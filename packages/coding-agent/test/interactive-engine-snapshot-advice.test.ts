@@ -7,7 +7,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { bunExecutable, cliPath, removeTempDirs } from "./cli-test-helpers.ts";
 
-/** Structural cost: two real interactive engine processes boot, load the extension and run a turn each. */
+/** Structural cost: real interactive engine processes boot, load the extension and run turns. */
 const REAL_ENGINE_TIMEOUT_MS = 240_000;
 /** A loaded runner has taken over 60 s to boot the CLI; the first answered request waits for that. */
 const CLI_BOOT_TIMEOUT_MS = 120_000;
@@ -119,6 +119,127 @@ test(
 			await client.restart(sessionId, { cwd, sessionDirectory: sessionDir });
 			await client.getState();
 			assert.deepEqual(await advice("write after the restart"), [], "a restarted engine resumes the session");
+		} finally {
+			await client.stop();
+		}
+	},
+	REAL_ENGINE_TIMEOUT_MS,
+);
+
+test(
+	"an interactive engine reports a fork the host made for it once, and an ordinary switch by ID reports nothing",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-engine-snapshot-advice-fork-"));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const sessionDir = join(root, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const original = await SessionManager.create(cwd, sessionDir);
+		await original.appendMessage({ role: "user", content: "earlier work", timestamp: 1 });
+		// As the fork a session whose directory is gone asks for: made by the host, then switched to by its ID.
+		const fork = await original.forkTo(cwd, sessionDir);
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			provider: "advice-test",
+			model: "writer",
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			args: [
+				"--session",
+				original.getSessionId(),
+				"--session-dir",
+				sessionDir,
+				"--offline",
+				"--no-extensions",
+				"--extension",
+				writeFileWritingProvider(root),
+				"--no-skills",
+				"--no-themes",
+				"--no-prompt-templates",
+			],
+			requestTimeoutMs: CLI_BOOT_TIMEOUT_MS,
+			interactiveEngine: { onDiagnostic: () => {} },
+		});
+		const advice = async (prompt: string) =>
+			(await client.promptAndWait(prompt, undefined, TURN_TIMEOUT_MS)).flatMap((event) =>
+				event.type === "worktree_snapshot_unavailable" ? [event.reason.code] : [],
+			);
+		try {
+			await client.start();
+			await client.getState();
+			assert.deepEqual(await advice("write in the resumed session"), [], "a resumed session reports nothing");
+
+			// What the host sends for the fork it made (`switchToForkedSession`).
+			const switched = await client.requestInternal<{ cancelled: boolean }>({
+				type: "switch_session",
+				sessionId: fork.getSessionId(),
+				sessionDirectory: sessionDir,
+				startedSession: true,
+			});
+			assert.equal(switched.cancelled, false);
+			assert.deepEqual(await advice("write in the fork"), ["blob-store-unsupported"]);
+
+			await client.switchSession(original.getSessionId(), undefined, sessionDir);
+			await client.switchSession(fork.getSessionId(), undefined, sessionDir);
+			assert.deepEqual(await advice("write in the fork again"), [], "switching back by ID reports nothing");
+		} finally {
+			await client.stop();
+		}
+	},
+	REAL_ENGINE_TIMEOUT_MS,
+);
+
+test(
+	"an RPC client that is not an interactive engine's host cannot mark a session it switches to as new",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-rpc-snapshot-advice-"));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const sessionDir = join(root, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const first = await SessionManager.create(cwd, sessionDir);
+		const second = await SessionManager.create(cwd, sessionDir);
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			provider: "advice-test",
+			model: "writer",
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			args: [
+				"--session",
+				first.getSessionId(),
+				"--session-dir",
+				sessionDir,
+				"--offline",
+				"--no-extensions",
+				"--extension",
+				writeFileWritingProvider(root),
+				"--no-skills",
+				"--no-themes",
+				"--no-prompt-templates",
+			],
+			requestTimeoutMs: CLI_BOOT_TIMEOUT_MS,
+		});
+		try {
+			await client.start();
+			await client.getState();
+			await client.requestInternal({
+				type: "switch_session",
+				sessionId: second.getSessionId(),
+				sessionDirectory: sessionDir,
+				startedSession: true,
+			});
+			const events = await client.promptAndWait("write a file", undefined, TURN_TIMEOUT_MS);
+			assert.deepEqual(
+				events.filter((event) => event.type === "worktree_snapshot_unavailable"),
+				[],
+			);
 		} finally {
 			await client.stop();
 		}
