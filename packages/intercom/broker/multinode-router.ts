@@ -60,7 +60,7 @@ import {
 	type SessionIdReclaimResult,
 } from "./multinode-state-store.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
-import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
+import { ROUTE_UNAVAILABLE_REASON, UNAUTHORIZED_REPLY_REASON } from "./delivery-failure-reason.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import {
 	decideReleasedAskerReply,
@@ -709,7 +709,7 @@ export class MultiNodeRouter {
 		asker: { readonly sessionId: string; readonly identity: string },
 	): Promise<void> {
 		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) {
-			this.fail(request, "Pending question route does not authorize this public reply");
+			this.fail(request, UNAUTHORIZED_REPLY_REASON);
 			return;
 		}
 		this.refuseRouteUnavailable(request);

@@ -111,6 +111,8 @@ intercom({ action: "ask", to: "research", message: "Any blockers?", wait: { kind
 // Your pending asks, and cancelling one
 intercom({ action: "pending" })
 intercom({ action: "cancel", askId: "4c4d8427" })
+// Close an ask sent to you that you will not answer; nothing is sent to its sender
+intercom({ action: "cancel", replyTo: "9f2c1e07" })
 
 // Check connection status
 intercom({ action: "status" })
