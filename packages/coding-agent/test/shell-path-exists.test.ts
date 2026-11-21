@@ -56,6 +56,7 @@ vi.mock("child_process", async (importOriginal) => ({
 }));
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const realWindows = process.platform === "win32";
 const standInRoot = mkdtempSync(join(tmpdir(), "atomic-shell-path-stand-ins-"));
 standIns.directory = join(standInRoot, "directory");
 mkdirSync(standIns.directory);
@@ -232,21 +233,25 @@ describe("Unix shell existence checks", () => {
 		assert.equal(shell.getShellConfig().shell, "/bin/bash");
 	});
 
-	it("falls back to bash in a PATH directory when /bin/bash fails access(F_OK), without starting which", () => {
-		accessSyncMock.mockImplementationOnce(() => {
-			throw Object.assign(new Error("not found"), { code: "ENOENT" });
-		});
-		const bin = mkdtempSync(join(tmpdir(), "atomic-shell-path-bin-"));
-		try {
-			writeFileSync(join(bin, "bash"), "");
-			vi.stubEnv("PATH", bin);
+	// A real directory on PATH, so only where Linux and macOS read it.
+	it.skipIf(realWindows)(
+		"falls back to bash in a PATH directory when /bin/bash fails access(F_OK), without starting which",
+		() => {
+			accessSyncMock.mockImplementationOnce(() => {
+				throw Object.assign(new Error("not found"), { code: "ENOENT" });
+			});
+			const bin = mkdtempSync(join(tmpdir(), "atomic-shell-path-bin-"));
+			try {
+				writeFileSync(join(bin, "bash"), "");
+				vi.stubEnv("PATH", bin);
 
-			assert.equal(shell.getShellConfig().shell, join(bin, "bash"));
-			assert.equal(spawnSyncMock.mock.calls.length, 0);
-		} finally {
-			rmSync(bin, { recursive: true, force: true });
-		}
-	});
+				assert.equal(shell.getShellConfig().shell, join(bin, "bash"));
+				assert.equal(spawnSyncMock.mock.calls.length, 0);
+			} finally {
+				rmSync(bin, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("rejects an explicitly configured shell path that fails access(F_OK)", () => {
 		accessSyncMock.mockImplementationOnce(() => {
@@ -258,19 +263,23 @@ describe("Unix shell existence checks", () => {
 		});
 	});
 
-	it("resolves bash in a PATH directory asynchronously when /bin/bash fails access(F_OK), without starting which", async () => {
-		accessMock.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }));
-		const bin = mkdtempSync(join(tmpdir(), "atomic-shell-path-bin-"));
-		try {
-			writeFileSync(join(bin, "bash"), "");
-			vi.stubEnv("PATH", bin);
+	// A real directory on PATH, so only where Linux and macOS read it.
+	it.skipIf(realWindows)(
+		"resolves bash in a PATH directory asynchronously when /bin/bash fails access(F_OK), without starting which",
+		async () => {
+			accessMock.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }));
+			const bin = mkdtempSync(join(tmpdir(), "atomic-shell-path-bin-"));
+			try {
+				writeFileSync(join(bin, "bash"), "");
+				vi.stubEnv("PATH", bin);
 
-			assert.equal((await shell.getShellConfigAsync()).shell, join(bin, "bash"));
-			assert.equal(accessSyncMock.mock.calls.length, 0);
-			assert.equal(spawnSyncMock.mock.calls.length, 0);
-			assert.equal(execFileMock.mock.calls.length, 0);
-		} finally {
-			rmSync(bin, { recursive: true, force: true });
-		}
-	});
+				assert.equal((await shell.getShellConfigAsync()).shell, join(bin, "bash"));
+				assert.equal(accessSyncMock.mock.calls.length, 0);
+				assert.equal(spawnSyncMock.mock.calls.length, 0);
+				assert.equal(execFileMock.mock.calls.length, 0);
+			} finally {
+				rmSync(bin, { recursive: true, force: true });
+			}
+		},
+	);
 });
