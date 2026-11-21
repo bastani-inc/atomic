@@ -11,6 +11,7 @@ import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "../src/core/extensions/loader.js";
 import { clearExtensionCache, extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { expectedShadowedNames, writeShadowedNamesExtension } from "./fixtures/extension-shadowed-names.js";
 
 const REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS = 120_000;
 
@@ -281,6 +282,46 @@ const answers = [${JSON.stringify(path.join(root, "absent.ts"))}, "./missing.js"
 			fs.rmSync(root, { recursive: true, force: true });
 			clearExtensionCache();
 		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
+// An extension module may declare at its top level any name the code the loader or jiti's transform adds also reads,
+// and still loads as it does natively (#6199).
+it(
+	"an extension module that declares a name the loader's code reads loads as natively, under Node",
+	async () => {
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-shadowed-names-"));
+		const entry = writeShadowedNamesExtension(root);
+		const bus = createEventBus();
+		const observations: unknown[] = [];
+		bus.on("shadowed-names", (value) => observations.push(value));
+		try {
+			for (const load of ["first", "reload"]) {
+				clearExtensionCache();
+				const factory =
+					load === "first"
+						? await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry)
+						: await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+				await loadExtensionFromFactory(factory!, root, bus, createExtensionRuntime(), entry);
+				expect(observations.at(-1), load).toEqual(expectedShadowedNames(root));
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			clearExtensionCache();
+		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
+it(
+	"an extension module that declares a name the loader's code reads loads as natively, under Bun",
+	() => {
+		const result = spawnSyncCollect(
+			[bunExecutable(), path.join(moduleDir(import.meta.url), "fixtures/extensions-shadowed-names-bun.ts")],
+			{ timeout: REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS },
+		);
+		expect(result.exitCode, result.stdout.toString() + result.stderr.toString()).toBe(0);
 	},
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );

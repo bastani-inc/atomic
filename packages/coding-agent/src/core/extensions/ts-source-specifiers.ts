@@ -150,8 +150,11 @@ interface ProgramPath {
 	unshiftContainer(key: "body", node: object): void;
 }
 
-/** The names jiti's module wrapper gives the functions its transform calls for `import()` and `import.meta.resolve`. */
-const JITI_FUNCTION_NAMES = ["jitiImport", "jitiESMResolve"];
+/**
+ * Names the code jiti's transform adds reads where the module wrote other code: the functions jiti's module wrapper
+ * gives it for `import()` and `import.meta.resolve`, and `Promise`, which an `import()` becomes a call of.
+ */
+const JITI_FUNCTION_NAMES = ["jitiImport", "jitiESMResolve", "Promise"];
 
 interface BabelApi {
 	types: { identifier(name: string): object; callExpression(callee: object, args: object[]): object };
@@ -187,7 +190,7 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 			// This runs before any plugin's visitors: jiti's own rewrites the module's direct reads of its URL, dirname
 			// and filename as soon as it enters the program.
 			const program = file.path;
-			// A binding of the module's own with a name jiti's wrapper gives its functions would stand in for them.
+			// A binding of the module's own with one of those names would stand in for what jiti's code reads.
 			const renameJitiNames = (scope: ScopeLike) => {
 				for (const name of JITI_FUNCTION_NAMES) if (scope.hasOwnBinding(name)) scope.rename(name);
 			};

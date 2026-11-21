@@ -68,7 +68,7 @@ interface LoadContext {
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs"]);
 const BINDER_KEY = Symbol.for("atomic.extensions.reloadableScripts");
 const prologue = (bindings: string) =>
-	`{const __atomicReloadable=globalThis[Symbol.for("atomic.extensions.reloadableScripts")];if(__atomicReloadable)[${bindings}]=__atomicReloadable(module,require,jitiImport);}`;
+	`{const __atomicReloadable=globalThis[globalThis.Symbol.for("atomic.extensions.reloadableScripts")];if(__atomicReloadable)[${bindings}]=__atomicReloadable(module,require,jitiImport);}`;
 const PROLOGUE = prologue("require,jitiImport");
 // CommonJS also gets the platform's own paths, which jiti gives with forward slashes on Windows.
 const COMMONJS_PROLOGUE = prologue("require,jitiImport,__filename,__dirname");
