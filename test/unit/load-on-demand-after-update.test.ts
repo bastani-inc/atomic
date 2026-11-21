@@ -40,6 +40,7 @@ function load(
 	dirs.push(dir);
 	const installation = join(dir, "installation");
 	const modules = options.owner === "user" ? join(dir, "user") : join(installation, "dist");
+	mkdirSync(installation, { recursive: true });
 	mkdirSync(modules, { recursive: true });
 	const sources: Record<string, string> = {
 		"earlier.mjs": "export const kept = 1;\n",
@@ -91,11 +92,15 @@ try {
 test(
 	"a module that no longer links after an update says to restart, naming the feature",
 	() => {
-		assert.deepEqual(load("lacks-export", "update"), {
-			name: "UpdatedInstallError",
-			message: "atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe.",
-			cause: "SyntaxError",
-		});
+		const outcome = load("lacks-export", "update");
+		assert.equal(outcome.name, "UpdatedInstallError");
+		assert.equal(outcome.cause, "SyntaxError");
+		const [first, ...rest] = (outcome.message ?? "").split("\n");
+		assert.equal(
+			first,
+			"atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe.",
+		);
+		assert.match(rest.join("\n"), /does not provide an export named 'added'/);
 	},
 	CHILD_TIMEOUT_MS,
 );
@@ -103,11 +108,15 @@ test(
 test(
 	"a module the update removed says to restart, naming the feature",
 	() => {
-		assert.deepEqual(load("missing-file", "update"), {
-			name: "UpdatedInstallError",
-			message: "atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe.",
-			cause: "ERR_MODULE_NOT_FOUND",
-		});
+		const outcome = load("missing-file", "update");
+		assert.equal(outcome.name, "UpdatedInstallError");
+		assert.equal(outcome.cause, "ERR_MODULE_NOT_FOUND");
+		const [first, ...rest] = (outcome.message ?? "").split("\n");
+		assert.equal(
+			first,
+			"atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe.",
+		);
+		assert.match(rest.join("\n"), /Cannot find module .*removed\.mjs/);
 	},
 	CHILD_TIMEOUT_MS,
 );
@@ -115,12 +124,15 @@ test(
 test(
 	"a removed installation says so",
 	() => {
-		assert.deepEqual(load("missing-file", "remove"), {
-			name: "UpdatedInstallError",
-			message:
-				"The atomic installation this session runs from was removed or replaced; restart it to keep using the probe.",
-			cause: "ERR_MODULE_NOT_FOUND",
-		});
+		const outcome = load("missing-file", "remove");
+		assert.equal(outcome.name, "UpdatedInstallError");
+		assert.equal(outcome.cause, "ERR_MODULE_NOT_FOUND");
+		const [first, ...rest] = (outcome.message ?? "").split("\n");
+		assert.equal(
+			first,
+			"The atomic installation this session runs from was removed or replaced; restart it to keep using the probe.",
+		);
+		assert.match(rest.join("\n"), /Cannot find module .*removed\.mjs/);
 	},
 	CHILD_TIMEOUT_MS,
 );
@@ -154,12 +166,15 @@ test(
 test(
 	"a tool whose code no longer links after an update fails with the restart message",
 	() => {
-		assert.deepEqual(load("lacks-export", "update", { via: "tool" }), {
-			name: "UpdatedInstallError",
-			message:
-				"atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe tool.",
-			cause: "SyntaxError",
-		});
+		const outcome = load("lacks-export", "update", { via: "tool" });
+		assert.equal(outcome.name, "UpdatedInstallError");
+		assert.equal(outcome.cause, "SyntaxError");
+		const [first, ...rest] = (outcome.message ?? "").split("\n");
+		assert.equal(
+			first,
+			"atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe tool.",
+		);
+		assert.match(rest.join("\n"), /does not provide an export named 'added'/);
 	},
 	CHILD_TIMEOUT_MS,
 );
@@ -183,6 +198,51 @@ test(
 		const outcome = load("missing-package", "update", { via: "tool", owner: "user" });
 		assert.equal(outcome.name, "Error");
 		assert.match(outcome.message ?? "", /Cannot find package 'left-pad-not-installed-atomic'/);
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+/** The error a user extension that imports a package that is not installed fails to load with, after an update. */
+function userExtensionLoadError(): string {
+	const dir = makeTempDirectory("atomic-load-on-demand-extension-");
+	dirs.push(dir);
+	const installation = join(dir, "installation");
+	mkdirSync(installation);
+	const extension = join(dir, "missing-dep.mjs");
+	writeFileSync(
+		extension,
+		'import { pad } from "left-pad-not-installed-atomic";\nexport default function (pi) { void pi; void pad; }\n',
+	);
+	const script = join(dir, "session.mjs");
+	writeFileSync(
+		script,
+		`import { writeFileSync } from "node:fs";
+const installation = ${JSON.stringify(installation)};
+writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.90" }));
+const { loadExtensions } = await import(${JSON.stringify(pathToFileURL(join(DIST, "core/extensions/loader-core.js")).href)});
+writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.91" }));
+const result = await loadExtensions([${JSON.stringify(extension)}], ${JSON.stringify(dir)}, undefined, undefined, undefined, undefined, ${JSON.stringify(join(dir, "agent"))});
+process.stdout.write(JSON.stringify(result.errors.map((entry) => entry.error)));
+process.exit(0);
+`,
+	);
+	const result = spawnSyncCollect([process.execPath, script], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: "", ATOMIC_PACKAGE_DIR: installation, PI_PACKAGE_DIR: "", HOME: dir },
+		timeout: CHILD_TIMEOUT_MS,
+	});
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	const errors = JSON.parse(result.stdout.toString()) as string[];
+	assert.equal(errors.length, 1, JSON.stringify(errors));
+	return errors[0]!;
+}
+
+test(
+	"a user extension whose dependency is missing fails to load with that error after an update",
+	() => {
+		const error = userExtensionLoadError();
+		assert.match(error, /^Failed to load extension: Cannot find (?:module|package) 'left-pad-not-installed-atomic'/);
+		assert.doesNotMatch(error, /restart it/);
 	},
 	CHILD_TIMEOUT_MS,
 );
