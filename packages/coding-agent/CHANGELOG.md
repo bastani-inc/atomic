@@ -4,11 +4,12 @@
 
 ### Added
 
-- `ToolBlock` and `NoticeLine` take the states `agent-running`, `shell-running`, `input` and `task-stopped`, which draw a subagent's or background task's state with the marks of the agent panel and `/tasks`, and `TASK_MARKS` gives those marks for text an extension draws itself ([#6122](https://github.com/bastani-inc/atomic/issues/6122))
+- `ToolBlock` and `NoticeLine` take the states `agent-running`, `shell-running`, `input` and `task-stopped`, which draw a subagent's or background task's state with the marks of the agent panel and `/tasks`, and `TASK_MARKS` gives those marks for text an extension draws itself ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
 
 ### Fixed
 
-- Every view of a subagent or background task uses the marks of the agent panel and `/tasks`: completion notices, launch cards, a chat's task rows and the `wait` and `kill` lines show a grey `◯` (a shell's `⧗`) while it runs, a green `●` once it is done and a red `◯` once it was stopped, also for a subagent paused or quit until it is resumed. A `wait` that returns before its shell finishes no longer shows the done mark `●`, a stopped task's notice no longer shows `◼`, which `/tasks` uses for a task that is stopping, and a command sent to the background shows `⧗` on its block instead of `●`. A task row shows a waiting question with `◆` and a stopping task with `◼`, and in `/tasks` a subagent paused with Esc reads in the warning colour and a queued one dim, as in the agent panel ([#6122](https://github.com/bastani-inc/atomic/issues/6122))
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
+- Every view of a subagent or background task uses the marks of the agent panel and `/tasks`: completion notices, launch cards, a chat's task rows and the `wait` and `kill` lines show a grey `◯` (a shell's `⧗`) while it runs, a green `●` once it is done and a red `◯` once it was stopped, also for a subagent paused or quit until it is resumed. A `wait` that returns before its shell finishes no longer shows the done mark `●`, a stopped task's notice no longer shows `◼`, which `/tasks` uses for a task that is stopping, and a command sent to the background shows `⧗` on its block instead of `●`. A task row shows a waiting question with `◆` and a stopping task with `◼`, and in `/tasks` a subagent paused with Esc reads in the warning colour and a queued one dim, as in the agent panel ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
 
 ## [0.10.2] - 2026-11-20
 
