@@ -47,6 +47,7 @@ import type {
 import { markNativeMcpToolDefinition, matchesMcpDirectToolSelection } from "../../core/mcp-child-policy.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
+import type { SessionEntry } from "../../core/session-manager.ts";
 import { sliceHead } from "../../core/tools/truncate.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
@@ -70,6 +71,7 @@ import type { McpServerConnection, McpServerLog, McpTransportFactory } from "./r
 import {
 	declaredMcpToolNames,
 	isRecordedToolName,
+	latestSystemSection,
 	MCP_TOOL_RECORD_ENTRY_TYPE,
 	type McpResourceServerRecord,
 	type McpServerIdentity,
@@ -233,7 +235,12 @@ function shownSummary(server: McpServerListing, room: number): string {
 	if (server.entry.config.description?.trim() || server.recordedSummary === undefined) {
 		return truncate(serverSummary(server), room);
 	}
-	return room === 1 && server.recordedSummaryCut ? "" : truncate(server.recordedSummary, room);
+	return shownRecordedSummary(server.recordedSummary, server.recordedSummaryCut === true, room);
+}
+
+/** A recorded summary as a line with room for `room` characters shows it; see {@link shownSummary}. */
+function shownRecordedSummary(summary: string, cut: boolean, room: number): string {
+	return room === 1 && cut ? "" : truncate(summary, room);
 }
 
 /** A summary as a server's line shows it, whether it is only the ellipsis of a longer one, and the server shown. */
@@ -275,10 +282,7 @@ function layOutServersSection(servers: readonly McpServerListing[]): ServersSect
 	let kept = listed.length;
 	while (kept > 0 && size(kept) > MAX_SERVERS_SECTION_CHARS) kept--;
 	// Each description also takes a ": " separator.
-	const perServer =
-		kept === 0
-			? 0
-			: Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
+	const perServer = summaryRoom(intro, heads.slice(0, kept), omitted(listed.length - kept));
 	const summarized =
 		perServer > 0
 			? listed.slice(0, kept).map((listing) => ({ listing, summary: shownSummary(listing, perServer) }))
@@ -287,6 +291,51 @@ function layOutServersSection(servers: readonly McpServerListing[]): ServersSect
 		.slice(0, kept)
 		.map((_, index) => (summarized[index]?.summary ? `${heads[index]}: ${summarized[index].summary}` : heads[index]));
 	return { text: [intro, ...lines, ...omitted(listed.length - kept)].join("\n"), summarized };
+}
+
+/** Room for a summary that each server line of a section with `intro`, these `heads` and `omitted` line had. */
+function summaryRoom(intro: string, heads: readonly string[], omitted: readonly string[]): number {
+	if (heads.length === 0) return 0;
+	const size = [intro, ...heads, ...omitted].join("\n").length;
+	return Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size) / heads.length) - 2);
+}
+
+/** A server line of the section: its head, the server's namespace, and the summary it shows. */
+const SERVER_LINE = /^(- (\S+) \((?:codemode|tool_search)\))(?:: ([^\n]*))?$/;
+
+/** What a section a request sent shows: the summary on each server's line, by namespace, and the room it had. */
+interface SentServersSection {
+	room: number;
+	/** The summaries shown for a namespace, "" for a line without one; more than one when two servers share it. */
+	summaries: Map<string, string[]>;
+}
+
+/** The section a request sent as `text`, with its tags; undefined when it is not one this extension wrote. */
+function readSentServersSection(text: string | undefined): SentServersSection | undefined {
+	const [intro, ...rest] = text?.split("\n").slice(1, -1) ?? [];
+	if (intro === undefined) return undefined;
+	const omitted = rest.at(-1)?.startsWith("- … ") ? [rest.at(-1)!] : [];
+	const heads: string[] = [];
+	const summaries = new Map<string, string[]>();
+	for (const line of rest.slice(0, rest.length - omitted.length)) {
+		const match = SERVER_LINE.exec(line);
+		if (!match) return undefined;
+		heads.push(match[1]!);
+		summaries.set(match[2]!, [...(summaries.get(match[2]!) ?? []), match[3] ?? ""]);
+	}
+	return { room: summaryRoom(intro, heads, omitted), summaries };
+}
+
+/**
+ * Whether the section a request sent last shows `record`'s summary on its server's line, as the line shows it with the
+ * room it had. A record the conversation does not show, such as one whose replacement could not be written, is not
+ * shown again after a resume; nor is one a line without a summary leaves unconfirmed.
+ */
+function showsRecordedSummary(section: SentServersSection | undefined, record: McpServerSummaryRecord): boolean {
+	const shown = section?.summaries.get(mcpNamespace(record.server));
+	if (!section || section.room <= 0 || shown?.length !== 1) return false;
+	const expected = shownRecordedSummary(record.summary, record.cut === true, section.room);
+	return expected !== "" && shown[0] === expected;
 }
 
 /**
@@ -491,6 +540,22 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 * started (see recordMatchesServer), and their connection attempt has not settled since.
 		 */
 		const pendingSummaries = new Set<string>();
+		/**
+		 * Servers whose summary record on the current branch is what the section its conversation sent last shows of
+		 * them (see showsRecordedSummary). Only these records are shown while their servers reconnect.
+		 */
+		let shownRecords = new Set<string>();
+		const readShownRecords = (branch: readonly SessionEntry[]) => {
+			const section =
+				toolRecords.summaries.size > 0
+					? readSentServersSection(latestSystemSection(branch, MCP_SERVERS_SECTION))
+					: undefined;
+			shownRecords = new Set(
+				[...toolRecords.summaries.values()]
+					.filter((record) => showsRecordedSummary(section, record))
+					.map((record) => record.server),
+			);
+		};
 		/**
 		 * The `mcp_servers` section of the prompt being started and the options it was set in, with the summary its
 		 * line shows from each server's instructions, and the servers whose line shows their recorded summary.
@@ -767,6 +832,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				syncResourceTools();
 			}
 			// The `mcp_servers` section shows a server's recorded summary while the server reconnects.
+			readShownRecords(branch);
 			for (const record of toolRecords.summaries.values()) {
 				const server = findServer(record.server);
 				if (server && isEnabled(server) && recordMatchesServer(server.entry, record))
@@ -776,9 +842,9 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 
 		/** The summary record of a server whose connection attempt has not settled since the session started. */
 		const pendingSummary = (server: McpServer): McpServerSummaryRecord | undefined => {
-			const record = pendingSummaries.has(server.entry.name)
-				? toolRecords.summaries.get(server.entry.name)
-				: undefined;
+			const name = server.entry.name;
+			const record =
+				pendingSummaries.has(name) && shownRecords.has(name) ? toolRecords.summaries.get(name) : undefined;
 			return record && recordMatchesServer(server.entry, record) ? record : undefined;
 		};
 
@@ -1678,6 +1744,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		pi.on("session_tree", (_event, ctx) => {
 			const branch = ctx.sessionManager.getBranch();
 			toolRecords = readToolRecords(branch);
+			readShownRecords(branch);
 			declaredNames = declaredMcpToolNames(branch);
 			void recordDeclaredTools();
 		});
@@ -1733,6 +1800,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			recordingResources = undefined;
 			pendingResourceServers.clear();
 			pendingSummaries.clear();
+			shownRecords = new Set();
 			promptSection = undefined;
 			declaredNames = new Set();
 			tokensAtSignIn.clear();
