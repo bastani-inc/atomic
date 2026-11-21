@@ -17,6 +17,7 @@ import {
 	buildSystemPromptSections,
 	diffSystemPromptSections,
 	type NormalizedBuildSystemPromptOptions,
+	namesSessionFolderInGuidelines,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
 import {
@@ -282,6 +283,10 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 				? {}
 				: { worktree_restore: worktreeRestoreSection(this._worktreeRestoreNotices) }),
 		},
+		// A session keeps naming its session folder where its recorded prompt does.
+		...(namesSessionFolderInGuidelines(getCurrentSystemMessage(this.agent.state.messages))
+			? { sessionFolderInGuidelines: true }
+			: {}),
 	});
 	if (this._systemPromptTransform) {
 		const sections = buildSystemPromptSections(this._baseSystemPromptOptions);
@@ -358,6 +363,7 @@ export function _preparePromptAndToolLoadout(
 	messages: AgentMessage[] = this.agent.state.messages,
 ): SystemMessage | undefined {
 	const current = getCurrentSystemMessage(messages);
+	options.sessionFolderInGuidelines = namesSessionFolderInGuidelines(current);
 	const selected = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
 	const recorded = (current?.toolsAdded ?? []).map((tool) => tool.name).filter((name) => selected.includes(name));
 	options.selectedTools = [...recorded, ...selected.filter((name) => !recorded.includes(name))];

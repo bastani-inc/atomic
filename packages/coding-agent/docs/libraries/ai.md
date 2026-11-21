@@ -1641,11 +1641,12 @@ interface SystemMessage {
   sections?: Record<string, string | null>;
   toolsAdded?: Tool[];
   toolsRemoved?: ToolReference[];
+  strictToolsDisabled?: boolean;
   timestamp: number;
 }
 ```
 
-Later system messages append instructions, patch named sections (`null` removes a section), and add or remove tools. Section text is opaque and rendered verbatim, joined by blank lines. `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)` replay these changes for custom providers; do not read `context.systemPrompt` or `context.tools` inside provider implementations.
+Later system messages append instructions, patch named sections (`null` removes a section), and add or remove tools. `strictToolsDisabled` records that the provider rejected the conversation's `strict: 'prefer'` tools for its strict-tool limits; Anthropic and Bedrock then send them without strict schemas, as they do after such a rejection. Set it on the system message that replaces compacted history, so the record outlives the replies that held it. Section text is opaque and rendered verbatim, joined by blank lines. `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)` replay these changes for custom providers; do not read `context.systemPrompt` or `context.tools` inside provider implementations.
 
 Models with `supportsMidConvoSystemMessages` receive updates in place. Other models receive the replayed prompt and tools as a leading checkpoint. Anthropic's `supportsMidConvoToolChanges`, OpenAI Responses' `supportsAdditionalTools`/`supportsToolSearch`, and OpenAI Completions' `supportsMidConvoToolAdditions` enable native tool transitions where representable. Unsupported transitions fall back to the current top-level tool list and may invalidate the cached prefix.
 

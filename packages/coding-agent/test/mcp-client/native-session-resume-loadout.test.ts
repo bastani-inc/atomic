@@ -265,11 +265,17 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		return session;
 	}
 
+	/**
+	 * How long a first process may take to list its server's tools. The in-memory server answers at once, but the
+	 * session's startup work before the listing can take seconds on a loaded machine.
+	 */
+	const TOOLS_LISTED_TIMEOUT_MS = 10_000;
+
 	/** A first process that declared the server's tools; it sends one more request (the control) and quits. */
 	async function liveSession(fixture: Fixture, options: StartOptions, tool = "mcp__docs__search") {
 		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
 		const live = await startSession(fixture, manager, options);
-		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(tool));
+		await vi.waitFor(() => expect(live.getActiveToolNames()).toContain(tool), { timeout: TOOLS_LISTED_TIMEOUT_MS });
 		fixture.faux.setResponses([fixture.reply("one")]);
 		await live.prompt("first");
 		// The control: the request the same process sends next, without a resume.
@@ -406,6 +412,41 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(fixture.requests.at(-2)).toBe(control);
 		expect(toolNames(fixture.requests.at(-1)!)).not.toContain("mcp__docs__search");
 		expect(toolChanges(resumed, before)).toEqual([{ added: [], removed: ["mcp__docs__search"] }]);
+	});
+
+	it("runs a restored tool whose server lists its required parameters in another order, and declares no change (#6130)", async () => {
+		const listed = (required: string[]): ListedTool => ({
+			...SEARCH,
+			inputSchema: {
+				type: "object",
+				properties: { query: { type: "string" }, limit: { type: "number" } },
+				required,
+			},
+		});
+		const fixture = await createFixture();
+		const { sessionFile, control } = await liveSession(fixture, {
+			servers: { docs: { tools: [listed(["query", "limit"])], calls: [] } },
+		});
+		const entriesBefore = readFileSync(sessionFile, "utf8").split("\n").length;
+
+		const server = held();
+		const script: ServerScript = { tools: [listed(["limit", "query"])], ready: server.ready, calls: [] };
+		const resumed = await resume(fixture, sessionFile, { servers: { docs: script } });
+		const before = resumed.messages.length;
+		const result = await promptCalling(fixture, resumed, "mcp__docs__search", () => server.release(), {
+			query: "again",
+			limit: 1,
+		});
+
+		expect(getMessageText(result)).toBe("again guide");
+		expect(script.calls).toEqual(["search"]);
+		expect(fixture.requests.slice(-2)).toEqual([control, control]);
+		expect(toolChanges(resumed, before)).toEqual([]);
+		const records = readFileSync(sessionFile, "utf8")
+			.split("\n")
+			.slice(entriesBefore - 1)
+			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE));
+		expect(records).toEqual([]);
 	});
 
 	it("does not run a restored tool whose server lists a changed definition, and declares the change", async () => {
