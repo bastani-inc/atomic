@@ -877,6 +877,117 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(sectionUpdates(resumed, before)).toEqual([]);
 	});
 
+	/** Names that share the namespace `mcp__a_b_c`, in the order the section lists them. */
+	const SHARED = ["a_b_c", "a_b-c", "a-b_c"] as const;
+	const sharedLine = (summary?: string) => `- mcp__a_b_c (codemode)${summary ? `: ${summary}` : ""}`;
+
+	it("keeps the summaries of servers that share a namespace while they reconnect", async () => {
+		const fixture = await createFixture();
+		const servers = (ready?: Promise<void>) => ({
+			[SHARED[0]]: { tools: [SEARCH], instructions: "From the first server.", ready, calls: [] },
+			[SHARED[1]]: { tools: [SEARCH], instructions: "From the second server.", ready, calls: [] },
+		});
+		const { sessionFile, section } = await liveCodemodeSession(fixture, { servers: servers() });
+		expect(serverLines(section)).toEqual([
+			sharedLine("From the first server."),
+			sharedLine("From the second server."),
+		]);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, { servers: servers(server.ready), exposure: "codemode" });
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(currentSection(resumed)).toBe(section);
+	});
+
+	it("writes which server each line lists only for namespaces that servers share", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: {
+				docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] },
+				wiki: { tools: [SEARCH], instructions: "Search the wiki.", calls: [] },
+			},
+		});
+		expect(readFileSync(sessionFile, "utf8")).not.toContain("serverLines");
+	});
+
+	/**
+	 * A session whose shared namespace showed a configured description and another server's summary, then that server
+	 * reconnected without instructions, and the records of that prompt were not written. Returns the session file.
+	 */
+	async function lostSharedRetirement(fixture: Fixture) {
+		const server = (instructions?: string) => ({ tools: [SEARCH], instructions, calls: [] });
+		const descriptions = { [SHARED[0]]: "Shared words." };
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { [SHARED[0]]: server(), [SHARED[1]]: server("Shared words.") },
+			descriptions,
+		});
+		const written = readFileSync(sessionFile, "utf8");
+		const first = await resume(fixture, sessionFile, {
+			servers: { [SHARED[0]]: server(), [SHARED[1]]: server() },
+			descriptions,
+			exposure: "codemode",
+		});
+		await settled(first);
+		await promptReply(fixture, first, "after reconnect");
+		expect(serverLines(currentSection(first))).toEqual([sharedLine("Shared words."), sharedLine()]);
+		await first.dispose();
+		// Everything that prompt's records said is lost, as when their write fails; the conversation is kept.
+		const lost = readFileSync(sessionFile, "utf8")
+			.slice(written.length)
+			.split("\n")
+			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE));
+		expect(lost).toHaveLength(1);
+		writeFileSync(sessionFile, readFileSync(sessionFile, "utf8").replace(`${lost[0]}\n`, ""));
+		return { sessionFile };
+	}
+
+	it("does not show a summary on a shared namespace's line that the conversation showed for another server", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await lostSharedRetirement(fixture);
+
+		// The server with the description is gone, and another one shares the namespace now.
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: {
+				[SHARED[1]]: { tools: [SEARCH], ready: server.ready, calls: [] },
+				[SHARED[2]]: { tools: [SEARCH], ready: server.ready, calls: [] },
+			},
+			exposure: "codemode",
+		});
+		await promptReply(fixture, resumed, "while reconnecting");
+		expect(serverLines(currentSection(resumed))).toEqual([sharedLine(), sharedLine()]);
+		server.release();
+		await settled(resumed);
+	});
+
+	it("does not show a shared namespace's summary that the conversation no longer showed when its replacement was not written", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await lostSharedRetirement(fixture);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: {
+				[SHARED[0]]: { tools: [SEARCH], ready: server.ready, calls: [] },
+				[SHARED[1]]: { tools: [SEARCH], ready: server.ready, calls: [] },
+			},
+			descriptions: { [SHARED[0]]: "Shared words." },
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "while reconnecting");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(serverLines(currentSection(resumed))).toEqual([sharedLine("Shared words."), sharedLine()]);
+		server.release();
+		await settled(resumed);
+	});
+
 	/**
 	 * A session whose server showed its summary, then reconnected without instructions; the record that its line shows
 	 * no summary is lost, as when that write fails. Returns the session file and the entry of the reply before.
