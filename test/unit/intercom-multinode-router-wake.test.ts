@@ -3430,7 +3430,13 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 	describe("a hand-over, whatever its claim and the database do (#5607)", () => {
 		const timings = ["immediate", "within the hold", "after the hold lapsed", "absent"] as const;
 		const results = ["committed", "rejected", "timed out uncommitted", "timed out committed later"] as const;
-		const storages = ["ok", "outage during", "outage after"] as const;
+		const storages = [
+			"ok",
+			"outage during",
+			"alias write fails",
+			"outage during, then the alias write fails",
+			"outage after",
+		] as const;
 		for (const timing of timings)
 			for (const result of results)
 				for (const storage of storages)
@@ -3448,6 +3454,17 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 						const knownSessions = here.state.knownSessions;
 						const realBind = knownSessions.bind.bind(knownSessions);
 						const bind = vi.spyOn(knownSessions, "bind");
+						// The first write that takes the fresh id back as an alias fails.
+						let aliasWriteFails =
+							storage === "alias write fails" || storage === "outage during, then the alias write fails";
+						const bindAlias = (...args: Parameters<typeof realBind>) => {
+							if (aliasWriteFails && args[0] === fresh.info.id) {
+								aliasWriteFails = false;
+								return Promise.reject(new Error("the database failed"));
+							}
+							return realBind(...args);
+						};
+						bind.mockImplementation(bindAlias);
 						if (result === "rejected") bind.mockRejectedValueOnce(new Error("the database failed"));
 						if (result === "timed out uncommitted") bind.mockImplementationOnce(() => new Promise(() => {}));
 						if (result === "timed out committed later")
@@ -3457,7 +3474,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 							});
 						// The registration's own binding write fails once too.
 						const failRegistration = () => {
-							if (storage !== "outage during") return;
+							if (storage !== "outage during" && storage !== "outage during, then the alias write fails") return;
 							bind.mockRejectedValueOnce(new Error("the database failed"));
 							vi.spyOn(knownSessions, "reclaim").mockRejectedValueOnce(new Error("the database failed"));
 						};
@@ -3518,7 +3535,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 							bind.mockRejectedValue(new Error("the database failed"));
 							await vi.advanceTimersByTimeAsync(2 * BROKER_LEASE_RENEW_INTERVAL_MS);
 							owners.mockRestore();
-							bind.mockImplementation(realBind);
+							bind.mockImplementation(bindAlias);
 						}
 						// Without the hand-over, a registration that does not get the id awaits it only when another holds it.
 						if (timing === "absent" && first.status !== "held" && first.status !== "granted") {
@@ -3543,7 +3560,9 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 							session = await register(await next);
 						}
 						assert.equal(session.info.id, id, "it holds its id again");
-						await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+						// A write that failed is tried again at the next renewals: its id's, then its alias's.
+						for (let renewal = 0; renewal < 3 && here.router.aliasTarget(fresh.info.id) !== session; renewal++)
+							await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
 						if (timing === "absent")
 							assert.notEqual(
 								here.router.localAliasTarget(fresh.info.id),

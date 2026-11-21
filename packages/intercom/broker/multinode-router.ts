@@ -490,7 +490,7 @@ interface PresenceEntry {
 	 * #5607: the alias its grant carried, when its registration's binding write failed: taken once that registration's
 	 * id is taken at a later check (`adopt`).
 	 */
-	pendingAlias?: { readonly alias: string; readonly aliasToken?: string; readonly recovery?: string };
+	pendingAlias?: { readonly alias: string; readonly aliasToken?: string; readonly recovery?: string; taking?: boolean };
 	/** #5607: it is being moved back to the id it awaited: its own id stays owned, by the same token, for its next registration. */
 	handsOver?: true;
 }
@@ -1396,12 +1396,7 @@ export class MultiNodeRouter {
 			entry.owner = { intercomSessionId: session.info.id, token: adoption.token, confirmed };
 			adoption.decided.resolve("own");
 			// #5607: the alias its grant carried is taken now.
-			const pending = entry.pendingAlias;
-			delete entry.pendingAlias;
-			if (pending !== undefined)
-				void this.takeAlias(session, entry, pending.alias, this.newOwner(pending.aliasToken ?? adoption.token))
-					.then(() => this.consumeLapsed(session, pending.recovery))
-					.catch((error: Error) => this.report(error));
+			void this.takePendingAlias(session, entry);
 			return "own";
 		}
 		if (
@@ -1469,8 +1464,31 @@ export class MultiNodeRouter {
 	 */
 	private retryAdoptions(): void {
 		if (this.state.knownSessions.owners === undefined) return;
-		for (const [session, entry] of this.presence)
-			if (entry.adoption !== undefined && entry.fenced !== true) void this.adoptionCheck(session, entry, true);
+		for (const [session, entry] of this.presence) {
+			if (entry.fenced === true) continue;
+			if (entry.adoption !== undefined) void this.adoptionCheck(session, entry, true);
+			// #5607: an alias whose write failed is tried again, once its own id is taken.
+			else if (entry.pendingAlias !== undefined && entry.owner !== undefined) void this.takePendingAlias(session, entry);
+		}
+	}
+
+	/**
+	 * #5607: `entry`'s pending alias (one its grant, or its binding write, gave it) taken, in one conditional write; kept
+	 * pending, to try again at the next renewal, while that write fails.
+	 */
+	private async takePendingAlias(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
+		const pending = entry.pendingAlias;
+		if (pending === undefined || pending.taking === true) return;
+		pending.taking = true;
+		try {
+			await this.takeAlias(session, entry, pending.alias, this.newOwner(pending.aliasToken ?? entry.owner?.token));
+			if (entry.pendingAlias === pending) delete entry.pendingAlias;
+			this.consumeLapsed(session, pending.recovery);
+		} catch (error) {
+			this.report(error);
+		} finally {
+			pending.taking = false;
+		}
 	}
 
 	/** #5607: the shared store answered a statement of this broker's. */
@@ -1699,7 +1717,13 @@ export class MultiNodeRouter {
 			if (reserved.token === token || reserved.aliasToken === token) return true;
 		for (const lapsed of this.lapsedHandoffs.values()) if (lapsed.aliasToken === token) return true;
 		for (const entry of this.presence.values())
-			if (entry.owner?.token === token || entry.alias?.token === token || entry.awaits?.token === token) return true;
+			if (
+				entry.owner?.token === token ||
+				entry.alias?.token === token ||
+				entry.awaits?.token === token ||
+				entry.pendingAlias?.aliasToken === token
+			)
+				return true;
 		return false;
 	}
 
@@ -1984,8 +2008,13 @@ export class MultiNodeRouter {
 							const alias = grant?.alias ?? reclaim?.alias;
 							const aliasToken = grant?.alias === undefined ? reclaim?.aliasToken : grant.aliasToken;
 							if (alias !== undefined && (reclaim === undefined || session.info.id === reclaim.sessionId)) {
-								await this.takeAlias(session, entry, alias, this.newOwner(aliasToken ?? owner.token));
-								this.consumeLapsed(session, grant?.alias === undefined ? reclaim?.recovery : grant.recovery);
+								const recovery = grant?.alias === undefined ? reclaim?.recovery : grant.recovery;
+								entry.pendingAlias = {
+									alias,
+									...(aliasToken === undefined ? {} : { aliasToken }),
+									...(recovery === undefined ? {} : { recovery }),
+								};
+								await this.takePendingAlias(session, entry);
 							}
 						}
 						// #5607: a hand-over whose id its binding write did not keep gives its alias back too, unless a lapsed
