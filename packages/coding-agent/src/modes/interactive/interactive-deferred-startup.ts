@@ -90,11 +90,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 		await this.themeController.applyFromSettings(heldProject ? { keepPreview: true } : undefined);
-		this.setupAutocompleteProvider(
-			heldProject
-				? { preserveSelection: true, refreshCommandMenu: this.settingsManager.isProjectTrusted() }
-				: undefined,
-		);
+		this.setupAutocompleteProvider();
 		this.setupExtensionShortcuts(this.session.extensionRunner);
 		try {
 			if (completedStartupTrust) {
