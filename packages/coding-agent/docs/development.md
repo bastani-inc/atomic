@@ -54,7 +54,7 @@ The process that draws the UI (`host`) and the engine that runs the agent and ex
 | `block` | After each stall of at least the threshold | `at` (when the UI was due to respond), `durationMs`, the number of stack `samples`, `hotFrames` (the functions most samples were in, most specific first) and the most common full `stacks` |
 | `delay` | Once the process is ready for input (the `host` as it draws its first frame, the `engine` once it has loaded its session and extensions), once it starts to quit, and as it exits | `phase` (`startup`, `session` or `shutdown`), and how late the process responded: `p50Ms`, `p99Ms`, `maxMs` over `ticks` checks. A stall counts in the phase it started in |
 
-Quit, or close the terminal or console window, to get the engine's `shutdown` record. Signing out of Windows, or restarting it, ends the engine at once, so its last records are not written.
+Quit, close the terminal or console window, or sign out of Windows, to get the engine's `shutdown` record.
 
 Records hold function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a problem.
 
