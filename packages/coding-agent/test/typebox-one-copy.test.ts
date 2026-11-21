@@ -118,10 +118,10 @@ export default function (pi) {
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );
 
-// Bun imports an extension natively on its first load; one that has a `typebox` package of its own still reaches
-// Atomic's copy, so its formats apply to tool validation.
+// Bun imports an extension natively on its first load, so Bun, not the extension loader, resolves its `typebox`
+// imports. Under Bun, Atomic uses the `typebox` package, so the extension's formats apply to tool validation.
 it(
-	"under Bun, an extension with its own typebox package registers its formats in Atomic's copy",
+	"under Bun, an extension's typebox formats apply to tool validation on its first load and after a reload",
 	() => {
 		const result = spawnSyncCollect(
 			[bunExecutable(), path.join(moduleDir(import.meta.url), "fixtures/extensions-native-typebox.ts")],

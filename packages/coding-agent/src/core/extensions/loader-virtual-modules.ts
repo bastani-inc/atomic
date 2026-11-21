@@ -750,21 +750,6 @@ export const extensionLoaderTestHooks = {
 };
 
 /**
- * Whether Bun, which imports an extension natively on its first load, would resolve the extension's `typebox` imports
- * to a `typebox` package of its own rather than to Atomic's copy, whose format registry tool validation reads. Such an
- * extension is transformed instead, so its `typebox` imports reach Atomic's copy, as on every reload and under Node.
- */
-function resolvesOwnTypebox(importPath: string): boolean {
-	if (process.versions.bun === undefined) return false;
-	try {
-		createRequire(importPath).resolve("typebox");
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
  * Extension paths already evaluated via native import() in this process. A
  * native import leaves the extension's whole module graph in the runtime's
  * module registry: the cache-busting query reaches only the entry file (and Bun
@@ -807,7 +792,7 @@ async function importExtensionModule(
 			const { code } = transformSource(options);
 			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
 		},
-		...(forceTransformedImports || resolvesOwnTypebox(importPath) ? { tryNative: false } : {}),
+		...(forceTransformedImports ? { tryNative: false } : {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),

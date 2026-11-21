@@ -39,7 +39,7 @@ export default nextConfig;
 
 Atomic's own dependencies load from `node_modules` once `@bastani/atomic` is external. The other entries cover packages your app may import directly. Add any other Atomic dependency you import yourself.
 
-Import TypeBox for tool schemas from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format` and TypeBox's other subpaths) rather than from `typebox`. Atomic ships its own copy of TypeBox, and formats, settings or a locale your app registers reach Atomic's validation only through that copy.
+Import TypeBox for tool schemas from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format` and TypeBox's other subpaths) rather than from `typebox`. Under Node, Atomic uses its own copy of TypeBox, and formats, settings or a locale your app registers reach Atomic's validation only through that copy.
 
 Every route that imports Atomic must use the Node.js runtime:
 

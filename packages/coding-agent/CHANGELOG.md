@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Atomic now ships its own copy of TypeBox, so an SDK app installed with Bun or with pnpm hoisting no longer shares its own `typebox` package with Atomic (with npm it already did not). Schemas built with that `typebox` still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. Extensions are not affected: every `typebox` import in an extension's own code resolves to Atomic's copy, also under Bun when the extension has a `typebox` package of its own.
+- Under Node, Atomic now uses its own copy of TypeBox instead of the `typebox` package. Code that imports the `typebox` package itself and shared Atomic's installed copy before, such as an SDK app installed with Bun or with pnpm hoisting (with npm it already did not share it), or a dependency of an extension that imports `typebox` itself, no longer shares it: schemas built with it still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. An extension's own `typebox` imports resolve to Atomic's copy as before. Under Bun nothing changes: Atomic uses the `typebox` package, as before.
 
 ### Added
 
@@ -15,7 +15,7 @@
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
 - Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless a session uses the memory session store (`--no-session`, `ATOMIC_STORAGE=memory` or `{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
 - Atomic starts faster, most of all on Windows: the packages it ships for models, the terminal UI, the agent loop, schemas and telemetry (`@bastani/atomic-ai`, `-tui`, `-agent-core`, `-schema`, `-telemetry`) now load from a few files each instead of one file per module, so a start reads about 290 fewer files. Their import paths, deep paths included, are unchanged. A bundler (esbuild, Vite, webpack, rolldown) that bundles `@bastani/atomic-ai`, `-agent-core`, `-schema` or `-telemetry` into an app still gets one file per module and leaves out what the app does not use. One that bundles `@bastani/atomic-tui` gets its modules in the shared files and can no longer leave the unused ones out: importing only `visibleWidth` grows from about 198 KB to 345 KB minified.
-- Atomic starts faster again: TypeBox loads from one file instead of about 670.
+- Atomic starts faster again under Node: TypeBox loads from one file instead of about 670. Under Bun, Atomic still loads the `typebox` package.
 
 ### Fixed
 

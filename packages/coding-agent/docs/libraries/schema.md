@@ -139,7 +139,7 @@ TypeBox's `BigInt` and `Undefined` are supported (see Values). Its other JavaScr
 ...), refinements and codecs are not JSON Schema and are not supported.
 
 `@bastani/atomic-schema/typebox` and its subpaths (`/compile`, `/value`, `/format` and TypeBox's others) export the copy
-of TypeBox that Atomic uses; `@bastani/atomic/typebox` re-exports it.
+of TypeBox that Atomic uses (under Bun, the `typebox` package itself); `@bastani/atomic/typebox` re-exports it.
 
 ### Coercion
 
