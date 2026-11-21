@@ -25,7 +25,7 @@ const distUrl = pathToFileURL(`${dist}/`).href;
 const stagesDir = join(dist, "startup-stages");
 
 /** About how much module source one stage loads: a turn of the event loop between stages, ~25 stages in all. */
-const STAGE_BYTES = 512 * 1024;
+const STAGE_BYTES = Number(process.env.W7SM_STAGE_KB ?? 512) * 1024;
 
 if (process.argv[2] === "--trace") {
 	await trace(process.argv[3]);
