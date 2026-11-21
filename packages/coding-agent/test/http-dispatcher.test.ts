@@ -1,8 +1,13 @@
 import { spawnSync } from "node:child_process";
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
+import { stream as streamOpenAICodexResponses } from "@bastani/atomic-ai/api/openai-codex-responses";
+import { normalizeContext } from "@bastani/atomic-ai/utils/transcript";
 import * as undici from "undici";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createTestCertificate } from "../../../test/helpers/tls-certificates.js";
+import { wrapCodexFastRouteWebSocket } from "../src/core/fast-model-routing-transport.ts";
 import { configureHttpDispatcher, createHttpDispatcherOptions } from "../src/core/http-dispatcher.ts";
 import { bunExecutable } from "./cli-test-helpers.ts";
 
@@ -136,6 +141,74 @@ describe("http dispatcher", () => {
 			await Promise.all([
 				new Promise<void>((resolve) => proxy.close(() => resolve())),
 				new Promise<void>((resolve) => origin.close(() => resolve())),
+			]);
+		}
+	});
+
+	it("sends OpenAI Codex's WebSocket through the configured proxy and reports a certificate it refused without falling back to SSE (#6114)", async () => {
+		// The endpoint shows a self-signed certificate; the proxy tunnels to it.
+		const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost", "127.0.0.1"] });
+		const endpoint = https.createServer({ cert: certificate.cert, key: certificate.key });
+		endpoint.on("tlsClientError", () => {});
+		await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+		const endpointAddress = endpoint.address();
+		if (!endpointAddress || typeof endpointAddress === "string")
+			throw new Error("Endpoint did not bind to a TCP port");
+		const proxyRequestLines: string[] = [];
+		const proxy = net.createServer((client) => {
+			client.on("error", () => {});
+			client.once("data", (data) => {
+				proxyRequestLines.push(data.toString().split("\r\n")[0] ?? "");
+				const upstream = net.connect(endpointAddress.port, "127.0.0.1", () => {
+					client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+					client.pipe(upstream).pipe(client);
+				});
+				upstream.on("error", () => client.destroy());
+			});
+		});
+		await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+		const proxyAddress = proxy.address();
+		if (!proxyAddress || typeof proxyAddress === "string") throw new Error("Proxy did not bind to a TCP port");
+
+		process.env.HTTPS_PROXY = `http://127.0.0.1:${proxyAddress.port}`;
+		configureHttpDispatcher();
+		const dispatcher = undici.getGlobalDispatcher();
+		// The WebSocket the runtime installs with the dispatcher, whichever test installed it first.
+		const originalWebSocket = globalThis.WebSocket;
+		globalThis.WebSocket = wrapCodexFastRouteWebSocket(undici.WebSocket as unknown as typeof globalThis.WebSocket);
+		try {
+			const token = `x.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.x`;
+			const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+			const message = await streamOpenAICodexResponses(
+				{
+					id: "test-model",
+					name: "Test Model",
+					api: "openai-codex-responses",
+					provider: "test-provider",
+					baseUrl: `https://localhost:${endpointAddress.port}`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 10_000,
+					maxTokens: 1_000,
+				},
+				normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }),
+				{ apiKey: token, transport: "auto", fetch, sessionId: "codex-websocket-through-proxy" },
+			).result();
+
+			expect(fetch).not.toHaveBeenCalled();
+			expect(proxyRequestLines).toEqual([`CONNECT localhost:${endpointAddress.port} HTTP/1.1`]);
+			expect(message.errorMessage).toMatch(
+				new RegExp(
+					`^The TLS certificate for localhost:${endpointAddress.port} was not accepted \\(DEPTH_ZERO_SELF_SIGNED_CERT: `,
+				),
+			);
+		} finally {
+			globalThis.WebSocket = originalWebSocket;
+			await dispatcher.close();
+			await Promise.all([
+				new Promise<void>((resolve) => proxy.close(() => resolve())),
+				new Promise<void>((resolve) => endpoint.close(() => resolve())),
 			]);
 		}
 	});
