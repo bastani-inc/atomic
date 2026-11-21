@@ -504,7 +504,7 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"Ctrl+C on an empty prompt pauses the working subagent shown, never main, and shows main in the same press",
+		"Ctrl+C on an empty prompt pauses the working subagent shown, never main, and keeps it shown, as Esc does",
 		async () => {
 			screen = await mainScreen();
 			const port = worker({ busy: true });
@@ -513,7 +513,7 @@ describe("the main prompt while a subagent is shown", () => {
 			await until(() => port.calls.length === 1);
 			assert.deepEqual(port.calls, [{ kind: "pause" }]);
 			assert.equal(screen.mode.session.queuedMessagesPaused, false);
-			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
 		},
 		HOST_TIMEOUT_MS,
 	);
@@ -538,16 +538,19 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"Ctrl+C on an empty prompt with the shown subagent idle shows main and never offers to exit Atomic",
+		"Ctrl+C on an empty prompt with the shown subagent idle keeps it shown and never offers to exit Atomic",
 		async () => {
 			screen = await mainScreen();
 			const port = worker();
 			await view(WORKER);
 			const exitOffer = () => stripAnsi(screen?.mode.chatContainer.render(WIDTH).join("\n") ?? "");
 			await screen.press(CTRL_C);
-			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			await screen.press(CTRL_C);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
 			assert.doesNotMatch(exitOffer(), /Press Ctrl\+C again to exit/);
-			// The press that showed main does not count toward exiting: main's own first press says how to exit.
+			// Neither press counts toward exiting: main's own first press says how to exit.
+			await screen.press(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
 			await screen.press(CTRL_C);
 			assert.match(exitOffer(), /Press Ctrl\+C again to exit/);
 			assert.deepEqual(port.calls, []);

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
 import { isRpcRequestAcceptedFailure, type RpcAcceptedRequestFailure } from "../rpc/rpc-transport-error.ts";
 import { combineQueuedMessagesForEditor } from "./chat-input-actions.ts";
@@ -19,6 +20,8 @@ export type SteeringSubmitLane = "auto" | SteeringLane;
 export interface SteeringQueuedMessage {
 	text: string;
 	mode: SteeringLane;
+	/** The id the target queues it with, which names it when the target reports taking it (see `noteTaken`). */
+	id?: string;
 }
 
 /** The target's own queue, in the order it delivers each lane. */
@@ -32,6 +35,8 @@ export interface SteeringPromptOptions {
 	streamingBehavior?: SteeringLane;
 	/** Called once when the target accepts (`true`, with how it dispatched the message) or refuses (`false`) it. */
 	preflightResult?: (success: boolean, disposition?: PromptDisposition) => void;
+	/** When the message is queued, the id the target queues it with. */
+	queuedMessageId?: string;
 }
 
 export interface SteeringClearOptions {
@@ -140,6 +145,8 @@ export class SteeringQueueController {
 	private readonly startedUnsaved = new WeakSet<SteeringQueuedMessage>();
 	/** In-flight submissions whose saved user message the target reported before its answer. */
 	private readonly savedBeforeAnswer = new WeakSet<SteeringQueuedMessage>();
+	/** In-flight submissions the target reported taking from its queue before its answer. */
+	private readonly takenBeforeAnswer = new WeakSet<SteeringQueuedMessage>();
 	/** The target's queue as the last listing showed it, so the next one shows which messages it added. */
 	private lastListed: SteeringQueueLists = { steering: [], followUp: [] };
 	/** Messages a lost target took with it, per lane, from {@link loseTarget} until {@link recoverTarget}. */
@@ -232,6 +239,24 @@ export class SteeringQueueController {
 	}
 
 	/**
+	 * The target took the messages queued with `ids` from its queue: what it took is its own to account for from now on
+	 * (it reports each with its receipt), so the submission it was is neither waiting for a listing nor lost with the
+	 * target. Only a submission queued with one of the ids is one of them: another sender's message with the same text
+	 * is not.
+	 */
+	noteTaken(ids: readonly string[]): void {
+		for (const id of ids) {
+			const accepted = this.acceptedUnlisted.findIndex((message) => message.id === id);
+			if (accepted !== -1) {
+				this.acceptedUnlisted.splice(accepted, 1);
+				continue;
+			}
+			const inFlight = this.unconfirmed.find((message) => message.id === id);
+			if (inFlight !== undefined) this.takenBeforeAnswer.add(inFlight);
+		}
+	}
+
+	/**
 	 * The target's process was lost, with every message it held (an isolated engine that crashed). Its listed queue,
 	 * the messages it accepted before listing them, and any submission still on its way are collected for
 	 * {@link recoverTarget}; the listing starts again empty, as a replacement process lists its own queue.
@@ -246,19 +271,32 @@ export class SteeringQueueController {
 		this.lostQueue = lost;
 		this.acceptedUnlisted = [];
 		this.lastListed = { steering: [], followUp: [] };
-		for (const message of this.unconfirmed) this.inFlightAtLoss.add(message);
+		for (const message of this.unconfirmed)
+			if (!this.takenBeforeAnswer.has(message)) this.inFlightAtLoss.add(message);
 	}
 
 	/**
 	 * The lost target was replaced (or could not be): every message it took with it that `delivered` does not account
 	 * for, steering messages first and then follow-ups, each lane in order, as Alt+Up would have restored them.
 	 * `delivered` is the user messages the replacement's history shows the lost process delivered. A submission still on
-	 * its way is given back here too, once, and its late answer gives back nothing more. `undefined` when nothing was lost.
+	 * its way is given back here too, once, and its late answer gives back nothing more. `unsent` are messages the lost
+	 * target had already taken from its queue and provably never saved: each comes first in its lane. `undefined` when
+	 * nothing was lost.
 	 */
-	recoverTarget(delivered: readonly string[] = []): string[] | undefined {
+	recoverTarget(
+		delivered: readonly string[] = [],
+		unsent: { readonly steering: readonly string[]; readonly followUp: readonly string[] } = {
+			steering: [],
+			followUp: [],
+		},
+	): string[] | undefined {
 		const lost = this.lostQueue;
 		this.lostQueue = undefined;
-		if (lost === undefined) return undefined;
+		if (lost === undefined) {
+			// An earlier recovery already gave back what was listed; these were taken by a target lost since.
+			const messages = [...unsent.steering, ...unsent.followUp];
+			return messages.length > 0 ? messages : undefined;
+		}
 		for (const message of this.inFlightAtLoss) {
 			(message.mode === "steer" ? lost.steering : lost.followUp).push(message.text);
 			this.givenBackByRecovery.add(message);
@@ -268,7 +306,13 @@ export class SteeringQueueController {
 		const remaining = new Map<string, number>();
 		for (const text of delivered) remaining.set(text, (remaining.get(text) ?? 0) + 1);
 		const undelivered = (text: string) => !takeCopy(remaining, text);
-		const messages = [...lost.steering.filter(undelivered), ...lost.followUp.filter(undelivered)];
+		// What the lost target had taken from its queue was ahead of what it still listed in each lane.
+		const messages = [
+			...unsent.steering,
+			...lost.steering.filter(undelivered),
+			...unsent.followUp,
+			...lost.followUp.filter(undelivered),
+		];
 		return messages.length > 0 ? messages : undefined;
 	}
 
@@ -320,7 +364,7 @@ export class SteeringQueueController {
 		const queueLane: SteeringLane | undefined = route === "queue" ? (lane === "auto" ? "steer" : lane) : undefined;
 		const shown =
 			queueLane !== undefined && options.showAsQueued !== false
-				? this.showAsQueued({ text, mode: queueLane })
+				? this.showAsQueued({ text, mode: queueLane, id: randomUUID() })
 				: undefined;
 		/**
 		 * Stop showing the copy. One the target took into its queue unlisted is remembered until a listing shows it; one
@@ -332,6 +376,8 @@ export class SteeringQueueController {
 			if (!this.settle(shown)) return;
 			this.editor.requestRender();
 			if (kept === undefined) return;
+			// The target already took it from its queue: it accounts for it by its receipt.
+			if (this.takenBeforeAnswer.has(shown)) return;
 			if (kept === "started" && savedEarly) {
 				this.inFlightAtLoss.delete(shown);
 				return;
@@ -350,6 +396,7 @@ export class SteeringQueueController {
 		try {
 			await this.target.prompt(text, {
 				...(queueLane !== undefined ? { streamingBehavior: queueLane } : {}),
+				...(shown?.id === undefined ? {} : { queuedMessageId: shown.id }),
 				preflightResult: (success, answered) => {
 					accepted = success;
 					disposition = answered;

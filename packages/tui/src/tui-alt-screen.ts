@@ -508,6 +508,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private selectionAutoScrollDirection: -1 | 0 | 1 = 0;
 	private selectionAutoScrollTimer?: NodeJS.Timeout;
 	private selectionPressActive = false;
+	private readonly viewportChangeListeners = new Set<() => void>();
+	private viewportChangeQueued = false;
 	private scrollbarDrag?: ScrollbarDrag;
 	private scrollbarHover?: ScrollView;
 	private scrollToEndIndicatorRect?: ScrollToEndIndicatorRect;
@@ -580,7 +582,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.copyOnSelect = options.copyOnSelect ?? true;
 		this.copySelection = options.copySelection;
-		this.addInputListener((data) => this.handleViewportInput(data));
+		this.addInputListener((data) => {
+			this.announceViewportChange();
+			return this.handleViewportInput(data);
+		});
 	}
 
 	get viewportTop(): number {
@@ -628,6 +633,27 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 	}
 
+	/**
+	 * Calls `listener` after each input this screen receives, each single click it delivers once a double click can no
+	 * longer follow, and each frame it paints: whenever {@link isPointerIdle} or where the viewport shows may have
+	 * changed. Calls made in one turn of the event loop run once, after it. Stops when the returned function is called.
+	 */
+	onViewportChange(listener: () => void): () => void {
+		this.viewportChangeListeners.add(listener);
+		return () => {
+			this.viewportChangeListeners.delete(listener);
+		};
+	}
+
+	private announceViewportChange(): void {
+		if (this.viewportChangeListeners.size === 0 || this.viewportChangeQueued) return;
+		this.viewportChangeQueued = true;
+		queueMicrotask(() => {
+			this.viewportChangeQueued = false;
+			for (const listener of [...this.viewportChangeListeners]) listener();
+		});
+	}
+
 	/** Copy the active fullscreen text selection, if any, using the configured selection clipboard path. */
 	async copyActiveSelectionToClipboard(): Promise<boolean> {
 		return this.copyActiveSelection();
@@ -639,6 +665,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.clearComponentMouseGesture();
 		this.clearTextSelection();
 		this.lastClick = undefined;
+		this.announceViewportChange();
 	}
 
 	/** The lines of the last rendered frame, one per terminal row, as written to the terminal. */
@@ -1345,6 +1372,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					}
 				} finally {
 					this.scheduleSingleClickTimer();
+					this.announceViewportChange();
 				}
 			},
 			Math.max(0, first.timestamp + MULTI_CLICK_INTERVAL_MS + 1 - clickTime()),
@@ -2925,6 +2953,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			click.awaitingPaint = false;
 			click.drawn = this.pointerFrame(click.col, click.row).drawn;
 		}
+		this.announceViewportChange();
 	}
 }
 

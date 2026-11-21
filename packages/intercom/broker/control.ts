@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { IntercomBrokerUpgradeError, isIntercomBrokerStopTimeoutError } from "@bastani/atomic";
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerStatusReport } from "../types.js";
+import { type BrokerProcess, endUnansweredBroker, identifyBrokerProcess } from "./broker-process.js";
 import { describeMultiNodeStatus, isBrokerStatusReport } from "./broker-status.js";
 import {
 	BROKER_STOP_TIMEOUT_MS,
@@ -86,21 +87,33 @@ export async function queryIntercomBroker(
 	agentDir: string,
 	timeoutMs: number = BROKER_CONTROL_TIMEOUT_MS,
 ): Promise<BrokerQuery> {
+	return (await queryBroker(agentDir, timeoutMs)).query;
+}
+
+/** The broker's status, and for a broker that answers without one, the process its pid names, as it was found. */
+async function queryBroker(
+	agentDir: string,
+	timeoutMs: number = BROKER_CONTROL_TIMEOUT_MS,
+): Promise<{ readonly query: BrokerQuery; readonly found?: BrokerProcess }> {
 	const answer = await controlRequest(
 		getBrokerSocketPath(process.platform, agentDir),
 		"broker_status",
 		"broker_status",
 		timeoutMs,
 	);
-	if (!answer.connected) return { state: "stopped" };
+	if (!answer.connected) return { query: { state: "stopped" } };
 	const reply = answer.reply;
 	if (typeof reply === "object" && reply !== null && !Array.isArray(reply) && isBrokerStatusReport(reply.report)) {
-		return { state: "running", report: reply.report };
+		return { query: { state: "running", report: reply.report } };
 	}
 	const pid = readBrokerPid(agentDir);
-	// Windows can briefly accept a named-pipe connection after its broker has terminated.
-	if (pid !== undefined && !isProcessAlive(pid)) return { state: "stopped" };
-	return pid === undefined ? { state: "legacy" } : { state: "legacy", pid };
+	if (pid === undefined) return { query: { state: "legacy" } };
+	// Windows can briefly accept a named-pipe connection after its broker has terminated, and gives its pid to another
+	// process within seconds: a pid that names a process created well after broker.pid was written is no broker.
+	if (!isProcessAlive(pid)) return { query: { state: "stopped" } };
+	const found = await identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
+	if (found.wroteBrokerPid === "no") return { query: { state: "stopped" } };
+	return { query: { state: "legacy", pid }, found };
 }
 
 /** The shared selection a broker started from this environment and agent directory would read, if any. */
@@ -129,16 +142,22 @@ export interface RestartOptions {
  * Restart the agent directory's broker so it reads the current storage selection: ask it to shut down (a broker
  * older than this request gets SIGTERM, which it handles the same way), wait for it to exit, then wait for its
  * sessions to reconnect, which starts a new broker. Without connected sessions the next session starts one.
+ *
+ * A broker that does not acknowledge the request is ended only while its pid still names the process found when the
+ * restart began, and on Windows only if that process wrote broker.pid ({@link endUnansweredBroker}): a pid Windows gave
+ * to another process meanwhile is never signalled, and the wait for the exit ends once the pid names another process.
  */
 export async function restartIntercomBroker(agentDir: string, options: RestartOptions = {}): Promise<RestartOutcome> {
 	const stopTimeoutMs = options.stopTimeoutMs ?? BROKER_STOP_TIMEOUT_MS;
 	const reconnectTimeoutMs = options.reconnectTimeoutMs ?? BROKER_RECONNECT_TIMEOUT_MS;
-	const before = await queryIntercomBroker(agentDir);
+	const { query: before, found } = await queryBroker(agentDir);
 	if (before.state === "stopped") return { status: "not-running" };
 	const pid = before.state === "running" ? before.report.pid : before.pid;
 	if (pid === undefined) {
 		throw new Error(`The Intercom broker answers, but ${getBrokerPidPath(agentDir)} does not name its process.`);
 	}
+	// Started before the shutdown request, which does not wait for it: the broker removes broker.pid when it exits.
+	const broker = found ?? identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
 	const sessions = before.state === "running" ? before.report.sessions : undefined;
 	const previous = sessions === undefined ? { pid } : { pid, sessions };
 	options.onProgress?.(
@@ -153,14 +172,8 @@ export async function restartIntercomBroker(agentDir: string, options: RestartOp
 					BROKER_CONTROL_TIMEOUT_MS,
 				)
 			: undefined;
-	if (answer === undefined || !answer.connected || answer.reply === undefined) {
-		try {
-			process.kill(pid, "SIGTERM");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-		}
-	}
-	await waitForBrokerExit(pid, stopTimeoutMs);
+	if (answer === undefined || !answer.connected || answer.reply === undefined) await endUnansweredBroker(await broker);
+	await waitForBrokerExit(pid, stopTimeoutMs, undefined, broker);
 	if (sessions === 0) return { status: "stopped", previous };
 	options.onProgress?.("Stopped. Waiting for its sessions to reconnect and start a new broker.");
 	const reconnectDeadline = Date.now() + reconnectTimeoutMs;

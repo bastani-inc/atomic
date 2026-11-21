@@ -354,6 +354,11 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Called once when preflight accepts (`true`, with how the prompt was dispatched) or rejects (`false`) the prompt. */
 	preflightResult?: (success: boolean, disposition?: PromptDisposition) => void;
+	/**
+	 * @internal When the input is queued, the id it is queued and saved with (by default a new one): the sender knows its
+	 * message by it when the session reports taking it from the queue.
+	 */
+	queuedMessageId?: string;
 }
 
 export interface ModelMutationOptions {

@@ -5,6 +5,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { BashExecutionComponent, type TruncationResult } from "./interactive-mode-deps.ts";
 import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
 import { releaseSavedChatHistory } from "./interactive-saved-chat-history.js";
+import { cancelApprovedResourceListing } from "./interactive-startup.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
@@ -167,6 +168,7 @@ InteractiveModeBase.prototype.stop = function (
 ): void {
 	if (this.chatContainer instanceof StartupChatContainer) this.chatContainer.cancelChatRecordPaint();
 	discardChatMount(this);
+	cancelApprovedResourceListing(this);
 	releaseSavedChatHistory(this, true);
 	this.disposeActiveSelector();
 	this.disposeAgentView?.();

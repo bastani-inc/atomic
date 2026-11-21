@@ -37,6 +37,17 @@ export interface SessionTrustDecisions {
 	readonly extensionSources: Readonly<Record<string, boolean>>;
 }
 
+/**
+ * What an interactive host found at startup when it checked, before any extension ran, whether an extension could answer
+ * `project_trust` for its folder ahead of a saved decision. An engine the host starts for that folder uses it instead of
+ * checking again, so the host and the engine decide with the same extensions.
+ */
+export interface StartupExtensionCheck {
+	/** The folder the host started in. */
+	readonly cwd: string;
+	readonly extensionsCanDecide: boolean;
+}
+
 /** What a runtime starts a session with before, or instead of, deciding its project's trust. */
 export interface StartupProjectTrust {
 	/** Whether the session starts trusted. */

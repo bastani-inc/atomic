@@ -44,7 +44,7 @@ function renderSingleCompactAtWidth(
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
 	const c = new Container();
-	const glyph = resultGlyph(r, output, theme, isRunning);
+	const glyph = resultGlyph(r, theme, isRunning);
 
 	if (isRunning && r.progress) {
 		const hasCurrentTool = Boolean(r.progress.currentTool);
@@ -256,7 +256,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number): Comp
 					: i + 1;
 		const stepStats = formatProgressStats(theme, rProg, true, now);
 		const modelDisplay = modelThinkingBadge(theme, r.model ?? rProg?.model, r.thinking ?? rProg?.thinking);
-		const glyph = rPending ? markText(theme, TASK_MARKS.queued) : resultGlyph(r, output, theme, rRunning);
+		const glyph = rPending ? markText(theme, TASK_MARKS.queued) : resultGlyph(r, theme, rRunning);
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${modelDisplay}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;

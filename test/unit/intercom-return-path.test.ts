@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, test, vi } from "vitest";
+import { afterAll, beforeAll, test } from "vitest";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { RETURN_PATH_MESSAGE_LIMIT, returnPathClosedReason } from "../../packages/intercom/broker/return-paths.js";
@@ -23,17 +23,57 @@ class WireClient {
 	readonly received: BrokerMessage[] = [];
 	readonly socket = net.createConnection(socketPath);
 	private consumed = new Set<number>();
+	private closed = false;
+	/** Waits for a frame, each re-checked whenever a frame arrives or the connection closes. */
+	private readonly waits = new Set<() => void>();
 
 	constructor() {
 		clients.add(this);
 		this.socket.on(
 			"data",
 			createMessageReader(
-				(message) => this.received.push(message as BrokerMessage),
+				(message) => {
+					this.received.push(message as BrokerMessage);
+					this.recheck();
+				},
 				(error) => this.socket.destroy(error),
 			),
 		);
 		this.socket.on("error", () => {});
+		this.socket.on("close", () => {
+			this.closed = true;
+			this.recheck();
+		});
+	}
+
+	private recheck(): void {
+		for (const wait of [...this.waits]) wait();
+	}
+
+	/**
+	 * The first frame not taken yet that `matches`, taken once: one already received, or the next that arrives. No clock
+	 * decides it: it fails only when the connection closes (as it does when the broker exits) with no such frame left.
+	 */
+	private take<T extends BrokerMessage>(awaited: string, matches: (frame: BrokerMessage) => frame is T): Promise<T> {
+		return new Promise((resolveFrame, reject) => {
+			const check = () => {
+				const index = this.received.findIndex(
+					(frame, candidate) => !this.consumed.has(candidate) && matches(frame),
+				);
+				if (index >= 0) {
+					this.waits.delete(check);
+					this.consumed.add(index);
+					resolveFrame(this.received[index] as T);
+				} else if (this.closed) {
+					this.waits.delete(check);
+					reject(
+						new Error(`Connection closed before ${awaited}: ${JSON.stringify(this.received)}\n${brokerOutput}`),
+					);
+				}
+			};
+			this.waits.add(check);
+			check();
+		});
 	}
 
 	async connected(): Promise<void> {
@@ -47,23 +87,15 @@ class WireClient {
 		writeMessage(this.socket, message);
 	}
 
-	async next<T extends BrokerMessage["type"]>(
+	next<T extends BrokerMessage["type"]>(
 		type: T,
 		matches: (message: Extract<BrokerMessage, { type: T }>) => boolean = () => true,
 	): Promise<Extract<BrokerMessage, { type: T }>> {
-		const deadline = Date.now() + 5_000;
-		while (Date.now() < deadline) {
-			const index = this.received.findIndex((message, candidate) => {
-				if (this.consumed.has(candidate) || message.type !== type) return false;
-				return matches(message as Extract<BrokerMessage, { type: T }>);
-			});
-			if (index >= 0) {
-				this.consumed.add(index);
-				return this.received[index] as Extract<BrokerMessage, { type: T }>;
-			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-		}
-		throw new Error(`Timed out waiting for broker frame ${type}: ${JSON.stringify(this.received)}`);
+		return this.take(
+			`broker frame ${type}`,
+			(frame): frame is Extract<BrokerMessage, { type: T }> =>
+				frame.type === type && matches(frame as Extract<BrokerMessage, { type: T }>),
+		);
 	}
 
 	/** Sends one plain message and returns how the broker settled it. */
@@ -77,40 +109,41 @@ class WireClient {
 	}
 
 	/** The broker's outcome for message `id`: delivered, failed or queued, whichever it answered. */
-	async settled(id: string): Promise<BrokerMessage> {
-		const deadline = Date.now() + 5_000;
-		while (Date.now() < deadline) {
-			const index = this.received.findIndex(
-				(frame, candidate) =>
-					!this.consumed.has(candidate) &&
-					(frame.type === "delivered" || frame.type === "delivery_failed" || frame.type === "queued") &&
-					frame.messageId === id,
-			);
-			if (index >= 0) {
-				this.consumed.add(index);
-				return this.received[index]!;
-			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-		}
-		throw new Error(`Timed out waiting for the outcome of ${id}: ${JSON.stringify(this.received)}`);
+	settled(id: string): Promise<BrokerMessage> {
+		return this.take(
+			`the outcome of ${id}`,
+			(frame): frame is BrokerMessage =>
+				(frame.type === "delivered" || frame.type === "delivery_failed" || frame.type === "queued") &&
+				frame.messageId === id,
+		);
 	}
 }
 
-async function waitForBroker(): Promise<void> {
-	const deadline = Date.now() + 10_000;
-	while (Date.now() < deadline) {
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const probe = net.createConnection(socketPath);
-			probe.once("connect", () => {
-				probe.destroy();
-				resolveConnected(true);
-			});
-			probe.once("error", () => resolveConnected(false));
-		});
-		if (connected) return;
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-	}
-	throw new Error(`Broker socket did not become ready: ${brokerOutput}`);
+/** Resolves once the broker logs that it started, which it does only once its socket listens; rejects if it exits. */
+function waitForBroker(child: ChildProcess): Promise<void> {
+	return new Promise((resolveStarted, reject) => {
+		const onOutput = () => {
+			if (!brokerOutput.includes("Intercom broker started")) return;
+			child.off("exit", onExit);
+			child.stdout?.off("data", onOutput);
+			resolveStarted();
+		};
+		const onExit = () => {
+			child.stdout?.off("data", onOutput);
+			reject(
+				new Error(
+					`Broker exited with code ${child.exitCode} signal ${child.signalCode} before it started: ${brokerOutput}`,
+				),
+			);
+		};
+		child.once("exit", onExit);
+		child.stdout?.on("data", onOutput);
+		onOutput();
+		if (child.exitCode !== null || child.signalCode !== null) {
+			child.off("exit", onExit);
+			onExit();
+		}
+	});
 }
 
 /** A host session registers with its return address, the stable identity a return path binds. */
@@ -200,7 +233,7 @@ beforeAll(async () => {
 	broker.stderr?.on("data", (data) => {
 		brokerOutput += String(data);
 	});
-	await waitForBroker();
+	await waitForBroker(broker);
 });
 
 afterAll(async () => {
@@ -503,7 +536,8 @@ test("a stage whose receipt arrives after the launcher ended for good opens noth
 	await register(copy, run.launcherName, run.home);
 	const answer = await stage.sendTo(run.launcherName, "receipt-ended-answer", "only for the launcher that ended");
 	assert.equal(answer.type, "delivery_failed", JSON.stringify(answer));
-	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	// The broker answers in order on each connection: anything it sent the copy for that answer came before this list.
+	await listed(copy, "receipt-ended-after");
 	assert.equal(
 		copy.received.some((frame) => frame.type === "message"),
 		false,
@@ -518,14 +552,7 @@ test("a stage whose receipt arrives after the launcher crashed, came back and en
 	const observer = new WireClient();
 	await register(observer, "receipt-hop-observer", run.home);
 	run.launcher.socket.destroy();
-	await vi.waitFor(async () => {
-		observer.send({ type: "list", requestId: "receipt-hop-away" });
-		const sessions = (await observer.next("sessions", (frame) => frame.requestId === "receipt-hop-away")).sessions;
-		assert.equal(
-			sessions.some((session) => session.id === run.launcherId),
-			false,
-		);
-	});
+	await observer.next("session_left", (frame) => frame.sessionId === run.launcherId);
 	// It comes back under a new id, then says goodbye for good.
 	const back = new WireClient();
 	await register(back, run.launcherName, run.home);
@@ -541,7 +568,7 @@ test("a stage whose receipt arrives after the launcher crashed, came back and en
 	await register(copy, run.launcherName, run.home);
 	const answer = await stage.sendTo(run.launcherName, "receipt-hop-answer", "only for the launcher that ended");
 	assert.equal(answer.type, "delivery_failed", JSON.stringify(answer));
-	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	await listed(copy, "receipt-hop-after");
 	assert.equal(
 		copy.received.some((frame) => frame.type === "message"),
 		false,
@@ -558,7 +585,8 @@ test("a name two live registrations of the launcher's identity share stays ambig
 	assert.notEqual(duplicateId, run.launcherId);
 	const refused = await stage.sendTo(run.launcherName, "live-duplicate-answer", "for the launcher");
 	assert.equal(refused.type, "delivery_failed", JSON.stringify(refused));
-	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	await listed(duplicate, "live-duplicate-after");
+	await listed(run.launcher, "live-duplicate-launcher-after");
 	assert.equal(
 		duplicate.received.some((frame) => frame.type === "message"),
 		false,

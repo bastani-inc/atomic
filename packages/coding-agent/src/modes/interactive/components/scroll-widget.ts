@@ -1,6 +1,7 @@
-import { Container, ScrollView, VStack } from "@bastani/atomic-tui";
+import { Container, ScrollView, stripHintMarkers, type TuiMouseEvent, VStack } from "@bastani/atomic-tui";
 import { LAYOUT_NODE, type StackLayoutNode } from "@bastani/atomic-tui/dist/layout-node.js";
 import type { ScrollableWidgetComponent, WidgetScrollState } from "../../../core/extensions/ui-types.js";
+import type { DockScene } from "../navigation-scene.js";
 
 /** A native layout node, so the dock's final allocation also owns mouse bounds. */
 export class ScrollWidget extends ScrollView {
@@ -54,8 +55,27 @@ export class ScrollWidget extends ScrollView {
 	}
 }
 
-/** Leave legacy widgets opaque; opt-in children expose native dock layout. */
+/** A row as a picture: what it shows, with nothing on it a click could run (no key hints, no links). */
+function inertRow(row: string): string {
+	return stripHintMarkers(row).replace(/\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
+}
+
+/**
+ * Leave legacy widgets opaque; opt-in children expose native dock layout. `scene` answers what the container shows at a
+ * width: its children (`live`), the same rows taking no clicks (`inert`), or nothing (`hidden`).
+ */
 export class WidgetContainer extends Container {
+	private readonly scene: (width: number) => DockScene;
+	/** The scene of the last render, which a click is judged against. */
+	private paintedScene: DockScene = "live";
+	/** The last layout laid the children out natively. */
+	private native = false;
+
+	constructor(scene: (width: number) => DockScene = () => "live") {
+		super();
+		this.scene = scene;
+	}
+
 	private scrollStack(): VStack | undefined {
 		if (!this.children.some((child) => child instanceof ScrollWidget)) return undefined;
 		return new VStack(
@@ -69,10 +89,22 @@ export class WidgetContainer extends Container {
 	}
 
 	[LAYOUT_NODE](): StackLayoutNode | undefined {
-		return this.scrollStack()?.[LAYOUT_NODE]();
+		// Only children drawn live are laid out natively: a hidden or inert container is drawn by its own render.
+		const node = this.paintedScene === "live" ? this.scrollStack()?.[LAYOUT_NODE]() : undefined;
+		this.native = node !== undefined;
+		return node;
 	}
 
 	override render(width: number): string[] {
-		return this.scrollStack()?.render(width) ?? super.render(width);
+		const scene = this.scene(width);
+		this.paintedScene = scene;
+		if (scene === "hidden") return [];
+		const rows = this.scrollStack()?.render(width) ?? super.render(width);
+		return scene === "inert" ? rows.map(inertRow) : rows;
+	}
+
+	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		// Laid out natively, the screen hands clicks to the children itself.
+		return this.paintedScene === "live" && !this.native ? super.handleMouse(event) : undefined;
 	}
 }

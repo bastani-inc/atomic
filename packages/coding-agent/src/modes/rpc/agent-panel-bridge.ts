@@ -37,6 +37,7 @@ import type { TaskId, TaskRecord } from "../../core/tasks/contracts.js";
 import { taskClockOf, taskClockRunning } from "../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { launchedTaskViewSource, ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
+import { withAgentPanelReturn } from "../interactive/agent-panel-return.js";
 import { type AgentViewBridge, agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
 import {
 	AGENT_PANEL_FOCUSED_ROWS,
@@ -152,7 +153,8 @@ interface PanelState {
 	open?: boolean;
 	onSourceError?: (error: Error) => void;
 	reportOnce?: (error: unknown) => void;
-	setVisible?: (visible: boolean) => void;
+	/** Shows or hides the bound panel; answers whether it is mounted then. */
+	setVisible?: (visible: boolean) => boolean;
 }
 
 const states = new WeakMap<object, PanelState>();
@@ -865,9 +867,11 @@ export function bindAgentPanel(
 		mounted = false;
 	});
 	state.setVisible = (value) => {
-		if (visible === value) return;
-		visible = value;
-		update();
+		if (visible !== value) {
+			visible = value;
+			update();
+		}
+		return mounted;
 	};
 	update();
 	return () => {
@@ -947,7 +951,7 @@ export async function showAgentPanel(
 	const faded = (row: AgentPanelRow) => state.model.faded(row);
 	let currentRows: AgentPanelRow[] = [];
 	let next: (() => Promise<void>) | undefined;
-	let hidden = false;
+	const idlePanel = hideAgentPanelFor(session);
 	const bridge = agentViewBridge(session);
 	/** The shown subagent's row, as the last ranking found it. */
 	let focusViewed: string | undefined;
@@ -963,9 +967,7 @@ export async function showAgentPanel(
 	try {
 		currentRows = focusedRows(0);
 		if (currentRows.length === 0) return;
-		setAgentPanelVisible(session, false);
-		hidden = true;
-		await ui.custom<void>(
+		const shown = ui.custom<void>(
 			(tui, _theme, keybindings, done) => {
 				const keys = keybindings as Parameters<typeof renderAgentPanelHint>[3] & {
 					matches(data: string, action: string): boolean;
@@ -995,7 +997,8 @@ export async function showAgentPanel(
 				const finish = () => {
 					if (finished) return;
 					finished = true;
-					done();
+					// The idle panel is back in the step the focused one leaves.
+					idlePanel.show(() => done());
 				};
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
@@ -1243,9 +1246,12 @@ export async function showAgentPanel(
 			},
 			{ overlay: false, purpose: "navigation", handlesCtrlC: true, deferInlineCustomUiFocus: true },
 		);
+		// The focused panel takes the idle panel's place: the idle one hides once the focused one is mounted.
+		idlePanel.hide();
+		await shown;
 	} finally {
 		try {
-			if (hidden) setAgentPanelVisible(session, true);
+			idlePanel.show();
 		} catch (error) {
 			report(error);
 		} finally {
@@ -1264,10 +1270,41 @@ export function agentPanelReturnsOnShow(session: AgentPanelSession & object): bo
 	return state.hideCount === 1 && state.setVisible !== undefined && agentPanelHasRows(session);
 }
 
-export function setAgentPanelVisible(session: object, visible: boolean): void {
+/**
+ * The agent panel of `target` hidden by a view that takes the prompt's place (`/tasks`, the focused panel), the way the
+ * screen changes in one frame: `hide` once the view was asked for, so it hides after the view mounts (a microtask
+ * later), and `show` with the view's `close`, so the panel is back in the step the view leaves and that close says so.
+ * `show` also cancels a hide not done yet; each happens once.
+ */
+export function hideAgentPanelFor(target: object): { hide(): void; show(close?: () => void): void } {
+	let state: "shown" | "hiding" | "hidden" | "over" = "shown";
+	return {
+		hide() {
+			if (state !== "shown") return;
+			state = "hiding";
+			queueMicrotask(() => {
+				if (state !== "hiding") return;
+				state = "hidden";
+				setAgentPanelVisible(target, false);
+			});
+		},
+		show(close) {
+			const was = state;
+			state = "over";
+			const mounted = was === "hidden" && setAgentPanelVisible(target, true);
+			if (close === undefined) return;
+			// The view's close, announced in this step, says the panel opens again (`engine_custom_done.panel`).
+			if (mounted) withAgentPanelReturn(close);
+			else close();
+		},
+	};
+}
+
+/** Hide the panel of `session` once more, or show it once more; answers whether it is mounted then. */
+export function setAgentPanelVisible(session: object, visible: boolean): boolean {
 	const state = panelState(session);
 	state.hideCount = visible ? Math.max(0, state.hideCount - 1) : state.hideCount + 1;
-	state.setVisible?.(state.hideCount === 0);
+	return state.setVisible?.(state.hideCount === 0) ?? false;
 }
 
 export function agentPanelCounts(session: AgentPanelSession & object): AgentPanelCounts {
