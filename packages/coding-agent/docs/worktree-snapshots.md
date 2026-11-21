@@ -172,9 +172,9 @@ Each snapshot is also a Git commit in the checkout's repository. Atomic keeps th
 
 - moves to each new snapshot of that checkout, so it never keeps more than one snapshot commit alive per session and checkout;
 - is deleted when the session's work moves to a worktree restored from that checkout, or back from it, and records a snapshot there;
-- is deleted from every checkout on this machine when you delete the session from the session picker, `/resume`, or the SDK's `SessionManager.deleteSession`, together with the refs of the subagents it launched that are not running at that moment.
+- is deleted from every checkout on this machine when you delete the session from the session picker, `/resume`, or the SDK's `SessionManager.deleteSession`.
 
-A subagent's ref is kept while it can still be continued where it worked: while it runs, waits released, or is paused, quit or stopped by its session's exit. It is deleted once the subagent finished, failed or was killed and its session saved that. A finished subagent you resume later after `git gc` pruned its snapshot commit and the checkout changed restores into a fresh worktree, like a session recorded by an older Atomic that has no ref.
+The subagents a session launches keep refs of their own, one per subagent and checkout, as long as that session: deleting the session deletes them with its own, except the refs of a subagent that is running at that moment.
 
 The refs are outside `refs/heads` and `refs/tags`, so `git push`, `git push --all`, `git push --tags` and a snapshot's bundle never include them. `git push --mirror` pushes every ref and would push them, together with the snapshot commits, which contain your uncommitted changes except the files described in [What is left out](#what-is-left-out). They also appear in `git for-each-ref` and `git log --all`, as commits titled `Atomic worktree snapshot`. To exclude them from `git log --all`, use `git log --exclude='refs/atomic/*' --all`.
 

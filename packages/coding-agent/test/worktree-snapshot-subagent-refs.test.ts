@@ -1,8 +1,8 @@
 /**
- * The Git refs that keep a subagent's snapshot commits, when its session is kept in its parent's store: deleting the
- * session that launched it deletes them, but not those of another session's subagents, of a subagent that runs now, or
- * of a subagent session an earlier release wrote; and a subagent's own release keeps a ref moved since it wrote it.
- * Real Git checkout and SQLite session store.
+ * The Git refs that keep a subagent's snapshot commits, when its session is kept in its parent's store, live as long as
+ * the session that launched it: deleting that session deletes them, but not those of another session's subagents, of a
+ * subagent open at that moment, or of a subagent session an earlier release wrote. Real Git checkout and SQLite session
+ * store.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -13,7 +13,6 @@ import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import {
 	deleteSessionWithSnapshotRefs,
-	releaseSubagentSnapshotRefs,
 	SessionWorktreeSnapshotRecorder,
 } from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -57,15 +56,13 @@ async function capturingSession(store: SqlSessionStore, clone: string, file: str
 			throw new Error(`unexpected: ${reason.code}`);
 		},
 	});
-	const turn = () =>
-		recorder.recordTurn(
-			fauxAssistantMessage([fauxToolCall("write", { path: join(clone, file), content: "" })], {
-				stopReason: "toolUse",
-			}),
-		);
 	sandbox.write(join(clone, file), `${file}\n`);
-	await turn();
-	return Object.assign(manager, { turn });
+	await recorder.recordTurn(
+		fauxAssistantMessage([fauxToolCall("write", { path: join(clone, file), content: "" })], {
+			stopReason: "toolUse",
+		}),
+	);
+	return manager;
 }
 
 /** A session of `store` holding the record of a subagent whose own session is `childSessionId`, launched by `owner`. */
@@ -82,9 +79,6 @@ async function sessionRecording(store: SqlSessionStore, clone: string, owner: st
 		});
 	return manager;
 }
-
-/** No other run of the subagent began since its run ended. */
-const ended = async () => true;
 
 async function refsOf(clone: string, sessionId: string): Promise<string[]> {
 	const listed = await sandbox.git(
@@ -116,7 +110,7 @@ test("deleting a session keeps the snapshot refs of another session's subagents 
 	assert.equal((await refsOf(clone, child.getSessionId())).length, 1);
 });
 
-test("deleting a session keeps the snapshot refs of a subagent that runs now", async () => {
+test("deleting a session keeps the snapshot refs of a subagent open at that moment", async () => {
 	const { clone, store } = await project();
 	const child = await capturingSession(store, clone, "child.txt", true);
 	cleanups.push(child.holdOpen());
@@ -133,58 +127,4 @@ test("deleting a session keeps the snapshot refs of a subagent session that is n
 
 	await deleteSessionWithSnapshotRefs(store, parent.getSessionId());
 	assert.equal((await refsOf(clone, listed.getSessionId())).length, 1);
-});
-
-test("a subagent's release deletes the refs it wrote, but keeps one that was moved since", async () => {
-	const { clone, store } = await project();
-	const first = await capturingSession(store, clone, "first.txt", true);
-	await releaseSubagentSnapshotRefs(first.getSessionId(), Promise.resolve(true), ended);
-	assert.deepEqual(await refsOf(clone, first.getSessionId()), []);
-
-	const second = await capturingSession(store, clone, "second.txt", true);
-	const [ref] = await refsOf(clone, second.getSessionId());
-	assert.ok(ref);
-	await sandbox.git(clone, "update-ref", ref, "HEAD");
-	await releaseSubagentSnapshotRefs(second.getSessionId(), Promise.resolve(true), ended);
-	assert.deepEqual(await refsOf(clone, second.getSessionId()), [ref]);
-});
-
-test("a subagent's release keeps a ref that a capture of its session kept again after the release read it", async () => {
-	const { clone, store } = await project();
-	const child = await capturingSession(store, clone, "child.txt", true);
-	const [ref] = await refsOf(clone, child.getSessionId());
-	assert.ok(ref);
-	const saved = Promise.withResolvers<boolean>();
-	const releasing = releaseSubagentSnapshotRefs(child.getSessionId(), saved.promise, ended);
-	// The checkout did not change: the capture keeps the same commit.
-	await child.turn();
-	saved.resolve(true);
-	await releasing;
-	assert.deepEqual(await refsOf(clone, child.getSessionId()), [ref]);
-});
-
-test("a subagent's release keeps its refs when the record that its run ended could not be saved", async () => {
-	const { clone, store } = await project();
-	const child = await capturingSession(store, clone, "child.txt", true);
-	await releaseSubagentSnapshotRefs(child.getSessionId(), Promise.resolve(false), ended);
-	assert.equal((await refsOf(clone, child.getSessionId())).length, 1);
-});
-
-test("a subagent's release keeps its refs when another run of it began after its run ended", async () => {
-	const { clone, store } = await project();
-	const child = await capturingSession(store, clone, "child.txt", true);
-	await releaseSubagentSnapshotRefs(child.getSessionId(), Promise.resolve(true), async () => false);
-	assert.equal((await refsOf(clone, child.getSessionId())).length, 1);
-});
-
-test("a subagent's release points its refs to their commits again when another run of it began while they were deleted", async () => {
-	const { clone, store } = await project();
-	const child = await capturingSession(store, clone, "child.txt", true);
-	const [ref] = await refsOf(clone, child.getSessionId());
-	assert.ok(ref);
-	const commit = await sandbox.git(clone, "rev-parse", ref);
-	let checks = 0;
-	await releaseSubagentSnapshotRefs(child.getSessionId(), Promise.resolve(true), async () => ++checks === 1);
-	assert.equal(checks, 2);
-	assert.equal(await sandbox.git(clone, "rev-parse", ref), commit);
 });
