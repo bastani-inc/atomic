@@ -8,8 +8,9 @@ import type { BuiltinPackageDirName } from "../src/core/builtin-install-layout.j
 // This narrower walker follows relative filesystem edges only, but matches the test walker by failing closed when a
 // direct import or require specifier cannot be determined statically.
 
-// Only packages whose kept raw TypeScript runs directly from the filesystem participate. The intercom broker is
-// spawned as its own jiti process, so it has no host aliases or virtualModules fallback.
+// Only packages whose kept raw TypeScript runs directly from the filesystem participate. The intercom broker starts from
+// its prebuilt bundle, but its source stays runnable as its own jiti process (a broker an earlier version started from
+// it imports its stores from it), so it has no host aliases or virtualModules fallback.
 export const INSTALLED_IMPORT_CLOSURE_ROOTS: Partial<Record<BuiltinPackageDirName, readonly string[]>> = {
 	intercom: ["broker/"],
 };
