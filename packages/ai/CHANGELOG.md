@@ -4,6 +4,15 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- `SystemMessage.strictToolsDisabled` records that the provider rejected the conversation's preferred strict tools for its strict-tool limits. Anthropic and Amazon Bedrock read it from the transcript before folding its system messages and send those tools without strict schemas, so a compaction that removes the replies recording the rejection can keep it ([#6119](https://github.com/bastani-inc/atomic/issues/6119)).
+- `jsonSchemasEqual()` compares two JSON Schemas as `declarationsEqual()` compares tool parameters ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
+
+### Fixed
+
+- `declarationsEqual()` and `getToolStateChanges()` treat the names in a schema's `required` list as a set, so a tool whose `required` names come back in another order is no longer declared again. Other arrays, such as `enum` values and tuple items, keep their order ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Added

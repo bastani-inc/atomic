@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Sessions in different projects share more of the cached system prompt. The Session memory guideline no longer names the project's session folder; a `session_folder` section near the end of the prompt does. Sessions started before keep the prompt they recorded ([#6121](https://github.com/bastani-inc/atomic/issues/6121)).
+
+### Fixed
+
+- A resumed Claude session no longer sends strict tools once more after compactions removed every reply that recorded their rejection: the compaction keeps the record ([#6119](https://github.com/bastani-inc/atomic/issues/6119)).
+- A tool whose schema lists its `required` parameters in another order, as an MCP server may after reconnecting, no longer counts as a changed tool: its declaration and the cached prompt stay the same, and a resumed session runs a call to it instead of refusing it as changed ([#6130](https://github.com/bastani-inc/atomic/issues/6130)).
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

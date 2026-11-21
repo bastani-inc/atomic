@@ -10,7 +10,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { getCurrentTools, type SystemMessage } from "@bastani/atomic-ai";
+import { getCurrentTools, jsonSchemasEqual, type SystemMessage } from "@bastani/atomic-ai";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import type { Tool as McpTool } from "./client/index.js";
 import type { McpServerEntry } from "./config.ts";
@@ -75,9 +75,18 @@ function canonicalJson(value: unknown): string {
 	return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
 }
 
-/** Whether two listings of a tool describe the same tool. */
+/**
+ * Whether two listings of a tool describe the same tool. Its schemas compare as tool declarations do, so a listing whose
+ * `required` names come in another order is the same tool.
+ */
 export function sameListedTool(left: McpTool, right: McpTool): boolean {
-	return canonicalJson(recordableTool(left)) === canonicalJson(recordableTool(right));
+	const { inputSchema: leftInput, outputSchema: leftOutput, ...leftRest } = recordableTool(left);
+	const { inputSchema: rightInput, outputSchema: rightOutput, ...rightRest } = recordableTool(right);
+	return (
+		canonicalJson(leftRest) === canonicalJson(rightRest) &&
+		jsonSchemasEqual(leftInput, rightInput) &&
+		jsonSchemasEqual(leftOutput, rightOutput)
+	);
 }
 
 /** Whether two records describe the same tool of the same server under the same name. */

@@ -378,6 +378,41 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(toolChanges(resumed, before)).toEqual([{ added: [], removed: ["mcp__docs__search"] }]);
 	});
 
+	it("runs a restored tool whose server lists its required parameters in another order, and declares no change (#6130)", async () => {
+		const listed = (required: string[]): ListedTool => ({
+			...SEARCH,
+			inputSchema: {
+				type: "object",
+				properties: { query: { type: "string" }, limit: { type: "number" } },
+				required,
+			},
+		});
+		const fixture = await createFixture();
+		const { sessionFile, control } = await liveSession(fixture, {
+			servers: { docs: { tools: [listed(["query", "limit"])], calls: [] } },
+		});
+		const entriesBefore = readFileSync(sessionFile, "utf8").split("\n").length;
+
+		const server = held();
+		const script: ServerScript = { tools: [listed(["limit", "query"])], ready: server.ready, calls: [] };
+		const resumed = await resume(fixture, sessionFile, { servers: { docs: script } });
+		const before = resumed.messages.length;
+		const result = await promptCalling(fixture, resumed, "mcp__docs__search", () => server.release(), {
+			query: "again",
+			limit: 1,
+		});
+
+		expect(getMessageText(result)).toBe("again guide");
+		expect(script.calls).toEqual(["search"]);
+		expect(fixture.requests.slice(-2)).toEqual([control, control]);
+		expect(toolChanges(resumed, before)).toEqual([]);
+		const records = readFileSync(sessionFile, "utf8")
+			.split("\n")
+			.slice(entriesBefore - 1)
+			.filter((line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE));
+		expect(records).toEqual([]);
+	});
+
 	it("does not run a restored tool whose server lists a changed definition, and declares the change", async () => {
 		const fixture = await createFixture();
 		const { sessionFile } = await liveSession(fixture, { servers: { docs: { tools: [SEARCH], calls: [] } } });
