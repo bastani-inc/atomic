@@ -147,26 +147,36 @@ def _check_batch_arguments(command: Sequence[str], arguments: Sequence[str]) -> 
             )
 
 
-def remove_path(path: Path) -> None:
-    """Remove a temporary file or folder the scripts created, never raising.
+def remove_file(path: Path) -> None:
+    """Remove a temporary file the scripts created, or a link in its place, never raising.
 
-    On Windows a process that has not quite exited, or any other process, can hold one of its files
-    open; removal is retried for a bounded time and then left to the system's temporary folder, so
-    a query reports its own outcome rather than this cleanup.
+    A query then reports its own outcome rather than this cleanup's. On Windows a process that has not
+    quite exited, or any other process, can hold the file open; removal is retried for a bounded time,
+    then the file is left to the system's temporary folder.
     """
     for attempt in range(STOP_POLLS):
         try:
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
-            return
-        except FileNotFoundError:
+            path.unlink(missing_ok=True)
             return
         except OSError:
             if os.name != "nt" or attempt == STOP_POLLS - 1:
                 return
             time.sleep(POLL_SECONDS)
+
+
+def remove_folder(path: Path) -> None:
+    """Remove a temporary folder the scripts created and everything in it, never raising.
+
+    As shutil.rmtree(ignore_errors=True): an entry that cannot be removed does not keep the others,
+    and a link or anything else in the folder's place is left alone. On Windows, removal is retried
+    while part of the folder is held open, as remove_file retries.
+    """
+    for attempt in range(STOP_POLLS):
+        shutil.rmtree(path, ignore_errors=True)
+        # os.path's checks answer False, rather than raise, for a path they cannot examine.
+        if os.name != "nt" or attempt == STOP_POLLS - 1 or not os.path.isdir(path) or os.path.islink(path):
+            return
+        time.sleep(POLL_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +445,7 @@ def _child_pids() -> set[int]:
     if all((task / "children").exists() for task in tasks):
         for task in tasks:
             try:
-                pids.update(int(pid) for pid in (task / "children").read_text().split())
+                pids.update(int(pid) for pid in (task / "children").read_bytes().split())
             except OSError:
                 continue
         return pids
@@ -445,7 +455,7 @@ def _child_pids() -> set[int]:
             continue
         try:
             # The parent follows the parenthesized command name, which may itself contain ") ".
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            fields = (entry / "stat").read_bytes().rsplit(b")", 1)[1].split()
         except (OSError, IndexError):
             continue
         if int(fields[1]) == me:

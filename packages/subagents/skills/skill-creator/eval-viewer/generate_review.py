@@ -367,7 +367,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 data = json.loads(body)
                 if not isinstance(data, dict) or "reviews" not in data:
                     raise ValueError("Expected JSON object with 'reviews' key")
-                self.feedback_path.write_text(json.dumps(data, indent=2) + "\n")
+                self.feedback_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
                 resp = b'{"ok":true}'
                 self.send_response(200)
             except (json.JSONDecodeError, OSError, ValueError) as e:
@@ -462,4 +462,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # The output usually goes to a pipe or a file that an agent reads, in the ANSI code page on Windows:
+    # write UTF-8, one line at a time, so the URL can be read as soon as the server is up.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
     main()
