@@ -16,6 +16,7 @@ import { openBrowser } from "../../utils/open-browser.ts";
 import { jumpToLatestPill, NewMessageCounter, PINNED_PROMPT } from "./components/jump-to-latest.ts";
 import { keyDisplayText } from "./components/keybinding-hints.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
+import { shouldUseFullscreenTui } from "./fullscreen-environment.ts";
 import { compositeOverlayLine } from "./overlay-line-composite.ts";
 
 interface TuiOverlayEntry {
@@ -584,20 +585,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	}
 }
 
-/**
- * CI detection follows the convention CI providers actually use: the variable
- * is SET AND NONEMPTY, with any value. GitHub Actions sets `CI=true`, but
- * other providers and users export arbitrary values (`CI=github-actions`,
- * `CI=circleci`); an allowlist of truthy spellings let those reach the
- * alternate screen and write escape sequences into CI logs (Greptile P1 on
- * PR #2308). Only explicit opt-outs (`0`, `false`, empty) read as not-CI.
- */
-function isCiEnvironment(value: string | undefined): boolean {
-	if (value === undefined) return false;
-	const normalized = value.trim().toLowerCase();
-	return normalized !== "" && normalized !== "0" && normalized !== "false";
-}
-
 class LifecycleTimingTerminal extends ProcessTerminal {
 	override write(data: string): void {
 		markLifecycleTiming("first-terminal-write");
@@ -605,14 +592,8 @@ class LifecycleTimingTerminal extends ProcessTerminal {
 	}
 }
 
-function createProcessTerminal(): ProcessTerminal {
+export function createProcessTerminal(): ProcessTerminal {
 	return isLifecycleTimingEnabled() ? new LifecycleTimingTerminal() : new ProcessTerminal();
-}
-
-export function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
-	if (process.env.TERM?.toLowerCase() === "dumb") return false;
-	if (usesInjectedTerminal) return true;
-	return process.stdin.isTTY === true && process.stdout.isTTY === true && !isCiEnvironment(process.env.CI);
 }
 
 /**

@@ -482,8 +482,11 @@ class ResumeProtocols {
 		if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
 			this.settle(`inbound:${record(data.message).replyTo}`);
 		// #6168: an ask this session closed without a reply is done as an answered one is.
-		if (branchActive && kind === "intercom_ask_closed" && typeof data.messageId === "string")
-			this.settle(`inbound:${data.messageId}`);
+		if (branchActive && kind === "intercom_ask_closed") {
+			// One ask closed, or several closed at once.
+			const closed = [data.messageId, ...(Array.isArray(data.messageIds) ? data.messageIds : [])];
+			for (const messageId of closed) if (typeof messageId === "string") this.settle(`inbound:${messageId}`);
+		}
 		updateWorkflowStarts(this.workflowStarts, entry, seq);
 		if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
 			this.keepPending(`wait:${data.toolCallId}`, seq);
