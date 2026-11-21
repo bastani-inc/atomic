@@ -13,6 +13,11 @@ import {
 	waitUntilGone,
 } from "../helpers/skill-creator-scripts.js";
 
+// A Python start for the fake Atomic and for the file holder; seconds under load on Windows.
+const HOLDER_START_MS = 15_000;
+// The query's 4 s timeout, the holder's 6 s hold, and the removal retries that outlast it.
+const HOLDER_TEST_MS = HOLDER_START_MS + 30_000;
+
 const sandboxes: ScriptSandbox[] = [];
 afterEach(() => {
 	for (const sandbox of sandboxes.splice(0)) removeTempDirectory(sandbox.dir);
@@ -273,6 +278,47 @@ describe.skipIf(python === undefined)("skill-creator scripts run Atomic", () => 
 				await Promise.allSettled([viewer?.exited, listener.exited]);
 			}
 		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"report a timed-out query's timeout, not a temporary file another process still holds open, and remove it once released",
+		async () => {
+			const box = sandbox();
+			const evalSet = box.writeEvalSet([{ query: "slow", should_trigger: true }]);
+			const args = ["--eval-set", evalSet, "--skill-path", box.skill, "--runs-per-query", "1", "--timeout", "4"];
+			const startedAt = Date.now();
+			const script = spawnProcess([python ?? "python3", "-m", "scripts.run_eval", ...args], {
+				cwd: box.project,
+				env: box.env({ FAKE_ATOMIC_SCENARIO: "hold" }),
+				stderr: "pipe",
+			});
+			await box.waitForRecords(1, HOLDER_START_MS);
+			// The query's error output file, in the evaluation's temporary folder.
+			const run = readdirSync(box.temp).find((name) => name.startsWith("skill-eval-")) ?? "";
+			const log = readdirSync(join(box.temp, run)).find((name) => name.startsWith("atomic-")) ?? "";
+			assert.ok(run && log, "the query's error output file exists");
+			// Open without delete sharing, as a process that is still exiting holds an inherited handle: removing
+			// the file fails with a sharing violation until the holder lets go, after the query has timed out.
+			const holder = spawnProcess(
+				[
+					python ?? "python3",
+					"-c",
+					"import sys, time\nf = open(sys.argv[1], 'rb')\nprint('held', flush=True)\ntime.sleep(float(sys.argv[2]))",
+					join(box.temp, run, log),
+					// Until 2.5 s after the query's 4 s timeout, well within the retries that follow it.
+					`${(startedAt + 6_500 - Date.now()) / 1_000}`,
+				],
+				{ stdout: "pipe" },
+			);
+			await readUntil(holder.stdout, /(held)/u);
+			assert.equal(await script.exited, 0);
+			const stderr = await new Response(script.stderr).text();
+			assert.match(stderr, /query failed: Timed out after 4s/u);
+			assert.doesNotMatch(stderr, /WinError|being used by another process/u);
+			await holder.exited;
+			assert.deepEqual(readdirSync(box.temp), [], "the temporary folder is removed once it is released");
+		},
+		HOLDER_TEST_MS,
 	);
 
 	test("leave no Atomic process running after a query that timed out (#5625)", async () => {
