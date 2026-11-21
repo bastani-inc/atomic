@@ -18,7 +18,7 @@ from scripts.atomic_cli import Cancellation, open_in_browser, run_main
 from scripts.generate_report import generate_html
 from scripts.improve_description import improve_description
 from scripts.run_eval import find_project_root, run_eval
-from scripts.utils import parse_skill_md
+from scripts.utils import parse_skill_md, write_output_in_utf8
 
 
 def split_eval_set(eval_set: list[dict], holdout: float, seed: int = 42) -> tuple[list[dict], list[dict]]:
@@ -334,4 +334,5 @@ def main():
 
 
 if __name__ == "__main__":
+    write_output_in_utf8()
     run_main(main)
