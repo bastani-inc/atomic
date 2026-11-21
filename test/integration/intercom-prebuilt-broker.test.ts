@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, test } from "vitest";
+import { pathToFileURL } from "node:url";
+import { afterEach, test, vi } from "vitest";
 import { ENDED_QUEUE_OPEN_WAIT_ENV } from "../../packages/intercom/broker/durable-ended-queue.js";
 import { createMessageReader, type JsonWireValue, writeMessage } from "../../packages/intercom/broker/framing.js";
-import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import { getBrokerEndedChildQueuePath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { resolveBrokerEntrypoint, spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { makeTempDirectory, moduleDir, removePath } from "../helpers/runtime.js";
 import { replaceEnvironmentVariable } from "../helpers/temporary-agent-dir.js";
 
@@ -36,6 +40,7 @@ afterEach(async () => {
 });
 
 interface InstalledLayout {
+	readonly root: string;
 	readonly intercomDir: string;
 	readonly agentDir: string;
 }
@@ -59,7 +64,7 @@ function installedLayout(): InstalledLayout {
 	);
 	const intercomDir = join(root, "app", "builtin", "intercom");
 	cpSync(builtIntercom, intercomDir, { recursive: true });
-	return { intercomDir, agentDir };
+	return { root, intercomDir, agentDir };
 }
 
 /** Register a session over the broker's socket and return its `registered` frame. */
@@ -121,6 +126,71 @@ runTest(
 		}
 
 		const registered = await register(agentDir);
+		assert.equal(registered.dropsEndedQueued, true);
+	},
+	PREBUILT_BROKER_TEST_TIMEOUT_MS,
+);
+
+/**
+ * Node module hooks that refuse to resolve the storage layer the first time the broker imports it, as during an update
+ * that is replacing Atomic's files, and let every later import through. Each attempt is written to `log`.
+ */
+function refuseStorageOnce(root: string, log: string): string {
+	const hooks = join(root, "refuse-storage-once.mjs");
+	writeFileSync(
+		hooks,
+		`import { appendFileSync } from "node:fs";
+let attempts = 0;
+export async function resolve(specifier, context, next) {
+	if (specifier === "@bastani/atomic/storage") {
+		attempts += 1;
+		appendFileSync(${JSON.stringify(log)}, attempts === 1 ? "refused\\n" : "resolved\\n");
+		if (attempts === 1) throw Object.assign(new Error("Cannot find package '@bastani/atomic/storage'"), { code: "ERR_MODULE_NOT_FOUND" });
+	}
+	return next(specifier, context);
+}
+`,
+	);
+	const registration = join(root, "register-refuse-storage-once.mjs");
+	writeFileSync(
+		registration,
+		`import { register } from "node:module";\nregister(${JSON.stringify(pathToFileURL(hooks).href)});\n`,
+	);
+	return pathToFileURL(registration).href;
+}
+
+runTest(
+	"a broker whose first load of the storage layer failed loads it again for the first registration",
+	async () => {
+		const { root, intercomDir, agentDir } = installedLayout();
+		const log = join(root, "storage-imports.log");
+		writeFileSync(log, "");
+		// A store an earlier broker left: the broker loads the store's code, and with it the storage layer, once it listens.
+		mkdirSync(join(agentDir, "intercom"), { recursive: true });
+		writeFileSync(getBrokerEndedChildQueuePath(agentDir), "");
+		const broker = spawn(
+			process.execPath,
+			["--import", refuseStorageOnce(root, log), join(intercomDir, "broker", "broker.bundle.mjs")],
+			{ cwd: intercomDir, env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir }, stdio: "ignore" },
+		);
+		assert.ok(broker.pid !== undefined);
+		const recorded = await recordProcess(broker.pid);
+		cleanups.push(async () => {
+			await signalRecordedProcess(recorded);
+		});
+		await vi.waitFor(
+			async () => assert.equal(await isSocketAnswering(getBrokerSocketPath(process.platform, agentDir)), true),
+			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 50 },
+		);
+		await vi.waitFor(() => assert.equal(readFileSync(log, "utf8"), "refused\n"), {
+			timeout: BROKER_READY_TIMEOUT_MS,
+			interval: 20,
+		});
+
+		const registered = await register(agentDir);
+
+		// The failed load was not kept: the registration loaded the storage layer, and the durable wake queue opened.
+		assert.match(readFileSync(log, "utf8"), /^refused\nresolved\n/);
 		assert.equal(registered.dropsEndedQueued, true);
 	},
 	PREBUILT_BROKER_TEST_TIMEOUT_MS,

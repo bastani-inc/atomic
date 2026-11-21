@@ -17,7 +17,8 @@ export interface BrokerHostModulePlugin {
 
 /**
  * A Bun runtime plugin that resolves `@bastani/atomic` and `@bastani/atomic/storage` to the app bundle's own modules.
- * The bundle loads on the first such import, which only a broker with multi-node routing makes.
+ * The bundle loads on the first such import: the broker's first store, as a session first registers or as the broker
+ * warms the local store an earlier broker left, or its multi-node routing.
  */
 export function createBrokerHostModulePlugin(loadApp: () => Promise<AppHostModules>): BrokerHostModulePlugin {
 	let app: Promise<AppHostModules> | undefined;
