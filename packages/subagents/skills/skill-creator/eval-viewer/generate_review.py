@@ -245,13 +245,43 @@ def load_previous_iteration(workspace: Path) -> dict[str, dict]:
     return result
 
 
+def load_saved_feedback(feedback_path: Path) -> dict[str, str]:
+    """The feedback already saved for the workspace under review, by run ID.
+
+    The page starts from it, so reopening or reloading the page, or starting the viewer again, shows
+    it, and the next save keeps it. A missing or unreadable file means no feedback yet.
+    """
+    try:
+        try:
+            text = feedback_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # As other files: one saved in the locale's encoding.
+            text = feedback_path.read_text(encoding="locale")
+        data = json.loads(text)
+    except (OSError, ValueError):
+        return {}
+    reviews = data.get("reviews") if isinstance(data, dict) else None
+    if not isinstance(reviews, list):
+        return {}
+    return {
+        review["run_id"]: review["feedback"]
+        for review in reviews
+        if isinstance(review, dict) and isinstance(review.get("run_id"), str) and isinstance(review.get("feedback"), str)
+    }
+
+
 def generate_html(
     runs: list[dict],
     skill_name: str,
     previous: dict[str, dict] | None = None,
     benchmark: dict | None = None,
+    saved_feedback: dict[str, str] | None = None,
 ) -> str:
-    """Generate the complete standalone HTML page with embedded data."""
+    """Generate the complete standalone HTML page with embedded data.
+
+    saved_feedback is the reviewed workspace's own feedback, which the served page starts from; a
+    static page has none.
+    """
     template_path = Path(__file__).parent / "viewer.html"
     template = template_path.read_text(encoding="utf-8")
 
@@ -270,11 +300,14 @@ def generate_html(
         "runs": runs,
         "previous_feedback": previous_feedback,
         "previous_outputs": previous_outputs,
+        "saved_feedback": saved_feedback or {},
     }
     if benchmark:
         embedded["benchmark"] = benchmark
 
-    data_json = json.dumps(embedded)
+    # Inside the page's script element, "</script>" in an output or in feedback would end the script:
+    # "<" is written as its JSON escape, which reads back as the same text.
+    data_json = json.dumps(embedded).replace("<", "\\u003c")
 
     return template.replace("/*__EMBEDDED_DATA__*/", f"const EMBEDDED_DATA = {data_json};")
 
@@ -340,7 +373,9 @@ class ReviewHandler(BaseHTTPRequestHandler):
                     benchmark = json.loads(self.benchmark_path.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
                     pass
-            html = generate_html(runs, self.skill_name, self.previous, benchmark)
+            html = generate_html(
+                runs, self.skill_name, self.previous, benchmark, load_saved_feedback(self.feedback_path)
+            )
             content = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
