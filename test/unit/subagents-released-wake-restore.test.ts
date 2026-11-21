@@ -1381,13 +1381,14 @@ async function wokenWhileDeployRuns(
 	h: Harness,
 	runId: string,
 	at: "before-save" | "after-save",
+	running: { readonly toolCallId: string; readonly toolName: string } = DEPLOY_CALL,
 ): Promise<{
 	record: SubagentChildRecord;
 	gate: PromiseWithResolvers<void>;
 	held: Promise<void>;
 	woken: RunSyncOptions;
 }> {
-	h.releasedWaits = [WAIT_CALL, DEPLOY_CALL];
+	h.releasedWaits = [WAIT_CALL, running];
 	const woke = await wokenByResult(h, runId, waitResult("ci-1 green"), at);
 	const woken = h.runs.at(-1)?.options;
 	assert.ok(woken);
@@ -1398,7 +1399,7 @@ async function wokenWhileDeployRuns(
 		]),
 		[
 			["ci-1", "ci-1 green"],
-			["deploy-2", SUBAGENT_STILL_RUNNING_RESULT],
+			[running.toolCallId, SUBAGENT_STILL_RUNNING_RESULT],
 		],
 	);
 	return { ...woke, woken };
@@ -1557,6 +1558,47 @@ test("a child that finished after a wake told it a call is still running is woke
 	assert.deepEqual(done.heldToolResults ?? [], [], "nothing is left held once the child was told");
 	assert.deepEqual(done.stillRunning ?? [], [], "the interrupted call is no longer tracked as running");
 });
+
+for (const question of [
+	{ toolCallId: "ask-2", toolName: "contact_supervisor" },
+	{ toolCallId: "ask-2", toolName: "intercom" },
+] as const) {
+	test(`a child that finished after a wake told it its ${question.toolName} question is still running is not relaunched after a restart for it (#6168)`, async () => {
+		const h = harness();
+		const { record, gate, woken } = await wokenWhileDeployRuns(
+			h,
+			`question-${question.toolName}`,
+			"after-save",
+			question,
+		);
+		gate.resolve();
+		await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.terminalStatus === "ok");
+		h.wokenGate = undefined;
+		await restartOwner(h, record.childId, () => saveIntoTranscript(record, woken.resumeToolResults ?? []));
+		const runs = h.runs.length;
+
+		const dispatcher = agentWakeDispatcher();
+		const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+		cleanups.push(async () => stop());
+		const held = await h.waitForLatest(record.childId, (latest) => (latest.heldToolResults ?? []).length > 0);
+		await dispatcher.whenIdle();
+		await sleep(KEPT_SETTLE_MS);
+
+		assert.equal(h.runs.length, runs, "the finished child is not relaunched for its question");
+		const latest = h.latest(record.childId);
+		assert.equal(latest?.state, "terminal");
+		assert.equal(latest?.terminalStatus, "ok");
+		// Its next wake or resume still tells it, once, that the question was interrupted.
+		assert.deepEqual(held.heldToolResults, [
+			{
+				...question,
+				result: { content: [{ type: "text", text: SUBAGENT_INTERRUPTED_BY_RESTART_RESULT }], details: undefined },
+				isError: true,
+			},
+		]);
+		assert.deepEqual(held.stillRunning ?? [], [], "the interrupted question is no longer tracked as running");
+	});
+}
 
 test("a woken child whose run saved its results and then lost its owner is not given them again when restored (#5012)", async () => {
 	const h = harness();

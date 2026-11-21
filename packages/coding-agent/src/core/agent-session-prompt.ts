@@ -784,6 +784,7 @@ async function runAgentPrompt(
 			];
 			const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
 			this._runSystemPromptOptions = result.systemPromptOptions;
+			if (this._resumeBudgetCheckpoint) await this._compactBeforeResumedPrompt(updateMessage, messages);
 			if (updateMessage) messages.unshift(updateMessage);
 		}
 		if (this._queuedMessagesPaused) {

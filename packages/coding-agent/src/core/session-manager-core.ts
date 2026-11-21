@@ -117,8 +117,10 @@ import {
 	addEntryToHistoryTotals,
 	EMPTY_SESSION_HISTORY_TOTALS,
 	readSessionRange,
+	recoveryWitnessesOf,
 	sessionResumeOf,
 	updateWorkflowStarts,
+	witnessedIn,
 } from "./storage/session/session-resume.js";
 import {
 	findWorktreeSnapshotRecords,
@@ -1208,15 +1210,6 @@ export class SessionManager {
 		if (!resume.compaction) return;
 		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
 		const priorRecovery = this.recoveryState;
-		this.recoveryState = {
-			...this.recoveryState,
-			intercomDeliveredIds: [
-				...new Set([...this.recoveryState.intercomDeliveredIds, ...resume.recovery.intercomDeliveredIds]),
-			],
-			deliveryOpIds: [
-				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
-			],
-		};
 		const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
 		const actual = entries.map((entry) => ({ entry, seq: this.entrySeqs.get(entry.id)! }));
 		const archived = this.childArchive.retire(
@@ -1226,6 +1219,26 @@ export class SessionManager {
 		const keep = new Set(
 			[...resume.branch, ...resume.state].map(({ entry }) => entry.id).filter((id) => !archived.has(id)),
 		);
+		const {
+			reconciledCardIds: _reconciled,
+			intercomTakenIds: _taken,
+			answeredInboundIds: _answered,
+			...carried
+		} = this.recoveryState;
+		this.recoveryState = {
+			...carried,
+			intercomDeliveredIds: [
+				...new Set([...this.recoveryState.intercomDeliveredIds, ...resume.recovery.intercomDeliveredIds]),
+			],
+			deliveryOpIds: [
+				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
+			],
+			// #6168: what either window knew the branch took, for the entries this window keeps.
+			...recoveryWitnessesOf(
+				entries.filter((entry) => keep.has(entry.id)),
+				witnessedIn(priorRecovery, resume.recovery),
+			),
+		};
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
 		const current = this.getBranch();

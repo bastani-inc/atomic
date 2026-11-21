@@ -713,7 +713,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 	}
 	session._abortPreparedRunAtStart = false;
 	// The interrupt starts a request, so it passes the same check as a prompt: a context over the trigger is cleared first.
-	await session._compactBeforeContinuation();
+	await session._compactBeforeContinuation([message]);
 	assertSessionOpen(session);
 	if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	await session.agent.prompt(message);

@@ -325,6 +325,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return [];
     }
   }
+  /** #6168: the messages this session took in entries its resumed window left out. */
+  function takenOutsideWindow(): readonly string[] {
+    try {
+      return runtimeContext?.sessionManager.getSessionRecoveryState?.().intercomTakenIds ?? [];
+    } catch {
+      return [];
+    }
+  }
   // #3761: a message counts as shown once its `intercom_message` card is on the session branch.
   const pendingIdleMessages = new InboundIdleQueue(() => consumedIntercomMessageIds(sessionBranch()));
   /** Every path that writes an arriving message to the session takes its place here, in arrival order. */
@@ -828,7 +836,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const liveContext = getLiveContext();
     if (!liveContext) return [];
     // #4907: a message an earlier version saved whole is shown bounded.
-    const records = await Promise.all(unconsumedIntercomInbox(sessionBranch()).map(async (record) => ({
+    const records = await Promise.all(unconsumedIntercomInbox(sessionBranch(), takenOutsideWindow()).map(async (record) => ({
       record,
       entry: buildInboundEntry(record.from, await boundReceived(record.message), record.channel),
     })));
@@ -1675,7 +1683,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     bindReplyTracker: (ctx) => {
       // #4751: a restarted recipient can still answer the asks it was sent before the restart.
       try {
-        restorePendingInboundAsks(replyTracker, ctx.sessionManager.getBranch(), ctx.sessionManager.getSessionId());
+        restorePendingInboundAsks(
+          replyTracker,
+          ctx.sessionManager.getBranch(),
+          ctx.sessionManager.getSessionId(),
+          () => ctx.sessionManager.getSessionRecoveryState?.().answeredInboundIds,
+        );
       } catch {
         // A session without a readable branch has no earlier asks to restore.
       }
