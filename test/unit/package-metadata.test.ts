@@ -82,6 +82,11 @@ const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {
 	...atomicPackageJson.optionalDependencies,
 };
 
+const ATOMIC_BUILD_DEPENDENCIES: DependencyMap = {
+	...ATOMIC_RUNTIME_DEPENDENCIES,
+	...atomicPackageJson.devDependencies,
+};
+
 const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
 	"@bastani/atomic",
 	"@bastani/atomic-natives",
@@ -130,8 +135,8 @@ function dependencyEntries(
 	});
 }
 
-function atomicRuntimeDependencyRange(name: string): string | undefined {
-	return ATOMIC_RUNTIME_DEPENDENCIES[name];
+function atomicBuildDependencyRange(name: string): string | undefined {
+	return ATOMIC_BUILD_DEPENDENCIES[name];
 }
 
 async function runtimeDependencyPackageJson(dependencyName: string): Promise<RuntimeDependencyPackageJson> {
@@ -219,6 +224,7 @@ describe("package metadata", () => {
 	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {
 		assert.deepEqual(atomicPackageJson.files, [
 			"dist",
+			"!dist/**/*.d.ts.map",
 			"docs",
 			"examples",
 			"schemas",
@@ -268,15 +274,16 @@ describe("package metadata", () => {
 		}
 	});
 
-	test("@bastani/atomic declares runtime dependencies required by bundled packages", () => {
+	test("@bastani/atomic declares the dependencies of the packages its build bundles", () => {
+		// The builtin bundles include these dependencies, so the build needs them; installs do not.
 		for (const bundledPackageJson of BUNDLED_PACKAGE_MANIFESTS) {
 			for (const [, dependencyName, dependencyRange] of dependencyEntries(bundledPackageJson, ["dependencies"])) {
 				if (dependencyName.startsWith("@bastani/")) continue;
-				const atomicDependencyRange = atomicRuntimeDependencyRange(dependencyName);
+				const atomicDependencyRange = atomicBuildDependencyRange(dependencyName);
 				const foundRange = atomicDependencyRange ?? "missing";
 				assert.ok(
 					atomicDependencyRange !== undefined && semverSubset(atomicDependencyRange, dependencyRange),
-					`@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name} with a range equal to or narrower than ${dependencyRange} (found ${foundRange})`,
+					`@bastani/atomic must declare ${dependencyName} for bundled ${bundledPackageJson.name} with a range equal to or narrower than ${dependencyRange} (found ${foundRange})`,
 				);
 			}
 		}
