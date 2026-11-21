@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Brings the dist directories of the packages `npm run typecheck` checks against up to date without rewriting them in
-// place, so tests that import those packages while a typecheck runs never read a missing or half-written file.
+// Brings the dist directories of the packages Atomic depends on up to date without rewriting them in place, so tests
+// and other processes that import those packages while `npm run build` or `npm run typecheck` runs never read a
+// missing or half-written file.
 //
 // Usage: node scripts/refresh-package-dist.mjs <package-dir>...
 //
@@ -145,20 +146,31 @@ function ensureModelData(/** @type {string} */ packageDir) {
 	}
 }
 
-/** @param {string} packageDir absolute */
-export function refreshPackageDist(packageDir) {
+/**
+ * @param {string} packageDir absolute
+ * @param {{ generateModelData?: boolean, tsBuildInfoFile?: string }} [options] With `generateModelData: false`,
+ *   @bastani/atomic-ai's model data is copied as it is, for a caller that has checked it, as the build does; by default
+ *   missing or stale data is generated. `tsBuildInfoFile` keeps tsc's incremental state there between refreshes, so an
+ *   unchanged program is not checked again; every file is still emitted into the staging directory.
+ */
+export function refreshPackageDist(packageDir, { generateModelData = true, tsBuildInfoFile } = {}) {
 	const name = relative(root, packageDir).split("\\").join("/");
 	const copied = COPIED_OUTPUTS[name];
-	if (copied?.modelData) ensureModelData(packageDir);
+	if (copied?.modelData && generateModelData) ensureModelData(packageDir);
 	const staged = mkdtempSync(join(packageDir, ".dist-staging-"));
 	try {
 		// The workspace's one TypeScript, the compiler every package build script runs.
 		const manifest = createRequire(import.meta.url).resolve("typescript/package.json");
 		const tsc = join(dirname(manifest), JSON.parse(readFileSync(manifest, "utf8")).bin.tsc);
-		const compiled = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", staged], {
-			cwd: packageDir,
-			stdio: "inherit",
-		});
+		const incremental = tsBuildInfoFile === undefined ? [] : ["--incremental", "--tsBuildInfoFile", tsBuildInfoFile];
+		const compiled = spawnSync(
+			process.execPath,
+			[tsc, "-p", "tsconfig.build.json", "--outDir", staged, ...incremental],
+			{
+				cwd: packageDir,
+				stdio: "inherit",
+			},
+		);
 		if (compiled.status !== 0) throw new Error(`${name}: tsc failed (${compiled.status ?? compiled.signal})`);
 		if (copied) cpSync(join(packageDir, copied.from), join(staged, copied.to), { recursive: true });
 		const { files, replaced, removed } = moveChangedFiles(
