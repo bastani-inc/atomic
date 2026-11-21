@@ -35,6 +35,8 @@ The script supports two directory layouts:
 """
 
 import argparse
+import codecs
+import io
 import json
 import math
 import sys
@@ -404,4 +406,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Output in UTF-8, as write_output_in_utf8() in utils.py sets it up; repeated here because this script
+    # also runs on its own, without its folder on the module path.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()

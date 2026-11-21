@@ -15,6 +15,7 @@ import sys
 import zipfile
 from pathlib import Path
 from scripts.quick_validate import validate_skill
+from scripts.utils import write_output_in_utf8
 
 # Patterns to exclude when packaging skills.
 EXCLUDE_DIRS = {"__pycache__", "node_modules"}
@@ -133,4 +134,5 @@ def main():
 
 
 if __name__ == "__main__":
+    write_output_in_utf8()
     main()
