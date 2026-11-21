@@ -15,14 +15,14 @@ const READER_THREADS = "32";
  * (`startup-prefetch-reader.ts`). On a cold start an antivirus scans each file when it is first opened, and the module
  * loader opens them one at a time; read ahead in parallel, they are scanned in parallel. The reader only reads, ends
  * when it is done, and ends with this process if this process ends first. Nothing starts in the standalone binary
- * (one file), without the file list the build writes, or when the process runs a preload, a module loader or the
- * permission model.
+ * (one file), without the file list the build writes, when the package directory is overridden (it then names assets,
+ * not this installation's code), or when the process runs a preload, a module loader or the permission model.
  */
 export function startStartupPrefetch(packageDir: string): void {
 	// Windows only: the files' first-open antivirus scans are what the reader overlaps. Node only: the reader's read
 	// concurrency comes from Node's I/O pool, which the reader's own environment sizes.
 	if (process.platform !== "win32" || process.versions.bun !== undefined || isBunBinary) return;
-	if (process.permission !== undefined) return;
+	if (process.permission !== undefined || process.env.ATOMIC_PACKAGE_DIR || process.env.PI_PACKAGE_DIR) return;
 	if (startupNodeOptions().some((option) => USER_CODE_OPTIONS.has(option.name))) return;
 	const listPath = join(packageDir, "dist", "startup-files.json");
 	const readerPath = join(packageDir, "dist", "utils", "startup-prefetch-reader.js");

@@ -143,14 +143,14 @@ ${stay ? "setInterval(() => {}, 1000);" : ""}
 }
 
 /** Runs the parent to its end; returns how its reader was started, or undefined when it started none. */
-function startPrefetchIn(nodeFlags: readonly string[] = []): ReaderStart | undefined {
+function startPrefetchIn(nodeFlags: readonly string[] = [], env: Record<string, string> = {}): ReaderStart | undefined {
 	const parent = prefetchFixture(false);
 	const result = spawnSyncCollect([process.execPath, ...nodeFlags, parent], {
 		cwd: dir,
 		stdout: "pipe",
 		stderr: "pipe",
 		timeout: CHILD_TIMEOUT_MS,
-		env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096" },
+		env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=4096", ...env },
 	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	const { started } = JSON.parse(result.stdout.toString().trim().split("\n").at(-1) ?? "{}") as { started: number };
@@ -188,7 +188,11 @@ test.runIf(process.platform === "win32")("the reader ends when its parent is kil
 	assert.ok(parent.pid !== undefined);
 	const recordedParent = await recordProcess(parent.pid);
 	try {
-		while (!existsSync(marker())) await new Promise((resolve) => setTimeout(resolve, 10));
+		// Until the reader records its start, or the parent ends without one.
+		const deadline = Date.now() + CHILD_TIMEOUT_MS;
+		while (!existsSync(marker()) && parent.exitCode === null && Date.now() < deadline)
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.ok(existsSync(marker()), "the reader started");
 		const start = JSON.parse(readFileSync(marker(), "utf8")) as ReaderStart;
 		await signalRecordedProcess(recordedParent, "SIGKILL");
 		await expectGone(start.pid);
@@ -202,6 +206,13 @@ test.runIf(process.platform === "win32")(
 	() => {
 		const preload = file(join(dir, "preload.cjs"), "");
 		assert.equal(startPrefetchIn(["--require", preload]), undefined);
+	},
+);
+
+test.runIf(process.platform === "win32")(
+	"no reader starts when the package directory is overridden: it then names assets, not this installation's code",
+	() => {
+		assert.equal(startPrefetchIn([], { ATOMIC_PACKAGE_DIR: join(dir, "package") }), undefined);
 	},
 );
 
