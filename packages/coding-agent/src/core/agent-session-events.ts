@@ -45,6 +45,7 @@ import { chatRecordSavesSettled, trackChatRecordSave } from "./chat-record-saves
 import { formatCodexProviderError } from "./codex-errors.ts";
 import { noteCommandTurnMessage } from "./command-deliveries.ts";
 import { assignMissingToolCallIds } from "./context-tool-pairing.js";
+import { reportDebugAsync } from "./debug.ts";
 import {
 	cancelSessionSubscriptions,
 	type SessionEventHandler,
@@ -63,6 +64,7 @@ import type {
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
+import { TRANSPILE_CACHE_WRITE_WAIT_MS, transpileCacheWritesSettled } from "./extensions/transpile-cache-writes.js";
 import type { SessionShutdownEvent } from "./extensions/types.ts";
 import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
@@ -927,6 +929,13 @@ export function closeAgentSession(
 		await attempt("settings", async () => {
 			await session.settingsManager.flush();
 			assertSettingsWrites(session);
+		});
+		// A module an extension imported after it started stores its transform after the import settled. The writes
+		// this session's work started finish before dispose() resolves; one still running after a few seconds is left
+		// to finish on its own, as other sessions' writes always are.
+		await attempt("extension transpile cache", async () => {
+			const unfinished = await transpileCacheWritesSettled(session, TRANSPILE_CACHE_WRITE_WAIT_MS);
+			if (unfinished > 0) await reportDebugAsync("engine", "transpile-cache-writes-unfinished", { unfinished });
 		});
 		await attempt("snapshot collection", () => session._worktreeSnapshots.scheduleCollection());
 		await attempt("pooled worktrees", () => session._worktreeSnapshots.releaseWorktrees());

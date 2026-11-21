@@ -9,6 +9,7 @@ import {
 	resolveFrom,
 	walkStaticImports,
 } from "./transform-graph.js";
+import { trackTranspileCacheWrite } from "./transpile-cache-writes.js";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 
 type CreateJiti = typeof createJiti;
@@ -209,24 +210,26 @@ async function prepareTransforms(createJitiImpl: CreateJiti, preparation: Transf
 }
 
 function runTransformWorker(preparation: TransformPreparation): Promise<void> {
-	return new Promise<void>((resolve) => {
-		let worker: Worker;
-		try {
-			transformWorkerUrl ??= new URL(
-				import.meta.url.endsWith(".ts") ? "./ts-transform-worker.ts" : "./ts-transform-worker.js",
-				import.meta.url,
-			);
-			worker = startModuleWorker(transformWorkerUrl, { workerData: preparation });
-		} catch {
-			resolve();
-			return;
-		}
-		const finish = (): void => {
-			resolve();
-			void worker.terminate();
-		};
-		worker.once("message", finish);
-		worker.once("exit", finish);
-		worker.on("error", finish);
-	});
+	return trackTranspileCacheWrite(
+		new Promise<void>((resolve) => {
+			let worker: Worker;
+			try {
+				transformWorkerUrl ??= new URL(
+					import.meta.url.endsWith(".ts") ? "./ts-transform-worker.ts" : "./ts-transform-worker.js",
+					import.meta.url,
+				);
+				worker = startModuleWorker(transformWorkerUrl, { workerData: preparation });
+			} catch {
+				resolve();
+				return;
+			}
+			const finish = (): void => {
+				resolve();
+				void worker.terminate();
+			};
+			worker.once("message", finish);
+			worker.once("exit", finish);
+			worker.on("error", finish);
+		}),
+	);
 }
