@@ -37,13 +37,8 @@ function loadedFrom(entries: readonly string[]): Set<string> {
 		if (seen.has(file)) continue;
 		seen.add(file);
 		const source = fs.readFileSync(join(dist, file), "utf8");
-		for (const match of source.matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+|#dist\/[^"]+)"/g)) {
-			const specifier = match[1] as string;
-			pending.push(
-				specifier.startsWith("#dist/")
-					? specifier.slice("#dist/".length)
-					: posix.normalize(posix.join(posix.dirname(file), specifier)),
-			);
+		for (const match of source.matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+)"/g)) {
+			pending.push(posix.normalize(posix.join(posix.dirname(file), match[1] as string)));
 		}
 	}
 	return seen;
@@ -96,18 +91,14 @@ test(
 		const paths = new Set(files.map((file) => file.path));
 		for (const file of loadedFrom(ENTRIES)) assert.ok(paths.has(`dist/${file}`), `dist/${file} is not packed`);
 		for (const entry of ENTRIES) assert.ok(paths.has(`dist/${entry}.js.map`), `dist/${entry}.js.map is not packed`);
-		assert.ok(paths.has("dist/dist-module-url.js"));
 		assert.ok(
 			[...paths].every((path) => !path.includes("atomic-split-dist")),
 			"the split's build state stays out of the package",
 		);
 		const manifest = JSON.parse(fs.readFileSync(join(packageDir, "package.json"), "utf8")) as {
 			exports: Record<string, Record<string, string>>;
-			imports: Record<string, string>;
 			bin: Record<string, string>;
 		};
-		assert.equal(manifest.imports["#dist-module-url"], "./dist/dist-module-url.js");
-		assert.equal(manifest.imports["#dist/*"], "./dist/*");
 		for (const target of [
 			...Object.values(manifest.exports).flatMap((conditions) => Object.values(conditions)),
 			...Object.values(manifest.bin),

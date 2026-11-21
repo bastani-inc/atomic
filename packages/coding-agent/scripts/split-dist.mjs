@@ -9,12 +9,12 @@
  * stay external and keep their own files and identities.
  *
  * `@bastani/atomic/storage` and `/storage/testing`, whose classes the SDK entry exports too, keep the modules they load
- * as compiled files at their own paths; bundled code imports those through `#dist/*`. A process that loaded them from
+ * as compiled files at their own paths; bundled code imports those by their paths. A process that loaded them from
  * an install later replaced in place therefore keeps one of each of their classes, whatever the release regrouped. The
  * modules they import only when they run become entries of their own, so that import reaches the bundled instance.
  *
- * Each bundled module keeps its own `import.meta.url`: it reads the URL of its compiled file through
- * `#dist-module-url`, so it finds its assets, siblings and workers as before, wherever the package is installed.
+ * Each bundled module keeps its own `import.meta.url`: the URL of its compiled file, from the file holding it, so it
+ * finds its assets, siblings and workers as before, wherever the package is installed.
  * Dynamic imports become shared files loaded when they run, so what loaded lazily still does. Every other compiled
  * file stays in place: worker entries and the modules they import by URL run from them, in their own threads.
  *
@@ -32,19 +32,20 @@ const dist = join(packageDir, "dist");
 const BUNDLED_ENTRIES = ["cli", "main", "index", "rpc-entry"];
 /**
  * Modules defining what the host and its extensions both hold (the context's model registry and session manager, and
- * the context retirement effects): bundled entries at their own paths, which every other module imports through
- * `#dist/*`, so their own code stays in that one file across releases.
+ * the context retirement effects): bundled entries at their own paths, which every other module imports by that path,
+ * so their own code stays in that one file across releases.
  */
 const OWNER_ENTRIES = ["core/model-registry", "core/session-manager-core", "core/extensions/runner-context"];
 /** The public entries whose modules stay compiled files at their own paths. */
 const COMPILED_PUBLIC_ENTRIES = ["core/storage/index", "core/storage/testing"];
 /** Where shared code goes, below `dist`. */
 export const SHARED_DIRECTORY = "_shared";
-/** The package import (package.json `imports`) that gives a compiled module its own URL. */
-const MODULE_URL_SPECIFIER = "#dist-module-url";
-const MODULE_URL_FILE = join(dist, "dist-module-url.js");
-/** The package import prefix (package.json `imports`) through which bundled code reaches a compiled module. */
-const COMPILED_SPECIFIER_PREFIX = "#dist/";
+/**
+ * Marks a path below `dist` in the bundle: once the files are named, each marked path becomes the path from the file
+ * holding it, so it names the same file wherever the package is installed. Bundled code imports a compiled module or an
+ * owner entry through it, and reads a module's own URL as `new URL(<marked path>, import.meta.url)`.
+ */
+const DIST_PATH_MARK = "__atomic_dist__/";
 const META_URL = "import.meta.url";
 const META_URL_SYMBOL = "__atomicDistModuleUrl";
 
@@ -69,7 +70,7 @@ const writtenBySplit = (entry) => {
 	return state.entries[entry] !== undefined && existsSync(file) && state.entries[entry] === digest(readFileSync(file));
 };
 /** Whether `source` is a split's output rather than compiled code. */
-const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`) || source.includes(MODULE_URL_SPECIFIER);
+const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`);
 /** `dist/<path>` as compiled, also where an earlier split overwrote it. */
 const compiledSource = (path) => {
 	const entry = path.replace(/\.js$/, "");
@@ -168,7 +169,6 @@ const result = await build({
 		{
 			name: "dist-module-url",
 			setup(context) {
-				context.onResolve({ filter: /^#dist-module-url$/ }, () => ({ path: MODULE_URL_SPECIFIER, external: true }));
 				// A module a compiled public entry loads is imported from its compiled file, not bundled.
 				// An owner module is imported from its own entry file, never bundled into another file.
 				const owners = new Set(OWNER_ENTRIES.map((entry) => `${entry}.js`));
@@ -176,11 +176,11 @@ const result = await build({
 					if (kind === "entry-point") return undefined;
 					const target = relative(dist, join(resolveDir, path)).split(sep).join("/");
 					return compiledModules.has(target) || owners.has(target)
-						? { path: `${COMPILED_SPECIFIER_PREFIX}${target}`, external: true }
+						? { path: `${DIST_PATH_MARK}${target}`, external: true }
 						: undefined;
 				});
 				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
-					if (!path.startsWith(dist + sep) || path === MODULE_URL_FILE) return undefined;
+					if (!path.startsWith(dist + sep)) return undefined;
 					const entry = compiledEntries.get(path);
 					const source = entry ?? readFileSync(path, "utf8");
 					if (!source.includes("import.meta")) return entry === undefined ? undefined : { contents: entry, loader: "js" };
@@ -201,7 +201,7 @@ const result = await build({
 					const url = relative(dist, path).split(sep).map(encodeURIComponent).join("/");
 					const transformed = await transform(withMap, {
 						...options,
-						banner: `import { distModuleUrl as ${META_URL_SYMBOL}Of } from ${JSON.stringify(MODULE_URL_SPECIFIER)};const ${META_URL_SYMBOL} = /* @__PURE__ */ ${META_URL_SYMBOL}Of(${JSON.stringify(url)});`,
+						banner: `const ${META_URL_SYMBOL} = new URL(${JSON.stringify(`${DIST_PATH_MARK}${url}`)}, import.meta.url).href;`,
 					});
 					return { contents: transformed.code, loader: "js", resolveDir: dirname(path) };
 				});
@@ -239,8 +239,16 @@ const contentNames = renames.size > 0 ? new RegExp([...renames.keys()].map((name
 const outputFiles = result.outputFiles.map((file) => {
 	const base = file.path.slice(file.path.lastIndexOf(sep) + 1);
 	const renamedBase = renames.get(base) ?? renames.get(base.replace(/\.map$/, ""))?.concat(".map");
-	const text = contentNames === undefined ? file.text : file.text.replace(contentNames, (name) => renames.get(name) ?? name);
-	return { path: renamedBase === undefined ? file.path : join(dirname(file.path), renamedBase), contents: text };
+	const path = renamedBase === undefined ? file.path : join(dirname(file.path), renamedBase);
+	let text = contentNames === undefined ? file.text : file.text.replace(contentNames, (name) => renames.get(name) ?? name);
+	if (path.endsWith(".js")) {
+		const from = relative(dist, dirname(path)).split(sep).join("/");
+		text = text.replace(new RegExp(`"${DIST_PATH_MARK}([^"]+)"`, "g"), (_, target) => {
+			const local = posix.relative(from, target);
+			return JSON.stringify(local.startsWith(".") ? local : `./${local}`);
+		});
+	}
+	return { path, contents: text };
 });
 
 // Shared files first and the entries last, so an entry never names a shared file not written yet.

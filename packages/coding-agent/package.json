@@ -40,10 +40,6 @@
       "default": "./dist/rpc-entry.js"
     }
   },
-  "imports": {
-    "#dist-module-url": "./dist/dist-module-url.js",
-    "#dist/*": "./dist/*"
-  },
   "files": [
     "dist",
     "docs",
