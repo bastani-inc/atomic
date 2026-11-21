@@ -446,7 +446,7 @@ async function writeCapturedTree(
 		}
 		const state = await writeTreeThrough(working, checkout, settings, policy, options, {
 			refresh: true,
-			forceAdded: () => ignoredAdditionsToHead(checkout, signal),
+			forceAdded: () => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
 		});
 		const written: IndexRecord = {
 			version: CAPTURE_INDEX_VERSION,
@@ -612,19 +612,72 @@ async function ignoredStagedOutsideSeed(
 }
 
 /**
- * Files staged in the user's index as additions to HEAD that an ignore rule matches (`git add -f`): one listing of the
- * staged additions, then the ignore rules on those paths alone.
+ * The files staged as additions to HEAD in each user's index this process listed, by index path: the hash of the
+ * index's bytes and the HEAD they were listed against, the listing, which follows from those two alone, and whether it
+ * holds a submodule.
  */
-async function ignoredAdditionsToHead(checkout: Checkout, signal?: AbortSignal): Promise<string[]> {
+const stagedAdditions = new Map<
+	string,
+	{ readonly key: string; readonly added: readonly string[]; readonly submodules: boolean }
+>();
+
+/** The command that lists the files staged in an index as additions to `head`. */
+function stagedAdditionsCommand(head: string, raw: boolean): string[] {
+	return [
+		"diff-index",
+		"--cached",
+		...(raw ? ["--raw", "--ignore-submodules=none"] : ["--name-only"]),
+		"-z",
+		"--no-renames",
+		"--diff-filter=A",
+		head,
+	];
+}
+
+/**
+ * Files staged in the user's index at `userIndexPath` as additions to HEAD that an ignore rule matches (`git add -f`):
+ * the staged additions, then the ignore rules on those paths alone. The additions are listed again only when the
+ * index's bytes or HEAD changed since the last listing, and then from a copy, in `scratch`, of exactly the bytes the
+ * listing is kept for: the user's index can change meanwhile. Whether Git lists a staged submodule follows its
+ * `ignore` setting, which the index does not hold, so while the index stages one the additions are listed every time.
+ */
+async function ignoredAdditionsToHead(
+	checkout: Checkout,
+	userIndexPath: string,
+	scratch: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
 	const { root, head } = checkout;
-	const added = nulFields(
-		(
-			await runGit(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", head], {
-				cwd: root,
-				signal,
-			})
-		).stdout,
-	);
+	let bytes: Buffer | null;
+	try {
+		bytes = await readFile(userIndexPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+		bytes = null;
+	}
+	const key = `${bytes === null ? "none" : sha256Hex(bytes)}\0${head}`;
+	let listed = stagedAdditions.get(userIndexPath);
+	if (listed?.key !== key) {
+		// A checkout without an index lists from an absent copy, as Git lists from its absent index: nothing.
+		const copy = join(scratch, "user-index");
+		if (bytes !== null) await writeFile(copy, bytes);
+		// Every addition with its mode, whatever any submodule's `ignore` setting says.
+		const fields = nulFields(
+			(await runGit(stagedAdditionsCommand(head, true), { cwd: root, env: { GIT_INDEX_FILE: copy }, signal }))
+				.stdout,
+		);
+		const added: string[] = [];
+		let submodules = false;
+		for (let index = 0; index + 1 < fields.length; index += 2) {
+			if (fields[index]!.slice(1).split(" ")[1] === "160000") submodules = true;
+			added.push(fields[index + 1]!);
+		}
+		listed = { key, added, submodules };
+		stagedAdditions.set(userIndexPath, listed);
+	}
+	const added = listed.submodules
+		? nulFields((await runGit(stagedAdditionsCommand(head, false), { cwd: root, signal })).stdout)
+		: listed.added;
 	if (added.length === 0) return [];
 	const ignored = await runGit(["check-ignore", "--no-index", "--stdin", "-z"], {
 		cwd: root,
@@ -747,7 +800,8 @@ async function carriedModes(root: string, signal?: AbortSignal): Promise<Readonl
  * the checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it
  * cannot read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep
  * HEAD's entry. The modes go into a tree of this capture's own, never into the checkout's private index, which every
- * capture of the checkout reads from: `tree` itself when no file gets another mode.
+ * capture of the checkout reads from: `tree` itself when no file gets another mode. `read` is `recorded` when Git read
+ * it to compare, which shows that the repository holds it.
  */
 async function withRecordedModes(
 	root: string,
@@ -755,16 +809,17 @@ async function withRecordedModes(
 	recorded: string | undefined,
 	omitted: ReadonlySet<string>,
 	signal?: AbortSignal,
-): Promise<string> {
-	if (recorded === undefined || recorded === tree) return tree;
+): Promise<{ readonly tree: string; readonly read?: string }> {
+	if (recorded === undefined || recorded === tree) return { tree };
 	const carried = await carriedModes(root, signal);
-	if (carried.size === 0) return tree;
+	if (carried.size === 0) return { tree };
 	// A recorded tree this store no longer holds has no modes to give: Git fails, printing no entries.
 	const diff = await runGit(["diff-tree", "-r", "--raw", "-z", "--no-renames", recorded, tree], {
 		cwd: root,
 		signal,
 		allowExitCodes: [128],
 	});
+	const read = diff.exitCode === 0 ? recorded : undefined;
 	const fields = nulFields(diff.stdout);
 	const entries: string[] = [];
 	for (let index = 0; index + 1 < fields.length; index += 2) {
@@ -774,12 +829,12 @@ async function withRecordedModes(
 			entries.push(`${oldMode} ${newBlob}\t${path}\0`);
 		}
 	}
-	if (entries.length === 0) return tree;
+	if (entries.length === 0) return { tree, read };
 	return withScratchDirectory(async (scratch) => {
 		const git: GitRunOptions = { cwd: root, env: { GIT_INDEX_FILE: join(scratch, "index") }, signal };
 		await runGit(["read-tree", tree], git);
 		await runGit(["update-index", "-z", "--index-info"], { ...git, input: entries.join("") });
-		return gitText(["write-tree"], git);
+		return { tree: await gitText(["write-tree"], git), read };
 	});
 }
 
@@ -1275,10 +1330,8 @@ async function captureCheckout(
 	const read = await readWorkingFiles(checkout, settings, capture, signal, wroteBy);
 	const modeTree = previous?.tree ?? (await restoredTreeOf(capture.gitDir));
 	const omittedPaths = new Set(read.state.omitted.flatMap((omission) => ("path" in omission ? [omission.path] : [])));
-	const state = {
-		...read.state,
-		tree: await withRecordedModes(root, read.state.tree, modeTree, omittedPaths, signal),
-	};
+	const modes = await withRecordedModes(root, read.state.tree, modeTree, omittedPaths, signal);
+	const state = { ...read.state, tree: modes.tree };
 	const pathOmissions = read.omitted;
 	const omissions = pathOmissionKeys(pathOmissions);
 	if (
@@ -1301,7 +1354,8 @@ async function captureCheckout(
 			previous !== undefined &&
 			previous.head === head &&
 			previous.chain.length < settings.fullEvery &&
-			(await objectExists(root, previous.tree, signal));
+			// Comparing modes with the previous tree read it, where the repository does not trust file modes.
+			(modes.read === previous.tree || (await objectExists(root, previous.tree, signal)));
 		const baseTree = incremental
 			? previous.tree
 			: await gitText(["rev-parse", `${head}^{tree}`], { cwd: root, signal });

@@ -12,7 +12,6 @@ import {
 	readFileSync,
 	realpathSync,
 	renameSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -20,6 +19,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { removeFixtureTree } from "../../../test/helpers/fixture-removal.js";
 import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../../../test/helpers/recorded-process.js";
 import {
 	copiesOutputToLog,
@@ -53,8 +53,19 @@ const REFUSED_STARTS = 5;
 const REFUSED_CHILD_TRIES = 200;
 /** The most tries a step makes of a program that stays refused: ten 50 ms apart, then at most six, further apart. */
 const MAX_REFUSED_TRIES = 16;
-/** Bound on the event-loop turns until a refused step is waiting to try again. */
-const UNTIL_WAITING_TURNS = 10_000;
+/**
+ * Real time a refused step may take to start waiting to try again: its first try comes once the step's log file is open,
+ * which a loaded machine can take seconds to answer while the event loop turns freely.
+ */
+const UNTIL_WAITING_MS = 30_000;
+
+/** Turns the event loop until the step is waiting on a timer, `done` holds, or {@link UNTIL_WAITING_MS} passed. */
+async function untilWaiting(done: () => boolean = () => false): Promise<void> {
+	// The tests' clocks are fake; the process's own high-resolution clock is not.
+	const deadline = process.hrtime.bigint() + BigInt(UNTIL_WAITING_MS) * 1_000_000n;
+	while (!done() && vi.getTimerCount() === 0 && process.hrtime.bigint() < deadline)
+		await new Promise((resolve) => setImmediate(resolve));
+}
 
 let sandbox: string;
 let logCount = 0;
@@ -65,7 +76,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.useRealTimers();
-	rmSync(sandbox, { recursive: true, force: true });
+	// Windows keeps a program's file, and the directory it ran in, in use for a moment after its process ended.
+	removeFixtureTree(sandbox);
 });
 
 const path = (...segments: string[]) => join(sandbox, ...segments);
@@ -417,8 +429,7 @@ describe("running a logged process (#4588)", () => {
 					settled = true;
 				});
 				while (!settled) {
-					for (let turn = 0; !settled && vi.getTimerCount() === 0 && turn < UNTIL_WAITING_TURNS; turn++)
-						await new Promise((resolve) => setImmediate(resolve));
+					await untilWaiting(() => settled);
 					if (settled) break;
 					assert.equal(vi.getTimerCount(), 1, `the step waits to try again after try ${triedAt.length}`);
 					await vi.advanceTimersToNextTimerAsync();
@@ -695,8 +706,7 @@ describe("running a logged process (#4588)", () => {
 					// The refusal is seen a second into the step, past the tries 50 ms apart, so it waits longer.
 					() => wall.mockReturnValue(wallStart + 1_000),
 				);
-				for (let turn = 0; vi.getTimerCount() === 0 && turn < UNTIL_WAITING_TURNS; turn++)
-					await new Promise((resolve) => setImmediate(resolve));
+				await untilWaiting();
 				assert.equal(vi.getTimerCount(), 1, "the step waits to try again");
 				controller.abort(reason);
 				const { result, tries } = await outcome;
@@ -725,7 +735,8 @@ describe("running a logged process (#4588)", () => {
 
 	/**
 	 * Starts `script` as `launch` runs it, aborts it once its grandchild runs, and checks that both stopped and the step
-	 * rejected with the reason. `onRefused` runs each time the system refused to start the step's process.
+	 * rejected with the reason, only once its own process had ended. `onRefused` runs each time the system refused to
+	 * start the step's process.
 	 */
 	async function abortsRunningProcess(
 		launch: (script: string, scriptArgs: string[]) => LoggedProcess,
@@ -748,12 +759,19 @@ describe("running a logged process (#4588)", () => {
 		].join("\n");
 		const controller = new AbortController();
 		const reason = new Error("resume cancelled");
+		// The step tells its build of its process's start and, once that process has ended, of its end.
+		const startedPids: number[] = [];
+		const endedPids: number[] = [];
 		let pending: Promise<{ exit: ProcessExit; output: string }>;
 		for (let start = 1; ; start++) {
-			const running = execute(launch(script, [path("grandchild.pid")]), {
-				timeoutMs: STEADY_TIMEOUT_MS,
-				signal: controller.signal,
-			});
+			const running = stepProcessWatcher.run(
+				(pid, isRunning) => (isRunning ? startedPids : endedPids).push(pid),
+				() =>
+					execute(launch(script, [path("grandchild.pid")]), {
+						timeoutMs: STEADY_TIMEOUT_MS,
+						signal: controller.signal,
+					}),
+			);
 			// A process that ends, or cannot start, before its grandchild starts fails the wait at once with how it ended.
 			const ended: { first?: unknown; refused?: boolean } = {};
 			running.then(
@@ -780,8 +798,12 @@ describe("running a logged process (#4588)", () => {
 		// #6125: recorded while it waits to be stopped, so a later process given its pid is never taken for it.
 		const grandchildProcess = await recordProcess(Number(readFileSync(path("grandchild.pid"), "utf8")));
 		try {
+			const stepProcess = startedPids.at(-1);
+			assert.ok(stepProcess !== undefined, "the step's process started");
 			controller.abort(reason);
 			await assert.rejects(pending, (error: unknown) => error === reason);
+			// A caller removes the step's files once it rejects, which Windows refuses while its program is still running.
+			assert.ok(endedPids.includes(stepProcess), "the step rejected before its process ended");
 			assert.equal(
 				await waitUntilGone(grandchildProcess, STEADY_TIMEOUT_MS),
 				true,
