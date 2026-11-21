@@ -38,6 +38,8 @@ interface ClosedSession {
 	readonly calls: readonly ShutdownRecord[];
 	readonly records: readonly LogRecord[];
 	readonly enginePid: number;
+	/** How many engine processes the session started: a replacement for a lost engine would be a second. */
+	readonly enginesStarted: number;
 	readonly engineGone: boolean;
 }
 
@@ -119,7 +121,8 @@ export default (pi) => {
 					.filter((line) => line.length > 0)
 					.map((line) => JSON.parse(line) as ShutdownRecord)
 			: [];
-		return { run, calls, records, enginePid: engine.pid, engineGone: run.readyProcessExited };
+		const enginesStarted = records.filter((record) => record.type === "start" && record.role === "engine").length;
+		return { run, calls, records, enginePid: engine.pid, enginesStarted, engineGone: run.readyProcessExited };
 	} finally {
 		await removeTempRootReleasingBroker(root, agentDir);
 	}
@@ -146,6 +149,7 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 				`Atomic exited ${closed.run.exitedAfterMs} ms after the close`,
 			);
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
+			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 			assert.ok(delayOf(closed.records, "engine", "shutdown"), "the engine wrote its shutdown record");
 		},
 		CLI_TIMEOUT_MS * 2 + 10_000,
@@ -159,6 +163,7 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 			assert.deepEqual(closed.calls, [{ pid: closed.enginePid, reason: "quit", fromSignal: true, finished: false }]);
 			assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
+			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 		},
 		CLI_TIMEOUT_MS * 2 + 10_000,
 	);

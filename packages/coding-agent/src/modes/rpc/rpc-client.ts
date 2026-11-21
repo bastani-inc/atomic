@@ -587,7 +587,7 @@ export class RpcClient extends RpcClientApi {
 		// Ahead of the terminal drain, which a transport error during the stop can begin: it would swallow the
 		// engine's report that its shutdown is complete.
 		if (this.stoppedEngine?.generation === generation) {
-			this.handleStoppedEngineLine(line, this.stoppedEngine.shutdownComplete);
+			this.handleStoppedEngineLine(line, generation, this.stoppedEngine.shutdownComplete);
 			return;
 		}
 		if (
@@ -634,14 +634,19 @@ export class RpcClient extends RpcClientApi {
 	/**
 	 * A line an engine writes while an explicit stop ends it. The host has already torn down that generation's UI,
 	 * so its extension UI requests, engine frames and events are dropped. What settles its own requests still
-	 * counts, as in its terminal drain, a failed shutdown is still reported, and the stop learns when the engine
-	 * says its shutdown is complete.
+	 * counts, as in its terminal drain, a failed shutdown is still reported, the stop learns when the engine
+	 * says its shutdown is complete, and the host still hears that the console it shares with the engine was closed.
 	 */
-	private handleStoppedEngineLine(line: string, shutdownComplete: PromiseWithResolvers<void>): void {
+	private handleStoppedEngineLine(
+		line: string,
+		generation: number,
+		shutdownComplete: PromiseWithResolvers<void>,
+	): void {
 		const message = parseInteractiveEngineMessage(line);
 		if (message) {
 			if (message.type === "engine_request_accepted") this.pendingRequests.markAccepted(message.requestId);
 			else if (message.type === "engine_shutdown_complete") shutdownComplete.resolve();
+			else if (message.type === "engine_console_closed") this.emitInteractiveEngineMessage(message, generation);
 			return;
 		}
 		try {
