@@ -3344,7 +3344,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			deliveryTargetIdentity(fresh),
 			handoff,
 		);
-		assert.equal(failed.status, "held", "it still awaits the id");
+		assert.ok(failed.status === "held" && failed.recovery !== undefined, "it still awaits the id");
 		bind.mockRestore();
 
 		// It registers under a fresh id meanwhile, awaiting the id: it is handed the same hand-over again.
@@ -3354,7 +3354,14 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			info: { ...fresh.info, id: randomUUID() },
 		};
 		here.sessions.set(interim.info.id, interim);
-		const registered = here.router.sessionRegistered(interim, undefined, undefined, undefined, live.info.id);
+		const registered = here.router.sessionRegistered(
+			interim,
+			undefined,
+			undefined,
+			undefined,
+			live.info.id,
+			failed.recovery,
+		);
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await registered;
 		await untilMovedBack(here, interim);
@@ -3368,6 +3375,37 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		);
 		assert.ok(claim.status === "granted");
 		assert.equal(claim.grant.alias, fresh.info.id, "the alias is still the id it had first");
+	});
+
+	test("a registration awaiting the id without having presented its hand-over is never handed that hand-over (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const { handoff } = here.handoffs[0]!;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const bind = vi
+			.spyOn(here.state.knownSessions, "bind")
+			.mockRejectedValueOnce(new Error("the shared database is busy"));
+		const failed = await here.router.claimSessionId(
+			live.info.id,
+			returnAddress,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		assert.equal(failed.status, "held");
+		bind.mockRestore();
+
+		// Another registration of the same session awaits the id: it is moved back with an id of its own at most.
+		const stranger = registeringAs(fresh, randomUUID());
+		here.sessions.set(stranger.info.id, stranger);
+		const registered = here.router.sessionRegistered(stranger, undefined, undefined, undefined, live.info.id);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		await untilMovedBack(here, stranger);
+		const last = here.handoffs.at(-1)!.handoff;
+		assert.notEqual(last, handoff, "not the hand-over it never presented");
+		const claim = await here.router.claimSessionId(live.info.id, returnAddress, deliveryTargetIdentity(fresh), last);
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.alias, stranger.info.id, "its own id, not the one the session had");
 	});
 
 	test("an id taken back for an awaiting session is not taken by a registration of another identity, and is given back unused after a while (#5607)", async () => {

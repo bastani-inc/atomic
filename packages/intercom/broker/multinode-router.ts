@@ -521,6 +521,12 @@ interface ReservedId {
 	handedAt: ClockMark;
 	/** It was handed over again, once, after a registration presenting it could not take it. */
 	handedAgain?: true;
+	/**
+	 * Given only to a registration that presented `handoff` and could not take the id: what alone has the id handed over
+	 * to it again, and carries the alias over once the hold lapsed. A registration of the same identity without it never
+	 * does.
+	 */
+	readonly recovery: string;
 }
 
 /**
@@ -1091,7 +1097,7 @@ export class MultiNodeRouter {
 			// handed it again: the registration gets a fresh id meanwhile.
 			if (reserved !== undefined && (claimed.status === "held" || claimed.status === "refused")) {
 				this.holdAgain(identity, reserved);
-				return { status: "held" };
+				return { status: "held", recovery: reserved.recovery };
 			}
 			if (lapsed !== undefined && (claimed.status === "held" || claimed.status === "refused"))
 				return { status: "held", recovery: lapsed.recovery };
@@ -1100,7 +1106,7 @@ export class MultiNodeRouter {
 			this.report(error);
 			if (reserved !== undefined) {
 				this.holdAgain(identity, reserved);
-				return { status: "held" };
+				return { status: "held", recovery: reserved.recovery };
 			}
 			return lapsed === undefined ? { status: "refused" } : { status: "held", recovery: lapsed.recovery };
 		} finally {
@@ -1482,10 +1488,15 @@ export class MultiNodeRouter {
 			// What is queued for the id it awaits is queued for its identity, but woken on the broker still holding the id.
 			const identity = deliveryTargetIdentity(session);
 			this.scanIdentity(identity);
-			// Already held for it, by a hand-over its last registration could not use: it is handed over once more, with a
-			// new hold of its own.
+			// Already held for it, by a hand-over its last registration presented but could not use: it is handed over once
+			// more, with a new hold of its own. Another registration of the same identity awaiting the id is not.
 			const held = this.reservedIds.get(identity);
-			if (held !== undefined && held.id === awaits.id && held.handedAgain !== true) {
+			if (
+				held !== undefined &&
+				held.id === awaits.id &&
+				held.handedAgain !== true &&
+				awaits.recovery === held.recovery
+			) {
 				delete entry.awaits;
 				held.handedAgain = true;
 				held.handedAt = clockMark();
@@ -1552,6 +1563,7 @@ export class MultiNodeRouter {
 				...alias,
 				confirmed,
 				handedAt: clockMark(),
+				recovery: randomUUID(),
 			});
 			this.host.fence(session, "reclaimed", { sessionId: awaits.id, handoff });
 			if (kept !== undefined && entry.owner !== undefined && !this.tokenInUse(entry.owner.token))
@@ -1601,7 +1613,7 @@ export class MultiNodeRouter {
 				alias: reserved.alias,
 				...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
 				lapsedAt: clockMark(),
-				recovery: randomUUID(),
+				recovery: reserved.recovery,
 			});
 		if (earlier !== undefined) this.giveBackLapsed(earlier);
 	}
