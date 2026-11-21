@@ -82,6 +82,7 @@
 - The turns after a tool call in a run that an interrupt or a queued message started no longer take the prompt sections that extensions add when a prompt starts, such as the MCP servers' section, out of the system prompt. The model lost the list of MCP servers, and the prompt changed twice, until the next prompt.
 - The bash and PowerShell tools find their shell, and an MCP server given by a program name finds its program, only in the absolute directories on your PATH and the known install locations, never through Windows' search of the working directory or an empty or relative PATH entry, so a shell or server program a project contains never runs in place of yours. A `shellPath` given as a name alone, such as `bash`, is looked up the same way; a path is used as written, as is an MCP server's `command` with a path. On Windows an MCP server whose program is not installed now fails with `spawn <name> ENOENT`, as elsewhere, instead of being handed to cmd.exe to look for.
 - On Windows a variable in an MCP server's `env`, such as `PATH`, replaces the inherited one however either is spelled, so a configured `PATH` chooses the server's program and is the `PATH` the server gets.
+- Extensions: on Windows, `pi.exec` runs a command named without a path, such as `git`, only from the absolute directories on `PATH`, never from the working directory, so a program in a project folder no longer runs in place of the one you installed. A command with a path runs as written, and one found nowhere fails with `ENOENT` as before.
 
 ## [0.10.3] - 2026-11-21
 
