@@ -5,6 +5,8 @@ import { test } from "vitest";
 import { moduleDir } from "../helpers/runtime.js";
 
 const repositoryRoot = join(moduleDir(import.meta.url), "..", "..");
+/** The entries the build's split wrote (`packages/coding-agent/scripts/split-dist.mjs`). */
+const SPLIT_STATE = join(repositoryRoot, "packages/coding-agent/node_modules/.cache/atomic-split-dist/state.json");
 const fixture = (name: string): unknown =>
 	JSON.parse(readFileSync(join(repositoryRoot, "test/fixtures/atomic-0.10.3", name), "utf8"));
 
@@ -59,11 +61,12 @@ test("Atomic's built files import only package subpaths a 0.10.3 process can sti
 		Object.entries(filesIn0103).map(([name, files]) => [name, new Set(files.map((file) => posix.dirname(file)))]),
 	);
 	const unresolvable = new Set<string>();
-	let scanned = 0;
-	for (const workspace of ["coding-agent", "ai", "agent", "tui", "schema", "telemetry", "codemode"]) {
+	const scanned = new Set<string>();
+	const workspaces = ["coding-agent", "ai", "agent", "tui", "schema", "telemetry", "codemode"];
+	for (const workspace of workspaces) {
 		for (const file of loadableFiles(join(repositoryRoot, "packages", workspace, "dist"))) {
-			scanned++;
 			const importer = relative(repositoryRoot, file).split("\\").join("/");
+			scanned.add(importer);
 			for (const [, name = "", subpath = ""] of readFileSync(file, "utf8").matchAll(specifier)) {
 				if (LOADED_AT_STARTUP.has(`${name}${subpath}`)) continue;
 				const resolved = resolvedIn0103(name, subpath);
@@ -77,6 +80,28 @@ test("Atomic's built files import only package subpaths a 0.10.3 process can sti
 			}
 		}
 	}
-	assert.ok(scanned > 1000, `scanned only ${scanned} built files`);
+	// Every package's built files were scanned: each package has some, and Atomic's are every entry the build's split
+	// wrote and every shared file it moved their code into.
+	for (const workspace of workspaces)
+		assert.ok(
+			[...scanned].some((path) => path.startsWith(`packages/${workspace}/dist/`)),
+			`no built files of ${workspace}`,
+		);
+	const splitEntries = Object.keys(
+		(JSON.parse(readFileSync(SPLIT_STATE, "utf8")) as { entries: Record<string, string> }).entries,
+	);
+	const sharedFiles = readdirSync(join(repositoryRoot, "packages/coding-agent/dist/_shared")).filter((file) =>
+		file.endsWith(".js"),
+	);
+	assert.ok(splitEntries.length > 0 && sharedFiles.length > 0, "the build split Atomic's modules");
+	const split = [
+		...splitEntries.map((entry) => `packages/coding-agent/dist/${entry}.js`),
+		...sharedFiles.map((file) => `packages/coding-agent/dist/_shared/${file}`),
+	];
+	assert.deepEqual(
+		split.filter((path) => !scanned.has(path)),
+		[],
+		"built files the scan missed",
+	);
 	assert.deepEqual([...unresolvable].sort(), []);
 });

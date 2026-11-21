@@ -8,6 +8,7 @@ import { VERSION } from "../../packages/coding-agent/src/config.js";
 import {
 	machineStartTimeMs,
 	STARTUP_FILES_READ_MARKER,
+	startStartupPrefetch,
 	startupFilesReadThisStart,
 } from "../../packages/coding-agent/src/utils/startup-prefetch.ts";
 import {
@@ -15,11 +16,13 @@ import {
 	readsFoundFilesInMemory,
 	startupFilePaths,
 } from "../../packages/coding-agent/src/utils/startup-prefetch-reader.ts";
+import { NODE_TS_SOURCE_HOOK } from "../helpers/node-ts-sources.js";
 import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../helpers/recorded-process.js";
 import { spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const codingAgent = new URL("../../packages/coding-agent/", import.meta.url);
-const prefetchModule = new URL("dist/utils/startup-prefetch.js", codingAgent).href;
+// The package bundles the module that starts the reader into its CLI, and ships the reader, which runs by path, as a file.
+const prefetchModule = new URL("src/utils/startup-prefetch.ts", codingAgent).href;
 const readerModule = new URL("dist/utils/startup-prefetch-reader.js", codingAgent).href;
 /** One child process start: generous, since the child is only waited on. */
 const CHILD_TIMEOUT_MS = 20_000;
@@ -264,7 +267,9 @@ setTimeout(() => {}, 60_000);
 	file(join(packageDir, "package.json"), JSON.stringify({ type: "module" }));
 	return file(
 		join(dir, "parent.mjs"),
-		`import childProcess from "node:child_process";
+		// The source's hook is registered by the script: with \`--import\`, no reader would start.
+		`${NODE_TS_SOURCE_HOOK}
+import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { existsSync } from "node:fs";
 let started = 0;
@@ -452,12 +457,9 @@ test.skipIf(process.platform === "win32")("no reader starts outside Windows", ()
 	assert.equal(startPrefetchIn(), undefined);
 });
 
-test("no reader starts without the list the build writes", async () => {
+test("no reader starts without the list the build writes", () => {
 	const packageDir = join(dir, "bare");
 	mkdirSync(join(packageDir, "dist"), { recursive: true });
-	const { startStartupPrefetch } = (await import(prefetchModule)) as {
-		startStartupPrefetch(packageDir: string): void;
-	};
 	startStartupPrefetch(packageDir);
 	assert.equal(existsSync(marker()), false);
 	assert.ok(pathToFileURL(packageDir));
