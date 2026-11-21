@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- While you view a subagent, `←` on its empty prompt returns to the main chat and leaves the subagent running, with its queued messages and unsent draft kept. The hint by the prompt reads `← main chat`. `Esc` no longer switches back to the main chat; it only pauses a working subagent, so how you leave a subagent no longer depends on whether it is working ([#6135](https://github.com/bastani-inc/atomic/issues/6135))
+
 ### Fixed
 
 - Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
