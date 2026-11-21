@@ -10,8 +10,7 @@ let stalled = false;
 fs.readFileSync = function (path, ...rest) {
 	if (!stalled && suffix && String(path).replaceAll("\\", "/").endsWith(suffix)) {
 		stalled = true;
-		const until = Date.now() + stallMs;
-		while (Date.now() < until) {}
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
 	}
 	return readFileSync.call(this, path, ...rest);
 };
