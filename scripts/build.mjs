@@ -191,7 +191,7 @@ export const BUILD_STEPS = [
 			"packages/intercom",
 		],
 		outputs: ["packages/coding-agent/dist"],
-		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:assets" }],
+		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:declarations" }, { script: "build:assets" }],
 		toolchains: ["bun"],
 		after: ["ai", "tui", "agent", "codemode", "natives"],
 	},
