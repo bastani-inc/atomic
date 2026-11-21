@@ -778,6 +778,9 @@ async function continueInChosenCheckout(
 		options.sessionDirectory,
 		{ history: "tail" },
 	);
+	// A session manager of an earlier Atomic version has none to hand over.
+	if (typeof sessionManager.handOverStartedSession === "function")
+		await sessionManager.handOverStartedSession(reopened);
 	const blueprints =
 		options.blueprints === "skip"
 			? SKIPPED_BLUEPRINTS

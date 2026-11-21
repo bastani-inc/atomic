@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A `password` function whose own request fails with a certificate code, such as one reading from a secret store whose certificate is not trusted, is no longer reported as the database server's certificate with an `sslrootcert` fix. It is retried and reported like any other failure of the password function, with its own message ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
+
 ## [0.10.3] - 2026-11-21
 
 ### Fixed

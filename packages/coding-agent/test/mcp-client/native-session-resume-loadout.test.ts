@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, getCurrentSystemMessage, resolveTranscriptTools } from "@bastani/atomic-ai";
@@ -849,6 +849,91 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		await promptReply(fixture, resumed, "after reconnect");
 		expect(sectionUpdates(resumed, before)).toEqual([]);
 		expect(currentSection(resumed)).toBe(section);
+	});
+
+	it("keeps the summaries of servers whose instructions hold other line separators", async () => {
+		const fixture = await createFixture();
+		const servers = (ready?: Promise<void>) => ({
+			docs: { tools: [SEARCH], instructions: "Part A\u2028Part B\nmore", ready, calls: [] },
+			wiki: { tools: [SEARCH], instructions: "Unchanged server", ready, calls: [] },
+		});
+		const { sessionFile, section } = await liveCodemodeSession(fixture, { servers: servers() });
+		expect(serverLines(section)).toEqual([
+			docsLine("Part A\u2028Part B"),
+			"- mcp__wiki (codemode): Unchanged server",
+		]);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, { servers: servers(server.ready), exposure: "codemode" });
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+	});
+
+	/**
+	 * A session whose server showed its summary, then reconnected without instructions; the record that its line shows
+	 * no summary is lost, as when that write fails. Returns the session file and the entry of the reply before.
+	 */
+	async function lostRetirement(fixture: Fixture) {
+		const { sessionFile } = await liveCodemodeSession(fixture, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+		});
+		const first = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: undefined, calls: [] } },
+			exposure: "codemode",
+		});
+		const shown = first.sessionManager
+			.getBranch()
+			.findLast((entry) => entry.type === "message" && entry.message.role === "assistant")!.id;
+		await settled(first);
+		await promptReply(fixture, first, "after reconnect");
+		expect(serverLines(currentSection(first))).toEqual([docsLine()]);
+		await first.dispose();
+		const stored = readFileSync(sessionFile, "utf8").split("\n");
+		const retired = stored.findLastIndex(
+			(line) => line.includes(MCP_TOOL_RECORD_ENTRY_TYPE) && line.includes('"summary":""'),
+		);
+		expect(retired).toBeGreaterThan(-1);
+		const entry = JSON.parse(stored[retired]!) as { data: { summaries?: unknown[] } };
+		stored[retired] = JSON.stringify({ ...entry, data: { ...entry.data, summaries: [] } });
+		writeFileSync(sessionFile, stored.join("\n"));
+		return { sessionFile, shown };
+	}
+
+	it("does not show a recorded summary the conversation no longer showed when its replacement was not written", async () => {
+		const fixture = await createFixture();
+		const { sessionFile } = await lostRetirement(fixture);
+
+		const server = held();
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: undefined, ready: server.ready, calls: [] } },
+			exposure: "codemode",
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after the second resume");
+		server.release();
+		await settled(resumed);
+		await promptReply(fixture, resumed, "after the second reconnect");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+	});
+
+	it("shows the recorded summary of a branch the session moves to while the server reconnects", async () => {
+		const fixture = await createFixture();
+		const { sessionFile, shown } = await lostRetirement(fixture);
+
+		const resumed = await resume(fixture, sessionFile, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, ready: held().ready, calls: [] } },
+			exposure: "codemode",
+		});
+		// That branch's last section showed the summary its record holds.
+		await resumed.navigateTree(shown, { summarize: false });
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "on the earlier branch");
+		expect(sectionUpdates(resumed, before)).toEqual([]);
+		expect(serverLines(currentSection(resumed))).toEqual([docsLine("Search and fetch the product docs.")]);
 	});
 
 	it("drops a recorded server summary once the server fails to reconnect (#6108)", async () => {
