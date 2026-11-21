@@ -1,0 +1,122 @@
+/**
+ * Bundles the package's compiled module graph into a few files, run after `tsc` and before the assets are copied.
+ *
+ * Starting Atomic loads about a thousand of this package's modules, and Node pays a fixed cost for each file and each
+ * import it resolves: on Windows several times what it pays on Linux. This build keeps every public entry at its path
+ * and moves the code all entries share into `dist/_shared/`, so each module is still evaluated once per process, by
+ * whichever entry loads it first: the CLI, the SDK (`@bastani/atomic`, `/storage`, `/storage/testing`, `/rpc-entry`),
+ * an extension, or the extension loader's aliases, which name those same entries. Other packages, TypeBox and Atomic's
+ * forked packages among them, stay external and keep their own files and identities.
+ *
+ * Each module keeps its own `import.meta.url`: it reads the URL of its compiled file through `#dist-module-url`, so a
+ * module finds its assets, siblings and workers as before, wherever the package is installed. Dynamic imports become
+ * chunks loaded when they run, so what loaded lazily still does. Every other compiled file stays in place: worker
+ * entries and the modules they import by URL run from them, in their own threads.
+ *
+ * Source maps chain to the TypeScript sources through the compiled files' maps.
+ */
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { build, transform } from "esbuild";
+
+const packageDir = fileURLToPath(new URL("..", import.meta.url));
+const dist = join(packageDir, "dist");
+/** The package's entry points: its bin, the SDK's export paths, and `main.js`, which the CLI imports. */
+export const SPLIT_ENTRIES = ["cli", "main", "index", "rpc-entry", "core/storage/index", "core/storage/testing"];
+/** Where shared code goes, below `dist`. */
+export const SHARED_DIRECTORY = "_shared";
+/** The package import (package.json `imports`) that gives a compiled module its own URL. */
+const MODULE_URL_SPECIFIER = "#dist-module-url";
+const MODULE_URL_FILE = join(dist, "dist-module-url.js");
+const META_URL = "import.meta.url";
+const META_URL_SYMBOL = "__atomicDistModuleUrl";
+
+if (!existsSync(join(dist, "cli.js"))) throw new Error("split-dist: run tsc first; dist/cli.js is missing");
+
+/** The entries as this build writes them: a second run on the same output, as `npm pack` makes, changes nothing. */
+const STAMP = join(dist, SHARED_DIRECTORY, ".entries");
+const entriesDigest = () => {
+	const hash = createHash("sha256");
+	for (const entry of SPLIT_ENTRIES) hash.update(readFileSync(join(dist, `${entry}.js`)));
+	return hash.digest("hex");
+};
+if (existsSync(STAMP) && readFileSync(STAMP, "utf8") === entriesDigest()) {
+	console.log("split-dist: dist is already split");
+	process.exit(0);
+}
+
+const result = await build({
+	absWorkingDir: packageDir,
+	entryPoints: Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, join(dist, `${entry}.js`)])),
+	outdir: dist,
+	write: false,
+	allowOverwrite: true,
+	bundle: true,
+	splitting: true,
+	format: "esm",
+	platform: "node",
+	target: "node22",
+	packages: "external",
+	keepNames: true,
+	sourcemap: "linked",
+	sourcesContent: true,
+	chunkNames: `${SHARED_DIRECTORY}/[name]-[hash]`,
+	metafile: true,
+	logLevel: "warning",
+	plugins: [
+		{
+			name: "dist-module-url",
+			setup(context) {
+				context.onResolve({ filter: /^#dist-module-url$/ }, () => ({ path: MODULE_URL_SPECIFIER, external: true }));
+				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
+					if (!path.startsWith(dist + sep) || path === MODULE_URL_FILE) return undefined;
+					const source = readFileSync(path, "utf8");
+					if (!source.includes("import.meta")) return undefined;
+					// The compiled file's own map, inlined, so the transformed code still maps to its TypeScript source.
+					const mapFile = `${path}.map`;
+					const withMap = existsSync(mapFile)
+						? source.replace(
+								/\/\/# sourceMappingURL=[^\r\n]*\s*$/,
+								`//# sourceMappingURL=data:application/json;base64,${readFileSync(mapFile).toString("base64")}\n`,
+							)
+						: source;
+					const options = {
+						loader: "js",
+						format: "esm",
+						target: "esnext",
+						sourcefile: path,
+						sourcemap: "inline",
+						define: { [META_URL]: META_URL_SYMBOL },
+					};
+					// Token-aware: a mention in a comment is not a use. Any meta property but `url` stops the build.
+					const probe = (await transform(withMap, { ...options, sourcemap: false })).code;
+					if (probe.includes("import.meta")) throw new Error(`split-dist: ${relative(dist, path)} uses import.meta beyond import.meta.url`);
+					if (!probe.includes(META_URL_SYMBOL)) return undefined;
+					const url = relative(dist, path).split(sep).map(encodeURIComponent).join("/");
+					const transformed = await transform(withMap, {
+						...options,
+						banner: `import { distModuleUrl as ${META_URL_SYMBOL}Of } from ${JSON.stringify(MODULE_URL_SPECIFIER)};const ${META_URL_SYMBOL} = /* @__PURE__ */ ${META_URL_SYMBOL}Of(${JSON.stringify(url)});`,
+					});
+					return { contents: transformed.code, loader: "js", resolveDir: dirname(path) };
+				});
+			},
+		},
+	],
+});
+
+// Shared code of an earlier build goes first; then each file is written whole before it takes its name.
+rmSync(join(dist, SHARED_DIRECTORY), { recursive: true, force: true });
+for (const file of result.outputFiles) {
+	mkdirSync(dirname(file.path), { recursive: true });
+	writeFileSync(`${file.path}.split`, file.contents);
+	renameSync(`${file.path}.split`, file.path);
+}
+for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
+writeFileSync(STAMP, entriesDigest());
+
+const outputs = Object.keys(result.metafile.outputs).filter((output) => output.endsWith(".js"));
+console.log(
+	`split-dist: ${Object.keys(result.metafile.inputs).length} modules into ${SPLIT_ENTRIES.length} entries and ${outputs.length - SPLIT_ENTRIES.length} shared files`,
+);

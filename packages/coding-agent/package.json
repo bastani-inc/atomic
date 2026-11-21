@@ -40,6 +40,9 @@
       "default": "./dist/rpc-entry.js"
     }
   },
+  "imports": {
+    "#dist-module-url": "./dist/dist-module-url.js"
+  },
   "files": [
     "dist",
     "docs",
@@ -54,6 +57,7 @@
     "typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.build.json && node ../../scripts/bun-typecheck.mjs -p tsconfig.typetests.json",
     "build": "bun run build:tsc && bun run build:assets",
     "build:tsc": "tsc -p tsconfig.build.json",
+    "build:split": "node scripts/split-dist.mjs",
     "build:assets": "node scripts/build-codemode-worker.mjs && node ../../scripts/package-files.mjs executable dist/cli.js dist/rpc-entry.js && bun run copy-assets",
     "bundle:dev": "bun build src/bun/cli.ts --target=bun --minify --external mupdf --define process.env.ATOMIC_BUNDLED_BUILD=\"'1'\" --outfile dist-dev/cli.js && bun build src/extensions/codemode/worker.ts --target=bun --format=esm --outfile dist-dev/codemode-worker.js && node ../../scripts/package-files.mjs copy ../../node_modules/quickjs-wasi/quickjs.wasm dist-dev/",
     "start:fast": "bun run bundle:dev && bun dist-dev/cli.js",
@@ -68,7 +72,8 @@
     "generate:references": "bun run scripts/generate-references.ts",
     "test": "vitest --run",
     "shrinkwrap": "bun run ../../scripts/generate-coding-agent-shrinkwrap.mjs",
-    "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap"
+    "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap",
+    "prepack": "node scripts/split-dist.mjs"
   },
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
