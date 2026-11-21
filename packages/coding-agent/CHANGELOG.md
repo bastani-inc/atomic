@@ -8,6 +8,11 @@
 
 ### Fixed
 
+- After a restart, a long session no longer replays an Intercom message, reply or ask that it had already taken in a turn, or an ask it had already answered, once a compaction had left the entry that recorded this out of the reopened session. Such a message came back as a new turn when its sender was still connected, and as history otherwise, after every restart ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+- Fixed the first run after a resume near the context window lowering the thinking budget when an extension starts it, or a queued message or session recovery continues it: like a typed prompt, it now compacts once first when only what the resume added would lower the budget. What an extension adds after the session opened counts as the conversation's, as in a session that kept running, so it no longer causes that compaction.
+- A subagent whose own prompt replaces the default now names the project's session folder in a section at the end of its prompt, so its Session memory section reads the same in every project. A session recorded with the folder in Session memory keeps it there.
+- A resumed session no longer shows an MCP server's recorded summary that the conversation did not show last, such as after the record of a later change could not be written; the server's line shows its summary again once it reconnects.
+- With the npm-installed `atomic`, an OpenAI Codex request whose WebSocket is refused for its TLS certificate now fails at once with the certificate message and how to trust a private CA, as the standalone binary does, instead of first retrying over SSE ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
 - Opening or closing `/tasks` or the focused agent panel no longer draws a frame without the agent panel, the footer's hints, or both. This includes Esc, Enter on the subagent already shown, and opening `/tasks` from a subagent's chat. The screen now changes from the prompt to the view and back in one frame.
 - While viewing a subagent, a narrow footer keeps `← main chat` and `↓ N agents` longer than `? keys` and the working status. Before, `↓ 1 agent` was dropped below 47 columns.
 - ↓ on the empty prompt of an extension's editor built on Atomic's editor (`ctx.ui.setEditorComponent`) now focuses the agent panel, as it does on the default prompt, unless the editor uses the key itself.
