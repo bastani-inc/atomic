@@ -36,10 +36,19 @@ export default {
 			const messageId = readFileSync(commitGate, "utf8");
 			let inserted = false;
 			const result = await transaction((tx) => {
+				const writes = (sql: string, params: readonly unknown[]) => {
+					if (/\bINSERT INTO \w*intercom_outbox\(/u.test(sql) && params[0] === messageId) inserted = true;
+				};
 				const run = tx.run.bind(tx);
 				tx.run = (sql, ...params) => {
-					if (/\bINSERT INTO \w*intercom_outbox\(/u.test(sql) && params[0] === messageId) inserted = true;
+					writes(sql, params);
 					return run(sql, ...params);
+				};
+				// The insert of a row for an offline recipient reads the row back from the insert itself (#5607).
+				const get = tx.get.bind(tx);
+				tx.get = (sql, ...params) => {
+					writes(sql, params);
+					return get(sql, ...params);
 				};
 				return callback(tx);
 			}, txOptions);

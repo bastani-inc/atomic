@@ -49,6 +49,15 @@ const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ statu
 const ageOf = (since: number): number => Math.max(0, Date.now() - since);
 const isLive = (since: number, staleAfterMs: number): boolean => ageOf(since) <= staleAfterMs;
 
+/**
+ * #5607: the broker holding the live presence lease of a delivery identity, read from a memory lease fixture, as the
+ * SQL stores read the lease table in the same transaction.
+ */
+export type MemoryPresenceHolder = (targetIdentity: string, staleAfterMs: number) => string | undefined;
+
+/** #5607: the brokers holding a live presence lease of any delivery identity of a return address, in any group. */
+export type MemoryReturnAddressHolders = (returnAddress: string, staleAfterMs: number) => string[];
+
 function subjectId(subject: LeaseSubject): string {
 	return subject.kind === "broker" ? subject.brokerId : subject.targetIdentity;
 }
@@ -206,7 +215,14 @@ interface OutboxState {
 	nextSequence: number;
 }
 
-function outboxStore(shared: OutboxState): OutboxStore {
+/** #5607: how the memory outbox sends the wake-up hint the SQL outbox writes with an offline recipient's row. */
+export type MemoryOutboxWake = (brokerId: string, version: number) => Promise<unknown>;
+
+function outboxStore(
+	shared: OutboxState,
+	presence: MemoryPresenceHolder | undefined,
+	wake: MemoryOutboxWake | undefined,
+): OutboxStore {
 	const row = (record: OutboxRecord): OutboxRow => ({
 		sequence: record.sequence,
 		messageId: record.messageId,
@@ -263,7 +279,12 @@ function outboxStore(shared: OutboxState): OutboxStore {
 				claimAttempts: 0,
 			};
 			shared.rows.set(messageId, record);
-			return { status: "inserted", row: row(record) };
+			const woke =
+				request.wakeHostWithinMs === undefined
+					? undefined
+					: presence?.(request.targetIdentity, request.wakeHostWithinMs);
+			if (woke !== undefined) await wake?.(woke, record.sequence);
+			return { status: "inserted", row: row(record), ...(woke === undefined ? {} : { woke }) };
 		},
 		async claim(request) {
 			if (request.claimantId.length === 0) return invalid("empty-claimant-id");
@@ -1045,15 +1066,18 @@ interface KnownRecord {
 
 interface BindingRecord {
 	readonly returnAddress: string;
-	readonly recordedAt: number;
+	recordedAt: number;
+	/** #5607: the claim of the registration that last bound the id, when it gave one. */
+	readonly latestClaim?: string;
 }
 
 function knownSessionStore(
 	known: Map<string, KnownRecord>,
 	nextOrder: { value: number },
 	bindings: Map<string, BindingRecord>,
+	presence: MemoryReturnAddressHolders | undefined,
 ): KnownSessionStore {
-	return {
+	const store: KnownSessionStore = {
 		async record(session) {
 			if (session.targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (session.intercomSessionId.length === 0) return invalid("empty-session-id");
@@ -1085,7 +1109,7 @@ function knownSessionStore(
 				}));
 			return { status: "found", sessions };
 		},
-		async bind(intercomSessionId, returnAddress, retentionMs) {
+		async bind(intercomSessionId, returnAddress, retentionMs, claim) {
 			if (intercomSessionId.length === 0) return invalid("empty-session-id");
 			const held = bindings.get(intercomSessionId);
 			let holder = held !== undefined && isLive(held.recordedAt, retentionMs) ? held.returnAddress : undefined;
@@ -1103,9 +1127,39 @@ function knownSessionStore(
 					bindings.set(intercomSessionId, { returnAddress: holder, recordedAt: Date.now() });
 				return { status: "refused", returnAddress: holder };
 			}
-			bindings.set(intercomSessionId, { returnAddress, recordedAt: Date.now() });
+			bindings.set(intercomSessionId, {
+				returnAddress,
+				recordedAt: Date.now(),
+				...(claim === undefined ? {} : { latestClaim: claim }),
+			});
 			return { status: "bound" };
 		},
+		...(presence === undefined
+			? {}
+			: {
+					async reclaim(request) {
+						if (request.intercomSessionId.length === 0 || request.freshId.length === 0)
+							return invalid("empty-session-id");
+						const held = bindings.get(request.intercomSessionId);
+						const elsewhere = presence(request.returnAddress, request.presenceStaleAfterMs).some(
+							(holder) => holder !== request.brokerId,
+						);
+						if (
+							held !== undefined &&
+							isLive(held.recordedAt, request.retentionMs) &&
+							held.returnAddress === request.returnAddress &&
+							held.latestClaim === request.claim &&
+							!elsewhere
+						) {
+							held.recordedAt = Date.now();
+							return { status: "kept" };
+						}
+						return {
+							status: "fresh",
+							binding: await store.bind(request.freshId, request.returnAddress, request.retentionMs),
+						};
+					},
+				}),
 		async binding(intercomSessionId, retentionMs) {
 			if (intercomSessionId.length === 0) return invalid("empty-session-id");
 			const held = bindings.get(intercomSessionId);
@@ -1141,21 +1195,50 @@ function knownSessionStore(
 				}));
 		},
 	};
+	return store;
 }
 
 function sharedFixture<Store>(connect: () => Store): Promise<SharedStoreFixture<Store>> {
 	return Promise.resolve({ connect: async () => connect(), close: async () => {} });
 }
 
-export function openMemoryLeaseStoreFixture(): Promise<SharedStoreFixture<BrokerLeaseStore>> {
+export async function openMemoryLeaseStoreFixture(): Promise<
+	SharedStoreFixture<BrokerLeaseStore> & {
+		readonly presenceHolder: MemoryPresenceHolder;
+		readonly returnAddressHolders: MemoryReturnAddressHolders;
+	}
+> {
 	const records = new Map<string, LeaseRecord>();
 	const nextOrder = { value: 1 };
-	return sharedFixture(() => leaseStore(records, nextOrder));
+	const presenceHolder: MemoryPresenceHolder = (targetIdentity, staleAfterMs) => {
+		const holder = records.get(JSON.stringify(["presence", targetIdentity]))?.holder;
+		return holder !== undefined && isLive(holder.renewedAt, staleAfterMs) ? holder.holderId : undefined;
+	};
+	const returnAddressHolders: MemoryReturnAddressHolders = (returnAddress, staleAfterMs) => {
+		// Keys are `["presence", identity]`; every identity of the return address starts `["return",<address>,`.
+		const start = JSON.stringify(["presence", `${JSON.stringify(["return", returnAddress]).slice(0, -1)},`]).slice(
+			0,
+			-2,
+		);
+		return [...records.entries()].flatMap(([key, record]) =>
+			key.startsWith(start) && record.holder !== undefined && isLive(record.holder.renewedAt, staleAfterMs)
+				? [record.holder.holderId]
+				: [],
+		);
+	};
+	return { ...(await sharedFixture(() => leaseStore(records, nextOrder))), presenceHolder, returnAddressHolders };
 }
 
-export function openMemoryOutboxFixture(): Promise<SharedStoreFixture<OutboxStore>> {
+/**
+ * `presence`: the lease fixture whose presence leases `enqueue` reads for `wakeHostWithinMs`, and `wake`, the hint it
+ * sends the broker they name (#5607).
+ */
+export function openMemoryOutboxFixture(
+	presence?: MemoryPresenceHolder,
+	wake?: MemoryOutboxWake,
+): Promise<SharedStoreFixture<OutboxStore>> {
 	const shared: OutboxState = { rows: new Map(), nextSequence: 1 };
-	return sharedFixture(() => outboxStore(shared));
+	return sharedFixture(() => outboxStore(shared, presence, wake));
 }
 
 export function openMemoryHeldSendFixture(): Promise<SharedStoreFixture<HeldSendStore>> {
@@ -1184,11 +1267,14 @@ export function openMemorySentMessageFixture(): Promise<SharedStoreFixture<SentM
 	return sharedFixture(() => sentMessageAuthority(sent));
 }
 
-export function openMemoryKnownSessionFixture(): Promise<SharedStoreFixture<KnownSessionStore>> {
+/** `presence`: the lease fixture whose presence leases `reclaim` reads; without it the store has no `reclaim` (#5607). */
+export function openMemoryKnownSessionFixture(
+	presence?: MemoryReturnAddressHolders,
+): Promise<SharedStoreFixture<KnownSessionStore>> {
 	const known = new Map<string, KnownRecord>();
 	const nextOrder = { value: 1 };
 	const bindings = new Map<string, BindingRecord>();
-	return sharedFixture(() => knownSessionStore(known, nextOrder, bindings));
+	return sharedFixture(() => knownSessionStore(known, nextOrder, bindings, presence));
 }
 
 interface MemorySubscription {
