@@ -1051,12 +1051,12 @@ export class ModelRuntime implements Models {
 		// Environment/runtime auth can remain after stored auth is removed. The
 		// probe is normally synchronous, but its deadline is authoritative because
 		// extension checks are third-party code and need not honor cancellation.
-		let timeout: number | undefined;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
 		try {
 			const remainingAuth = await Promise.race([
 				this.checkAuth(providerId).catch(() => undefined),
 				new Promise<undefined>((resolve) => {
-					timeout = setTimeout(resolve, POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS);
+					timeout = setTimeout(() => resolve(undefined), POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS);
 				}),
 			]);
 			if (logoutGeneration === this.snapshotGeneration && !this.snapshot.storedProviders.has(providerId)) {
