@@ -48,6 +48,7 @@ import {
   nativeProcessCreationTime,
   processStartToken,
   readProcessStartToken,
+  readProcessStartWithoutProcess,
   stopWindowsProcess,
 } from "./broker-process.js";
 import { isBrokerStatusReport } from "./broker-status.js";
@@ -846,6 +847,8 @@ export async function upgradeBroker(
           else lockOwner = renewed;
         },
         found,
+        // Polls read the pid's start only where that starts no process; elsewhere broker.pid's verdict and liveness decide.
+        readProcessStartWithoutProcess,
       );
     } catch (error) {
       if (isIntercomBrokerStopTimeoutError(error)) {

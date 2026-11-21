@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { IntercomBrokerUpgradeError, isIntercomBrokerStopTimeoutError } from "@bastani/atomic";
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerStatusReport } from "../types.js";
-import { type BrokerProcess, endUnansweredBroker, identifyBrokerProcess } from "./broker-process.js";
+import {
+	type BrokerProcess,
+	endUnansweredBroker,
+	identifyBrokerProcess,
+	readProcessStartWithoutProcess,
+} from "./broker-process.js";
 import { describeMultiNodeStatus, isBrokerStatusReport } from "./broker-status.js";
 import {
 	BROKER_STOP_TIMEOUT_MS,
@@ -236,7 +241,14 @@ export async function upgradeIntercomBroker(agentDir: string, options: UpgradeOp
 	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir));
 	if (answer === "unanswered") throw failed();
 	try {
-		await waitForBrokerExit(pid, options.stopTimeoutMs ?? BROKER_UPGRADE_STOP_TIMEOUT_MS, undefined, found);
+		// Polls read the pid's start only where that starts no process; elsewhere broker.pid's verdict and liveness decide.
+		await waitForBrokerExit(
+			pid,
+			options.stopTimeoutMs ?? BROKER_UPGRADE_STOP_TIMEOUT_MS,
+			undefined,
+			found,
+			readProcessStartWithoutProcess,
+		);
 	} catch (error) {
 		if (isIntercomBrokerStopTimeoutError(error)) throw failed(error);
 		throw error;

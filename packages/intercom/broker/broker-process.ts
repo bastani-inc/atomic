@@ -121,9 +121,27 @@ async function readBrokerPidRecordAsync(
 
 /** When process `pid` started, as this platform records it, read now; undefined where it cannot be read. */
 export async function readProcessStart(pid: number): Promise<string | undefined> {
-	if (process.platform === "win32") return readProcessCreationTime(pid);
-	if (process.platform === "linux") return readProcessStartToken(pid);
-	if (process.platform === "darwin") return readPsProcessStart(pid);
+	try {
+		if (process.platform === "win32") return await readProcessCreationTime(pid);
+		if (process.platform === "linux") return await readProcessStartToken(pid);
+		if (process.platform === "darwin") return await readPsProcessStart(pid);
+	} catch {
+		// A reader that failed read no start.
+	}
+	return undefined;
+}
+
+/**
+ * When process `pid` started, as {@link readProcessStart} reads it, but only where reading it starts no process: Linux
+ * `/proc` and the Windows native module. Undefined elsewhere (the Windows PowerShell fallback, macOS `ps`).
+ */
+export async function readProcessStartWithoutProcess(pid: number): Promise<string | undefined> {
+	try {
+		if (process.platform === "linux") return await readProcessStartToken(pid);
+		if (process.platform === "win32") return nativeProcessCreationTime(pid);
+	} catch {
+		// A reader that failed read no start.
+	}
 	return undefined;
 }
 
@@ -137,21 +155,26 @@ const PS_START_TIMEOUT_MS = 2_000;
  */
 export function readPsProcessStart(pid: number): Promise<string | undefined> {
 	return new Promise((resolve) => {
-		execFile(
-			"/bin/ps",
-			["-o", "lstart=", "-p", String(pid)],
-			{
-				encoding: "utf8",
-				env: { ...hostCommandEnvironment(), LC_ALL: "C", TZ: "UTC" },
-				maxBuffer: 1024,
-				timeout: PS_START_TIMEOUT_MS,
-				windowsHide: true,
-			},
-			(error, stdout) => {
-				const started = error === null ? stdout.trim() : "";
-				resolve(started === "" ? undefined : started);
-			},
-		);
+		try {
+			execFile(
+				"/bin/ps",
+				["-o", "lstart=", "-p", String(pid)],
+				{
+					encoding: "utf8",
+					env: { ...hostCommandEnvironment(), LC_ALL: "C", TZ: "UTC" },
+					maxBuffer: 1024,
+					timeout: PS_START_TIMEOUT_MS,
+					windowsHide: true,
+				},
+				(error, stdout) => {
+					const started = error === null ? stdout.trim() : "";
+					resolve(started === "" ? undefined : started);
+				},
+			);
+		} catch {
+			// `ps` could not be started at all (a sandbox that denies it, for one): no start is read.
+			resolve(undefined);
+		}
 	});
 }
 
@@ -193,7 +216,10 @@ function brokerProcess(
  * one read of the pid's start when none is running, and answers with what the reads so far found. A start that cannot
  * be read is no proof either way, and neither is anything before `found` resolves.
  */
-export function laterProcessProbe(found: BrokerProcess | Promise<BrokerProcess>): () => boolean {
+export function laterProcessProbe(
+	found: BrokerProcess | Promise<BrokerProcess>,
+	readCurrentStart: (pid: number) => Promise<string | undefined> = readProcessStart,
+): () => boolean {
 	let broker: BrokerProcess | undefined;
 	let later = false;
 	let reading = false;
@@ -208,7 +234,7 @@ export function laterProcessProbe(found: BrokerProcess | Promise<BrokerProcess>)
 		if (broker !== undefined && !later && !reading && broker.started !== undefined) {
 			const { pid, started } = broker;
 			reading = true;
-			void readProcessStart(pid).then(
+			void readCurrentStart(pid).then(
 				(current) => {
 					reading = false;
 					if (current !== undefined && current !== started) later = true;
