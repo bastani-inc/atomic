@@ -1088,17 +1088,20 @@
           saved(status);
         } else if (response.status === 412) {
           saving = { state: "conflict" };
+          notDone();
           showSaveProblem(CONFLICT_MESSAGE);
           setFeedbackStatus("Not saved");
         } else {
           finishSave();
+          notDone();
           showSaveProblem("Not saved: " + (answer.error || response.statusText || "error " + response.status));
           setFeedbackStatus("Not saved");
         }
       }, () => {
-        // Static mode or server unavailable: the feedback is downloaded on final submit.
-        finishSave();
-        if (status === "complete" && downloadIfUnsaved) {
+        // Static mode or server unavailable: the feedback is downloaded on final submit, once nothing newer
+        // waits to be saved, so the download holds the feedback as it is then.
+        const next = finishSave();
+        if (status === "complete" && downloadIfUnsaved && next === null && saveTimeout === null) {
           downloadIfUnsaved = false;
           downloadFeedback(payload);
         } else if (!submitted) {
@@ -1107,11 +1110,19 @@
       });
     }
 
+    // The done dialog says the review was saved: it shows only when the latest Submit landed, and leaves when a
+    // save after it did not.
+    function notDone() {
+      document.getElementById("done-overlay").classList.remove("visible");
+    }
+
     function saved(status) {
       // A failure shown for an earlier save is over once one lands.
       document.getElementById("save-problem").hidden = true;
       const next = finishSave();
-      if (status === "complete") document.getElementById("done-overlay").classList.add("visible");
+      if (status === "complete" && submitted && next === null && saveTimeout === null) {
+        document.getElementById("done-overlay").classList.add("visible");
+      }
       // "Saved" only when what the box shows is what was saved, and nothing waits to be.
       const run = EMBEDDED_DATA.runs[currentIndex];
       const text = document.getElementById("feedback").value;
