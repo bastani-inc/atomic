@@ -4,8 +4,9 @@
 // keeps answering keys while they load. Importing a module runs its whole graph without a turn of the event loop.
 //
 // Each stage is a module that imports, in order, some modules of the session's graph. Loading the stages one after the
-// other and then the session's own entry modules runs every module exactly once and in the order the runtime would run
-// them for the entry modules alone. A stage may only import one of this package's own modules, or a third-party module
+// other and then the session's own entry modules runs every module exactly once and in the order the runtime this build
+// runs on would run them for the entry modules alone (`cli.js` imports the entry modules at the same time; which entry's
+// graph runs first differs between Node versions, and the stages keep this runtime's choice). A stage may only import one of this package's own modules, or a third-party module
 // one of them imports by name (by that name) where the runtime reaches it from that module, and only where everything
 // run since the previous one lies in that module's own graph: then importing it runs what the runtime would have run
 // there, and nothing else, whatever version of a third-party package is installed. A module of an import cycle stands
