@@ -14,9 +14,9 @@
  * alone: it runs without it (after an install there is nothing to read; after an
  * upgrade it gives up the entries of files the upgrade left unchanged), and a
  * helper process that owns nothing else loads the same modules and writes the
- * cache while the session runs (`compile-cache-warmup-host.ts`). The helper marks
- * the cache warm for this Atomic build when it is done, and later sessions use the
- * cache as before. Elsewhere the exit-time write takes a fraction of a second and
+ * cache (`compile-cache-warmup-host.ts`), finishing after the session if the
+ * session ends first. The helper marks the cache warm for this Atomic build when
+ * it is done, and later sessions use the cache as before. Elsewhere the exit-time write takes a fraction of a second and
  * the cache works as it always did.
  */
 import { existsSync } from "node:fs";
@@ -65,6 +65,18 @@ export function compileCacheStartMode(input: CompileCacheStartInput): "enable" |
 	if (input.platform !== "win32" || input.runtimeIsBun || input.unsupported) return "enable";
 	if (input.alreadyEnabled || input.disabled || !input.interactive || !input.helperRuntime) return "enable";
 	return input.warm() ? "enable" : "defer";
+}
+
+/** Whether a session that left its cold cache alone starts a helper to write it: never under CI. */
+export function startsCompileCacheHelper(env: NodeJS.ProcessEnv): boolean {
+	return !isCiValue(env.CI);
+}
+
+/** Whether `CI` names a CI run, as the fullscreen TUI reads it: any value but empty, `0` and `false`. */
+export function isCiValue(value: string | undefined): boolean {
+	if (value === undefined) return false;
+	const normalized = value.trim().toLowerCase();
+	return normalized !== "" && normalized !== "0" && normalized !== "false";
 }
 
 /** The only runtime flag a helper keeps: the heap size, which the engine gets from its host. */
@@ -158,10 +170,12 @@ export function currentCompileCacheWarmMarker(buildId: string): string {
 	});
 }
 
-/** A process that left its cold cache to a helper: the build to warm and how a helper repeats this runtime. */
+/** A process that left its cold cache alone: the build, how a helper repeats this runtime, and whether one starts. */
 export interface CompileCacheDeferral {
 	readonly buildId: string;
 	readonly runtime: CompileCacheHelperRuntime;
+	/** False under CI: the session still quits without writing the cache, and nothing warms it. */
+	readonly helper: boolean;
 }
 
 let deferral: CompileCacheDeferral | undefined;
@@ -185,7 +199,7 @@ export function enablePersistentCompileCache(options: { interactive?: boolean; b
 			warm: () => existsSync(currentCompileCacheWarmMarker(buildId)),
 		});
 		if (mode === "defer" && runtime) {
-			deferral = { buildId, runtime };
+			deferral = { buildId, runtime, helper: startsCompileCacheHelper(process.env) };
 			return;
 		}
 		compileCacheApi.enableCompileCache?.();

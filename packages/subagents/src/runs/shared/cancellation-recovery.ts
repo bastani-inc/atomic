@@ -15,6 +15,8 @@ export interface CancellationRecoveryInput {
 	readonly assistantText?: string;
 	readonly toolCount?: number;
 	readonly sessionPath?: string;
+	/** Set, equal to `sessionPath`, when the child's session has no file and is cited by its history URL. */
+	readonly sessionUrl?: string;
 	readonly outputArtifactPath?: string;
 	readonly progressArtifactPath?: string;
 }
@@ -72,7 +74,11 @@ async function artifactLines(input: CancellationRecoveryInput): Promise<string[]
 		["Progress", input.progressArtifactPath],
 		["Output", input.outputArtifactPath],
 	] as const) {
-		const existing = await existingArtifactPath(pathValue);
+		// The session of a child with no session file is its history URL, a session in the store: no file to check for.
+		const existing =
+			label === "Session" && input.sessionUrl !== undefined && pathValue === input.sessionUrl
+				? pathValue
+				: await existingArtifactPath(pathValue);
 		if (existing) lines.push(`${label}: ${existing}`);
 	}
 	return lines;

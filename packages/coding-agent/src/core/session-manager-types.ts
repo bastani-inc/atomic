@@ -42,6 +42,11 @@ export interface SessionHeader extends SessionRecordHeader {
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	/**
+	 * Mark the new session internal: `/resume`, `atomic -r`, `-c` and `history://sessions` leave it out, and it can still
+	 * be opened by its ID. A subagent's own session is created this way in its parent's store.
+	 */
+	internal?: boolean;
 }
 
 export interface SessionOpenOptions {
