@@ -349,8 +349,9 @@ for (const [quit, keys] of [
 		async () => {
 			const dir = makeTempDirectory("atomic-early-editor-quit-");
 			roots.push(dir);
-			// The session's main module loads only after a wait. Node waits for it before it reads input, so the keys
-			// typed meanwhile reach the early editor as soon as it loads, long before the session it starts is ready.
+			// The session's main module loads only after a wait, so the session cannot be ready before the keys typed
+			// meanwhile reach the early editor. Where Node holds input until that module has loaded, the keys still
+			// reach the early editor first, as soon as it has, long before the session it starts is ready.
 			// Only in the process that shows the early editor: an engine child (`--internal-engine-…`) loads as usual.
 			const hooks = join(dir, "hold-main.mjs");
 			writeFileSync(
