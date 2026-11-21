@@ -6,12 +6,16 @@ import { afterEach, describe, test } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { prepareAgentDir, prepareInstalledPackage } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyExit, type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
-import { makeTempDirectory, moduleDir } from "../helpers/runtime.js";
+import { makeTempDirectory, moduleDir, sleep } from "../helpers/runtime.js";
 
 const PACKAGE = join(moduleDir(import.meta.url), "../../packages/coding-agent");
 const CLI_TIMEOUT_MS = 90_000;
 /** The session's own interface names the model, in its footer from its first frame; the early editor does not. */
 const SESSION_HEADER = "guard-model";
+/** Between the two parts of a paste: long enough for the session to become ready meanwhile on a fast machine. */
+const SPLIT_PASTE_GAP_MS = 1_000;
+/** Longer than the terminal waits before it reads a lone Esc as one (10 ms locally, 100 ms over SSH). */
+const LONE_ESCAPE_GAP_MS = 300;
 /** A real CLI child plus its startup under a loaded machine: structural, not a slow test. */
 const REAL_CLI_TEST_TIMEOUT_MS = 3 * CLI_TIMEOUT_MS;
 
@@ -118,7 +122,9 @@ for (const [host, trust] of [
 			REAL_CLI_TEST_TIMEOUT_MS,
 		);
 
-		test(
+		// The frames are read from the program's own synchronized updates. On Windows the pseudo console redraws the
+		// screen in its own output instead of passing those updates through, so there is nothing to read them from.
+		test.skipIf(process.platform === "win32")(
 			"the session takes over the screen without clearing the prompt in any frame",
 			async () => {
 				const program = startCli([trust]);
@@ -155,13 +161,43 @@ for (const [host, trust] of [
 			async () => {
 				const program = startCli([trust]);
 				await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
-				// Left can also move between views in the session, so it and every key after it wait for it.
+				// Left on a prompt with text moves the cursor, here and in the session. Esc means more than an edit, so it
+				// and every key after it wait for the session.
 				program.write("ab\x1b[Dc\x1b[200~ pasted \x1b[201~");
-				await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
 				await program.waitForScreen(
 					(screen) => promptLine(screen) === "❯ ac pasted b",
 					CLI_TIMEOUT_MS,
-					"the keys applied in order",
+					"the edits",
+				);
+				program.write("\x1b");
+				// Apart, so the terminal reads a lone Esc rather than the start of a sequence.
+				await sleep(LONE_ESCAPE_GAP_MS);
+				program.write("\x1b[Dd");
+				await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
+				// The cursor sat after the paste, before "b": Left moves it before the paste's last space.
+				await program.waitForScreen(
+					(screen) => promptLine(screen) === "❯ ac pastedd b",
+					CLI_TIMEOUT_MS,
+					"the held keys applied in order",
+				);
+			},
+			REAL_CLI_TEST_TIMEOUT_MS,
+		);
+
+		test(
+			"a paste still arriving when the session is ready arrives whole, with no terminal answer inside it",
+			async () => {
+				const program = startCli([trust]);
+				await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
+				program.write("A\x1b[200~界");
+				// A terminal sends a paste at once; this one arrives in two parts, the second a little later.
+				await sleep(SPLIT_PASTE_GAP_MS);
+				program.write("👩‍💻\x1b[201~!");
+				await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
+				await program.waitForScreen(
+					(screen) => promptLine(screen) === "❯ A界👩‍💻!",
+					CLI_TIMEOUT_MS,
+					"the whole paste",
 				);
 			},
 			REAL_CLI_TEST_TIMEOUT_MS,
@@ -191,6 +227,26 @@ for (const [host, trust] of [
 				const exit = (await program.exited) as PtyExit;
 				assert.equal(exit.timedOut, false);
 				assert.equal(exit.exitCode, 0);
+			},
+			REAL_CLI_TEST_TIMEOUT_MS,
+		);
+
+		test(
+			"one Ctrl+C that waited for the session is one press there, and Atomic keeps running",
+			async () => {
+				const program = startCli([trust]);
+				await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
+				// Up can mean more than an edit, so it and the Ctrl+C after it wait for the session.
+				program.write("\x1b[A");
+				program.write("\x03");
+				await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
+				// The session takes the waiting keys before this one.
+				program.write("x");
+				await program.waitForScreen(
+					(screen) => promptLine(screen) === "❯ x",
+					CLI_TIMEOUT_MS,
+					"a key after the Ctrl+C",
+				);
 			},
 			REAL_CLI_TEST_TIMEOUT_MS,
 		);

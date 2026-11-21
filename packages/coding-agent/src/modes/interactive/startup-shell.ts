@@ -40,6 +40,8 @@ export type StartupShellState = "painting" | "holding" | "handedOver" | "aborted
 export interface StartupShellHandover {
 	/** The prompt as the early editor left it, for `Editor.restoreDraft`. */
 	readonly draft: ReturnType<CustomEditor["snapshotDraft"]>;
+	/** When a first Ctrl+C on the empty prompt asked to exit, still counting toward the second; 0 when none. */
+	readonly ctrlCAt: number;
 }
 
 /** Keys the early editor applies itself: they only edit the prompt, here and in the session alike. */
@@ -60,6 +62,19 @@ const PROMPT_EDIT_ACTIONS: ReadonlySet<string> = new Set([
 	"tui.editor.yankPop",
 	"tui.editor.undo",
 	"tui.input.newLine",
+]);
+
+/**
+ * Actions the session never takes on a key the prompt receives: a list's or a selection's keys, which act only in a
+ * focused list (the agent panel) or an open menu.
+ */
+const OUTSIDE_THE_PROMPT_PREFIXES = ["app.list.", "tui.select."];
+/** Actions the session takes from the prompt only while it is empty; with text, their keys edit the prompt. */
+const EMPTY_PROMPT_ACTIONS: ReadonlySet<string> = new Set([
+	"app.nav.back",
+	"app.agents.focus",
+	"app.keys.help",
+	"app.exit",
 ]);
 
 const BRACKETED_PASTE_START = "\x1b[200~";
@@ -84,7 +99,13 @@ class StartupShell {
 	private readonly keybindings: KeybindingsManager;
 	private readonly keybindingIds: readonly string[];
 	private readonly status: Text;
+	/** The last Ctrl+C, here or held: a second one within the window exits. */
 	private lastCtrlC = 0;
+	/**
+	 * The last Ctrl+C this editor answered itself on the empty prompt, for the session to count toward its own second
+	 * press. A held Ctrl+C is not: the session counts that one itself when it receives it.
+	 */
+	private armedCtrlC = 0;
 	private readonly restoreOutput: () => void;
 
 	constructor(plan: StartupShellPlan) {
@@ -116,7 +137,19 @@ class StartupShell {
 		this.tui.setFocus(this.editor);
 		this.tui.addInputListener((data) => this.route(data));
 		this.restoreOutput = this.guardOutput();
-		this.tui.start();
+		try {
+			this.tui.start();
+			// The first frame now, before the rest of Atomic loads: loading it can keep a scheduled frame waiting.
+			this.tui.renderNow();
+		} catch (error) {
+			this.restoreOutput();
+			try {
+				this.tui.stop();
+			} catch {
+				// The terminal never started.
+			}
+			throw error;
+		}
 	}
 
 	/** Decides, for each key, whether the prompt takes it now, it waits for the session, or it is Ctrl+C/Ctrl+D. */
@@ -130,10 +163,17 @@ class StartupShell {
 			return { consume: true };
 		}
 		if (data.startsWith(BRACKETED_PASTE_START)) return undefined;
-		const actions = this.keybindingIds.filter((id) => this.keybindings.matches(data, id as never));
+		const promptEmpty = this.editor.getText().length === 0;
+		const actions = this.keybindingIds.filter(
+			(id) =>
+				!OUTSIDE_THE_PROMPT_PREFIXES.some((prefix) => id.startsWith(prefix)) &&
+				!(EMPTY_PROMPT_ACTIONS.has(id) && !promptEmpty) &&
+				this.keybindings.matches(data, id as never),
+		);
 		const promptEdit = actions.length === 0 ? isTypedText(data) : actions.every((id) => PROMPT_EDIT_ACTIONS.has(id));
 		if (promptEdit) {
 			this.lastCtrlC = 0;
+			this.armedCtrlC = 0;
 			this.showStatus("");
 			return undefined;
 		}
@@ -155,6 +195,7 @@ class StartupShell {
 		if (this.state === "painting" && this.editor.getText() !== "") {
 			this.editor.setText("");
 			this.lastCtrlC = 0;
+			this.armedCtrlC = 0;
 			this.tui.requestRender();
 			return { consume: true };
 		}
@@ -164,7 +205,11 @@ class StartupShell {
 			return { consume: true };
 		}
 		this.lastCtrlC = now;
-		if (this.state === "holding") return this.hold(data);
+		if (this.state === "holding") {
+			this.armedCtrlC = 0;
+			return this.hold(data);
+		}
+		this.armedCtrlC = now;
 		this.showStatus(CTRL_C_EXIT_HINT);
 		return { consume: true };
 	}
@@ -186,7 +231,7 @@ class StartupShell {
 		linkStartupShell(undefined);
 		const draft = this.editor.snapshotDraft();
 		this.tui.handOffTerminal(this.held);
-		return { draft };
+		return { draft, ctrlCAt: this.armedCtrlC };
 	}
 
 	/**
@@ -258,7 +303,10 @@ export function startStartupShell(plan: StartupShellPlan): void {
 		get active() {
 			return started.state === "painting" || started.state === "holding";
 		},
-		abort: () => started.abort(),
+		abort: () => {
+			if (shell === started) shell = undefined;
+			return started.abort();
+		},
 	});
 }
 
@@ -267,13 +315,38 @@ export function startupShellTerminal(): ProcessTerminal | undefined {
 	return shell !== undefined && (shell.state === "painting" || shell.state === "holding") ? shell.terminal : undefined;
 }
 
+/** The longest the session's interface waits for a paste into the early editor to arrive in full. */
+const PASTE_END_WAIT_MS = 2_000;
+
+/**
+ * Resolves when the early editor may hand over: once no paste into it is still arriving, since the session's
+ * interface asks the terminal questions as it starts, and a terminal answers in the middle of a paste it is still
+ * sending. Waits at most {@link PASTE_END_WAIT_MS}.
+ */
+export async function whenStartupShellCanHandOver(): Promise<void> {
+	const terminal = startupShellTerminal();
+	if (terminal === undefined) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([
+		terminal.whenPasteEnds(),
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, PASTE_END_WAIT_MS);
+		}),
+	]);
+	clearTimeout(timer);
+}
+
 /** Ends the early editor for the session's interface, which takes the terminal and the prompt (see `handOver`). */
 export function handOverStartupShell(): StartupShellHandover | undefined {
-	return shell?.handOver();
+	const handover = shell?.handOver();
+	if (handover !== undefined) shell = undefined;
+	return handover;
 }
 
 /** Ends the early editor and gives what was typed to the startup input capture (see `abort`). */
 export function abortStartupShell(): void {
-	const typed = shell?.abort();
-	if (typed !== undefined) linkStartupShell(undefined, typed);
+	const ended = shell;
+	if (ended === undefined || (ended.state !== "painting" && ended.state !== "holding")) return;
+	shell = undefined;
+	linkStartupShell(undefined, ended.abort());
 }

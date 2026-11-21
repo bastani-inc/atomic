@@ -246,6 +246,24 @@ export class ProcessTerminal implements Terminal {
 		return this.handedOff || this._continuedFromHandOff;
 	}
 
+	/** Callers waiting for the bracketed paste in progress to end. */
+	private pasteEndWaiters: Array<() => void> = [];
+
+	/**
+	 * Resolves once no bracketed paste is in progress: at once when none is, else when its end arrives. A terminal
+	 * answers a query in the middle of a paste it is still sending, so a new owner's queries wait for it.
+	 */
+	whenPasteEnds(): Promise<void> {
+		if (!this.stdinBuffer?.pasting) return Promise.resolve();
+		return new Promise((resolve) => this.pasteEndWaiters.push(resolve));
+	}
+
+	private settlePasteEndWaiters(): void {
+		const waiters = this.pasteEndWaiters;
+		this.pasteEndWaiters = [];
+		for (const resolve of waiters) resolve();
+	}
+
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
 	}
@@ -347,6 +365,7 @@ export class ProcessTerminal implements Terminal {
 		// Re-wrap paste content with bracketed paste markers for existing editor handling
 		this.stdinBuffer.on("paste", (content) => {
 			this.deliverInput(`\x1b[200~${content}\x1b[201~`);
+			this.settlePasteEndWaiters();
 		});
 
 		// Handler that pipes stdin data through the buffer
@@ -560,6 +579,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		this.settlePasteEndWaiters();
 		this.heldInput = undefined;
 		this.handedOff = false;
 		this._continuedFromHandOff = false;

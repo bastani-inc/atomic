@@ -78,7 +78,7 @@ import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { showSessionNotices } from "./session-notices.ts";
-import { abortStartupShell, handOverStartupShell } from "./startup-shell.ts";
+import { abortStartupShell, handOverStartupShell, whenStartupShellCanHandOver } from "./startup-shell.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
@@ -399,9 +399,14 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
 	// The early editor stops drawing and hands over its terminal and prompt; the keys it held reach this interface first.
+	if (this.options.terminal === undefined) await whenStartupShellCanHandOver();
 	const earlyEditor = this.options.terminal === undefined ? handOverStartupShell() : undefined;
 	this.ui.start();
-	if (earlyEditor) this.defaultEditor.restoreDraft(earlyEditor.draft);
+	if (earlyEditor) {
+		this.defaultEditor.restoreDraft(earlyEditor.draft);
+		// A first Ctrl+C on the empty prompt still counts: a second one in time exits, as it would have there.
+		if (earlyEditor.ctrlCAt > 0) this.lastSigintTime = earlyEditor.ctrlCAt;
+	}
 	markEventLoopStartupComplete();
 	this.programStatus.report();
 	ensurePngTranscoder(() => {

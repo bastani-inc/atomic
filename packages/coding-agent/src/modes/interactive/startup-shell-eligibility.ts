@@ -15,7 +15,9 @@ import { hasProjectTrustInputs, ProjectTrustStore } from "../../core/trust-manag
  * Arguments a session started with that change nothing the editor shows before the session is ready, and open no
  * dialog before it: with any other argument the early editor does not start, and startup is as it was.
  */
-const ARGUMENTS_WITHOUT_EARLY_EFFECT = new Set(["--offline", "--no-mcp", "--approve", "--no-approve", "--verbose"]);
+const ARGUMENTS_WITHOUT_EARLY_EFFECT = new Set(["--offline", "--no-mcp", "--verbose"]);
+/** The arguments that decide the folder's trust for this run, so that no trust question can come first. */
+const TRUST_ARGUMENTS = new Set(["--approve", "-a", "--no-approve", "-na"]);
 
 /** Settings that change how the editor and the screen around it look or behave before the session is ready. */
 const DISPLAY_SETTINGS = [
@@ -66,7 +68,7 @@ function readSettingsFile(path: string): Record<string, unknown> | undefined | "
  * naming one of Atomic's own themes. Anything else keeps today's startup.
  */
 export function planStartupShell(args: readonly string[], cwd: string): StartupShellPlan | undefined {
-	if (args.some((arg) => !ARGUMENTS_WITHOUT_EARLY_EFFECT.has(arg))) return undefined;
+	if (args.some((arg) => !ARGUMENTS_WITHOUT_EARLY_EFFECT.has(arg) && !TRUST_ARGUMENTS.has(arg))) return undefined;
 	if (getEnvValue(ENV_STARTUP_BENCHMARK)) return undefined;
 	// First run: the setup questions come before the editor.
 	if (!getEnvValue(ENV_AGENT_DIR) && !existsSync(getSettingsPath())) return undefined;
@@ -86,7 +88,7 @@ export function planStartupShell(args: readonly string[], cwd: string): StartupS
 	const theme = global?.theme;
 	if (theme !== undefined && !(typeof theme === "string" && BUILTIN_THEMES.has(theme))) return undefined;
 	// A folder whose trust is still to be asked asks before the editor.
-	const override = args.includes("--approve") || args.includes("--no-approve");
+	const override = args.some((arg) => TRUST_ARGUMENTS.has(arg));
 	const defaultProjectTrust = global?.defaultProjectTrust;
 	const asks = defaultProjectTrust !== "always" && defaultProjectTrust !== "never";
 	if (!override && asks && hasProjectTrustInputs(cwd) && new ProjectTrustStore(agentDir).get(cwd) === null)
