@@ -3,12 +3,12 @@
  * host and its extensions share, and its assets and source maps from wherever the package is installed.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { join, posix, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, test } from "vitest";
+import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
 import { moduleDir } from "../helpers/runtime.js";
@@ -291,3 +291,90 @@ for (const host of ["in-process", "isolated"] as const) {
 		SESSION_TIMEOUT_MS + LAYOUT_TIMEOUT_MS,
 	);
 }
+
+/**
+ * The package as `tsc` compiled it, before the split: the entries as compiled, which the split saves in the package's
+ * build cache before overwriting them, and every other compiled file, which stays in `dist`.
+ */
+function compiledPackage(target: string): void {
+	fs.mkdirSync(target, { recursive: true });
+	fs.copyFileSync(join(packageDir, "package.json"), join(target, "package.json"));
+	fs.cpSync(join(packageDir, "scripts", "split-dist.mjs"), join(target, "scripts", "split-dist.mjs"));
+	fs.cpSync(dist, join(target, "dist"), {
+		recursive: true,
+		dereference: true,
+		filter: (source) => !source.includes(`${join("dist", "_shared")}`),
+	});
+	const compiled = join(packageDir, "node_modules", ".cache", "atomic-split-dist", "compiled");
+	for (const entry of ENTRIES)
+		for (const suffix of [".js", ".js.map"])
+			fs.copyFileSync(join(compiled, `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));
+}
+
+test(
+	"a process that loaded the package keeps one StorageError when the package is replaced in place by a rebuild",
+	async () => {
+		const { nodeModules, atomic } = installedLayout();
+		const builds = join(dirname(nodeModules), "rebuilds");
+		const first = join(builds, "first");
+		const second = join(builds, "second");
+		for (const build of [first, second]) {
+			compiledPackage(build);
+			if (build === second) {
+				// A later release that changed a body in the module defining StorageError.
+				const errors = join(build, "dist", "core", "storage", "errors.js");
+				const source = fs.readFileSync(errors, "utf8");
+				const changed = source.replace(
+					"this.name = new.target.name;",
+					'this.name = new.target.name;\n        this.rebuilt = "second";',
+				);
+				assert.notEqual(changed, source, "the rebuild changes StorageError's constructor");
+				fs.writeFileSync(errors, changed);
+			}
+			const split = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+			assert.equal(split.status, 0, split.stderr);
+		}
+		const sharedFiles = (build: string) => fs.readdirSync(join(build, "dist", "_shared")).sort();
+		assert.deepEqual(sharedFiles(second), sharedFiles(first), "the rebuild names its shared files as before");
+
+		const installed = join(dirname(atomic), "atomic-live");
+		fs.mkdirSync(installed, { recursive: true });
+		fs.copyFileSync(join(first, "package.json"), join(installed, "package.json"));
+		fs.cpSync(join(first, "dist"), join(installed, "dist"), { recursive: true });
+		const project = fs.mkdtempSync(join(dirname(nodeModules), "live-"));
+		const probe = join(project, "probe.mjs");
+		fs.writeFileSync(
+			probe,
+			[
+				'import { createInterface } from "node:readline";',
+				`const base = ${JSON.stringify(pathToFileURL(join(installed, "dist")).href)};`,
+				'const storage = await import(base + "/core/storage/index.js");',
+				"const before = storage.StorageError;",
+				"const existing = Object.create(before.prototype);",
+				'console.log("loaded");',
+				"for await (const _line of createInterface({ input: process.stdin })) break;",
+				'const sdk = await import(base + "/index.js");',
+				"console.log(JSON.stringify({ same: sdk.StorageError === before, instance: existing instanceof sdk.StorageError }));",
+			].join("\n"),
+		);
+		const child = spawn(process.execPath, [probe], { stdio: ["pipe", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString();
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString();
+		});
+		const exited = new Promise<number | null>((resolveExit) => child.once("exit", resolveExit));
+		await vi.waitFor(() => assert.ok(stdout.includes("loaded"), stderr), { timeout: LAYOUT_TIMEOUT_MS / 2 });
+		// As npm replaces a package: the earlier files leave, the rebuild takes their place.
+		fs.renameSync(join(installed, "dist"), join(installed, "dist-replaced"));
+		fs.cpSync(join(second, "dist"), join(installed, "dist"), { recursive: true });
+		child.stdin.end("go\n");
+		assert.equal(await exited, 0, stderr);
+		const result = JSON.parse(stdout.trim().split("\n").at(-1) as string) as { same: boolean; instance: boolean };
+		assert.deepEqual(result, { same: true, instance: true });
+	},
+	LAYOUT_TIMEOUT_MS,
+);

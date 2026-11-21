@@ -130,9 +130,38 @@ const result = await build({
 
 // Each file is written whole before it takes its name. Shared files of earlier builds stay: a process started from
 // them may still load one. A fresh build, as a release's, has none.
+// A shared file is named by the modules it holds (or, for one that only re-exports a dynamic import, by that import's
+// module), not by its content: an install updated in place keeps the path of
+// every shared file whose modules stay together, so a process still running from the earlier install resolves the new
+// entries to the modules it already loaded, as it did when each compiled module had a file of its own. esbuild names
+// it by content; the name keeps esbuild's form and length, so no source map shifts.
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const groupName = (members) => {
+	const bytes = createHash("sha256").update(members.join("\n")).digest();
+	let name = "";
+	for (let index = 0; index < 8; index++) name += BASE32[(bytes[index] ?? 0) % 32];
+	return name;
+};
+const renames = new Map();
+for (const [output, meta] of Object.entries(result.metafile.outputs)) {
+	const match = /^(.*\/)?([^/]+)-([A-Z2-7]{8})\.js$/.exec(output);
+	if (!output.startsWith(`dist/${SHARED_DIRECTORY}/`) || match === null) continue;
+	// A file that only re-exports a dynamically imported module holds no module of its own: that module names it.
+	const renamed = `${match[2]}-${groupName([meta.entryPoint ?? "", ...Object.keys(meta.inputs).sort()])}.js`;
+	if ([...renames.values()].includes(renamed)) throw new Error(`split-dist: two shared files would be named ${renamed}`);
+	renames.set(`${match[2]}-${match[3]}.js`, renamed);
+}
+const contentNames = renames.size > 0 ? new RegExp([...renames.keys()].map((name) => name.replace(/[.]/g, "\\.")).join("|"), "g") : undefined;
+const outputFiles = result.outputFiles.map((file) => {
+	const base = file.path.slice(file.path.lastIndexOf(sep) + 1);
+	const renamedBase = renames.get(base) ?? renames.get(base.replace(/\.map$/, ""))?.concat(".map");
+	const text = contentNames === undefined ? file.text : file.text.replace(contentNames, (name) => renames.get(name) ?? name);
+	return { path: renamedBase === undefined ? file.path : join(dirname(file.path), renamedBase), contents: text };
+});
+
 // Shared files first and the entries last, so an entry never names a shared file not written yet.
 const entryFiles = new Set(SPLIT_ENTRIES.flatMap((entry) => [join(dist, `${entry}.js`), join(dist, `${entry}.js.map`)]));
-const ordered = [...result.outputFiles].sort((a, b) => Number(entryFiles.has(a.path)) - Number(entryFiles.has(b.path)));
+const ordered = [...outputFiles].sort((a, b) => Number(entryFiles.has(a.path)) - Number(entryFiles.has(b.path)));
 for (const file of ordered) {
 	mkdirSync(dirname(file.path), { recursive: true });
 	writeFileSync(`${file.path}.split`, file.contents);
