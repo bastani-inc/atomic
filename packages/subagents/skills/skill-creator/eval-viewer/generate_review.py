@@ -94,11 +94,13 @@ def read_text(path: Path) -> str | None:
 
     As a browser reads a page: UTF-8, with or without a byte order mark, and a replacement mark for
     anything that is not UTF-8, so a file saved in another encoding still shows rather than failing.
+    Line endings read as "\n", whichever a file uses, as Python's text files read them.
     """
     try:
-        return path.read_bytes().decode("utf-8-sig", errors="replace")
+        text = path.read_bytes().decode("utf-8-sig", errors="replace")
     except OSError:
         return None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def read_json(path: Path):
