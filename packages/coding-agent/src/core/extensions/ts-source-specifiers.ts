@@ -9,9 +9,9 @@ type JitiTransform = NonNullable<NonNullable<Parameters<CreateJiti>[1]>["transfo
 type JitiTransformOptions = Parameters<JitiTransform>[0];
 
 // 2: a stored transform starts with a line listing the module's static imports.
-// 4: `import.meta` is an object of the module's own file, and every path the module reads is written as the platform
+// 5: `import.meta` is an object of the module's own file, and every path the module reads is written as the platform
 // writes it (see `moduleImportMetaPlugin`).
-const TRANSFORM_CACHE_FORMAT = 4;
+const TRANSFORM_CACHE_FORMAT = 5;
 const RELATIVE_SCRIPT_SPECIFIER = /["'](\.\.?\/[^"'\r\n]*?\.[cm]?jsx?)["']/g;
 const SCRIPT_EXTENSION = /\.[cm]?jsx?$/;
 const TYPESCRIPT_EXTENSION_FOR: Readonly<Record<string, string>> = {
@@ -242,14 +242,29 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 					}
 					const importMeta = state.importMeta;
 					if (importMeta === undefined) return;
+					// Its `resolve` answers as a native one does: a built-in module by its `node:` name, a path or URL to no
+					// file by its URL, and a package it cannot find with ERR_MODULE_NOT_FOUND.
 					nodePath.unshiftContainer(
 						"body",
 						babel.template.statement.ast(
 							`function ${importMeta}() {
-								${importMeta}.meta ??= ((nodeProcess, resolve) => {
+								${importMeta}.meta ??= ((nodeProcess, jitiResolve) => {
+									const nodeModule = nodeProcess.getBuiltinModule("node:module");
+									const resolve = (specifier, parent) => {
+										if (nodeModule.isBuiltin(specifier)) return specifier.includes(":") ? specifier : "node:" + specifier;
+										try {
+											return jitiResolve(specifier, parent);
+										} catch (error) {
+											if (!/^(?:\\.{0,2}\\/|[a-zA-Z][a-zA-Z\\d+.-]*:)/.test(specifier)) {
+												if (error?.code !== "MODULE_NOT_FOUND") throw error;
+												throw Object.assign(new Error(error.message, { cause: error }), { code: "ERR_MODULE_NOT_FOUND" });
+											}
+											return new URL(specifier, parent ?? ${literal(url)}).href;
+										}
+									};
 									const meta = { url: ${literal(url)}, filename: ${literal(filename)}, dirname: ${literal(dirname)}, resolve, env: nodeProcess.env };
 									if (nodeProcess.versions.bun === undefined) return meta;
-									const require = nodeProcess.getBuiltinModule("node:module").createRequire(${literal(filename)});
+									const require = nodeModule.createRequire(${literal(filename)});
 									return { ...meta, path: ${literal(filename)}, dir: ${literal(dirname)}, file: ${literal(file)}, main: false, require };
 								})(globalThis.process, jitiESMResolve);
 								return ${importMeta}.meta;

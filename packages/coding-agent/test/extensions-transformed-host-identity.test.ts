@@ -190,6 +190,16 @@ it(
 		aliasedDirname: meta.dirname,
 		destructuredFilename: filename,
 		resolved: meta.resolve("./extension.ts"),
+		// As a native import.meta.resolve answers.
+		builtins: [import.meta.resolve("node:fs"), meta.resolve("fs"), meta.resolve("fs/promises")],
+		missingFile: meta.resolve("./missing.js"),
+		missingPackage: (() => {
+			try {
+				return meta.resolve("atomic-no-such-package");
+			} catch (error) {
+				return error.code;
+			}
+		})(),
 		bunDir: meta.dir,
 	});
 }
@@ -214,6 +224,9 @@ it(
 					aliasedDirname: root,
 					destructuredFilename: entry,
 					resolved: pathToFileURL(entry).href,
+					builtins: ["node:fs", "node:fs", "node:fs/promises"],
+					missingFile: pathToFileURL(path.join(root, "missing.js")).href,
+					missingPackage: "ERR_MODULE_NOT_FOUND",
 					// Node's `import.meta` has no Bun properties.
 					bunDir: undefined,
 				});
