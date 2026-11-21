@@ -2777,6 +2777,9 @@ export class SubagentControlRuntime {
 				...(typeof transcriptSession.entryReceipt === "function"
 					? { entryReceipt: (message) => transcriptSession.entryReceipt(message) }
 					: {}),
+				...(typeof sessionManager.getSessionFile === "function"
+					? { getSessionFile: () => sessionManager.getSessionFile() }
+					: {}),
 				...(typeof sessionManager.readHistory === "function"
 					? {
 							getEarlierCursor: () => sessionManager.getEarlierCursor(),

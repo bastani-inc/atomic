@@ -33,6 +33,7 @@ import {
 	registerSourceBuiltinLoad,
 	transformTemplate,
 } from "./source-builtin-imports.js";
+import { trackTranspileCacheWrite } from "./transpile-cache-writes.js";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 import type { ExtensionFactory } from "./types.ts";
 
@@ -245,8 +246,10 @@ function writeGraphManifest(manifest: ExtensionGraphManifest, cacheDir: string |
 	if (cacheDir === undefined) return Promise.resolve();
 	const manifestFile = graphManifestPath(manifest.extensionPath, cacheDir);
 	const contents = JSON.stringify(manifest);
-	const write = (graphManifestWrites.get(manifestFile) ?? Promise.resolve()).then(() =>
-		persistGraphManifest(contents, manifestFile, cacheDir),
+	const write = trackTranspileCacheWrite(
+		(graphManifestWrites.get(manifestFile) ?? Promise.resolve()).then(() =>
+			persistGraphManifest(contents, manifestFile, cacheDir),
+		),
 	);
 	graphManifestWrites.set(manifestFile, write);
 	void write.finally(() => {
@@ -424,11 +427,18 @@ function recordLateModule(
 	owner.manifest.files[file] = hash;
 	if (lateReadWrites.has(owner)) return;
 	lateReadWrites.add(owner);
-	setImmediate(() => {
-		lateReadWrites.delete(owner);
-		if (retainedTransformedLoads.get(extensionPath) === owner)
-			void writeGraphManifest(owner.manifest, owner.cacheDir);
-	});
+	void trackTranspileCacheWrite(
+		new Promise<void>((written) => {
+			setImmediate(() => {
+				lateReadWrites.delete(owner);
+				written(
+					retainedTransformedLoads.get(extensionPath) === owner
+						? writeGraphManifest(owner.manifest, owner.cacheDir)
+						: undefined,
+				);
+			});
+		}),
+	);
 }
 
 let extensionCacheCwd: string | undefined;
@@ -757,6 +767,7 @@ async function importExtensionModule(
 		createJitiImpl,
 		resolutionBaseUrl(import.meta.url),
 		() => cacheDir,
+		trackTranspileCacheWrite,
 	);
 	// Atomic's own packages as a source checkout loads them: their entries and deferred imports are transformed in a
 	// worker (#6118).
