@@ -79,6 +79,7 @@ import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-ti
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { showSessionNotices } from "./session-notices.ts";
 import { abortStartupShell, handOverStartupShell, whenStartupShellCanHandOver } from "./startup-shell.ts";
+import { watchWindowsSessionEnd } from "./windows-session-end.js";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
@@ -550,6 +551,8 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 
 	setTimeout(() => {
+		// Hearing the end of the Windows session costs a thread and a hidden window, so it starts once the screen is up.
+		watchWindowsSessionEnd();
 		const startupNoticesContainer = this.startupNoticesContainer;
 		checkForNewPiVersion(this.version).then((newVersion) => {
 			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);
