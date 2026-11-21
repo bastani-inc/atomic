@@ -213,11 +213,13 @@ test("root build runs the incremental build orchestrator", async () => {
 	assert.equal(manifest.scripts.build, "node scripts/build.mjs");
 });
 
-test("typecheck builds the forked packages before compiling dependents", async () => {
+test("typecheck brings the forked packages' dist up to date before compiling dependents", async () => {
+	// What the refresh writes, and that it leaves an up-to-date dist alone, is covered by
+	// scripts/refresh-package-dist.test.mjs.
 	const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
 	assert.equal(
 		manifest.scripts.typecheck,
-		"npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-ai run build && npm --workspace=@bastani/atomic-ai run typecheck && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
+		"node scripts/refresh-package-dist.mjs packages/schema packages/telemetry packages/ai && npm --workspace=@bastani/atomic-ai run typecheck && node scripts/refresh-package-dist.mjs packages/tui packages/agent packages/codemode && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
 	);
 });
 

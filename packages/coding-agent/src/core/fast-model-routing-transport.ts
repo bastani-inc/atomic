@@ -7,6 +7,8 @@ const CODEX_FAST_ROUTE_PRIORITY_MARKER_VALUE = "priority";
 const CODEX_FAST_ROUTE_NORMAL_MARKER_VALUE = "normal";
 
 const CODEX_BACKEND_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
+/** What `new Headers()` accepts: a Headers object, name/value pairs or a record. */
+type HeaderValues = ConstructorParameters<typeof Headers>[0];
 const wrappedWebSockets = new WeakMap<typeof globalThis.WebSocket, typeof globalThis.WebSocket>();
 const installedWebSocketWrappers = new WeakSet<typeof globalThis.WebSocket>();
 
@@ -63,10 +65,7 @@ export function clearCodexFastRouteRequestMarker(headers: Record<string, string 
 	}
 }
 
-export function forceCodexFastRouteOriginator(
-	_endpoint: string | URL | Request,
-	headersInit: HeadersInit | undefined,
-): Headers {
+export function forceCodexFastRouteOriginator(_endpoint: string | URL | Request, headersInit: HeaderValues): Headers {
 	const headers = new Headers(headersInit);
 	const marker = codexFastRouteRequestMarker(headers);
 	headers.delete(CODEX_FAST_ROUTE_REQUEST_MARKER_HEADER);
@@ -121,7 +120,7 @@ export function wrapCodexFastRouteWebSocket(
 			if ((typeof endpoint !== "string" && !(endpoint instanceof URL)) || optionsIndex === undefined) {
 				return Reflect.construct(target, args, newTarget);
 			}
-			const candidateOptions = args[optionsIndex] as { headers?: HeadersInit };
+			const candidateOptions = args[optionsIndex] as { headers?: HeaderValues };
 			const candidateHeaders = new Headers(candidateOptions.headers);
 			if (codexFastRouteRequestMarker(candidateHeaders) === undefined) {
 				return Reflect.construct(target, args, newTarget);
