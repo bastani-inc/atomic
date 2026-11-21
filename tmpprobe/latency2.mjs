@@ -1,4 +1,4 @@
-const dist = process.argv[2];
+const dist = process.argv[2] ?? new URL("../packages/coding-agent/dist/", import.meta.url).href;
 const { startupFilePaths } = await import(new URL("utils/startup-prefetch-reader.js", dist).href);
 const { readFile, stat } = await import("node:fs/promises");
 const { fileURLToPath } = await import("node:url");
