@@ -90,6 +90,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { recordStartupThinkingLevel, savedConversationThinkingLevel } from "./core/startup-thinking-level.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
 import { takeStorageAdoptionNotice } from "./core/storage/file-identity.js";
+import { ThreadConnection } from "./core/storage/node-sqlite-thread.js";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
@@ -1119,7 +1120,8 @@ export async function main(argv: string[], options?: MainOptions) {
 					scopedModels: sessionOptions.scopedModels,
 					fallbackModels: sessionOptions.fallbackModels,
 					tools: sessionOptions.tools,
-					builtins: parsed.noMcp ? { mcp: false } : undefined,
+					// The isolated host runs no tools: the engine it starts gets `--no-mcp` and loads the builtins.
+					builtins: parsed.noMcp && !isolateInteractiveHost ? { mcp: false } : undefined,
 					excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
 					noTools: sessionOptions.noTools,
 					customTools: sessionOptions.customTools,
@@ -1556,6 +1558,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	);
 	endTimingSpan(runtimeCreationSpan);
 	markLifecycleTiming("runtime-created");
+	// The session's database is open by now; a connection thread started for it that nothing took is not needed.
+	ThreadConnection.releaseSpare();
 	startupRuntime = runtime;
 	const settleWhenDecided = () => {
 		if (!runtime.isProjectTrustPending()) settleStartupTrust();
