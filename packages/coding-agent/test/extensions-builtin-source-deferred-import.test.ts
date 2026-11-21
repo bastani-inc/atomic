@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { createJiti } from "jiti";
 import { afterEach, describe, test, vi } from "vitest";
 import { getExtensionTranspileCacheDir } from "../src/config.ts";
+import { loadExtensionsCached } from "../src/core/extensions/loader.ts";
 import { clearExtensionCache, loadExtensionModule } from "../src/core/extensions/loader-virtual-modules.ts";
 import { resetNativeBuiltinExtensionEntriesForTest } from "../src/core/extensions/native-builtin-entries.ts";
 import { transformTemplate } from "../src/core/extensions/source-builtin-imports.ts";
@@ -432,6 +433,22 @@ describe("loads of a source checkout's builtin package entry", {
 		assert.equal(workers(), 0);
 	});
 
+	test("a batch whose entry is already loaded in memory prepares nothing and leaves the cache alone", async () => {
+		const { root, agentDir, entry } = sourceCheckout(ENTRY_GRAPH);
+		assert.deepEqual(
+			(await loadExtensionsCached([entry], root, undefined, undefined, undefined, undefined, agentDir)).errors,
+			[],
+		);
+		rmSync(join(agentDir, "cache"), { recursive: true, force: true });
+		const workers = countWorkers();
+
+		const again = await loadExtensionsCached([entry], root, undefined, undefined, undefined, undefined, agentDir);
+
+		assert.deepEqual(again.errors, []);
+		assert.equal(workers(), 0);
+		assert.equal(fs.existsSync(join(agentDir, "cache")), false);
+	});
+
 	test("a load whose entry changed prepares its graph and evaluates every module as it is now", async () => {
 		const { agentDir, dir, entry } = sourceCheckout(ENTRY_GRAPH);
 		await loadFactory(entry, agentDir);
@@ -669,6 +686,31 @@ describe.each([
 		clearExtensionCache();
 
 		assert.equal((await (await loadFactory(entry, agentDir))()).value, "AAA");
+	});
+
+	test("a replaced evaluation's factory that runs later does not make a reload keep the current one", async () => {
+		replaceEnvironmentVariable("JITI_TRY_NATIVE", tryNative);
+		const { agentDir, dir, entry } = layout({
+			...LAZY_GRAPH,
+			"index.ts": `export default async function start() {
+	return (await import("./late.ts")).value;
+}
+`,
+		});
+		const leaf = join(dir, "leaf.ts");
+		const run = async (factory: ExtensionFactory | undefined) => (factory as unknown as () => Promise<string>)();
+		await run(await loadExtensionModule(entry, undefined, agentDir));
+		clearExtensionCache();
+		const replaced = await loadExtensionModule(entry, undefined, agentDir);
+		fs.appendFileSync(entry, "// edited\n");
+		clearExtensionCache();
+		assert.equal(await run(await loadExtensionModule(entry, undefined, agentDir)), "AAA");
+
+		replaceKeepingSizeAndTime(leaf, "AAA", "BBB");
+		assert.equal(await run(replaced), "BBB");
+		clearExtensionCache();
+
+		assert.equal(await run(await loadExtensionModule(entry, undefined, agentDir)), "BBB");
 	});
 
 	test("a reload evaluates an edited JavaScript module that the previous evaluation imported lazily", async () => {

@@ -874,14 +874,20 @@ async function loadTransformedExtensionModule(
 /**
  * Before a batch of extension loads: the builtin packages' source entries among `extensionPaths` (a source checkout)
  * that jiti will transform and whose transforms are not stored have their module graphs transformed in workers, so
- * their loads do not transform them on the main thread. Does nothing for any other extension or layout. The transpile
- * cache is chosen as {@link loadExtensionModule} chooses it.
+ * their loads do not transform them on the main thread. Does nothing for any other extension or layout, or for one
+ * {@link loadExtensionModule} would serve from memory under `cacheToken`. The transpile cache is chosen as
+ * {@link loadExtensionModule} chooses it.
  */
-export async function prepareExtensionEntries(extensionPaths: readonly string[], agentDir?: string): Promise<void> {
+export async function prepareExtensionEntries(
+	extensionPaths: readonly string[],
+	cacheToken?: ExtensionCacheToken,
+	agentDir?: string,
+): Promise<void> {
 	if (isBunBinary || isBundledBuild) return;
-	const entries = extensionPaths.filter(isSourceBuiltinExtensionPath);
+	const resident = isCurrentCacheToken(cacheToken) ? extensionCache : undefined;
+	const entries = extensionPaths.filter((entry) => !resident?.has(entry) && isSourceBuiltinExtensionPath(entry));
 	if (entries.length === 0) return;
-	const cacheDir = await resolveTranspileCacheDir(agentDir);
+	const cacheDir = await resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (cacheDir === undefined) return;
 	const createJitiImpl = await getCreateJiti();
 	// The options a load's jiti gets that decide whether it imports the entry natively and how it transforms modules.

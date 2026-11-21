@@ -324,7 +324,8 @@ async function loadExtensionsInternal(
 	// Only speeds up the loads below; each load works the same whether or not this did anything.
 	await prepareExtensionEntries(
 		paths.map((extPath) => resolvePath(extPath, resolvedCwd, { normalizeUnicodeSpaces: true })),
-		agentDir ?? cacheToken?.agentDir,
+		cacheToken,
+		agentDir,
 	).catch(() => {});
 	let processedExtensionCount = 0;
 	let lastYieldAt = Date.now();
