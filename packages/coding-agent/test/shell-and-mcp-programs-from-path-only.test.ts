@@ -240,27 +240,44 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		assert.equal(transport.pid, undefined);
 	});
 
-	test.skipIf(!windows)(
-		"an MCP server named by a script without an extension runs through its interpreter, found as the program is",
-		async () => {
-			const bin = join(root, "bin");
-			mkdirSync(bin);
-			writeFileSync(
-				join(bin, "atomic-test-mcp-script"),
-				'#!/usr/bin/env node\nrequire("fs").appendFileSync(process.env.PLANTED_PROGRAM_MARKER, "script\\n"); setTimeout(() => {}, 5000);\n',
-			);
-			// An interpreter the project folder holds is never the one that runs the script.
-			writeFileSync(join(project, "node.cmd"), "@echo planted>> %PLANTED_PROGRAM_MARKER%\r\n");
-			vi.stubEnv("PATH", `${bin};${dirname(process.execPath)}`);
-			const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
-			const transport = new StdioTransport({ command: "atomic-test-mcp-script", cwd: project, projectCwd: project });
+	for (const shape of [
+		"named without an extension",
+		"named with an extension PATHEXT gives it",
+		"given by its path",
+	] as const) {
+		test.skipIf(!windows)(
+			`an MCP server whose program is a script ${shape} runs through its interpreter, found as the program is`,
+			async () => {
+				const bin = join(root, "bin");
+				mkdirSync(bin);
+				const file = join(
+					bin,
+					shape === "named with an extension PATHEXT gives it"
+						? "atomic-test-mcp-script.js"
+						: "atomic-test-mcp-script",
+				);
+				writeFileSync(
+					file,
+					'#!/usr/bin/env node\nrequire("fs").appendFileSync(process.env.PLANTED_PROGRAM_MARKER, "script\\n"); setTimeout(() => {}, 5000);\n',
+				);
+				// An interpreter the project folder holds is never the one that runs the script.
+				writeFileSync(join(project, "node.cmd"), "@echo planted>> %PLANTED_PROGRAM_MARKER%\r\n");
+				vi.stubEnv("PATH", `${bin};${dirname(process.execPath)}`);
+				vi.stubEnv("PATHEXT", ".COM;.EXE;.BAT;.CMD;.JS");
+				const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+				const transport = new StdioTransport({
+					command: shape === "given by its path" ? file : "atomic-test-mcp-script",
+					cwd: project,
+					projectCwd: project,
+				});
 
-			await transport.start();
-			await vi.waitFor(() => assert.deepEqual(runs(), ["script"]), { timeout: SERVER_START_BUDGET_MS });
-			await transport.close();
-			assert.deepEqual(runs(), ["script"]);
-		},
-	);
+				await transport.start();
+				await vi.waitFor(() => assert.deepEqual(runs(), ["script"]), { timeout: SERVER_START_BUDGET_MS });
+				await transport.close();
+				assert.deepEqual(runs(), ["script"]);
+			},
+		);
+	}
 
 	test("an MCP server closed while its program is looked up never starts", async () => {
 		const bin = join(root, "bin");
