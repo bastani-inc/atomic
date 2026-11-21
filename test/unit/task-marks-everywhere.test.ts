@@ -335,4 +335,93 @@ test("subagent result rows and status lists read with the agent panel's marks (#
 		const [line] = renderSubagentStatus(group(status), false, tagged).render(120);
 		assert.ok(line?.startsWith(tag(mark)), `${status}: ${line}`);
 	}
+	// Only the mark changes: the words keep their colour.
+	const [running] = renderSubagentStatus(group("running"), false, tagged).render(120);
+	assert.ok(running?.includes("<accent>Running</>"), running);
+	const [continued] = renderSubagentStatus(group("continued"), false, tagged).render(120);
+	assert.ok(continued?.includes("<warning>Continued</>"), continued);
+});
+
+test("a foreground subagent's card keeps its clock while it runs, and one that continued on its own reads running without one (#6122)", () => {
+	const child = (change: Partial<Details["results"][number]>) =>
+		({
+			agent: "worker",
+			task: "fix shipping batches",
+			exitCode: 0,
+			messages: [],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+			status: "ok",
+			...change,
+		}) as unknown as Details["results"][number];
+	const card = (result: Details["results"][number], isPartial: boolean) =>
+		renderSubagentToolResult(
+			{ content: [{ type: "text", text: "" }], details: { mode: "single", results: [result] } as Details },
+			{ expanded: false, isPartial },
+			theme,
+			{ toolCallId: `fg-${result.status}`, state: {}, invalidate() {} } as never,
+		) as { render(width: number): string[]; isWorking?: () => boolean };
+
+	const running = card(
+		child({
+			progress: {
+				index: 0,
+				agent: "worker",
+				status: "running",
+				task: "fix shipping batches",
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 1,
+				tokens: 10,
+				durationMs: 2_000,
+			} as unknown as Details["results"][number]["progress"],
+		}),
+		true,
+	);
+	markOf("running foreground card", running.render(120), /Agent\(/, RUNNING);
+	assert.equal(running.isWorking?.(), true, "its elapsed time keeps updating");
+
+	const continued = card(
+		child({ status: "continued", detached: true, detachedReason: "intercom-coordination" }),
+		false,
+	);
+	const rows = continued.render(120);
+	markOf("continued foreground card", rows, /Agent\(/, RUNNING);
+	assert.match(rows.map(stripVTControlCharacters).join("\n"), /⎿ {2}Continued/);
+	assert.equal(continued.isWorking?.(), false, "a card for work that continues elsewhere starts no clock");
+});
+
+test("a call header drawn with an earlier version's stopped or paused mark still yields its title (#6122)", () => {
+	for (const mark of ["◼", "⏸", "◯", "⧗"]) {
+		const header = {
+			toolBlockKind: "block" as const,
+			render: () => [` ${mark} Descriptive argument`],
+			invalidate() {},
+		};
+		const component = new ToolExecutionComponent(
+			"custom",
+			`legacy-${mark}`,
+			{},
+			{},
+			{
+				name: "custom",
+				label: "generic-label",
+				description: "custom",
+				parameters: SubagentParams,
+				execute: async () => {
+					throw new Error("Rendering must not execute the tool");
+				},
+				renderCall: () => header as never,
+			},
+			{ requestRender() {} } as TUI,
+			process.cwd(),
+		);
+		try {
+			component.updateResult({ content: [{ type: "text", text: "response" }], isError: false });
+			const text = component.render(80).map(stripVTControlCharacters).join("\n");
+			assert.match(text, /Descriptive argument/, `${mark}: ${text}`);
+			assert.doesNotMatch(text, /generic-label/, `${mark}: ${text}`);
+		} finally {
+			component.dispose();
+		}
+	}
 });
