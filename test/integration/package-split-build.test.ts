@@ -17,7 +17,7 @@ import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const packageDir = join(repoRoot, "packages", "coding-agent");
 const dist = join(packageDir, "dist");
-/** The package's entry files, as `scripts/split-dist.mjs` writes them. */
+/** The package's public entry files and `main.js`, which the CLI imports. */
 const ENTRIES = ["cli", "main", "index", "rpc-entry", "core/storage/index", "core/storage/testing"];
 // Copying the package and starting it in a terminal is structural work.
 const LAYOUT_TIMEOUT_MS = 120_000;
@@ -37,8 +37,13 @@ function loadedFrom(entries: readonly string[]): Set<string> {
 		if (seen.has(file)) continue;
 		seen.add(file);
 		const source = fs.readFileSync(join(dist, file), "utf8");
-		for (const match of source.matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+)"/g)) {
-			pending.push(posix.normalize(posix.join(posix.dirname(file), match[1] as string)));
+		for (const match of source.matchAll(/(?:from|import\()\s*"(\.{1,2}\/[^"]+|#dist\/[^"]+)"/g)) {
+			const specifier = match[1] as string;
+			pending.push(
+				specifier.startsWith("#dist/")
+					? specifier.slice("#dist/".length)
+					: posix.normalize(posix.join(posix.dirname(file), specifier)),
+			);
 		}
 	}
 	return seen;
@@ -102,6 +107,7 @@ test(
 			bin: Record<string, string>;
 		};
 		assert.equal(manifest.imports["#dist-module-url"], "./dist/dist-module-url.js");
+		assert.equal(manifest.imports["#dist/*"], "./dist/*");
 		for (const target of [
 			...Object.values(manifest.exports).flatMap((conditions) => Object.values(conditions)),
 			...Object.values(manifest.bin),
@@ -305,17 +311,21 @@ function compiledPackage(target: string): void {
 		dereference: true,
 		filter: (source) => !source.includes(`${join("dist", "_shared")}`),
 	});
-	const compiled = join(packageDir, "node_modules", ".cache", "atomic-split-dist", "compiled");
-	for (const entry of ENTRIES)
+	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
+	const bundled = Object.keys(
+		(JSON.parse(fs.readFileSync(join(state, "state.json"), "utf8")) as { entries: Record<string, string> }).entries,
+	);
+	for (const entry of bundled)
 		for (const suffix of [".js", ".js.map"])
-			fs.copyFileSync(join(compiled, `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));
+			fs.copyFileSync(join(state, "compiled", `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));
 }
 
-test(
-	"a process that loaded the package keeps one StorageError when the package is replaced in place by a rebuild",
-	async () => {
+const RELEASES = ["changes StorageError's constructor", "adds a module StorageError's module imports"] as const;
+test.each(RELEASES)(
+	"a process that loaded the package keeps one StorageError when it is replaced in place by a release that %s",
+	async (release) => {
 		const { nodeModules, atomic } = installedLayout();
-		const builds = join(dirname(nodeModules), "rebuilds");
+		const builds = join(dirname(nodeModules), `rebuilds-${RELEASES.indexOf(release)}`);
 		const first = join(builds, "first");
 		const second = join(builds, "second");
 		for (const build of [first, second]) {
@@ -329,7 +339,15 @@ test(
 					'this.name = new.target.name;\n        this.rebuilt = "second";',
 				);
 				assert.notEqual(changed, source, "the rebuild changes StorageError's constructor");
-				fs.writeFileSync(errors, changed);
+				if (release === RELEASES[0]) fs.writeFileSync(errors, changed);
+				else {
+					// A new module only errors.js imports, named to sort after the modules beside it: it joins the shared
+					// file that holds StorageError without becoming that file's first module.
+					const detail = join(build, "dist", "core", "storage", "zz-storage-error-detail.js");
+					fs.writeFileSync(detail, 'export const detail = "second";\n');
+					const imported = `import { detail } from "./zz-storage-error-detail.js";\n${changed}`;
+					fs.writeFileSync(errors, imported.replace('this.rebuilt = "second";', "this.rebuilt = detail;"));
+				}
 			}
 			const split = spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
 			assert.equal(split.status, 0, split.stderr);
@@ -337,7 +355,7 @@ test(
 		const sharedFiles = (build: string) => fs.readdirSync(join(build, "dist", "_shared")).sort();
 		assert.deepEqual(sharedFiles(second), sharedFiles(first), "the rebuild names its shared files as before");
 
-		const installed = join(dirname(atomic), "atomic-live");
+		const installed = join(dirname(atomic), `atomic-live-${RELEASES.indexOf(release)}`);
 		fs.mkdirSync(installed, { recursive: true });
 		fs.copyFileSync(join(first, "package.json"), join(installed, "package.json"));
 		fs.cpSync(join(first, "dist"), join(installed, "dist"), { recursive: true });

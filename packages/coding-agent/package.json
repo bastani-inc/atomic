@@ -41,7 +41,8 @@
     }
   },
   "imports": {
-    "#dist-module-url": "./dist/dist-module-url.js"
+    "#dist-module-url": "./dist/dist-module-url.js",
+    "#dist/*": "./dist/*"
   },
   "files": [
     "dist",
