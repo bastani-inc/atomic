@@ -6,6 +6,7 @@ import {
 	registerCrossNodeHeldRoundTripConformance,
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
+	registerIdOwnerConformance,
 	registerKnownSessionStoreConformance,
 	registerOutboxStoreConformance,
 	registerPendingAskStoreConformance,
@@ -57,6 +58,9 @@ registerReturningSessionConformance(test, "memory reference", async () => {
 		close: () => bus.close(),
 	};
 });
+registerIdOwnerConformance(test, "memory reference", async () =>
+	openMemoryKnownSessionFixture((await openMemoryLeaseStoreFixture()).returnAddressHolders),
+);
 registerCrossNodeRoundTripConformance(test, "memory reference", {
 	openOutbox: openMemoryOutboxFixture,
 	openPendingAsks: openMemoryPendingAskFixture,

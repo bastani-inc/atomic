@@ -13,6 +13,7 @@ import {
 } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
+import { childSessionLocator } from "../../shared/child-session-store.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
 import type {
@@ -115,6 +116,7 @@ function resultFromOutcome(
 	durationMs: number,
 	artifactPaths: ArtifactPaths | undefined,
 	index: number,
+	place: { readonly cwd: string; readonly parentCwd: string },
 	requestedModel?: string,
 ): SingleResult {
 	const status = outcome.status;
@@ -162,6 +164,17 @@ function resultFromOutcome(
 		...(outcome.skillsWarning ? { skillsWarning: outcome.skillsWarning } : {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
+		// A session with no file of its own, in its parent's store, is read by its history URL. Without a session the
+		// child's stats name its admitted path instead, which is no session to read.
+		...(outcome.sessionFile || !outcome.stats.sessionId || outcome.stats.sessionId === outcome.path
+			? {}
+			: {
+					sessionUrl: childSessionLocator({
+						sessionId: outcome.stats.sessionId,
+						cwd: outcome.sessionCwd ?? place.cwd,
+						parentCwd: place.parentCwd,
+					}),
+				}),
 		progress: progressFor(agent, task, outcome, durationMs, index),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
@@ -424,6 +437,8 @@ async function launchSingleInProcess(
 		cwd,
 		testSession: testSession,
 		sessionManager: options.sessionManager,
+		...(options.sessionStore && !options.sessionManager ? { sessionStore: options.sessionStore } : {}),
+		parentCwd: runtimeCwd,
 		...(options.resumeSession ? { resumeSession: true } : {}),
 		...(options.resumeFollowUps?.length ? { resumeFollowUps: options.resumeFollowUps } : {}),
 		...(options.resumeTaskLiteral ? { resumeTaskLiteral: true } : {}),
@@ -432,6 +447,7 @@ async function launchSingleInProcess(
 		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
 		...(options.resumeLateToolResults?.length ? { resumeLateToolResults: options.resumeLateToolResults } : {}),
 		...(options.resumeNotices?.length ? { resumeNotices: options.resumeNotices } : {}),
+		...(options.resumeNote ? { resumeNote: options.resumeNote } : {}),
 		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),
 		...(options.resumeTaskFallback ? { resumeTaskFallback: true } : {}),
 		...(options.resumePaused ? { resumePaused: true } : {}),
@@ -630,6 +646,7 @@ async function launchSingleInProcess(
 						spanElapsedMs(elapsedSpan),
 						artifactPaths,
 						options.index ?? 0,
+						{ cwd, parentCwd: runtimeCwd },
 						requestedModel,
 					);
 					try {
@@ -648,6 +665,7 @@ async function launchSingleInProcess(
 								...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
 								...(requestedModel ? { requestedModel } : {}),
 								sessionFile: continuedOutcome.sessionFile,
+								...(recovered.sessionUrl ? { sessionUrl: recovered.sessionUrl } : {}),
 								timestamp: Date.now(),
 								artifactsDir: options.artifactsDir,
 							},
@@ -726,6 +744,7 @@ async function launchSingleInProcess(
 		spanElapsedMs(elapsedSpan),
 		artifactPaths,
 		options.index ?? 0,
+		{ cwd, parentCwd: runtimeCwd },
 		requestedModel,
 	);
 	if (filteredCandidates.skippedAttempts.length)
@@ -744,6 +763,7 @@ async function launchSingleInProcess(
 			...(result.thinking === undefined ? {} : { thinking: result.thinking }),
 			...(requestedModel ? { requestedModel } : {}),
 			sessionFile: outcome.sessionFile,
+			...(result.sessionUrl ? { sessionUrl: result.sessionUrl } : {}),
 			timestamp: Date.now(),
 			artifactsDir: options.artifactsDir,
 		},

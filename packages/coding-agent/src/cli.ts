@@ -9,10 +9,16 @@
  * attribution, and the disabled-by-default lifecycle seam. The full CLI graph
  * loads dynamically so metadata fast paths (for example `--version`) skip it.
  */
-import { APP_NAME, VERSION } from "./config.js";
+import { APP_NAME, getPackageDir, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
+import { engineHeapRuntimeArgsForHost } from "./modes/interactive-engine/engine-heap.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
-import { COMPILE_CACHE_ENGINE_WARMUP_ENV, enablePersistentCompileCache } from "./utils/compile-cache.ts";
+import {
+	COMPILE_CACHE_ENGINE_WARMUP_ENV,
+	compileCacheDeferral,
+	enablePersistentCompileCache,
+} from "./utils/compile-cache.ts";
+import { warmCompileCache } from "./utils/compile-cache-warmup-host.ts";
 import { headlessHeapRelaunchArgs, isHeadlessInvocation, relaunchWithHeap } from "./utils/heap-relaunch.ts";
 import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
@@ -21,6 +27,7 @@ import {
 	INTERACTIVE_ENGINE_PREWARM_NO_DATABASE,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
+import { startStartupPrefetch } from "./utils/startup-prefetch.js";
 
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
@@ -41,6 +48,10 @@ enablePersistentCompileCache({
 			: isPlainInteractiveSessionInvocation(args, terminal),
 	build: VERSION,
 });
+// A session that ends before it starts its compile-cache helpers starts them as it exits; they outlive it.
+if (compileCacheDeferral() && !prewarmedEngine && !hasInteractiveEngineBootstrapArg(args)) {
+	process.once("exit", () => warmCompileCache(engineHeapRuntimeArgsForHost(true)));
+}
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
@@ -61,6 +72,9 @@ if (heapArgs.length > 0) {
 	// An interactive host starts its engine child first, so the child loads the application while this process does;
 	// a prewarmed child loads it while it waits for its arguments.
 	const interactiveHost = !prewarmedEngine && terminal.stdinIsTTY && terminal.stdoutIsTTY;
+	// Read the files an interactive session loads ahead of the module loader, in parallel: on a cold start each one is
+	// scanned by an antivirus when first opened. This also covers the engine child, which loads the same files.
+	if (interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)) startStartupPrefetch(getPackageDir());
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
 	// An interactive session's database opens on a thread of its own: start that thread now, while the modules load.

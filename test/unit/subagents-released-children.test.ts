@@ -8,8 +8,11 @@ import {
 	type DetachedToolResult,
 	type ExtensionContext,
 } from "@bastani/atomic";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { SESSION_HISTORY_PAGE_ENTRIES } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import {
@@ -43,6 +46,7 @@ import {
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_STILL_RUNNING_RESULT,
 	savedToolResultIds,
+	savedToolResultIdsInHistory,
 	subagentReleasePolicy,
 	subagentWakeKey,
 	subagentWakeNamespace,
@@ -712,4 +716,179 @@ test("a held result counts as saved once the transcript holds it as its call's r
 		savedToolResultIds(sessionManager, [recorded, stillRunning, read, readWithImage, unseen, noticed, otherNotice]),
 		["ci-1", "lint-3", "img-4", "test-6"],
 	);
+});
+
+test("a late result the child read before a compaction took it out of its context still counts as saved, in every form (#5012)", async () => {
+	const late = result("ci-1", "tests green");
+	const noticed = result("ci-2", "lint clean");
+	const unread = result("ci-3", "deployed");
+	const store = new MemorySessionStore();
+	const child = await SessionManager.create(store, "/repo");
+	const calls = (ids: readonly string[]) =>
+		child.appendMessage({
+			...fauxAssistantMessage(
+				ids.map((id) => fauxToolCall("wait_for_ci", { run: id }, { id })),
+				{ stopReason: "toolUse" },
+			),
+		});
+	const stillRunning = (toolCallId: string) =>
+		child.appendMessage({
+			role: "toolResult",
+			toolCallId,
+			toolName: "wait_for_ci",
+			content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+			isError: false,
+			timestamp: 2,
+		});
+	await child.appendMessage({ role: "user", content: "watch CI", timestamp: 1 });
+	await calls(["ci-1", "ci-2"]);
+	await stillRunning("ci-1");
+	await stillRunning("ci-2");
+	// What an earlier build delivered as a message, and what this one delivers as a notice.
+	await child.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: 3 });
+	const notice = lateToolResultNotice([noticed]);
+	await child.appendCustomMessageEntry(notice.customType, notice.content, notice.display, notice.details);
+	await child.appendMessage({ role: "user", content: "ok", timestamp: 4 });
+	await child.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 3,
+			linesDeleted: 3,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	await child.appendMessage({ role: "user", content: "after compaction", timestamp: 5 });
+	await calls(["ci-3"]);
+	await stillRunning("ci-3");
+	const reopened = await SessionManager.open(store, child.getSessionId(), "/repo", { history: "tail" });
+	assert.equal(reopened.hasFullHistory(), false, "the reopened session holds only its window");
+
+	for (const manager of [child, reopened]) {
+		assert.deepEqual(savedToolResultIds(manager, [late, noticed]), [], "its context no longer holds them");
+		assert.deepEqual(await savedToolResultIdsInHistory(manager, [late, noticed]), ["ci-1", "ci-2"]);
+	}
+	// One it never read is not.
+	assert.deepEqual(await savedToolResultIdsInHistory(reopened, [unread]), []);
+	assert.deepEqual(await savedToolResultIdsInHistory(child, [unread]), []);
+});
+
+test("a woken child's history is read back only as far as the call of each result it may have read", async () => {
+	const unread = result("ci-9", "deployed");
+	const store = new MemorySessionStore();
+	const child = await SessionManager.create(store, "/repo");
+	// Far more history before the call than one page holds.
+	const before = SESSION_HISTORY_PAGE_ENTRIES * 4;
+	for (let turn = 0; turn < before; turn++)
+		await child.appendMessage({ role: "user", content: `earlier ${turn}`, timestamp: 1 });
+	await child.appendMessage({
+		...fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "9" }, { id: "ci-9" })], { stopReason: "toolUse" }),
+	});
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-9",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+		isError: false,
+		timestamp: 2,
+	});
+	await child.appendMessage({ role: "user", content: "ok", timestamp: 3 });
+	await child.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 3,
+			linesDeleted: 3,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	await child.appendMessage({ role: "user", content: "after compaction", timestamp: 4 });
+	const reopened = await SessionManager.open(store, child.getSessionId(), "/repo", { history: "tail" });
+	assert.equal(reopened.hasFullHistory(), false, "the reopened session holds only its window");
+	const read: number[] = [];
+	const readHistory = reopened.readHistory.bind(reopened);
+	vi.spyOn(reopened, "readHistory").mockImplementation((options) => {
+		const pages = readHistory(options);
+		return (async function* () {
+			for await (const page of pages) {
+				read.push(page.items.length);
+				yield page;
+			}
+		})();
+	});
+
+	assert.deepEqual(await savedToolResultIdsInHistory(reopened, [unread]), []);
+
+	const entries = read.reduce((total, count) => total + count, 0);
+	assert.ok(entries < before, `read back only as far as its call: pages of ${read.join(", ")}`);
+});
+
+test("a held late result whose call reused an earlier call's id is not taken as read from that earlier call's result (#3274)", async () => {
+	// A provider that numbers each response's calls from 0 gives the background call the id of an earlier one.
+	const id = "functions.bash:0";
+	const late = result(id, "deployed");
+	for (const compacted of [false, true]) {
+		const store = new MemorySessionStore();
+		const child = await SessionManager.create(store, "/repo");
+		const call = () =>
+			child.appendMessage({
+				...fauxAssistantMessage([fauxToolCall("bash", { command: "npm test" }, { id })], { stopReason: "toolUse" }),
+			});
+		const ownResult = (text: string) =>
+			child.appendMessage({
+				role: "toolResult",
+				toolCallId: id,
+				toolName: "bash",
+				content: [{ type: "text", text }],
+				isError: false,
+				timestamp: 2,
+			});
+		await child.appendMessage({ role: "user", content: "run the tests", timestamp: 1 });
+		await call();
+		await ownResult("run 6 passed");
+		await child.appendMessage({ role: "user", content: "now deploy", timestamp: 3 });
+		if (compacted)
+			await child.appendCompaction("summary", null, 100, {
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "" },
+				stats: {
+					linesBefore: 3,
+					linesDeleted: 3,
+					linesKept: 0,
+					rangeCount: 1,
+					tokensBefore: 100,
+					tokensAfter: 10,
+					percentReduction: 90,
+				},
+				form: "cleared",
+			});
+		await child.appendMessage({ role: "user", content: "deploy it in the background", timestamp: 4 });
+		await call();
+		await ownResult(SUBAGENT_STILL_RUNNING_RESULT);
+		const reopened = await SessionManager.open(store, child.getSessionId(), "/repo", { history: "tail" });
+
+		for (const manager of [child, reopened]) {
+			const label = `${compacted ? "compacted" : "in context"}, ${manager === child ? "whole" : "reopened"}`;
+			assert.deepEqual(savedToolResultIds(manager, [late]), [], `${label}: its context`);
+			assert.deepEqual(await savedToolResultIdsInHistory(manager, [late]), [], `${label}: its history`);
+		}
+		// Read once its notice is saved, after its call.
+		const notice = lateToolResultNotice([late]);
+		await child.appendCustomMessageEntry(notice.customType, notice.content, notice.display, notice.details);
+		assert.deepEqual(savedToolResultIds(child, [late]), [id]);
+		assert.deepEqual(await savedToolResultIdsInHistory(child, [late]), [id]);
+	}
 });

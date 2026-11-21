@@ -532,7 +532,21 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					}),
 				);
 			if (session.readHistory && ((session.loadHistory && !session.subscribe) || cursor?.includes(":")))
-				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor, undefined, signal);
+				return savedTranscriptView(
+					session,
+					taskId,
+					session.readHistory.bind(session),
+					cursor,
+					undefined,
+					signal,
+				).catch((error: unknown): TaskViewResult<TaskTranscriptView> => {
+					// As for a session file that is gone: a session deleted from its store is a result, not a failed read.
+					if (signal?.aborted || !(error instanceof Error && error.name === "SessionNotFoundError")) throw error;
+					return {
+						ok: false,
+						error: { message: "History unavailable: the session was deleted from its session store." },
+					};
+				});
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (session.loadHistory) {
 				const archive = archiveReader(session);
