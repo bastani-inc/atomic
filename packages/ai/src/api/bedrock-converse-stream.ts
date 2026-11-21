@@ -492,17 +492,25 @@ function formatBedrockError(error: unknown): string {
 	return `${withConnectionCode(core, error, norm.status)}${dataRetentionHint}`;
 }
 
+/**
+ * What Bedrock's HTTP handler rejected a request with, below every response: the request's own connection failures. A
+ * hook, a credential source or a response that fails never comes from there.
+ */
+const connectionFailures = new WeakSet<object>();
+
 /** A connection error's code, such as `ECONNRESET`, as Node.js and Bun name them. */
 const CONNECTION_ERROR_CODE = /^(?:E[A-Z]+|ERR_SOCKET_[A-Z_]+)$/;
 
 /**
- * `message` with the code of the connection error it reports, when it does not name it: the HTTP handler's own errors
- * carry their reason in the code, such as `ECONNRESET` for a connection reset during a TLS handshake or before a proxy
- * answered, which is what the retry rules read. Bun reports a connection closed under the request as its socket being
- * closed (`ERR_SOCKET_CLOSED`), which is named as the reset it is.
+ * `message` with the code of the connection error it reports, when it does not name it, for a failure of the request's
+ * own connection only (`connectionFailures`): the HTTP handler's errors carry their reason in the code, such as
+ * `ECONNRESET` for a connection reset during a TLS handshake or before a proxy answered, which is what the retry rules
+ * read. Bun reports a connection closed under the request as its socket being closed (`ERR_SOCKET_CLOSED`), which is
+ * named as the reset it is.
  */
 function withConnectionCode(message: string, error: unknown, status: number | undefined): string {
-	if (status !== undefined || typeof error !== "object" || error === null) return message;
+	if (status !== undefined || typeof error !== "object" || error === null || !connectionFailures.has(error))
+		return message;
 	const code = (error as { code?: unknown }).code;
 	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code)) return message;
 	const reported = code === "ERR_SOCKET_CLOSED" ? "ECONNRESET" : code;
@@ -737,11 +745,14 @@ function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
 			return await next(args);
 		} catch (error) {
 			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
-			if (!request?.hostname) throw error;
-			throw transportFailure(
-				error,
-				`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
-			);
+			const failure = request?.hostname
+				? transportFailure(
+						error,
+						`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
+					)
+				: error;
+			if (typeof failure === "object" && failure !== null) connectionFailures.add(failure);
+			throw failure;
 		}
 	};
 	client.middlewareStack.add(middleware, { step: "deserialize", name: "atomic-transport-failure", priority: "low" });

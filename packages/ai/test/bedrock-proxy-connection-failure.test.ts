@@ -170,6 +170,27 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 	);
 });
 
+describe("a Bedrock failure that is not its connection's", () => {
+	it("keeps its own message and is not retried, though it carries a connection error's code", async () => {
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		for (const code of ["ERR_SOCKET_CLOSED", "ECONNRESET", "EACCES"]) {
+			// A hook that stops the request before anything is sent, with a code of its own.
+			const message = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: { AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				onPayload: async () => {
+					throw Object.assign(new Error("Application preparation stopped"), { code });
+				},
+			}).result();
+
+			assert.equal(message.stopReason, "error");
+			assert.equal(message.errorMessage, "Application preparation stopped", code);
+			assert.equal(isRetryableAssistantError(message), false, code);
+		}
+	});
+});
+
 describe("a provider's answer that names a connection error", () => {
 	it("is not retried for its text: an HTTP 400 whose body names a closed socket or a dropped proxy connection", async () => {
 		// What a connection error reads like on Node.js and Bun, quoted by a provider in an answer to a bad request.
