@@ -135,6 +135,32 @@ class RemoteComponent implements Component {
 		this.getRenderSettings = getRenderSettings;
 	}
 
+	/**
+	 * Frames up to this request may draw what the screen was about to show and no longer does: they are not shown, and a
+	 * frame asked for after it is (see hideFramesUntilFresh).
+	 */
+	private hiddenUpTo: number | undefined;
+	private hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** Shows nothing until a frame asked for from now on comes, or `capMs` passes. */
+	hideFramesUntilFresh(capMs: number): void {
+		if (this.disposed) return;
+		this.hiddenUpTo = this.requestId;
+		this.dirty = true;
+		clearTimeout(this.hiddenTimer);
+		this.hiddenTimer = setTimeout(() => {
+			this.showFramesAgain();
+			this.requestRender();
+		}, capMs);
+		this.hiddenTimer.unref?.();
+	}
+
+	private showFramesAgain(): void {
+		clearTimeout(this.hiddenTimer);
+		this.hiddenTimer = undefined;
+		this.hiddenUpTo = undefined;
+	}
+
 	render(width: number): string[] {
 		if (this.retiredShowing !== undefined) {
 			// Only the picture it was painted as, at that width.
@@ -160,6 +186,14 @@ class RemoteComponent implements Component {
 		// arrives, the previous frame may be wrapped for an older terminal
 		// width. Clamp so a resize never replays overflowing lines (pi-tui
 		// crashes on any rendered line wider than the terminal).
+		if (this.hiddenUpTo !== undefined) {
+			this.paintedFrame = undefined;
+			this.paintedRowKeys = undefined;
+			this.paintedFrameLayout = undefined;
+			this.paintedLines = [];
+			this.paintedWidth = width;
+			return [];
+		}
 		this.paintedFrame = this.frame;
 		this.paintedRowKeys = this.rowKeys;
 		this.paintedFrameLayout = this.layout;
@@ -358,6 +392,7 @@ class RemoteComponent implements Component {
 	): void {
 		if (this.disposed || requestId < this.appliedRequestId) return;
 		this.appliedRequestId = requestId;
+		if (this.hiddenUpTo !== undefined && requestId > this.hiddenUpTo) this.showFramesAgain();
 		this.lines = lines;
 		this.frame = frame;
 		this.rowKeys = rowKeys;
@@ -395,6 +430,7 @@ class RemoteComponent implements Component {
 	dispose(notifyEngine = true): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		clearTimeout(this.hiddenTimer);
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		if (notifyEngine)
 			this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
@@ -502,6 +538,11 @@ const controllers = new WeakMap<object, RemoteComponentController>();
  * has opened and no widget under the key is without its first frame now: one that closed leaves nothing to wait for,
  * one that replaced it is waited for in turn. A widget open before the watch began does not count as opened.
  */
+/** See RemoteComponentController.hideWidgetFramesUntilFresh. */
+export function hideWidgetFramesUntilFresh(runtime: object, widgetKey: string, capMs: number): void {
+	controllers.get(runtime)?.hideWidgetFramesUntilFresh(widgetKey, capMs);
+}
+
 export function watchWidgetFrames(runtime: object, widgetKey: string): { drawn(): Promise<void>; stop(): void } {
 	let watches = widgetFrameWatches.get(runtime);
 	if (watches === undefined) {
@@ -673,6 +714,18 @@ export class RemoteComponentController {
 		}
 		this.checkWidgetFrames();
 	}
+
+	/**
+	 * The widgets open under `widgetKey`, and those the engine opens under it within `capMs`, show nothing until a frame
+	 * asked for from now on comes (or `capMs` passes): what they have may draw what the screen no longer shows.
+	 */
+	hideWidgetFramesUntilFresh(widgetKey: string, capMs: number): void {
+		this.hideOpening.set(widgetKey, performance.now() + capMs);
+		for (const record of this.mounted.values())
+			if (record.widgetKey === widgetKey) record.component.hideFramesUntilFresh(capMs);
+	}
+
+	private readonly hideOpening = new Map<string, number>();
 
 	/** Whether a widget open under `widgetKey` has not drawn its first frame yet. */
 	widgetWithoutFrame(widgetKey: string): boolean {
@@ -865,6 +918,8 @@ export class RemoteComponentController {
 			});
 			for (const watch of widgetFrameWatches.get(this.runtime) ?? [])
 				if (watch.widgetKey === widgetKey) watch.opened = true;
+			const hideFor = (this.hideOpening.get(widgetKey) ?? 0) - performance.now();
+			if (hideFor > 0) component.hideFramesUntilFresh(hideFor);
 			// The panel opened again replaces the one still showing.
 			if (widgetKey === AGENT_PANEL_WIDGET_KEY && this.retiredPanel !== undefined) {
 				this.retiredPanel.dispose();

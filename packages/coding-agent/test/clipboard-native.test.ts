@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
-import { type ClipboardModule, loadClipboardNative } from "../src/utils/clipboard-native.ts";
+import {
+	type ClipboardModule,
+	createNativeClipboardGetter,
+	loadClipboardNative,
+} from "../src/utils/clipboard-native.ts";
 
 type ClipboardRequire = (id: string) => unknown;
 
@@ -27,5 +31,34 @@ describe("loadClipboardNative", () => {
 		});
 
 		expect(loadClipboardNative([missing])).toBeNull();
+	});
+});
+
+describe("createNativeClipboardGetter", () => {
+	test("loads nothing until the first call, then loads once", () => {
+		const load = vi.fn<() => ClipboardModule | null>(() => fakeClipboard);
+		const getClipboard = createNativeClipboardGetter(true, load);
+		expect(load).not.toHaveBeenCalled();
+
+		expect(getClipboard()).toBe(fakeClipboard);
+		expect(getClipboard()).toBe(fakeClipboard);
+		expect(load).toHaveBeenCalledTimes(1);
+	});
+
+	test("remembers a module that could not load", () => {
+		const load = vi.fn<() => ClipboardModule | null>(() => null);
+		const getClipboard = createNativeClipboardGetter(true, load);
+
+		expect(getClipboard()).toBeNull();
+		expect(getClipboard()).toBeNull();
+		expect(load).toHaveBeenCalledTimes(1);
+	});
+
+	test("never loads where the native module is not used", () => {
+		const load = vi.fn<() => ClipboardModule | null>(() => fakeClipboard);
+		const getClipboard = createNativeClipboardGetter(false, load);
+
+		expect(getClipboard()).toBeNull();
+		expect(load).not.toHaveBeenCalled();
 	});
 });

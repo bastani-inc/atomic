@@ -7,6 +7,15 @@
  */
 import { describe, expect, test, vi } from "vitest";
 
+// The simulated platform's programs are the mocked child processes, so every helper is found under its own name.
+vi.mock("../src/utils/helper-command.ts", () => ({
+	findHelperExecutable: (name: string) => name,
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunch: (name: string) => ({ file: name }),
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+	missingHelperOptions: () => ({}),
+}));
+
 function createTinyBmp1x1Red24bpp(): Uint8Array {
 	// Minimal 1x1 24bpp BMP (BGR + row padding to 4 bytes)
 	// File size = 14 (BMP header) + 40 (DIB header) + 4 (pixel row) = 58

@@ -176,7 +176,7 @@ Each snapshot is also a Git commit in the checkout's repository. Atomic keeps th
 - is deleted when the session's work moves to a worktree restored from that checkout, or back from it, and records a snapshot there;
 - is deleted from every checkout on this machine when you delete the session from the session picker, `/resume`, or the SDK's `SessionManager.deleteSession`.
 
-The subagents a session launches keep refs of their own, one per subagent and checkout, as long as that session: deleting the session deletes them with its own, except the refs of a subagent that is running at that moment.
+The subagents a session launches keep refs of their own, one per subagent and checkout, as long as that session: deleting the session deletes them with its own, except the refs of a subagent that is running from the same session store at that moment. A copy of a session imported into another store keeps the same session ID, so in the same checkout the two share a ref: deleting the session in one store can remove the ref the other copy uses. No file is deleted, but once `git gc` pruned that copy's snapshot commit and you changed the checkout, its next resume restores the checkout into a fresh worktree.
 
 The refs are outside `refs/heads` and `refs/tags`, so `git push`, `git push --all`, `git push --tags` and a snapshot's bundle never include them. `git push --mirror` pushes every ref and would push them, together with the snapshot commits, which contain your uncommitted changes except the files described in [What is left out](#what-is-left-out). They also appear in `git for-each-ref` and `git log --all`, as commits titled `Atomic worktree snapshot`. To exclude them from `git log --all`, use `git log --exclude='refs/atomic/*' --all`.
 

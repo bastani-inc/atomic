@@ -25,6 +25,7 @@ import {
 	captureLocatedCheckout,
 	captureWorktreeSnapshot,
 	locateCheckout,
+	nextCaptureTick,
 	recordWorktreeCapture,
 	type WorktreeSnapshotCapture,
 	type WorktreeSnapshotUnavailableReason,
@@ -236,8 +237,9 @@ export class SessionWorktreeSnapshotRecorder {
 						const result =
 							located === undefined
 								? await captureWorktreeSnapshot(root, { settings, previous, blobs })
-								: await sharedCheckoutCapture(blobs, root, settings, wroteBy, previous, () =>
-										captureLocatedCheckout(checkout, { settings, previous, blobs }),
+								: await sharedCheckoutCapture(blobs, root, settings, wroteBy, previous, (startedAt) =>
+										// Every turn this capture serves wrote before it started; a scan that started later holds those writes.
+										captureLocatedCheckout(checkout, { settings, previous, blobs }, startedAt),
 									);
 						located = undefined;
 						captureMs = Math.floor(performance.now() - started);
@@ -332,13 +334,6 @@ interface CheckoutCapture {
  */
 const runningCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCapture>>();
 
-/** Orders turn ends and capture starts in this process: a later tick happened after, even within one clock tick. */
-let captureTick = 0;
-function nextCaptureTick(): number {
-	captureTick += 1;
-	return captureTick;
-}
-
 /**
  * Captures the checkout at `root` from the session's own earlier snapshot of it, `previous`, for a turn whose writes
  * ended at `wroteBy`, sharing the work with every session of this process that captures it into the same blob table
@@ -354,7 +349,7 @@ async function sharedCheckoutCapture(
 	settings: WorktreeSnapshotSettings,
 	wroteBy: number,
 	previous: WorktreeSnapshot | undefined,
-	capture: () => Promise<WorktreeSnapshotCapture>,
+	capture: (startedAt: number) => Promise<WorktreeSnapshotCapture>,
 ): Promise<WorktreeSnapshotCapture> {
 	let running = runningCaptures.get(blobs);
 	if (running === undefined) {
@@ -368,7 +363,8 @@ async function sharedCheckoutCapture(
 		// A capture that started after the turn's writes serves it; one that started before does not, and the next starts
 		// at once: its scan of the working files follows the running one's.
 		if (flight === undefined || flight === failed || flight.startedAt < wroteBy) {
-			const current: CheckoutCapture = { startedAt: nextCaptureTick(), result: capture() };
+			const startedAt = nextCaptureTick();
+			const current: CheckoutCapture = { startedAt, result: capture(startedAt) };
 			running.set(key, current);
 			try {
 				return await current.result;

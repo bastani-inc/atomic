@@ -1,6 +1,15 @@
 import { writeFileSync } from "fs";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
+// The simulated platform's programs are the mocked child processes, so every helper is found under its own name.
+vi.mock("../src/utils/helper-command.ts", () => ({
+	findHelperExecutable: (name: string) => name,
+	findHelperExecutableAsync: async (name: string) => name,
+	helperLaunch: (name: string) => ({ file: name }),
+	helperLaunchAsync: async (name: string) => ({ file: name }),
+	missingHelperOptions: () => ({}),
+}));
+
 type ExecFileCallback = (error: Error | null, stdout: Buffer, stderr: Buffer) => void;
 
 const mocks = vi.hoisted(() => {
@@ -21,7 +30,7 @@ vi.mock("child_process", () => {
 
 vi.mock("../src/utils/clipboard-native.js", () => {
 	return {
-		clipboard: mocks.clipboard,
+		getNativeClipboard: () => mocks.clipboard,
 	};
 });
 

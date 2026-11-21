@@ -32,6 +32,11 @@ export const INTERACTIVE_ENGINE_BOOTSTRAP_VERSION = 1;
  * loads the application, then reads them from its first stdin line (see engine-prewarm.ts).
  */
 export const INTERACTIVE_ENGINE_PREWARM_FLAG = "--internal-engine-prewarm";
+/**
+ * After the prewarm flag: the host runs `--no-session`, so the prewarmed engine opens no session database and starts no
+ * thread for one. Read only at process entry; the engine's own arguments arrive later.
+ */
+export const INTERACTIVE_ENGINE_PREWARM_NO_DATABASE = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-no-database`;
 
 export interface InteractiveEngineBootstrap {
 	version: number;
