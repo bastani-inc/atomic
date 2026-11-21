@@ -33,6 +33,8 @@ from queue import Empty, SimpleQueue
 
 POLL_SECONDS = 0.1
 _POLL_NS = 100_000_000
+# The first wait for a terminated job's processes to end.
+_FIRST_JOB_POLL_NS = 1_000_000
 # A child asked to stop has this many polls to exit before it is asked again, and as many again
 # before it is killed. They are counted rather than timed: time the job spends stopped by Ctrl+Z
 # does not use them up.
@@ -615,10 +617,17 @@ class _WindowsJob:
             self._kernel32.TerminateJobObject(self._handle, 1)
 
     def wait_until_empty(self) -> None:
-        """Wait, for a bounded time, until no process of the job is left."""
+        """Wait, for a bounded time, until no process of the job is left.
+
+        Terminated processes end within moments, so the first checks follow each other closely; the
+        time between checks then doubles up to POLL_SECONDS. The waits add up to at most STOP_POLLS
+        times POLL_SECONDS.
+        """
         basic_accounting_information = 1
         accounting = self._accounting()
-        for _ in range(STOP_POLLS):
+        budget_ns = STOP_POLLS * _POLL_NS
+        wait_ns = _FIRST_JOB_POLL_NS
+        while True:
             if self._handle is None or not self._kernel32.QueryInformationJobObject(
                 self._handle,
                 basic_accounting_information,
@@ -627,9 +636,12 @@ class _WindowsJob:
                 None,
             ):
                 return
-            if accounting.ActiveProcesses == 0:
+            if accounting.ActiveProcesses == 0 or budget_ns == 0:
                 return
-            time.sleep(POLL_SECONDS)
+            wait_ns = min(wait_ns, budget_ns)
+            time.sleep(wait_ns / 1_000_000_000)
+            budget_ns -= wait_ns
+            wait_ns = min(2 * wait_ns, _POLL_NS)
 
     def close(self) -> None:
         if self._handle is not None:
