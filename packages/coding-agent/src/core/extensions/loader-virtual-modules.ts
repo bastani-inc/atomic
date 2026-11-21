@@ -54,7 +54,14 @@ const transpileCachePrunes = new Map<string, Promise<void>>();
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
 		isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")
-	).then((module) => module.createJiti);
+	).then((module) =>
+		// jiti imports a module natively first under Bun, and Bun then resolves the module's own imports itself, so an
+		// extension's `typebox` or Atomic package imports could reach other copies than the host's. Every load is
+		// transformed instead, as under Node: each import goes through the host's modules and aliases.
+		process.versions.bun === undefined
+			? module.createJiti
+			: (((id, options) => module.createJiti(id, { tryNative: false, ...options })) as typeof createJiti),
+	);
 	return createJitiPromise;
 }
 
@@ -846,8 +853,8 @@ async function importExtensionModule(
 	} else {
 		module = await importEntry();
 	}
-	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
-	// using the transformed path and its retained-evaluation reuse.
+	// jiti transforms every load (see getCreateJiti); on Windows re-loads keep using the transformed path and its
+	// retained-evaluation reuse.
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
@@ -945,11 +952,11 @@ export async function loadExtensionModule(
 	// module instances baked into the build, so virtualModules is used instead
 	// (which requires jiti's transformed-import path).
 	// Every editable path retains the existing jiti/virtualModules behavior.
-	// First-load fast path: native import() (jiti's default tryNative under Bun)
-	// skips per-launch transpilation of the extension module graph. Re-loads of
-	// the same path fall back to transformed imports for fresh evaluation.
+	// A first load is transformed like any other (see getCreateJiti), from
+	// the persistent transpile cache when it holds the module. On Windows,
+	// re-loads of the same path take the retained-evaluation path below.
 	//
-	// That fallback is not free. Measured on Windows CI, a transformed re-import
+	// A transformed re-import is not free. Measured on Windows CI, a transformed re-import
 	// costs ~15 ms per module file in the extension's transitive graph, so a
 	// reload of all five builtin packages (621 files) takes ~10.7 s cold and
 	// ~2.5 s against a warm jiti fsCache, against ~40 ms on Linux and macOS. The

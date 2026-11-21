@@ -3,10 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// Bun imports an extension natively on its first load, so the extension's `typebox` imports are resolved by Bun, not by
-// the extension loader. Under Bun, Atomic uses the `typebox` package itself, so an extension that resolves that package
-// registers its formats where tool validation reads them, on its first load and after a reload.
-const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-native-typebox-"));
+// Under Bun the extension loader transforms an extension on its first load too, as on every reload and under Node.
+// Its `typebox` imports reach Atomic's copy, which tool validation reads, even when it has a `typebox` package of its
+// own; its modules are evaluated once per load; and `import.meta` describes each module's own file.
+const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-bun-extension-"));
 process.env.ATOMIC_CODING_AGENT_DIR = path.join(root, "agent");
 fs.mkdirSync(process.env.ATOMIC_CODING_AGENT_DIR);
 
@@ -18,25 +18,54 @@ try {
 	const { createEventBus } = await import("../../src/index.ts");
 	const { validateToolArguments } = await import("@bastani/atomic-ai");
 	const host = await import("@bastani/atomic-schema/typebox/format");
-	const repositoryTypebox = path.dirname(
-		fs.realpathSync(path.join(import.meta.dirname, "../../../../node_modules/typebox/package.json")),
+	const extensionDir = path.join(root, "extension");
+	// A `typebox` package of the extension's own, which Bun would resolve if it imported the extension natively.
+	const ownTypebox = path.join(extensionDir, "node_modules", "typebox");
+	fs.mkdirSync(path.dirname(ownTypebox), { recursive: true });
+	fs.symlinkSync(
+		path.dirname(fs.realpathSync(path.join(import.meta.dirname, "../../../../node_modules/typebox/package.json"))),
+		ownTypebox,
+		"junction",
 	);
-	fs.mkdirSync(path.join(root, "node_modules"));
-	fs.symlinkSync(repositoryTypebox, path.join(root, "node_modules", "typebox"), "junction");
-	const entry = path.join(root, "extension.ts");
+	fs.writeFileSync(path.join(extensionDir, "shared.ts"), "export const shared = {};\n");
+	fs.writeFileSync(path.join(extensionDir, "a.ts"), 'export { shared } from "./shared.ts";\n');
+	fs.writeFileSync(path.join(extensionDir, "b.ts"), 'import { shared } from "./shared.ts";\nexport const viaB = shared;\n');
+	fs.writeFileSync(path.join(extensionDir, "asset.txt"), "extension asset\n");
+	const entry = path.join(extensionDir, "extension.ts");
 	fs.writeFileSync(
 		entry,
-		`import { Format } from "typebox/format";
+		`import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { Format } from "typebox/format";
 import { Type } from "typebox";
+import { shared } from "./a.ts";
+import { viaB } from "./b.ts";
 export default function (pi) {
-	Format.Set("atomic-native-format", (value) => value.startsWith("ok-"));
-	pi.events.emit("native-typebox", { Format, schema: Type.Object({ value: Type.String({ format: "atomic-native-format" }) }) });
+	Format.Set("atomic-bun-format", (value) => value.startsWith("ok-"));
+	pi.events.emit("bun-extension", {
+		Format,
+		schema: Type.Object({ value: Type.String({ format: "atomic-bun-format" }) }),
+		oneShared: shared === viaB,
+		meta: {
+			url: import.meta.url,
+			filename: import.meta.filename,
+			dirname: import.meta.dirname,
+			path: import.meta.path,
+			dir: import.meta.dir,
+			file: import.meta.file,
+			main: import.meta.main,
+			dirnameGlobal: __dirname,
+			filenameGlobal: __filename,
+			required: require.resolve("./a.ts"),
+		},
+		asset: readFileSync(join(import.meta.dir, "asset.txt"), "utf8"),
+	});
 }
 `,
 	);
 	const bus = createEventBus();
-	const observations: Array<{ Format: object; schema: object }> = [];
-	bus.on("native-typebox", (data) => observations.push(data as (typeof observations)[number]));
+	const observations: Array<Record<string, unknown> & { Format: object; schema: object }> = [];
+	bus.on("bun-extension", (data) => observations.push(data as (typeof observations)[number]));
 	const saved = host.Format.Entries();
 	try {
 		for (const load of ["first", "reload"]) {
@@ -54,6 +83,24 @@ export default function (pi) {
 			const call = (value: string) => ({ type: "toolCall" as const, id: "call", name: "probe", arguments: { value } });
 			assert.deepEqual(validateToolArguments(tool, call("ok-value")), { value: "ok-value" }, load);
 			assert.throws(() => validateToolArguments(tool, call("other")), /Validation failed/, load);
+			assert.equal(observed.oneShared, true, load);
+			assert.deepEqual(
+				observed.meta,
+				{
+					url: `file://${entry}`,
+					filename: entry,
+					dirname: extensionDir,
+					path: entry,
+					dir: extensionDir,
+					file: "extension.ts",
+					main: false,
+					dirnameGlobal: extensionDir,
+					filenameGlobal: entry,
+					required: path.join(extensionDir, "a.ts"),
+				},
+				load,
+			);
+			assert.equal(observed.asset, "extension asset\n", load);
 		}
 		assert.equal(observations.length, 2);
 	} finally {

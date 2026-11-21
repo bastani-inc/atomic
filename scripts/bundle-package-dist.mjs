@@ -18,9 +18,8 @@
  *   resolve as before, wherever the package is installed.
  * - A shared file is named by its first module, so an install updated in place keeps the names of files whose first
  *   module stays the same.
- * - A module named with `--standalone=<path below dist>,...` (or below a directory named with a trailing `/`) keeps its
- *   compiled file and code: the release build of the single-file binary copies such files beside the binary and loads
- *   them from there, and an export condition may name such a file for a runtime that should not load the bundle.
+ * - A module named with `--standalone=<path below dist>,...` keeps its compiled file and code: the release build of
+ *   the single-file binary copies such files beside the binary and loads them from there.
  * - A package named with `--inline=<package>,...` is bundled in, its modules grouped apart from the package's own:
  *   the package's compiled modules that import it then share one copy of it, loaded from the shared files.
  *
@@ -249,13 +248,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	const compiledDir = join(cacheDir, "compiled");
 	/** @type {{ facades: Record<string, string> }} */
 	const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : { facades: {} };
-	const standaloneFiles = (options.standalone ?? []).filter((rel) => !rel.endsWith("/")).map((rel) => join(dist, rel));
-	const standaloneDirs = (options.standalone ?? []).filter((rel) => rel.endsWith("/")).map((rel) => join(dist, rel));
-	/** The standalone modules: those named, and those below a named directory. */
-	const standalone = {
-		has: (/** @type {string} */ file) =>
-			standaloneFiles.includes(file) || standaloneDirs.some((dir) => file.startsWith(dir)),
-	};
+	const standalone = new Set((options.standalone ?? []).map((rel) => join(dist, rel)));
 	const inline = options.inline ?? [];
 	/** Whether a bare specifier names a package that stays external, rather than one bundled in. */
 	const isExternal = (/** @type {string} */ id) =>
@@ -283,7 +276,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		const root = inlinedRootOf(id);
 		return root ? `${root.name}/${toPosix(relative(root.dir, id))}` : toPosix(relative(packageDir, id));
 	};
-	for (const file of [...standaloneFiles, ...standaloneDirs]) {
+	for (const file of standalone) {
 		if (!existsSync(file))
 			throw new Error(`bundle-package-dist: standalone module ${relative(dist, file)} does not exist`);
 	}
@@ -545,7 +538,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
  * they read (the package's other files in `dist`, copied), each with its source map inline.
  * @param {string} dist
  * @param {string} compiledDir The saved compiled modules.
- * @param {{ has(file: string): boolean }} standalone
+ * @param {Set<string>} standalone
  */
 function writeModulesCopy(dist, compiledDir, standalone) {
 	const modules = join(dist, MODULES_DIRECTORY);

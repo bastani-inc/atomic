@@ -118,8 +118,8 @@ export default function (pi) {
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );
 
-// Bun imports an extension natively on its first load, so Bun, not the extension loader, resolves its `typebox`
-// imports. Under Bun, Atomic uses the `typebox` package, so the extension's formats apply to tool validation.
+// Under Bun the loader transforms an extension's first load too: an extension with a `typebox` package of its own
+// registers its formats in Atomic's copy, its modules load once, and its `import.meta` names its own files.
 it(
 	"under Bun, an extension's typebox formats apply to tool validation on its first load and after a reload",
 	() => {

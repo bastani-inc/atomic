@@ -8,7 +8,8 @@ type JitiTransform = NonNullable<NonNullable<Parameters<CreateJiti>[1]>["transfo
 type JitiTransformOptions = Parameters<JitiTransform>[0];
 
 // 2: a stored transform starts with a line listing the module's static imports.
-const TRANSFORM_CACHE_FORMAT = 2;
+// 3: `import.meta` names the module's own file (see `moduleLocationPlugin`).
+const TRANSFORM_CACHE_FORMAT = 3;
 const RELATIVE_SCRIPT_SPECIFIER = /["'](\.\.?\/[^"'\r\n]*?\.[cm]?jsx?)["']/g;
 const SCRIPT_EXTENSION = /\.[cm]?jsx?$/;
 const TYPESCRIPT_EXTENSION_FOR: Readonly<Record<string, string>> = {
@@ -114,6 +115,58 @@ function typeScriptSourceSpecifierPlugin(_babel: object, options: PluginOptions)
 			},
 			CallExpression(nodePath: NodePath<CallNode>) {
 				if (isModuleLoadCall(nodePath)) rewriteSource(nodePath.node.arguments?.[0], options.rewrites);
+			},
+		},
+	};
+}
+
+interface MetaMemberNode {
+	type: string;
+	computed?: boolean;
+	object?: { type: string; meta?: { name?: string }; property?: { name?: string } };
+	property?: { type: string; name?: string };
+}
+
+interface MetaMemberPath {
+	node: MetaMemberNode;
+	scope: { hasBinding(name: string): boolean };
+	replaceWith(node: object): void;
+}
+
+interface BabelTypes {
+	stringLiteral(value: string): object;
+	booleanLiteral(value: boolean): object;
+	identifier(name: string): object;
+}
+
+/**
+ * jiti replaces a module's `import.meta.url` with its file's URL, but under Bun it evaluates the transformed code as a
+ * `data:` module, whose `import.meta` names no file. This replaces the rest of what a module's `import.meta` says about
+ * its file (Node's `filename` and `dirname`, Bun's `path`, `dir`, `file`, `main` and `require`) with the module's own,
+ * as a natively imported module has them.
+ */
+function moduleLocationPlugin(babel: { types: BabelTypes }, options: { filename: string }) {
+	const { types } = babel;
+	const values: Readonly<Record<string, (nodePath: MetaMemberPath) => object | undefined>> = {
+		filename: () => types.stringLiteral(options.filename),
+		path: () => types.stringLiteral(options.filename),
+		dirname: () => types.stringLiteral(path.dirname(options.filename)),
+		dir: () => types.stringLiteral(path.dirname(options.filename)),
+		file: () => types.stringLiteral(path.basename(options.filename)),
+		main: () => types.booleanLiteral(false),
+		// The `require` jiti gives the module, unless the module declares its own.
+		require: (nodePath) => (nodePath.scope.hasBinding("require") ? undefined : types.identifier("require")),
+	};
+	return {
+		name: "atomic-module-location",
+		visitor: {
+			MemberExpression(nodePath: MetaMemberPath) {
+				const { object, property, computed } = nodePath.node;
+				if (computed || object?.type !== "MetaProperty" || property?.type !== "Identifier") return;
+				if (object.meta?.name !== "import" || object.property?.name !== "meta" || property.name === undefined)
+					return;
+				const replacement = Object.hasOwn(values, property.name) ? values[property.name]?.(nodePath) : undefined;
+				if (replacement !== undefined) nodePath.replaceWith(replacement);
 			},
 		},
 	};
@@ -225,7 +278,14 @@ export function createTypeScriptSourceSpecifierTransform(
 		const imports: string[] = [];
 		const code = babelHost.transform({
 			...options,
-			babel: { ...options.babel, plugins: [...plugins, [typeScriptSourceSpecifierPlugin, { rewrites, imports }]] },
+			babel: {
+				...options.babel,
+				plugins: [
+					...plugins,
+					[typeScriptSourceSpecifierPlugin, { rewrites, imports }],
+					[moduleLocationPlugin, { filename: options.filename }],
+				],
+			},
 		});
 		const transformed: TransformedModule = { code, imports };
 		if (cached && !code.includes("__JITI_ERROR__")) {
