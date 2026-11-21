@@ -45,6 +45,20 @@ function loadedFrom(entries: readonly string[]): Set<string> {
 }
 
 /**
+ * Copies a directory tree file by file, following links. Not `fs.cpSync`: on Windows Node 22 it aborts the process for
+ * a destination below a path with a non-ASCII letter, which this test's install path has on purpose.
+ */
+function copyTree(source: string, target: string, keep: (path: string) => boolean = () => true): void {
+	fs.mkdirSync(target, { recursive: true });
+	for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+		const from = join(source, entry.name);
+		if (!keep(from)) continue;
+		if (fs.statSync(from).isDirectory()) copyTree(from, join(target, entry.name), keep);
+		else fs.copyFileSync(from, join(target, entry.name));
+	}
+}
+
+/**
  * The package installed at a path with spaces, a non-ASCII letter and URL-reserved characters, beside links to the
  * workspace's other packages: what `npm install` leaves, moved somewhere the build never saw.
  */
@@ -72,7 +86,7 @@ function installedLayout(name = "install"): { readonly nodeModules: string; read
 	}
 	fs.mkdirSync(atomic, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(atomic, "package.json"));
-	fs.cpSync(dist, join(atomic, "dist"), { recursive: true, dereference: true });
+	copyTree(dist, join(atomic, "dist"));
 	return { nodeModules, atomic };
 }
 
@@ -308,12 +322,9 @@ for (const host of ["in-process", "isolated"] as const) {
 function compiledPackage(target: string): void {
 	fs.mkdirSync(target, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(target, "package.json"));
-	fs.cpSync(join(packageDir, "scripts", "split-dist.mjs"), join(target, "scripts", "split-dist.mjs"));
-	fs.cpSync(dist, join(target, "dist"), {
-		recursive: true,
-		dereference: true,
-		filter: (source) => !source.includes(`${join("dist", "_shared")}`),
-	});
+	fs.mkdirSync(join(target, "scripts"), { recursive: true });
+	fs.copyFileSync(join(packageDir, "scripts", "split-dist.mjs"), join(target, "scripts", "split-dist.mjs"));
+	copyTree(dist, join(target, "dist"), (source) => !source.includes(join("dist", "_shared")));
 	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
 	const bundled = Object.keys(
 		(JSON.parse(fs.readFileSync(join(state, "state.json"), "utf8")) as { entries: Record<string, string> }).entries,
@@ -361,7 +372,7 @@ test.each(RELEASES)(
 		const installed = join(dirname(atomic), `atomic-live-${RELEASES.indexOf(release)}`);
 		fs.mkdirSync(installed, { recursive: true });
 		fs.copyFileSync(join(first, "package.json"), join(installed, "package.json"));
-		fs.cpSync(join(first, "dist"), join(installed, "dist"), { recursive: true });
+		copyTree(join(first, "dist"), join(installed, "dist"));
 		const project = fs.mkdtempSync(join(dirname(nodeModules), "live-"));
 		const probe = join(project, "probe.mjs");
 		fs.writeFileSync(
@@ -391,7 +402,7 @@ test.each(RELEASES)(
 		await vi.waitFor(() => assert.ok(stdout.includes("loaded"), stderr), { timeout: LAYOUT_TIMEOUT_MS / 2 });
 		// As npm replaces a package: the earlier files leave, the rebuild takes their place.
 		fs.renameSync(join(installed, "dist"), join(installed, "dist-replaced"));
-		fs.cpSync(join(second, "dist"), join(installed, "dist"), { recursive: true });
+		copyTree(join(second, "dist"), join(installed, "dist"));
 		child.stdin.end("go\n");
 		assert.equal(await exited, 0, stderr);
 		const result = JSON.parse(stdout.trim().split("\n").at(-1) as string) as { same: boolean; instance: boolean };
