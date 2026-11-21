@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { SessionManager } from "./session-manager.ts";
 import { bindSessionFile, JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
-import { readSessionRange } from "./storage/session/session-resume.ts";
+import { readSessionRange } from "./storage/session/session-resume.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 /** Which queued messages, saved with their receipt ids, a session's store holds (see `findQueuedMessages`). */
