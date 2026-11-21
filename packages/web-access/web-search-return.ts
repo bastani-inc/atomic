@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
+import type { TextContent } from "@bastani/atomic-ai";
 import type { ExtractedContent } from "./extract.js";
 import {
 	duplicateQuerySet,
@@ -24,7 +25,7 @@ export interface SearchReturnOptions {
 }
 
 export interface SearchReturnPayload {
-	content: Array<{ type: string; text: string }>;
+	content: TextContent[];
 	details: Record<string, unknown>;
 }
 
