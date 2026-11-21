@@ -20,10 +20,18 @@ const START_MS = 15_000;
 const STALLED_TEST_MS = START_MS + STOP_ESCALATION_MS + 15_000;
 // STATUS_CONTROL_C_EXIT: how Windows reports a console program ended by Ctrl+C, Ctrl+Break or closing its console.
 const WINDOWS_CONSOLE_INTERRUPTED = 0xc000013a;
-// The console-close harness waits this long for the queries to start and then for the script to exit.
-const CLOSE_HARNESS_S = START_MS / 1_000 + 10;
-const CLOSE_TEST_MS = 2 * CLOSE_HARNESS_S * 1_000 + 15_000;
+// The console-close harness closes the console once the queries have started, then gives the script this long to exit;
+// Windows itself ends a console program about five seconds after the close.
+const CLOSE_EXIT_S = 10;
+const CLOSE_TEST_MS = START_MS + CLOSE_EXIT_S * 1_000 + 15_000;
 const consoleClose = join(moduleDir(import.meta.url), "../fixtures/skill-creator/console-close.py");
+
+/** What the console-close harness reports: records ready at the close, the exit status, the console's text. */
+interface CloseOutcome {
+	readonly ready: number;
+	readonly status: number | null;
+	readonly screen: string;
+}
 
 const sandboxes: ScriptSandbox[] = [];
 afterEach(() => {
@@ -329,14 +337,18 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 					consoleClose,
 					box.log,
 					"2",
-					`${CLOSE_HARNESS_S}`,
+					// A fake Atomic records itself, then again with its helper and that helper's child.
+					"grandchild",
+					`${START_MS / 1_000}`,
+					`${CLOSE_EXIT_S}`,
 					python ?? "python",
 					...evalArgs(box, ["one", "two"]),
 				],
 				{ cwd: box.project, env: box.env({ FAKE_ATOMIC_SCENARIO: "hold-child" }) },
 			);
 			assert.equal(result.exitCode, 0, result.stderr.toString());
-			const closed = JSON.parse(result.stdout.toString()) as { status: number | null; screen: string };
+			const closed = JSON.parse(result.stdout.toString()) as CloseOutcome;
+			assert.equal(closed.ready, 2, "both queries' Atomic and their processes ran when the console closed");
 			assert.equal(closed.status, WINDOWS_CONSOLE_INTERRUPTED, closed.screen);
 			assert.doesNotMatch(closed.screen, /query failed|"results"/u, "a closed console reports no query as failed");
 			await waitUntilGone(startedPids(box.records()), 5_000);
@@ -364,7 +376,9 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 					consoleClose,
 					box.log,
 					"1",
-					`${CLOSE_HARNESS_S}`,
+					"-",
+					`${START_MS / 1_000}`,
+					`${CLOSE_EXIT_S}`,
 					python ?? "python",
 					"-c",
 					program,
@@ -373,7 +387,8 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 				{ cwd: box.project, env: box.env() },
 			);
 			assert.equal(result.exitCode, 0, result.stderr.toString());
-			const closed = JSON.parse(result.stdout.toString()) as { status: number | null; screen: string };
+			const closed = JSON.parse(result.stdout.toString()) as CloseOutcome;
+			assert.equal(closed.ready, 1, "the script ran when the console closed");
 			assert.equal(closed.status, WINDOWS_CONSOLE_INTERRUPTED, closed.screen);
 		},
 		CLOSE_TEST_MS,

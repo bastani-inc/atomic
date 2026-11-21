@@ -1,11 +1,12 @@
 """Windows: run a command in a console of its own, then close that console as closing its window does.
 
-usage: python console-close.py <records folder> <count> <timeout seconds> <command...>
+usage: python console-close.py <records folder> <count> <key> <start seconds> <exit seconds> <command...>
 
-The command starts on a pseudoconsole. Once the folder holds <count> .json records, the console is
-closed, which sends CTRL_CLOSE_EVENT to every process attached to it. Prints one JSON object: the
-command's exit status (or null if it still ran after the timeout, when it is ended), the seconds it
-took to exit after the close, and what it wrote to the console.
+The command starts on a pseudoconsole. Once the folder holds <count> .json records that each have
+<key> (any record when <key> is "-"), or <start seconds> have passed, the console is closed, which
+sends CTRL_CLOSE_EVENT to every process attached to it. Prints one JSON object: how many such records
+there were at the close, the command's exit status (null if it still ran <exit seconds> after the
+close, when it is ended), the seconds it took to exit, and what it wrote to the console.
 """
 
 import ctypes
@@ -17,8 +18,9 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-records, count, timeout = Path(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
-command = subprocess.list2cmdline(sys.argv[4:])
+records, count, key = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+start_seconds, exit_seconds = float(sys.argv[4]), float(sys.argv[5])
+command = subprocess.list2cmdline(sys.argv[6:])
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
@@ -156,18 +158,31 @@ assert kernel32.CreateProcessW(
     ctypes.byref(process),
 ), ctypes.get_last_error()
 
-deadline = time.monotonic() + timeout
-while len(list(records.glob("*.json"))) < count and time.monotonic() < deadline:
+
+def ready() -> int:
+    found = 0
+    for path in records.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # Being written.
+        found += key == "-" or key in record
+    return found
+
+
+deadline = time.monotonic() + start_seconds
+while ready() < count and time.monotonic() < deadline:
     time.sleep(0.05)
+started = ready()
 closed = time.monotonic()
 # ClosePseudoConsole can wait for the console's processes; the command's exit is what is measured.
 threading.Thread(target=kernel32.ClosePseudoConsole, args=(console,), daemon=True).start()
 status = None
-if kernel32.WaitForSingleObject(process.hProcess, int(max(deadline - time.monotonic(), 0) * 1000)) == 0:
+if kernel32.WaitForSingleObject(process.hProcess, int(exit_seconds * 1000)) == 0:
     code = wintypes.DWORD()
     kernel32.GetExitCodeProcess(process.hProcess, ctypes.byref(code))
     status = code.value
 else:
     kernel32.TerminateProcess(process.hProcess, 1)
 seconds = time.monotonic() - closed
-print(json.dumps({"status": status, "seconds": seconds, "screen": screen.decode("utf-8", errors="replace")}))
+print(json.dumps({"ready": started, "status": status, "seconds": seconds, "screen": screen.decode("utf-8", errors="replace")}))
