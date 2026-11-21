@@ -5,7 +5,7 @@ import { beforeAll, test, vi } from "vitest";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
-import type { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
+import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
@@ -146,14 +146,8 @@ test("an extension completion repaints without revealing its component prototype
 });
 
 test("a memoized extension completion card behind a transparent proxy expands and collapses (#5690)", async () => {
-	// Use the same built module instance for the host and the extension's deep import.
-	const components = new URL("../../packages/coding-agent/dist/modes/interactive/components/", import.meta.url);
-	const { CustomMessageComponent: Host }: { CustomMessageComponent: typeof CustomMessageComponent } = await import(
-		new URL("custom-message.js", components).href
-	);
-	const { TaskCompletionMessage: Card }: { TaskCompletionMessage: typeof TaskCompletionMessage } = await import(
-		new URL("task-completion-message.js", components).href
-	);
+	const Host = CustomMessageComponent;
+	const Card = TaskCompletionMessage;
 	const notice = { title, taskId: "child", status: "completed", preview: "one\ntwo\nthree\nfour\nfive\nsix" } as const;
 	let cached: TaskCompletionMessage | undefined;
 	const card = new Host(

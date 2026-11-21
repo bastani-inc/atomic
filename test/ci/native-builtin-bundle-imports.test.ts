@@ -39,7 +39,15 @@ function stageBuiltinBuild(fixture: string): string {
 	// Dependencies and companion sources are read-only inputs; every build output stays in the copy.
 	symlinkSync(join(root, "node_modules"), join(fixture, "node_modules"), "junction");
 	const packageDependencies = join(root, "packages/coding-agent/node_modules");
-	if (existsSync(packageDependencies)) symlinkSync(packageDependencies, join(packageRoot, "node_modules"), "junction");
+	if (existsSync(packageDependencies)) {
+		// The package's dependencies, each linked; its build state (`node_modules/.cache`) is the copy's own.
+		mkdirSync(join(packageRoot, "node_modules"));
+		for (const name of readdirSync(packageDependencies)) {
+			const dependency = join(packageDependencies, name);
+			if (name !== ".cache" && statSync(dependency).isDirectory())
+				symlinkSync(dependency, join(packageRoot, "node_modules", name), "junction");
+		}
+	}
 	for (const name of readdirSync(join(root, "packages"))) {
 		if (name !== "coding-agent") {
 			symlinkSync(join(root, "packages", name), join(fixture, "packages", name), "junction");
@@ -101,6 +109,9 @@ test(
 	async () => {
 		const sharedBuiltinRoot = join(root, "packages/coding-agent/dist/builtin");
 		const sharedBuiltinMtime = statSync(sharedBuiltinRoot, { throwIfNoEntry: false })?.mtimeMs;
+		// What the checkout's last split recorded, which its next split and `npm pack` read.
+		const splitState = join(root, "packages/coding-agent/node_modules/.cache/atomic-split-dist/state.json");
+		const splitStateBefore = existsSync(splitState) ? readFileSync(splitState, "utf8") : undefined;
 		const fixture = mkdtempSync(join(root, ".tmp-builtin-bundle-contract-"));
 		try {
 			const packageRoot = stageBuiltinBuild(fixture);
@@ -112,6 +123,11 @@ test(
 				statSync(sharedBuiltinRoot, { throwIfNoEntry: false })?.mtimeMs,
 				sharedBuiltinMtime,
 				"the contract build must not rewrite the checkout's builtin bundles",
+			);
+			assert.equal(
+				existsSync(splitState) ? readFileSync(splitState, "utf8") : undefined,
+				splitStateBefore,
+				"the contract build must not rewrite the checkout's split state",
 			);
 
 			const hostSpecifiers = new Set(Object.keys(await getVirtualModules()));
