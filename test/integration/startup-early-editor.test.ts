@@ -315,7 +315,8 @@ test(
 		const exit = (await program.exited) as PtyExit;
 		assert.equal(exit.exitCode, 1);
 		const output = program.output();
-		assert.ok(output.includes("\x1b[?1049h"), "the early editor showed before the error");
+		// Its prompt marker, in the program's own output or in what Windows' pseudo console redrew from it.
+		assert.ok(output.includes("❯"), "the early editor showed before the error");
 		// As without the early editor: the screen shows the error, once, after everything else, and no line of the prompt.
 		const lines = ((await screensOf(output, 100, 30)).at(-1) ?? "")
 			.split("\n")
