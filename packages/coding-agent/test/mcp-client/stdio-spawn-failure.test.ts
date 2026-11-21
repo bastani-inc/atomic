@@ -14,7 +14,8 @@ vi.mock("cross-spawn", () => ({
 
 describe("StdioTransport when the process cannot be created", () => {
 	it("reports the spawn error for a child that has no pipes", async () => {
-		const transport = new StdioTransport({ command: "irrelevant" });
+		// A path is started as it is: what the start reports is the faked spawn's.
+		const transport = new StdioTransport({ command: process.execPath });
 		await assert.rejects(transport.start(), { code: "EMFILE" });
 	});
 });
