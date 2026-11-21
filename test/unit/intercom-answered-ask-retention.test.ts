@@ -15,6 +15,7 @@ import { OutboundAsks, SETTLED_ASKS_PER_RECORD } from "../../packages/intercom/o
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
+import { hasIntercomHistory } from "../../packages/intercom/session-recovery.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -367,4 +368,24 @@ test("a restart records many taken answers in one bounded entry, and the rest at
 		(entry) => (entry as { data: { askIds: string[] } }).data.askIds.length,
 	);
 	assert.deepEqual(records, [SETTLED_ASKS_PER_RECORD, 20]);
+});
+
+test("a reopened session with a pending ask still joins Intercom at recovery after its answered asks are recorded", async () => {
+	const [, open] = stores.find(([name]) => name.startsWith("a SQLite"))!;
+	const store = await open();
+	const { manager } = store;
+	await asked(manager, "ask-answered");
+	await arrived(manager, replyTo("ask-answered"));
+	await asksOf(manager).recordAnswered("ask-answered");
+	await asked(manager, "ask-pending");
+	await compacted(manager);
+
+	const reopened = await restarted(store);
+
+	assert.deepEqual(
+		kept(reopened, "intercom_ask").map((entry) => (entry as { data: { askId: string } }).data.askId),
+		["ask-pending"],
+	);
+	// Its reply may be held for it at the broker: a restart connects to Intercom to take it.
+	assert.equal(hasIntercomHistory(reopened.getEntries()), true);
 });
