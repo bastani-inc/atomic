@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readdir, readlink, realpath, stat } from "node:fs/promises";
 import { sep } from "node:path";
+import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 
 export async function processesWorkIn(path: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
 	let target: string;
@@ -52,11 +53,14 @@ function gone(error: unknown): boolean {
 
 const UNREADABLE_ENTRY = / info error|\((?:readlink|l?stat): /;
 
-function openFilesInside(inside: (link: string) => boolean): Promise<boolean> {
+async function openFilesInside(inside: (link: string) => boolean): Promise<boolean> {
 	const uid = String(process.getuid?.() ?? "");
+	const lsof = await findHelperExecutableAsync("lsof");
+	// Without lsof nothing tells the checkout is free, as when lsof fails.
+	if (lsof === undefined) return true;
 	return new Promise((resolve) => {
 		execFile(
-			"lsof",
+			lsof,
 			["-w", "-n", "-P", "-u", uid, "-F", "n"],
 			{ encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 * 1024 },
 			(error, stdout) => {

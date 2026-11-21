@@ -79,11 +79,18 @@ export const PROTOCOL_4_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = 
 	"reach_failed",
 ]);
 
+/** #5607: frames written only to a client that registered saying it takes ids back (`takesIdHandoff`). */
+export const ID_HANDOFF_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = new Set<BrokerOutboundFrame["type"]>([
+	"id_handoff",
+]);
+
 /** Sockets whose client registered speaking protocol 1 only. */
 const protocol1Clients = new WeakSet<net.Socket>();
 /** #4642: sockets whose client registered speaking protocol 3 or later. */
 const hostingClients = new WeakSet<net.Socket>();
 const reachClients = new WeakSet<net.Socket>();
+/** #5607: sockets whose client registered saying it takes ids back. */
+const idHandoffClients = new WeakSet<net.Socket>();
 
 /** Record the protocol range the client on `socket` registered with, before anything is written to it. */
 export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtocolRange): void {
@@ -95,6 +102,12 @@ export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtoco
 	else reachClients.delete(socket);
 }
 
+/** #5607: record whether the client on `socket` registered saying it takes ids back, before anything is written to it. */
+export function recordClientTakesIdHandoff(socket: net.Socket, takes: boolean): void {
+	if (takes) idHandoffClients.add(socket);
+	else idHandoffClients.delete(socket);
+}
+
 /** #4642: whether the client on `socket` registered speaking protocol 3, so it may host sessions. */
 export function clientHostsSessions(socket: net.Socket): boolean {
 	return hostingClients.has(socket);
@@ -104,6 +117,7 @@ export function clientHostsSessions(socket: net.Socket): boolean {
 function clientKnows(socket: net.Socket, message: BrokerOutboundFrame): boolean {
 	if (PROTOCOL_3_FRAME_TYPES.has(message.type)) return hostingClients.has(socket);
 	if (PROTOCOL_4_FRAME_TYPES.has(message.type)) return reachClients.has(socket);
+	if (ID_HANDOFF_FRAME_TYPES.has(message.type)) return idHandoffClients.has(socket);
 	return !(protocol1Clients.has(socket) && PROTOCOL_2_FRAME_TYPES.has(message.type));
 }
 
