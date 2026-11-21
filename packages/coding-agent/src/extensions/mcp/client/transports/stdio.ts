@@ -84,7 +84,8 @@ const DIRECT_EXTENSIONS = new Set([".com", ".exe"]);
 /**
  * Windows: how `command` starts when its program is a script whose first line names an interpreter (`#!/usr/bin/env
  * node`), which cross-spawn starts by that interpreter, but with the interpreter looked up as the program is, never in
- * the project folder. The script is the program `launch` found or names, or, when nothing was found under a name
+ * the project folder, and in a working directory configured outside it first, as for a program given by name. The
+ * script is the program `launch` found or names, or, when nothing was found under a name
  * without an extension, a file of that very name in PATH's absolute directories, as cross-spawn also tries. Undefined
  * for a program that is no such script; a missing interpreter fails as a missing program does.
  */
@@ -93,6 +94,7 @@ async function interpretedLaunch(
 	launch: HelperLaunch,
 	cwd: string,
 	search: HelperExecutableOptions,
+	interpreterSearch: () => Promise<HelperExecutableOptions>,
 ): Promise<{ readonly launch: HelperLaunch; readonly args: readonly string[] } | undefined> {
 	const script =
 		launch.missing === undefined
@@ -105,7 +107,7 @@ async function interpretedLaunch(
 	if (interpreter === undefined) return undefined;
 	const [program, ...interpreterArgs] = interpreter;
 	return {
-		launch: await helperLaunchAsync(program, { ...search, shellScripts: true }),
+		launch: await helperLaunchAsync(program, { ...(await interpreterSearch()), shellScripts: true }),
 		args: [...interpreterArgs, script],
 	};
 }
@@ -232,28 +234,31 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		/** What the program's command line starts with before the server's arguments: a script's interpreter's. */
 		let leading: readonly string[] = [];
 		try {
-			// Windows looks in a program's working directory first: one configured outside the project folder, for a
-			// program given by name.
-			const searchFirst =
+			// Windows looks in a program's working directory first: one configured outside the project folder.
+			const firstFolder = async (): Promise<string | undefined> =>
 				process.platform === "win32" &&
-				!/[\\/:]/.test(this.options.command) &&
 				cwd !== undefined &&
 				projectCwd !== undefined &&
 				cwd !== projectCwd &&
 				(await untilAborted(outsideProject(cwd, projectCwd), this.lookup.signal))
 					? cwd
 					: undefined;
-			const search: HelperExecutableOptions = {
+			const searchFrom = (searchFirst: string | undefined): HelperExecutableOptions => ({
 				env,
 				...(projectCwd === undefined ? {} : { cwd: projectCwd }),
 				...(searchFirst === undefined ? {} : { searchFirst }),
 				signal: this.lookup.signal,
-			};
+			});
+			// A program given by its path needs no search, unless it is a script whose interpreter is looked up.
+			const named = !/[\\/:]/.test(this.options.command);
+			const search = searchFrom(named ? await firstFolder() : undefined);
 			// cross-spawn runs `.cmd` and `.bat` shims through cmd.exe.
 			launch = await helperLaunchAsync(this.options.command, { ...search, shellScripts: true });
 			if (process.platform === "win32") {
 				const interpreted = await untilAborted(
-					interpretedLaunch(this.options.command, launch, cwd ?? process.cwd(), search),
+					interpretedLaunch(this.options.command, launch, cwd ?? process.cwd(), search, async () =>
+						named ? search : searchFrom(await firstFolder()),
+					),
 					this.lookup.signal,
 				);
 				if (interpreted !== undefined) ({ launch, args: leading } = interpreted);

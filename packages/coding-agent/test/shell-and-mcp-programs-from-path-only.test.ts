@@ -279,6 +279,27 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		);
 	}
 
+	test.skipIf(!windows)(
+		"an MCP server script given by its path finds its interpreter in the server's own folder outside the project first",
+		async () => {
+			// A portable layout: the script and the Node it needs, side by side, and no Node on PATH.
+			const tools = join(root, "tools");
+			mkdirSync(tools);
+			plantProgram(tools, "node");
+			const script = join(tools, "atomic-test-mcp-script");
+			writeFileSync(
+				script,
+				'#!/usr/bin/env node\nrequire("fs").appendFileSync(process.env.PLANTED_PROGRAM_MARKER, "script\\n"); setTimeout(() => {}, 5000);\n',
+			);
+			const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+			const transport = new StdioTransport({ command: script, cwd: tools, projectCwd: project });
+
+			await transport.start();
+			await vi.waitFor(() => assert.deepEqual(runs(), ["script"]), { timeout: SERVER_START_BUDGET_MS });
+			await transport.close();
+		},
+	);
+
 	test("an MCP server closed while its program is looked up never starts", async () => {
 		const bin = join(root, "bin");
 		mkdirSync(bin);
