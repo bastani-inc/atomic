@@ -45,6 +45,7 @@ async function writeFixturePackage(): Promise<void> {
 		[
 			'/// <reference path="./globals.d.ts" />',
 			'/// <reference types="./ambient.d.ts" />',
+			'/// <REFERENCE preserve="true" PATH="./preserved.d.ts" />',
 			'/// <reference types="node" />',
 			'export { Session } from "./session.js";',
 			'export type * from "./types/index.js";',
@@ -55,6 +56,7 @@ async function writeFixturePackage(): Promise<void> {
 	);
 	await write("dist/globals.d.ts", "declare const marker: string;");
 	await write("dist/ambient.d.ts", "declare const ambient: string;");
+	await write("dist/preserved.d.ts", "declare const preserved: string;");
 	await write("dist/conditioned.d.ts", "export declare const conditioned: number;");
 	await write("dist/session.d.ts", 'import type { Row } from "./row.js";\nexport declare class Session { row: Row; }');
 	await write("dist/row.d.ts", "export interface Row { id: string }");
@@ -77,7 +79,7 @@ test(
 	async () => {
 		await writeFixturePackage();
 
-		assert.deepEqual(excludeUnreachableDeclarations(root), { kept: 11, excluded: 2 });
+		assert.deepEqual(excludeUnreachableDeclarations(root), { kept: 12, excluded: 2 });
 		assert.ok(existsSync(join(root, "dist/internal.d.ts")), "dist keeps every declaration for incremental builds");
 
 		const pack = spawnSyncCollect([...npmSpawnPrefix(), "pack", "--dry-run", "--json", "--ignore-scripts"], {
@@ -98,6 +100,7 @@ test(
 			"dist/legacy.d.ts",
 			"dist/plain.d.ts",
 			"dist/plain.js",
+			"dist/preserved.d.ts",
 			"dist/row.d.ts",
 			"dist/session.d.ts",
 			"dist/session.d.ts.map",

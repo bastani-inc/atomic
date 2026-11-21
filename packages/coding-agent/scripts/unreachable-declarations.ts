@@ -25,7 +25,8 @@ interface SyntaxNode {
 	readonly [key: string]: SyntaxValue;
 }
 
-const REFERENCE = /^\/\s*<reference\s+(path|types)\s*=\s*["']([^"']+)["']/;
+const REFERENCE = /^\/\s*<reference\b([^>]*)>/i;
+const REFERENCE_ATTRIBUTE = /\b(path|types)\s*=\s*["']([^"']+)["']/gi;
 
 /**
  * The declaration files TypeScript can resolve for a package manifest: its top-level `types`, every
@@ -77,9 +78,11 @@ export function declarationReferences(path: string): string[] {
 	});
 	const specifiers = new Set<string>();
 	for (const comment of program.comments ?? []) {
-		const match = comment.type === "CommentLine" ? REFERENCE.exec(comment.value.trim()) : null;
-		// A `types` reference names a package unless it is a relative path.
-		if (match?.[2] && (match[1] === "path" || match[2].startsWith("."))) specifiers.add(match[2]);
+		const attributes = comment.type === "CommentLine" ? REFERENCE.exec(comment.value.trim())?.[1] : undefined;
+		for (const [, kind, value] of attributes?.matchAll(REFERENCE_ATTRIBUTE) ?? []) {
+			// A `types` reference names a package unless it is a relative path.
+			if (value && (kind?.toLowerCase() === "path" || value.startsWith("."))) specifiers.add(value);
+		}
 	}
 	const visit = (node: SyntaxValue): void => {
 		if (Array.isArray(node)) {
