@@ -1,19 +1,9 @@
 import { isPowerShellAvailable } from "../utils/shell.ts";
 import type { Settings } from "./settings-types.ts";
+import { isToolModifier } from "./tool-list-entries.js";
 import { defaultToolSelectionFor } from "./tools/index.js";
 
-export function isToolModifier(entry: string): boolean {
-	return entry.startsWith("+") || entry.startsWith("-");
-}
-
-export function getToolListError(entries: readonly string[]): string | undefined {
-	const modifiers = entries.filter(isToolModifier);
-	if (modifiers.length === 0) return undefined;
-	if (modifiers.length < entries.length) return "tool names cannot be mixed with +name or -name entries";
-	const pattern = modifiers.find((entry) => entry.includes("*"));
-	if (pattern) return `+name and -name entries take exact tool names, not patterns: ${pattern}`;
-	return undefined;
-}
+export { getToolListError, isToolModifier } from "./tool-list-entries.js";
 
 export function applyToolModifiers(base: readonly string[], entries: readonly string[]): string[] {
 	const tools = [...base];

@@ -41,6 +41,7 @@
 - `atomic -p` with an extension command prints the command's own answer, or fails on its failed reply, even when another message is saved after it, and waits for a reply the command asks for while an earlier run is still finishing
 - On Windows, the first quit after installing or upgrading Atomic no longer takes several seconds. A session that finds Node's compile cache empty or out of date for this version runs without it, and a short-lived background process writes the cache while the session runs, so later sessions start from it ([#6132](https://github.com/bastani-inc/atomic/issues/6132))
 - `session.dispose()` now waits, for up to about five seconds, until the extension transpile cache has finished storing what the session's own extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
+- Starting Atomic with `--offline`, `--debug`, a `PI_OFFLINE` or non-`1` `ATOMIC_OFFLINE` value, or the `debug` or `httpProxy` setting no longer throws away the engine it starts loading at launch and loads a second one. The prompt takes input about 1.8 s sooner on Windows and 0.7 s sooner on Linux, and on a cold Windows start without antivirus exclusions about 8 s sooner, without the 5 s pause that followed the first frame there.
 
 ## [0.10.3] - 2026-11-21
 
