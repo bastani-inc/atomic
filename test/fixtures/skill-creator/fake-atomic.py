@@ -25,6 +25,8 @@ FAKE_ATOMIC_PLAN (a JSON object of prompt -> scenario) or FAKE_ATOMIC_SCENARIO n
                     exit at once, leaving a child that holds the output open
   exit:<status>     exit at once with a status and a stderr line
   no-credentials    exit at once as Atomic does without credentials for the model
+  quotes-credentials-error
+                    exit at once with an error that only quotes Atomic's missing-credentials text
   improve           text mode: an answer with <new_description> tags
 """
 
@@ -179,6 +181,9 @@ elif scenario == "no-credentials":
         "Use /login to log into a provider via OAuth or API key.\n"
     )
     sys.exit(1)
+elif scenario == "quotes-credentials-error":
+    sys.stderr.write('Cannot read "notes/No API key found for local.md": no such file\n')
+    sys.exit(2)
 elif scenario == "improve":
     sys.stdout.write("<new_description>Use this skill for fake work. \u2713</new_description>\n")
 else:

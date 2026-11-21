@@ -121,6 +121,18 @@ describe.skipIf(python === undefined)("skill-creator's note on missing credentia
 		assert.ok(!lines.includes(NOTE), lines.join("\n"));
 	});
 
+	test.runIf(windows)(
+		"on Windows, a failure whose error only quotes the missing-credentials text prints no note",
+		() => {
+			const box = sandbox();
+			const result = runEval(box, "quotes-credentials-error");
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			const lines = stderrLines(result.stderr);
+			assert.equal(lines.filter((line) => line.startsWith("Warning: query failed: atomic -p exited 2")).length, 4);
+			assert.ok(!lines.includes(NOTE), lines.join("\n"));
+		},
+	);
+
 	test("an evaluation whose queries fail for another reason prints no note", () => {
 		const box = sandbox();
 		const result = runEval(box, "exit:3");
