@@ -33,6 +33,7 @@ import type { Readable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { windowsPowerShellEnvironment } from "../../utils/windows-powershell.ts";
+import { asyncScope } from "../async-scope.ts";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -241,7 +242,7 @@ type ChildStream = (Readable & Partial<Pick<Socket, "ref" | "unref">>) | null;
 const outsideAnyCaller = AsyncLocalStorage.snapshot();
 
 const sharedReads = new Map<string, SharedSecurityRead>();
-const currentReadOwner = new AsyncLocalStorage<WeakRef<AbortSignal>>();
+const currentReadOwner = asyncScope<WeakRef<AbortSignal>>();
 const ownedReads = new WeakMap<AbortSignal, Set<Promise<void>>>();
 const activeReads = new Set<Promise<void>>();
 
