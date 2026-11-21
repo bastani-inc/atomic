@@ -26,6 +26,7 @@ import { createMessageReader, writeMessage } from "../../packages/intercom/broke
 import { getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
+import { reconnectDelayMs } from "../../packages/intercom/reconnect-backoff.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
@@ -403,10 +404,13 @@ test(
 		assert.ok(before.pid !== undefined);
 		const session = await connectSession(fixture.agentDir, "reconnecting");
 		onTestFinished(await keepProcessPid(before));
-		// A stand-in that starts in a moment, so the restart's own default wait decides, not the time a broker start takes.
+		// A stand-in that starts in a moment once a real session would first reconnect, so the restart's own default wait
+		// decides, not the time a broker start takes.
 		let after: Promise<ChildProcess> | undefined;
 		session.once("close", () => {
-			after = exited(before).then(() => startLegacyBroker(fixture));
+			after = exited(before)
+				.then(() => new Promise((resolveDelay) => setTimeout(resolveDelay, reconnectDelayMs(0))))
+				.then(() => startLegacyBroker(fixture));
 		});
 		const outcome = await restartIntercomBroker(fixture.agentDir);
 		const replacement = await after;
