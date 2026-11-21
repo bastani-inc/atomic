@@ -154,6 +154,8 @@ describe.skipIf(python === undefined)("skill-creator review viewer feedback", ()
 		assert.equal(page.feedback(), "the title is missing");
 		assert.equal(page.previousFeedback(), "older");
 		page.press("ArrowRight");
+		// Each save lands before the next starts: two saves sent at once can reach the server in either order.
+		await page.settled();
 		page.type("add axis labels");
 		page.press("ArrowLeft");
 		await page.settled();
@@ -186,7 +188,12 @@ describe.skipIf(python === undefined)("skill-creator review viewer feedback", ()
 		const current = iteration(box, "iteration-1", ["eval-1"], [{ run_id: "eval-1-with_skill", feedback: html }]);
 		writeFileSync(join(current, "eval-1", "with_skill", "outputs", "page.html"), html);
 		const url = await startViewer(box, [current]);
-		const page = await openServedPage(url);
+		const served = await (await fetch(url)).text();
+		// HTML ends a script at "</script", and after "<!--" a "<script" makes the script's own end tag not end it.
+		const embedded = /const EMBEDDED_DATA = (.*);/u.exec(served)?.[1] ?? "";
+		assert.ok(embedded.includes("globalThis.injected"), "the output is in the page");
+		assert.doesNotMatch(embedded, /<\/script|<!--/iu);
+		const page = openPage(served, url);
 		assert.equal(page.feedback(), html);
 		const shown = [...page.document.querySelectorAll(".output-file-content pre")].map((pre) => pre.textContent);
 		assert.ok(shown.includes(html), JSON.stringify(shown));
@@ -215,6 +222,8 @@ describe.skipIf(python === undefined)("skill-creator review viewer feedback", ()
 		const page = await openServedPage(url);
 		assert.equal(page.feedback(), "caf\u00e9 title");
 		page.press("ArrowRight");
+		// Each save lands before the next starts: two saves sent at once can reach the server in either order.
+		await page.settled();
 		page.type("axis labels");
 		page.press("ArrowLeft");
 		await page.settled();
@@ -224,16 +233,18 @@ describe.skipIf(python === undefined)("skill-creator review viewer feedback", ()
 		]);
 	});
 
-	test("feedback that is neither UTF-8 nor in the system's encoding is shown with replacement marks and kept, as before", async () => {
+	test("feedback that is not UTF-8 is shown with replacement marks and kept, as before", async () => {
 		const box = sandbox();
 		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
-		// 0x81 is undefined in UTF-8 and in Windows' code page 1252.
-		const text = Buffer.from('{"reviews": [{"run_id": "eval-1-with_skill", "feedback": "caf\x81 title"}]}', "latin1");
+		// "caf\u00e9" saved in Windows' code page 1252: 0xE9 is not UTF-8.
+		const text = Buffer.from('{"reviews": [{"run_id": "eval-1-with_skill", "feedback": "caf\xe9 title"}]}', "latin1");
 		writeFileSync(join(current, "feedback.json"), text);
 		const url = await startViewer(box, [current]);
 		const page = await openServedPage(url);
 		assert.equal(page.feedback(), "caf\ufffd title");
 		page.press("ArrowRight");
+		// Each save lands before the next starts: two saves sent at once can reach the server in either order.
+		await page.settled();
 		page.type("axis labels");
 		page.press("ArrowLeft");
 		await page.settled();
@@ -241,6 +252,33 @@ describe.skipIf(python === undefined)("skill-creator review viewer feedback", ()
 			{ run_id: "eval-1-with_skill", feedback: "caf\ufffd title" },
 			{ run_id: "eval-2-with_skill", feedback: "axis labels" },
 		]);
+	});
+
+	test("outputs full of HTML make a page not much larger than they are", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1"]);
+		const html = "<p>x</p>".repeat(125_000);
+		writeFileSync(join(current, "eval-1", "with_skill", "outputs", "page.html"), html);
+		const url = await startViewer(box, [current]);
+		const response = await fetch(url);
+		const page = await response.text();
+		const template = readFileSync(join(skillCreatorDir, "eval-viewer", "viewer.html"), "utf8");
+		// Only "</" and "<!" are written escaped: an eighth more for this output, not more than twice its size.
+		assert.ok(page.length < template.length + html.length * 1.2, `${page.length} for a ${html.length}-byte output`);
+		const opened = openPage(page, url);
+		const shown = [...opened.document.querySelectorAll(".output-file-content pre")].map((pre) => pre.textContent);
+		assert.ok(shown.includes(html));
+	});
+
+	test("a saved feedback file nested too deeply to read starts the page empty instead of failing it", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1"]);
+		writeFileSync(join(current, "feedback.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
+		const url = await startViewer(box, [current]);
+		const response = await fetch(url);
+		assert.equal(response.status, 200);
+		const page = openPage(await response.text(), url);
+		assert.equal(page.feedback(), "");
 	});
 
 	test("a static page starts with no feedback, as before", () => {
