@@ -563,13 +563,6 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
 }
 
 /**
- * Attach caller-supplied headers to the outgoing Bedrock request via a Smithy
- * `build`-step middleware. The `build` step runs after request serialisation but
- * before SigV4 signing, so injected headers are covered by the signature. Reserved
- * SigV4 / auth headers (`x-amz-*`, `authorization`, `host`) are silently skipped;
- * all other caller headers override any existing same-named header on the request.
- */
-/**
  * The agent for an HTTPS endpoint through the proxy, recording what its connection to the proxy fails with before the
  * tunnel opens as the proxy's: a certificate the proxy shows is then named as the proxy's, not the endpoint's. The
  * endpoint's own TLS session runs over the tunnel after `connect` returns, so its failures are never recorded.
@@ -624,6 +617,13 @@ function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
 	client.middlewareStack.add(middleware, { step: "deserialize", name: "atomic-transport-failure", priority: "low" });
 }
 
+/**
+ * Attach caller-supplied headers to the outgoing Bedrock request via a Smithy
+ * `build`-step middleware. The `build` step runs after request serialisation but
+ * before SigV4 signing, so injected headers are covered by the signature. Reserved
+ * SigV4 / auth headers (`x-amz-*`, `authorization`, `host`) are silently skipped;
+ * all other caller headers override any existing same-named header on the request.
+ */
 function addCustomHeadersMiddleware(client: BedrockRuntimeClient, headers: Record<string, string>): void {
 	const middleware: BuildMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		const request = args.request;
