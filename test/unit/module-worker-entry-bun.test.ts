@@ -26,10 +26,13 @@ test("on Bun a module worker starts from its file whatever NODE_OPTIONS says abo
 				void worker.terminate();
 			});
 		`;
+		// Each child ends within a second; the bound ends one that would not, so the test fails instead of stalling.
+		const CHILD_TIMEOUT_MS = 30_000;
 		for (const nodeOptions of ["--input-type=module", '"--input-type=module"', "--input_type=module"]) {
 			const result = spawnSyncCollect([bunExecutable(), "-e", script], {
 				cwd: REPO_ROOT,
 				env: { ...process.env, NODE_OPTIONS: nodeOptions },
+				timeout: CHILD_TIMEOUT_MS,
 			});
 			assert.equal(result.exitCode, 0, `NODE_OPTIONS=${nodeOptions}: ${result.stderr.toString()}`);
 			const argv1 = JSON.parse(result.stdout.toString().trim()) as string;

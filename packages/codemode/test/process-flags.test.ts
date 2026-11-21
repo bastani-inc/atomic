@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 
 const SANDBOX_MODULE = JSON.stringify(pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href);
+/** Each child ends within seconds; the bound ends one that would not, so its test fails instead of stalling the run. */
+const CHILD_TIMEOUT_MS = 60_000;
 // A preload that records the thread it runs on, as a host's loader or instrumentation would.
 const RECORDING_PRELOAD = `import { appendFileSync } from "node:fs";
 import { isMainThread } from "node:worker_threads";
@@ -39,8 +41,13 @@ function runsWithPreloads(flags: string[], env: Record<string, string>): void {
 				const result = await new CodemodeSandbox().execute("return 6 * 7");
 				process.stdout.write(JSON.stringify(result));`,
 			],
-			{ encoding: "utf-8", env: { ...process.env, ...env, CODEMODE_TEST_PRELOAD_LOG: log } },
+			{
+				encoding: "utf-8",
+				env: { ...process.env, NODE_OPTIONS: "", ...env, CODEMODE_TEST_PRELOAD_LOG: log },
+				timeout: CHILD_TIMEOUT_MS,
+			},
 		);
+		expect(result.error).toBeUndefined();
 		expect(result.status, result.stderr).toBe(0);
 		expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
 		// The worker starts with the process's flags, such as a loader its module may need, as without --input-type.
@@ -89,8 +96,13 @@ it.each([
 					`import { CodemodeSandbox } from ${SANDBOX_MODULE};
 				process.stdout.write(JSON.stringify(await new CodemodeSandbox().execute("return 6 * 7")));`,
 				],
-				{ encoding: "utf-8", env: { ...process.env, NODE_OPTIONS: nodeOptions, CODEMODE_TEST_PRELOAD_LOG: log } },
+				{
+					encoding: "utf-8",
+					env: { ...process.env, NODE_OPTIONS: nodeOptions, CODEMODE_TEST_PRELOAD_LOG: log },
+					timeout: CHILD_TIMEOUT_MS,
+				},
 			);
+			expect(result.error).toBeUndefined();
 			expect(result.status, result.stderr).toBe(0);
 			expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
 			expect(existsSync(log) ? readFileSync(log, "utf-8") : "").toBe("entry\n");
@@ -110,8 +122,9 @@ it("runs a script in a process started with --input-type=module in NODE_OPTIONS 
 			delete process.env.NODE_OPTIONS;
 			process.stdout.write(JSON.stringify(await new CodemodeSandbox().execute("return 6 * 7")));`,
 		],
-		{ encoding: "utf-8", env: { ...process.env, NODE_OPTIONS: "--input-type=module" } },
+		{ encoding: "utf-8", env: { ...process.env, NODE_OPTIONS: "--input-type=module" }, timeout: CHILD_TIMEOUT_MS },
 	);
+	expect(result.error).toBeUndefined();
 	expect(result.status, result.stderr).toBe(0);
 	expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
 });

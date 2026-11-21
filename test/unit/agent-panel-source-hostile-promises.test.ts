@@ -570,6 +570,8 @@ test("the panel's rejection guard keeps an --unhandled-rejections mode that NODE
 		await new Promise((r) => setTimeout(r, 40));
 		console.log("SURVIVED");
 	`;
+	// Each child ends within a second; the bound ends one that would not, so the test fails instead of stalling.
+	const CHILD_TIMEOUT_MS = 30_000;
 	for (const nodeOptions of [
 		'"--unhandled-rejections=warn"',
 		"--unhandled_rejections=none",
@@ -578,11 +580,16 @@ test("the panel's rejection guard keeps an --unhandled-rejections mode that NODE
 		const result = spawnSyncCollect([bunExecutable(), "-e", script], {
 			cwd: REPO_ROOT,
 			env: { ...process.env, NODE_OPTIONS: nodeOptions },
+			timeout: CHILD_TIMEOUT_MS,
 		});
 		assert.equal(result.exitCode, 0, `NODE_OPTIONS=${nodeOptions}: ${result.stderr.toString()}`);
 		assert.match(result.stdout.toString(), /SURVIVED/u);
 	}
-	const thrown = spawnSyncCollect([bunExecutable(), "-e", script], { cwd: REPO_ROOT });
+	const thrown = spawnSyncCollect([bunExecutable(), "-e", script], {
+		cwd: REPO_ROOT,
+		env: { ...process.env, NODE_OPTIONS: "" },
+		timeout: CHILD_TIMEOUT_MS,
+	});
 	assert.notEqual(thrown.exitCode, 0, "the guard throws an unrelated rejection by default");
 	assert.match(thrown.stderr.toString(), /UNRELATED_REJECTION/u);
 });
