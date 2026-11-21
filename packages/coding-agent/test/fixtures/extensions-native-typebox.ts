@@ -37,7 +37,7 @@ try {
 	// The extension's own `process`, declared after what the loader adds to the module.
 	fs.writeFileSync(
 		path.join(extensionDir, "own-process.ts"),
-		'const process = { label: "mine" };\nexport const ownProcess = () => [process.label, __dirname, import.meta.dir];\n',
+		'const process = { label: "mine" };\nconst URL = "https://example.invalid/profile";\nexport const ownProcess = () => [process.label, URL, __dirname, import.meta.dir, import.meta.resolve("./not-yet-created.json")];\n',
 	);
 	const entry = path.join(extensionDir, "extension.ts");
 	// What a module Bun imports itself answers for paths to missing files: an absolute one on Windows throws.
@@ -146,7 +146,13 @@ export default function (pi) {
 					metaRequired: path.join(extensionDir, "a.ts"),
 					destructuredRequired: path.join(extensionDir, "a.ts"),
 					requiredJson: "a JSON string",
-					ownProcess: ["mine", extensionDir, extensionDir],
+					ownProcess: [
+						"mine",
+						"https://example.invalid/profile",
+						extensionDir,
+						extensionDir,
+						pathToFileURL(path.join(extensionDir, "not-yet-created.json")).href,
+					],
 				},
 				load,
 			);

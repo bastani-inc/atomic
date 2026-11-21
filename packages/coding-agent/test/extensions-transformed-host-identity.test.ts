@@ -309,11 +309,21 @@ export const probe = () => ({ hasVersion: process.versions.node !== undefined, f
 			`const _importMeta = "mine";
 const __atomicImportMeta = "also mine";
 const jitiESMResolve = (specifier) => "mine:" + specifier;
+const URL = "https://example.invalid/profile";
+const Error = "my error";
 const load = (jitiImport) => import("./helper.ts").then((helper) => [jitiImport, helper.value]);
 export const probe = async () => ({
-	own: [_importMeta, __atomicImportMeta, jitiESMResolve("x")],
+	own: [_importMeta, __atomicImportMeta, jitiESMResolve("x"), URL, Error],
 	nested: ((_importMeta) => [_importMeta, import.meta.filename])("nested"),
 	resolved: import.meta.resolve("./helper.ts"),
+	notYetCreated: import.meta.resolve("./not-yet-created.json"),
+	missingPackage: (() => {
+		try {
+			return import.meta.resolve("atomic-no-such-package");
+		} catch (error) {
+			return error.code;
+		}
+	})(),
 	loaded: await load("mine"),
 });
 `,
@@ -363,9 +373,11 @@ export default async function (pi) {
 					processConst: { label: "mine", dirname: root, filename: file("process-const.ts") },
 					processVar: { hasVersion: false, filename: file("process-var.ts") },
 					ownNames: {
-						own: ["mine", "also mine", "mine:x"],
+						own: ["mine", "also mine", "mine:x", "https://example.invalid/profile", "my error"],
 						nested: ["nested", file("own-names.ts")],
 						resolved: pathToFileURL(file("helper.ts")).href,
+						notYetCreated: pathToFileURL(file("not-yet-created.json")).href,
+						missingPackage: "ERR_MODULE_NOT_FOUND",
 						loaded: ["mine", "helper"],
 					},
 					cycle: { seen: file("cycle.ts") },
