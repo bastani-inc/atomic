@@ -153,6 +153,10 @@ export interface RunSyncOptions {
 	onBeforeRelease?: () => Promise<void>;
 	/** Results for the detached calls the reopened child's transcript ends on; its interrupted turn continues with them. */
 	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
+	/** Results of calls the child was already told are still running: read in one notice with its next turn. */
+	resumeLateToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
+	/** Notices of finished background tasks held for the child: each delivered as a notice with its next turn. */
+	resumeNotices?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildHeldNotice[];
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
 	/**
