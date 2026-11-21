@@ -1109,11 +1109,25 @@ test("a wrapped statement that reads the change counters during a threaded trans
 	// A function of yours that reads the counters through the connection.
 	raw.function("read_prior", () => Number(raw.prepare("SELECT changes() AS n").get()?.n));
 	const { committed, settled } = await holdLock(threaded);
-	for (const call of ["changes()", '"changes"()', "[changes]()", "`changes`()", "read_prior()", '"read_prior"()']) {
+	// SQLite reads a function's name in any case, quoted or not.
+	const calls = [
+		"changes()",
+		'"changes"()',
+		"[changes]()",
+		"`changes`()",
+		"CHANGES()",
+		"Changes()",
+		'"CHANGES"()',
+		"[Changes]()",
+		"read_prior()",
+		'"read_prior"()',
+		"READ_PRIOR()",
+	];
+	for (const call of calls) {
 		await wrapped.run("INSERT INTO scratch VALUES (1), (2), (3)");
 		assert.deepEqual(await wrapped.get(`INSERT INTO scratch VALUES (${call}) RETURNING x`), { x: 3 }, call);
 	}
-	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 24 });
+	assert.deepEqual(await wrapped.get("SELECT changes() AS n, total_changes() AS total"), { n: 1, total: 44 });
 	assert.equal(settled(), false, "a call waited for the transaction");
 	await committed;
 });

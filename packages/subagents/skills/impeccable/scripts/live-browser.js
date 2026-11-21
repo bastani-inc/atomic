@@ -45,7 +45,10 @@
       if (!script || !script.src) continue;
       let url;
       try { url = new URL(script.src); } catch { continue; }
-      if (url.pathname === '/live.js' && url.port === String(PORT)) return new URL(path, url.origin).href;
+      // A URL leaves out its scheme's default port: live.js on port 80 is
+      // http://localhost/live.js.
+      const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+      if (url.pathname === '/live.js' && port === String(PORT)) return new URL(path, url.origin).href;
     }
     return null;
   }
