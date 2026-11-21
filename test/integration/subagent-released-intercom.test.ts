@@ -309,7 +309,12 @@ test(
 			// The broker told the parent; the parent's dispatcher restored the child, prompted to read what woke it.
 			await vi.waitFor(() => assert.equal(launched.length, 2), { timeout: RECORD_WAIT_MS, interval: 10 });
 			assert.equal(launched[1]?.resumeSession, true);
-			assert.equal(tasks[1], SUBAGENT_RELEASED_WAKE_PROMPT, "the woken child is told to read what arrived");
+			assert.deepEqual(
+				launched[1]?.resumeNote,
+				{ kind: "wake", text: SUBAGENT_RELEASED_WAKE_PROMPT },
+				"the woken child is told to read what arrived, in its wake note",
+			);
+			assert.equal(tasks[1], "", "never as a message from the user");
 			const relaunch = launched[1];
 			assert.ok(relaunch);
 			const capability = relaunch.supervisorAuthorization;
