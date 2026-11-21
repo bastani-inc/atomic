@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { INTERCOM_BROKER_BUNDLE_ENTRY } from "../core/builtin-install-layout.js";
+import { INTERCOM_BROKER_BUNDLE_ENTRY } from "../core/builtin-install-layout.ts";
 import { type AppHostModuleSpecifier, type AppHostModules, requestAppHostModulesOnly } from "./app-host-modules.js";
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
