@@ -9,7 +9,6 @@ import {
 	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
-	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
@@ -49,6 +48,7 @@ import {
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
+import { wrapNotes } from "./note-rows.ts";
 import {
 	type BoardRowModel,
 	boardModelFits,
@@ -2095,31 +2095,4 @@ export class TaskInspector implements Component {
 	}
 }
 
-/** The most rows a transcript's notes take, so the transcript itself keeps its room. */
-const MAX_NOTE_ROWS = 6;
-
-/**
- * A transcript's notes on as many rows as they need, up to {@link MAX_NOTE_ROWS}: each ` · ` part stays whole on a row
- * where it fits, so what a released subagent waits on, that it wakes by itself, and where its shell is all stay
- * readable at narrow widths.
- */
-export function wrapNotes(notes: string, width: number): string[] {
-	if (!notes) return [];
-	const room = Math.max(1, width);
-	if (visibleWidth(notes) <= room) return [notes];
-	const rows: string[] = [];
-	let row = "";
-	for (const part of notes.split(" · ")) {
-		const joined = row ? `${row} · ${part}` : part;
-		if (visibleWidth(joined) <= room) {
-			row = joined;
-			continue;
-		}
-		if (row) rows.push(row);
-		const wrapped = wrapTextWithAnsi(part, room);
-		row = wrapped.pop() ?? "";
-		rows.push(...wrapped);
-	}
-	if (row) rows.push(row);
-	return rows.slice(0, MAX_NOTE_ROWS);
-}
+export { wrapNotes };
