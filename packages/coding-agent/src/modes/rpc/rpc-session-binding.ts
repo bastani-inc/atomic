@@ -1,5 +1,6 @@
 import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
+import { queuedMessageReceiptId } from "../../core/agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { chatReceipt } from "../../core/chat-receipts.js";
@@ -282,7 +283,17 @@ export class RpcSessionBinding {
 			const receipt = this.writeEngineLine && chatReceipt(event);
 			const json = toJsonEvent(event);
 			const withSaved = saved === undefined ? json : { ...json, entryId: saved.entryId, seq: saved.seq };
-			const record = withQueuedDeliveryChange(withSaved, this.queuedDeliveries?.note(session, event));
+			// A queued user message's start, and its save, name it by its receipt id for a host that follows deliveries.
+			const queuedMessageId =
+				this.queuedDeliveries !== undefined &&
+				(event.type === "message_start" || (event.type === "message_end" && saved !== undefined)) &&
+				event.message.role === "user"
+					? queuedMessageReceiptId(event.message)
+					: undefined;
+			const record = withQueuedDeliveryChange(
+				withSaved,
+				this.queuedDeliveries?.note(session, event, queuedMessageId),
+			);
 			this.output(receipt ? { ...record, atomicChatReceipt: receipt } : record);
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});

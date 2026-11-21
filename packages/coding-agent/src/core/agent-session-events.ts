@@ -4,7 +4,12 @@ import { cleanupSessionResources } from "@bastani/atomic-ai/compat";
 import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
-import { queueRunStarted, requeueQueuedMessagesNotStarted, startQueuedMessage } from "./agent-session-message-queue.ts";
+import {
+	queuedMessageReceiptId,
+	queueRunStarted,
+	requeueQueuedMessagesNotStarted,
+	startQueuedMessage,
+} from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import {
@@ -445,8 +450,13 @@ export async function _processAgentEvent(
 				event.message.role === "assistant" ||
 				(event.message.role === "toolResult" && !answersUnsavedCall(this, event.message))
 			) {
-				// Regular LLM message - persist as SessionMessageEntry
-				entryId = await this.sessionManager.appendMessage(event.message);
+				// Regular LLM message - persist as SessionMessageEntry. A queued message is saved with its receipt id, kept by the
+				// message object, which a message_end hook's replacement keeps.
+				const queuedMessageId = queuedMessageReceiptId(event.message);
+				entryId = await this.sessionManager.appendMessage(
+					event.message,
+					queuedMessageId === undefined ? undefined : { queuedMessageId },
+				);
 				if (event.message.role === "system") await recordExplicitToolDeactivations(this, event.message);
 			}
 		} catch (error) {

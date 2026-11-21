@@ -1,3 +1,4 @@
+import { queuedMessageReceiptId } from "../../src/core/agent-session-message-queue.ts";
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
@@ -474,11 +475,22 @@ export async function createEngineHostPair(
 	let relay = newRelay();
 	// As the engine's session binding does for a host that asked about queued messages.
 	const releaseDropped = relay === undefined ? () => {} : keepDroppedQueuedMessages(engine.session);
-	const unsubscribe = engine.session.subscribe((event) =>
+	const unsubscribe = engine.session.subscribe((event) => {
+		// As the engine's session binding names a queued user message's start, and its save, by its receipt id.
+		const saved = event.type === "message_end" ? engine.session.entryReceipt(event.message) : undefined;
+		const queuedMessageId =
+			relay !== undefined &&
+			(event.type === "message_start" || (event.type === "message_end" && saved !== undefined)) &&
+			event.message.role === "user"
+				? queuedMessageReceiptId(event.message)
+				: undefined;
 		client.engineOutput(
-			withQueuedDeliveryChange(toJsonEvent(event), relay?.note(engine.session, event)) as JsonAgentSessionEvent,
-		),
-	);
+			withQueuedDeliveryChange(
+				toJsonEvent(event),
+				relay?.note(engine.session, event, queuedMessageId),
+			) as JsonAgentSessionEvent,
+		);
+	});
 	const local = new AgentSessionRuntime(
 		hostHarness.session,
 		{ cwd: hostHarness.tempDir, agentDir: hostHarness.tempDir } as never,

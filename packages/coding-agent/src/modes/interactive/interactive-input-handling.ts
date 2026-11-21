@@ -761,7 +761,7 @@ async function submitToMainChat(
 							!text.startsWith("/") &&
 							this.userMessagesShownBySession === shownBefore;
 						const echo = echoed ? this.renderDeferredUserInput(text) : undefined;
-						if (echo !== undefined) this.expectStartedUserInput(text, shownBefore, echo);
+						if (echoed) this.expectStartedUserInput(text, shownBefore, echo);
 						// The run's own events decide this echo (#5135), however they and this answer are ordered.
 						startedEcho.answer(echoed, echo);
 					},

@@ -337,8 +337,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const keepAcceptedInput = async (error: unknown): Promise<void> => {
 		if (!acceptedWhileHeld || held.cancelled || isSessionClosed(error)) return;
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this)) return;
-		if (held.lane === "followUp") await this._queueFollowUp(keptText, keptImages, text, keptRawText);
-		else await this._queueSteer(keptText, keptImages, text, keptRawText);
+		if (held.lane === "followUp")
+			await this._queueFollowUp(keptText, keptImages, text, keptRawText, options?.queuedMessageId);
+		else await this._queueSteer(keptText, keptImages, text, keptRawText, options?.queuedMessageId);
 	};
 
 	// Reserves the context through async input hooks and auth checks, so tree navigation cannot start
@@ -405,8 +406,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				return;
 			}
 			if (held) stopWaiting(this, held);
-			if (delivery === "followUp") await this._queueFollowUp(pausedText, pausedImages, text);
-			else await this._queueSteer(pausedText, pausedImages, text);
+			if (delivery === "followUp")
+				await this._queueFollowUp(pausedText, pausedImages, text, undefined, options?.queuedMessageId);
+			else await this._queueSteer(pausedText, pausedImages, text, undefined, options?.queuedMessageId);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -477,8 +479,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				return;
 			}
 			if (this._queuedMessagesPaused) {
-				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
-				else await this._queueSteer(expandedText, currentImages, text, currentText);
+				if (held.lane === "followUp")
+					await this._queueFollowUp(expandedText, currentImages, text, currentText, options?.queuedMessageId);
+				else await this._queueSteer(expandedText, currentImages, text, currentText, options?.queuedMessageId);
 				preflightResult?.(true, "queued");
 				return;
 			}
@@ -505,8 +508,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			const queued =
 				delivery.streamingBehavior === "followUp"
-					? this._queueFollowUp(expandedText, currentImages, text, currentText)
-					: this._queueSteer(expandedText, currentImages, text, currentText);
+					? this._queueFollowUp(expandedText, currentImages, text, currentText, options?.queuedMessageId)
+					: this._queueSteer(expandedText, currentImages, text, currentText, options?.queuedMessageId);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
 			preflightResult?.(true, "queued");

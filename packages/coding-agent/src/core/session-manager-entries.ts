@@ -104,11 +104,13 @@ export function createMessageEntry(
 	message: Message | CustomMessage | BashExecutionMessage,
 	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
+	queuedMessageId?: string,
 ): SessionMessageEntry {
 	return {
 		type: "message",
 		...entryBase(byId, parentId),
 		message,
+		...(queuedMessageId === undefined ? {} : { queuedMessageId }),
 	};
 }
 

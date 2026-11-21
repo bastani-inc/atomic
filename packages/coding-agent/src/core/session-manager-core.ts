@@ -687,6 +687,10 @@ export class SessionManager {
 	getLastSeq(): number {
 		return this.lastSeq;
 	}
+	/** @internal The generation of the store's history this manager reads; undefined for a store that has none. */
+	getHistoryEpoch(): string | undefined {
+		return this.historyEpoch;
+	}
 
 	/** A task transcript follows recorded events, including abandoned branches. The live suffix ends at the
 	 * manager's watermark and stops at the first missing record. Its preceding page is read from the archive. */
@@ -1355,10 +1359,16 @@ export class SessionManager {
 		});
 	}
 
-	/** Append a message as child of current leaf, then advance leaf. Returns entry id. */
-	appendMessage(message: Message | CustomMessage | BashExecutionMessage): Promise<string> {
+	/**
+	 * Append a message as child of current leaf, then advance leaf. Returns entry id. `queuedMessageId` is the receipt id
+	 * of a queued message, saved with its entry.
+	 */
+	appendMessage(
+		message: Message | CustomMessage | BashExecutionMessage,
+		options?: { readonly queuedMessageId?: string },
+	): Promise<string> {
 		return this.runMutation(async () => {
-			const entry = createMessageEntry(message, this.byId, this.leafId);
+			const entry = createMessageEntry(message, this.byId, this.leafId, options?.queuedMessageId);
 			const companion = this.messageCompanions.get(message);
 			this.messageCompanions.delete(message);
 			const custom = companion?.();

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PromptDisposition, UserMessageWithRawText } from "../../core/agent-session-types.js";
 import {
 	NO_QUEUED_MESSAGES,
+	type QueuedDeliveryEntry,
 	type QueuedMessageLanes,
 	queuedMessagesUnderWay,
 	takeQueuedMessagesDroppedAt,
@@ -467,12 +468,13 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 		const message = takeNextCompactionMessage(mode);
 		if (!message) return;
 		// The echo is this message's own: a discard of it never takes an earlier message's echo of the same text.
-		const echo = message.text.startsWith("/") ? undefined : mode.renderDeferredUserInput(message.text);
+		const echoed = !message.text.startsWith("/");
+		const echo = echoed ? mode.renderDeferredUserInput(message.text) : undefined;
 		const shownBefore = mode.userMessagesShownBySession;
 		const refused = await promptUntilAccepted(
 			mode,
 			message,
-			echo
+			echoed
 				? (disposition) => {
 						if (disposition === "queued" || disposition === "handled")
 							mode.discardDeferredRenderedUserInput(message.text, echo);
@@ -481,12 +483,13 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 				: undefined,
 		);
 		if (refused !== undefined) {
-			if (echo) mode.discardDeferredRenderedUserInput(message.text, echo);
+			if (echoed) mode.discardDeferredRenderedUserInput(message.text, echo);
 			returnCompactionMessage(mode, message, refused.error);
 			return;
 		}
 		// #5135: a run that repeats input the chat already shows as unsaved shows no message of its own.
-		if (echo && awaitsStartedRunMessage(mode, echo)) mode.discardDeferredRenderedUserInput(message.text, echo);
+		if (echo !== undefined && awaitsStartedRunMessage(mode, echo))
+			mode.discardDeferredRenderedUserInput(message.text, echo);
 	}
 }
 
@@ -506,6 +509,22 @@ function queuedMessagesPhrase(count: number): string {
 /** The notice the main chat shows when queued messages that were never sent come back to its editor. */
 export function queuedMessagesReturnedNotice(count: number): string {
 	return `${queuedMessagesPhrase(count)} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
+}
+
+/** How long a lost engine's replacement may take to say which of its queued messages it saved. */
+const RECEIPT_LOOKUP_TIMEOUT_MS = 2_000;
+
+/** What `work` resolves with if it does so within `ms`; undefined if it rejects or takes longer. */
+async function settledWithin<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<undefined>((resolve) => {
+		timer = setTimeout(() => resolve(undefined), ms);
+	});
+	try {
+		return await Promise.race([work.catch(() => undefined), late]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**
@@ -631,18 +650,24 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	/** The user messages the chat knew when the engine was lost, while its replacement is pending. */
 	let knownAtLoss: string[] | undefined;
 	/** What the lost engine was delivering, steering first, each lane in order, while its replacement is pending. */
-	let deliveringAtLoss: string[] = [];
+	let deliveringAtLoss: QueuedDeliveryEntry[] = [];
 	const stopEnded = runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
 		mainSteering(this).loseTarget();
 		runtime.discardLostQueue();
 		// What it took from its queue and the chat never saw saved: being delivered, or shown without its save.
 		const delivering = runtime.takeDeliveringAtLoss();
-		if (delivering !== undefined) deliveringAtLoss.push(...delivering.steering, ...delivering.followUp);
+		if (delivering !== undefined) deliveringAtLoss.push(...delivering);
 		knownAtLoss ??= userMessageTexts(this.session.messages);
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
 	});
+	// What the engine takes from its queue is accounted for by its receipt, not as a submission it may have lost.
+	const stopTaken = runtime.onQueuedMessagesTaken((taken) =>
+		mainSteering(this).noteTaken(
+			taken.flatMap((message) => (message.receipt === undefined ? [] : [message.receipt.id])),
+		),
+	);
 	// The engine was lost or retired its session: what it was delivering never shows here.
 	const stopForgotten = runtime.onQueuedDeliveriesForgotten(() => {
 		this.updatePendingMessagesDisplay();
@@ -656,28 +681,57 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 		if (known === undefined) return;
 		void (async () => {
 			let delivered: string[] | undefined;
+			let found: { readonly saved: ReadonlySet<string>; readonly absent: ReadonlySet<string> } | undefined;
 			if (replaced) {
 				try {
 					delivered = withoutEach(await runtime.engineUserMessages(), known);
 				} catch {
 					// The replacement could not say what it holds: give everything back, nothing is resent.
 				}
+				// A store that does not answer in time leaves each unconfirmed, as one that cannot (an engine of an earlier
+				// version) does: what the chat still listed comes back without waiting for it.
+				if (delivering.some((message) => message.receipt !== undefined))
+					found = await settledWithin(runtime.findQueuedMessages(delivering), RECEIPT_LOOKUP_TIMEOUT_MS);
 			}
 			// What the lost engine had taken from its queue and the chat never saw saved may have been saved, and answered,
-			// whatever its replacement's history shows (a compaction can leave it out, and the engine may have saved it after
-			// the chat's last line): it is listed in full as unconfirmed, neither given back nor sent again. The replacement's
-			// history only accounts for what the chat still listed.
-			const remaining = delivered === undefined ? undefined : withoutEach(delivered, delivering);
-			const unconfirmed = delivering;
-			const messages = mainSteering(this).recoverTarget(remaining ?? []) ?? [];
+			// whatever its replacement's context shows (a compaction can leave it out, and the engine may have saved it after
+			// the chat's last line). Its receipt tells: one found saved is neither given back nor reported; one its store
+			// provably never saved comes back to the editor, as typed, ahead of what the chat still listed in its lane; any
+			// other is listed in full as unconfirmed. None is sent again. The replacement's context only accounts for what
+			// the chat still listed.
+			const outcome = (message: QueuedDeliveryEntry): "saved" | "unsaved" | "unknown" =>
+				message.receipt === undefined
+					? "unknown"
+					: found?.saved.has(message.receipt.id)
+						? "saved"
+						: found?.absent.has(message.receipt.id)
+							? "unsaved"
+							: "unknown";
+			const unsent = (lane: QueuedDeliveryEntry["lane"]) =>
+				delivering.flatMap((message) =>
+					message.lane === lane && outcome(message) === "unsaved" ? [message.receipt?.typed ?? message.text] : [],
+				);
+			const remaining =
+				delivered === undefined
+					? undefined
+					: withoutEach(
+							delivered,
+							delivering.map((message) => message.text),
+						);
+			const unconfirmed = delivering.flatMap((message) => (outcome(message) === "unknown" ? [message.text] : []));
+			const messages =
+				mainSteering(this).recoverTarget(remaining ?? [], {
+					steering: unsent("steer"),
+					followUp: unsent("followUp"),
+				}) ?? [];
 			if (unconfirmed.length > 0) this.showWarning(engineLossUnconfirmedNotice(unconfirmed));
 			if (messages.length === 0) {
 				if (unconfirmed.length > 0) this.ui.requestRender();
 				return;
 			}
-			// Main's prompt, whatever the screen shows by the time the replacement answers.
-			const prompt = promptHandle(this, "main");
-			prompt.setText(combineQueuedMessagesForEditor(messages, prompt.getExpandedText()));
+			// Main's prompt, whatever the screen shows by the time the replacement answers, with what the user typed there
+			// (never a history entry it shows).
+			rewritePromptOwnText(this, { kind: "main" }, (own) => combineQueuedMessagesForEditor(messages, own));
 			this.updatePendingMessagesDisplay();
 			this.showWarning(engineLossRestoredNotice(messages.length));
 			this.ui.requestRender();
@@ -685,6 +739,7 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	});
 	return () => {
 		stopEnded();
+		stopTaken();
 		stopForgotten();
 		stopRecovered();
 	};
