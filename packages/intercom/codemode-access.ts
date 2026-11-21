@@ -1,6 +1,6 @@
 import type { ToolScriptAccess } from "@bastani/atomic";
 import type { JsonValue } from "@bastani/atomic-ai";
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic-ai";
 import { normalizeGroups } from "./group.js";
 import type { SessionInfo } from "./types.js";
 
