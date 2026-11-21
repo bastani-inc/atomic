@@ -1,8 +1,8 @@
 import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import type { AgentTool } from "@bastani/atomic-agent-core";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Text } from "@bastani/atomic-tui";
 import nodePath from "path";
-import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";

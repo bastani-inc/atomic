@@ -90,7 +90,7 @@ A classifier can answer a finite Choice. Literal unions, enums, booleans, and fl
 Pass the session `modelRegistry`. Classifier credentials come from that registry's normal provider login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. Do not copy a resolved key into `state`.
 
 ```typescript
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic/typebox";
 import { generateStructuredOutput, ModelRegistry, ModelRuntime } from "@bastani/atomic";
 
 const modelRuntime = await ModelRuntime.create();

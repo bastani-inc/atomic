@@ -1,6 +1,6 @@
-import type { TSchema } from "typebox";
-import type { TLocalizedValidationError } from "typebox/error";
-import { Errors } from "typebox/value";
+import type { TLocalizedValidationError } from "@bastani/atomic-ai/utils/typebox/error";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
+import { Errors } from "@bastani/atomic-ai/utils/typebox/value";
 
 export const SCHEMA_MISMATCH_PREFIX = "Invalid structured output: response does not match the decision schema.";
 export const UNPARSEABLE_ARGUMENTS_PREFIX = "Invalid structured output: tool call arguments were not valid JSON.";

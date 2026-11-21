@@ -260,6 +260,34 @@ test("a package whose exports do not name its compiled modules for bundlers is n
 	await assert.rejects(bundle(pkg), /export "\." must name its compiled module for bundlers/);
 });
 
+test("a package bundled in is one copy, loaded from the shared files instead of its own", async () => {
+	const { root, pkg } = fixture();
+	writeTree(root, {
+		"node_modules/inline-pkg/package.json": JSON.stringify({
+			name: "inline-pkg",
+			type: "module",
+			exports: { ".": "./index.js", "./sub": "./sub.js" },
+		}),
+		"node_modules/inline-pkg/registry.js": "export const registry = new Map();\n",
+		"node_modules/inline-pkg/index.js": `export { registry } from "./registry.js";\nexport default "inline-default";\n`,
+		"node_modules/inline-pkg/sub.js": `import { registry } from "./registry.js";\nexport const register = (key) => registry.set(key, true);\n`,
+		"pkg/dist/vendor.js": `export * from "inline-pkg";\nexport { default } from "inline-pkg";\n`,
+		"pkg/dist/vendor-sub.js": `export * from "inline-pkg/sub";\n`,
+	});
+	await bundlePackageDist(pkg, { standalone: ["standalone.js"], inline: ["inline-pkg"], log: () => {} });
+	const result = inChild(
+		join(pkg, "dist/vendor.js"),
+		`const { register } = await import(${JSON.stringify(pathToFileURL(join(pkg, "dist/vendor-sub.js")).href)});
+		register("key");
+		process.stdout.write(JSON.stringify({ shared: m.registry.has("key"), fallback: m.default, keys: Object.keys(m).sort() }));`,
+	);
+	assert.deepEqual(result, { shared: true, fallback: "inline-default", keys: ["default", "registry"] });
+	for (const name of sharedFiles(pkg)) {
+		assert.doesNotMatch(readFileSync(join(pkg, "dist", name), "utf8"), /from "inline-pkg/);
+	}
+	assert.doesNotMatch(readFileSync(join(pkg, "dist/vendor.js"), "utf8"), /inline-pkg/);
+});
+
 test("shared files are named by their group and first module, the same in every build", async () => {
 	const first = fixture();
 	const second = fixture();
