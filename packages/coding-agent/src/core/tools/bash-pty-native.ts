@@ -220,7 +220,7 @@ export async function executeSupervisedCommand(
 	if (options.signal?.aborted) throw new Error("aborted");
 	const context = options.taskOwner;
 	if (!context) throw new Error("Supervised command requires its task owner");
-	const shell = options.shellConfig ?? (await getShellConfigAsync(options.shellPath, cwd));
+	const shell = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));
 	if (process.platform === "win32" && shell.commandTransport === "stdin")
 		throw new Error("ContainmentUnavailable: run Atomic inside WSL to supervise Linux guest commands");
 	const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
@@ -346,7 +346,7 @@ export async function executeNativePty(
 	if (options.taskOwner) return executeSupervisedCommand(command, cwd, options, true);
 	const loaded = loadNativePtyBinding();
 	if (!loaded.ok) throw loaded.error;
-	const shellConfig = options.shellConfig ?? (await getShellConfigAsync(options.shellPath, cwd));
+	const shellConfig = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));
 	const shellEnv = await getShellEnvAsync();
 	if (options.signal?.aborted) throw new Error("aborted");
 	const session = new loaded.binding.PtySession();

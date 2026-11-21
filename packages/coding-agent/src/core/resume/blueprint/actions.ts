@@ -901,30 +901,31 @@ export function powerShellInvocation(config: ShellConfig, script: string): Shell
 	return { executable: config.shell, args: [...config.args, text] };
 }
 
-type StepShell = "bash" | "sh" | "pwsh" | "powershell";
-
-/** The shell a `run` step names; one Atomic cannot run here fails the action. */
-function stepShell(context: RunContext, frame: ActionFrame, shell: string): StepShell {
+async function shellInvocation(
+	context: RunContext,
+	frame: ActionFrame,
+	shell: string,
+	script: string,
+): Promise<ShellInvocation | Error> {
 	const name = shell.toLowerCase();
-	if (name === "bash" || name === "sh") return name;
+	if (name === "bash" || name === "sh") {
+		try {
+			return bashInvocation(await getShellConfigAsync(), name, script);
+		} catch (error) {
+			return error as Error;
+		}
+	}
 	if (name === "pwsh" || name === "powershell") {
 		if (process.platform !== "win32") {
 			throw failure(context, frame, "unsupported-expression", "PowerShell steps are only supported on Windows");
 		}
-		return name;
+		try {
+			return powerShellInvocation(await getPowerShellConfigAsync(), script);
+		} catch (error) {
+			return error as Error;
+		}
 	}
 	throw failure(context, frame, "unsupported-expression", `the shell "${shell.slice(0, 40)}" is not supported`);
-}
-
-/** How `shell` runs `script` in `directory`, which its program is never taken from, or why it cannot start. */
-async function shellInvocation(shell: StepShell, script: string, directory: string): Promise<ShellInvocation | Error> {
-	try {
-		return shell === "bash" || shell === "sh"
-			? bashInvocation(await getShellConfigAsync(undefined, directory), shell, script)
-			: powerShellInvocation(await getPowerShellConfigAsync(directory), script);
-	} catch (error) {
-		return error as Error;
-	}
 }
 
 function stepDirectory(
@@ -985,11 +986,13 @@ async function runCompositeAction(
 				depth: frame.depth + 1,
 			});
 		} else {
-			const shell = interpolate(step.action.shell, expressions).trim();
-			const script = interpolate(step.action.run, expressions);
-			const name = stepShell(context, frame, shell);
+			const invocation = await shellInvocation(
+				context,
+				frame,
+				interpolate(step.action.shell, expressions).trim(),
+				interpolate(step.action.run, expressions),
+			);
 			const directory = stepDirectory(context, frame, step.workingDirectory, expressions);
-			const invocation = await shellInvocation(name, script, directory);
 			if (invocation instanceof Error) {
 				await log(context, `=== ${title} ===\ncould not start: ${invocation.message}`);
 				outcome = { exit: unstartable(context, invocation), outputs: {} };
