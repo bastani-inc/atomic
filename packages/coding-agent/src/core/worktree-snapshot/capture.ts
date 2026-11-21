@@ -6,6 +6,7 @@ import {
 	mkdir,
 	mkdtemp,
 	open,
+	readdir,
 	readFile,
 	rm,
 	stat,
@@ -908,6 +909,96 @@ interface HistoryCapture {
 	readonly blob?: SnapshotBlob;
 }
 
+/** Why a snapshot leaves its checkout's unpushed commits out. */
+type HistoryOmission = Extract<
+	WorktreeSnapshotOmission,
+	{ readonly reason: "unpushed-history-denied" | "bundle-over-cap" }
+>;
+
+/**
+ * The unpushed commits a capture of each checkout in this process last left out, by checkout root: the hash of their
+ * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs when
+ * the commits were bundled ({@link packsOf}). Which of those commits add or modify a deny-listed path follows from the
+ * list alone, and the size of their bundle from the list and the packs, so a later capture of the same list records the
+ * same omission without checking and bundling the commits again, which takes seconds for a long history no remote has.
+ */
+const leftOutHistory = new Map<
+	string,
+	{ readonly fingerprint: string; readonly omission: HistoryOmission; readonly packs: string | undefined }
+>();
+
+/**
+ * How far over the cap an earlier bundle of the same commits, from the same packs, must have been for a capture to
+ * leave them out without bundling them again: packing the same commits again can give a slightly smaller bundle.
+ * Nearer the cap they are bundled again.
+ */
+const OVER_CAP_REUSE_MARGIN = 0.1;
+
+/** How deep Git follows object directories that borrow from others (`objects/info/alternates`). */
+const ALTERNATES_DEPTH = 5;
+
+/**
+ * The packs of the repository with the Git directory `gitDir`, and of the object directories it borrows objects from
+ * (`objects/info/alternates`), as a hash of their file names and sizes; undefined when they cannot all be read. A
+ * bundle of the same commits packed from the same packs has nearly the same size; a repack or `git gc` replaces them
+ * and can make it much smaller. Objects written loose since then are not part of it: an unpushed commit's objects stay
+ * loose until a repack packs them, and objects written later are no part of the commits' bundle.
+ */
+async function packsOf(gitDir: string): Promise<string | undefined> {
+	let objects: string;
+	try {
+		// A linked worktree's Git directory names the repository's own, which holds the objects.
+		objects = join(resolve(gitDir, (await readFile(join(gitDir, "commondir"), "utf8")).trim()), "objects");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+		objects = join(gitDir, "objects");
+	}
+	const listed: string[] = [];
+	const visited = new Set<string>();
+	const visit = async (directory: string, depth: number): Promise<boolean> => {
+		if (visited.has(directory)) return true;
+		if (depth > ALTERNATES_DEPTH) return false;
+		visited.add(directory);
+		let names: string[];
+		let alternates: string;
+		try {
+			names = (await readdir(join(directory, "pack"))).sort();
+			for (const name of names)
+				listed.push(`${directory}\0${name}\0${(await stat(join(directory, "pack", name))).size}`);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+		}
+		try {
+			alternates = await readFile(join(directory, "info", "alternates"), "utf8");
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ENOENT";
+		}
+		for (const line of alternates.split(/\r?\n/)) {
+			if (line === "" || line.startsWith("#")) continue;
+			// A quoted path is one Git unquotes first; it is not followed here, and the packs count as unknown.
+			if (line.startsWith('"') || !(await visit(resolve(directory, line), depth + 1))) return false;
+		}
+		return true;
+	};
+	return (await visit(objects, 0)) ? sha256Hex(listed.join("\n")) : undefined;
+}
+
+/**
+ * Whether `omission`, recorded for the same unpushed commits, still leaves them out under `settings`: a denied commit
+ * always does; a bundle over the cap does while the repository's packs are those it was bundled from (`packs`, as
+ * {@link packsOf} gives them now: `current`) and its size exceeds the cap by more than {@link OVER_CAP_REUSE_MARGIN}.
+ */
+async function stillLeftOut(
+	omission: HistoryOmission,
+	packs: string | undefined,
+	current: () => Promise<string | undefined>,
+	settings: WorktreeSnapshotSettings,
+): Promise<boolean> {
+	if (omission.reason === "unpushed-history-denied") return true;
+	if (packs === undefined || omission.bytes <= settings.maxSnapshotBytes * (1 + OVER_CAP_REUSE_MARGIN)) return false;
+	return (await current()) === packs;
+}
+
 const COMMIT_TOKEN = /^([0-9a-f]{40}|[0-9a-f]{64})(?: \(from [0-9a-f]+\))?$/;
 
 /** Commits of `commits` that add or modify a deny-listed path, with those paths. */
@@ -1007,6 +1098,7 @@ async function verifiedBundle(
 
 async function captureHistory(
 	checkout: Checkout,
+	gitDir: string,
 	settings: WorktreeSnapshotSettings,
 	previous: WorktreeSnapshot | undefined,
 	scratch: string,
@@ -1022,17 +1114,30 @@ async function captureHistory(
 	const sameHistory = (commits: readonly string[]) =>
 		previous?.head === head && commits.length === unpushed.length && commits.every((c, i) => c === unpushed[i]);
 	if (previous?.bundle && sameHistory(previous.bundle.commits)) return { bundle: previous.bundle, omitted: [] };
-	const denied = await deniedHistory(root, unpushed, signal);
-	if (denied.commits.length > 0) {
-		return { bundle: null, omitted: [{ reason: "unpushed-history-denied", ...denied }] };
+	const fingerprint = sha256Hex(unpushed.join("\n"));
+	const remembered = leftOutHistory.get(root);
+	if (
+		remembered?.fingerprint === fingerprint &&
+		(await stillLeftOut(remembered.omission, remembered.packs, () => packsOf(gitDir), settings))
+	) {
+		return { bundle: null, omitted: [remembered.omission] };
 	}
+	const leaveOut = (omission: HistoryOmission, packs?: string): HistoryCapture => {
+		leftOutHistory.set(root, { fingerprint, omission, packs });
+		return { bundle: null, omitted: [omission] };
+	};
+	const denied = await deniedHistory(root, unpushed, signal);
+	if (denied.commits.length > 0) return leaveOut({ reason: "unpushed-history-denied", ...denied });
+	const packs = await packsOf(gitDir);
 	const file = join(scratch, "history.bundle");
 	await bundlePinned(root, head, boundary, file, signal);
 	const data = await verifiedBundle(root, head, unpushed, file, signal);
 	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
-		return { bundle: null, omitted: [{ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }] };
+		// The size is kept for the packs only when they were the same before and after bundling.
+		const bundledFrom = packs === (await packsOf(gitDir)) ? packs : undefined;
+		return leaveOut({ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }, bundledFrom);
 	}
 	const blob = snapshotBlob(data);
 	return { bundle: { blob: blob.hash, bytes: data.byteLength, commits: unpushed }, omitted: [], blob };
@@ -1228,7 +1333,7 @@ async function captureCheckout(
 			bytes: patch?.data.byteLength ?? 0,
 		};
 		const chain = incremental ? [...previous.chain, link] : [link];
-		const history = await captureHistory(checkout, settings, previous, scratch, signal);
+		const history = await captureHistory(checkout, capture.gitDir, settings, previous, scratch, signal);
 		if (history.blob) blobs.push(history.blob);
 		const fields = {
 			root,

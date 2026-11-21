@@ -29,7 +29,8 @@ const packages = ["ai", "agent", "schema", "telemetry"].map((directory) => {
 			.filter((name) => name.endsWith(suffix) && !name.endsWith(".d.ts") && !name.startsWith("_"))
 			.map((name) => {
 				const stem = name.slice(0, name.length - suffix.length);
-				return [specifierOf(key.replace("*", stem)), join(packageDir, compiled.replace("*", stem))] as const;
+				// As Node resolves a pattern export: the matched text takes the place of every `*`.
+				return [specifierOf(key.replaceAll("*", stem)), join(packageDir, compiled.replaceAll("*", stem))] as const;
 			});
 	});
 	return { name: manifest.name, specifiers: keys.map(specifierOf), modules };
