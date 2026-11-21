@@ -740,15 +740,14 @@ function presentList(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 }
 
 function formatWaitTaskStatusLine(observation: WaitOutcome, hasOutput: boolean): string {
-	if (observation.kind === "settled" && observation.result.kind === "cancelled") {
-		const status = waitStatus(observation, hasOutput);
-		const head = `◼ ${status.label}`;
-		return theme.fg("muted", head) + (status.detail ? theme.fg("dim", ` · ${status.detail}`) : "");
-	}
 	const status = waitStatus(observation, hasOutput);
-	const head = `${status.glyph} ${status.label}`;
+	const mark = theme.fg(status.mark.color, status.mark.glyph);
+	if (observation.kind === "settled" && observation.result.kind === "cancelled") {
+		return `${mark} ${theme.fg("muted", status.label)}${status.detail ? theme.fg("dim", ` · ${status.detail}`) : ""}`;
+	}
 	return (
-		theme.fg(status.tone, head) + (status.detail ? theme.fg("dim", " · ") + theme.fg("muted", status.detail) : "")
+		`${mark} ${theme.fg(status.tone, status.label)}` +
+		(status.detail ? theme.fg("dim", " · ") + theme.fg("muted", status.detail) : "")
 	);
 }
 
@@ -832,9 +831,9 @@ function presentWait(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 						? "success"
 						: "failure"
 					: observation.result.kind === "cancelled"
-						? "stopped"
+						? "task-stopped"
 						: "failure"
-				: "success";
+				: "shell-running";
 		return {
 			title: "Wait",
 			args: taskId,
@@ -1098,7 +1097,7 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 		return {
 			title: "Bash",
 			args: commandArg,
-			status: "success",
+			status: "shell-running",
 			meta: ["background"],
 			details: new ToolBlockLines([bgLine, ...outputLines], input.expanded),
 		};

@@ -6,8 +6,6 @@ export interface SubagentResultRenderState {
 	subagentResultSnapshotKey?: string;
 	/** Stable semantic/content timestamp used for durations and activity text. */
 	subagentResultSnapshotNow?: number;
-	/** Monotonic pulse frame, advanced once per progress update (no timer). */
-	subagentResultPulseFrame?: number;
 }
 
 export type ResultAnimationContext = {
@@ -31,10 +29,6 @@ export function clearResultAnimationTimer(context: LegacyResultAnimationContext)
 	if (timer) clearInterval(timer);
 	context.state.subagentResultAnimationTimer = undefined;
 	context.state.subagentResultAnimationCleanup = undefined;
-}
-
-export function advanceResultPulseFrame(frame: number | undefined): number {
-	return (frame ?? 0) + 1;
 }
 
 export function clearLegacyResultAnimationTimer(context: LegacyResultAnimationContext): void {

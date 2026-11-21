@@ -164,7 +164,7 @@ export function createTypeScriptSourceSpecifierTransform(
 	createJitiImpl: CreateJiti,
 	id: string,
 	cacheDir: () => string | undefined,
-): JitiTransform & { flush: () => Promise<void> } {
+): JitiTransform & { flush: () => Promise<void>; cached: (options: JitiTransformOptions) => string | undefined } {
 	const babelHost = babelHostFor(createJitiImpl, id);
 	const writes = new Set<Promise<void>>();
 	const transform: JitiTransform = (options: JitiTransformOptions) => {
@@ -191,6 +191,12 @@ export function createTypeScriptSourceSpecifierTransform(
 	return Object.assign(transform, {
 		async flush(): Promise<void> {
 			while (writes.size > 0) await Promise.all(writes);
+		},
+		/** The stored transform for `options`, without transforming on a miss. */
+		cached(options: JitiTransformOptions): string | undefined {
+			const directory = cacheDir();
+			if (!options.filename || !directory) return undefined;
+			return readCached(cacheFile(directory, options, planRewrites(options.source, options.filename)));
 		},
 	});
 }

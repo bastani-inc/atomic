@@ -129,7 +129,9 @@ test("status rows use names and all native states, with diagnostics disclosed on
 	for (const [index, label] of ["Pending", "Running", "Completed", "Failed", "Interrupted", "Continued"].entries()) {
 		assert.match(collapsed, new RegExp(`debugger_${index + 1} · ${label}`));
 	}
-	for (const glyph of ["○", "∀", "✓", "✗", "■"]) assert.ok(collapsed.includes(glyph));
+	// The agent panel's marks: queued, running (and continued), done, failed, and stopped in the error colour.
+	for (const glyph of ["○", "◯", "●", "✗"]) assert.ok(collapsed.includes(glyph));
+	assert.doesNotMatch(collapsed, /[∀✓■]/u);
 	assert.doesNotMatch(collapsed, /Path:|Parent:|Residency:|Session:|loaded|cold|\/sessions/);
 	const expanded = plain(render(groups, true));
 	assert.match(expanded, /Path: parent\/debugger_1/);

@@ -1,10 +1,10 @@
-import { formatTokenCount, sliceHead } from "@bastani/atomic";
+import { formatTokenCount, sliceHead, TASK_MARKS, type TaskMark } from "@bastani/atomic";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatToolCall } from "../shared/formatters.js";
 import { formatActivityLabel } from "../shared/status-format.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getDisplayItems } from "../shared/utils.js";
-import { getTermWidth, pulseGlyph, type Theme } from "./render-layout.js";
+import { getTermWidth, type Theme } from "./render-layout.js";
 
 export function extractOutputTarget(task: string): string | undefined {
 	const writeToMatch = task.match(/\[Write to:(?:[^\S\n]*\n)*([^\]\n]+)\]/i);
@@ -147,25 +147,34 @@ export function resultStatusLine(result: Details["results"][number], output: str
 	return "Done";
 }
 
+/** A mark in its colour. */
+export function markText(theme: Theme, mark: TaskMark): string {
+	return theme.fg(mark.color, mark.glyph);
+}
+
+/**
+ * A result's mark, the one the agent panel and `/tasks` show its state with: running, or continued on its own, an open
+ * grey circle; killed, interrupted or skipped, the stopped mark; failed, a cross; done, a filled circle (`!` when it
+ * left no text output).
+ */
 export function resultGlyph(
 	result: Details["results"][number],
 	output: string,
 	theme: Theme,
 	running = result.progress?.status === "running",
-	pulseFrame?: number,
 ): string {
-	if (running) return theme.fg("accent", pulseGlyph(pulseFrame));
-	if (result.detached || result.status === "continued") return theme.fg("muted", "◼");
+	if (running) return markText(theme, TASK_MARKS.running);
+	if (result.detached || result.status === "continued") return markText(theme, TASK_MARKS.running);
 	if (
 		result.status === "killed" ||
 		result.interrupted ||
 		result.status === "interrupted" ||
 		result.status === "skipped"
 	)
-		return theme.fg("muted", "◼");
-	if (result.status === "error") return theme.fg("error", "✗");
+		return markText(theme, TASK_MARKS.stopped);
+	if (result.status === "error") return markText(theme, TASK_MARKS.failed);
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "!");
-	return theme.fg("success", "●");
+	return markText(theme, TASK_MARKS.done);
 }
 
 export function compactCurrentActivity(progress: AgentProgress, now?: number): string {

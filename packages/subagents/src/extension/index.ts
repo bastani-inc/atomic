@@ -60,12 +60,7 @@ import {
 	restoreSlashFinalSnapshots,
 	type SlashMessageDetails,
 } from "../slash/slash-live-state.js";
-import {
-	advanceResultPulseFrame,
-	renderSubagentResult,
-	type SubagentResultRenderState,
-	stopResultAnimations,
-} from "../tui/render.js";
+import { renderSubagentResult, type SubagentResultRenderState, stopResultAnimations } from "../tui/render.js";
 import { subagentScriptAccess } from "./codemode-access.js";
 import { loadConfig } from "./config.js";
 import { parseSubagentNotifyContent } from "./notification-content.js";
@@ -148,7 +143,7 @@ type SubagentToolRenderState = SubagentResultRenderState;
 function rebuildSlashResultContainer(
 	container: Container,
 	result: AgentToolResult<Details>,
-	options: { expanded: boolean; now?: number; pulseFrame?: number },
+	options: { expanded: boolean; now?: number },
 	theme: ExtensionContext["ui"]["theme"],
 ): void {
 	container.clear();
@@ -164,19 +159,12 @@ function createSlashResultComponent(
 	const container = new Container();
 	let lastVersion = -1;
 	let lastSnapshotNow = 0;
-	let pulseFrame = 0;
 	container.render = (width: number): string[] => {
 		const snapshot = getSlashRenderableSnapshot(details, owner);
 		if (snapshot.version !== lastVersion) {
 			lastVersion = snapshot.version;
 			lastSnapshotNow = Date.now();
-			pulseFrame = advanceResultPulseFrame(pulseFrame);
-			rebuildSlashResultContainer(
-				container,
-				snapshot.result,
-				{ ...options, now: lastSnapshotNow, pulseFrame },
-				theme,
-			);
+			rebuildSlashResultContainer(container, snapshot.result, { ...options, now: lastSnapshotNow }, theme);
 		}
 		return Container.prototype.render.call(container, width);
 	};
@@ -197,7 +185,7 @@ export function renderSubagentNotification(
 		details.status === "completed"
 			? "success"
 			: details.status === "interrupted" || details.status === "killed"
-				? "stopped"
+				? "task-stopped"
 				: "failure";
 	const meta: string[] = [];
 	if (details.taskInfo) meta.push(details.taskInfo);

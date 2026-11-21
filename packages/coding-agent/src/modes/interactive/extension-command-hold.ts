@@ -1,6 +1,5 @@
 import type { Container, TUI } from "@bastani/atomic-tui";
 import { holdPromptSlot, type PromptSlotHold } from "./components/prompt-slot.ts";
-import { screenHoldOf } from "./screen-hold.ts";
 
 /**
  * An extension command clears the prompt at once, but whether it opens a view shows only once it runs. Its hold of the
@@ -22,13 +21,14 @@ const submitted = new WeakMap<object, PromptSlotHold>();
 
 /** Hold the prompt's slot of `mode` while the extension command submitted now starts. */
 export function holdForExtensionCommand(mode: ExtensionCommandScreen): PromptSlotHold {
-	const held = holdPromptSlot(mode.editorContainer);
+	const held = holdPromptSlot(mode.editorContainer, { lateView: true });
 	unchanged.set(mode, held);
 	return {
 		settle: () => {
 			if (unchanged.get(mode) === held) unchanged.delete(mode);
 			held.settle();
 		},
+		endEarly: () => held.endEarly(),
 	};
 }
 
@@ -52,9 +52,7 @@ export function extensionChangedScreen(mode: ExtensionCommandScreen): void {
 	const held = unchanged.get(mode);
 	if (held === undefined) return;
 	unchanged.delete(mode);
-	const screen = screenHoldOf(mode);
-	const wasHeld = screen.region === "prompt";
-	held.settle();
-	// Draw the live slot before anything else arrives: a view mounted after it can then keep these rows until it draws.
-	if (wasHeld && screen.region === undefined) mode.ui.requestImmediateRender();
+	// Draw the live slot before anything else arrives: a view mounted after it can then keep these rows until it draws,
+	// and the command's view mounted before it keeps the command's rows.
+	if (held.endEarly()) mode.ui.requestImmediateRender();
 }

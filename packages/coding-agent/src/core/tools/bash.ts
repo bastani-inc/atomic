@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { APP_NAME } from "../../config.js";
 import { slashCommandHint } from "../../modes/interactive/components/nav-keys.ts";
+import { TASK_MARKS } from "../../modes/interactive/components/task-marks.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
@@ -404,7 +405,13 @@ function rebuildBashResultRenderComponent(
 	if (observation?.kind === "yielded") {
 		const receiptAt = output.lastIndexOf(STILL_RUNNING(observation.taskId));
 		if (receiptAt >= 0) output = output.slice(0, receiptAt).trimEnd();
-		component.addChild(new Text(theme.fg("accent", "∀ Continued in background"), 0, 0));
+		component.addChild(
+			new Text(
+				`${theme.fg(TASK_MARKS.shell.color, TASK_MARKS.shell.glyph)} ${theme.fg("accent", "Continued in background")}`,
+				0,
+				0,
+			),
+		);
 		component.addChild(
 			new Text(
 				theme.fg(

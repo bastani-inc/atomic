@@ -67,7 +67,7 @@ test("single background launch renders unshaded Agent tool block with short task
 		card.updateResult({ ...result, isError: false });
 		const lines = card.render(120);
 		const text = stripVTControlCharacters(lines.join("\n"));
-		assert.match(text, /∀ Agent\(worker · Intercom foreground smoke test only\.\)/);
+		assert.match(text, /◯ Agent\(worker · Intercom foreground smoke test only\.\)/);
 		assert.match(text, /⎿ {2}Running/);
 		assert.doesNotMatch(text, /\/tasks to inspect output and manage tasks|Do not edit files/);
 		assertUnshadedToolBlock(lines, 120);

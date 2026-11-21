@@ -76,20 +76,20 @@ test("compact rows show states, zero counts and display-only truncation", async 
 	}
 });
 
-test("a quit or paused agent row shows it paused and awaiting resume, not stopped or killed", () => {
+test("a quit or paused agent row says paused and awaiting resume, not stopped or killed, with the stopped mark /tasks shows (#6122)", () => {
 	for (const cause of ["quit", "pause"] as const) {
 		const paused: TaskRecord = {
 			...taskRecord(`paused-${cause}`),
 			execution: { kind: "settled", result: { kind: "cancelled", cause } },
 		};
 		const row = plain(new TaskRow(paused).render(80));
-		assert.match(row, /‖ worker|‖ agent/);
+		assert.match(row, /◯ worker|◯ agent/);
 		assert.match(row, /paused · awaiting resume/);
 		assert.doesNotMatch(row, /cancelled|killed|stopped/i);
 		assert.deepEqual(taskStatusAppearance(paused), {
 			label: "Paused · awaiting resume",
-			icon: "‖",
-			color: "warning",
+			icon: "◯",
+			color: "error",
 		});
 	}
 });

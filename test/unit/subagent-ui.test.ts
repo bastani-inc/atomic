@@ -141,7 +141,7 @@ test("background receipt is readable without changing model-facing task identity
 	renderSubagentToolCall({ agent: "worker", task: "Inspect fixture" }, theme, context);
 	const view = renderSubagentToolResult(result, { expanded: false, isPartial: false }, theme, context);
 	const text = stripVTControlCharacters(view.render(80).join("\n"));
-	assert.match(text, /∀ Agent\(worker · Inspect fixture\)/);
+	assert.match(text, /◯ Agent\(worker · Inspect fixture\)/);
 	assert.match(text, /⎿ {2}Running/);
 	assert.doesNotMatch(text, /wait-fixture|"observation"|\/tasks/);
 	assert.equal(JSON.stringify(result), original);
@@ -200,7 +200,7 @@ test("parallel receipts identify each sibling and preserve errors at narrow widt
 		stripVTControlCharacters(
 			renderSubagentToolResult(result, { expanded, isPartial: false }, theme, context).render(80).join("\n"),
 		);
-	assert.match(text(false), /∀ Agent\(reader · Read\)\n {3}⎿ {2}Running/);
+	assert.match(text(false), /◯ Agent\(reader · Read\)\n {3}⎿ {2}Running/);
 	assert.match(text(false), /✗ Agent\(checker · Check\)\n {3}⎿ {2}Failed · Check failed/);
 	assert.doesNotMatch(text(false), /task-a|Prompt/);
 	assert.match(text(true), /Prompt[\s\S]*Tool calls[\s\S]*Result/);
