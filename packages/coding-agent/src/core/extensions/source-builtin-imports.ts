@@ -1,9 +1,9 @@
 import type { Worker } from "node:worker_threads";
 import type { createJiti } from "jiti";
-import { startModuleWorker } from "../../utils/worker-threads.ts";
+import { startModuleWorker } from "../../utils/worker-threads.js";
 import type { JitiImport, LoadedModule } from "./reloadable-scripts.ts";
-import { isTypeScriptFile, readModuleSource, resolveFrom, walkStaticImports } from "./transform-graph.ts";
-import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.ts";
+import { isTypeScriptFile, readModuleSource, resolveFrom, walkStaticImports } from "./transform-graph.js";
+import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 
 type CreateJiti = typeof createJiti;
 type Jiti = ReturnType<CreateJiti>;
@@ -29,6 +29,9 @@ export interface TransformPreparation {
 
 // Every module jiti evaluates for one load shares that load's options object.
 const loads = new WeakMap<object, SourceBuiltinLoad>();
+/** Per load, the deferred imports in progress, by the module file they import. */
+const importing = new WeakMap<SourceBuiltinLoad, Map<string, Promise<unknown>>>();
+/** Preparations in progress, by transpile cache and module file; loads of one extension can share them. */
 const preparing = new Map<string, Promise<void>>();
 let transformWorkerUrl: URL | undefined;
 
@@ -73,6 +76,10 @@ function settledModuleFiles(module: LoadedModule): string[] | undefined {
  * load itself is unchanged: it reads every file again and uses a stored transform only for the same source, so an
  * edit made meanwhile is evaluated as it is now. Anything else returns `undefined` and the import goes to jiti at
  * once, as before.
+ *
+ * Every import of the same module that arrives while one is in progress gets that import's own promise. jiti hands a
+ * second caller the module as soon as its evaluation has started, so two callers that resumed together after the
+ * preparation would let the second use the module before its body had run.
  */
 export function importAfterEvaluation(
 	importer: LoadedModule,
@@ -89,20 +96,40 @@ export function importAfterEvaluation(
 		return undefined;
 	}
 	if (!isTypeScriptFile(target)) return undefined;
+	let inProgress = importing.get(load);
+	const pending = inProgress?.get(target);
+	if (pending !== undefined) return pending;
 	const loaded = settledModuleFiles(importer);
 	if (loaded === undefined || loaded.includes(target)) return undefined;
 	const { createJiti, cacheDir, template } = load;
-	const key = `${cacheDir}\0${target}`;
-	let prepared = preparing.get(key);
-	if (prepared === undefined) {
-		const started = prepareTransforms(createJiti, { cacheDir, template, targets: [target], visited: loaded });
-		void started.then(() => {
-			if (preparing.get(key) === started) preparing.delete(key);
-		});
-		preparing.set(key, started);
-		prepared = started;
+	const imported = shared(preparing, `${cacheDir}\0${target}`, () =>
+		prepareTransforms(createJiti, { cacheDir, template, targets: [target], visited: loaded }),
+	).then(() => jitiImport(id));
+	if (inProgress === undefined) {
+		inProgress = new Map();
+		importing.set(load, inProgress);
 	}
-	return prepared.then(() => jitiImport(id));
+	const imports = inProgress;
+	imports.set(target, imported);
+	const settled = (): void => {
+		if (imports.get(target) === imported) imports.delete(target);
+	};
+	void imported.then(settled, settled);
+	return imported;
+}
+
+/** The promise `start` makes for `key`, shared by every caller until it settles. */
+function shared(promises: Map<string, Promise<void>>, key: string, start: () => Promise<void>): Promise<void> {
+	let pending = promises.get(key);
+	if (pending === undefined) {
+		const started = start();
+		void started.then(() => {
+			if (promises.get(key) === started) promises.delete(key);
+		});
+		promises.set(key, started);
+		pending = started;
+	}
+	return pending;
 }
 
 /**

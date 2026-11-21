@@ -17,7 +17,7 @@ import {
 	withLegacyPackageNames,
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
-import { normalizeJitiAliases } from "./jiti-aliases.ts";
+import { normalizeJitiAliases } from "./jiti-aliases.js";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath, isSourceBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import {
@@ -31,7 +31,7 @@ import {
 	registerSourceBuiltinLoad,
 	type SourceBuiltinLoad,
 	transformTemplate,
-} from "./source-builtin-imports.ts";
+} from "./source-builtin-imports.js";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 import type { ExtensionFactory } from "./types.ts";
 

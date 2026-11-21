@@ -21,6 +21,8 @@ const EVENTS = `(globalThis as { ${EVENTS_KEY}?: string[] }).${EVENTS_KEY}`;
 // Each test loads extensions through the real loader; the first load in a test process also builds the host's
 // virtual modules.
 const REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS = 120_000;
+// The main thread stores a transform after the import that needed it has settled.
+const STORED_TRANSFORM_TIMEOUT_MS = 30_000;
 
 const cleanups: Array<() => void> = [];
 
@@ -158,6 +160,17 @@ async function mainThreadTransforms<T>(
 	}
 }
 
+/** Waits until the transforms of `modules` are stored, so removing the test's folder does not race their writes. */
+async function storedTransforms(agentDir: string, modules: string[]): Promise<void> {
+	await vi.waitFor(
+		() => {
+			const stored = cachedModules(agentDir);
+			for (const module of modules) assert.ok(stored.includes(module), `${module} is not stored yet`);
+		},
+		{ timeout: STORED_TRANSFORM_TIMEOUT_MS, interval: 10 },
+	);
+}
+
 function cachedModules(agentDir: string): string[] {
 	return readdirSync(getExtensionTranspileCacheDir(agentDir))
 		.filter((name) => name.endsWith(".mjs"))
@@ -220,6 +233,7 @@ export const value: string = heavy.value;
 		await new Promise((settle) => setImmediate(settle));
 
 		assert.deepEqual(events, ["heavy", "outer", "task queued by outer", "task queued by first"]);
+		await storedTransforms(agentDir, ["first", "heavy", "second"]);
 	});
 
 	test("importing a module the extension already loaded starts no preparation (#6118)", async () => {
@@ -237,6 +251,29 @@ export const value: string = heavy.value;
 		await new Promise((settle) => setImmediate(settle));
 
 		assert.deepEqual(events, ["imported again", "event loop"]);
+	});
+
+	test("an import of a module that another import is still preparing gets the evaluated module (#6118)", async () => {
+		// `heavy` declares `late` after twenty imports, so its body runs only once their evaluations have settled.
+		const parts = Array.from({ length: 20 }, (_, index) => `part${index}`);
+		const { agentDir, entry } = sourceCheckout({
+			...DEFERRED_GRAPH,
+			...Object.fromEntries(parts.map((part) => [`lib/${part}.ts`, `export const ${part}: string = "${part}";\n`])),
+			"heavy.ts": `import { first } from "./lib/first.js";
+${parts.map((part) => `import { ${part} } from "./lib/${part}.js";`).join("\n")}
+export function read(): string {
+	return late + first + " " + [${parts.join(", ")}].length;
+}
+const late: string = "late ";
+`,
+		});
+		const load = (await loadFactory(entry, agentDir)) as unknown as () => Promise<{ read: () => string }>;
+
+		const earlier = load().then((module) => module.read());
+		await new Promise((settle) => setImmediate(settle));
+		const later = load().then((module) => module.read());
+
+		assert.deepEqual(await Promise.all([earlier, later]), ["late first-1 20", "late first-1 20"]);
 	});
 
 	test("a deferred import still loads when its transforms cannot be stored (#6118)", async () => {
@@ -302,6 +339,7 @@ describe("deferred imports of other extensions", { timeout: REAL_EXTENSION_LOADE
 		assert.equal(result.value, "first-1 second-1");
 		assert.deepEqual(files.sort(), ["first", "heavy", "second"]);
 		assert.deepEqual(deferred.eventsAtSettle(), ["heavy"]);
+		await storedTransforms(agentDir, ["first", "heavy", "second"]);
 	});
 });
 
