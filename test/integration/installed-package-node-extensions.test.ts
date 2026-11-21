@@ -357,6 +357,14 @@ runTest(
 // Packing, registry installation, two strict compiler passes and real Node hosts are structural work.
 const PACKED_NODE_CONSUMER_TIMEOUT_MS = 480_000;
 
+/** This host's napi target, as the platform package of `@bastani/atomic-natives` names it. */
+function hostNativeTarget(): string {
+	if (process.platform === "win32") return `win32-${process.arch}-msvc`;
+	if (process.platform !== "linux") return `${process.platform}-${process.arch}`;
+	const header = (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header;
+	return `linux-${process.arch}-${header?.glibcVersionRuntime ? "gnu" : "musl"}`;
+}
+
 // #3105: no workspace links or loader aliases may participate in this consumer.
 runTest(
 	"packed Node consumer types, assets and builtin parity",
@@ -423,11 +431,33 @@ runTest(
 			repoRoot,
 			"pack consumer closure",
 		);
+		// @bastani/atomic-natives carries no binary of its own: the host's platform package, as publish.yml packs it.
+		const platformPackage = join(packedRoot, "platform-package");
+		const target = hostNativeTarget();
+		fs.mkdirSync(platformPackage);
+		fs.copyFileSync(
+			join(repoRoot, "packages", "natives", "native", `atomic_natives.${target}.node`),
+			join(platformPackage, `atomic_natives.${target}.node`),
+		);
+		fs.writeFileSync(
+			join(platformPackage, "package.json"),
+			JSON.stringify({
+				name: `@bastani/atomic-natives-${target}`,
+				version: JSON.parse(fs.readFileSync(join(repoRoot, "packages", "natives", "package.json"), "utf8")).version,
+				main: `atomic_natives.${target}.node`,
+				files: [`atomic_natives.${target}.node`],
+			}),
+		);
+		execute(
+			[npmCli, "pack", "--ignore-scripts", "--pack-destination", packedRoot],
+			platformPackage,
+			"pack platform package",
+		);
 		const archives = fs
 			.readdirSync(packedRoot)
 			.filter((name) => name.endsWith(".tgz"))
 			.map((name) => join(packedRoot!, name));
-		assert.equal(archives.length, 8);
+		assert.equal(archives.length, 9);
 		// Local tarball manifests lack the registry's _hasShrinkwrap marker. Seed
 		// npm's root lock so this consumer uses the published dependency pins too.
 		const publishedShrinkwrap = fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8");
@@ -464,7 +494,8 @@ runTest(
 		assert.equal(shrinkwrap, publishedShrinkwrap, "the packed shrinkwrap must match the consumer's lock seed");
 		assert.ok(!shrinkwrap.includes(repoRoot));
 		assert.doesNotMatch(shrinkwrap, /"(?:link|resolved)"\s*:\s*(?:true|"(?:file:|\.\.\/|packages\/))/);
-		assert.ok(fs.readdirSync(join(installed, "atomic-natives", "native")).some((name) => name.endsWith(".node")));
+		assert.ok(!fs.readdirSync(join(installed, "atomic-natives", "native")).some((name) => name.endsWith(".node")));
+		assert.ok(fs.existsSync(join(installed, `atomic-natives-${target}`, `atomic_natives.${target}.node`)));
 		const fixtures = [
 			"consumer-parity-types.mts",
 			"consumer-parity.mjs",

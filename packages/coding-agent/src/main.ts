@@ -184,6 +184,7 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
+import { installNativeModuleWarning } from "./utils/native-module-warning.js";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -465,6 +466,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	loadShownDeprecationNotices(agentDir);
 	// The interactive engine sends its warnings to the host, which shows them, rather than writing them to its stderr.
 	if (engineEnv.child === "1") deferDeprecationWarnings();
+	installNativeModuleWarning();
 	// Before the first settings load, so a removed routing setting is not also reported as ignored. When another process
 	// holds the file, its migration below tries again, and the load's "ignored" warning waits for that.
 	removeSavedModelRoutingSettings(cwd, { retryLater: true });

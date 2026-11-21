@@ -721,16 +721,39 @@ if (!nativeBinding || forceWasi) {
   }
 }
 
+function __atomicNativePackage() {
+  const abi = process.platform === 'linux' ? (isMusl() ? '-musl' : '-gnu') : process.platform === 'win32' ? '-msvc' : ''
+  return `@bastani/atomic-natives-${process.platform}-${process.arch}${abi}`
+}
+
+function __atomicNativePackageMissing() {
+  try {
+    require.resolve(`${__atomicNativePackage()}/package.json`)
+    return false
+  } catch {
+    return true
+  }
+}
+
 if (!nativeBinding) {
   if (loadErrors.length > 0) {
     const error = new Error(
-      `Cannot find native binding. ` +
-        `npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). ` +
-        'Please try `npm i` again after removing both package-lock.json and node_modules directory.',
+      (__atomicNativePackageMissing()
+        ? `Cannot find Atomic's native module: the optional package ${__atomicNativePackage()} is not installed. ` +
+          'Reinstall Atomic without omitting optional dependencies (npm --omit=optional, pnpm --no-optional and ' +
+          'bun --omit=optional leave it out).'
+        : `Cannot load Atomic's native module from ${__atomicNativePackage()}.`),
     )
     // assign instead of the `new Error(message, { cause })` options form,
     // which Node < 16.9 silently ignores
     error.cause = createLoadErrorChain(loadErrors)
+    try {
+      if (__atomicNativePackageMissing()) {
+        const report = globalThis[Symbol.for('@bastani/atomic/natives/report-missing-platform-package')]
+        if (typeof report === 'function') report(error.message)
+        else globalThis[Symbol.for('@bastani/atomic/natives/missing-platform-package')] = error.message
+      }
+    } catch { /* Reporting is optional. */ }
     throw error
   }
   throw new Error(`Failed to load native binding`)

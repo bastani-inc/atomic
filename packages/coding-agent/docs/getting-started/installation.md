@@ -23,6 +23,7 @@ npm install -g @bastani/atomic
 
 - Atomic does not require package install scripts; pass `--ignore-scripts` if you disable lifecycle scripts.
 - Package managers select the right platform runtime automatically. Keep a standalone archive's complete directory (`node_modules`, libraries, licenses) intact.
+- Atomic's native module ships as one optional package per platform (`@bastani/atomic-natives-<platform>`), and the package manager installs the one that matches. Do not omit optional dependencies (`npm --omit=optional`, `pnpm --no-optional`, `bun --omit=optional`): without that package Atomic runs on slower fallbacks, without the features that need it, and shows a warning that names the package to install.
 - Sessions are stored locally in `~/.atomic/workflows/journal.sqlite` with no database server needed. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 - On Node 22, `AsyncLocalStorage` runs on promise hooks, which make every `await` in an Atomic process cost more. Node 24 and Bun have no such cost, so run Atomic on Node 24 or later to avoid it. Do not set `NODE_OPTIONS=--experimental-async-context-frame` for this: Node 24 and later refuse to start with that option, and commands Atomic runs for you inherit `NODE_OPTIONS`.
 

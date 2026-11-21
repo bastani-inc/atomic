@@ -44,6 +44,8 @@ export interface DeprecationOptions {
 	 * same, once {@link loadShownDeprecationNotices} has loaded the record. It is recorded as shown when it is delivered.
 	 */
 	once?: string;
+	/** What stderr calls the warning when no UI shows it. Defaults to "Deprecation warning". */
+	label?: string;
 }
 
 /** Where warnings are shown while a UI owns the terminal. `once` identifies a notice shown once across starts. */
@@ -95,7 +97,7 @@ export function warnDeprecation(message: string, options: DeprecationOptions = {
 		return;
 	}
 	const deferred = state[DEFERRED_KEY] === true;
-	if (!deferred) console.warn(chalk.yellow(`Deprecation warning: ${message}`));
+	if (!deferred) console.warn(chalk.yellow(`${options.label ?? "Deprecation warning"}: ${message}`));
 	// A notice shown once across starts must reach the UI too, which clears what was printed before it started.
 	if (deferred || options.showInUi || once !== undefined) {
 		state[UI_PENDING_KEY] ??= [];

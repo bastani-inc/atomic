@@ -8,6 +8,10 @@
 - `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing ([#6187](https://github.com/bastani-inc/atomic/pull/6187)).
 - `startHostProcess` takes `endWithParent`: the process gets `SIGKILL` when the process that started it ends, however it ends; not the processes it starts.
 
+### Changed
+
+- The package no longer includes the native binaries of every platform: each platform's binary comes from its own optional package (`@bastani/atomic-natives-<platform>`), which package managers install for the platform they run on. When that package is missing, the error names it and says to reinstall without omitting optional dependencies, instead of blaming an npm bug, and tells Atomic so that it can show a warning.
+
 ## [0.10.1] - 2026-11-20
 
 ### Added

@@ -99,3 +99,60 @@ for (const shape of ["extensible", "sealed", "frozen"] as const) {
 		assert.equal(module.exports, binding);
 	});
 }
+
+/** The loader on a Linux glibc x64 host where no binding loads, `platformPackage` telling whether that package resolves. */
+async function loadWithoutBinding(platformPackage: boolean) {
+	const { loader } = await artifacts();
+	const reports: string[] = [];
+	const globals: Record<symbol, ((message: string) => void) | string> = {};
+	const require = Object.assign(
+		(id: string) => {
+			if (id === "fs") return { readFileSync: () => "" };
+			throw new Error(`Cannot find module '${id}'`);
+		},
+		{
+			resolve: (id: string) => {
+				if (platformPackage && id === "@bastani/atomic-natives-linux-x64-gnu/package.json") return id;
+				throw new Error(`Cannot find module '${id}'`);
+			},
+		},
+	);
+	globals[Symbol.for("@bastani/atomic/natives/report-missing-platform-package")] = (message: string) =>
+		reports.push(message);
+	const context = vm.createContext({
+		module: { exports: {} },
+		process: {
+			env: {},
+			platform: "linux",
+			arch: "x64",
+			report: { getReport: () => ({ header: { glibcVersionRuntime: "2.39" } }) },
+		},
+		require,
+	});
+	Object.assign(vm.runInContext("globalThis", context), globals);
+	let message = "";
+	try {
+		vm.runInContext(loader, context);
+	} catch (error) {
+		message = (error as Error).message;
+	}
+	return { message, reports };
+}
+
+test("a missing platform package names itself and the install options that leave it out, and Atomic hears of it", async () => {
+	const { message, reports } = await loadWithoutBinding(false);
+	assert.equal(
+		message,
+		"Cannot find Atomic's native module: the optional package @bastani/atomic-natives-linux-x64-gnu is not installed. " +
+			"Reinstall Atomic without omitting optional dependencies (npm --omit=optional, pnpm --no-optional and " +
+			"bun --omit=optional leave it out).",
+	);
+	assert.doesNotMatch(message, /npm has a bug/);
+	assert.deepEqual(reports, [message]);
+});
+
+test("an installed platform package whose binding fails to load is not reported as missing", async () => {
+	const { message, reports } = await loadWithoutBinding(true);
+	assert.equal(message, "Cannot load Atomic's native module from @bastani/atomic-natives-linux-x64-gnu.");
+	assert.deepEqual(reports, []);
+});
