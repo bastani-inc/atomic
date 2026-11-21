@@ -220,6 +220,59 @@ describe("extension transpile cache follows the agent directory", () => {
 		assert.equal(fs.existsSync(unused), false, "an unused version cache must be removed");
 	});
 
+	it("a module loaded from the cache runs exactly as it did when it was compiled", async () => {
+		const agentDir = existingAgentDir("atomic-cache-strict-");
+		const entry = path.join(tempDir("atomic-cache-strict-ext-"), "entry.ts");
+		fs.writeFileSync(
+			entry,
+			`export default function (): string[] {
+	const observed: string[] = [];
+	try {
+		// @ts-expect-error -- an undeclared name, which strict mode refuses to create
+		atomicCacheStrictProbe = 1;
+		observed.push("assigned");
+	} catch (error) {
+		observed.push(error instanceof ReferenceError ? "ReferenceError" : String(error));
+	}
+	observed.push(typeof (function (this: unknown) {
+		return this;
+	})());
+	observed.push(new Error("where").stack?.split("\\n").find((frame) => frame.includes("entry.ts")) ?? "no frame");
+	return observed;
+}
+`,
+		);
+		const cacheDir = path.resolve(getExtensionTranspileCacheDir(agentDir));
+		const run = async (): Promise<string[]> => {
+			const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(entry, undefined, agentDir);
+			return (factory as unknown as () => Promise<string[]>)();
+		};
+		const probe = globalThis as { atomicCacheStrictProbe?: number };
+
+		const compiled = await run();
+		const writes = vi.spyOn(fs.promises, "writeFile");
+		let cached: string[];
+		try {
+			cached = await run();
+			assert.deepEqual(
+				writes.mock.calls.filter(([file]) => path.dirname(path.resolve(String(file))) === cacheDir),
+				[],
+				"the second load must use the stored transform",
+			);
+		} finally {
+			writes.mockRestore();
+			delete probe.atomicCacheStrictProbe;
+		}
+
+		assert.deepEqual(
+			compiled.slice(0, 2),
+			["ReferenceError", "undefined"],
+			"the compiled module must run in strict mode",
+		);
+		assert.match(compiled[2], /entry\.ts:13:/, "the compiled module must keep its source lines");
+		assert.deepEqual(cached, compiled);
+	});
+
 	it("marks the cache it uses as used, so other versions keep it", async () => {
 		const entry = writeExtension(tempDir("atomic-mark-used-ext-"));
 		const warmAgentDir = existingAgentDir("atomic-mark-used-warm-");

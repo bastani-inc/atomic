@@ -1,17 +1,31 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { createJiti } from "jiti";
 import { afterEach, describe, test, vi } from "vitest";
 import { getExtensionTranspileCacheDir } from "../src/config.ts";
 import { loadExtensionsCached } from "../src/core/extensions/loader.ts";
-import { clearExtensionCache, loadExtensionModule } from "../src/core/extensions/loader-virtual-modules.ts";
+import {
+	clearExtensionCache,
+	extensionLoaderTestHooks,
+	loadExtensionModule,
+} from "../src/core/extensions/loader-virtual-modules.ts";
 import { resetNativeBuiltinExtensionEntriesForTest } from "../src/core/extensions/native-builtin-entries.ts";
-import { transformTemplate } from "../src/core/extensions/source-builtin-imports.ts";
+import { prepareSourceEntries, transformTemplate } from "../src/core/extensions/source-builtin-imports.ts";
 import { moduleTransformOptions } from "../src/core/extensions/transform-graph.ts";
+import { createTypeScriptSourceSpecifierTransform } from "../src/core/extensions/ts-source-specifiers.ts";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 
 /**
@@ -447,6 +461,25 @@ describe("loads of a source checkout's builtin package entry", {
 		assert.deepEqual(again.errors, []);
 		assert.equal(workers(), 0);
 		assert.equal(fs.existsSync(join(agentDir, "cache")), false);
+	});
+
+	test("an entry prepared under another spelling of its path is stored under the name jiti evaluates it by", async () => {
+		const { agentDir, dir, entry } = sourceCheckout(ENTRY_GRAPH);
+		const cacheDir = await extensionLoaderTestHooks.getTranspileCacheDir(agentDir);
+		assert.ok(cacheDir);
+		// Windows gives Atomic `C:\…` paths and jiti names the file `C:/…`; a `.` segment is another spelling of the
+		// same file on every platform.
+		const spelled = `${dir}${sep}.${sep}index.ts`;
+		const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false });
+		const template = transformTemplate(jiti.options);
+
+		await prepareSourceEntries({ createJiti, cacheDir, template }, [spelled]);
+
+		const stored = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url, () => cacheDir).cached(
+			moduleTransformOptions(template, jiti.resolve(entry), readFileSync(entry, "utf8")),
+		);
+		assert.notEqual(stored, undefined, "the entry must be stored under the name jiti loads it by");
+		assert.deepEqual(cachedModules(agentDir), ["first", "index", "second"]);
 	});
 
 	test("a load whose entry changed prepares its graph and evaluates every module as it is now", async () => {
