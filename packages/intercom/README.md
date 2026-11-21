@@ -313,7 +313,7 @@ atomic intercom upgrade    # Replace an older broker when safe
 
 ## Configuration
 
-Create `~/.atomic/agent/intercom/config.json`.
+Create `~/.atomic/agent/intercom/config.json`. When that file is absent and `ATOMIC_CODING_AGENT_DIR` is unset, Atomic also checks legacy `~/.pi/agent/intercom/config.json`.
 
 ```json
 {
@@ -339,8 +339,8 @@ The default `npx --no-install tsx` pair is a compatibility sentinel. Intercom re
 | `maxPendingAsks` | `6` | Maximum concurrent waiting asks per session (minimum `1`). |
 | `replyHint` | `true` | Include the `intercom({ action: "reply", ... })` hint in incoming messages. |
 | `status` | none | Optional status suffix appended after automatic lifecycle states (`idle`, `thinking`, `tool:<name>`). |
-| `group` | none | Optional default home group. `ATOMIC_INTERCOM_GROUP` overrides it. |
-| `joinAtStartup` | `true` | Connect interactive sessions in the background at startup. Set to `false` or set `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` to connect on first use. |
+| `group` | none | Optional default home group. `ATOMIC_INTERCOM_GROUP` (or legacy `PI_INTERCOM_GROUP`) overrides it. |
+| `joinAtStartup` | `true` | Connect interactive sessions in the background at startup. `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` disables startup join, and `ATOMIC_INTERCOM_JOIN_AT_STARTUP=1` forces startup join even when config sets `joinAtStartup` to `false`. |
 
 Custom broker commands remain supported. To launch the broker explicitly with Bun from `PATH`:
 
@@ -391,7 +391,7 @@ The broker is a standalone process that manages session registration and message
 
 ### Runtime files
 
-Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_DIR` relocates this directory.
+Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR` when unset) relocates this directory.
 
 - `broker.sock` holds the Unix domain socket on macOS and Linux (Windows uses a named pipe). If the path exceeds the Unix socket path limit (107 bytes on Linux, 103 bytes on macOS), the broker creates an owner-only `atomic-intercom-<uid>/<digest>.sock` socket under `$XDG_RUNTIME_DIR` or the system temp directory.
 - `broker.sock.path` records the moved socket path when `broker.sock` would exceed the platform limit.

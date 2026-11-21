@@ -206,15 +206,16 @@ Discovery precedence, from lowest to highest:
 | Scope | Path |
 | --- | --- |
 | Builtin | Bundled with `@bastani/atomic` (`packages/subagents/agents/`) |
-| Package | Declared via `agents` in installed Atomic packages (`<namespace>.<name>`) |
 | User | `~/.atomic/agent/agents/**/*.md` |
 | Project | `.atomic/agents/**/*.md` |
 
-Project discovery also checks `.agents/**/*.md` recursively. When `.atomic/agents/` and `.agents/` define the same runtime agent name, `.atomic/agents/` wins. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
+Installed Atomic packages can also contribute read-only agents declared under `agents` in `package.json`, registered as `<namespace>.<name>`. Package agents never replace builtin, user, or project agents with the same full name.
+
+Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, and user discovery checks legacy `~/.pi/agent/agents/**/*.md` when `ATOMIC_CODING_AGENT_DIR` is unset. When multiple directories in the same scope define the same runtime agent name, the `.atomic` directory wins. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
 
 ### Builtin overrides
 
-Override selected builtin fields in `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project) without copying the bundled agent file.
+Override selected builtin fields in `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project) without copying the bundled agent file. Legacy `~/.pi/agent/settings.json` (when `ATOMIC_CODING_AGENT_DIR` is unset) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
 
 ```json
 {
@@ -243,7 +244,7 @@ Custom agents start with a focused system prompt and only the context you opt in
 | `inheritSkills: true` | Include Atomic's discovered skills catalog. |
 | `defaultContext: fork` | Default to forked session context when a launch omits `context` (explicit `context: "fresh"` still wins). |
 
-`inheritProjectContext` and `inheritSkills` shape fresh children. A forked child continues the parent's conversation as the parent sent it, including project context and skills, so its first request reads from the parent's prompt cache while still respecting the child's own tool policy. Builtin agents set `inheritProjectContext: true` by default.
+`inheritProjectContext` and `inheritSkills` shape fresh children. A forked child continues the parent's conversation as the parent sent it, including project context and skills, so its first request reads from the parent's prompt cache while still respecting the child's own tool policy. The packaged `worker` sets `inheritProjectContext: true`; other builtins leave project instruction files out of fresh runs.
 
 ### Agent frontmatter
 
@@ -278,7 +279,7 @@ Frontmatter is parsed with a strict YAML parser. Invalid YAML (such as an unquot
 | `tools` | Tool allowlist as a comma-separated string (`tools: read, bash`) or YAML array (`tools: [read, bash]`). `mcp:<server>` and `mcp:<server>/<tool>` entries expose direct tools from Atomic's bundled MCP integration. |
 | `extensions` | Omitted loads normal extensions; empty disables optional extensions; comma-separated paths allowlist specific optional extensions. |
 | `model` | Default model (`provider/id[:effort]` or `auto`). When omitted with no `fallbackModels` and no per-call override, the child inherits the parent session's model and thinking level. |
-| `fallbackModels` | Ordered backup models for retryable provider errors (quota, auth, timeouts, 5xx, content-filter refusals, or incompatible payloads). A concrete pinned model falls back only through these entries. Ordinary task failures never trigger fallback. |
+| `fallbackModels` | Ordered backup models for retryable provider errors (quota, auth, timeouts, 5xx, content-filter refusals, or incompatible payloads). A concrete pinned model falls back only through these entries. For unpinned and `auto` children, the current user-selected model is appended as the final fallback. Ordinary task failures never trigger fallback. |
 | `thinking` | Deprecated default thinking level used only when a model candidate carries no `:effort` suffix. |
 | `fallbackThinkingLevels` | Deprecated compatibility list aligned positionally with `fallbackModels` for entries without a `:effort` suffix. |
 | `systemPromptMode` | `replace` by default, or `append` to keep Atomic's base prompt. |
@@ -317,14 +318,7 @@ extensions: /abs/path/to/ext-a.ts, /abs/path/to/ext-b.ts
 
 ## Skills
 
-Skills are `SKILL.md` files injected into a child's system prompt. Discovery checks project locations before user and builtin locations:
-
-1. `.atomic/skills/{name}/SKILL.md` and `.agents/skills/{name}/SKILL.md`
-2. `~/.atomic/agent/skills/{name}/SKILL.md` and `~/.agents/skills/{name}/SKILL.md`
-3. Installed packages and packages listed in `settings.json -> packages`
-4. Current working directory `package.json` skills
-5. `.atomic/settings.json -> skills` and `~/.atomic/agent/settings.json -> skills`
-6. Builtin packages
+Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when `ATOMIC_CODING_AGENT_DIR` is unset) directories are also read for compatibility, with `.atomic` taking precedence. See [skills](../coding-agent/docs/skills.md) for discovery and project-trust rules.
 
 Override or disable skills per launch:
 
@@ -497,7 +491,7 @@ A named worktree belongs to the caller. Atomic never deletes the worktree or its
 
 ## Configuration
 
-Optional JSON configuration lives at `~/.atomic/agent/extensions/subagent/config.json`.
+Optional JSON configuration lives at `~/.atomic/agent/extensions/subagent/config.json`. When that file is absent and `ATOMIC_CODING_AGENT_DIR` is unset, Atomic also checks legacy `~/.pi/agent/extensions/subagent/config.json`.
 
 ### `parallel`
 
@@ -527,6 +521,8 @@ Controls startup and `/resume` recovery of paused and quit children launched by 
 - `"ask"` prompts once with each child's name and ID (acts like `"never"` without a UI).
 - `"auto"` resumes each child from its saved session automatically.
 
+Any other `resumeInFlight` value is reported and treated as `"never"`.
+
 ### `sessionStartTimeoutMs`
 
 ```json
@@ -554,7 +550,7 @@ Stores child sessions as JSONL files in `params.sessionDir` if set, else `defaul
 }
 ```
 
-Controls runtime Intercom coordination guidance injected into child prompts:
+Controls runtime Intercom coordination guidance injected into child prompts and whether the bridge adds `intercom` and `contact_supervisor` to child tool allowlists. Setting `mode` to `"off"` disables both.
 
 - `mode` accepts `"always"` (default), `"fork-only"`, or `"off"`.
 - `instructionFile` points to an optional markdown template that replaces the default instructions. Atomic interpolates `{orchestratorTarget}`, and relative paths resolve from `~/.atomic/agent/extensions/subagent/`.

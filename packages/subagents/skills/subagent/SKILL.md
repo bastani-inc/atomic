@@ -108,6 +108,7 @@ Settings locations:
 
 - User scope is `~/.atomic/agent/settings.json`.
 - Project scope is `.atomic/settings.json`.
+- Legacy `~/.pi/agent/settings.json` (when `ATOMIC_CODING_AGENT_DIR` is unset) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
 
 Direct settings example:
 
@@ -134,6 +135,7 @@ Agent files can live in:
 - `~/.atomic/agent/agents/**/*.md` for user scope.
 - `.atomic/agents/**/*.md` for project scope.
 - `.agents/**/*.md` for project compatibility; `.atomic/agents/` wins on conflicts.
+- Legacy `~/.pi/agent/agents/**/*.md` (when `ATOMIC_CODING_AGENT_DIR` is unset) and `.pi/agents/**/*.md` directories are also read for compatibility, with `.atomic` winning on conflicts.
 
 Discovery is recursive. Agents can set optional frontmatter/package metadata; `name: codebase-analyzer` plus `package: code-analysis` registers as runtime name `code-analysis.codebase-analyzer` while serialization keeps `name` and `package` separate.
 
@@ -279,7 +281,7 @@ subagent({
 
 ## Subagent + Intercom Coordination
 
-Atomic subagents work without Intercom. When Atomic's bundled `@bastani/intercom` extension is available, `intercomBridge.mode` is not `"off"` (default `"always"`, or `"fork-only"` for forked runs), and the parent session has an Intercom target, the bridge injects coordination guidance and adds `intercom` and `contact_supervisor` to eligible child tool allowlists. During launch, Atomic connects the parent Intercom client to issue a child-bound supervisor capability whenever the child's tool policy permits `intercom` or `contact_supervisor`. The admitted child registers on Intercom at session start before its first turn, so the parent and siblings can list and message it right away.
+Atomic subagents work without Intercom. When Atomic's bundled `@bastani/intercom` extension is available, `intercomBridge.mode` is not `"off"` (default `"always"`, or `"fork-only"` for forked runs), and the parent session has an Intercom target, the bridge injects coordination guidance and adds `intercom` and `contact_supervisor` to eligible child tool allowlists. When the bridge is active, Atomic connects the parent Intercom client during launch to issue a child-bound supervisor capability whenever the child's tool policy permits `intercom` or `contact_supervisor`. The admitted child registers on Intercom at session start before its first turn, so the parent and siblings can list and message it right away.
 
 All builtin specialists can coordinate through `intercom`, both upward to the supervisor and sideways to peers in the same Intercom group. `debugger` and `worker` also declare `contact_supervisor`; use it for supervisor requests when the bridge supplies it. Explicit parent tool allowlists, exclusions, `noTools`, and disabled builtins are never bypassed to restore coordination.
 

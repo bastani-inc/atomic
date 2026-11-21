@@ -18,6 +18,8 @@ Atomic bundles `@bastani/web-access` with `@bastani/atomic`. No separate install
 }
 ```
 
+When `~/.atomic/web-search.json` is absent, Atomic checks legacy `~/.pi/web-search.json` without merging the two files.
+
 In `auto` mode (the default), `web_search` tries Exa first (direct API if keyed, MCP if not), then Perplexity, then Gemini API, and then Gemini Web when browser cookie access is enabled.
 
 Optional binaries for video frame extraction:
@@ -180,21 +182,19 @@ Only `http` and `https` URLs are fetched. URLs with embedded credentials, local 
 
 ## Routing
 
-```text
-web_search(query)
-  Exa (direct API with key, keyless MCP without)
-  -> Perplexity
-  -> Gemini API
-  -> Gemini Web (when browser cookies are enabled)
+`web_search` tries providers in this order in `auto` mode:
 
-fetch_content({ urls: [target] })
-  Local video -> Gemini API (Files API) -> Gemini Web (when browser cookies are enabled)
-  GitHub URL  -> Local clone (or GitHub API for large repos and commit SHAs)
-  YouTube URL -> Gemini Web (when browser cookies are enabled) -> Gemini API -> Perplexity
-  HTTP URL    -> PDF: extract text and save markdown to ~/Downloads/
-              -> HTML: Readability -> RSC parser -> Jina Reader -> Gemini fallback
-              -> Text, JSON, or Markdown: return directly
-```
+1. Exa (direct API with a key, keyless MCP without).
+2. Perplexity.
+3. Gemini API.
+4. Gemini Web when browser cookies are enabled.
+
+`fetch_content` routes each target by type:
+
+- Local video paths use Gemini API (Files API), then Gemini Web when browser cookies are enabled.
+- GitHub repository URLs clone locally, or use the GitHub API for large repositories and full commit SHAs.
+- YouTube URLs use Gemini Web when browser cookies are enabled, then Gemini API, and then Perplexity.
+- HTTP and HTTPS URLs branch by content type. PDFs extract text to markdown in `~/Downloads/`. HTML runs Readability, the RSC parser, Jina Reader, and then Gemini fallback. Plain text, JSON, and Markdown return directly.
 
 ## Commands
 
