@@ -167,6 +167,14 @@ export async function openSqlKnownSessionStore({
 				brokerId,
 			);
 		},
+		async ownerOf(intercomSessionId) {
+			const row = await database.get<SqliteRow & { owner_broker: string; age_ms: number | bigint }>(
+				`SELECT owner_broker, ${greatest("0", `${nowMs} - owner_renewed_at`)} AS age_ms FROM ${bindings}
+				 WHERE intercom_session_id = ? AND owner_token IS NOT NULL AND owner_broker IS NOT NULL`,
+				intercomSessionId,
+			);
+			return row === undefined ? undefined : { brokerId: row.owner_broker, ageMs: Number(row.age_ms) };
+		},
 	};
 
 	/** `bind`'s statements, in the caller's serial transaction on `bindings`. */

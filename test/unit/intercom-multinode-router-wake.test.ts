@@ -2658,6 +2658,50 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal((await taken).status, "held", "the id is the session's again, on one registration");
 	});
 
+	test("a send from another broker to an alias another registration took meanwhile does not reach the session that held it (#5607)", async () => {
+		const { shared, here, fresh } = await awaitingWhileStopped();
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		const claim = await here.router.claimSessionId(
+			fresh.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+		);
+		assert.ok(claim.status === "granted" && claim.grant.aliasToken !== undefined);
+		const back: BrokerConnectedSession = {
+			...fresh,
+			socket: fakeSocket(),
+			info: { ...fresh.info, id: claim.grant.sessionId },
+		};
+		const again = registeredOn(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await again;
+		assert.equal(here.router.aliasTarget(fresh.info.id), back);
+		// The alias's ownership passes to another registration of the session before this broker learns of it.
+		await here.state.knownSessions.owners!.release({
+			intercomSessionId: fresh.info.id,
+			token: claim.grant.aliasToken,
+		});
+		const elsewhere = await startNode(shared);
+		const taken = elsewhere.router.claimSessionId(fresh.info.id, fresh.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal((await taken).status, "granted");
+
+		const third = await startNode(shared);
+		const sender = session("sender");
+		await registeredOn(third, sender);
+		let notFound = 0;
+		const send = remoteSend(sender, fresh.info.id, false);
+		third.router.routeSend({ ...send.request, notFound: () => void notFound++ });
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		assert.equal(notFound, 1, "an alias the store no longer gives this session does not route to it");
+		assert.deepEqual(
+			(back.socket as FakeSocket).frames.filter((frame) => frame.type === "message"),
+			[],
+		);
+	});
+
 	test("an answer of an earlier attempt that arrives after the session came back under the awaited id leaves that id its own (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped();
 		const id = live.info.id;

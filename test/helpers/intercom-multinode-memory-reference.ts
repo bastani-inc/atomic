@@ -1170,6 +1170,10 @@ function knownSessionStore(
 			async retireBroker(brokerId) {
 				for (const held of bindings.values()) if (held.owner?.brokerId === brokerId) delete held.owner;
 			},
+			async ownerOf(intercomSessionId) {
+				const owner = bindings.get(intercomSessionId)?.owner;
+				return owner === undefined ? undefined : { brokerId: owner.brokerId, ageMs: ageOf(owner.renewedAt) };
+			},
 		},
 		...(presence === undefined
 			? {}

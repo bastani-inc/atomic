@@ -1468,12 +1468,48 @@ export class MultiNodeRouter {
 		});
 	}
 
-	/** #5607: whether `known` is the record of a session here that awaits the id `target`, asked for exactly. */
+	/**
+	 * #5607: whether `known` is the record of a session here that answers to `target`, asked for exactly, as an id it
+	 * awaits or one it holds as a confirmed alias.
+	 */
 	private awaitedHere(known: KnownSessionState, target: string): boolean {
 		if (known.aliasSessionId !== target) return false;
-		for (const [session, entry] of this.presence)
-			if (entry.awaits?.id === target && deliveryTargetIdentity(session) === known.targetIdentity) return true;
+		for (const [session, entry] of this.presence) {
+			if (deliveryTargetIdentity(session) !== known.targetIdentity) continue;
+			if (entry.awaits?.id === target || this.aliasTarget(target) === session) return true;
+		}
 		return false;
+	}
+
+	/**
+	 * #5607: whether the session of the record `known` still answers to its other id `alias`: no registration owns that
+	 * id with a live renewal, or the one that does is on the broker presenting this session.
+	 */
+	private async aliasStillAnswers(known: KnownSessionState, alias: string): Promise<boolean> {
+		const owner = await this.state.knownSessions.owners?.ownerOf(alias);
+		if (owner === undefined || owner.ageMs > BROKER_LEASE_STALE_AFTER_MS) return true;
+		const presence = await this.state.leases.read({ kind: "presence", targetIdentity: known.targetIdentity });
+		return (
+			presence.status === "found" &&
+			presence.lease.holderId === owner.brokerId &&
+			presence.lease.ageMs <= BROKER_LEASE_STALE_AFTER_MS
+		);
+	}
+
+	/**
+	 * #5607: the live presence of another broker's session that holds `target` as an alias, while that broker owns the id
+	 * by the shared store's word (its registration renewed it within the stale age): an alias it lost meanwhile is not
+	 * routed to, however long its presence still names it.
+	 */
+	private async aliasHolder(live: readonly LeaseState[], target: string): Promise<LeaseState | undefined> {
+		const holder = live.find(
+			(lease) => (lease.subject as RecipientPresenceSubject).aliases?.includes(target) === true,
+		);
+		if (holder === undefined) return undefined;
+		const owner = await this.state.knownSessions.owners?.ownerOf(target);
+		return owner !== undefined && owner.brokerId === holder.holderId && owner.ageMs <= BROKER_LEASE_STALE_AFTER_MS
+			? holder
+			: undefined;
 	}
 
 	/**
@@ -2653,7 +2689,7 @@ export class MultiNodeRouter {
 		const plain = isPlainSend(request);
 		const exact =
 			live.find((lease) => presenceOf(lease).session.id === request.target) ??
-			(plain ? live.find((lease) => presenceOf(lease).aliases?.includes(request.target) === true) : undefined);
+			(plain ? await this.aliasHolder(live, request.target) : undefined);
 		let resolved: LeaseState | undefined = exact;
 		if (resolved === undefined) {
 			const replyAuthorized = await this.replyAuthorizedTargets(
@@ -3173,9 +3209,14 @@ export class MultiNodeRouter {
 		const byId = sessions.find((session) => session.intercomSessionId === request.target);
 		if (byId !== undefined) return byId;
 		// #5607: the other id a session answers to reaches it as that id.
-		// #5607: the other id a session answers to reaches it as that id, while that id is bound to its return address.
+		// #5607: the other id a session answers to reaches it as that id, while that id is bound to its return address
+		// and no live registration elsewhere owns it.
 		const byAlias = sessions.find((session) => session.aliasSessionId === request.target);
-		if (byAlias !== undefined && (await this.holdsSessionId(request.target, byAlias.atomicSessionId)))
+		if (
+			byAlias !== undefined &&
+			(await this.holdsSessionId(request.target, byAlias.atomicSessionId)) &&
+			(await this.aliasStillAnswers(byAlias, request.target))
+		)
 			return { ...byAlias, intercomSessionId: request.target };
 		const replyAuthorized = await this.replyAuthorizedTargets(
 			request,

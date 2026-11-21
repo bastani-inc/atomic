@@ -960,6 +960,8 @@ export interface KnownSessionStore {
 		renew(ownerships: readonly KnownSessionOwnership[]): Promise<KnownSessionOwnership[]>;
 		/** Every id the broker `brokerId` owns is given up: that broker instance is gone. */
 		retireBroker(brokerId: string): Promise<void>;
+		/** The broker of the registration that owns the id, and store-clock milliseconds since it renewed it; none when no owner. */
+		ownerOf(intercomSessionId: string): Promise<{ readonly brokerId: string; readonly ageMs: number } | undefined>;
 	};
 	/** The return address the id is bound to, if a binding recorded within `retentionMs` holds it. */
 	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
