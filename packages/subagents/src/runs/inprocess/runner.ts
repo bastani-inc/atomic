@@ -30,6 +30,7 @@ import {
 	SessionManager,
 	type SessionStartError,
 	type SessionStats,
+	type SessionStore,
 	SettingsManager,
 	type Skill,
 	type SubagentIntercomIdentity,
@@ -67,6 +68,7 @@ import {
 } from "../../agents/skills.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
+import { childSessionLocator } from "../../shared/child-session-store.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
 import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import {
@@ -188,6 +190,14 @@ export interface ChildSpec {
 	/** Typed identity/capability resolved by the parent before admission. */
 	readonly intercom?: SubagentIntercomIdentity;
 	readonly sessionManager?: SessionManager;
+	/**
+	 * Without `sessionManager`, the child's own session is created in this store, its parent's, once it is admitted,
+	 * rather than as a file in its session directory. Marked internal, it is left out of session lists, as a file of its
+	 * run is.
+	 */
+	readonly sessionStore?: SessionStore;
+	/** The working directory of the session that launched the child, which its history URL is read from. */
+	readonly parentCwd?: string;
 	/** The child reopens its own interrupted session, so its unreconciled deliveries are recovered before the task. */
 	readonly resumeSession?: boolean;
 	/**
@@ -521,6 +531,8 @@ export interface ResultEnvelope {
 		readonly cause?: string;
 	}[];
 	readonly sessionFile?: string;
+	/** The child's `history://sessions/<id>` URL, when its session has no file of its own. */
+	readonly sessionUrl?: string;
 	readonly artifactsDir?: string;
 	readonly durationMs?: number;
 	readonly timestamp: number;
@@ -1094,6 +1106,8 @@ function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | n
 async function historyUnavailable(sessionFile: string | undefined, cause?: unknown): Promise<string> {
 	if (sessionFile !== undefined && !(await pathExists(sessionFile)))
 		return `History unavailable: the session file was moved or deleted (${sessionFile}).`;
+	if (sessionFile === undefined && cause instanceof Error && cause.name === "SessionNotFoundError")
+		return "History unavailable: the session was deleted from its session store.";
 	return `History unavailable: ${cause instanceof Error ? cause.message : String(cause ?? "its session could not be read")}`;
 }
 
@@ -1721,12 +1735,23 @@ async function cancelledEnvelope(
 	stats: AttemptStats,
 	ownTurns: readonly AssistantMessage[],
 ): Promise<string> {
+	const sessionFile = session?.sessionFile ?? spec.sessionManager?.getSessionFile();
+	// Only a session the child opened is named: a child that never opened one has none to read.
+	const sessionUrl =
+		sessionFile === undefined
+			? childSessionLocator({
+					sessionId: session?.sessionId ?? spec.sessionManager?.getSessionId(),
+					cwd: spec.cwd,
+					parentCwd: spec.parentCwd,
+				})
+			: undefined;
 	return (
 		await recoverCancelledChildOutput({
 			progressPath: spec.progressPath,
 			assistantText: outputFor(ownTurns),
 			toolCount: stats.toolCalls,
-			sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
+			sessionPath: sessionFile ?? sessionUrl,
+			...(sessionUrl === undefined ? {} : { sessionUrl }),
 			...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
 			...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
 		})
@@ -2402,18 +2427,21 @@ export class SubagentControlRuntime {
 				typeof admitted.sessionManager.getEntrySeq === typeof SessionManager.prototype.getEntrySeq;
 			const openOptions =
 				typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
-			const opening = mkdir(admitted.sessionDir, { recursive: true }).then(() =>
-				admitted.sessionManager
-					? canReopenFromStore
-						? SessionManager.open(
-								admitted.sessionManager.getSessionStore(),
-								admitted.sessionManager.getSessionId(),
-								admitted.policy.cwd,
-								openOptions,
-							)
-						: Promise.resolve(admitted.sessionManager)
-					: SessionManager.create(admitted.policy.cwd, admitted.sessionDir),
-			);
+			// A session it opens, or creates in its parent's store, needs no directory; only a session file of its own does.
+			const opening = admitted.sessionManager
+				? canReopenFromStore
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+							openOptions,
+						)
+					: Promise.resolve(admitted.sessionManager)
+				: admitted.spec.sessionStore
+					? SessionManager.create(admitted.spec.sessionStore, admitted.policy.cwd, { internal: true })
+					: mkdir(admitted.sessionDir, { recursive: true }).then(() =>
+							SessionManager.create(admitted.policy.cwd, admitted.sessionDir),
+						);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
 			const prepareChildSession = async () => {
@@ -3236,10 +3264,15 @@ export class SubagentControlRuntime {
 			const disposal = (async (): Promise<SessionDisposal> => {
 				try {
 					await session?.dispose();
+					// A released child's history leaves process memory when its store can keep it elsewhere, and so does a finished
+					// child's own session in its parent's memory store, created internal for it, also after a resume: a task view
+					// reads it back from there.
 					if (
-						releasedAttempt &&
 						transcriptManager !== undefined &&
-						typeof transcriptManager.getSessionStore === "function"
+						typeof transcriptManager.getSessionStore === "function" &&
+						(releasedAttempt ||
+							((admitted.spec.sessionStore !== undefined || transcriptManager.getHeader()?.internal === true) &&
+								transcriptManager.getSessionStore().descriptor.adapter === "memory"))
 					)
 						await transcriptManager.getSessionStore().releaseSession?.(transcriptManager.getSessionId());
 					return { cleanup: { kind: "reaped" } };

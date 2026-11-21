@@ -543,7 +543,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `artifacts` | boolean | true | Write debug artifacts. |
 | `includeProgress` | boolean | false | Include detailed runtime progress telemetry in the final result. This does not create or maintain `progress.md`; use `progress` for that. |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
-| `sessionDir` | string | derived | Override session log directory. |
+| `sessionDir` | string | parent's store | Keep the children's sessions as JSONL files in this directory instead of the parent's session store. |
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.
 
@@ -636,7 +636,7 @@ Starting Atomic and resuming a session recover children; a reload, new session, 
 { "defaultSessionDir": "~/.atomic/agent/sessions/subagent/" }
 ```
 
-Session directory precedence is: `params.sessionDir`, then `config.defaultSessionDir`, then a directory derived from the parent session. Sessions are always enabled.
+A child's session is kept as a JSONL file in `params.sessionDir`, else in `config.defaultSessionDir`. Without either, it is kept where its parent's session is: in the parent's session store (SQLite by default, a database adapter, or memory for a parent that saves nothing), or, for a parent kept in JSONL files, as a file beside the parent's session file. Sessions are always enabled.
 
 ### `intercomBridge`
 
@@ -690,7 +690,7 @@ Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped t
 
 Metadata records timing, usage, typed status, termination cause, final model, attempted models, and fallback attempt outcomes.
 
-Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
+Child sessions are kept in the parent's session store, hidden from session lists, or as files under a per-run session directory when the parent's sessions are files or a session directory is configured. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
 Owner-bound completions notify the originating session while its admission boundary remains open. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
 

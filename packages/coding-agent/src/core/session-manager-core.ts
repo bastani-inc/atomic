@@ -893,7 +893,13 @@ export class SessionManager {
 		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
 		this.fileEntries = [
-			createSessionHeader(this.sessionId, this.cwd, new Date().toISOString(), options?.parentSession),
+			createSessionHeader(
+				this.sessionId,
+				this.cwd,
+				new Date().toISOString(),
+				options?.parentSession,
+				options?.internal,
+			),
 		];
 		this.lastSeq = 0;
 		this.childArchive = new ChildCatalog();
@@ -962,6 +968,7 @@ export class SessionManager {
 				this.cwd,
 				new Date().toISOString(),
 				options?.parentSession,
+				options?.internal,
 			);
 			const record = this.recordHeader(header);
 			const store = await this.storeForNewSession();

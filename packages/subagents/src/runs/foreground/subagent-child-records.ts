@@ -342,6 +342,11 @@ export interface SubagentChildLaunch {
 	 * starts on: its id, in the owner's session store, and its file when that store keeps one.
 	 */
 	readonly forkSession?: { readonly id: string; readonly file?: string };
+	/**
+	 * A fresh child whose session is created in its owner's session store once it starts, rather than as a file in
+	 * `sessionDir`, which is kept for releases that do not read this.
+	 */
+	readonly ownerStore?: true;
 	readonly sessionDir?: string;
 	readonly modelOverride?: string;
 	readonly skills?: readonly string[];
@@ -370,6 +375,7 @@ export function subagentChildLaunch(
 					},
 				}
 			: {}),
+		...(options.sessionStore && !forkSession ? { ownerStore: true as const } : {}),
 		...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
 		...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
 		...(options.skills ? { skills: options.skills } : {}),

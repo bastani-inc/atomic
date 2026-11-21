@@ -112,7 +112,7 @@ Once the agent goes idle, Atomic generates a one-line `session_summary` using th
 
 ### Internal sessions
 
-Sessions marked **internal** are hidden from `/resume`, `atomic -r`, and `-c`, but can still be opened by session ID.
+Sessions marked **internal** are hidden from `/resume`, `atomic -r`, `-c`, and the `history://sessions` list, but can still be opened by session ID. A subagent's own session is internal.
 
 ## Recalling earlier work
 

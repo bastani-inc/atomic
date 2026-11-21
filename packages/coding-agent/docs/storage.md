@@ -5,6 +5,7 @@ The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/
 - Earlier releases' workflow data stays untouched on disk ([Workflow data from earlier releases](#workflow-data-from-earlier-releases)).
 - Configure an alternate SQLite file, explicit JSONL directory, memory store, or database adapter in [storage settings](/settings#sessions) or [per process](#selecting-storage-per-process).
 - A failed persistent store never falls back to memory.
+- Subagents' own sessions are kept in the same store as the session that launched them, hidden from session lists; see [Child session storage](/subagents).
 
 ### Storage home
 
