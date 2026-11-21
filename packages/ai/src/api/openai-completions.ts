@@ -1320,10 +1320,81 @@ function applyAnthropicCacheControl(
 ): void {
 	addCacheControlToSystemPrompt(messages, cacheControl);
 	addCacheControlToLastTool(tools, cacheControl);
-	addCacheControlToLastConversationMessage(messages, cacheControl);
+	// Where the request the last reply answered put its newest breakpoint, by the same rule.
+	const replyAt = replyPositions.get(messages);
+	const previous = replyAt === undefined ? undefined : lastCacheablePart(messages, replyAt);
+	const newest = lastCacheablePart(messages, messages.length);
+	if (newest) addCacheControlToMessage(messages[newest.index]!, cacheControl);
 	// The fourth and last breakpoint Claude allows.
 	const checkpoint = cacheCheckpoints.get(messages);
-	if (checkpoint && checkpoint !== messages.at(-1)) addCacheControlToMessage(checkpoint, cacheControl);
+	if (checkpoint) {
+		if (checkpoint !== messages.at(-1)) addCacheControlToMessage(checkpoint, cacheControl);
+	} else if (previous && newest && positionsBetween(messages, previous, newest) >= CACHE_LOOKBACK_POSITIONS) {
+		// One turn added so many blocks that the newest breakpoint no longer reaches back to the previous request's.
+		addCacheControlToMessage(messages[previous.index]!, cacheControl);
+	}
+}
+
+/**
+ * Claude finds an earlier request's cached prefix from a breakpoint only within this many positions, the breakpoint
+ * included. Every content part, tool call and reasoning field counts as one position here, which is never fewer than
+ * Claude counts for the blocks they become.
+ */
+const CACHE_LOOKBACK_POSITIONS = 20;
+
+/** A message that can take a breakpoint, and the position of the part that takes it within the message. */
+interface CacheablePart {
+	index: number;
+	offset: number;
+}
+
+/**
+ * The last user, assistant or tool message before index `end` that can take a breakpoint, as the newest breakpoint is
+ * placed: on its last text, or on the whole of a non-empty string.
+ */
+function lastCacheablePart(messages: ChatCompletionMessageParam[], end: number): CacheablePart | undefined {
+	for (let index = end - 1; index >= 0; index--) {
+		const message = messages[index]!;
+		if (message.role !== "user" && message.role !== "assistant" && message.role !== "tool") continue;
+		const content = message.content;
+		const part =
+			typeof content === "string"
+				? content.length > 0
+					? 0
+					: -1
+				: Array.isArray(content)
+					? content.findLastIndex((item) => item?.type === "text")
+					: -1;
+		if (part === -1) continue;
+		// An assistant message's reasoning goes before its text.
+		return { index, offset: part + (message.role === "assistant" && hasReasoning(message) ? 1 : 0) };
+	}
+	return undefined;
+}
+
+/** Positions after the part `from` marks through the part `to` marks, counted until they reach the lookback. */
+function positionsBetween(messages: ChatCompletionMessageParam[], from: CacheablePart, to: CacheablePart): number {
+	if (from.index === to.index) return to.offset - from.offset;
+	let positions = messagePositions(messages[from.index]!) - from.offset;
+	for (let index = from.index + 1; index < to.index && positions < CACHE_LOOKBACK_POSITIONS; index++) {
+		positions += messagePositions(messages[index]!);
+	}
+	return positions + to.offset;
+}
+
+function messagePositions(message: ChatCompletionMessageParam): number {
+	const content = message.content;
+	const parts = typeof content === "string" ? 1 : Array.isArray(content) ? content.length : 0;
+	if (message.role !== "assistant") return Math.max(1, parts);
+	return Math.max(1, parts + (message.tool_calls?.length ?? 0) + (hasReasoning(message) ? 1 : 0));
+}
+
+function hasReasoning(message: ChatCompletionAssistantMessageParamWithReasoning): boolean {
+	return (
+		message.reasoning_details !== undefined ||
+		message.reasoning_opaque !== undefined ||
+		OPENAI_COMPLETIONS_REASONING_FIELDS.some((field) => message[field] !== undefined)
+	);
 }
 
 function addCacheControlToSystemPrompt(
@@ -1334,20 +1405,6 @@ function addCacheControlToSystemPrompt(
 		if (message.role === "system" || message.role === "developer") {
 			addCacheControlToInstructionMessage(message, cacheControl);
 			return;
-		}
-	}
-}
-
-function addCacheControlToLastConversationMessage(
-	messages: ChatCompletionMessageParam[],
-	cacheControl: OpenAICompatCacheControl,
-): void {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const message = messages[i];
-		if (message.role === "user" || message.role === "assistant" || message.role === "tool") {
-			if (addCacheControlToMessage(message, cacheControl)) {
-				return;
-			}
 		}
 	}
 }
@@ -1468,6 +1525,7 @@ export function convertMessages(
 	let systemIndex = 0;
 	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user or tool message so far.
 	let checkpoint: ChatCompletionMessageParam | undefined;
+	let replyAt: number | undefined;
 	const markCheckpoint = (): void => {
 		const last = params.at(-1);
 		if (last?.role === "user" || last?.role === "tool") checkpoint = last;
@@ -1650,6 +1708,7 @@ export function convertMessages(
 			if (!hasContent && !assistantMsg.tool_calls) {
 				continue;
 			}
+			replyAt = params.length;
 			params.push(assistantMsg);
 		} else if (msg.role === "toolResult") {
 			const imageBlocks: Array<{ type: "image_url"; image_url: { url: string } }> = [];
@@ -1727,11 +1786,17 @@ export function convertMessages(
 	}
 
 	if (checkpoint) cacheCheckpoints.set(params, checkpoint);
+	if (replyAt !== undefined) replyPositions.set(params, replyAt);
 	return params;
 }
 
 /** The message a `cacheBreakpoint` hint asked a breakpoint for, by the message list `convertMessages` returned. */
 const cacheCheckpoints = new WeakMap<ChatCompletionMessageParam[], ChatCompletionMessageParam>();
+/**
+ * The index of the last reply in the message list `convertMessages` returned: the request it answered sent the
+ * messages before it.
+ */
+const replyPositions = new WeakMap<ChatCompletionMessageParam[], number>();
 
 function convertTools(
 	tools: Tool[],

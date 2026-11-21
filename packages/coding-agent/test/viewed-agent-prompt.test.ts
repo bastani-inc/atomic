@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@bastani/atomic-ai/compat";
-import type { Terminal } from "@bastani/atomic-tui";
+import { runAsHintActivation, stripHintMarkers, type Terminal } from "@bastani/atomic-tui";
 import { afterEach, describe, test, vi } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -12,7 +12,7 @@ import {
 } from "../src/core/agent-session-runtime.js";
 import { createUnstartedAgentSessionFromServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import type { InlineExtension } from "../src/core/extensions/types.js";
+import type { EditorFactory, InlineExtension } from "../src/core/extensions/types.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { TaskId } from "../src/core/tasks/contracts.js";
@@ -20,6 +20,7 @@ import { InteractiveMode } from "../src/index.js";
 import { takeMovedDraftMark } from "../src/modes/interactive/agent-view/agent-drafts.ts";
 import { attachLostAgentQueueNotices } from "../src/modes/interactive/agent-view/prompt-retarget.ts";
 import { setViewedNoticeSink } from "../src/modes/interactive/agent-view/viewed-notices.ts";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
 import { stripAnsi } from "../src/utils/ansi.js";
@@ -44,6 +45,10 @@ const WIDTH = 120;
 const ESC = "\x1b";
 const ENTER = "\r";
 const CTRL_C = "\x03";
+const LEFT = "\x1b[D";
+/** A Kitty key-release report of ←. */
+const LEFT_RELEASE = "\x1b[1;1:3D";
+const CTRL_LEFT = "\x1b[1;5D";
 const LONG_PASTE = Array.from({ length: 20 }, (_, index) => `pasted line ${index + 1}`).join("\n");
 const WORKER = "task-worker-1" as TaskId;
 
@@ -75,6 +80,8 @@ interface Screen {
 	readonly mode: InteractiveMode;
 	/** Send key bytes as the terminal does. */
 	press(...keys: string[]): Promise<void>;
+	/** Press `key` as a click on its hint does. */
+	clickHint(key: string): Promise<void>;
 	type(text: string): Promise<void>;
 	/** The prompt's lines as drawn, without colors. */
 	prompt(): string[];
@@ -110,11 +117,18 @@ async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void
 	}
 }
 
-/** A real interactive host over a real in-process main session on the faux provider, started as the CLI starts it. */
-async function mainScreen(extensions: InlineExtension[] = []): Promise<Screen> {
+/**
+ * A real interactive host over a real in-process main session on the faux provider, started as the CLI starts it.
+ * `keybindings` is the user's keybindings.json.
+ */
+async function mainScreen(
+	extensions: InlineExtension[] = [],
+	options: { readonly keybindings?: Record<string, string | string[]> } = {},
+): Promise<Screen> {
 	initTheme("dark");
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-viewed-prompt-cwd-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-viewed-prompt-agent-"));
+	if (options.keybindings) writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify(options.keybindings));
 	const faux = registerFauxProvider();
 	const model = faux.getModel();
 	const authStorage = AuthStorage.inMemory({ [model.provider]: { type: "api_key", key: "faux-key" } });
@@ -183,7 +197,7 @@ async function mainScreen(extensions: InlineExtension[] = []): Promise<Screen> {
 		warnings.push(message);
 		showWarning(message, target);
 	};
-	const plain = (lines: readonly string[]) => lines.map((line) => stripAnsi(line).trimEnd());
+	const plain = (lines: readonly string[]) => lines.map((line) => stripHintMarkers(stripAnsi(line)).trimEnd());
 	return {
 		mode,
 		async press(...keys) {
@@ -194,6 +208,10 @@ async function mainScreen(extensions: InlineExtension[] = []): Promise<Screen> {
 		},
 		async type(text) {
 			for (const char of text) terminal.input?.(char);
+			await settle();
+		},
+		async clickHint(key) {
+			runAsHintActivation(() => terminal.input?.(key));
 			await settle();
 		},
 		prompt: () => plain(mode.editorContainer.render(WIDTH)),
@@ -538,18 +556,294 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"Esc on an empty prompt with the shown subagent idle shows main, and is not the first press of main's double-Esc",
+		"Esc on an empty prompt with the shown subagent idle keeps it shown, and is not the first press of main's double-Esc (#6135)",
 		async () => {
 			screen = await mainScreen();
 			const port = worker();
 			screen.mode.settingsManager.setDoubleEscapeAction("tree");
 			await view(WORKER);
 			await screen.press(ESC);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+			await screen.press(LEFT);
 			assert.equal(screen.mode.agentView?.viewed.kind, "main");
 			// One more Esc on main is a first press: the tree does not open.
 			await screen.press(ESC);
 			assert.equal(screen.mode.editorContainer.children.at(-1), screen.mode.editor);
 			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"neither an Esc on the shown subagent nor ← back counts as the first press of main's double-Esc (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			screen.mode.settingsManager.setDoubleEscapeAction("tree");
+			// One instant for every press: only the presses in between can keep the tree closed.
+			const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+			try {
+				const treeOpen = () => screen?.mode.editorContainer.children.at(-1) !== screen?.mode.editor;
+				await screen.press(ESC);
+				await view(WORKER);
+				await screen.type("x");
+				await screen.press(ESC);
+				await view(undefined);
+				await screen.press(ESC);
+				assert.equal(treeOpen(), false, "the Esc on the subagent ended main's double-Esc");
+				await view(WORKER);
+				await screen.press(CTRL_C, LEFT);
+				assert.equal(screen.mode.agentView?.viewed.kind, "main");
+				await screen.press(ESC);
+				assert.equal(treeOpen(), false, "going back with ← ended main's double-Esc");
+			} finally {
+				now.mockRestore();
+			}
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"while another subagent is being opened, the footer offers no way back (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			const other = new FakeAgentViewPort({ taskId: "task-other-1" as TaskId, name: "other" });
+			openable.ports.set("task-other-1", other);
+			await view(WORKER);
+			assert.match(screen.footer(), /← main chat/);
+			let open: (() => void) | undefined;
+			openable.gate = new Promise<void>((resolve) => {
+				open = resolve;
+			});
+			const shown = screen.mode.agentView?.view("task-other-1" as TaskId);
+			await settle();
+			assert.doesNotMatch(screen.footer(), /main chat/);
+			open?.();
+			assert.equal(await shown, true);
+			assert.match(screen.footer(), /← main chat/);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"← on an empty prompt shows main and leaves the working subagent running, with its queue and both prompts as they were (#6135)",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ busy: true, queued: { steering: ["queued steer"], followUp: [] } });
+			await screen.type("main draft");
+			await view(WORKER);
+			await screen.press(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			assert.equal(screen.mode.editor.getText(), "main draft");
+			assert.equal(screen.mode.session.queuedMessagesPaused, false, "main's queue was not paused");
+			await view(WORKER);
+			assert.equal(screen.mode.editor.getText(), "");
+			assert.deepEqual(screen.rows().slice(0, 1), ["Steering: queued steer"]);
+			assert.deepEqual(port.calls, [], "the subagent was neither paused nor sent anything");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"← with text typed for the subagent moves the cursor and keeps it shown; a space alone is text (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			await view(WORKER);
+			await screen.type("ac");
+			await screen.press(LEFT);
+			await screen.type("b");
+			assert.equal(screen.mode.editor.getText(), "abc");
+			await screen.press(CTRL_C);
+			await screen.type(" ");
+			await screen.press(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+			assert.equal(screen.mode.editor.getText(), " ");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a released ← and Ctrl+← on an empty prompt keep the subagent shown (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			await view(WORKER);
+			await screen.press(LEFT_RELEASE, CTRL_LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"the footer leads with ← main chat while the shown subagent's prompt is empty, and never names Esc as a way back (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker({ busy: true });
+			assert.doesNotMatch(screen.footer(), /main chat/);
+			await view(WORKER);
+			assert.match(screen.footer(), /esc to pause · ← main chat · /);
+			assert.doesNotMatch(screen.footer(), /esc[^·]*main/);
+			await screen.type("draft");
+			assert.doesNotMatch(screen.footer(), /main chat/);
+			await screen.press(CTRL_C);
+			assert.match(screen.footer(), /← main chat/);
+			await view(undefined);
+			assert.doesNotMatch(screen.footer(), /main chat/);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"the keys overlay of a shown subagent lists ← main chat and Esc pausing its turn (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker({ busy: true });
+			await view(WORKER);
+			await screen.type("?");
+			const overlay = stripHintMarkers(stripAnsi(screen.mode.ui.render(WIDTH).join("\n")));
+			assert.match(overlay, /← +main chat, on an empty prompt/);
+			assert.match(overlay, /esc +pause the agent's turn/);
+			assert.doesNotMatch(overlay, /interrupt the agent's turn/);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a click on ← main chat shows main, and the subagent keeps what was typed for it (#6135)",
+		async () => {
+			screen = await mainScreen();
+			const port = worker({ busy: true });
+			await view(WORKER);
+			await screen.type("half a thought");
+			await screen.clickHint(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			await view(WORKER);
+			assert.equal(screen.mode.editor.getText(), "half a thought");
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a ← pressed while the subagent is being opened moves its prompt's cursor once shown and does not show main (#6135)",
+		async () => {
+			screen = await mainScreen();
+			worker();
+			let open: (() => void) | undefined;
+			openable.gate = new Promise<void>((resolve) => {
+				open = resolve;
+			});
+			const shown = screen.mode.agentView?.view(WORKER);
+			await settle();
+			await screen.press(LEFT);
+			open?.();
+			assert.equal(await shown, true);
+			await settle();
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension's shortcut on ← keeps the key while a subagent is shown (#6135)",
+		async () => {
+			let pressed = 0;
+			screen = await mainScreen([
+				(pi) =>
+					pi.registerShortcut("left", {
+						description: "takes left",
+						handler: async () => {
+							pressed++;
+						},
+					}),
+			]);
+			worker();
+			await view(WORKER);
+			assert.doesNotMatch(screen.footer(), /main chat/, "the hint never names a key an extension takes");
+			await screen.press(LEFT);
+			await until(() => pressed === 1);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension's editor built on the prompt's editor leads back to main with ← too (#6135)",
+		async () => {
+			let setEditor: ((factory: EditorFactory) => void) | undefined;
+			screen = await mainScreen([
+				(pi) =>
+					pi.on("session_start", (_event, ctx) => {
+						setEditor = (factory) => ctx.ui.setEditorComponent(factory);
+					}),
+			]);
+			const port = worker({ busy: true });
+			await until(() => setEditor !== undefined);
+			setEditor?.((tui, theme, keybindings) => new (class extends CustomEditor {})(tui, theme, keybindings));
+			await settle();
+			assert.notEqual(screen.mode.editor, screen.mode.defaultEditor);
+			await view(WORKER);
+			assert.match(screen.footer(), /← main chat/);
+			await screen.press(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			assert.deepEqual(port.calls, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"an extension editor's own shortcut on ← keeps the key while a subagent is shown (#6135)",
+		async () => {
+			let setEditor: ((factory: EditorFactory) => void) | undefined;
+			screen = await mainScreen([
+				(pi) =>
+					pi.on("session_start", (_event, ctx) => {
+						setEditor = (factory) => ctx.ui.setEditorComponent(factory);
+					}),
+			]);
+			worker();
+			let pressed = 0;
+			await until(() => setEditor !== undefined);
+			setEditor?.((tui, theme, keybindings) => {
+				const editor = new (class extends CustomEditor {})(tui, theme, keybindings);
+				editor.onExtensionShortcut = (data) => {
+					if (data !== LEFT) return false;
+					pressed++;
+					return true;
+				};
+				return editor;
+			});
+			await settle();
+			await view(WORKER);
+			await screen.press(LEFT);
+			assert.equal(pressed, 1);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"the back key follows keybindings.json, and Esc bound to it still only pauses the subagent (#6135)",
+		async () => {
+			// Ctrl+[ sends what Esc sends, and ↓ focuses the agent panel: neither is a way back, nor is Esc once
+			// another key interrupts.
+			screen = await mainScreen([], {
+				keybindings: { "app.nav.back": ["escape", "ctrl+[", "down", "ctrl+b"], "app.interrupt": "f2" },
+			});
+			const port = worker({ busy: true });
+			await view(WORKER);
+			assert.match(screen.footer(), /· ctrl\+b main chat ·/);
+			assert.doesNotMatch(screen.footer(), /esc[^·]*main chat|ctrl\+\[|↓[^·]*main chat/);
+			await screen.press(ESC);
+			await until(() => port.calls.length === 1);
+			assert.deepEqual(port.calls, [{ kind: "pause" }]);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+			await screen.press(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
+			await screen.press("\x02");
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
 		},
 		HOST_TIMEOUT_MS,
 	);

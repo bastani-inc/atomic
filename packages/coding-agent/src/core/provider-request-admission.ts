@@ -1,8 +1,8 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { Api, AssistantMessage, Model, RetryDeadline, StreamOptions } from "@bastani/atomic-ai";
 import { ProviderRetryTransport } from "@bastani/atomic-ai/utils/provider-retry";
 import { createFetchWithAdmission } from "@bastani/atomic-ai/utils/request-admission";
 import { RetryDeadlineError, retryDeadlineReached } from "@bastani/atomic-ai/utils/retry-sleep";
+import { asyncScope } from "./async-scope.ts";
 import {
 	isProviderLimitFailure,
 	isProviderRateLimit,
@@ -37,7 +37,7 @@ interface StreamAdmissionState {
 	observedScope?: ProviderLimitScope;
 }
 
-const streamAdmission = new AsyncLocalStorage<StreamAdmissionState>();
+const streamAdmission = asyncScope<StreamAdmissionState>();
 const admittedFetches = new WeakMap<typeof fetch, Map<string, typeof fetch>>();
 
 async function responseText(response: Response): Promise<string> {
