@@ -856,6 +856,46 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(currentSection(resumed)).toBe(section);
 	});
 
+	it("keeps the mcp_servers section in the turns of an interrupt's run after a tool call", async () => {
+		const fixture = await createFixture();
+		let interrupt = (): Promise<void> => Promise.resolve();
+		const interrupting: ExtensionFactory = (pi) => {
+			interrupt = () =>
+				pi.sendMessage(
+					{ customType: "ping", content: "Interrupting.", display: true },
+					{ deliverAs: "interrupt", triggerTurn: true },
+				);
+		};
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			exposure: "codemode",
+			extensions: [interrupting],
+		});
+		await settled(live);
+		await promptReply(fixture, live, "first");
+		const section = currentSection(live);
+		expect(serverLines(section)).toEqual([docsLine("Search and fetch the product docs.")]);
+
+		// The mcp_servers section each request of the interrupt's run sends: a tool call, then the turn after its result.
+		const sent: (string | null | undefined)[] = [];
+		const recorded =
+			(respond: (context: Context) => ReturnType<typeof fauxAssistantMessage>) => (context: Context) => {
+				sent.push(getCurrentSystemMessage(context.messages)?.sections?.[MCP_SERVERS_SECTION]);
+				return respond(context);
+			};
+		const before = live.messages.length;
+		fixture.faux.setResponses([recorded(fixture.callTool("no_such_tool", {})), recorded(fixture.reply("done"))]);
+		await interrupt();
+		await vi.waitFor(() => {
+			expect(sent).toHaveLength(2);
+			expect(live.isStreaming).toBe(false);
+		});
+		expect(sent).toEqual([section, section]);
+		expect(sectionUpdates(live, before)).toEqual([]);
+		expect(currentSection(live)).toBe(section);
+	});
+
 	it("keeps the summaries of servers whose instructions hold other line separators", async () => {
 		const fixture = await createFixture();
 		const servers = (ready?: Promise<void>) => ({

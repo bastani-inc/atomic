@@ -340,9 +340,50 @@ export function _refreshBaseSystemPromptFromActiveTools(this: AgentSession): voi
 	this._rebuildSystemPrompt(this.getActiveToolNames());
 }
 
-/** The run's system prompt options brought up to date with the session's current model, thinking level and tools. */
+/**
+ * Remember the names of the sections the `before_agent_start` handlers of the prompt being sent set, replaced or
+ * removed relative to the base options (`options` is what the handlers returned), for the runs that start without a
+ * prompt until the next prompt is sent; see `_currentRunSystemPromptOptions`.
+ */
+export function recordPromptSections(session: AgentSession, options: NormalizedBuildSystemPromptOptions): void {
+	const base = session._baseSystemPromptOptions.sections ?? {};
+	const sections = options.sections ?? {};
+	const names = [...new Set([...Object.keys(base), ...Object.keys(sections)])].filter(
+		(name) => (sections[name] || undefined) !== (base[name] || undefined),
+	);
+	session._promptSectionNames =
+		names.length > 0 ? { runner: session._extensionRunner, names: new Set(names) } : undefined;
+}
+
+/**
+ * The base options with the sections the latest sent prompt's handlers own as the conversation last had them: present
+ * with its content, or absent. A run that starts without a prompt prepares its turns from these, so that it leaves
+ * those sections as they are, and follows the base options for every other part of the prompt.
+ */
+function withPromptSections(session: AgentSession): NormalizedBuildSystemPromptOptions {
+	const base = session._baseSystemPromptOptions;
+	const recorded = session._promptSectionNames;
+	if (!recorded || recorded.runner !== session._extensionRunner) return base;
+	const current = getCurrentSystemMessage(session.agent.state.messages)?.sections ?? {};
+	const sections: Record<string, string> = { ...base.sections };
+	for (const name of recorded.names) {
+		delete sections[name];
+		const text = current[name];
+		const open = `<${name}>\n`;
+		const close = `\n</${name}>`;
+		if (text?.startsWith(open) && text.endsWith(close)) sections[name] = text.slice(open.length, -close.length);
+	}
+	return { ...base, sections };
+}
+
+/**
+ * The run's system prompt options brought up to date with the session's current model, thinking level and tools. A run
+ * that started without a prompt has the base options with the sections the latest sent prompt's handlers own as the
+ * conversation last had them (see withPromptSections), so that its turns neither take them out of the prompt nor bring
+ * back ones they removed.
+ */
 export function _currentRunSystemPromptOptions(this: AgentSession): NormalizedBuildSystemPromptOptions {
-	const runOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+	const runOptions = this._runSystemPromptOptions ?? withPromptSections(this);
 	return normalizeBuildSystemPromptOptions({
 		...runOptions,
 		selectedModel: this.model,
