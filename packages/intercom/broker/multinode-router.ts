@@ -638,6 +638,8 @@ export class MultiNodeRouter {
 				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
 				if (expired || performance.now() + wait >= deadline) return false;
 				await new Promise<void>((resolve) => setTimeout(resolve, wait).unref());
+				// A broker that stalled through the wait does not try again past the claim's bound.
+				if (expired || performance.now() >= deadline) return false;
 			}
 		})();
 		let bound: ReturnType<typeof setTimeout> | undefined;
@@ -3330,6 +3332,8 @@ export class MultiNodeRouter {
 			for (const entry of this.presence.values()) {
 				if (entry.lease !== undefined) await this.state.leases.release(entry.lease);
 			}
+			// #5607: its sessions' ids are free for them to take again on another broker, as their presences are.
+			await this.state.knownSessions.owners?.retireBroker(this.brokerId);
 			if (this.membership !== undefined) await this.state.leases.release(this.membership);
 		} catch (error) {
 			this.report(error);
