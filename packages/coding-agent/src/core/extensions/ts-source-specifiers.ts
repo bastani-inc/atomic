@@ -183,9 +183,9 @@ function moduleImportMetaPlugin(babel: BabelApi, options: { filename: string }) 
 	const literal = JSON.stringify;
 	return {
 		name: "atomic-module-import-meta",
-		// Before any plugin's visitors: jiti's own replaces `import.meta.url`, `dirname` and `filename` reads as its
-		// program is entered.
 		pre(this: State, file: { path: ProgramPath }) {
+			// This runs before any plugin's visitors: jiti's own rewrites the module's direct reads of its URL, dirname
+			// and filename as soon as it enters the program.
 			const program = file.path;
 			// A binding of the module's own with a name jiti's wrapper gives its functions would stand in for them.
 			const renameJitiNames = (scope: ScopeLike) => {
