@@ -21,6 +21,7 @@ scripts' console reach only the scripts, which then end the job.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -49,6 +50,13 @@ ISOLATED_RUN = ["--no-session", "--no-extensions", "--no-mcp", "--no-prompt-temp
 WINDOWS_INTERRUPTED_STATUS = -1073741510
 # Characters cmd.exe interprets in a batch file's arguments.
 _BATCH_UNSAFE = frozenset('"%!^&|<>()\r\n')
+# Atomic's error for a model it has no credentials for: a line of its own, which may start with "Error: ".
+_MISSING_CREDENTIALS = re.compile(r"^(?:Error: )?No API key found for ", re.MULTILINE)
+# Printed last, on Windows, by a script run as a command when a query's Atomic failed for missing credentials.
+WINDOWS_CREDENTIALS_NOTE = (
+    "Note: Atomic found no credentials for the model. On Windows a query cannot answer a credential command "
+    'that asks for input; see "Credentials on Windows" in skill-creator\'s SKILL.md.'
+)
 
 
 class Cancelled(Exception):
@@ -63,6 +71,8 @@ _generation = 0
 # Evaluations, queries and improvement calls in progress, each counted before it creates a temporary
 # folder or a process. While it is zero a stop signal has nothing to clean up and ends the script at once.
 _owners = 0
+# Whether an Atomic process failed for missing credentials.
+_missing_credentials = False
 
 
 def cancel() -> None:
@@ -324,11 +334,18 @@ class AtomicProcess:
         return self.process.poll()
 
     def stderr_tail(self, limit: int = 2000) -> str:
-        """The end of what the process wrote to standard error."""
+        """The end of what the process wrote to standard error, which says why it failed.
+
+        A failure for missing credentials is remembered for the note run_main prints last on Windows.
+        """
+        global _missing_credentials
         self._stderr.flush()
         with open(self._stderr_path, "rb") as stderr:
             stderr.seek(max(0, stderr.seek(0, os.SEEK_END) - limit))
-            return stderr.read(limit).decode("utf-8", errors="replace").strip()
+            tail = stderr.read(limit).decode("utf-8", errors="replace").strip()
+        if _MISSING_CREDENTIALS.search(tail):
+            _missing_credentials = True
+        return tail
 
     def close(self) -> None:
         """Stop the process and anything it started, reap it, and release its pipes."""
@@ -750,6 +767,10 @@ def run_main(main: Callable[[], None]) -> None:
     console) cancel the run. Its Atomic processes are stopped and its
     temporary files removed, then the script exits with that signal's status.
     Importing a script never installs these handlers.
+
+    On Windows, when a query's Atomic failed for missing credentials, the
+    script prints a note on standard error as it ends, pointing to SKILL.md:
+    a query there cannot answer a credential command that asks for input.
     """
     global _run_as_command
     _install_stop_handlers()
@@ -765,5 +786,7 @@ def run_main(main: Callable[[], None]) -> None:
     finally:
         _end_orphans()
         _finished.set()
+        if os.name == "nt" and _missing_credentials and _stop_signal is None:
+            print(WINDOWS_CREDENTIALS_NOTE, file=sys.stderr)
     if _stop_signal is not None:
         _exit_by_signal(_stop_signal)
