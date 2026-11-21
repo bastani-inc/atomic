@@ -151,7 +151,8 @@ describe("the http proxy an https request falls back to", () => {
 
 	it("is HTTP_PROXY when no https proxy is set, as Node.js's dispatcher takes it, and only for an https request", () => {
 		expect(fallback({ HTTP_PROXY: "http://proxy.example:8080" })).toBe("http://proxy.example:8080/");
-		expect(fallback({ http_proxy: "http://lower.example:8080", HTTP_PROXY: "http://upper.example:8080" })).toBe(
+		// A credential's own variables, which are case-sensitive on every platform (Windows's environment is not).
+		expect(fallback({}, { http_proxy: "http://lower.example:8080", HTTP_PROXY: "http://upper.example:8080" })).toBe(
 			"http://lower.example:8080/",
 		);
 		expect(fallback({ HTTP_PROXY: "proxy.example:3128" })).toBe("http://proxy.example:3128/");
@@ -168,7 +169,7 @@ describe("the http proxy an https request falls back to", () => {
 		expect(fallback({ HTTP_PROXY: "http://proxy.example:8080", HTTPS_PROXY: "http://https.example:8080" })).toBe(
 			undefined,
 		);
-		expect(fallback({ HTTP_PROXY: "http://proxy.example:8080", https_proxy: "http://https.example:8080" })).toBe(
+		expect(fallback({ HTTP_PROXY: "http://proxy.example:8080" }, { https_proxy: "http://https.example:8080" })).toBe(
 			undefined,
 		);
 		expect(fallback({ HTTP_PROXY: "http://proxy.example:8080", ALL_PROXY: "http://all.example:8080" })).toBe(
@@ -176,7 +177,7 @@ describe("the http proxy an https request falls back to", () => {
 		);
 		expect(fallback({ HTTP_PROXY: "http://proxy.example:8080", NO_PROXY: ".example.com" })).toBe(undefined);
 		// Node.js reads the lowercase variable when it is set at all: an empty one means no proxy.
-		expect(fallback({ http_proxy: "", HTTP_PROXY: "http://proxy.example:8080" })).toBe(undefined);
+		expect(fallback({}, { http_proxy: "", HTTP_PROXY: "http://proxy.example:8080" })).toBe(undefined);
 		expect(fallback({ HTTP_PROXY: "socks5://socks.example:1080" })).toBe(undefined);
 		expect(fallback({})).toBe(undefined);
 	});
