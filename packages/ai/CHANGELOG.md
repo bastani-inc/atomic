@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Fixed
+
+- On Node.js, an OpenAI Codex WebSocket refused for its TLS certificate now fails at once with the certificate message, as on Bun, instead of first falling back to SSE and remembering that fallback for the session. Node.js's WebSocket names no certificate on its error, so the connection's own failure is read instead; a reset, an upgrade the server refuses and other failures still fall back to SSE ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
+
 ## [0.10.3] - 2026-11-21
 
 ### Added

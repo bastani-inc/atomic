@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- With the npm-installed `atomic`, an OpenAI Codex request whose WebSocket is refused for its TLS certificate now fails at once with the certificate message and how to trust a private CA, as the standalone binary does, instead of first retrying over SSE ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.
