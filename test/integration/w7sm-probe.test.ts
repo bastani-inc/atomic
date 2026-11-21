@@ -33,7 +33,7 @@ async function once(trust: string, disableStages: boolean): Promise<Record<strin
 			TERM: "xterm-256color",
 			CI: "0",
 			...(disableStages ? { NODE_OPTIONS: "--conditions=w7sm-probe-nostages" } : {}),
-			...(process.env.W7SM_STDIN ? { NODE_OPTIONS: `--require ${JSON.stringify(join(moduleDir(import.meta.url), "../../tmpprobe/stdin-log.cjs"))}`, W7SM_STDIN_LOG: join(root, "stdin.log") } : {}),
+			...(true ? { NODE_OPTIONS: `--require ${JSON.stringify(join(moduleDir(import.meta.url), "../../tmpprobe/stdin-log.cjs"))}`, W7SM_STDIN_LOG: join(root, "stdin.log") } : {}),
 		},
 		timeoutMs: 60_000,
 		cols: 100,
@@ -69,8 +69,8 @@ async function once(trust: string, disableStages: boolean): Promise<Record<strin
 }
 
 test("w7sm probe", async () => {
-	const reps = process.env.W7SM_STDIN ? 1 : 4;
+	const reps = true ? 1 : 4;
 	for (let i = 0; i < reps; i++)
 		for (const trust of ["--approve", "--no-approve"])
-			for (const disable of process.env.W7SM_STDIN ? [true] : [false, true]) console.log("W7SM", JSON.stringify(await once(trust, disable)));
+			for (const disable of true ? [true] : [false, true]) console.log("W7SM", JSON.stringify(await once(trust, disable)));
 }, 900_000);
