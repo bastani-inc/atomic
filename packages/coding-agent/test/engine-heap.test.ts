@@ -4,6 +4,8 @@ import { describe, it } from "vitest";
 import { type EngineHeapInputs, engineHeapRuntimeArgs } from "../src/modes/interactive-engine/engine-heap.js";
 
 const GIB = 1024 * 1024 * 1024;
+/** A Node process that prints its heap limit and exits; generous for a loaded machine. */
+const HEAP_LIMIT_PROCESS_TIMEOUT_MS = 20_000;
 
 const largeMachine: EngineHeapInputs = {
 	runsOnNode: true,
@@ -172,7 +174,11 @@ describe("interactive engine heap sizing", () => {
 			const result = spawnSync(
 				process.execPath,
 				[...flags, "-e", 'process.stdout.write(String(require("node:v8").getHeapStatistics().heap_size_limit))'],
-				{ encoding: "utf8", env: { ...process.env, NODE_OPTIONS: nodeOptions } },
+				{
+					encoding: "utf8",
+					env: { ...process.env, NODE_OPTIONS: nodeOptions },
+					timeout: HEAP_LIMIT_PROCESS_TIMEOUT_MS,
+				},
 			);
 			assert.equal(result.status, 0, result.stderr);
 			return Number(result.stdout);

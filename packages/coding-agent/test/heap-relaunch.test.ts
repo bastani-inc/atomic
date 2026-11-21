@@ -35,19 +35,28 @@ describe("headless heap relaunch detection", () => {
 	});
 });
 
+const RELAUNCH_ENV = ["ATOMIC_HEAP_MB", "NODE_OPTIONS", "ATOMIC_INTERNAL_HEAP_RELAUNCHED"];
+
 describe("headless heap relaunch", () => {
 	function relaunchArgsWith(execArgv: readonly string[]): string[] {
 		const savedExecArgv = process.execArgv;
-		const savedHeapMb = process.env.ATOMIC_HEAP_MB;
+		const savedEnv = Object.fromEntries(
+			RELAUNCH_ENV.map((name): [string, string | undefined] => [name, process.env[name]]),
+		);
 		process.execArgv = [...execArgv];
-		// A size of its own makes a run without a heap size on its command line relaunch on any machine.
+		// A size of its own makes a run without a heap size on its command line relaunch on any machine, unless
+		// NODE_OPTIONS sets one or the run is itself the relaunch.
 		process.env.ATOMIC_HEAP_MB = "1234";
+		delete process.env.NODE_OPTIONS;
+		delete process.env.ATOMIC_INTERNAL_HEAP_RELAUNCHED;
 		try {
 			return headlessHeapRelaunchArgs(["--print", "hi"]);
 		} finally {
 			process.execArgv = savedExecArgv;
-			if (savedHeapMb === undefined) delete process.env.ATOMIC_HEAP_MB;
-			else process.env.ATOMIC_HEAP_MB = savedHeapMb;
+			for (const [name, value] of Object.entries(savedEnv)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
 		}
 	}
 
