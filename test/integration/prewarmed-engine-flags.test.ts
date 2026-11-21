@@ -306,7 +306,7 @@ export default (pi) => pi.on("session_start", (_event, ctx) => {
 					ATOMIC_SKIP_VERSION_CHECK: "1",
 					ATOMIC_TELEMETRY: "0",
 					ATOMIC_STARTUP_TRACE: trace,
-					NODE_OPTIONS: `--require=${preload}`,
+					NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
 					ATOMIC_TEST_SETTINGS_FILE: settingsFile,
 					ATOMIC_TEST_SETTINGS_EDIT: settings,
 					TERM: "xterm-256color",
