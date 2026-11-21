@@ -1,5 +1,6 @@
 import type { QueuedTaskMessages } from "../../../core/tasks/supervisor.js";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
+import type { NavBackInput } from "../components/custom-editor.ts";
 import { mainSubmit } from "../interactive-input-handling.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
@@ -11,13 +12,15 @@ import {
 import { markMovedDraft, type PromptHandle, promptHandle, rewritePromptOwnText } from "./agent-drafts.ts";
 import type { AgentViewPort } from "./contracts.ts";
 import { routeViewedCommand } from "./viewed-commands.ts";
+import { type ViewedAgentKey, type ViewedAgentKeyAction, viewedAgentKeyAction } from "./viewed-keys.ts";
 import { notifyViewed } from "./viewed-notices.ts";
 
 /**
  * What the one prompt does while a subagent is shown: it steers that subagent exactly as it steers the main chat,
  * through the shared steering controller over the subagent's own session (#6008). Enter steers and Alt+Enter queues a
  * follow-up while it works, each shown as a queued row until the subagent takes it; Alt+Up takes every queued message
- * back; Esc pauses it and its queued messages come back to its prompt; the next message continues it.
+ * back; Esc pauses it and its queued messages come back to its prompt; the next message continues it. ← on an empty
+ * prompt shows main and leaves it running.
  */
 
 /** `!` commands run in the main chat's shell; a subagent's view refuses them. */
@@ -248,21 +251,57 @@ function pausable(mode: InteractiveModeBase, port: AgentViewPort): boolean {
 	return status.busy || status.retrying || agentSteering(mode, port).hasQueued();
 }
 
+/** Do what {@link viewedAgentKeyAction} decided for `key` on the subagent `port` shows; `editor` leaves the key to it. */
+function actOnViewedAgent(mode: InteractiveModeBase, port: AgentViewPort, key: ViewedAgentKey): ViewedAgentKeyAction {
+	const action = viewedAgentKeyAction(key);
+	if (action === "pause" || action === "pauseAndShowMain") pauseViewedAgent(mode, port);
+	if (action === "showMain" || action === "pauseAndShowMain") void mode.agentView?.view(undefined);
+	return action;
+}
+
 /**
- * Esc while a subagent is shown: pause it when it works, waits to retry or has messages queued, and stay. On an
- * empty prompt while it does not work, Esc shows main; that Esc is not the first press of main's double-Esc. With text
- * typed it does nothing. Answers false while main is shown, which keeps the main chat's Esc.
+ * Esc while a subagent is shown: pause it when it works, waits to retry or has messages queued. It never shows main,
+ * and it is never the first press of main's double-Esc. Answers false while main is shown, which keeps the main chat's
+ * Esc.
  */
 export function escapeViewedAgent(mode: InteractiveModeBase): boolean {
 	const viewed = mode.agentView?.viewed;
 	if (viewed?.kind !== "agent") return false;
-	if (pausable(mode, viewed.port)) {
-		pauseViewedAgent(mode, viewed.port);
-		return true;
-	}
-	if (mode.editor.getText().trim()) return true;
 	mode.lastEscapeTime = 0;
-	void mode.agentView?.view(undefined);
+	actOnViewedAgent(mode, viewed.port, { key: "escape", pausable: pausable(mode, viewed.port) });
+	return true;
+}
+
+/** Keys pressed while a subagent was being opened are being typed into its prompt. */
+const replaying = new WeakSet<InteractiveModeBase>();
+
+/** Type `keys`, pressed while the subagent now shown was being opened, into its prompt. None of them shows main. */
+export function replayToViewedAgent(mode: InteractiveModeBase, keys: readonly string[]): void {
+	replaying.add(mode);
+	try {
+		for (const key of keys) mode.editor.handleInput(key);
+	} finally {
+		replaying.delete(mode);
+	}
+}
+
+/**
+ * The back key while a subagent is shown: on an empty prompt, or from a click on its hint, it shows main and leaves the
+ * subagent's run, its queue and both prompts as they are. That press is not the first of main's double-Esc. Answers
+ * false when the key is the prompt's: text is typed, or another handler has that key.
+ */
+export function backFromViewedAgent(mode: InteractiveModeBase, input: NavBackInput): boolean {
+	const viewed = mode.agentView?.viewed;
+	if (viewed?.kind !== "agent") return false;
+	const key: ViewedAgentKey = {
+		key: "back",
+		promptEmpty: input.promptEmpty,
+		clicked: input.clicked,
+		replayed: replaying.has(mode),
+	};
+	if (viewedAgentKeyAction(key) === "editor" || !input.isBackKey()) return false;
+	mode.lastEscapeTime = 0;
+	actOnViewedAgent(mode, viewed.port, key);
 	return true;
 }
 
@@ -273,8 +312,7 @@ export function escapeViewedAgent(mode: InteractiveModeBase): boolean {
 export function leaveViewedAgent(mode: InteractiveModeBase): boolean {
 	const viewed = mode.agentView?.viewed;
 	if (viewed?.kind !== "agent") return false;
-	if (pausable(mode, viewed.port)) pauseViewedAgent(mode, viewed.port);
-	void mode.agentView?.view(undefined);
+	actOnViewedAgent(mode, viewed.port, { key: "leave", pausable: pausable(mode, viewed.port) });
 	return true;
 }
 
@@ -286,9 +324,7 @@ export function leaveViewedAgent(mode: InteractiveModeBase): boolean {
 export function interruptViewedAgent(mode: InteractiveModeBase): boolean | undefined {
 	const viewed = mode.agentView?.viewed;
 	if (viewed?.kind !== "agent") return undefined;
-	if (!pausable(mode, viewed.port)) return false;
-	pauseViewedAgent(mode, viewed.port);
-	return true;
+	return actOnViewedAgent(mode, viewed.port, { key: "signal", pausable: pausable(mode, viewed.port) }) === "pause";
 }
 
 /** Alt+Up while a subagent is shown: every message queued for it comes back to its prompt. False while main is shown. */

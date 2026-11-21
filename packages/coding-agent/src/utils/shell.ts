@@ -7,7 +7,7 @@ import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
-import { evalWorkerExecArgv } from "./worker-threads.js";
+import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "./worker-threads.js";
 
 export interface ShellConfig {
 	shell: string;
@@ -407,10 +407,11 @@ interface DetachedChildGuardian {
 let detachedChildGuardian: DetachedChildGuardian | undefined;
 
 const PARENT_GUARDIAN_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
-const { spawn } = require("node:child_process");
-const { existsSync } = require("node:fs");
-const { join } = require("node:path");
+${EVAL_WORKER_BUILTIN}
+const { parentPort, workerData } = builtin("node:worker_threads");
+const { spawn } = builtin("node:child_process");
+const { existsSync } = builtin("node:fs");
+const { join } = builtin("node:path");
 const tracked = new Map();
 parentPort.on("message", ({ action, pid }) => {
   if (action === "track") tracked.set(pid, false);

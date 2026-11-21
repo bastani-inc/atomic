@@ -114,6 +114,11 @@ export type InteractiveEngineMessage =
 			taskId: string | null;
 			/** The request closes `/tasks`: the host keeps its prompt and panel as painted until the subagent is shown. */
 			keepScreen?: true;
+			/**
+			 * With `keepScreen`: `/tasks` hid the agent panel, and it opens again as `/tasks` closes. The host shows the
+			 * subagent once that panel has drawn too.
+			 */
+			panel?: true;
 	  }
 	| { type: "engine_ui_prompt"; event: UIPromptStartEvent | UIPromptEndEvent }
 	/**
@@ -553,7 +558,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_view_agent":
 			return typeof value.taskId === "string" || value.taskId === null
-				? { type: value.type, taskId: value.taskId, ...(value.keepScreen === true ? { keepScreen: true } : {}) }
+				? {
+						type: value.type,
+						taskId: value.taskId,
+						...(value.keepScreen === true ? { keepScreen: true } : {}),
+						...(value.panel === true ? { panel: true } : {}),
+					}
 				: undefined;
 		case "engine_activity_started":
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;

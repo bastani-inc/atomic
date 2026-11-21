@@ -1,6 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { Provider } from "@bastani/atomic-ai";
 import type { KeyId } from "@bastani/atomic-tui";
+import { type AsyncScope, asyncScope } from "../async-scope.ts";
 import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
@@ -52,7 +52,7 @@ const DEFAULT_MARKDOWN_MESSAGE_TYPES: readonly MarkdownMessageType[] = ["user", 
 
 const apiLifetime = Symbol.for("atomic.extension-api-lifetime.v1");
 type ExtensionWithLifetime = Extension & {
-	[apiLifetime]?: { retired: boolean; releases: Set<() => void>; cleanup?: AsyncLocalStorage<{ active: boolean }> };
+	[apiLifetime]?: { retired: boolean; releases: Set<() => void>; cleanup?: AsyncScope<{ active: boolean }> };
 };
 
 /** Factory receipts must not include selected siblings sharing the runtime. */
@@ -64,7 +64,7 @@ export async function drainExtensionAPIWork(extension: Extension): Promise<void>
 export function sealExtensionAPI(extension: Extension): boolean {
 	const lifetime = (extension as ExtensionWithLifetime)[apiLifetime];
 	if (lifetime?.retired) return false;
-	if (lifetime) lifetime.cleanup ??= new AsyncLocalStorage<{ active: boolean }>();
+	if (lifetime) lifetime.cleanup ??= asyncScope<{ active: boolean }>();
 	return true;
 }
 
@@ -72,7 +72,7 @@ export function sealExtensionAPI(extension: Extension): boolean {
 export async function runExtensionAPICleanup(extension: Extension, operation: () => Promise<void>): Promise<void> {
 	const lifetime = (extension as ExtensionWithLifetime)[apiLifetime];
 	if (!lifetime) return operation();
-	lifetime.cleanup ??= new AsyncLocalStorage<{ active: boolean }>();
+	lifetime.cleanup ??= asyncScope<{ active: boolean }>();
 	const scope = { active: true };
 	try {
 		await lifetime.cleanup.run(scope, operation);
