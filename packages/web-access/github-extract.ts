@@ -1,6 +1,6 @@
 import { readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
@@ -123,8 +123,18 @@ async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 
 async function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
 	const env = createChildProcessEnvironment();
-	// gh and git only from PATH's absolute directories, never from the working directory.
-	const launch = await helperLaunchAsync(args[0]!, { env });
+	const startedAt = performance.now();
+	const expired = AbortSignal.timeout(timeoutMs);
+	let launch: HelperLaunch;
+	try {
+		// gh and git only from PATH's absolute directories, never from the working directory. The lookup counts against
+		// the clone's time limit and ends with its cancellation, which then starts nothing.
+		launch = await helperLaunchAsync(args[0]!, { env, signal: signal ? AbortSignal.any([signal, expired]) : expired });
+	} catch (error) {
+		if (signal?.aborted || expired.aborted) return removeOwnedClone(paths).then(() => null);
+		throw error;
+	}
+	const remainingMs = Math.max(0, timeoutMs - (performance.now() - startedAt));
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -160,7 +170,7 @@ async function execClone(args: string[], paths: ClonePaths, timeoutMs: number, s
 			launch.file,
 			args.slice(1),
 			{
-				timeout: timeoutMs,
+				timeout: remainingMs,
 				detached: process.platform !== "win32",
 				windowsHide: true,
 				stdio: ["ignore", "pipe", "pipe"],
@@ -172,7 +182,7 @@ async function execClone(args: string[], paths: ClonePaths, timeoutMs: number, s
 		const detachedPid =
 			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
 		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);
-		const timer = setTimeout(stop, timeoutMs);
+		const timer = setTimeout(stop, remainingMs);
 		child.on("error", () => finish(true));
 		child.on("exit", (code, exitSignal) => {
 			exited = true;

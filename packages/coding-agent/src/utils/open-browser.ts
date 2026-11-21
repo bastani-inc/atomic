@@ -23,10 +23,13 @@ export function openBrowser(target: string): void {
 	// On WSL, xdg-open launches explorer.exe, which fails when the cwd's \\wsl.localhost\... path exceeds
 	// MAX_PATH (pi#11592). The target is a URL, so no launcher needs the cwd.
 	const env = createChildProcessEnvironment();
-	void findHelperExecutableAsync(cmd, { env, cwd: "/" }).then((file) => {
-		if (file === undefined) return;
-		spawn(file, args, { stdio: "ignore", detached: true, cwd: "/", env })
-			.on("error", () => {})
-			.unref();
-	});
+	findHelperExecutableAsync(cmd, { env, cwd: "/" }).then(
+		(file) => {
+			if (file === undefined) return;
+			spawn(file, args, { stdio: "ignore", detached: true, cwd: "/", env })
+				.on("error", () => {})
+				.unref();
+		},
+		() => {},
+	);
 }

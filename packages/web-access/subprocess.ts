@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { createChildProcessEnvironment } from "@bastani/atomic";
-import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 
 export interface BunSubprocessOptions {
 	timeoutMs: number;
@@ -57,10 +57,26 @@ export async function runBunSubprocess(
 		throw new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true });
 	}
 	const env = createChildProcessEnvironment(options.env);
-	// Only PATH's absolute directories, never the working directory.
-	const launch = await helperLaunchAsync(command, { env, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
-	if (options.signal?.aborted) {
-		throw new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true });
+	// The deadline and cancellation start now: looking the command up counts against them, and a lookup they end
+	// starts nothing.
+	const deadline = performance.now() + options.timeoutMs;
+	const lookupExpired = AbortSignal.timeout(options.timeoutMs);
+	let launch: HelperLaunch;
+	try {
+		// Only PATH's absolute directories, never the working directory.
+		launch = await helperLaunchAsync(command, {
+			env,
+			...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+			signal: options.signal ? AbortSignal.any([options.signal, lookupExpired]) : lookupExpired,
+		});
+	} catch (error) {
+		if (options.signal?.aborted) {
+			throw new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true });
+		}
+		if (lookupExpired.aborted) {
+			throw new AsyncSubprocessError(`${command} timed out`, { code: "ETIMEDOUT", killed: true });
+		}
+		throw error;
 	}
 	let primaryError: AsyncSubprocessError | undefined;
 	let escalation: ReturnType<typeof setTimeout> | undefined;
@@ -92,7 +108,10 @@ export async function runBunSubprocess(
 	};
 	const onAbort = (): void => fail(new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true }));
 	options.signal?.addEventListener("abort", onAbort, { once: true });
-	const timeout = setTimeout(() => fail(new AsyncSubprocessError(`${command} timed out`, { code: "ETIMEDOUT", killed: true })), options.timeoutMs);
+	const timeout = setTimeout(
+		() => fail(new AsyncSubprocessError(`${command} timed out`, { code: "ETIMEDOUT", killed: true })),
+		Math.max(0, deadline - performance.now()),
+	);
 	const output = [
 		readBounded(proc.stdout, options.maxStdoutBytes, fail),
 		readBounded(proc.stderr, options.maxStderrBytes ?? 256 * 1024, fail),

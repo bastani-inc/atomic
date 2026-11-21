@@ -169,15 +169,11 @@ function readCommandOutput(
 	args: string[],
 	options: { requireSuccess?: boolean } = {},
 ): string | undefined {
-	const launch = processLaunch(command, { env: process.env });
-	const shell = shouldUseWindowsShell(command);
-	// The shell reads the command line as it is: a path with spaces needs its quotes.
-	const file = shell && launch.missing === undefined ? `"${launch.file}"` : launch.file;
-	const result = spawnLaunchedProcessSync({ ...launch, file }, args, {
+	const result = spawnLaunchedProcessSync(processLaunch(command, { env: process.env }), args, {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: process.env,
-		shell,
+		shell: shouldUseWindowsShell(command),
 	});
 	if (result.status === 0) return result.stdout.trim() || undefined;
 	if (options.requireSuccess) {

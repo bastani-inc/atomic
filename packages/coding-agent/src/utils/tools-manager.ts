@@ -37,7 +37,12 @@ import {
 	type SerializedGitProvisionError,
 } from "./git-errors.ts";
 import { gitInstallCommand, type OsRelease, readOsRelease, readOsReleaseAsync } from "./git-install-command.ts";
-import { findHelperExecutableAsync, helperLaunchAsync, missingHelperOptions } from "./helper-command.ts";
+import {
+	findHelperExecutableAsync,
+	type HelperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "./helper-command.ts";
 import {
 	isManagedToolError,
 	ManagedToolDownloadError,
@@ -2041,7 +2046,29 @@ async function runProvisionStep(
 ): Promise<BoundedRunResult> {
 	const startedAt = Date.now();
 	const timeout = AbortSignal.timeout(options.timeoutMs);
-	const launch = await helperLaunchAsync(command, { env: options.env });
+	const timedOut = async (cause: unknown): Promise<never> => {
+		throw new GitProvisionTimeoutError(
+			{
+				phase: options.phase,
+				timeoutMs: options.timeoutMs,
+				elapsedMs: Date.now() - startedAt,
+				...(await installCommandFieldAsync()),
+			},
+			{ cause },
+		);
+	};
+	let launch: HelperLaunch;
+	try {
+		// The lookup counts against the step's time limit and ends with its cancellation; then nothing starts.
+		launch = await helperLaunchAsync(command, {
+			env: options.env,
+			signal: AbortSignal.any([options.signal, timeout]),
+		});
+	} catch (error) {
+		if (options.signal.aborted) throw options.signal.reason;
+		if (timeout.aborted) return timedOut(error);
+		throw error;
+	}
 	return new Promise((resolvePromise, rejectPromise) => {
 		execFile(
 			launch.file,
@@ -2058,19 +2085,7 @@ async function runProvisionStep(
 					return;
 				}
 				if (timeout.aborted) {
-					void installCommandFieldAsync().then((installField) =>
-						rejectPromise(
-							new GitProvisionTimeoutError(
-								{
-									phase: options.phase,
-									timeoutMs: options.timeoutMs,
-									elapsedMs: Date.now() - startedAt,
-									...installField,
-								},
-								{ cause: error },
-							),
-						),
-					);
+					timedOut(error).catch(rejectPromise);
 					return;
 				}
 				if (error === null) {

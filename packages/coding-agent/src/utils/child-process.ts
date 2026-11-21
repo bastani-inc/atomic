@@ -11,7 +11,7 @@ import {
 	type StdioPipe,
 } from "node:child_process";
 import { constants as osConstants } from "node:os";
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
@@ -101,6 +101,8 @@ export function spawnProcess(
 ): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess {
+	// Through a shell `command` is a command line the shell reads, as it always was.
+	if (options.shell) return spawnLaunchedProcess({ file: command }, args, options);
 	const cwd = typeof options.cwd === "string" ? options.cwd : options.cwd?.pathname;
 	return spawnLaunchedProcess(processLaunch(command, { cwd, env: options.env }), args, options);
 }
@@ -111,8 +113,20 @@ export function spawnProcessSync(
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
+	if (options.shell) return spawnLaunchedProcessSync({ file: command }, args, options);
 	const cwd = typeof options.cwd === "string" ? options.cwd : options.cwd?.pathname;
 	return spawnLaunchedProcessSync(processLaunch(command, { cwd, env: options.env }), args, options);
+}
+
+/**
+ * A shell reads the program of a command line up to the first space: a program looked up to a path with spaces runs
+ * through one only quoted.
+ */
+function shellReadable(launch: HelperLaunch, shell: SpawnOptions["shell"]): HelperLaunch {
+	if (!shell || launch.missing !== undefined || !isAbsolute(launch.file)) return launch;
+	return {
+		file: process.platform === "win32" ? `"${launch.file}"` : `'${launch.file.replaceAll("'", `'\\''`)}'`,
+	};
 }
 
 /** {@link spawnProcess} for a command its caller has looked up with {@link processLaunch} or {@link processLaunchAsync}. */
@@ -123,6 +137,7 @@ export function spawnLaunchedProcess(
 ): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnLaunchedProcess(launch: HelperLaunch, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnLaunchedProcess(launch: HelperLaunch, args: string[], options: SpawnOptions): ChildProcess {
+	launch = shellReadable(launch, options.shell);
 	const childOptions = {
 		...options,
 		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
@@ -141,6 +156,7 @@ export function spawnLaunchedProcessSync(
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
+	launch = shellReadable(launch, options.shell);
 	const childOptions = {
 		...options,
 		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),

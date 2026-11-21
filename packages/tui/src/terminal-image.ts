@@ -61,26 +61,31 @@ function probeTmuxHyperlinks(): boolean {
 	if (tmuxForwardsHyperlinks !== undefined) return tmuxForwardsHyperlinks;
 	if (!tmuxHyperlinksAsked) {
 		tmuxHyperlinksAsked = true;
-		void findHelperExecutableAsync("tmux").then((tmux) => {
-			if (tmux === undefined) {
+		findHelperExecutableAsync("tmux").then(
+			(tmux) => {
+				if (tmux === undefined) {
+					tmuxForwardsHyperlinks = false;
+					return;
+				}
+				execFile(
+					tmux,
+					["display-message", "-p", "#{client_termfeatures}"],
+					{ encoding: "utf8", timeout: 250 },
+					(error, termfeatures) => {
+						tmuxForwardsHyperlinks =
+							!error &&
+							termfeatures
+								.split(",")
+								.map((feature) => feature.trim())
+								.includes("hyperlinks");
+						if (tmuxForwardsHyperlinks && cachedCapabilitiesDetected) cachedCapabilities = null;
+					},
+				);
+			},
+			() => {
 				tmuxForwardsHyperlinks = false;
-				return;
-			}
-			execFile(
-				tmux,
-				["display-message", "-p", "#{client_termfeatures}"],
-				{ encoding: "utf8", timeout: 250 },
-				(error, termfeatures) => {
-					tmuxForwardsHyperlinks =
-						!error &&
-						termfeatures
-							.split(",")
-							.map((feature) => feature.trim())
-							.includes("hyperlinks");
-					if (tmuxForwardsHyperlinks && cachedCapabilitiesDetected) cachedCapabilities = null;
-				},
-			);
-		});
+			},
+		);
 	}
 	return false;
 }

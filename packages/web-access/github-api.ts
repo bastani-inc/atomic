@@ -18,9 +18,12 @@ function execGh(
 	options: { timeout: number; maxBuffer?: number; env: NodeJS.ProcessEnv },
 	callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
 ): void {
-	void helperLaunchAsync("gh", { env: options.env }).then((launch) => {
-		execFile(launch.file, args, { ...options, encoding: "utf8" as const, ...missingHelperOptions(launch) }, callback);
-	});
+	helperLaunchAsync("gh", { env: options.env }).then(
+		(launch) => {
+			execFile(launch.file, args, { ...options, encoding: "utf8" as const, ...missingHelperOptions(launch) }, callback);
+		},
+		(error: Error) => callback(error, "", ""),
+	);
 }
 let ghHintShown = false;
 

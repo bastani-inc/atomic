@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ExecFileException, execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -94,6 +94,44 @@ describe("findHelperExecutable", () => {
 			findHelperExecutable("tool", { env: { PATH: [bin, join(root, "later")].join(delimiter) }, cwd }),
 			later,
 		);
+	});
+});
+
+describe.skipIf(windows)("findHelperExecutable elsewhere", () => {
+	test("without PATH looks in the system's default directories, as a start by name does", () => {
+		const systemShell = ["/usr/bin/sh", "/bin/sh"].find((candidate) => existsSync(candidate));
+		assert.ok(systemShell);
+		assert.equal(findHelperExecutable("sh", { env: {}, cwd }), systemShell);
+	});
+
+	test("still finds a program in PATH once this process's working directory was removed", async () => {
+		const bin = join(root, "bin");
+		const file = program(bin, "tool");
+		const gone = join(root, "gone");
+		mkdirSync(gone);
+		const previous = process.cwd();
+		process.chdir(gone);
+		try {
+			rmSync(gone, { recursive: true });
+			assert.equal(findHelperExecutable("tool", { env: { PATH: bin } }), file);
+			assert.equal(await findHelperExecutableAsync("tool", { env: { PATH: bin } }), file);
+		} finally {
+			process.chdir(previous);
+		}
+	});
+
+	test("starting a file in PATH it may not run fails with EACCES, as a start by name does", async () => {
+		const bin = join(root, "bin");
+		const file = program(bin, "tool");
+		chmodSync(file, 0o644);
+		const env = { ...process.env, PATH: bin };
+		assert.equal(findHelperExecutable("tool", { env, cwd }), undefined);
+		const launch = helperLaunch("tool", { env, cwd });
+		assert.deepEqual(launch, { file });
+		const error = await new Promise<ExecFileException | null>((resolve) =>
+			execFile(launch.file, [], { env, cwd, ...missingHelperOptions(launch) }, (failure) => resolve(failure)),
+		);
+		assert.equal(error?.code, "EACCES");
 	});
 });
 

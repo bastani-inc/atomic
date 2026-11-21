@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { resolve as resolvePath } from "node:path";
 import {
 	findHelperExecutable,
+	type HelperLaunch,
 	helperLaunch,
 	helperLaunchAsync,
 	missingHelperOptions,
@@ -677,7 +678,13 @@ function missingSetup(error: unknown): SubscriptionSetupError | undefined {
 }
 
 const runGh: GitHubCommandRunner = async (args, signal) => {
-	const launch = await helperLaunchAsync("gh");
+	let launch: HelperLaunch;
+	try {
+		// A cancellation while gh is looked up ends the run as it ends a running gh, and starts nothing.
+		launch = await helperLaunchAsync("gh", { signal });
+	} catch (error) {
+		throw new GitHubCommandError(undefined, signal.aborted ? "ABORT_ERR" : errnoCode(error), "", error);
+	}
 	return new Promise((resolve, reject) => {
 		execFile(
 			launch.file,

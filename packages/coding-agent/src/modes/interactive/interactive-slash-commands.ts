@@ -20,7 +20,7 @@ import { parseSlashCommand } from "../../core/slash-commands.js";
 import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
 import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
-import { helperLaunchAsync, missingHelperOptions } from "../../utils/helper-command.ts";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../../utils/helper-command.ts";
 import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -284,10 +284,22 @@ async function exportedSessionId(file: string): Promise<string | undefined> {
 	}
 }
 
-/** Run `gh auth status`; `started` receives the child, so a cancel can stop it. */
-async function ghAuthStatus(started: (child: ReturnType<typeof spawn>) => void): Promise<number | null> {
+/**
+ * Run `gh auth status`; `started` receives the child, so a cancel can stop it. A cancel while gh is looked up starts
+ * nothing.
+ */
+async function ghAuthStatus(
+	signal: AbortSignal,
+	started: (child: ReturnType<typeof spawn>) => void,
+): Promise<number | null> {
 	const env = createChildProcessEnvironment();
-	const launch = await helperLaunchAsync("gh", { env });
+	let launch: HelperLaunch;
+	try {
+		launch = await helperLaunchAsync("gh", { env, signal });
+	} catch {
+		return null;
+	}
+	if (signal.aborted) return null;
 	return new Promise((resolve) => {
 		const child = spawn(launch.file, ["auth", "status"], {
 			env,
@@ -351,7 +363,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	try {
 		// Check if gh is available and logged in
 		try {
-			const status = await ghAuthStatus((child) => {
+			const status = await ghAuthStatus(loader.signal, (child) => {
 				proc = child;
 			});
 			proc = undefined;
@@ -398,8 +410,13 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 		// Create a secret gist
 		try {
 			const ghEnv = createChildProcessEnvironment();
-			const gh = await helperLaunchAsync("gh", { env: ghEnv });
-			if (cancelled()) return;
+			let gh: HelperLaunch;
+			try {
+				gh = await helperLaunchAsync("gh", { env: ghEnv, signal: loader.signal });
+			} catch {
+				return;
+			}
+			if (cancelled() || replaced()) return;
 			const result = await new Promise<{
 				stdout: string;
 				stderr: string;
