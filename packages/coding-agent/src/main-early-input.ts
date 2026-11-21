@@ -77,6 +77,31 @@ async function receiveInputAlreadyTyped(capture: ActiveEarlyInputCapture): Promi
 }
 
 let activeCapture: ActiveEarlyInputCapture | undefined;
+
+/** The early editor, while it holds the terminal: see `modes/interactive/startup-shell.ts`. */
+export interface StartupShellLink {
+	/** Whether the early editor still shows the prompt and takes the keys. */
+	readonly active: boolean;
+	/** Ends the early editor, the screen restored, and returns what was typed as startup input. */
+	abort(): EarlyInputState;
+}
+
+let startupShell: StartupShellLink | undefined;
+/** What an early editor that ended before the session's interface was ready handed back, for the capture. */
+let startupShellInput: EarlyInputState | undefined;
+/** Starts the capture behind an early editor once that editor ends; set while such a capture exists. */
+let onStartupShellEnded: ((typed: EarlyInputState) => void) | undefined;
+
+/**
+ * Links the early editor to the startup input capture, or unlinks it. `typed` is what it handed back when it ended
+ * before the session's interface: the capture continues from it, as if the keys had reached the capture.
+ */
+export function linkStartupShell(link: StartupShellLink | undefined, typed?: EarlyInputState): void {
+	startupShell = link;
+	if (typed === undefined) return;
+	if (onStartupShellEnded) onStartupShellEnded(typed);
+	else startupShellInput = typed;
+}
 let startupDialogDrafts: string[] = [];
 let startupDialogQueue: Promise<void> | undefined;
 
@@ -154,6 +179,8 @@ interface EarlyInputProcess {
 
 export interface StartEarlyInputCaptureOptions {
 	enabled: boolean;
+	/** What was typed before the capture started, as the capture would have read it. */
+	initialState?: EarlyInputState;
 	stdin?: EarlyInputStream;
 	process?: EarlyInputProcess;
 	/** How much input the OS holds unread for `stdin`; for this process's own stdin, the native module tells. */
@@ -230,11 +257,65 @@ function removeProcessListener(
 }
 
 export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): EarlyInputCapture | undefined {
+	if (options.enabled && startupShell?.active) return captureBehindStartupShell(options);
+	const handedBack = startupShellInput;
+	startupShellInput = undefined;
+	return startRawEarlyInputCapture({ ...options, initialState: options.initialState ?? handedBack });
+}
+
+/**
+ * The startup input capture while the early editor holds the terminal. The editor's prompt reaches the session's
+ * interface directly, so this captures nothing until the editor ends early: a startup question that needs the terminal
+ * ends it, and so does a message it writes. From then on it is the capture that would have run without the editor,
+ * starting from what was typed.
+ */
+function captureBehindStartupShell(options: StartEarlyInputCaptureOptions): EarlyInputCapture {
+	let inner: EarlyInputCapture | undefined;
+	let innerControl: ActiveEarlyInputCapture | undefined;
+	const startInner = (typed: EarlyInputState) => {
+		if (inner !== undefined) return;
+		onStartupShellEnded = undefined;
+		inner = startRawEarlyInputCapture({ ...options, initialState: typed });
+		innerControl = activeCapture;
+		activeCapture = control;
+	};
+	const ensureInner = () => {
+		if (inner === undefined && startupShell?.active) startInner(startupShell.abort());
+	};
+	onStartupShellEnded = startInner;
+	const control: ActiveEarlyInputCapture = {
+		pause() {
+			ensureInner();
+			return innerControl?.pause() ?? false;
+		},
+		resume() {
+			innerControl?.resume();
+		},
+		keepDraft(text) {
+			ensureInner();
+			innerControl?.keepDraft(text);
+		},
+	};
+	activeCapture = control;
+	return {
+		consume() {
+			if (activeCapture === control) activeCapture = undefined;
+			onStartupShellEnded = undefined;
+			// Still drawing: the session's interface takes the prompt from the editor itself.
+			return inner?.consume() ?? { text: "", submissions: [] };
+		},
+	};
+}
+
+function startRawEarlyInputCapture(options: StartEarlyInputCaptureOptions): EarlyInputCapture | undefined {
 	const stdin = options.stdin ?? process.stdin;
 	const processLike = options.process ?? process;
 	if (!options.enabled || stdin.isTTY !== true || !stdin.setRawMode) return undefined;
 
-	const state: EarlyInputState = { text: "", submissions: [] };
+	const state: EarlyInputState = {
+		text: options.initialState?.text ?? "",
+		submissions: [...(options.initialState?.submissions ?? [])],
+	};
 	const draftParts: string[] = [];
 	const wasRaw = stdin.isRaw === true;
 	let consumed = false;
