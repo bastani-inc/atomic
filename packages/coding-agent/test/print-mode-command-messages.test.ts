@@ -79,6 +79,10 @@ function answeringCommands(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerCommand("noop", { description: "Answers nothing", handler: async () => {} });
+	// Preparing the user message's turn takes a moment, as a hook that reads a file does.
+	pi.on("before_agent_start", async (event) => {
+		if (event.messageType === "user") await new Promise((resolve) => setTimeout(resolve, 0));
+	});
 	pi.registerCommand("ask", {
 		description: "Asks the model as the user would",
 		handler: async () => {
