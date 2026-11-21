@@ -21,6 +21,11 @@ import { PRELUDE_SOURCE } from "../src/runtime/prelude-source.ts";
  * small interrupt budget so runaway scripts end quickly.
  */
 const INTERRUPT_BUDGET = 20_000;
+/**
+ * The output limit test runs four scripts that each fill an output cap (16 MiB, or 100,000 items), which the backend
+ * then copies out of the worker or context the script ran in: about a second on an idle machine, several on a loaded one.
+ */
+const OUTPUT_LIMIT_TEST_TIMEOUT_MS = 30_000;
 const BACKENDS: Record<string, (options: CodemodeSandboxBaseOptions) => CodemodeSandboxBase> = {
 	worker: (options) => new CodemodeSandbox(options),
 	inline: (options) =>
@@ -638,7 +643,9 @@ describe.each(Object.keys(BACKENDS))("%s backend", (name) => {
 		});
 
 		// #10283: the host keeps all output, so a script that prints in a loop must not grow it without bound.
-		it("fails a script whose output passes the limits, even if it catches the error", async () => {
+		it("fails a script whose output passes the limits, even if it catches the error", {
+			timeout: OUTPUT_LIMIT_TEST_TIMEOUT_MS,
+		}, async () => {
 			const sandbox = createSandbox();
 			for (const print of ["text(s)", "console.log(s)", 'image("data:image/png;base64," + p)']) {
 				const result = await sandbox.execute(`

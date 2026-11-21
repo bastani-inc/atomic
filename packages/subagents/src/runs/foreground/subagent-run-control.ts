@@ -893,7 +893,9 @@ async function resumeChild(
 	const resumeRequest =
 		message && interrupted
 			? { prompt: message, continuation: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, message }
-			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, ...(message ? { message } : {}) };
+			: message
+				? { prompt: message, message }
+				: { prompt: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, continuationOnly: true as const };
 	const queued =
 		waking || isReleased(record) || ((record.waitingOn?.length ?? 0) > 0 && stoppedAs(record))
 			? resumeReleasedChild(ownerSessionId, record.childId, resumeRequest, signal)
