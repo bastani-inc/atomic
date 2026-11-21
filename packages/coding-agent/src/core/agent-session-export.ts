@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
+import { loadOnDemand } from "../utils/updated-install.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.js";
 import { adoptCommandSession } from "./command-deliveries.ts";
@@ -161,10 +162,9 @@ export async function exportToHtml(
 	const themeName = [options.themeName, this.settingsManager.getTheme()].find(
 		(candidate) => candidate !== undefined && getThemeByName(candidate) !== undefined,
 	);
-	const [{ exportSessionToHtml }, { createToolHtmlRenderer }] = await Promise.all([
-		import("./export-html/index.ts"),
-		import("./export-html/tool-renderer.ts"),
-	]);
+	const [{ exportSessionToHtml }, { createToolHtmlRenderer }] = await loadOnDemand("session export", () =>
+		Promise.all([import("./export-html/index.ts"), import("./export-html/tool-renderer.ts")]),
+	);
 
 	// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 	const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
