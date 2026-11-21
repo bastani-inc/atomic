@@ -7,6 +7,8 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import type { Cleanup } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
+import { SUBAGENT_RELEASED_WAKE_PROMPT } from "../../packages/subagents/src/runs/foreground/released-children.ts";
+import { queuedResumeStart } from "../../packages/subagents/src/runs/foreground/task-execution.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import type { TaskExecutionHooks } from "../../packages/subagents/src/shared/types.ts";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
@@ -302,6 +304,50 @@ test(
 			}),
 		);
 		assert.deepEqual(order, ["reserved", "disconnect"]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a reopened child that starts its detached call again keeps the message it was resumed with while it waited for its run's slot for its wake, after its held messages",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
+		env.faux.setResponses([waitCall()]);
+		const released = await runSingleInProcess(env.root, agent, "watch CI", {
+			...env.options("slot-redispatch", {
+				sessionManager: childSession,
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+			}),
+		});
+		assert.ok(released.released);
+		env.faux.setResponses([fauxAssistantMessage("never requested")]);
+		const start = queuedResumeStart(
+			SUBAGENT_RELEASED_WAKE_PROMPT,
+			env.options("slot-redispatch", {
+				sessionManager: await SessionManager.open(store, childSession.getSessionId()),
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+				redispatchDetachedCalls: true,
+				resumeTaskFallback: true,
+				resumeFollowUps: ["Check the flaky test too."],
+				resumeTaskLiteral: true,
+			}),
+			"Then rerun the linter.",
+		);
+
+		const again = await runSingleInProcess(env.root, agent, start.task, start.options);
+
+		assert.deepEqual(again.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
+		assert.equal(env.faux.getPendingResponseCount(), 1, "no model request was made");
+		assert.deepEqual(again.pendingMessages, ["Check the flaky test too.", "Then rerun the linter."]);
+		assert.notEqual(again.pendingTaskExpands, true, "both are delivered as written");
+		env.answers[1]?.({ content: [{ type: "text", text: "green" }], details: undefined });
+		const [call] = again.released?.calls ?? [];
+		assert.ok(call);
+		await call.result;
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
