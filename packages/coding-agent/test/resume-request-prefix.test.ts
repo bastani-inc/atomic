@@ -625,33 +625,34 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		});
 	}
 
-	test("with a context handler that leaves a long resume note out of every request, the context is not cleared", async () => {
-		let resuming = false;
-		const note: ExtensionFactory = (pi) => {
-			pi.on("session_start", () => {
-				if (resuming)
-					pi.sendMessage(
-						{ customType: "resume-note", content: `Restored. ${"Cache notes. ".repeat(1500)}`, display: true },
-						{ triggerTurn: false },
-					);
-			});
-			pi.on("context", (event) => ({
-				messages: event.messages.filter(
-					(message) => !(message.role === "custom" && message.customType === "resume-note"),
-				),
-			}));
-		};
-		const { installation, sessionId, lastBeforeExit } = await nearWindowSession({}, [note]);
-		writeFileSync(join(installation.cwd, "AGENTS.md"), "Prefer small changes.\n");
-		resuming = true;
-		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
-		await until(() => resumed.session.messages.some((message) => message.role === "custom"));
-		const firstAfterResume = await send(resumed, "three");
+	for (const event of ["context", "context_with_system"] as const)
+		test(`with a ${event} handler that leaves a long resume note out of every request, the context is not cleared`, async () => {
+			let resuming = false;
+			const note: ExtensionFactory = (pi) => {
+				pi.on("session_start", () => {
+					if (resuming)
+						pi.sendMessage(
+							{ customType: "resume-note", content: `Restored. ${"Cache notes. ".repeat(1500)}`, display: true },
+							{ triggerTurn: false },
+						);
+				});
+				pi.on(event, (context) => ({
+					messages: context.messages.filter(
+						(message) => !(message.role === "custom" && message.customType === "resume-note"),
+					),
+				}));
+			};
+			const { installation, sessionId, lastBeforeExit } = await nearWindowSession({}, [note]);
+			writeFileSync(join(installation.cwd, "AGENTS.md"), "Prefer small changes.\n");
+			resuming = true;
+			const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+			await until(() => resumed.session.messages.some((message) => message.role === "custom"));
+			const firstAfterResume = await send(resumed, "three");
 
-		assert.equal(compactions(resumed), 0);
-		assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
-		assert.deepEqual(firstAfterResume.thinking, lastBeforeExit.thinking);
-	});
+			assert.equal(compactions(resumed), 0);
+			assert.ok(JSON.stringify(firstAfterResume.messages).includes("answer to one"), "the history is not sent");
+			assert.deepEqual(firstAfterResume.thinking, lastBeforeExit.thinking);
+		});
 
 	test("with automatic compaction off, the request lowers the budget to fit as before", async () => {
 		const { installation, sessionId } = await nearWindowSession({ compaction: { enabled: false } });
