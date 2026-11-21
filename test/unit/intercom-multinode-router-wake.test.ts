@@ -3377,6 +3377,183 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal(claim.grant.alias, fresh.info.id, "the alias is still the id it had first");
 	});
 
+	test("a hand-over presented in time whose claim goes unanswered and is not kept leaves the session awaiting its id, and the move back keeps the fresh id (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const { handoff } = here.handoffs[0]!;
+		vi.spyOn(here.state.knownSessions, "bind").mockImplementationOnce(() => new Promise(() => {}));
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "unanswered" && claim.unanswered.recovery !== undefined, JSON.stringify(claim));
+
+		const again = registeringAs(fresh, randomUUID());
+		const freshId = again.info.id;
+		let settled = false;
+		const registered = here.router.sessionRegistered(again, undefined, {
+			...claim.unanswered,
+			settle: (keep) => {
+				if (settled) return false;
+				settled = true;
+				const kept = keep && !here.sessions.has(claim.unanswered.sessionId);
+				if (kept) again.info.id = claim.unanswered.sessionId;
+				here.sessions.set(again.info.id, again);
+				return kept;
+			},
+			unsettled: () => !settled,
+		});
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		assert.equal(again.info.id, freshId, "its binding write did not keep the id");
+		await untilMovedBack(here, again);
+		const back = await here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			here.handoffs.at(-1)!.handoff,
+		);
+		assert.ok(back.status === "granted", JSON.stringify(back));
+		assert.equal(back.grant.alias, fresh.info.id, "the id its asks were sent to");
+	});
+
+	/**
+	 * Every combination of when the session presents its hand-over (or a registration of it does without one), what the
+	 * claim's binding write does, and when the shared database fails: a registration that presents the hand-over gets
+	 * the id or awaits it, never a fresh id for good, and once the session holds the id again the fresh id is its alias;
+	 * one that never presents it never gets that alias.
+	 */
+	describe("a hand-over, whatever its claim and the database do (#5607)", () => {
+		const timings = ["immediate", "within the hold", "after the hold lapsed", "absent"] as const;
+		const results = ["committed", "rejected", "timed out uncommitted", "timed out committed later"] as const;
+		const storages = ["ok", "outage during", "outage after"] as const;
+		for (const timing of timings)
+			for (const result of results)
+				for (const storage of storages)
+					test(`${timing}; claim ${result}; storage ${storage}`, async () => {
+						const { here, live, fresh } = await awaitingWhileStopped();
+						await untilMovedBack(here, fresh);
+						const id = live.info.id;
+						const returnAddress = fresh.registrationReturnAddress!;
+						const identity = deliveryTargetIdentity(fresh);
+						let handoff: string | undefined = here.handoffs[0]!.handoff;
+						if (timing === "within the hold") await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS / 2);
+						if (timing === "after the hold lapsed")
+							await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+						if (timing === "absent") handoff = undefined;
+						const knownSessions = here.state.knownSessions;
+						const realBind = knownSessions.bind.bind(knownSessions);
+						const bind = vi.spyOn(knownSessions, "bind");
+						if (result === "rejected") bind.mockRejectedValueOnce(new Error("the database failed"));
+						if (result === "timed out uncommitted") bind.mockImplementationOnce(() => new Promise(() => {}));
+						if (result === "timed out committed later")
+							bind.mockImplementationOnce(async (...args) => {
+								await new Promise((resolve) => setTimeout(resolve, SESSION_ID_CLAIM_BOUND_MS + 500));
+								return realBind(...args);
+							});
+						// The registration's own binding write fails once too.
+						const failRegistration = () => {
+							if (storage !== "outage during") return;
+							bind.mockRejectedValueOnce(new Error("the database failed"));
+							vi.spyOn(knownSessions, "reclaim").mockRejectedValueOnce(new Error("the database failed"));
+						};
+
+						/** Registers the session as the broker does for `claim`; returns the registration. */
+						const register = async (claim: SessionIdClaim): Promise<BrokerConnectedSession> => {
+							if (claim.status === "granted") {
+								const session = registeringAs(fresh, claim.grant.sessionId);
+								failRegistration();
+								here.sessions.set(session.info.id, session);
+								const registered = here.router.sessionRegistered(session, undefined, undefined, claim.grant);
+								await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+								await registered.catch(() => {});
+								return session;
+							}
+							const session = registeringAs(fresh, randomUUID());
+							failRegistration();
+							if (claim.status === "unanswered") {
+								let settled = false;
+								const registered = here.router.sessionRegistered(session, undefined, {
+									...claim.unanswered,
+									settle: (keep) => {
+										if (settled) return false;
+										settled = true;
+										const kept = keep && !here.sessions.has(claim.unanswered.sessionId);
+										if (kept) session.info.id = claim.unanswered.sessionId;
+										here.sessions.set(session.info.id, session);
+										return kept;
+									},
+									unsettled: () => !settled,
+								});
+								await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+								await registered.catch(() => {});
+								return session;
+							}
+							here.sessions.set(session.info.id, session);
+							const registered = here.router.sessionRegistered(
+								session,
+								undefined,
+								undefined,
+								undefined,
+								claim.status === "held" ? id : undefined,
+								claim.status === "held" ? claim.recovery : undefined,
+							);
+							await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+							await registered.catch(() => {});
+							return session;
+						};
+
+						const claimed = here.router.claimSessionId(id, returnAddress, identity, handoff);
+						await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+						const first = await claimed;
+						let session = await register(first);
+						if (storage === "outage after") {
+							const owners = vi
+								.spyOn(knownSessions.owners!, "renew")
+								.mockRejectedValue(new Error("the database failed"));
+							bind.mockRejectedValue(new Error("the database failed"));
+							await vi.advanceTimersByTimeAsync(2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+							owners.mockRestore();
+							bind.mockImplementation(realBind);
+						}
+						// Without the hand-over, a registration that does not get the id awaits it only when another holds it.
+						if (timing === "absent" && first.status !== "held" && first.status !== "granted") {
+							await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+							assert.notEqual(
+								here.router.localAliasTarget(fresh.info.id),
+								session,
+								"never the alias it did not present",
+							);
+							return;
+						}
+						// It moves back as often as it is handed over, presenting each hand-over at once.
+						for (let move = 0; session.info.id !== id && move < 3; move++) {
+							await untilMovedBack(here, session);
+							const next = here.router.claimSessionId(
+								id,
+								returnAddress,
+								identity,
+								here.handoffs.at(-1)!.handoff,
+							);
+							await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+							session = await register(await next);
+						}
+						assert.equal(session.info.id, id, "it holds its id again");
+						await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+						if (timing === "absent")
+							assert.notEqual(
+								here.router.localAliasTarget(fresh.info.id),
+								session,
+								"never the alias it did not present",
+							);
+						else assert.equal(here.router.aliasTarget(fresh.info.id), session, "the fresh id is its alias");
+					});
+	});
+
 	test("a registration awaiting the id without having presented its hand-over is never handed that hand-over (#5607)", async () => {
 		const { here, live, fresh } = await awaitingWhileStopped();
 		await untilMovedBack(here, fresh);
