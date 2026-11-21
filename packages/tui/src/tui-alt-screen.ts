@@ -732,6 +732,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			term.startsWith("screen")
 				? ENABLE_BUTTON_MOTION_MOUSE
 				: ENABLE_ALL_MOTION_MOUSE;
+		if (this.terminal.continuedFromHandOff) {
+			// The renderer that handed this terminal over left its frame on the alternate screen, with the same modes
+			// set: the first frame paints over it, so no frame ever shows the screen cleared.
+			this.screenPhase = { kind: "alternate-screen" };
+			return;
+		}
 		const enter = `${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`;
 		if (entryHoldDelaysAnswers(process.env)) {
 			this.screenPhase = { kind: "alternate-screen" };

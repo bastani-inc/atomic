@@ -9,10 +9,12 @@ import {
 	type DetachedToolCall,
 	type DetachedToolResult,
 	type ExtensionContext,
+	type SessionEntry,
 	type SessionManager,
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
+import { issuedCallIds, visitBranchBack } from "./branch-read-back.js";
 import { lateToolResultNoticeIds, legacyLateToolResultMessage } from "./late-tool-result-notice.js";
 import { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
@@ -304,6 +306,55 @@ function textOf(content: string | ReadonlyArray<{ readonly type: string; readonl
 		: content.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}]`)).join("\n");
 }
 
+/** A transcript message as {@link readBack} reads it. */
+interface SavedMessage {
+	readonly role: string;
+	readonly toolCallId?: string;
+	readonly content?: Parameters<typeof textOf>[0];
+	readonly customType?: string;
+	readonly details?: unknown;
+}
+
+/**
+ * The ids of `results` a message shows read: its call's own result (one that is not "still running"), the notice a woken
+ * child reads late results in, or the message an earlier version built from a late result.
+ */
+function readIds(message: SavedMessage, results: readonly DetachedToolResult[]): readonly string[] {
+	if (message.role === "toolResult")
+		return message.toolCallId !== undefined && textOf(message.content ?? "") !== SUBAGENT_STILL_RUNNING_RESULT
+			? [message.toolCallId]
+			: [];
+	if (message.role === "custom") return lateToolResultNoticeIds(message);
+	if (message.role !== "user") return [];
+	const text = textOf(message.content ?? "");
+	return results.flatMap((result) => (legacyLateToolResultMessage(result) === text ? [result.toolCallId] : []));
+}
+
+/**
+ * Reads `messages`, oldest first, from the newest back, as the branch back from its newest entry or the next older
+ * part of it. An id still `open` is `saved` when a message reads it after the newest call that issued it. That call
+ * closes it unread: a result is read only after its call, and a provider can give a later call the id of an earlier
+ * one, whose result is not this one (#3274).
+ */
+function readBack(
+	messages: readonly SavedMessage[],
+	results: readonly DetachedToolResult[],
+	open: Set<string>,
+	saved: Set<string>,
+): void {
+	for (let index = messages.length - 1; index >= 0 && open.size > 0; index--) {
+		const message = messages[index];
+		if (message === undefined) continue;
+		for (const id of issuedCallIds(message)) open.delete(id);
+		for (const id of readIds(message, results)) if (open.delete(id)) saved.add(id);
+	}
+}
+
+/** The ids of `results` in `saved`, in their order, once each. */
+function savedOf(results: readonly DetachedToolResult[], saved: ReadonlySet<string>): string[] {
+	return [...new Set(results.flatMap((result) => (saved.has(result.toolCallId) ? [result.toolCallId] : [])))];
+}
+
 /**
  * The ids of `results` the child's transcript already holds: recorded as their call's own result (one that is not
  * "still running"), or delivered as a late result, in the notice a woken child reads it in or as the message builds
@@ -315,26 +366,40 @@ export function savedToolResultIds(
 	results: readonly DetachedToolResult[],
 ): string[] {
 	if (results.length === 0) return [];
-	const messages = sessionManager.buildSessionProjection().messages;
-	const answered = new Set(
-		messages.flatMap((message) =>
-			message.role === "toolResult" && textOf(message.content) !== SUBAGENT_STILL_RUNNING_RESULT
-				? [message.toolCallId]
-				: [],
-		),
+	const saved = new Set<string>();
+	readBack(
+		sessionManager.buildSessionProjection().messages,
+		results,
+		new Set(results.map((result) => result.toolCallId)),
+		saved,
 	);
-	const noticed = new Set(
-		messages.flatMap((message) => (message.role === "custom" ? lateToolResultNoticeIds(message) : [])),
-	);
-	const read = new Set(messages.flatMap((message) => (message.role === "user" ? [textOf(message.content)] : [])));
-	return results
-		.filter(
-			(result) =>
-				answered.has(result.toolCallId) ||
-				noticed.has(result.toolCallId) ||
-				read.has(legacyLateToolResultMessage(result)),
-		)
-		.map((result) => result.toolCallId);
+	return savedOf(results, saved);
+}
+
+/** The message a session entry holds, as {@link readBack} reads it. */
+function savedMessageOf(entry: SessionEntry): SavedMessage | undefined {
+	if (entry.type === "message") return entry.message;
+	if (entry.type === "custom_message") return { role: "custom", customType: entry.customType, details: entry.details };
+	return undefined;
+}
+
+/**
+ * {@link savedToolResultIds}, read from the child's branch rather than its context, so also where a compaction took
+ * them out of it. Each result is read back only as far as its call.
+ */
+export async function savedToolResultIdsInHistory(
+	sessionManager: Pick<SessionManager, "getBranch" | "readHistory" | "getLeafId" | "getEntrySeq">,
+	results: readonly DetachedToolResult[],
+): Promise<string[]> {
+	const saved = new Set<string>();
+	const open = new Set(results.map((result) => result.toolCallId));
+	if (open.size === 0) return [];
+	await visitBranchBack(sessionManager, (entry) => {
+		const message = savedMessageOf(entry);
+		if (message !== undefined) readBack([message], results, open, saved);
+		return open.size === 0;
+	});
+	return savedOf(results, saved);
 }
 
 /** How a woken child continues: results recorded as its pending calls' results, then its late results and prompt. */
