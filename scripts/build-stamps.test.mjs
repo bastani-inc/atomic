@@ -224,5 +224,22 @@ test("the packages Atomic depends on are refreshed through a staging directory, 
 			`${step.name} runs no compiler into its dist`,
 		);
 		assert.ok(inputPaths(step).includes("scripts/refresh-package-dist.mjs"), `${step.name} hashes the refresh`);
+		// The refresh bundles a package that ships bundled from its staged files; a bundle step script would bundle the
+		// dist the refresh then overwrites with the compiler's files.
+		assert.deepEqual(
+			step.scripts.filter((script) => script.script === "build:bundle"),
+			[],
+			`${step.name} bundles inside the refresh`,
+		);
+		if (manifests.get(step.packageDir).scripts?.["build:bundle"] !== undefined) {
+			assert.ok(inputPaths(step).includes("scripts/bundle-package-dist.mjs"), `${step.name} hashes the bundler`);
+		}
 	}
+	// The packages Atomic loads from a few shared files each.
+	assert.deepEqual(
+		staged
+			.filter((step) => manifests.get(step.packageDir).scripts?.["build:bundle"] !== undefined)
+			.map((step) => step.name),
+		["schema", "telemetry", "ai", "tui", "agent"],
+	);
 });
