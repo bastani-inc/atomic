@@ -13,7 +13,9 @@ POLL_SECONDS, and the waiting thread then stops its own child: SIGTERM, a
 second SIGTERM if it is still running, then SIGKILL.
 
 On Windows a child runs in a job object, which ends it and anything it starts
-when the evaluation stops it or when the scripts' own process ends.
+when the evaluation stops it or when the scripts' own process ends, and in a
+console of its own without a window, so Ctrl+C, Ctrl+Break and closing the
+scripts' console reach only the scripts, which then end the job.
 """
 
 from __future__ import annotations
@@ -236,8 +238,9 @@ class AtomicProcess:
                     stderr=self._stderr,
                     cwd=cwd,
                     env=environment,
-                    # Ctrl+C reaches the scripts, which end the job.
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    # A hidden console of its own: the console events of the scripts' console reach only
+                    # the scripts, which end the job, so no query ends before they know they were stopped.
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
                 )
                 try:
                     self._job.assign(self.process.pid)
@@ -681,8 +684,7 @@ def _install_console_close_handler() -> None:
     def handler(event: int) -> bool:
         if event not in close_events:
             return False  # Ctrl+C and Ctrl+Break reach the SIGINT and SIGBREAK handlers.
-        if _owners == 0:
-            return False  # Nothing to clean up: Windows ends the process.
+        # With nothing to clean up, this exits at once with the console-interrupt status.
         _on_stop_signal(signal.SIGINT, None)
         # Windows ends the process about five seconds after a close event: exit with the
         # console-interrupt status once the cleanup is done, before Windows ends it with another.
