@@ -248,6 +248,12 @@ export interface UnansweredSessionIdClaim {
 	readonly sessionId: string;
 	readonly claim: string;
 	readonly token: string;
+	/**
+	 * #5607: with a hand-over it presented, the id it had meanwhile, still owned by `aliasToken`: kept as its alias when
+	 * its binding write keeps `sessionId`, and given back otherwise.
+	 */
+	readonly alias?: string;
+	readonly aliasToken?: string;
 }
 
 /**
@@ -977,7 +983,21 @@ export class MultiNodeRouter {
 				attempts,
 				new Promise<SessionIdClaim>((resolve) => {
 					bound = setTimeout(
-						() => resolve({ status: "unanswered", unanswered: { sessionId, claim, token: owner.token } }),
+						() =>
+							resolve({
+								status: "unanswered",
+								unanswered: {
+									sessionId,
+									claim,
+									token: owner.token,
+									...(reserved === undefined || reserved.alias === sessionId
+										? {}
+										: {
+												alias: reserved.alias,
+												...(reserved.aliasToken === undefined ? {} : { aliasToken: reserved.aliasToken }),
+											}),
+								},
+							}),
 						SESSION_ID_CLAIM_BOUND_MS,
 					);
 					bound.unref?.();
@@ -1700,9 +1720,18 @@ export class MultiNodeRouter {
 								confirmed: laterMark(entry.owner?.confirmed, confirmed),
 							};
 							// #5607: the id it had while it awaited this one stays an alias of it, owned the same way.
-							if (grant?.alias !== undefined)
-								await this.takeAlias(session, entry, grant.alias, this.newOwner(grant.aliasToken ?? owner.token));
+							const alias = grant?.alias ?? reclaim?.alias;
+							const aliasToken = grant?.alias === undefined ? reclaim?.aliasToken : grant.aliasToken;
+							if (alias !== undefined && (reclaim === undefined || session.info.id === reclaim.sessionId))
+								await this.takeAlias(session, entry, alias, this.newOwner(aliasToken ?? owner.token));
 						}
+						// #5607: a hand-over whose id its binding write did not keep gives its alias back too.
+						if (
+							reclaim?.alias !== undefined &&
+							reclaim.aliasToken !== undefined &&
+							session.info.id !== reclaim.sessionId
+						)
+							await this.releaseOwner({ intercomSessionId: reclaim.alias, token: reclaim.aliasToken });
 					}
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
