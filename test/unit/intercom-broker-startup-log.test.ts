@@ -698,14 +698,12 @@ describe("a broker behind a launcher that hides it", () => {
 		async () => {
 			const socketPath = pathsModule.getBrokerSocketPath();
 			const listenAfterMs = 1_500;
-			const loading = spawn(
-				process.execPath,
-				[
-					"-e",
-					`setTimeout(() => require("node:net").createServer((socket) => socket.on("error", () => {})).listen(${JSON.stringify(socketPath)}), ${listenAfterMs}); setTimeout(() => process.exit(0), 8000);`,
-				],
-				{ stdio: "ignore" },
-			);
+			// Listens on the socket its first argument names once the milliseconds its second argument gives have passed.
+			const listensLater =
+				'setTimeout(() => require("node:net").createServer((socket) => socket.on("error", () => {})).listen(process.argv[1]), Number(process.argv[2])); setTimeout(() => process.exit(0), 8000);';
+			const loading = spawn(process.execPath, ["-e", listensLater, socketPath, String(listenAfterMs)], {
+				stdio: "ignore",
+			});
 			await once(loading, "spawn");
 			assert.ok(loading.pid !== undefined);
 			const recorded = await recordProcess(loading.pid);
