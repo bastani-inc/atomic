@@ -1,6 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ENV_DEBUG, ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, getEnvValue, setEnvValue } from "../config.js";
+import {
+	ENV_DEBUG,
+	ENV_OFFLINE,
+	ENV_SKIP_VERSION_CHECK,
+	getAgentConfigPaths,
+	getAgentDir,
+	getEnvValue,
+	setEnvValue,
+} from "../config.js";
 import { DEBUG_SETTING_ENV, inheritsDebugSetting } from "../core/debug-setting.ts";
 import { parseJsonFileContent } from "./json.ts";
 
@@ -42,24 +50,33 @@ export async function applyArgumentEnvironment(args: readonly string[]): Promise
 
 /**
  * The environment the global settings will give an engine child once `main()` has loaded them: the `debug` setting and
- * `httpProxy`, read from `settings.json` in `agentDir` as the settings manager reads them (a value of the wrong type
- * counts as unset; a missing or unparsable file gives nothing). Only for a child started before that load, such as the
- * prewarmed engine: this process's environment is left to `main()`, so a file that changes meanwhile ends up only in a
- * launch that no longer matches, and the host starts a fresh engine as it did before.
+ * `httpProxy`, read from the files the settings manager reads for `agentDir` and as it reads them: the agent
+ * directory's `settings.json` over the legacy one's, a value of the wrong type unset in its file, and no global settings
+ * at all when a file there cannot be read or parsed. Only for a child started before that load, such as the prewarmed
+ * engine: this process's environment is left to `main()`, so a file that changes meanwhile ends up only in a launch that
+ * no longer matches, and the host starts a fresh engine as it did before.
  */
 export async function settingsEnvironmentForEarlyChild(agentDir: string): Promise<Record<string, string>> {
-	let settings: { debug?: unknown; httpProxy?: unknown };
-	try {
-		const parsed = parseJsonFileContent(await readFile(join(agentDir, "settings.json"), "utf8"));
+	const files = agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [join(agentDir, "settings.json")];
+	let debug: boolean | undefined;
+	let httpProxy: string | undefined;
+	for (const file of files) {
+		let parsed: unknown;
+		try {
+			parsed = parseJsonFileContent(await readFile(file, "utf8"));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			return {};
+		}
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-		settings = parsed as { debug?: unknown; httpProxy?: unknown };
-	} catch {
-		return {};
+		const settings = parsed as { debug?: unknown; httpProxy?: unknown };
+		if (debug === undefined && typeof settings.debug === "boolean") debug = settings.debug;
+		if (httpProxy === undefined && typeof settings.httpProxy === "string") httpProxy = settings.httpProxy;
 	}
 	const env: Record<string, string> = {};
-	if (!inheritsDebugSetting()) env[DEBUG_SETTING_ENV] = settings.debug === true ? "1" : "0";
+	if (!inheritsDebugSetting()) env[DEBUG_SETTING_ENV] = debug === true ? "1" : "0";
 	// As `applyHttpProxySettings` applies it: trimmed, and only where the environment names no proxy.
-	const proxy = typeof settings.httpProxy === "string" ? settings.httpProxy.trim() : "";
+	const proxy = httpProxy?.trim();
 	if (proxy) {
 		if (process.env.HTTP_PROXY === undefined) env.HTTP_PROXY = proxy;
 		if (process.env.HTTPS_PROXY === undefined) env.HTTPS_PROXY = proxy;

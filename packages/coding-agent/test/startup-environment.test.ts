@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
-import { settingsEnvironmentForEarlyChild } from "../src/utils/startup-environment.ts";
+import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../src/utils/startup-environment.ts";
 
 const tempDirs: string[] = [];
 
@@ -55,8 +55,77 @@ describe("the settings environment of an engine child started before main() load
 		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDirWith(JSON.stringify({ httpProxy: "  " }))), {
 			ATOMIC_DEBUG_SETTING: "0",
 		});
-		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDirWith(undefined)), {});
+		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDirWith(undefined)), { ATOMIC_DEBUG_SETTING: "0" });
 		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDirWith("{ not json")), {});
 		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDirWith("[]")), {});
+	});
+});
+
+describe("the global settings layers, without an agent directory named by the environment", () => {
+	/** A home whose Atomic and legacy agent directories hold these `settings.json` contents (undefined: no file). */
+	function homeWith(atomic: string | undefined, legacy: string | undefined): string {
+		const home = mkdtempSync(join(tmpdir(), "startup-environment-home-"));
+		tempDirs.push(home);
+		for (const [directory, content] of [
+			[join(home, ".atomic", "agent"), atomic],
+			[join(home, ".pi", "agent"), legacy],
+		] as const) {
+			mkdirSync(directory, { recursive: true });
+			if (content !== undefined) writeFileSync(join(directory, "settings.json"), content);
+		}
+		for (const name of [
+			"ATOMIC_CODING_AGENT_DIR",
+			"PI_CODING_AGENT_DIR",
+			"HTTP_PROXY",
+			"HTTPS_PROXY",
+			"ATOMIC_DEBUG_SETTING",
+		])
+			vi.stubEnv(name, undefined);
+		vi.stubEnv("HOME", home);
+		vi.stubEnv("USERPROFILE", home);
+		return join(home, ".atomic", "agent");
+	}
+
+	test("the Atomic file's values win over the legacy file's, each value of the right type only", async () => {
+		const agentDir = homeWith(
+			JSON.stringify({ debug: false, httpProxy: 8080 }),
+			JSON.stringify({ debug: true, httpProxy: "http://legacy.test:3128" }),
+		);
+		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDir), {
+			ATOMIC_DEBUG_SETTING: "0",
+			HTTP_PROXY: "http://legacy.test:3128",
+			HTTPS_PROXY: "http://legacy.test:3128",
+		});
+		const legacyOnly = homeWith(undefined, JSON.stringify({ debug: true }));
+		assert.deepEqual(await settingsEnvironmentForEarlyChild(legacyOnly), { ATOMIC_DEBUG_SETTING: "1" });
+	});
+
+	test("a legacy file that cannot be parsed leaves no global settings, as the settings manager reads them", async () => {
+		const agentDir = homeWith(JSON.stringify({ debug: true, httpProxy: "http://proxy.test:3128" }), "{ broken");
+		assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDir), {});
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"a legacy file that cannot be read leaves no global settings either",
+		async () => {
+			const agentDir = homeWith(JSON.stringify({ debug: true }), JSON.stringify({}));
+			const legacy = join(agentDir, "..", "..", ".pi", "agent", "settings.json");
+			chmodSync(legacy, 0o000);
+			try {
+				assert.deepEqual(await settingsEnvironmentForEarlyChild(agentDir), {});
+			} finally {
+				chmodSync(legacy, 0o600);
+			}
+		},
+	);
+});
+
+describe("the environment the command line sets before main()", () => {
+	test("--debug turns debug mode on only where the parser reads it as the flag", async () => {
+		for (const name of ["ATOMIC_DEBUG", "PI_DEBUG", "ATOMIC_OFFLINE", "PI_OFFLINE"]) vi.stubEnv(name, undefined);
+		await applyArgumentEnvironment(["--name", "--debug"]);
+		assert.equal(process.env.ATOMIC_DEBUG, undefined, "--debug as the value of --name");
+		await applyArgumentEnvironment(["--debug"]);
+		assert.equal(process.env.ATOMIC_DEBUG, "1");
 	});
 });

@@ -30,9 +30,12 @@ async function startInteractive(
 	args: readonly string[],
 	env: Record<string, string | undefined>,
 	settings: Record<string, unknown>,
+	legacySettings?: string,
 ): Promise<TraceLine[]> {
 	const root = makeTempDirectory("prewarmed-engine-flags-");
-	const agentDir = join(root, "agent");
+	// With legacy settings the agent directory is the home's, which the environment does not name, as for most users.
+	const home = join(root, "home");
+	const agentDir = legacySettings === undefined ? join(root, "agent") : join(home, ".atomic", "agent");
 	const packageDir = join(root, "package");
 	const project = join(root, "project");
 	const trace = join(root, "startup.jsonl");
@@ -42,6 +45,10 @@ async function startInteractive(
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		const settingsFile = join(agentDir, "settings.json");
 		writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(readFileSync(settingsFile, "utf8")), ...settings }));
+		if (legacySettings !== undefined) {
+			mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+			writeFileSync(join(home, ".pi", "agent", "settings.json"), legacySettings);
+		}
 		prepareInstalledPackage(PACKAGE, packageDir);
 		// The native PTY starts the CLI with this process's environment underneath the one given here.
 		for (const name of [
@@ -56,13 +63,17 @@ async function startInteractive(
 			"https_proxy",
 		])
 			vi.stubEnv(name, undefined);
+		if (legacySettings !== undefined)
+			for (const name of ["ATOMIC_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"]) vi.stubEnv(name, undefined);
 		for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
 		program = startPtyProgram({
 			executable: process.execPath,
 			args: [CLI, ...args, "--no-session", "--approve"],
 			cwd: project,
 			env: {
-				ATOMIC_CODING_AGENT_DIR: agentDir,
+				...(legacySettings === undefined
+					? { ATOMIC_CODING_AGENT_DIR: agentDir }
+					: { HOME: home, USERPROFILE: home }),
 				ATOMIC_PACKAGE_DIR: packageDir,
 				ATOMIC_SKIP_VERSION_CHECK: "1",
 				ATOMIC_TELEMETRY: "0",
@@ -117,10 +128,18 @@ test.each([
 		env: { ATOMIC_OFFLINE: "1" },
 		settings: { httpProxy: "http://127.0.0.1:9" },
 	},
+	{
+		// The settings manager then reads no global settings at all, so neither does the prewarmed engine.
+		name: "an httpProxy setting beside a broken legacy settings file",
+		args: [],
+		env: { ATOMIC_OFFLINE: "1" },
+		settings: { httpProxy: "http://127.0.0.1:9", debug: true },
+		legacy: "{ broken",
+	},
 ])(
 	"a host started with $name runs the engine it prewarmed instead of starting a second one",
-	async ({ args, env, settings }) => {
-		assert.equal(engineChildren(await startInteractive(args, env, settings)).length, 1);
+	async ({ args, env, settings, legacy }) => {
+		assert.equal(engineChildren(await startInteractive(args, env, settings, legacy)).length, 1);
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,
 );
