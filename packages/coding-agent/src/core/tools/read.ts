@@ -1,10 +1,10 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { ImageContent, ModelImageResizeOptions, TextContent } from "@bastani/atomic-ai/compat";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Text } from "@bastani/atomic-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "fs/promises";
-import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.js";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.js";

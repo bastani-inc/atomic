@@ -23,6 +23,7 @@ import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
 import { sliceTail } from "../../core/tools/truncate.ts";
 import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
+import { loadOnDemand } from "../../utils/updated-install.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { handleAgentViewCommand } from "./agent-view-rpc.ts";
@@ -840,8 +841,11 @@ export function createRpcCommandHandler({
 			case "get_fork_messages": {
 				if (session.sessionManager.hasFullHistory())
 					return createRpcSuccessResponse(id, command.type, { messages: session.getUserMessagesForForking() });
-				const { ForkPromptArchive } = await import("../interactive/components/user-message-selector-archive.js");
-				const { archive, prompts } = await ForkPromptArchive.open(session.sessionManager);
+				const { archive, prompts } = await loadOnDemand("fork", async () =>
+					(await import("../interactive/components/user-message-selector-archive.js")).ForkPromptArchive.open(
+						session.sessionManager,
+					),
+				);
 				try {
 					return createRpcSuccessResponse(id, command.type, {
 						messages: prompts.map(({ entryId, text }) => ({ entryId, text })),

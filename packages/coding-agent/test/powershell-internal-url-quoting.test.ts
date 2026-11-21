@@ -11,6 +11,11 @@ import { getPowerShellConfig } from "../src/utils/shell.ts";
 // Windows CI uses its real PowerShell; POSIX can opt in with a portable pwsh executable.
 const portablePowerShell = process.env.ATOMIC_TEST_PWSH;
 const eol = process.platform === "win32" ? "\r\n" : "\n";
+/**
+ * PowerShell starts in about a second on an idle machine and can take several on a loaded Windows one. The bound ends
+ * one that would never end, and two of them still fit in a test's budget.
+ */
+const POWERSHELL_RUN_TIMEOUT_MS = 30_000;
 
 function realPowerShellTool(cwd: string, transport: string) {
 	const shell = portablePowerShell ?? getPowerShellConfig().shell;
@@ -23,7 +28,7 @@ function realPowerShellTool(cwd: string, transport: string) {
 				const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", transport, payload], {
 					cwd: executionCwd,
 					encoding: "utf8",
-					timeout: 5000,
+					timeout: POWERSHELL_RUN_TIMEOUT_MS,
 				});
 				assert.ifError(result.error);
 				assert.equal(result.status, 0, result.stderr);

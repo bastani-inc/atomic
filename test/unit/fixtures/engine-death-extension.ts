@@ -1,6 +1,8 @@
 import { writeFileSync, renameSync } from "node:fs";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/index.ts";
-import { INTERACTIVE_ENGINE_ENV_VARS } from "../../../packages/coding-agent/src/index.ts";
+// Through the package name, which reaches the host's own instance; by path the loader would evaluate the whole host
+// source again.
+import { INTERACTIVE_ENGINE_ENV_VARS } from "@bastani/atomic";
 import { INTERACTIVE_ENGINE_BOOTSTRAP_FLAG } from "../../../packages/coding-agent/src/utils/interactive-engine-bootstrap.ts";
 
 /**
