@@ -11,7 +11,8 @@
  * that write is empty; on the first run after an install or an upgrade it covers
  * the whole module graph, which takes seconds on Windows after the session has
  * ended (#6132). On Windows an interactive session therefore leaves a cold cache
- * alone: it runs without it, as it would have run with nothing to read, and a
+ * alone: it runs without it (after an install there is nothing to read; after an
+ * upgrade it gives up the entries of files the upgrade left unchanged), and a
  * helper process that owns nothing else loads the same modules and writes the
  * cache while the session runs (`compile-cache-warmup-host.ts`). The helper marks
  * the cache warm for this Atomic build when it is done, and later sessions use the
@@ -57,8 +58,8 @@ export interface CompileCacheStartInput {
 
 /**
  * `defer`: run without the cache now and let a helper write it. `enable`: use it as before. Only an interactive
- * process on Windows with a cold cache defers; it loses nothing for this run, because a cold cache has nothing for it
- * to read. The marker is read last, after every cheaper reason to keep the cache as it was.
+ * process on Windows whose cache is cold for this build defers. The marker is read last, after every cheaper reason to
+ * keep the cache as it was.
  */
 export function compileCacheStartMode(input: CompileCacheStartInput): "enable" | "defer" {
 	if (input.platform !== "win32" || input.runtimeIsBun || input.unsupported) return "enable";
