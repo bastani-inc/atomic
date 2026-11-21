@@ -43,6 +43,9 @@ pub(crate) struct SpawnRequest {
 	new_session: bool,
 	signals: SignalDefaults,
 	end_with_parent: bool,
+	/// Makes the child take the parent-death signal as refused, as a sandbox can refuse it.
+	#[cfg(test)]
+	refuse_parent_death: bool,
 }
 
 impl SpawnRequest {
@@ -79,13 +82,22 @@ impl SpawnRequest {
 			new_session,
 			signals,
 			end_with_parent: false,
+			#[cfg(test)]
+			refuse_parent_death: false,
 		})
 	}
 
 	/// Ends the child with `SIGKILL` when the thread that starts it ends, as it does when this process ends however it
-	/// ends (`PR_SET_PDEATHSIG`). The processes the child starts are not ended with it.
+	/// ends (`PR_SET_PDEATHSIG`). The processes the child starts are not ended with it. Where the system refuses the
+	/// request, as a sandbox can, the child runs without it.
 	pub(crate) fn ending_with_parent(mut self) -> Self {
 		self.end_with_parent = true;
+		self
+	}
+
+	#[cfg(test)]
+	fn refusing_parent_death(mut self) -> Self {
+		self.refuse_parent_death = true;
 		self
 	}
 }
@@ -161,6 +173,8 @@ struct ChildArgs {
 	signals: SignalDefaults,
 	/// This process, when the child is to end with it; 0 otherwise.
 	end_with: libc::pid_t,
+	#[cfg(test)]
+	refuse_parent_death: bool,
 	/// The write end of the error pipe, close-on-exec.
 	error: RawFd,
 	empty_mask: libc::sigset_t,
@@ -206,11 +220,15 @@ extern "C" fn child_main(arg: *mut libc::c_void) -> libc::c_int {
 			fail(args, errno());
 		}
 		if args.end_with != 0 {
-			if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0) < 0 {
-				fail(args, errno());
-			}
+			#[cfg(test)]
+			let refused = args.refuse_parent_death;
+			#[cfg(not(test))]
+			let refused = false;
+			// A refused request leaves the child running without it, as it ran before.
+			let requested = !refused
+				&& libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0) == 0;
 			// A parent that ended before the request was made sends no signal: end as it would have.
-			if libc::getppid() != args.end_with {
+			if requested && libc::getppid() != args.end_with {
 				fail(args, libc::ESRCH);
 			}
 		}
@@ -319,6 +337,8 @@ pub(crate) fn spawn(
 		cgroup_procs: cgroup_procs.unwrap_or(-1),
 		signals: request.signals,
 		end_with: if request.end_with_parent { unsafe { libc::getpid() } } else { 0 },
+		#[cfg(test)]
+		refuse_parent_death: request.refuse_parent_death,
 		error: error_writer.as_raw_fd(),
 		empty_mask: unsafe { std::mem::zeroed() },
 	};
@@ -499,6 +519,14 @@ mod tests {
 			request("sleep", &["30"], None).unwrap().ending_with_parent(),
 		);
 		assert_eq!(status.signal(), Some(libc::SIGKILL));
+	}
+
+	#[test]
+	fn a_child_whose_parent_death_signal_is_refused_runs_without_it() {
+		let status = status_after_the_starting_thread_ended(
+			request("sleep", &["0.2"], None).unwrap().ending_with_parent().refusing_parent_death(),
+		);
+		assert_eq!(status.code(), Some(0));
 	}
 
 	#[test]

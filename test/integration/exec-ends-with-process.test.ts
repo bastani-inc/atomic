@@ -6,7 +6,6 @@ import {
 	type RecordedProcess,
 	recordProcess,
 	signalRecordedProcess,
-	stillRuns,
 	waitUntilGone,
 } from "../helpers/recorded-process.js";
 import {
@@ -27,6 +26,8 @@ const START_MS = 30_000;
 const POLL_MS = 20;
 /** Longer than a killed process takes to be gone, however loaded the machine. */
 const GONE_MS = 5_000;
+/** Longer than a SIGKILLed process takes to be gone; a process still there after it was not signalled. */
+const KILL_SEEN_MS = 1_000;
 
 const roots: string[] = [];
 const processes: RecordedProcess[] = [];
@@ -75,6 +76,10 @@ describe.runIf(process.platform === "linux")("a process running extensions' pi.e
 		await signalRecordedProcess(hostProcess, "SIGKILL");
 
 		assert.equal(await waitUntilGone(stoppedCommand, GONE_MS), true, "the command outlived the killed process");
-		assert.equal(await stillRuns(keptCommand), true, "a command no quit stops ended with the process");
+		assert.equal(
+			await waitUntilGone(keptCommand, KILL_SEEN_MS),
+			false,
+			"a command no quit stops ended with the process",
+		);
 	});
 });
