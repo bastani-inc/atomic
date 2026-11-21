@@ -1,7 +1,8 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { join } from "node:path";
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import crossSpawn from "cross-spawn";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../../../../utils/helper-command.ts";
 import { type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
 import { type McpTransport, TransportEvents } from "./transport.js";
@@ -56,10 +57,24 @@ function installExitHook(): void {
 	});
 }
 
+/** Whether `directory` is the project folder or inside it, where a program is never looked up by name. */
+function insideProject(directory: string, projectCwd: string | undefined): boolean {
+	if (projectCwd === undefined) return false;
+	const fromProject = relative(resolve(projectCwd), resolve(directory));
+	return fromProject !== ".." && !fromProject.startsWith(`..${sep}`) && !isAbsolute(fromProject);
+}
+
 export interface StdioTransportOptions {
+	/**
+	 * The server's program: a path is started as it is; a name only from PATH's absolute directories, never from the
+	 * project folder (`projectCwd`) or Atomic's working directory. On Windows a name is also looked up in a `cwd` that is
+	 * neither, as Windows looks in a program's working directory first.
+	 */
 	command: string;
 	args?: readonly string[];
 	cwd?: string;
+	/** The folder of the session the server serves; default `cwd`. */
+	projectCwd?: string;
 	env?: Record<string, string>;
 	inheritEnv?: boolean;
 	stderr?: "pipe" | "inherit";
@@ -76,6 +91,8 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 	private readonly lines: JsonRpcLineReader;
 	private started = false;
 	private closed = false;
+	/** Ends a lookup of the server's program that `close()` cuts short. */
+	private readonly lookup = new AbortController();
 
 	constructor(options: StdioTransportOptions) {
 		super();
@@ -102,14 +119,38 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		if (this.closed) throw new McpConnectionClosedError();
 		this.started = true;
 		const env = this.options.inheritEnv === false ? { ...this.options.env } : { ...process.env, ...this.options.env };
-		const child = crossSpawn(this.options.command, this.options.args ?? [], {
+		const projectCwd = this.options.projectCwd ?? this.options.cwd;
+		let launch: HelperLaunch;
+		try {
+			launch = await helperLaunchAsync(this.options.command, {
+				env,
+				...(projectCwd === undefined ? {} : { cwd: projectCwd }),
+				...(this.options.cwd === undefined || insideProject(this.options.cwd, projectCwd)
+					? {}
+					: { searchFirst: this.options.cwd }),
+				// cross-spawn runs `.cmd` and `.bat` shims through cmd.exe.
+				shellScripts: true,
+				signal: this.lookup.signal,
+			});
+		} catch (error) {
+			if (this.closed) throw new McpConnectionClosedError();
+			throw error;
+		}
+		// Closed while the program was looked up: nothing starts.
+		if (this.closed) throw new McpConnectionClosedError();
+		const options: SpawnOptions = {
 			cwd: this.options.cwd,
 			env,
 			stdio: ["pipe", "pipe", this.options.stderr === "inherit" ? "inherit" : "pipe"],
 			windowsHide: true,
 			// Own process group, so closing the transport can terminate the server's children too.
 			detached: USE_PROCESS_GROUPS,
-		});
+		};
+		// A program found nowhere fails as a missing one does; cross-spawn would look in the working directory.
+		const child =
+			launch.missing === undefined
+				? crossSpawn(launch.file, this.options.args ?? [], options)
+				: spawn(launch.file, this.options.args ?? [], { ...options, ...missingHelperOptions(launch) });
 		this.child = child;
 		const pid = child.pid;
 		if (USE_PROCESS_GROUPS && pid !== undefined) {
@@ -160,6 +201,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		this.lookup.abort();
 		const child = this.child;
 		if (!child) {
 			this.emitClose();

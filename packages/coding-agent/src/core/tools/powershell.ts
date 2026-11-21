@@ -63,7 +63,7 @@ export function createLocalPowerShellOperations(binding?: {
 			validateBashWait(options.wait, !!binding?.taskOwner);
 			if (options.timeout !== undefined) validateExplicitTimeoutSeconds(options.timeout);
 			if (options.signal?.aborted) throw new Error("aborted");
-			const { shell, args } = await getPowerShellConfigAsync();
+			const { shell, args } = await getPowerShellConfigAsync(cwd);
 			const script = `${UTF8_OUTPUT_PREFIX}${command}${windowsPowerShellExitSuffix(shell, command)}`;
 			const pty = !!options.pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1";
 			if (binding?.taskOwner || pty) {

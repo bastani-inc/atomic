@@ -33,6 +33,13 @@ export interface HelperExecutableOptions {
 	 * so a caller's cancellation and deadline hold while it looks.
 	 */
 	readonly signal?: AbortSignal;
+	/**
+	 * Windows: a directory searched before PATH, as Windows searches a program's working directory first, for a working
+	 * directory the user configured. It is skipped like PATH's entries when it is a working directory above.
+	 */
+	readonly searchFirst?: string;
+	/** Windows: a name with an extension is tried only as it is, as a shell's lookup of such a name does. */
+	readonly exact?: boolean;
 }
 
 /** Windows' default PATHEXT, used when the environment has none. */
@@ -52,6 +59,8 @@ interface Search {
 	readonly directories: readonly string[];
 	readonly names: readonly string[];
 	readonly windows: boolean;
+	/** The working directories, which no directory may be, however PATH spells it. */
+	readonly working: readonly string[];
 }
 
 const currentDirectory = (): string => process.cwd();
@@ -75,25 +84,49 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 	const sameDirectory = (directory: string) =>
 		workingDirectories.some((cwd) => (windows ? directory.toLowerCase() === cwd.toLowerCase() : directory === cwd));
 	const directories: string[] = [];
+	if (windows && options.searchFirst !== undefined && path.isAbsolute(options.searchFirst)) {
+		const first = path.resolve(options.searchFirst);
+		if (!sameDirectory(first)) directories.push(first);
+	}
 	// Without PATH, a start by name searches the system's default directories elsewhere, and nothing on Windows.
 	for (const raw of (envValue(env, "PATH", windows) ?? (windows ? "" : DEFAULT_POSIX_PATH)).split(path.delimiter)) {
-		const entry = windows ? raw.replace(/^"(.*)"$/, "$1") : raw;
+		const entry = windows ? raw.trim().replace(/^"(.*)"$/, "$1") : raw;
 		// Empty and relative entries name the working directory, or a directory under it.
 		if (entry === "" || !path.isAbsolute(entry)) continue;
 		const directory = path.resolve(entry);
 		if (sameDirectory(directory) || directories.includes(directory)) continue;
 		directories.push(directory);
 	}
-	if (!windows) return { directories, names: [name], windows };
+	if (!windows) return { directories, names: [name], windows, working: workingDirectories };
 	const extensions = (envValue(env, "PATHEXT", true) || DEFAULT_PATHEXT)
 		.split(";")
 		.map((extension) => extension.trim().toLowerCase())
 		.filter((extension) => extension.startsWith(".") && (options.shellScripts || DIRECT_EXTENSIONS.has(extension)));
-	const names = [
-		...(win32.extname(name) !== "" ? [name] : []),
-		...extensions.map((extension) => `${name}${extension}`),
-	];
-	return { directories, names, windows };
+	const hasExtension = win32.extname(name) !== "";
+	const names =
+		hasExtension && options.exact
+			? [name]
+			: [...(hasExtension ? [name] : []), ...extensions.map((extension) => `${name}${extension}`)];
+	return { directories, names, windows, working: workingDirectories };
+}
+
+/** A directory's identity on its file system, so another spelling of it (a link, a short name) is told apart. */
+function identity(directory: string): string | undefined {
+	try {
+		const stats = statSync(directory, { bigint: true });
+		return stats.isDirectory() ? `${stats.dev}:${stats.ino}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function identityAsync(directory: string): Promise<string | undefined> {
+	try {
+		const stats = await stat(directory, { bigint: true });
+		return stats.isDirectory() ? `${stats.dev}:${stats.ino}` : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -107,10 +140,14 @@ function candidateKind(candidate: string, windows: boolean): Candidate {
 	try {
 		if (windows) {
 			accessSync(candidate, constants.F_OK);
-			const entry = lstatSync(candidate);
-			return entry.isDirectory() || (entry.isSymbolicLink() && statSync(candidate).isDirectory())
-				? "none"
-				: "program";
+			// An app execution alias is seen by `access` alone: what cannot be told to be a directory is a program.
+			try {
+				const entry = lstatSync(candidate);
+				const directory = entry.isDirectory() || (entry.isSymbolicLink() && statSync(candidate).isDirectory());
+				return directory ? "none" : "program";
+			} catch {
+				return "program";
+			}
 		}
 		if (!statSync(candidate).isFile()) return "none";
 	} catch {
@@ -128,10 +165,13 @@ async function candidateKindAsync(candidate: string, windows: boolean): Promise<
 	try {
 		if (windows) {
 			await access(candidate, constants.F_OK);
-			const entry = await lstat(candidate);
-			return entry.isDirectory() || (entry.isSymbolicLink() && (await stat(candidate)).isDirectory())
-				? "none"
-				: "program";
+			try {
+				const entry = await lstat(candidate);
+				const directory = entry.isDirectory() || (entry.isSymbolicLink() && (await stat(candidate)).isDirectory());
+				return directory ? "none" : "program";
+			} catch {
+				return "program";
+			}
 		}
 		if (!(await stat(candidate)).isFile()) return "none";
 	} catch {
@@ -155,8 +195,12 @@ function searchSync(name: string, options: HelperExecutableOptions): Found {
 	const search = searchFor(name, options);
 	if (search === undefined) return { program: name };
 	const path = search.windows ? win32 : posix;
+	const working = new Set(search.working.map(identity).filter((id) => id !== undefined));
 	let denied: string | undefined;
 	for (const directory of search.directories) {
+		const id = identity(directory);
+		// A directory that is a working directory, however it is spelled, is never searched.
+		if (id !== undefined && working.has(id)) continue;
 		for (const file of search.names) {
 			const candidate = path.join(directory, file);
 			const kind = candidateKind(candidate, search.windows);
@@ -171,8 +215,12 @@ async function searchAsync(name: string, options: HelperExecutableOptions, signa
 	const search = searchFor(name, options);
 	if (search === undefined) return { program: name };
 	const path = search.windows ? win32 : posix;
+	const working = new Set((await Promise.all(search.working.map(identityAsync))).filter((id) => id !== undefined));
 	let denied: string | undefined;
 	for (const directory of search.directories) {
+		if (signal?.aborted) return {};
+		const id = await identityAsync(directory);
+		if (id !== undefined && working.has(id)) continue;
 		for (const file of search.names) {
 			if (signal?.aborted) return {};
 			const candidate = path.join(directory, file);
