@@ -20,6 +20,7 @@ vi.mock("@bastani/atomic", async (importOriginal) => {
 		readProcessStartToken: undefined,
 		readProcessCreationTime: undefined,
 		nativeProcessCreationTime: undefined,
+		nativeTerminateProcess: undefined,
 	};
 });
 
