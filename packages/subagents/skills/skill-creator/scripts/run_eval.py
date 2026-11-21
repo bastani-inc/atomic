@@ -174,12 +174,30 @@ def run_single_query(
     """
     second_ns = 1_000_000_000
     deadline_ns = time.monotonic_ns() + timeout * second_ns
+    cancellation = cancellation or Cancellation()
+    try:
+        return _run_query(
+            query, skill_name, skill_description, project_root, model, skill_file, cancellation, command, deadline_ns
+        )
+    except TimeoutError:
+        raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger") from None
 
+
+def _run_query(
+    query: str,
+    skill_name: str,
+    skill_description: str,
+    project_root: str,
+    model: str | None,
+    skill_file: Path | None,
+    cancellation: Cancellation,
+    command: list[str] | None,
+    deadline_ns: int,
+) -> bool:
     def check_deadline():
         if time.monotonic_ns() >= deadline_ns:
-            raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger")
+            raise TimeoutError("Timed out waiting for a skill trigger")
 
-    cancellation = cancellation or Cancellation()
     with Owner():
         cancellation.check()
         own_folder = None
@@ -194,17 +212,13 @@ def run_single_query(
             check_deadline()
             try:
                 with AtomicProcess(
-                    query_arguments(skill_file, model), query, root, stderr_path, cancellation, command
+                    query_arguments(skill_file, model), query, root, stderr_path, cancellation, command, deadline_ns
                 ) as atomic:
-                    try:
-                        for line in atomic.lines(deadline_ns):
-                            if decision.feed(line) is not None:
-                                # A decision read after the deadline is a timeout.
-                                check_deadline()
-                                return decision.result
-                    except TimeoutError:
-                        check_deadline()
-                        raise
+                    for line in atomic.lines(deadline_ns):
+                        if decision.feed(line) is not None:
+                            # A decision read after the deadline is a timeout.
+                            check_deadline()
+                            return decision.result
                     # Output ended in time without a decision: not triggered, unless Atomic failed.
                     check_deadline()
                     status = atomic.wait_for_exit(polls=5)

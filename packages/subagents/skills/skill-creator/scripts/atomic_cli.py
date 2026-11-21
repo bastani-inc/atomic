@@ -171,6 +171,7 @@ class AtomicProcess:
         stderr_path: Path,
         cancellation: Cancellation,
         command: Sequence[str] | None = None,
+        deadline_ns: int | None = None,
     ) -> None:
         cancellation.check()
         self._cancellation = cancellation
@@ -183,9 +184,18 @@ class AtomicProcess:
         self._job: _WindowsJob | None = None
         self._lines: SimpleQueue[bytes | None] = SimpleQueue()
         data = prompt.encode("utf-8")
+
+        def admit() -> None:
+            # Checked again right before the start: a query that waited to start may have been
+            # cancelled, or run out of time, in the meantime.
+            cancellation.check()
+            if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+                raise TimeoutError("Timed out before Atomic started")
+
         try:
             if os.name == "nt":
                 self._job = _WindowsJob()
+                admit()
                 self.process = subprocess.Popen(
                     # -I -S: no environment variables, user site or site hooks act before the gate.
                     [sys.executable, "-I", "-S", "-c", _WINDOWS_GATE, *argv],
@@ -205,7 +215,7 @@ class AtomicProcess:
                     raise
                 data = b"1" + data
             else:
-                self.process = _start_in_job(argv, cwd, environment, self._stderr)
+                self.process = _start_in_job(argv, cwd, environment, self._stderr, admit)
         except BaseException:
             if self._job is not None:
                 self._job.close()
@@ -324,7 +334,9 @@ _run_as_command = False
 _adopts_orphans = False
 
 
-def _start_in_job(argv: list[str], cwd, environment: dict[str, str], stderr) -> subprocess.Popen[bytes]:
+def _start_in_job(
+    argv: list[str], cwd, environment: dict[str, str], stderr, admit: Callable[[], None]
+) -> subprocess.Popen[bytes]:
     """Start a child in this process's own process group, so the shell's job control reaches it.
 
     SIGTSTP stays blocked in this thread while the child is created. CPython may create it with
@@ -336,6 +348,7 @@ def _start_in_job(argv: list[str], cwd, environment: dict[str, str], stderr) -> 
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTSTP})
     try:
         with _children_lock:
+            admit()
             if _run_as_command and not _adopts_orphans:
                 _adopt_orphans()
             process = subprocess.Popen(

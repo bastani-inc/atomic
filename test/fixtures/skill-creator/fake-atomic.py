@@ -130,7 +130,12 @@ elif scenario in ("hold-child", "stalled-child"):
         "print(child.pid, flush=True)\n"
         "while not os.environ.get('FAKE_ATOMIC_HELPER_EXITS'): time.sleep(1)"
     )
-    helper = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, start_new_session=os.name != "nt")
+    if os.name == "nt":
+        # As Node starts a detached process on Windows: no console, so no console events reach it.
+        detached = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        detached = {"start_new_session": True}
+    helper = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, **detached)
     record["child"] = helper.pid
     record["grandchild"] = int(helper.stdout.readline())
 
