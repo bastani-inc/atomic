@@ -69,8 +69,6 @@ function ownerContext(root: string, id: string): ExtensionContext {
 			getSessionFile: () => join(root, `${id}.jsonl`),
 			getSessionId: () => `session-${id}`,
 			getLeafId: () => null,
-			getLeafEntry: () => undefined,
-			getEntry: () => undefined,
 			getEntries: () => [],
 		},
 		isIdle: () => true,
@@ -96,8 +94,6 @@ function harness(root: string, emitter: EventEmitter, gates: readonly Promise<vo
 	let nextGate = 0;
 	const pi = {
 		events: bus,
-		// The launching session keeps its children's records, as an extension's session does.
-		appendEntry: async () => {},
 		getSessionName: () => "parent",
 		sendMessage(message: { content?: string }) {
 			emittedNotifications.push(message.content ?? "");

@@ -11,7 +11,11 @@ import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contract
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
-import { createSubagentChildRecordSink } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import {
+	createSubagentChildRecordSink,
+	latestRecordSaved,
+	subagentChildRecordFailures,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { subagentChildrenAwaitingResume } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
@@ -194,4 +198,34 @@ test("a launch the owner's session could not save fails the child's task with th
 	assert.equal(existsSync(promptLog), false);
 	const status = subagentChildrenAwaitingResume(ctx, "launch-not-saved:0").join("\n");
 	assert.match(status, /record-append-failed/, status);
+});
+
+test("a record the owner's session saved counts as saved, even when finding its entry there fails afterwards", async () => {
+	// An owner session that saves what it is given but cannot be read back, as a minimal one.
+	const ctx = {
+		sessionManager: { getSessionId: () => "owner-without-reads", getLeafId: () => null, getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	const sink = createSubagentChildRecordSink({ appendEntry: async () => {} }, ctx);
+	const failures = subagentChildRecordFailures.count;
+
+	sink.record({
+		runId: "saved-unread",
+		index: 0,
+		agent: "worker",
+		state: "running",
+		cwd: "/repo",
+		launchLeafId: null,
+	});
+
+	assert.equal(await latestRecordSaved(sink), undefined);
+	assert.equal(subagentChildRecordFailures.count, failures + 1, "the failed lookup is still reported");
+});
+
+test("an owner that keeps no records gives a launch nothing to wait for", () => {
+	const ctx = { sessionManager: { getSessionId: () => "owner-without-records" } } as unknown as ExtensionContext;
+	const sink = createSubagentChildRecordSink({} as never, ctx);
+
+	sink.record({ runId: "recordless", index: 0, agent: "worker", state: "running", cwd: "/repo", launchLeafId: null });
+
+	assert.equal(latestRecordSaved(sink), undefined);
 });
