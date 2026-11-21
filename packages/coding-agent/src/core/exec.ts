@@ -3,9 +3,9 @@
  */
 
 import { constants as bufferConstants } from "node:buffer";
-import { access } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
 import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../utils/helper-command.ts";
@@ -51,14 +51,20 @@ export interface ExecResult {
 	truncated: boolean;
 }
 
-/** Every extension a start by name on Windows may try: PATHEXT's, and those Node or Bun try whatever it names. */
+/**
+ * The files a start of `command` by name on Windows may run: the name as it is when it has an extension, and the name
+ * with each extension PATHEXT names or Node or Bun tries whatever it names.
+ */
 function windowsNames(command: string, env: NodeJS.ProcessEnv): string[] {
 	const extensions = new Set([".com", ".exe", ".bat", ".cmd"]);
 	for (const extension of (windowsVariable(env, "PATHEXT") ?? "").split(";")) {
 		const trimmed = extension.trim().toLowerCase();
 		if (trimmed.startsWith(".")) extensions.add(trimmed);
 	}
-	return [command, ...[...extensions].map((extension) => `${command}${extension}`)];
+	return [
+		...(extname(command) === "" ? [] : [command]),
+		...[...extensions].map((extension) => `${command}${extension}`),
+	];
 }
 
 /** Variable `name` as a program started with `env` gets it: of several spellings, the first in sorted order. */
@@ -99,20 +105,41 @@ async function windowsLaunch(
 	const names = windowsNames(command, env);
 	for (const folder of windowsWorkingFolders(cwd, env)) {
 		for (const name of names) {
-			if (signal.aborted) throw signal.reason;
-			if (await exists(join(folder, name))) return helperLaunchAsync(command, { env, cwd, signal });
+			if (await untilAborted(couldStart(join(folder, name)), signal)) {
+				return helperLaunchAsync(command, { env, cwd, signal });
+			}
 		}
 	}
 	return { file: command };
 }
 
-async function exists(path: string): Promise<boolean> {
+/** Whether a start may run `path`: anything there but a directory, an app execution alias included. */
+async function couldStart(path: string): Promise<boolean> {
 	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
+		return !(await stat(path)).isDirectory();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code !== "ENOENT" && code !== "ENOTDIR";
 	}
+}
+
+/** `work`'s result, or `signal`'s reason as soon as it aborts, whatever `work` still waits for. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /**

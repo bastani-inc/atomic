@@ -145,6 +145,29 @@ describe.skipIf(process.platform === "win32")("a pi.exec command whose arguments
 	});
 });
 
+describe("a pi.exec command whose working folder holds nothing a start could run under its name", () => {
+	test("starts by its name, with no lookup to wait for: a folder or a file without an extension does not count", async () => {
+		rmSync(join(root, "atomic-test-program.exe"));
+		mkdirSync(join(root, "atomic-test-program.exe"));
+		writeFileSync(join(root, "atomic-test-program"), "");
+
+		const result = await execOnWindows("atomic-test-program", [], root, { timeout: 50 });
+
+		// The held PATH directory was never searched: the start found nothing and failed as a missing program does.
+		assert.deepEqual([result.killed, result.code], [false, 1]);
+	});
+});
+
+describe("a pi.exec command whose working folder is still being read", () => {
+	test("ends when its signal aborts, starting nothing", async () => {
+		held.add(root);
+		const controller = new AbortController();
+		const result = execOnWindows("atomic-test-program", [], root, { signal: controller.signal });
+		controller.abort();
+		assert.deepEqual(await result, STOPPED);
+	});
+});
+
 describe("a pi.exec command whose program is still being looked up", () => {
 	test("ends when its signal aborts, starting nothing", async () => {
 		const controller = new AbortController();
