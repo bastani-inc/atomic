@@ -15,6 +15,7 @@ No dependencies beyond the Python stdlib are required.
 import argparse
 import base64
 import json
+import locale
 import mimetypes
 import os
 import re
@@ -252,13 +253,22 @@ def load_saved_feedback(feedback_path: Path) -> dict[str, str]:
     it, and the next save keeps it. A missing or unreadable file means no feedback yet.
     """
     try:
+        raw = feedback_path.read_bytes()
+    except OSError:
+        return {}
+    try:
+        # UTF-8, with or without a byte order mark (as Windows PowerShell 5 and older Notepad save it).
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
         try:
-            text = feedback_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
             # As other files: one saved in the locale's encoding.
-            text = feedback_path.read_text(encoding="locale")
+            text = raw.decode(locale.getpreferredencoding(False))
+        except UnicodeDecodeError:
+            # As a browser reads it: what cannot be decoded shows as a replacement mark, and the rest is kept.
+            text = raw.decode("utf-8-sig", errors="replace")
+    try:
         data = json.loads(text)
-    except (OSError, ValueError):
+    except ValueError:
         return {}
     reviews = data.get("reviews") if isinstance(data, dict) else None
     if not isinstance(reviews, list):
@@ -379,6 +389,9 @@ class ReviewHandler(BaseHTTPRequestHandler):
             content = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # Never kept in the browser's cache: a tab it restores, or a page revisited through its history, is made
+            # again here with the feedback saved since, rather than shown with what it embedded at first.
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
