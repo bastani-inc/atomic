@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
-import { readProcessStartToken } from "../../packages/coding-agent/src/core/process-start-token.js";
-import { isProcessAlive } from "../../packages/intercom/broker/broker-stop.js";
+import { readProcessCreationTime } from "../../packages/coding-agent/src/core/process-start-token.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
 	getBrokerSocketPath,
@@ -15,6 +15,13 @@ import {
 } from "../../packages/intercom/broker/paths.js";
 import { spawnBrokerIfNeeded, upgradeBroker } from "../../packages/intercom/broker/spawn.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	stillRuns,
+	waitUntilGone,
+} from "../helpers/recorded-process.js";
 import { sleep } from "../helpers/runtime.ts";
 
 /** Far longer than an aborted wait may take, so a wait that ignores its signal fails the test instead of passing late. */
@@ -43,15 +50,6 @@ afterEach(async () => {
 	rmSync(join(agentDir, ".."), { recursive: true, force: true });
 });
 
-/** A process a broker command of this test started, and when it started. */
-interface RecordedProcess {
-	readonly pid: number;
-	readonly started: string | undefined;
-}
-
-/** Where a process's start can be read, so that a pid is never taken for a later process given the same pid. */
-const READS_PROCESS_STARTS = process.platform === "linux" || process.platform === "win32";
-
 /**
  * The process that records its pid in `markerPath`, and when it started, read the moment it has recorded itself, while
  * it still runs. Rejects once `settled` settles with nothing recorded.
@@ -68,7 +66,7 @@ async function recordedProcess(markerPath: string, settled: Promise<unknown>): P
 	);
 	for (;;) {
 		const pid = existsSync(markerPath) ? Number(readFileSync(markerPath, "utf8")) : 0;
-		if (Number.isInteger(pid) && pid > 0) return { pid, started: await readProcessStartToken(pid) };
+		if (Number.isInteger(pid) && pid > 0) return recordProcess(pid);
 		if (done) throw new Error(`No broker recorded its pid in ${markerPath}`);
 		await sleep(10);
 	}
@@ -80,13 +78,8 @@ async function recordedProcess(markerPath: string, settled: Promise<unknown>): P
  * holds that pid by then, such as another test's or another job's broker. So the pid is killed only while it still
  * names the process that started then.
  */
-async function killIfStillRunning({ pid, started }: RecordedProcess): Promise<void> {
-	if (started !== undefined ? (await readProcessStartToken(pid)) !== started : READS_PROCESS_STARTS) return;
-	try {
-		process.kill(pid, "SIGKILL");
-	} catch {
-		// Already gone.
-	}
+async function killIfStillRunning(recorded: RecordedProcess): Promise<void> {
+	await signalRecordedProcess(recorded);
 }
 
 /**
@@ -154,13 +147,9 @@ function isBrokerAnswering(): Promise<boolean> {
 	});
 }
 
-async function waitUntilGone(pid: number): Promise<boolean> {
-	const deadline = Date.now() + BROKER_GONE_WAIT_MS;
-	while (isProcessAlive(pid)) {
-		if (Date.now() >= deadline) return false;
-		await sleep(20);
-	}
-	return true;
+/** Whether `recorded` is gone within {@link BROKER_GONE_WAIT_MS}; a later process given its pid is not it. */
+function gone(recorded: RecordedProcess): Promise<boolean> {
+	return waitUntilGone(recorded, BROKER_GONE_WAIT_MS);
 }
 
 test("an aborted broker start writes nothing into the agent directory (#4727)", async () => {
@@ -210,11 +199,7 @@ directSpawnTest(
 		cleanups.push(() => killIfStillRunning(replacement));
 
 		await assert.rejects(upgrade);
-		assert.equal(
-			await waitUntilGone(replacement.pid),
-			true,
-			"the replacement broker is still starting after the upgrade settled",
-		);
+		assert.equal(await gone(replacement), true, "the replacement broker is still starting after the upgrade settled");
 	},
 );
 
@@ -250,7 +235,7 @@ directSpawnTest("a disposed start stops the broker a wrapper command runs as its
 	controller.abort(new Error("session disposed"));
 
 	await assert.rejects(start);
-	assert.equal(await waitUntilGone(broker.pid), true, "the wrapped broker is still running after the start settled");
+	assert.equal(await gone(broker), true, "the wrapped broker is still running after the start settled");
 });
 
 directSpawnTest("a disposed start stops waiting for a broker that never listens, and stops that broker", async () => {
@@ -273,21 +258,49 @@ directSpawnTest("a disposed start stops waiting for a broker that never listens,
 		performance.now() - aborted < ABORTED_WAIT_BOUND_MS + BROKER_GONE_WAIT_MS,
 		"the disposed start kept waiting for its broker to listen",
 	);
-	assert.equal(await waitUntilGone(broker.pid), true, "the broker is still running after the start settled");
+	assert.equal(await gone(broker), true, "the broker is still running after the start settled");
 });
 
+/** Atomic's native module, which a stand-in broker loads by path to read when it was created, as a real broker does. */
+const NATIVES_PATH = createRequire(import.meta.url).resolve("@bastani/atomic-natives");
+
 /**
- * A broker command that records its pid, announces itself as a real broker does (so a Windows spawner can stop it), and
- * never listens. A script file rather than `-e`: on Windows a custom command runs through a launcher's command line.
+ * A broker command that records its pid, announces `announcedPid` (its own by default) and, unless `witness` is
+ * `"none"`, when that process was created, as a real broker does when asked (so a Windows spawner can stop it); then it
+ * never listens. `witness: "other"` announces a creation time that is not the announced process's. With `startsChild`
+ * it first starts a process of its own and records that one's pid in `<markerPath>.child`. A script file rather than
+ * `-e`: on Windows a custom command runs through a launcher's command line.
  */
-function announcedNeverReadyBrokerCommand(markerPath: string): string[] {
+function announcedNeverReadyBrokerCommand(
+	markerPath: string,
+	{
+		announcedPid,
+		witness = "own",
+		startsChild = false,
+	}: {
+		readonly announcedPid?: number;
+		readonly witness?: "own" | "other" | "none";
+		readonly startsChild?: boolean;
+	} = {},
+): string[] {
 	const script = join(agentDir, "..", "never-ready-broker.cjs");
 	writeFileSync(
 		script,
 		`const fs = require("node:fs");
+if (${startsChild}) {
+	const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	fs.writeFileSync(process.argv[2] + ".child", String(child.pid));
+}
 const path = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_PATH;
 const token = process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_TOKEN;
-if (path && token) fs.writeFileSync(path, token + " " + process.pid + "\\n");
+const announcedPid = ${announcedPid ?? "process.pid"};
+const witness = ${JSON.stringify(witness)};
+let started = null;
+if (witness !== "none" && process.env.ATOMIC_INTERCOM_BROKER_ANNOUNCE_START === "1" && process.platform === "win32") {
+	started = require(${JSON.stringify(NATIVES_PATH)}).processCreationTime(announcedPid);
+	if (started !== null && witness === "other") started = String(BigInt(started) + 1n);
+}
+if (path && token) fs.writeFileSync(path, token + " " + announcedPid + (started === null ? "" : " " + started) + "\\n");
 fs.writeFileSync(process.argv[2], String(process.pid));
 setInterval(() => {}, 1000);
 `,
@@ -318,6 +331,101 @@ test(
 
 		await waiting;
 		assert.equal(await isBrokerAnswering(), true, "no broker answers");
+	},
+	2 * READY_TIMEOUT_MS,
+);
+
+// #6133: only a broker behind the Windows launcher is found by the pid it announced.
+const windowsLauncherTest = process.platform === "win32" ? test : test.skip;
+
+/** A process that is no broker, as a later process given an exited broker's pid is; this test holds its handle. */
+function startUnrelatedProcess(): ChildProcess {
+	const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	cleanups.push(() => {
+		unrelated.kill("SIGKILL");
+	});
+	return unrelated;
+}
+
+/**
+ * Starts a broker with `command`, waits until it has recorded its pid, runs `beforeAbort` with it, and disposes of the
+ * start.
+ */
+async function abandonAnnouncedStart(
+	markerPath: string,
+	command: string[],
+	beforeAbort: (broker: RecordedProcess) => Promise<void> = async () => {},
+): Promise<RecordedProcess> {
+	// Runs after the broker is stopped: removes its files once Windows has let go of the broker log.
+	cleanups.push(() => removeTempRootReleasingBroker(join(agentDir, ".."), agentDir));
+	const controller = new AbortController();
+	const start = spawnBrokerIfNeeded(process.execPath, command, READY_TIMEOUT_MS, undefined, controller.signal);
+	const broker = await recordedProcess(markerPath, start);
+	cleanups.push(() => killIfStillRunning(broker));
+	await beforeAbort(broker);
+	controller.abort(new Error("session disposed"));
+	await assert.rejects(start);
+	return broker;
+}
+
+for (const witness of ["none", "other"] as const) {
+	windowsLauncherTest(
+		`a disposed start never stops another process its broker announced, ${witness === "none" ? "without a creation time" : "with another creation time"} (#6133)`,
+		async () => {
+			const markerPath = join(agentDir, "..", "lying-broker.pid");
+			const unrelated = startUnrelatedProcess();
+			const announcedPid = unrelated.pid;
+			assert.ok(announcedPid !== undefined);
+			const started = await readProcessCreationTime(announcedPid);
+			assert.ok(started !== undefined, "the unrelated process's creation time cannot be read");
+
+			await abandonAnnouncedStart(
+				markerPath,
+				announcedNeverReadyBrokerCommand(markerPath, { announcedPid, witness }),
+			);
+
+			assert.equal(unrelated.exitCode, null, "the disposed start stopped a process that is not its broker");
+			assert.equal(await readProcessCreationTime(announcedPid), started);
+		},
+		2 * READY_TIMEOUT_MS,
+	);
+}
+
+windowsLauncherTest(
+	"a disposed start leaves running a broker that announced no creation time (#6133)",
+	async () => {
+		const markerPath = join(agentDir, "..", "witnessless-broker.pid");
+		// An older broker, or one that could not load the native module, announces only its token and pid.
+		const broker = await abandonAnnouncedStart(
+			markerPath,
+			announcedNeverReadyBrokerCommand(markerPath, { witness: "none" }),
+		);
+
+		assert.equal(await stillRuns(broker), true, "the disposed start stopped a broker it could not identify");
+	},
+	2 * READY_TIMEOUT_MS,
+);
+
+windowsLauncherTest(
+	"a disposed start stops the broker that announced when it was created, and what it started (#6133)",
+	async () => {
+		const markerPath = join(agentDir, "..", "announced-broker.pid");
+		let child: RecordedProcess | undefined;
+		const broker = await abandonAnnouncedStart(
+			markerPath,
+			announcedNeverReadyBrokerCommand(markerPath, { startsChild: true }),
+			async () => {
+				// Written before the broker recorded its own pid, while that process waits to be stopped.
+				child = await recordProcess(Number(readFileSync(`${markerPath}.child`, "utf8")));
+				const recorded = child;
+				cleanups.push(() => killIfStillRunning(recorded));
+				assert.notEqual(recorded.started, undefined, "the broker's child is not running");
+			},
+		);
+
+		assert.equal(await gone(broker), true, "the broker is still running after the start settled");
+		assert.ok(child !== undefined);
+		assert.equal(await gone(child), true, "the process the broker started is still running");
 	},
 	2 * READY_TIMEOUT_MS,
 );

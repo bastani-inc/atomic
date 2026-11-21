@@ -10,6 +10,7 @@ import type {
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { QUARANTINED_ADMISSION_WAIT_MS } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
@@ -106,16 +107,6 @@ function pidFile(dir: string, name: string): number | undefined {
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
-		return false;
-	}
-}
-
 async function waitFor<T>(poll: () => T | undefined, limitMs: number, failure: string): Promise<T> {
 	const deadline = Date.now() + limitMs;
 	for (;;) {
@@ -172,6 +163,8 @@ test.runIf(process.platform === "linux")(
 				AbortSignal.timeout(limitMs),
 			);
 		const pending: Array<Promise<unknown>> = [];
+		// #6125: recorded while it waits to be released, so the cleanup never signals a later process given its pid.
+		let holder: RecordedProcess | undefined;
 		try {
 			const first = launch(escapedHolderCommand(dir), FIRST_LAUNCH_LIMIT_MS);
 			pending.push(settle(first));
@@ -180,6 +173,10 @@ test.runIf(process.platform === "linux")(
 				quarantine.promise,
 				QUARANTINE_EVENT_LIMIT_MS,
 				"the first command's cleanup was never quarantined",
+			);
+			// The command waits for its holder's pid file, so it is there before the command's cleanup is quarantined.
+			holder = await recordProcess(
+				await waitFor(() => pidFile(dir, "holder"), WAITING_LIMIT_MS, "the command started no holder"),
 			);
 
 			const second = settle(launch("echo SECOND", BLOCKED_LAUNCH_LIMIT_MS));
@@ -223,8 +220,7 @@ test.runIf(process.platform === "linux")(
 		} finally {
 			gate.resolve();
 			writeTextSync(`${dir}/release`, "");
-			const holder = pidFile(dir, "holder");
-			if (holder !== undefined && processExists(holder)) process.kill(holder, "SIGKILL");
+			if (holder !== undefined) await signalRecordedProcess(holder);
 			try {
 				await within(Promise.all(pending), FIRST_LAUNCH_LIMIT_MS, "a launch outlived its outer guard");
 				const closed = await within(

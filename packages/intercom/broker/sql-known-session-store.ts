@@ -1,5 +1,5 @@
-import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
-import { addMissingColumns } from "./sql-add-column.js";
+import { dialectOf, type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { addMissingColumns, addOptionalColumn } from "./sql-add-column.js";
 import type {
 	IntercomBrokerStateOptions,
 	KnownSessionBindingResult,
@@ -8,10 +8,20 @@ import type {
 	KnownSessionRecordResult,
 	KnownSessionState,
 	KnownSessionStore,
+	SessionIdReclaim,
+	SessionIdReclaimResult,
 } from "./multinode-state-store.js";
 import { ensureBrokerSchema } from "./sql-schema.js";
 
 type BindingRow = SqliteRow & { return_address: string };
+
+/**
+ * The start every delivery identity of a session with `returnAddress` shares, whatever its group (`deliveryTargetIdentity`
+ * writes `["return", returnAddress, group]`).
+ */
+function returnIdentityPrefix(returnAddress: string): string {
+	return `${JSON.stringify(["return", returnAddress]).slice(0, -1)},`;
+}
 
 type KnownRow = SqliteRow & {
 	target_identity: string;
@@ -55,6 +65,8 @@ export async function openSqlKnownSessionStore({
 }: IntercomBrokerStateOptions): Promise<KnownSessionStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_known_sessions`;
 	const bindings = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_session_bindings`;
+	// The lease store's table, which the broker opens first: `reclaim` reads its presence leases.
+	const leases = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_leases`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const age = greatest("0", `${nowMs} - recorded_at`);
 	/** `age` at the statement's one reading of the clock, from `WITH clock`. */
@@ -89,10 +101,112 @@ export async function openSqlKnownSessionStore({
 	// #5154: added later: set, by store clock, once the session's broker was retired before it recorded the session
 	// leaving. An older broker ignores it, and its `record` leaves it set.
 	await addMissingColumns(database, table, { lost_at: types.int });
+	// #5607: added later: the claim of the registration that last bound the id, written by `bind` when it is given one.
+	// An older broker's `bind` leaves it as it is. Without it (a role that may not add it) there is no `reclaim`.
+	const claims = await addOptionalColumn(database, bindings, "latest_claim", "TEXT");
 	const columns = `target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
 					recipient_purpose, reply_capability, ${age} AS age_ms`;
 
+	/** `bind`'s statements, in the caller's serial transaction on `bindings`. */
+	const bindIn = async (
+		tx: SqliteExecutor,
+		intercomSessionId: string,
+		returnAddress: string,
+		retentionMs: number,
+		claim: string | undefined,
+	): Promise<KnownSessionBindResult> => {
+		await tx.run(
+			`DELETE FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at > ?`,
+			intercomSessionId,
+			retentionMs,
+		);
+		// A known-session record kept from before bindings existed holds the id for its return address.
+		await tx.run(
+			`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at)
+			 SELECT intercom_session_id, COALESCE(atomic_session_id, ''), ${nowMs} FROM ${table}
+			 WHERE intercom_session_id = ? AND ${age} <= ?
+			 ORDER BY record_order LIMIT 1
+			 ON CONFLICT(intercom_session_id) DO NOTHING`,
+			intercomSessionId,
+			retentionMs,
+		);
+		// One conditional write: a binding held by another return address is left as it is.
+		if (claims) {
+			await tx.run(
+				`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at, latest_claim) VALUES (?, ?, ${nowMs}, ?)
+				 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at, latest_claim = excluded.latest_claim
+				 WHERE ${bindings}.return_address = excluded.return_address`,
+				intercomSessionId,
+				returnAddress,
+				claim ?? null,
+			);
+		} else {
+			await tx.run(
+				`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at) VALUES (?, ?, ${nowMs})
+				 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at
+				 WHERE ${bindings}.return_address = excluded.return_address`,
+				intercomSessionId,
+				returnAddress,
+			);
+		}
+		const bound = await tx.get<BindingRow>(
+			`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ?`,
+			intercomSessionId,
+		);
+		if (bound === undefined || bound.return_address === returnAddress) return { status: "bound" };
+		return { status: "refused", returnAddress: bound.return_address };
+	};
+
+	const reclaim = async (request: SessionIdReclaim): Promise<SessionIdReclaimResult> => {
+		if (request.intercomSessionId.length === 0 || request.freshId.length === 0)
+			return { status: "invalid", reason: "empty-session-id" };
+		return database.transaction(
+			async (tx) => {
+				// A session of this return address that another broker presents, in any group, holds the id there.
+				const identities = returnIdentityPrefix(request.returnAddress);
+				const { changes } = await tx.run(
+					`UPDATE ${bindings} SET recorded_at = ${nowMs}
+					 WHERE intercom_session_id = ? AND return_address = ? AND latest_claim = ? AND ${nowMs} - recorded_at <= ?
+						AND NOT EXISTS (
+							SELECT 1 FROM ${leases} presence
+							WHERE presence.kind = 'presence' AND substr(presence.key, 1, length(?)) = ? AND presence.holder_id IS NOT NULL
+								AND presence.holder_id <> ? AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?
+						)`,
+					request.intercomSessionId,
+					request.returnAddress,
+					request.claim,
+					request.retentionMs,
+					// The database measures the prefix itself, in its own characters.
+					identities,
+					identities,
+					request.brokerId,
+					request.presenceStaleAfterMs,
+				);
+				if (changes === 1) return { status: "kept" } as const;
+				// A fresh id, made at random for this registration, has no binding or record yet: one write binds it, and only an
+				// id already there, bound or recorded, takes `bind`'s whole way.
+				const inserted = await tx.run(
+					`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at)
+					 SELECT ?, ?, ${nowMs}
+					 WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE intercom_session_id = ? AND ${age} <= ?)
+					 ON CONFLICT(intercom_session_id) DO NOTHING`,
+					request.freshId,
+					request.returnAddress,
+					request.freshId,
+					request.retentionMs,
+				);
+				const binding =
+					inserted.changes === 1
+						? ({ status: "bound" } as const)
+						: await bindIn(tx, request.freshId, request.returnAddress, request.retentionMs, undefined);
+				return { status: "fresh", binding } as const;
+			},
+			{ concurrency: { kind: "serial", domain: bindings } },
+		);
+	};
+
 	return {
+		...(claims ? { reclaim } : {}),
 		async record(session): Promise<KnownSessionRecordResult> {
 			if (session.targetIdentity.length === 0) return { status: "invalid", reason: "empty-target-identity" };
 			if (session.intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
@@ -142,41 +256,11 @@ export async function openSqlKnownSessionStore({
 			);
 			return { status: "found", sessions: rows.map(stateFromRow) };
 		},
-		async bind(intercomSessionId, returnAddress, retentionMs): Promise<KnownSessionBindResult> {
+		async bind(intercomSessionId, returnAddress, retentionMs, claim): Promise<KnownSessionBindResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
-			const bound = await database.transaction(
-				async (tx) => {
-					await tx.run(
-						`DELETE FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at > ?`,
-						intercomSessionId,
-						retentionMs,
-					);
-					// A known-session record kept from before bindings existed holds the id for its return address.
-					await tx.run(
-						`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at)
-						 SELECT intercom_session_id, COALESCE(atomic_session_id, ''), ${nowMs} FROM ${table}
-						 WHERE intercom_session_id = ? AND ${age} <= ?
-						 ORDER BY record_order LIMIT 1
-						 ON CONFLICT(intercom_session_id) DO NOTHING`,
-						intercomSessionId,
-						retentionMs,
-					);
-					await tx.run(
-						`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at) VALUES (?, ?, ${nowMs})
-						 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at
-						 WHERE ${bindings}.return_address = excluded.return_address`,
-						intercomSessionId,
-						returnAddress,
-					);
-					return tx.get<BindingRow>(
-						`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ?`,
-						intercomSessionId,
-					);
-				},
-				{ concurrency: { kind: "serial", domain: bindings } },
-			);
-			if (bound === undefined || bound.return_address === returnAddress) return { status: "bound" };
-			return { status: "refused", returnAddress: bound.return_address };
+			return database.transaction((tx) => bindIn(tx, intercomSessionId, returnAddress, retentionMs, claim), {
+				concurrency: { kind: "serial", domain: bindings },
+			});
 		},
 		async binding(intercomSessionId, retentionMs): Promise<KnownSessionBindingResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };

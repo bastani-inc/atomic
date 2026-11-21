@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
+import { type RecordedProcess, recordProcess, stillRuns } from "../helpers/recorded-process.js";
 import {
 	bunExecutable,
 	decodeStream,
@@ -26,12 +27,14 @@ const INHERITED_REPORT_TIMEOUT_MS = 30_000;
  * notices (~50 ms poll). Targeting the negative pid reaps the whole group at
  * once so nothing outlives the test to keep writing into the temporary home.
  */
-function killEngineProcessGroup(pid: number): void {
+async function killEngineProcessGroup(engine: RecordedProcess): Promise<void> {
+	// #6125: only while its pid still names the engine the host reported.
+	if (!(await stillRuns(engine))) return;
 	try {
-		process.kill(-pid, "SIGKILL");
+		process.kill(-engine.pid, "SIGKILL");
 	} catch {
 		try {
-			process.kill(pid, "SIGKILL");
+			process.kill(engine.pid, "SIGKILL");
 		} catch {}
 	}
 }
@@ -72,7 +75,8 @@ class InteractiveDriver {
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
-	private readonly enginePids = new Set<number>();
+	/** #6125: each engine the host reported, recorded as it was reported, while it ran. */
+	private readonly engines = new Map<number, Promise<RecordedProcess>>();
 
 	constructor(args: string[], overrides: Record<string, string | undefined>) {
 		const inherited: Record<string, string | undefined> = { ...process.env };
@@ -145,7 +149,7 @@ class InteractiveDriver {
 		await this.process.exited;
 		// Killing the host skips the teardown that reaps the detached engine
 		// child, so reap every engine group this session reported directly.
-		for (const pid of this.enginePids) killEngineProcessGroup(pid);
+		for (const engine of this.engines.values()) await killEngineProcessGroup(await engine);
 	}
 
 	private async readReports(): Promise<void> {
@@ -166,7 +170,10 @@ class InteractiveDriver {
 				if (marker === -1) continue;
 				try {
 					const report = JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport;
-					if (typeof report.enginePid === "number") this.enginePids.add(report.enginePid);
+					const enginePid = report.enginePid;
+					if (typeof enginePid === "number" && !this.engines.has(enginePid)) {
+						this.engines.set(enginePid, recordProcess(enginePid));
+					}
 					this.reports.push(report);
 					for (const waiter of this.waiters) waiter();
 				} catch {}

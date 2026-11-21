@@ -14,15 +14,16 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { bunExecutable, moduleDir, readStreamText, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const HOST_DEATH_PROCESS_TIMEOUT_MS = 120_000;
 const ORPHAN_EXIT_WAIT_MS = 8_000;
 const HELPER_HOLD_MS = 20_000;
 
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+const cleanups: Array<() => unknown> = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 function posixPath(value: string): string {
@@ -64,11 +65,9 @@ async function waitForPidFile(pidFile: string, timeoutMs = 15_000): Promise<numb
 			const raw = readFileSync(pidFile, "utf8").trim();
 			const pid = Number(raw);
 			if (Number.isInteger(pid) && pid > 0) {
-				cleanups.push(() => {
-					try {
-						process.kill(pid, "SIGKILL");
-					} catch {}
-				});
+				// #6125: recorded as soon as it records its pid, so the cleanup never signals a later process given it.
+				const recorded = await recordProcess(pid);
+				cleanups.push(() => signalRecordedProcess(recorded));
 				return pid;
 			}
 		}
