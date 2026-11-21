@@ -1116,10 +1116,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const unrecordedQuit = !options?.fromSignal && (await this.client.announceExplicitQuit?.()) === false;
 			// A quit lets the engine run its extensions' shutdown on every platform. After a
 			// signal, Windows still ends the engine at once. A disposal after a failed start is not one for a signal.
-			const stop = {
-				graceful: !options?.fromSignal,
-				hostSignaled: options?.fromSignal === true && !this.startupFailure,
-			};
+			const stop =
+				options?.fromSignal && !this.startupFailure
+					? { graceful: false, hostSignaled: true }
+					: { graceful: !options?.fromSignal };
 			// EngineHealthController owns the first client stop and joins recovery.
 			await this.health.shutdown(stop);
 			// A replacement may have spawned while shutdown joined recovery; the
