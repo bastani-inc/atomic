@@ -107,6 +107,8 @@ class StartupShell {
 	 */
 	private armedCtrlC = 0;
 	private readonly restoreOutput: () => void;
+	/** Stops taking SIGINT, SIGTERM and SIGHUP, once the session's interface has its own handlers. */
+	releaseSignals: () => void = () => {};
 
 	constructor(plan: StartupShellPlan) {
 		// The session's interface starts the theme file watcher; the early editor draws only Atomic's own themes.
@@ -155,6 +157,9 @@ class StartupShell {
 	/** Decides, for each key, whether the prompt takes it now, it waits for the session, or it is Ctrl+C/Ctrl+D. */
 	private route(data: string): { consume: true } | undefined {
 		if (this.state !== "painting" && this.state !== "holding") return { consume: true };
+		// Enter typed before the terminal was set up arrives as a line feed, which the terminal's line discipline made
+		// of it; the startup input capture always read a line feed as Enter, and so does the early editor.
+		if (!data.startsWith("\x1b") && data.includes("\n")) data = data.replaceAll("\n", "\r");
 		if (isPhysicalCtrlC(data)) return this.ctrlC(data);
 		if (this.state === "holding") return this.hold(data);
 		if (isKeyRelease(data)) return undefined;
@@ -170,6 +175,9 @@ class StartupShell {
 				!(EMPTY_PROMPT_ACTIONS.has(id) && !promptEmpty) &&
 				this.keybindings.matches(data, id as never),
 		);
+		// A sequence no key of Atomic's means anything to (some terminals send one as they start) is not kept, as the
+		// startup input capture keeps no sequence; holding it would hold every key after it.
+		if (actions.length === 0 && data.startsWith("\x1b")) return { consume: true };
 		const promptEdit = actions.length === 0 ? isTypedText(data) : actions.every((id) => PROMPT_EDIT_ACTIONS.has(id));
 		if (promptEdit) {
 			this.lastCtrlC = 0;
@@ -258,7 +266,8 @@ class StartupShell {
 
 	/**
 	 * Output written before the session's interface is ready belongs on the screen the user sees: the first console
-	 * message, error or uncaught failure ends the early editor before it is written.
+	 * message, error or uncaught failure ends the early editor before it is written. A signal that ends the process
+	 * (SIGINT, SIGTERM, SIGHUP from outside) also ends it first, so the terminal is given back as it was found.
 	 */
 	private guardOutput(): () => void {
 		// The wrappers outlive the early editor where something wrapped them in turn: once it has ended they only pass
@@ -282,8 +291,24 @@ class StartupShell {
 		}) as typeof process.stderr.write;
 		process.stderr.write = stderrWrapper;
 		process.on("uncaughtExceptionMonitor", abort);
+		const signals: NodeJS.Signals[] =
+			process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
+		// Until the session's own handlers take signals over (`releaseStartupShellSignals`): the terminal is given back,
+		// and the signal is sent again, to what would have handled it without the early editor (the startup input
+		// capture, or the runtime's default, which ends the process).
+		const onSignal = (signal: NodeJS.Signals) => {
+			abort();
+			releaseSignals();
+			process.kill(process.pid, signal);
+		};
+		const releaseSignals = () => {
+			for (const signal of signals) process.off(signal, onSignal);
+		};
+		for (const signal of signals) process.on(signal, onSignal);
+		this.releaseSignals = releaseSignals;
 		return () => {
 			guarded = undefined;
+			releaseSignals();
 			// What replaced a wrapper since stays: it is someone else's now.
 			for (const [index, name] of consoleMethods.entries())
 				if (console[name] === wrappers[index]) console[name] = originals[index]!;
@@ -340,6 +365,11 @@ export async function whenStartupShellCanHandOver(): Promise<void> {
 		}),
 	]);
 	clearTimeout(timer);
+}
+
+/** The session's interface handles signals from here on, while the early editor may still draw. */
+export function releaseStartupShellSignals(): void {
+	shell?.releaseSignals();
 }
 
 /** Ends the early editor for the session's interface, which takes the terminal and the prompt (see `handOver`). */
