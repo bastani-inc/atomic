@@ -227,6 +227,45 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    */
   let connectAbort = new AbortController();
   let stopBrokerStartsOnSessionEnd: (() => void) | undefined;
+  /** The controller the session's ended lifetime aborted (as a quit or reload began), not this runtime's cleanup. */
+  let endedWithSessionLifetime: AbortController | undefined;
+  /**
+   * A session that starts to quit or reload stops the broker starts it waits for at once, before its shutdown handlers
+   * run: a quit cut short at its shutdown bound must not leave a broker that never listens running. A context a host
+   * built without the session's lifetime leaves this to the shutdown handler, as before.
+   */
+  function stopBrokerStartsWhenSessionEnds(ctx: ExtensionContext): void {
+    stopBrokerStartsOnSessionEnd?.();
+    stopBrokerStartsOnSessionEnd = undefined;
+    const sessionEnds: AbortSignal | undefined = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+    const starts = connectAbort;
+    const stop = () => {
+      endedWithSessionLifetime = starts;
+      starts.abort(new IntercomRuntimeInactiveError());
+    };
+    if (sessionEnds?.aborted) stop();
+    else if (sessionEnds !== undefined) {
+      sessionEnds.addEventListener("abort", stop, { once: true });
+      stopBrokerStartsOnSessionEnd = () => sessionEnds.removeEventListener("abort", stop);
+    }
+  }
+  /**
+   * The controller a connect uses. One the session's lifetime ended is renewed once that session lives on, as after a
+   * reload its host rejected (the session keeps its runtime and gets a new lifetime, with no new session_start), while
+   * this runtime still runs; a quit's ended lifetime is never renewed, so its broker starts stay stopped.
+   */
+  function liveConnectAbort(): AbortController {
+    if (connectAbort.signal.aborted && endedWithSessionLifetime === connectAbort && !disposed && !shuttingDown) {
+      const ctx = runtimeContext;
+      const current = ctx?.getCurrentSessionSignal?.() ?? ctx?.sessionSignal;
+      if (ctx !== null && current !== undefined && !current.aborted) {
+        connectAbort = new AbortController();
+        endedWithSessionLifetime = undefined;
+        stopBrokerStartsWhenSessionEnds(ctx);
+      }
+    }
+    return connectAbort;
+  }
   /** #4727: the broker starts in flight, settled either way; the cleanup waits for them. */
   const brokerStarts = new Set<Promise<void>>();
   function trackBrokerStart<T>(begin: () => Promise<T>): Promise<T> {
@@ -1334,7 +1373,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const sessionIdAtStart = currentSessionId;
     // #3760: a resumed session or restored subagent registers under the Intercom id its peers already know.
     const preferredSessionId = persistedIntercomSessionId(contextAtStart, sessionIdAtStart);
-    const { signal } = connectAbort;
+    const { signal } = liveConnectAbort();
     const nextReconnectPromise = (async () => {
       let connectFailed = false;
       await ownershipRecorded.promise;
@@ -1638,21 +1677,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await Promise.all(brokerStarts);
     },
     setRuntimeContext: async (value) => {
-      if (value !== null && connectAbort.signal.aborted) connectAbort = new AbortController();
-      stopBrokerStartsOnSessionEnd?.();
-      stopBrokerStartsOnSessionEnd = undefined;
-      if (value !== null) {
-        // A session that starts to quit or reload stops the broker starts it waits for at once, before its shutdown
-        // handlers run: a quit cut short at its shutdown bound must not leave a broker that never listens running.
-        // A context a host built without the session's lifetime leaves this to the shutdown handler, as before.
-        const sessionEnds: AbortSignal | undefined = value.getCurrentSessionSignal?.() ?? value.sessionSignal;
-        const starts = connectAbort;
-        const stop = () => starts.abort(new IntercomRuntimeInactiveError());
-        if (sessionEnds?.aborted) stop();
-        else if (sessionEnds !== undefined) {
-          sessionEnds.addEventListener("abort", stop, { once: true });
-          stopBrokerStartsOnSessionEnd = () => sessionEnds.removeEventListener("abort", stop);
-        }
+      if (value !== null && connectAbort.signal.aborted) {
+        connectAbort = new AbortController();
+        endedWithSessionLifetime = undefined;
+      }
+      if (value !== null) stopBrokerStartsWhenSessionEnds(value);
+      else {
+        stopBrokerStartsOnSessionEnd?.();
+        stopBrokerStartsOnSessionEnd = undefined;
       }
       stopApplyingReach?.();
       stopApplyingReach = undefined;
