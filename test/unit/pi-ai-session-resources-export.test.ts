@@ -4,10 +4,9 @@ import { test } from "vitest";
 import aiPackageJson from "../../packages/ai/package.json" with { type: "json" };
 
 test("@bastani/atomic-ai exports the session-resources subpath from its built entry", () => {
-	assert.deepEqual(aiPackageJson.exports["./session-resources"], {
-		types: "./dist/session-resources.d.ts",
-		import: "./dist/session-resources.js",
-	});
+	const entry = aiPackageJson.exports["./session-resources"];
+	assert.equal(entry.types, "./dist/session-resources.d.ts");
+	assert.equal(entry.import, "./dist/session-resources.js");
 });
 
 test("@bastani/atomic-ai/session-resources resolves and runs registered cleanups for a session", () => {

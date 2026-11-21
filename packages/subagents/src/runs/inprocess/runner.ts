@@ -88,8 +88,13 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import {
+	issuedCallArguments,
+	lateToolResultNotice,
+	lateToolResultNoticeKey,
+} from "../foreground/late-tool-result-notice.js";
 import { releasedChildWaitingCalls } from "../foreground/released-child-replies.js";
-import type { SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
+import type { SubagentChildHeldNotice, SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
 import { readPreviousIntercomId } from "../foreground/subagent-child-session.js";
 import {
 	lastNonEmptyAssistantText,
@@ -255,6 +260,17 @@ export interface ChildSpec {
 	 * follow-up or prompt; the turn that issued them continues.
 	 */
 	readonly resumeToolResults?: readonly DetachedToolResult[];
+	/**
+	 * Results of calls the child was already told are still running, in arrival order. It reads them in one notice
+	 * delivered with its next turn (the continued turn, its task's, or, when nothing else starts one, the notice's own),
+	 * never as a message from the user.
+	 */
+	readonly resumeLateToolResults?: readonly DetachedToolResult[];
+	/**
+	 * Notices of finished background tasks the child launched, held for it while it could not take them: each is
+	 * delivered with its next turn as the notice a running child gets, never as a message from the user.
+	 */
+	readonly resumeNotices?: readonly SubagentChildHeldNotice[];
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
 	/**
@@ -415,6 +431,60 @@ function modelIdForSession(session: AgentSession | undefined): string | undefine
 function thinkingLevelForSession(session: AgentSession | undefined): string | undefined {
 	const thinking = session?.thinkingLevel;
 	return typeof thinking === "string" ? thinking : undefined;
+}
+
+/**
+ * Settles once the attempt is aborted or interrupted, until `dispose` removes what listens for that: call it once the
+ * wait it races is over, so a signal that outlives the attempt keeps nothing of it.
+ */
+function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<void>; dispose(): void } {
+	let dispose = (): void => {};
+	const stopped = new Promise<void>((resolve) => {
+		if (signals.abort.aborted || signals.interrupt.aborted) return resolve();
+		const stop = () => resolve();
+		signals.abort.addEventListener("abort", stop, { once: true });
+		signals.interrupt.addEventListener("abort", stop, { once: true });
+		dispose = () => {
+			signals.abort.removeEventListener("abort", stop);
+			signals.interrupt.removeEventListener("abort", stop);
+		};
+	});
+	return { stopped, dispose: () => dispose() };
+}
+
+/** The model and thinking level a child's session records last on its branch. */
+function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
+	if (typeof sessionManager.getLatestBranchSettings === "function") {
+		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
+		return {
+			...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+			...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+		};
+	}
+	const context = sessionManager.buildSessionContext();
+	return {
+		...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}),
+		thinking: context.thinkingLevel,
+	};
+}
+
+/**
+ * What writes the model and thinking level `session` starts on into its own session, as `/model` does, where the
+ * session records others; undefined when there is nothing to write. A new session recorded them as it started, and
+ * one that already runs on them needs nothing.
+ */
+function launchSettingsWrite(sessionManager: SessionManager, session: AgentSession): (() => Promise<void>) | undefined {
+	const model = session.model;
+	const thinking = thinkingLevelForSession(session);
+	if (model === undefined && thinking === undefined) return undefined;
+	const recorded = recordedSettings(sessionManager);
+	const writeModel = model !== undefined && recorded.model !== `${model.provider}/${model.id}`;
+	const writeThinking = thinking !== undefined && recorded.thinking !== thinking;
+	if (!writeModel && !writeThinking) return undefined;
+	return async () => {
+		if (writeModel) await sessionManager.appendModelChange(model.provider, model.id);
+		if (writeThinking) await sessionManager.appendThinkingLevelChange(thinking);
+	};
 }
 
 function initialThinkingForAttempt(
@@ -930,6 +1000,20 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 					});
 				onRecorded?.(results.map((result) => result.toolCallId));
 			});
+		},
+		// As a real session saves a card: the notice is in its transcript, and a turn reads it.
+		sendCustomMessage: async (message: {
+			customType: string;
+			content: string;
+			display: boolean;
+			details?: unknown;
+		}) => {
+			await sessionManager.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+			);
 		},
 		pauseQueuedMessages: () => {
 			queuedMessagesPaused = true;
@@ -2160,6 +2244,7 @@ export class SubagentControlRuntime {
 			| "bindChildSession"
 			| "bindChildLaunch"
 			| "toolResultsSaved"
+			| "noticesSaved"
 			| "reportTurnPaused"
 			| "setExtensionStatus"
 			| "clearExtensionStatuses"
@@ -2196,6 +2281,7 @@ export class SubagentControlRuntime {
 					| "bindChildSession"
 					| "bindChildLaunch"
 					| "toolResultsSaved"
+					| "noticesSaved"
 					| "reportTurnPaused"
 					| "setExtensionStatus"
 					| "clearExtensionStatuses"
@@ -2761,6 +2847,19 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			// A restart restores the child on the model and thinking level its own session records. Those a launch applies
+			// without an entry (a fork's or a relaunch's own model, a resumed session's other effort) are recorded now,
+			// before its first request, so a restart finds them whatever its record in its owner's session says yet.
+			const writeLaunchSettings = launchSettingsWrite(sessionManager, session);
+			if (writeLaunchSettings !== undefined) {
+				// A stop does not wait for that write: the attempt stops before it runs, as below.
+				const stop = attemptStopped(signals);
+				try {
+					await beforeStartDeadline(Promise.race([writeLaunchSettings(), stop.stopped]));
+				} finally {
+					stop.dispose();
+				}
+			}
 			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
@@ -2919,11 +3018,8 @@ export class SubagentControlRuntime {
 				if (termination) break;
 				await session.sendCustomMessage(message);
 			}
-			if (!termination && admitted.spec.resumeSession) {
-				await recoverChildSession(session, admitted.spec);
-				await settleInterruptedTurns();
-			}
-			// The user had paused it: it comes back paused, prompted with nothing, and waits for them to continue it.
+			// The user had paused it: it comes back paused, prompted with nothing, and waits for them to continue it. Paused
+			// before its recovery replays what an earlier process left unread, so nothing replayed runs a turn meanwhile.
 			const resumedPaused = !termination && admitted.spec.resumePaused === true;
 			if (resumedPaused) {
 				taskPending = false;
@@ -2932,7 +3028,34 @@ export class SubagentControlRuntime {
 				reportTurnPaused(true);
 				await endTurn(() => transcriptSession.pauseTurn());
 			}
+			if (!termination && admitted.spec.resumeSession) {
+				await recoverChildSession(session, admitted.spec);
+				// A paused child's turn settles once the user continues it, after its dispatch below.
+				if (!resumedPaused) await settleInterruptedTurns();
+			}
 			restoringPaused = false;
+			const lateResults = admitted.spec.resumeLateToolResults ?? [];
+			if (!termination && !resumedPaused && lateResults.length > 0) {
+				// Saved as one card before its turn reads it, and read once: a restart before that turn replays it.
+				await session.sendCustomMessage(
+					lateToolResultNotice(lateResults, issuedCallArguments(sessionManager.buildSessionProjection().messages)),
+					{
+						triggerTurn: true,
+						persistWhenStreaming: true,
+						stageAdmissionKey: lateToolResultNoticeKey(lateResults),
+					},
+				);
+				// Its card holds them now: the owner lets them go (#5012).
+				taskHooks?.toolResultsSaved?.(lateResults.map((result) => result.toolCallId));
+			}
+			for (const notice of admitted.spec.resumeNotices ?? []) {
+				if (termination || resumedPaused) break;
+				await session.sendCustomMessage(
+					{ ...notice, display: true },
+					{ triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: notice.details.completionId },
+				);
+				taskHooks?.noticesSaved?.([notice.details.completionId]);
+			}
 			const redispatched =
 				!termination && !resumedPaused && admitted.spec.redispatchDetachedCalls
 					? session.redispatchDetachedToolCalls()

@@ -42,6 +42,10 @@ pub(crate) struct SpawnRequest {
 	cwd: Option<CString>,
 	new_session: bool,
 	signals: SignalDefaults,
+	end_with_parent: bool,
+	/// Makes the child take the parent-death signal as refused, as a sandbox can refuse it.
+	#[cfg(test)]
+	refuse_parent_death: bool,
 }
 
 impl SpawnRequest {
@@ -77,7 +81,24 @@ impl SpawnRequest {
 			cwd: cwd.map(|path| c_string(path.as_os_str().to_os_string())).transpose()?,
 			new_session,
 			signals,
+			end_with_parent: false,
+			#[cfg(test)]
+			refuse_parent_death: false,
 		})
+	}
+
+	/// Ends the child with `SIGKILL` when the thread that starts it ends, as it does when this process ends however it
+	/// ends (`PR_SET_PDEATHSIG`). The processes the child starts are not ended with it. Where the system refuses the
+	/// request, as a sandbox can, the child runs without it.
+	pub(crate) fn ending_with_parent(mut self) -> Self {
+		self.end_with_parent = true;
+		self
+	}
+
+	#[cfg(test)]
+	fn refusing_parent_death(mut self) -> Self {
+		self.refuse_parent_death = true;
+		self
 	}
 }
 
@@ -150,6 +171,10 @@ struct ChildArgs {
 	new_session: bool,
 	cgroup_procs: RawFd,
 	signals: SignalDefaults,
+	/// This process, when the child is to end with it; 0 otherwise.
+	end_with: libc::pid_t,
+	#[cfg(test)]
+	refuse_parent_death: bool,
 	/// The write end of the error pipe, close-on-exec.
 	error: RawFd,
 	empty_mask: libc::sigset_t,
@@ -193,6 +218,19 @@ extern "C" fn child_main(arg: *mut libc::c_void) -> libc::c_int {
 		}
 		if args.new_session && libc::setsid() < 0 {
 			fail(args, errno());
+		}
+		if args.end_with != 0 {
+			#[cfg(test)]
+			let refused = args.refuse_parent_death;
+			#[cfg(not(test))]
+			let refused = false;
+			// A refused request leaves the child running without it, as it ran before.
+			let requested = !refused
+				&& libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0) == 0;
+			// A parent that ended before the request was made sends no signal: end as it would have.
+			if requested && libc::getppid() != args.end_with {
+				fail(args, libc::ESRCH);
+			}
 		}
 		if args.cgroup_procs >= 0 {
 			// A refusal leaves the child where it was, which the caller checks afterwards.
@@ -298,6 +336,9 @@ pub(crate) fn spawn(
 		new_session: request.new_session,
 		cgroup_procs: cgroup_procs.unwrap_or(-1),
 		signals: request.signals,
+		end_with: if request.end_with_parent { unsafe { libc::getpid() } } else { 0 },
+		#[cfg(test)]
+		refuse_parent_death: request.refuse_parent_death,
 		error: error_writer.as_raw_fd(),
 		empty_mask: unsafe { std::mem::zeroed() },
 	};
@@ -454,6 +495,45 @@ mod tests {
 			run(&request("sh", &["-c", "pwd; echo \"$0\""], Some(&directory)).unwrap());
 		assert!(status.success());
 		assert_eq!(output, format!("{}\nsh\n", directory.display()));
+	}
+
+	/// Starts `request` from a thread of its own, which then ends; returns the child's status once it ended.
+	fn status_after_the_starting_thread_ended(request: SpawnRequest) -> ExitStatus {
+		let pid = std::thread::spawn(move || {
+			let pipes = stdio_pipes().unwrap();
+			spawn(
+				&request,
+				[pipes.child[0].as_raw_fd(), pipes.child[1].as_raw_fd(), pipes.child[2].as_raw_fd()],
+				None,
+			)
+			.unwrap()
+		})
+		.join()
+		.unwrap();
+		SpawnedChild::new(pid).wait().unwrap()
+	}
+
+	#[test]
+	fn a_child_started_to_end_with_its_parent_ends_when_the_thread_that_started_it_ends() {
+		let status = status_after_the_starting_thread_ended(
+			request("sleep", &["30"], None).unwrap().ending_with_parent(),
+		);
+		assert_eq!(status.signal(), Some(libc::SIGKILL));
+	}
+
+	#[test]
+	fn a_child_whose_parent_death_signal_is_refused_runs_without_it() {
+		let status = status_after_the_starting_thread_ended(
+			request("sleep", &["0.2"], None).unwrap().ending_with_parent().refusing_parent_death(),
+		);
+		assert_eq!(status.code(), Some(0));
+	}
+
+	#[test]
+	fn a_child_outlives_the_thread_that_started_it_unless_it_was_started_to_end_with_it() {
+		let status =
+			status_after_the_starting_thread_ended(request("sleep", &["0.2"], None).unwrap());
+		assert_eq!(status.code(), Some(0));
 	}
 
 	#[test]

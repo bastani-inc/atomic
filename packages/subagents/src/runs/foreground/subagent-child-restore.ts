@@ -40,6 +40,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../shared/start-progress.js";
+import { savedNoticeIds, withoutLegacyLateMessages } from "./late-tool-result-notice.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import {
@@ -61,6 +62,7 @@ import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHol
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import { type ChildOwnerAPI, subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
+	clearSubagentChildHeldNotices,
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
@@ -260,6 +262,28 @@ function hasPartialHistory(sessionManager: SessionManager): boolean {
 	return false;
 }
 
+/** The position of the child's launch leaf in its session, for a session that knows its entries' positions. */
+async function launchSeqOf(sessionManager: SessionManager, record: SubagentChildRecord): Promise<number | undefined> {
+	return (
+		record.launchLeafSeq ??
+		(record.launchLeafId === null
+			? 0
+			: typeof record.launchLeafId === "string"
+				? typeof sessionManager.findEntrySeq === "function"
+					? await sessionManager.findEntrySeq(record.launchLeafId)
+					: sessionManager.getEntrySeq(record.launchLeafId)
+				: undefined)
+	);
+}
+
+/** Where on `branch` the entries after the launch leaf begin; past its end when the branch does not hold that leaf. */
+function launchIndexOf(branch: ReturnType<SessionManager["getBranch"]>, record: SubagentChildRecord): number {
+	if (record.launchLeafId === undefined) return branch.length;
+	if (record.launchLeafId === null) return 0;
+	const index = branch.findIndex((entry) => entry.id === record.launchLeafId);
+	return index === -1 ? branch.length : index + 1;
+}
+
 async function entriesAfterLaunch(
 	sessionManager: SessionManager,
 	branch: ReturnType<SessionManager["getBranch"]>,
@@ -267,24 +291,9 @@ async function entriesAfterLaunch(
 ): Promise<ReturnType<SessionManager["getBranch"]>> {
 	const branchLaunchIndex =
 		typeof record.launchLeafId === "string" ? branch.findIndex((entry) => entry.id === record.launchLeafId) : -1;
-	const launchIndex =
-		record.launchLeafId === undefined
-			? branch.length
-			: record.launchLeafId === null
-				? 0
-				: branchLaunchIndex === -1
-					? branch.length
-					: branchLaunchIndex + 1;
+	const launchIndex = launchIndexOf(branch, record);
 	if (typeof sessionManager.getEntrySeq === "function") {
-		const launchSeq =
-			record.launchLeafSeq ??
-			(record.launchLeafId === null
-				? 0
-				: typeof record.launchLeafId === "string"
-					? typeof sessionManager.findEntrySeq === "function"
-						? await sessionManager.findEntrySeq(record.launchLeafId)
-						: sessionManager.getEntrySeq(record.launchLeafId)
-					: undefined);
+		const launchSeq = await launchSeqOf(sessionManager, record);
 		return launchSeq === undefined
 			? branch.slice(launchIndex)
 			: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq);
@@ -392,18 +401,47 @@ function recordTime(entry: { readonly timestamp: string }): number | undefined {
 	return Number.isNaN(at) ? undefined : at;
 }
 
+/**
+ * The latest model and thinking level the child's own session changed to after its launch, each on its own. They are
+ * read from memory, never from the session's saved history: a session that holds only part of its history still holds
+ * the latest change of each on its branch, which is what `getLatestBranchSettings` answers. A session without it
+ * (an SDK caller's) is searched from its launch on, as it holds it.
+ */
+async function settingsChangedSinceLaunch(
+	sessionManager: SessionManager,
+	record: SubagentChildRecord,
+): Promise<{ readonly model?: string; readonly thinking?: string }> {
+	let afterLaunch: ReturnType<SessionManager["getBranch"]>;
+	if (
+		typeof sessionManager.getLatestBranchSettings === "function" &&
+		typeof sessionManager.getEntrySeq === "function"
+	) {
+		const launchSeq = await launchSeqOf(sessionManager, record);
+		if (launchSeq !== undefined) {
+			const { model, thinkingLevel } = sessionManager.getLatestBranchSettings(launchSeq);
+			return {
+				...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+				...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+			};
+		}
+		const branch = sessionManager.getBranch();
+		afterLaunch = branch.slice(launchIndexOf(branch, record));
+	} else afterLaunch = await entriesAfterLaunch(sessionManager, sessionManager.getBranch(), record);
+	let model: string | undefined;
+	let thinking: string | undefined;
+	for (const entry of afterLaunch) {
+		if (entry.type === "model_change") model = `${entry.provider}/${entry.modelId}`;
+		else if (entry.type === "thinking_level_change") thinking = entry.thinkingLevel;
+	}
+	return { ...(model ? { model } : {}), ...(thinking ? { thinking } : {}) };
+}
+
 async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
 ): Promise<string | undefined> {
-	const branch = sessionManager.getBranch();
-	let changedModel: string | undefined;
-	let changedThinking: string | undefined;
-	for (const entry of await entriesAfterLaunch(sessionManager, branch, record)) {
-		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
-		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
-	}
+	const { model: changedModel, thinking: changedThinking } = await settingsChangedSinceLaunch(sessionManager, record);
 	const context = sessionManager.buildSessionContext();
 	const model =
 		changedModel ??
@@ -412,6 +450,27 @@ async function ownSessionModelCandidate(
 	if (!model) return undefined;
 	const candidate = `${model}:${changedThinking ?? record.launchThinkingLevel ?? context.thinkingLevel}`;
 	return resolveCandidateModel(candidate)?.model ? candidate : undefined;
+}
+
+/** The entry a session saves once a turn read a notice saved before it (see `holdsUnreadNotice`). */
+const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
+
+/**
+ * Whether the child's session holds a notice saved for a turn that never read it, as when its process stopped between
+ * saving the notice and the turn that reads it: the reopened session reads it, so the child has to run.
+ */
+function holdsUnreadNotice(sessionManager: SessionManager): boolean {
+	const branch = sessionManager.getBranch();
+	const read = new Set(sessionManager.getSessionRecoveryState?.().reconciledCardIds ?? []);
+	for (const entry of branch) {
+		if (entry.type !== "custom_message" || entry.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) continue;
+		const card = (entry.details as { readonly protectedReconciliationOf?: unknown } | undefined)
+			?.protectedReconciliationOf;
+		if (typeof card === "string") read.add(card);
+	}
+	return branch.some(
+		(entry) => entry.type === "custom_message" && entry.protectedReconciliation !== undefined && !read.has(entry.id),
+	);
 }
 
 /** What a restored child is prompted with: its task, then follow-ups delivered as written. */
@@ -758,6 +817,11 @@ async function relaunchChild(
 	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>
 		results.filter((result) => !saved.includes(result.toolCallId));
+	// So were the notices of finished background tasks held for it that its transcript already holds.
+	const heldNotices = latest.heldNotices ?? [];
+	const savedNotices = sessionManager && !fresh ? savedNoticeIds(sessionManager, heldNotices) : [];
+	if (savedNotices.length > 0)
+		await clearSubagentChildHeldNotices(deps.pi, record.owner.sessionId, record.childId, savedNotices);
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
 	const redispatch = resume?.redispatch === true && !fresh && sessionManager !== undefined;
 	const supervisorAuthorization =
@@ -783,8 +847,6 @@ async function relaunchChild(
 	const toolResults = sessionManager
 		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
 		: heldResults;
-	const heldMessages =
-		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
 	// Session recovery of a child the user had paused: it comes back paused, prompted with nothing, as it was.
 	const restoredPaused =
 		resume === undefined &&
@@ -796,13 +858,8 @@ async function relaunchChild(
 			latest.pausedAtLeafId,
 			latest.pausedAtLeafId === undefined ? pauseRecordedAt(ctx, record.childId) : undefined,
 		);
-	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
-	// A wake's fallback prompt is not input of its own: such a wake is promptless unless it brings messages to read.
-	const wakeFallback = resume?.wakeFallback === true && !fresh;
-	const promptless = wakeFallback
-		? !promptsAnything(basePrompts)
-		: resume?.promptless === true && heldMessages.length === 0;
-	const wakePlan =
+	// The calls a woken child's transcript waits on: a released child, one waiting on a call, or one results are held for.
+	const pending =
 		!redispatch &&
 		!restoredPaused &&
 		!fresh &&
@@ -810,28 +867,70 @@ async function relaunchChild(
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? planReleasedChildWake(
-					pendingToolCalls(sessionManager),
-					toolResults,
-					!promptless,
-					interruptedByRestart(record),
-				)
+			? pendingToolCalls(sessionManager)
 			: undefined;
+	// A late result an earlier build held for the child as a message is read in its notice now, so that copy is not.
+	const heldRecord =
+		pending === undefined
+			? record
+			: withoutLegacyLateMessages(
+					record,
+					toolResults.filter((result) => !pending.has(result.toolCallId)),
+				);
+	const heldMessages =
+		heldRecord.heldMessages && heldRecord.heldMessages.taskId === heldRecord.taskId
+			? heldRecord.heldMessages.messages
+			: [];
+	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(heldRecord, resume);
+	// A wake's fallback prompt is not input of its own: such a wake is promptless unless it brings messages to read.
+	const wakeFallback = resume?.wakeFallback === true && !fresh;
+	const promptless = wakeFallback
+		? !promptsAnything(basePrompts)
+		: resume?.promptless === true && heldMessages.length === 0;
+	const wakePlan =
+		pending === undefined
+			? undefined
+			: planReleasedChildWake(pending, toolResults, !promptless, interruptedByRestart(record));
+	// Each reaches it as the notice a running child gets, with its next turn, once. A paused child keeps them held.
+	const notices =
+		!redispatch && !restoredPaused && !fresh && sessionManager
+			? heldNotices.filter((notice) => !savedNotices.includes(notice.details.completionId))
+			: [];
 	const wokenPrompts = redispatch
 		? { task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT, followUps: heldMessages, taskLiteral: true }
-		: wakePlan
-			? wakePrompts(basePrompts, wakePlan.lateMessages, promptless)
-			: basePrompts;
-	// The wake's own prompt starts the child only when nothing else does: no turn continues and nothing is to be read.
-	// It is never queued behind the continued turn as a follow-up the child would take a turn for (an extra request).
+		: basePrompts;
+	// The wake's own prompt starts the child only when nothing else does: no turn continues, no late result starts one
+	// and nothing is to be read. It is never queued behind the continued turn as a follow-up the child would take a turn
+	// for (an extra request).
 	const fallback =
 		wakeFallback &&
 		resume?.promptless !== true &&
 		!redispatch &&
 		(wakePlan?.resumeToolResults.length ?? 0) === 0 &&
+		(wakePlan?.lateResults.length ?? 0) === 0 &&
+		notices.length === 0 &&
 		!promptsAnything(wokenPrompts) &&
 		resume !== undefined;
 	const prompts: ResumePrompts = fallback ? { task: resume.prompt, followUps: [], taskLiteral: true } : wokenPrompts;
+	// A wake by results alone of a child that finished on its own, all of them already in its transcript, leaves it
+	// nothing to continue, read or answer: it is not run again. One with a notice it has not read yet is, to read it.
+	if (
+		resume?.wakeFallback === true &&
+		resume.promptless === true &&
+		latest.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS &&
+		!redispatch &&
+		!fresh &&
+		sessionManager !== undefined &&
+		(wakePlan?.resumeToolResults.length ?? 0) === 0 &&
+		(wakePlan?.lateResults.length ?? 0) === 0 &&
+		notices.length === 0 &&
+		!fallback &&
+		!promptsAnything(prompts) &&
+		!holdsUnreadNotice(sessionManager)
+	) {
+		await hold?.release();
+		return { kind: "terminal", record: latest };
+	}
 	// Redispatched calls start the child; their task is never prompted, so it is only a fallback too.
 	const taskFallback = fallback || (redispatch && wakeFallback);
 	const options: RunSyncOptions = {
@@ -862,11 +961,14 @@ async function relaunchChild(
 		...(wakePlan
 			? {
 					resumeToolResults: wakePlan.resumeToolResults,
+					...(wakePlan.lateResults.length > 0 ? { resumeLateToolResults: wakePlan.lateResults } : {}),
 					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
 					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
 				}
 			: {}),
-		...(wakePlan?.skipPrompt && !fallback ? { skipTaskPrompt: true } : {}),
+		...(notices.length > 0 ? { resumeNotices: notices } : {}),
+		// An empty prompt is never sent: what it has to read, a notice its reopened session replays included, starts its turn.
+		...((wakePlan?.skipPrompt || !promptsAnything(prompts)) && !fallback ? { skipTaskPrompt: true } : {}),
 		...(taskFallback ? { resumeTaskFallback: true } : {}),
 		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
@@ -969,16 +1071,6 @@ async function relaunchChild(
 		intercomGroup,
 	);
 	return fresh ? startedFresh(outcome) : outcome;
-}
-
-/**
- * What a woken child is prompted with: results that came too late for their calls first, as messages, then what the
- * resume or wake brought. A wake by tool results alone prompts only the late results.
- */
-function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promptless: boolean): ResumePrompts {
-	if (lateMessages.length === 0) return base;
-	const [task = "", ...followUps] = promptless ? lateMessages : [...lateMessages, base.task, ...base.followUps];
-	return { task, followUps, taskLiteral: true };
 }
 
 /**
