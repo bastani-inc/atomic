@@ -53,6 +53,7 @@ import { intercomScriptAccess } from "./codemode-access.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
 import { RETURN_PATH_TOOL_NOTE } from "./group.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
+import { closeFinishedChildAsks } from "./finished-asks.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -901,10 +902,14 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		}
 	}
 	pi.on("session_recovery_restore", async (_event, ctx) => {
+		const closed = await closeFinishedChildAsks(pi, ctx);
 		const peers = hasIntercomHistory(ctx.sessionManager.getEntries()) ? await recoveryPeers(ctx) : undefined;
-		if (unconsumedIntercomInbox(ctx.sessionManager.getBranch()).length === 0) return undefined;
-		const notices = await replayIntercomInbox(ctx, peers);
-		return notices.length > 0 ? { notices: [...notices] } : undefined;
+		const taken = ctx.sessionManager.getSessionRecoveryState?.().intercomTakenIds;
+		const notices =
+			unconsumedIntercomInbox(ctx.sessionManager.getBranch(), taken).length === 0
+				? []
+				: await replayIntercomInbox(ctx, peers);
+		return closed.length + notices.length > 0 ? { notices: [...closed, ...notices] } : undefined;
 	});
 	pi.on("session_recovery_replay", async (event, ctx) => {
 		if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;
@@ -976,7 +981,7 @@ ${ASK_USAGE}
 			}))),
 			wait: Type.Optional(askWaitSchema),
 			askId: Type.Optional(askIdSchema),
-			replyTo: Type.Optional(Type.String({ description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender" })),
+			replyTo: Type.Optional(Type.String({ description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender. With 'cancel', closes that ask sent to you without replying" })),
 			group: Type.Optional(Type.String({ description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group." })),
 		}),
 		execute: (...args) => {

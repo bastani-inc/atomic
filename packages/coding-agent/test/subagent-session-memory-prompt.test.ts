@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
+import { getAgentDir } from "../src/config.js";
 import type { SubagentChildPolicy, ToolDefinition } from "../src/core/extensions/index.js";
+import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
 import { createHarness, type Harness, type HarnessOptions } from "./suite/harness.js";
 import { createTestResourceLoader } from "./utilities.js";
 
@@ -15,8 +20,10 @@ const SUBAGENT: SubagentChildPolicy = {
 };
 
 const harnesses: Harness[] = [];
+const projects: string[] = [];
 afterEach(async () => {
 	while (harnesses.length > 0) await harnesses.pop()?.cleanup();
+	for (const project of projects.splice(0)) rmSync(project, { recursive: true, force: true });
 });
 
 async function systemPrompt(options: HarnessOptions): Promise<string> {
@@ -96,4 +103,41 @@ describe("Session memory in a subagent's own prompt (#4648)", () => {
 		assert.ok(prompt.startsWith(AGENT_PROMPT), prompt);
 		assert.ok(!prompt.includes("**Session memory**"), prompt);
 	});
+
+	test("a subagent's own prompt names its session folder in a section at the end, not in Session memory", async () => {
+		const project = (name: string) => {
+			const cwd = mkdtempSync(join(tmpdir(), `subagent-${name}-`));
+			projects.push(cwd);
+			return cwd;
+		};
+		const alpha = project("alpha");
+		const beta = project("beta");
+		const prompts = await Promise.all(
+			[alpha, beta].map((cwd) =>
+				systemPrompt({
+					cwd,
+					subagentPolicy: SUBAGENT,
+					resourceLoader: createTestResourceLoader({ systemPrompt: AGENT_PROMPT }),
+				}),
+			),
+		);
+		const [inAlpha, inBeta] = prompts.map((prompt) => sectionsOf(prompt));
+		// Session memory reads the same in every project, and refers to the section that names the folder.
+		assert.equal(inAlpha!.session_memory, inBeta!.session_memory);
+		assert.ok(inAlpha!.session_memory!.includes("named under `<session_folder>` at the end of this prompt"));
+		assert.ok(!inAlpha!.session_memory!.includes(getDefaultSessionDirPath(alpha, getAgentDir())));
+		assert.equal(
+			inAlpha!.session_folder,
+			`Session folder of this project: ${getDefaultSessionDirPath(alpha, getAgentDir())}`,
+		);
+		const names = Object.keys(inAlpha!);
+		assert.deepEqual(names.slice(-4), ["model", "cwd", "session_folder", "date"]);
+	});
 });
+
+/** The tagged sections of a prompt, by name, without their tags. */
+function sectionsOf(prompt: string): Record<string, string> {
+	const sections: Record<string, string> = {};
+	for (const match of prompt.matchAll(/<([a-z][a-z0-9_-]*)>\n([\s\S]*?)\n<\/\1>/g)) sections[match[1]!] = match[2]!;
+	return sections;
+}

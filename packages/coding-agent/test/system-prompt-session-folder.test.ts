@@ -15,6 +15,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { getAgentDir } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { SubagentChildPolicy } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -83,8 +84,23 @@ async function createRuntime(prompts: string[]) {
 	return { runtime, model };
 }
 
-/** Runs one turn of a session on `sessionManager`; returns the system prompt text of each request and its messages. */
-async function turn(sessionManager: SessionManager, text: string, addendum?: string, tools = ["read"]) {
+/** A subagent whose own prompt replaces the default. */
+const CHILD = {
+	prompt: "You are the recall agent. Report what the project did before.",
+	policy: {
+		managementActions: "restricted",
+		fanoutAuthorized: false,
+		inheritProjectContext: false,
+		inheritSkills: false,
+		depth: 1,
+	} satisfies SubagentChildPolicy,
+};
+
+/**
+ * Runs one turn of a session on `sessionManager`, or with `child` of a subagent whose own prompt replaces the default;
+ * returns the system prompt text of each request and its messages.
+ */
+async function turn(sessionManager: SessionManager, text: string, addendum?: string, tools = ["read"], child = false) {
 	const prompts: string[] = [];
 	const { runtime, model } = await createRuntime(prompts);
 	const extensionsResult = addendum
@@ -102,9 +118,13 @@ async function turn(sessionManager: SessionManager, text: string, addendum?: str
 		model,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager,
-		resourceLoader: createTestResourceLoader(extensionsResult ? { extensionsResult } : undefined),
+		resourceLoader: createTestResourceLoader({
+			...(extensionsResult ? { extensionsResult } : {}),
+			...(child ? { systemPrompt: CHILD.prompt } : {}),
+		}),
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools,
+		...(child ? { subagentPolicy: CHILD.policy } : {}),
 	});
 	cleanups.push(() => session.dispose());
 	const before = session.messages.length;
@@ -200,5 +220,74 @@ describe("the session folder in the system prompt (#6121)", () => {
 		const updates = sectionUpdates(resumed.added);
 		expect(updates.map((update) => Object.keys(update))).toEqual([["rules"]]);
 		expect(updates[0]?.rules).toContain(inGuidelines(getDefaultSessionDirPath(process.cwd(), getAgentDir())));
+	});
+
+	it("a subagent with its own prompt names it in a section of its own and keeps that prompt when it resumes", async () => {
+		const sessionManager = SessionManager.inMemory(process.cwd());
+		const first = await turn(sessionManager, "first", undefined, ["read"], true);
+		const [recorded] = sectionUpdates(first.added);
+		expect(recorded?.preamble).toBe(CHILD.prompt);
+		expect(recorded?.session_memory).toContain(IN_SECTION);
+		expect(recorded?.session_folder).toMatch(/^<session_folder>\nSession folder of this project: /);
+
+		const resumed = await turn(sessionManager, "after the resume", undefined, ["read"], true);
+		expect(sectionUpdates(resumed.added)).toEqual([]);
+		expect(resumed.prompts[0]).toBe(first.prompts[0]);
+	});
+
+	it("a subagent session recorded with the folder in its Session memory keeps it there when it resumes", async () => {
+		const recorder = SessionManager.inMemory(process.cwd());
+		await turn(recorder, "first", undefined, ["read"], true);
+		const folder = getDefaultSessionDirPath(process.cwd(), getAgentDir());
+		// The session as an earlier version recorded it: the folder in Session memory, and no section for it.
+		const legacy = SessionManager.inMemory(process.cwd());
+		for (const entry of recorder.getBranch()) {
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "system" && message.sections?.session_folder) {
+				const { session_folder: _folder, ...sections } = message.sections;
+				await legacy.appendMessage({
+					...message,
+					sections: {
+						...sections,
+						session_memory: sections.session_memory!.replace(IN_SECTION, inGuidelines(folder)),
+					},
+				});
+			} else await legacy.appendMessage(message);
+		}
+		expect(recordedPrompt(legacy)).toContain(inGuidelines(folder));
+		expect(recordedPrompt(legacy)).not.toContain("<session_folder>");
+
+		const resumed = await turn(legacy, "after the upgrade", undefined, ["read"], true);
+		expect(sectionUpdates(resumed.added)).toEqual([]);
+		expect(resumed.prompts[0]).toBe(recordedPrompt(legacy));
+	});
+
+	it("a session whose own prompt has a Session memory section of its own gets no section for the folder", async () => {
+		const sessionManager = SessionManager.inMemory(process.cwd());
+		const quoting = `Guide example: ${IN_SECTION}`;
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("before_agent_start", (event) => {
+					event.systemPromptOptions.sections.session_memory = quoting;
+				});
+			},
+		]);
+		const prompts: string[] = [];
+		const { runtime, model } = await createRuntime(prompts);
+		const { session } = await createAgentSession({
+			cwd: process.cwd(),
+			modelRuntime: runtime,
+			model,
+			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+			sessionManager,
+			resourceLoader: createTestResourceLoader({ extensionsResult, systemPrompt: CHILD.prompt }),
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+			tools: ["read"],
+		});
+		cleanups.push(() => session.dispose());
+		await session.prompt("first");
+		expect(prompts[0]).toContain(quoting);
+		expect(prompts[0]).not.toContain("Session folder of this project:");
 	});
 });
