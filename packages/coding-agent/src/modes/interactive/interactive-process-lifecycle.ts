@@ -1,6 +1,7 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
+import { exitWithStatus } from "../../utils/process-exit-status.js";
 import { gracefullyStoppedEnginePids, terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { ENGINE_SHUTDOWN_GRACE_MS } from "../rpc/rpc-client-process.js";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
@@ -213,7 +214,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			if (!ending.terminalLost) stopTerminal(this);
 		}
-		process.exit(ending.terminalLost ? terminalLostExitCode(ending) : 0);
+		exitWithStatus(ending.terminalLost ? terminalLostExitCode(ending) : 0);
 	}
 
 	// Drain any in-flight Kitty key release events briefly before stopping.
@@ -235,10 +236,10 @@ InteractiveModeBase.prototype.shutdown = async function (
 	}
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await this.runtimeHost.dispose();
-	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
+	if (ending.terminalLost) exitWithStatus(terminalLostExitCode(ending));
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	// The terminal can be lost while the hint is being looked up; then it is not written.
-	if (ending.terminalLost) process.exit(terminalLostExitCode(ending));
+	if (ending.terminalLost) exitWithStatus(terminalLostExitCode(ending));
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 	}
@@ -279,7 +280,8 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 	killTrackedDetachedChildren();
 	killSupervisedProcessTrees();
 	// The terminal is gone. Do not run normal shutdown because TUI and
-	// extension cleanup can write restore sequences and re-trigger EIO.
+	// extension cleanup can write restore sequences and re-trigger EIO. The shutdown has not finished, so the
+	// runtime's own exit still runs, whatever part of the status it keeps.
 	process.exit(terminalLostExitCode(hostEnding(this)));
 };
 

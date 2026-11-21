@@ -91,6 +91,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 				cwd: launch.cwd,
 				env: launch.env,
 				detached: launch.detached,
+				windowsHide: launch.windowsHide,
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 	} catch (error) {

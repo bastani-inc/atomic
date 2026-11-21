@@ -146,6 +146,7 @@ describe("adopting a prewarmed engine child", () => {
 			Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
 		),
 		detached: false,
+		windowsHide: false,
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
@@ -175,7 +176,7 @@ describe("adopting a prewarmed engine child", () => {
 		await vi.waitFor(() => assert.equal(running(pid), false), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
 	});
 
-	test("a launch differs from another in any of its executable, arguments, directory, environment or group", () => {
+	test("a launch differs from another in any of its executable, arguments, directory, environment, group or console", () => {
 		const base = launch();
 		assert.equal(sameEngineLaunch(base, launch()), true);
 		for (const changed of [
@@ -186,6 +187,7 @@ describe("adopting a prewarmed engine child", () => {
 			launch({ env: { ...base.env, AI_AGENT: `${base.env.AI_AGENT}-changed` } }),
 			launch({ env: Object.fromEntries(Object.entries(base.env).slice(1)) }),
 			launch({ detached: !base.detached }),
+			launch({ windowsHide: !base.windowsHide }),
 		]) {
 			assert.equal(sameEngineLaunch(base, changed), false);
 		}
