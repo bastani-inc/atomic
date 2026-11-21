@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -6,13 +6,11 @@ import { stream as streamOpenAICodexResponses } from "@bastani/atomic-ai/api/ope
 import { normalizeContext } from "@bastani/atomic-ai/utils/transcript";
 import * as undici from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type ConnectProxy, startConnectProxy } from "../../../test/helpers/http-connect-proxy.js";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.js";
 import { wrapCodexFastRouteWebSocket } from "../src/core/fast-model-routing-transport.ts";
 import { configureHttpDispatcher, createHttpDispatcherOptions } from "../src/core/http-dispatcher.ts";
 import { bunExecutable } from "./cli-test-helpers.ts";
-
-/** Structural: starts Bun to exercise its ESM view of undici, which differs from Node's. */
-const BUN_HTTP_SETUP_TIMEOUT_MS = 10_000;
 
 describe("createHttpDispatcherOptions", () => {
 	it("disables undici's default fixed connect timeout", () => {
@@ -30,29 +28,6 @@ describe("createHttpDispatcherOptions", () => {
 		expect(typeof options.clientFactory).toBe("function");
 		expect(typeof options.factory).toBe("function");
 	});
-
-	it(
-		"installs the configured undici fetch under Bun",
-		() => {
-			const moduleUrl = new URL("../src/core/http-dispatcher.ts", import.meta.url).href;
-			const script = [
-				`const originalFetch = globalThis.fetch;`,
-				`const { configureHttpDispatcher } = await import(${JSON.stringify(moduleUrl)});`,
-				`configureHttpDispatcher();`,
-				`console.log(JSON.stringify({ replaced: globalThis.fetch !== originalFetch }));`,
-			].join("\n");
-			const child = spawnSync(bunExecutable(), ["--eval", script], {
-				encoding: "utf8",
-				timeout: BUN_HTTP_SETUP_TIMEOUT_MS,
-			});
-
-			expect(child.error).toBeUndefined();
-			expect(child.status).toBe(0);
-			expect(child.stderr).toBe("");
-			expect(JSON.parse(child.stdout)).toEqual({ replaced: true });
-		},
-		BUN_HTTP_SETUP_TIMEOUT_MS,
-	);
 });
 
 function codexModel(baseUrl: string) {
@@ -445,4 +420,287 @@ describe("http dispatcher", () => {
 			await new Promise<void>((resolve) => endpoint.close(() => resolve()));
 		}
 	});
+});
+
+/**
+ * Structural: each case starts Bun, as the standalone binary runs, and waits for Bun's socket idle timer, which fires
+ * only on a sweep every few seconds (up to about 8 s after a 1 s deadline).
+ */
+const BUN_IDLE_TIMER_TEST_MS = 60_000;
+/** How long the slow servers stay silent: well past the deadline Bun is given, and past its sweep. */
+const SILENT_MS = 12_000;
+const PROXY_ENV_KEYS = [
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"ALL_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"all_proxy",
+	"no_proxy",
+];
+
+/** Runs `script` under Bun with the http dispatcher configured as the binary configures it, and returns what it prints. */
+function runUnderBun(script: string, env: Readonly<Record<string, string>>): Promise<string> {
+	const moduleUrl = new URL("../src/core/http-dispatcher.ts", import.meta.url).href;
+	const childEnv: NodeJS.ProcessEnv = { ...process.env };
+	for (const key of [...PROXY_ENV_KEYS, "BUN_CONFIG_HTTP_IDLE_TIMEOUT"]) delete childEnv[key];
+	Object.assign(childEnv, env);
+	const source = [
+		`const { configureHttpDispatcher } = await import(${JSON.stringify(moduleUrl)});`,
+		`const outcome = async (request) => { const started = performance.now(); try { const response = await request; return { text: await response.text(), ms: performance.now() - started }; } catch (error) { return { error: error?.name ?? String(error), ms: performance.now() - started }; } };`,
+		script,
+	].join("\n");
+	return new Promise((resolve, reject) => {
+		execFile(
+			bunExecutable(),
+			["--eval", source],
+			{ cwd: new URL("..", import.meta.url), env: childEnv, timeout: BUN_IDLE_TIMER_TEST_MS, encoding: "utf8" },
+			(error, stdout, stderr) => (error ? reject(new Error(`${error.message}\n${stderr}`)) : resolve(stdout)),
+		);
+	});
+}
+
+/** Servers that answer after `SILENT_MS`: one before its headers, one between two body chunks. */
+async function silentServers(): Promise<{ headers: string; body: string; close(): Promise<void> }> {
+	const timers = new Set<NodeJS.Timeout>();
+	const later = (run: () => void) => {
+		const timer = setTimeout(() => {
+			timers.delete(timer);
+			run();
+		}, SILENT_MS);
+		timers.add(timer);
+	};
+	const headers = http.createServer((_request, response) => later(() => response.end("late headers")));
+	const body = http.createServer((_request, response) => {
+		response.writeHead(200, { "content-type": "text/plain" });
+		response.write("first chunk, ");
+		later(() => response.end("late chunk"));
+	});
+	for (const server of [headers, body]) await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const urlOf = (server: http.Server) => `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/`;
+	return {
+		headers: urlOf(headers),
+		body: urlOf(body),
+		async close() {
+			for (const timer of timers) clearTimeout(timer);
+			await Promise.all(
+				[headers, body].map((server) => {
+					server.closeAllConnections();
+					return new Promise<void>((resolve) => server.close(() => resolve()));
+				}),
+			);
+		},
+	};
+}
+
+describe("the standalone binary's fetch (Bun)", () => {
+	it(
+		"ends a response that stays silent longer than httpIdleTimeoutMs, before its headers and between body chunks",
+		async () => {
+			const servers = await silentServers();
+			try {
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher(1_000);`,
+						`console.log(JSON.stringify(await Promise.all([outcome(fetch(${JSON.stringify(servers.headers)})), outcome(fetch(${JSON.stringify(servers.body)}))])));`,
+					].join("\n"),
+					{},
+				);
+				const [headers, body] = JSON.parse(printed) as { error?: string; text?: string; ms: number }[];
+				for (const outcome of [headers, body]) {
+					expect(outcome?.error, JSON.stringify(outcome)).toBe("TimeoutError");
+					expect(outcome?.ms).toBeLessThan(SILENT_MS);
+				}
+			} finally {
+				await servers.close();
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"waits for a response silent for less than httpIdleTimeoutMs, or for any time when it is disabled, past Bun's own idle timeout",
+		async () => {
+			const servers = await silentServers();
+			try {
+				// Bun's own idle timeout, one second here, would end both requests long before the servers answer.
+				const run = (timeoutMs: number) =>
+					runUnderBun(
+						[
+							`configureHttpDispatcher(${timeoutMs});`,
+							`console.log(JSON.stringify(await Promise.all([outcome(fetch(${JSON.stringify(servers.headers)})), outcome(fetch(${JSON.stringify(servers.body)}))])));`,
+						].join("\n"),
+						{ BUN_CONFIG_HTTP_IDLE_TIMEOUT: "1" },
+					);
+				for (const printed of await Promise.all([run(60_000), run(0)])) {
+					const outcomes = (JSON.parse(printed) as { error?: string; text?: string }[]).map(
+						(outcome) => outcome.text ?? outcome.error,
+					);
+					expect(outcomes).toEqual(["late headers", "first chunk, late chunk"]);
+				}
+			} finally {
+				await servers.close();
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"passes a request's own options as Bun reads them: inherited, not enumerable, frozen, getters left unread, and a Request's",
+		async () => {
+			const echo = http.createServer(async (request, response) => {
+				let body = "";
+				for await (const chunk of request) body += chunk;
+				response.end(
+					JSON.stringify({ method: request.method, marker: request.headers["x-fixture"] ?? null, body }),
+				);
+			});
+			await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+			const url = `http://127.0.0.1:${(echo.address() as net.AddressInfo).port}/`;
+			try {
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher(30_000);`,
+						`let reads = 0;`,
+						`let optionReads = 0;`,
+						`const options = { method: "POST", headers: { "x-fixture": "ok" }, body: "hello" };`,
+						`const inits = {`,
+						`	inherited: Object.create(options),`,
+						`	notEnumerable: Object.defineProperties({}, { method: { value: "POST" }, headers: { value: { "x-fixture": "ok" } }, body: { value: "hello" } }),`,
+						`	frozen: Object.freeze({ ...options }),`,
+						`	frozenWithoutTimeout: Object.freeze({ ...options, timeout: undefined, proxy: undefined }),`,
+						`	unreadGetter: { ...options, get traceMetadata() { reads++; throw new Error("read"); } },`,
+						`	ownTimeoutAndProxy: { ...options, get timeout() { optionReads++; return false; }, get proxy() { optionReads++; return false; } },`,
+						`};`,
+						`const results = {};`,
+						`for (const [name, init] of Object.entries(inits)) results[name] = await outcome(fetch(${JSON.stringify(url)}, init));`,
+						`results.request = await outcome(fetch(new Request(${JSON.stringify(url)}, options)));`,
+						`console.log(JSON.stringify({ results, reads, optionReads }));`,
+					].join("\n"),
+					{},
+				);
+				const { results, reads, optionReads } = JSON.parse(printed) as {
+					results: Record<string, { text?: string }>;
+					reads: number;
+					optionReads: number;
+				};
+				expect(reads).toBe(0);
+				// Bun reads a request's own `timeout` and `proxy` once each; so does the binary's fetch, through to Bun.
+				expect(optionReads).toBe(2);
+				for (const [name, result] of Object.entries(results))
+					expect(JSON.parse(result.text ?? "{}"), name).toEqual({ method: "POST", marker: "ok", body: "hello" });
+			} finally {
+				echo.closeAllConnections();
+				await new Promise<void>((resolve) => echo.close(() => resolve()));
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"sends an https request through HTTP_PROXY when no https proxy is set, as on Node.js, keeping NO_PROXY, ALL_PROXY and HTTPS_PROXY",
+		async () => {
+			const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
+			const endpoints: https.Server[] = [];
+			for (let i = 0; i < 4; i++) {
+				const endpoint = https.createServer(
+					{ cert: certificate.cert, key: certificate.key },
+					(_request, response) => response.end("endpoint"),
+				);
+				await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+				endpoints.push(endpoint);
+			}
+			const ports = endpoints.map((endpoint) => (endpoint.address() as net.AddressInfo).port);
+			const routes = (target: string) => ({ host: "127.0.0.1", port: Number(target.split(":")[1]) });
+			const proxies: ConnectProxy[] = [await startConnectProxy({ routes }), await startConnectProxy({ routes })];
+			const [httpProxy, otherProxy] = proxies as [ConnectProxy, ConnectProxy];
+			try {
+				// Each case sets the environment for its own endpoint; Bun reads it at each request.
+				const cases = [
+					{ HTTP_PROXY: httpProxy.url },
+					{ HTTP_PROXY: httpProxy.url, NO_PROXY: "localhost" },
+					{ HTTP_PROXY: httpProxy.url, ALL_PROXY: otherProxy.url },
+					{ HTTP_PROXY: httpProxy.url, HTTPS_PROXY: otherProxy.url },
+				];
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher();`,
+						`const cases = ${JSON.stringify(cases)};`,
+						`const ports = ${JSON.stringify(ports)};`,
+						`const keys = ${JSON.stringify(PROXY_ENV_KEYS)};`,
+						`const results = [];`,
+						`for (let i = 0; i < cases.length; i++) {`,
+						`	for (const key of keys) delete process.env[key];`,
+						`	Object.assign(process.env, cases[i]);`,
+						`	results.push(await outcome(fetch("https://localhost:" + ports[i] + "/", { tls: { ca: ${JSON.stringify(certificate.cert)} } })));`,
+						`}`,
+						`console.log(JSON.stringify(results.map((result) => result.text ?? result.error)));`,
+					].join("\n"),
+					{},
+				);
+				expect(JSON.parse(printed)).toEqual(["endpoint", "endpoint", "endpoint", "endpoint"]);
+				const [toHttpProxy, exempt, toAllProxy, toHttpsProxy] = ports.map((port) => `localhost:${port}`);
+				expect(httpProxy.requests.map((request) => request.target)).toEqual([toHttpProxy]);
+				expect(otherProxy.requests.map((request) => request.target)).toEqual([toAllProxy, toHttpsProxy]);
+				expect([...httpProxy.requests, ...otherProxy.requests].map((request) => request.target)).not.toContain(
+					exempt,
+				);
+			} finally {
+				await Promise.all([
+					...proxies.map((proxy) => proxy.close()),
+					...endpoints.map((endpoint) => new Promise<void>((resolve) => endpoint.close(() => resolve()))),
+				]);
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"connects OpenAI Codex's WebSocket through HTTP_PROXY when no https proxy is set, as its requests over fetch go",
+		async () => {
+			let endpointConnections = 0;
+			const endpoint = net.createServer((socket) => {
+				endpointConnections++;
+				socket.destroy();
+			});
+			await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+			const port = (endpoint.address() as net.AddressInfo).port;
+			// The proxy refuses the tunnel, so the request goes on over SSE, which the test answers.
+			const proxy = await startConnectProxy({ routes: () => undefined });
+			try {
+				const model = {
+					id: "test-model",
+					name: "Test Model",
+					api: "openai-codex-responses",
+					provider: "test-provider",
+					baseUrl: `https://localhost:${port}`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 10_000,
+					maxTokens: 1_000,
+				};
+				const token = `x.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.x`;
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher();`,
+						`const { stream } = await import("@bastani/atomic-ai/api/openai-codex-responses");`,
+						`const { normalizeContext } = await import("@bastani/atomic-ai/utils/transcript");`,
+						`let sse = 0;`,
+						`const message = await stream(${JSON.stringify(model)}, normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }), { apiKey: ${JSON.stringify(token)}, transport: "auto", sessionId: "codex-bun-http-proxy", fetch: async () => { sse++; return new Response("unavailable", { status: 503 }); } }).result();`,
+						`console.log(JSON.stringify({ stopReason: message.stopReason, sse }));`,
+					].join("\n"),
+					{ HTTP_PROXY: proxy.url },
+				);
+				expect(JSON.parse(printed)).toMatchObject({ stopReason: "error" });
+				expect(proxy.requests.map((request) => request.target)).toEqual([`localhost:${port}`]);
+				expect(endpointConnections).toBe(0);
+			} finally {
+				await proxy.close();
+				await new Promise<void>((resolve) => endpoint.close(() => resolve()));
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
 });

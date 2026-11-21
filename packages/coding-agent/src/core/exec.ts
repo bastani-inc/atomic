@@ -9,8 +9,14 @@ import { extname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
 import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../utils/helper-command.ts";
-import { spawnHostProcess } from "../utils/host-spawn.ts";
-import { descendantsOf, type IdentifiedProcess, signalIfSame } from "./process-descendants.js";
+import { type HostChildProcess, spawnHostProcess } from "../utils/host-spawn.ts";
+import {
+	descendantsOf,
+	descendantsOfNow,
+	type IdentifiedProcess,
+	signalIfSame,
+	signalIfSameNow,
+} from "./process-descendants.js";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -19,6 +25,36 @@ const FORCE_KILL_DELAY_MS = 5000;
  * session's shutdown handlers still have most of the quit's grace period once every such command has ended.
  */
 const QUIT_FORCE_KILL_DELAY_MS = 1000;
+
+/**
+ * The commands running now that their session's quit would stop, each until it exits: those started with `onQuit`
+ * (see {@link execCommand}).
+ */
+const quitStoppableCommands = new Set<HostChildProcess>();
+
+/** Whether a command its session's quit would stop is running in this process. */
+export function hasQuitStoppableCommands(): boolean {
+	return quitStoppableCommands.size > 0;
+}
+
+/**
+ * Ends at once, with `SIGKILL`, every running command that its session's quit would stop, and the processes it
+ * started (as the quit reads them), for a process about to exit that can no longer wait, such as an engine whose host
+ * is gone. Each of these is signalled only while it is the process recorded; the command itself through its own
+ * handle. Not on Windows, where they end with the process that started them.
+ */
+export function killQuitStoppableCommandsNow(): void {
+	if (process.platform === "win32") return;
+	for (const proc of quitStoppableCommands) {
+		const pid = proc.pid;
+		if (pid === undefined || proc.exitCode !== null || proc.signalCode !== null) continue;
+		// Read while the command still runs: once it ends, the processes it started are no longer below it.
+		const descendants = descendantsOfNow(pid);
+		proc.kill("SIGKILL");
+		signalIfSameNow(descendants, "SIGKILL");
+	}
+	quitStoppableCommands.clear();
+}
 
 /**
  * Options for executing shell commands.
@@ -171,7 +207,8 @@ function stopLookupOn(
  * ends a command still running so that it cannot hold the session's shutdown: it and the processes it started get
  * SIGTERM, and those still running after {@link QUIT_FORCE_KILL_DELAY_MS}, or once the command exited, SIGKILL; output
  * its descendants still hold open is then no longer waited for. The processes it started are the ones running when the
- * stop starts (on Windows they end with this process instead). A command that already exited is left as it is.
+ * stop starts (on Windows they end with this process instead). A command that already exited is left as it is. Such a
+ * command is also one that {@link killQuitStoppableCommandsNow} ends while it runs.
  */
 export async function execCommand(
 	command: string,
@@ -221,8 +258,12 @@ export async function execCommand(
 		cwd,
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
+		// A command a quit would stop must not outlive this process when it is killed instead.
+		endWithParent: onQuit !== undefined,
 		...missingHelperOptions(launch),
 	});
+	// Until it settles; one that exited by then is left alone (see killQuitStoppableCommandsNow).
+	if (onQuit !== undefined && proc.pid !== undefined) quitStoppableCommands.add(proc);
 
 	let stdout = "";
 	let stderr = "";
@@ -331,6 +372,7 @@ export async function execCommand(
 		clearTimeout(forceKillId);
 		options?.signal?.removeEventListener("abort", killProcess);
 		stopOnQuit?.();
+		quitStoppableCommands.delete(proc);
 		await quitStop;
 		clearTimeout(quitCutId);
 		// The command the quit stopped has exited: the processes it started that outlived SIGTERM end now.
