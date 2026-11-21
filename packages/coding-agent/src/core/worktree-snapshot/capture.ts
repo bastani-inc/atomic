@@ -613,15 +613,33 @@ async function ignoredStagedOutsideSeed(
 
 /**
  * The files staged as additions to HEAD in each user's index this process listed, by index path: the hash of the
- * index's bytes and the HEAD they were listed against, with the listing, which follows from those two alone.
+ * index's bytes and the HEAD they were listed against, the listing, which follows from those two alone, and whether it
+ * holds a submodule.
  */
-const stagedAdditions = new Map<string, { readonly key: string; readonly added: readonly string[] }>();
+const stagedAdditions = new Map<
+	string,
+	{ readonly key: string; readonly added: readonly string[]; readonly submodules: boolean }
+>();
+
+/** The command that lists the files staged in an index as additions to `head`. */
+function stagedAdditionsCommand(head: string, raw: boolean): string[] {
+	return [
+		"diff-index",
+		"--cached",
+		...(raw ? ["--raw", "--ignore-submodules=none"] : ["--name-only"]),
+		"-z",
+		"--no-renames",
+		"--diff-filter=A",
+		head,
+	];
+}
 
 /**
  * Files staged in the user's index at `userIndexPath` as additions to HEAD that an ignore rule matches (`git add -f`):
  * the staged additions, then the ignore rules on those paths alone. The additions are listed again only when the
  * index's bytes or HEAD changed since the last listing, and then from a copy, in `scratch`, of exactly the bytes the
- * listing is kept for: the user's index can change meanwhile.
+ * listing is kept for: the user's index can change meanwhile. Whether Git lists a staged submodule follows its
+ * `ignore` setting, which the index does not hold, so while the index stages one the additions are listed every time.
  */
 async function ignoredAdditionsToHead(
 	checkout: Checkout,
@@ -638,23 +656,28 @@ async function ignoredAdditionsToHead(
 		bytes = null;
 	}
 	const key = `${bytes === null ? "none" : sha256Hex(bytes)}\0${head}`;
-	const listed = stagedAdditions.get(userIndexPath);
-	let added = listed?.key === key ? listed.added : undefined;
-	if (added === undefined) {
+	let listed = stagedAdditions.get(userIndexPath);
+	if (listed?.key !== key) {
 		// A checkout without an index lists from an absent copy, as Git lists from its absent index: nothing.
 		const copy = join(scratch, "user-index");
 		if (bytes !== null) await writeFile(copy, bytes);
-		added = nulFields(
-			(
-				await runGit(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", head], {
-					cwd: root,
-					env: { GIT_INDEX_FILE: copy },
-					signal,
-				})
-			).stdout,
+		// Every addition with its mode, whatever any submodule's `ignore` setting says.
+		const fields = nulFields(
+			(await runGit(stagedAdditionsCommand(head, true), { cwd: root, env: { GIT_INDEX_FILE: copy }, signal }))
+				.stdout,
 		);
-		stagedAdditions.set(userIndexPath, { key, added });
+		const added: string[] = [];
+		let submodules = false;
+		for (let index = 0; index + 1 < fields.length; index += 2) {
+			if (fields[index]!.slice(1).split(" ")[1] === "160000") submodules = true;
+			added.push(fields[index + 1]!);
+		}
+		listed = { key, added, submodules };
+		stagedAdditions.set(userIndexPath, listed);
 	}
+	const added = listed.submodules
+		? nulFields((await runGit(stagedAdditionsCommand(head, false), { cwd: root, signal })).stdout)
+		: listed.added;
 	if (added.length === 0) return [];
 	const ignored = await runGit(["check-ignore", "--no-index", "--stdin", "-z"], {
 		cwd: root,

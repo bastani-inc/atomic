@@ -105,6 +105,37 @@ describe("files staged in your index despite an ignore rule", () => {
 		assert.ok((await treePaths(clone, reset.snapshot.tree)).includes("forced.log"));
 	});
 
+	test("include a staged submodule as its ignore setting says, which can change while the index does not", async () => {
+		const clone = await cloneIgnoringLogs();
+		const { clone: sub } = await sandbox.remoteWithClone("sub", { "inner.txt": "inner\n" });
+		writeFileSync(join(clone, ".gitignore"), "*.log\nbuild/\n");
+		await sandbox.git(clone, "submodule", "add", "-q", "-f", sub, "build/sub");
+		const index = readFileSync(join(clone, ".git", "index"));
+		const listed = captured(await captureWorktreeSnapshot(clone));
+		assert.ok((await treePaths(clone, listed.snapshot.tree)).includes("build/sub"));
+
+		// `ignore = all` hides the submodule from Git's listing of the staged files; the index's bytes stay as they were.
+		writeFileSync(join(clone, ".gitmodules"), `${readFileSync(join(clone, ".gitmodules"), "utf8")}\tignore = all\n`);
+		assert.deepEqual(readFileSync(join(clone, ".git", "index")), index);
+		const hidden = captured(await captureWorktreeSnapshot(clone));
+		assert.ok(!(await treePaths(clone, hidden.snapshot.tree)).includes("build/sub"));
+	});
+
+	test("include a staged submodule again once its ignore setting no longer hides it", async () => {
+		const clone = await cloneIgnoringLogs();
+		const { clone: sub } = await sandbox.remoteWithClone("sub", { "inner.txt": "inner\n" });
+		writeFileSync(join(clone, ".gitignore"), "*.log\nbuild/\n");
+		await sandbox.git(clone, "submodule", "add", "-q", "-f", sub, "build/sub");
+		await sandbox.git(clone, "config", "submodule.build/sub.ignore", "all");
+		const hidden = captured(await captureWorktreeSnapshot(clone));
+		assert.ok(!(await treePaths(clone, hidden.snapshot.tree)).includes("build/sub"));
+
+		await sandbox.git(clone, "config", "--unset", "submodule.build/sub.ignore");
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const listed = captured(await captureWorktreeSnapshot(clone));
+		assert.ok((await treePaths(clone, listed.snapshot.tree)).includes("build/sub"));
+	});
+
 	test("are kept for the index bytes they were listed from, not for a change made while they were listed", async () => {
 		const clone = await cloneIgnoringLogs();
 		sandbox.write(join(clone, "late.log"), "late\n");
