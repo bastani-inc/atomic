@@ -366,7 +366,11 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		this._callerReplacedNextRequestContext = previousSnapshot?.context !== undefined;
 		const previousContext = previousSnapshot?.context ?? compactedContext;
 		const options = this._currentRunSystemPromptOptions();
-		const updateMessage = this._preparePromptAndToolLoadout(options, previousContext.messages);
+		const prepared = this._preparePromptAndToolLoadout(options, previousContext.messages);
+		// Until a request that sends the session's prompt as it is now retired the resume's budget check, a run that
+		// started without it (an interrupt, queued input) keeps the prompt its first request had; the next prompt sends
+		// the update through that check (see _compactBeforeResumedPrompt). Tool changes are still declared.
+		const updateMessage = this._resumeBudgetCheckpoint ? undefined : prepared;
 		this._runSystemPromptOptions = options;
 		await joinTurnEndAdmissions(this, signal);
 

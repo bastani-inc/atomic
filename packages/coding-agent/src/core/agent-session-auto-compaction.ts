@@ -694,7 +694,7 @@ export async function _compactBeforeContinuation(
 	if (shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, model.contextWindow, settings))
 		return (await this._runAutoCompaction("threshold", false)) === "compacted";
 	if (this._resumeBudgetCheckpoint)
-		await this._compactBeforeResumedPrompt(undefined, input ?? continuationInput(this));
+		await this._compactBeforeResumedPrompt(undefined, input ?? continuationInput(this), false);
 	return false;
 }
 
@@ -715,16 +715,21 @@ function continuationInput(session: AgentSession): AgentMessage[] {
  * opened counts with the input: a session that kept running would have sent it too. Resolves whether it cleared.
  *
  * The check runs again for a later run when no request followed this one (the run stopped before its request, or the
- * request's provider setup failed): the first request the provider gets is checked with its own input. Only that
- * request, or this clear, retires the checkpoint.
+ * request's provider setup failed): the first request the provider gets is checked with its own input. A run that does
+ * not send the session's prompt as it is now (`sendsPrompt` false: an interrupt, or a continuation of queued input)
+ * sends no `update`, so the run that sends it is checked again. Only a request whose transcript holds the `update` a
+ * run that sends the prompt was checked with (any request once that run found no update), or this clear, retires the
+ * checkpoint.
  */
 export async function _compactBeforeResumedPrompt(
 	this: AgentSession,
 	update: AgentMessage | undefined,
 	input: readonly AgentMessage[],
+	sendsPrompt = true,
 ): Promise<boolean> {
 	const checkpoint = this._resumeBudgetCheckpoint;
 	const model = this.model;
+	if (checkpoint && sendsPrompt) this._resumePromptUpdate = update ?? null;
 	if (!checkpoint || !model || !this.settingsManager.getCompactionSettings(model).enabled) return false;
 	if (
 		this._compactionAbortController !== undefined ||
@@ -762,7 +767,10 @@ export async function _compactBeforeResumedPrompt(
 	// The boundary covers the restored history only, so what the resume added stays in the context as it was.
 	if (!clears || (await this._runAutoCompaction("threshold", false, "recoverable", entryId)) !== "compacted")
 		return false;
-	if (this._resumeBudgetCheckpoint === checkpoint) this._resumeBudgetCheckpoint = undefined;
+	if (this._resumeBudgetCheckpoint === checkpoint) {
+		this._resumeBudgetCheckpoint = undefined;
+		this._resumePromptUpdate = undefined;
+	}
 	return true;
 }
 

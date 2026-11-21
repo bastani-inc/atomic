@@ -526,10 +526,12 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		factories: ExtensionFactory[] = [],
 		instructions = MORE_INSTRUCTIONS,
 		inputTokens = NEAR_WINDOW_INPUT,
+		tools?: () => readonly string[],
 	) {
 		const installation = await install(BUDGET_MODEL, "install", {
 			settings: { defaultThinkingLevel: "medium", ...settings },
 			factories,
+			...(tools ? { tools } : {}),
 		});
 		server.inputTokens = inputTokens;
 		const live = await start(installation);
@@ -797,7 +799,15 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	});
 
 	test("a request whose provider setup fails leaves the clear to the request that follows", async () => {
-		const { installation, sessionId } = await nearWindowSession();
+		const recovering: ExtensionFactory = (pi) => {
+			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		};
+		const { installation, sessionId } = await nearWindowSession(
+			{ defaultThinkingLevel: "high" },
+			[recovering],
+			"Prefer small changes.\n",
+			HIGH_NEAR_WINDOW_INPUT,
+		);
 		// The model's requests carry a header taken from an environment variable, which is unset at first.
 		writeFileSync(
 			join(installation.agentDir, "models.json"),
@@ -813,20 +823,157 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		vi.stubEnv("ATOMIC_TEST_TEAM_HEADER", undefined);
 		cleanups.push(() => vi.unstubAllEnvs());
 		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
-		const { agent } = resumed.session;
 		const before = server.requests.length;
-		// The conversation's request fails before anything is sent.
-		await assert.rejects(
-			async () =>
-				(await agent.streamFunction(agent.state.model, { messages: [] }, { sessionId: agent.sessionId })).result(),
-			/ATOMIC_TEST_TEAM_HEADER/,
-		);
+		// The first prompt's request fails before anything is sent.
+		await resumed.session.prompt("three").catch(() => {});
 		assert.equal(server.requests.length, before);
 
+		// The next prompt is the first request the provider gets, so it is checked with the notice the resume added
+		// since, as a prompt that follows a sent request is not.
 		vi.stubEnv("ATOMIC_TEST_TEAM_HEADER", "core");
-		const firstAfterResume = await send(resumed, "three");
-		assert.equal(budgetOf(firstAfterResume), 8192);
+		await resumed.session.startPendingRecovery("resume");
+		const firstAfterResume = await send(resumed, "four");
+		assert.equal(budgetOf(firstAfterResume), 16_384);
 		assert.equal(compactions(resumed), 1);
+	});
+
+	test("an interrupt sent first after the resume leaves the clear to the prompt that sends the new instructions", async () => {
+		let interrupt = (): Promise<void> => Promise.resolve();
+		const interrupting: ExtensionFactory = (pi) => {
+			interrupt = () =>
+				pi.sendMessage(
+					{ customType: "ping", content: "Interrupting.", display: true },
+					{ deliverAs: "interrupt", triggerTurn: true },
+				);
+		};
+		const { installation, sessionId } = await nearWindowSession({}, [interrupting]);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		await interrupt();
+		const interrupted = await firstRequestAfter(resumed, before);
+		// The interrupt's request goes out without the instructions the resume added, at the budget it had.
+		assert.equal(budgetOf(interrupted), 8192);
+		assert.ok(!JSON.stringify(interrupted).includes("Keep each change reviewed."));
+		assert.equal(compactions(resumed), 0);
+
+		const prompted = await send(resumed, "four");
+		assert.equal(budgetOf(prompted), 8192);
+		assert.equal(compactions(resumed), 1);
+		// The clear covers the restored history only: the interrupt and its answer are still sent.
+		assert.ok(JSON.stringify(prompted.messages).includes("Interrupting."), "the interrupt is not sent");
+		assert.ok(!JSON.stringify(prompted.messages).includes("answer to one"), "the cleared history is still sent");
+		assert.ok(
+			JSON.stringify(prompted.messages).includes("Keep each change reviewed."),
+			"the new instructions are not sent",
+		);
+	});
+
+	test("the turn after an interrupt's tool call keeps the interrupt's prompt, and the next prompt sends the new instructions after the clear", async () => {
+		let interrupt = (): Promise<void> => Promise.resolve();
+		const interrupting: ExtensionFactory = (pi) => {
+			interrupt = () =>
+				pi.sendMessage(
+					{ customType: "ping", content: "Interrupting.", display: true },
+					{ deliverAs: "interrupt", triggerTurn: true },
+				);
+			// A section of the prompt that only a prompt's start sets, as the MCP servers' section is.
+			pi.on("before_agent_start", (event) => {
+				const { sections } = event.systemPromptOptions;
+				sections.probe = "Probe section.";
+			});
+		};
+		const { installation, sessionId } = await nearWindowSession(
+			{},
+			[interrupting],
+			MORE_INSTRUCTIONS,
+			NEAR_WINDOW_INPUT,
+			() => ["probe_tool"],
+		);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		server.reply({ toolUse: { name: "probe_tool", input: { value: "x" } } }, { text: "done" });
+		await interrupt();
+		await until(
+			() =>
+				server.requests.length >= before + 2 &&
+				!resumed.session.isStreaming &&
+				resumed.session.messages.at(-1)?.role === "assistant",
+		);
+		const interruptRun = server.requests.slice(before).map((request) => request.json);
+		assert.equal(interruptRun.length, 2);
+		// Both requests of the interrupt's run keep the prompt and budget the interrupt was sent with.
+		for (const request of interruptRun) {
+			assert.equal(budgetOf(request), 8192);
+			assert.ok(!JSON.stringify(request).includes("Keep each change reviewed."), "the new instructions are sent");
+			assert.ok(JSON.stringify(request).includes("Probe section."), "a section a prompt set is dropped");
+		}
+		assert.ok(JSON.stringify(interruptRun[1]!.messages).includes("probe_tool done"), "the tool result is not sent");
+		assert.equal(compactions(resumed), 0);
+
+		const prompted = await send(resumed, "four");
+		assert.equal(budgetOf(prompted), 8192);
+		assert.equal(compactions(resumed), 1);
+		const sent = JSON.stringify(prompted.messages);
+		assert.ok(sent.includes("Keep each change reviewed."), "the new instructions are not sent");
+		assert.equal(sent.split("probe_tool done").length - 1, 1, "the tool result is not sent once");
+	});
+
+	test("once the first request after the resume went out, a tool turned on during a run is described in the prompt of the run's next request", async () => {
+		const toggling: ExtensionFactory = (pi) => {
+			pi.on("session_start", () => {
+				pi.registerTool({
+					name: "helper_tool",
+					label: "helper_tool",
+					description: "The helper tool",
+					promptSnippet: "Ask helper_tool for help.",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "helped" }], details: {} }),
+				});
+				pi.registerTool({
+					name: "enable_helper",
+					label: "enable_helper",
+					description: "Turns the helper tool on",
+					parameters: Type.Object({}),
+					execute: async () => {
+						pi.setActiveTools([...pi.getActiveTools(), "helper_tool"]);
+						return { content: [{ type: "text", text: "enabled" }], details: {} };
+					},
+				});
+				pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "helper_tool"));
+			});
+		};
+		const { installation, sessionId } = await nearWindowSession({}, [toggling]);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		await send(resumed, "three");
+		const before = server.requests.length;
+		server.reply({ toolUse: { name: "enable_helper", input: {} } }, { text: "done" });
+		await send(resumed, "four");
+		const run = server.requests.slice(before).map((request) => JSON.stringify(request.json));
+		assert.equal(run.length, 2);
+		assert.ok(!run[0]!.includes("Ask helper_tool for help."));
+		assert.ok(run[1]!.includes("Ask helper_tool for help."), "the tool turned on is not described");
+	});
+
+	test("a recovery notice added after the first prompt does not clear the context for the next one", async () => {
+		const recovering: ExtensionFactory = (pi) => {
+			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		};
+		const { installation, sessionId } = await nearWindowSession(
+			{ defaultThinkingLevel: "high" },
+			[recovering],
+			"Prefer small changes.\n",
+			HIGH_NEAR_WINDOW_INPUT,
+		);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const first = await send(resumed, "three");
+		assert.equal(budgetOf(first), 16_384);
+		await resumed.session.startPendingRecovery("resume");
+
+		// Only the first request after the resume is checked; the notice now lowers the next budget, as before.
+		const second = await send(resumed, "four");
+		assert.equal(compactions(resumed), 0);
+		assert.ok(budgetOf(second) < 16_384, `budget ${budgetOf(second)}`);
+		assert.ok(JSON.stringify(second.messages).includes("answer to one"), "the history is not sent");
 	});
 
 	test("with automatic compaction off, the request lowers the budget to fit as before", async () => {

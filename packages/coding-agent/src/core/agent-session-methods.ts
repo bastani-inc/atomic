@@ -369,7 +369,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_compactBeforeContinuation(input?: readonly AgentMessage[]): Promise<boolean>;
-	_compactBeforeResumedPrompt(update: AgentMessage | undefined, input: readonly AgentMessage[]): Promise<boolean>;
+	_compactBeforeResumedPrompt(
+		update: AgentMessage | undefined,
+		input: readonly AgentMessage[],
+		sendsPrompt?: boolean,
+	): Promise<boolean>;
 	_continueAgentAfterCompactionCheck(): Promise<void>;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): Promise<void>;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
@@ -763,6 +767,13 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	/** The restored history's last message until the first request after a resume; see `_compactBeforeResumedPrompt`. */
 	_resumeBudgetCheckpoint?: AgentMessage;
+	/**
+	 * What the check of `_resumeBudgetCheckpoint` for a run that sends the session's prompt as it is now (a prompt, or a
+	 * run an extension starts) found that prompt to need: its update, or null when the prompt was current. Undefined
+	 * until such a run is checked. A conversation request retires the checkpoint once the transcript it sends holds that
+	 * update, at once when it is null; see `_compactBeforeResumedPrompt`.
+	 */
+	_resumePromptUpdate?: AgentMessage | null;
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
