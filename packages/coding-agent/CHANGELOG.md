@@ -4,7 +4,9 @@
 
 ### Fixed
 
-- **Print mode prints an extension command's answer.** `atomic -p "/curator off"`, `/google-account` and other commands that answer with a message they send now print that message, or the reply of the turn it starts, instead of the session's earlier reply, and that turn is no longer cut off and saved as aborted. A later `-p` message waits for the turn instead of being refused, and an earlier reply that reached the output limit no longer marks the command's answer as truncated ([#6113](https://github.com/bastani-inc/atomic/issues/6113))
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
+- On Node 22, where `AsyncLocalStorage` runs on promise hooks, each scope Atomic used and each session it ran made every `await` in the process slower, in an SDK host's own code too. Atomic now keeps all of its async context in one store, so the cost no longer grows: after a 300-prompt SDK session, 3 million awaits take about half as long as before. Node 24 and Bun were not affected. See [Node 22 hosts](docs/sdk.md#node-22-hosts) for the Node flag that removes the remaining cost ([#6111](https://github.com/bastani-inc/atomic/issues/6111)).
+- In print mode, `atomic -p "/curator off"`, `/google-account` and other extension commands that answer with a message they send now print that message, or the reply of the turn it starts, instead of the session's earlier reply, and that turn is no longer cut off and saved as aborted. A later `-p` message waits for the turn instead of being refused, and an earlier reply that reached the output limit no longer marks the command's answer as truncated ([#6113](https://github.com/bastani-inc/atomic/issues/6113)).
 
 ## [0.10.2] - 2026-11-20
 

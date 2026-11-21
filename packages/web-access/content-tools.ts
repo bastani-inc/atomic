@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai";
 import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import {
@@ -136,7 +137,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 						`Use get_search_content({ responseId: "${responseId}", urlIndex: 0 }) for full content.`;
 				}
 
-				const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
+				const content: Array<TextContent | ImageContent> = [];
 				if (result.frames?.length) {
 					for (const frame of result.frames) {
 						content.push({ type: "image", data: frame.data, mimeType: frame.mimeType });

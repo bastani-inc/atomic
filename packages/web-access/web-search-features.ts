@@ -1,5 +1,6 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
 import { isStaleExtensionContextError, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import type { KeyId } from "@bastani/atomic-tui";
 import { fetchAllContent } from "./extract.js";
 import { clearCloneCache } from "./github-extract.js";
 import { registerContentTools } from "./content-tools.js";
@@ -131,7 +132,8 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		searchesComplete,
 	);
 
-	pi.registerShortcut(curateKey, {
+	// Keys from the user's web-search config, as configured: the host matches them like any other key id.
+	pi.registerShortcut(curateKey as KeyId, {
 		description: "Review search results",
 		handler: async (ctx) => {
 			const pc = runtimeState.pendingCurate;
@@ -145,7 +147,7 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		},
 	});
 
-	pi.registerShortcut(activityKey, {
+	pi.registerShortcut(activityKey as KeyId, {
 		description: "Toggle web search activity",
 		handler: async (ctx) => {
 			toggleActivityWidget(activityState, ctx);

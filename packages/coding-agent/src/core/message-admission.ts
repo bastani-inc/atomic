@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { asyncScope } from "./async-scope.ts";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
 
 interface PersistedAdmission {
@@ -18,9 +18,9 @@ export class MessageAdmissionBoundary {
 	private readonly completed = new SessionKeyDigests();
 	private readonly inFlight = new Map<string, Promise<void>>();
 	private readonly pending = new Set<Promise<void>>();
-	private readonly invocationContext = new AsyncLocalStorage<string>();
-	private readonly messageDeliveryContext = new AsyncLocalStorage<{ active: boolean }>();
-	private readonly awaitedTurnContext = new AsyncLocalStorage<{ active: boolean }>();
+	private readonly invocationContext = asyncScope<string>();
+	private readonly messageDeliveryContext = asyncScope<{ active: boolean }>();
+	private readonly awaitedTurnContext = asyncScope<{ active: boolean }>();
 	private readonly messageDeliveries = new Set<Promise<void>>();
 	private messageDeliveryTail: Promise<void> | undefined;
 	private constructor(completedKeys: Iterable<string>, encoded?: string) {
