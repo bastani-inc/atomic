@@ -286,6 +286,11 @@ export interface WorktreeSnapshotEntry extends SessionEntryBase {
 	/** How long the turn's capture of this checkout took, in milliseconds; present on entries a turn's capture wrote. */
 	captureMs?: number;
 	/**
+	 * Present on an entry a resume wrote to take a capture one of the session's subagents recorded of this checkout:
+	 * when the subagent's session recorded it. A later resume compares the session's captures and its subagents' by it.
+	 */
+	capturedAt?: string;
+	/**
 	 * The snapshot a resume could restore only partly into this checkout (#4922): this entry records the partly restored
 	 * worktree as it is now, and `degradedFrom` stays the checkout's restore target, kept by collection, until a resume
 	 * restores it fully, `discardDegradedRestore` releases it, or 30 days have passed since the partial restore. On the

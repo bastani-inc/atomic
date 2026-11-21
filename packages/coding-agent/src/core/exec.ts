@@ -3,9 +3,12 @@
  */
 
 import { constants as bufferConstants } from "node:buffer";
+import { stat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
+import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../utils/helper-command.ts";
 import { type HostChildProcess, spawnHostProcess } from "../utils/host-spawn.ts";
 import {
 	descendantsOf,
@@ -85,6 +88,118 @@ export interface ExecResult {
 }
 
 /**
+ * The files a start of `command` by name on Windows may run: the name as it is when it has an extension, and the name
+ * with each extension PATHEXT names or Node or Bun tries whatever it names.
+ */
+function windowsNames(command: string, env: NodeJS.ProcessEnv): string[] {
+	const extensions = new Set([".com", ".exe", ".bat", ".cmd"]);
+	for (const extension of (windowsVariable(env, "PATHEXT") ?? "").split(";")) {
+		const trimmed = extension.trim().toLowerCase();
+		if (trimmed.startsWith(".")) extensions.add(trimmed);
+	}
+	return [
+		...(extname(command) === "" ? [] : [command]),
+		...[...extensions].map((extension) => `${command}${extension}`),
+	];
+}
+
+/** Variable `name` as a program started with `env` gets it: of several spellings, the first in sorted order. */
+function windowsVariable(env: NodeJS.ProcessEnv, name: string): string | undefined {
+	const key = Object.keys(env)
+		.filter((candidate) => candidate.toUpperCase() === name)
+		.sort()[0];
+	return key === undefined ? undefined : env[key];
+}
+
+/**
+ * The folders a start by name on Windows searches besides PATH's absolute directories: the working directory, which it
+ * searches first, and the folders PATH's empty and relative entries name in it.
+ */
+function windowsWorkingFolders(cwd: string, env: NodeJS.ProcessEnv): string[] {
+	const folders = [cwd];
+	for (const raw of (windowsVariable(env, "PATH") ?? process.env.PATH ?? "").split(";")) {
+		const entry = raw.trim().replace(/^"(.*)"$/, "$1");
+		if (entry === "" || !isAbsolute(entry)) folders.push(resolve(cwd, entry));
+	}
+	return folders;
+}
+
+/**
+ * How Windows starts `command` from `cwd`. A path runs as written. A name runs as before, found by the runtime's own
+ * search (Bun's also runs `.cmd` and `.bat` shims such as npm's), when neither the working directory nor a folder an
+ * empty or relative PATH entry names holds anything it could start: that search then finds only what PATH's absolute
+ * directories hold. Otherwise it is looked up in PATH's absolute directories only and started by its absolute path, or
+ * fails as a missing program does, so a project folder cannot supply it.
+ */
+async function windowsLaunch(
+	command: string,
+	env: NodeJS.ProcessEnv,
+	cwd: string,
+	signal: AbortSignal,
+): Promise<HelperLaunch> {
+	if (/[\\/:]/.test(command)) return { file: command };
+	const names = windowsNames(command, env);
+	for (const folder of windowsWorkingFolders(cwd, env)) {
+		for (const name of names) {
+			if (await untilAborted(couldStart(join(folder, name)), signal)) {
+				return helperLaunchAsync(command, { env, cwd, signal });
+			}
+		}
+	}
+	return { file: command };
+}
+
+/** Whether a start may run `path`: anything there but a directory, an app execution alias included. */
+async function couldStart(path: string): Promise<boolean> {
+	try {
+		return !(await stat(path)).isDirectory();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code !== "ENOENT" && code !== "ENOTDIR";
+	}
+}
+
+/** `work`'s result, or `signal`'s reason as soon as it aborts, whatever `work` still waits for. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/**
+ * Ends the lookup of `command`'s program, which runs before it starts, on what ends a running command: its abort
+ * signal, its timeout and its session's quit. Returns their release.
+ */
+function stopLookupOn(
+	lookup: AbortController,
+	options: ExecOptions | undefined,
+	onQuit: ((stop: () => void) => () => void) | undefined,
+): () => void {
+	const stop = () => lookup.abort();
+	options?.signal?.addEventListener("abort", stop, { once: true });
+	if (options?.signal?.aborted) stop();
+	const timer = options?.timeout && options.timeout > 0 ? setTimeout(stop, options.timeout) : undefined;
+	const stopOnQuit = onQuit?.(stop);
+	return () => {
+		clearTimeout(timer);
+		options?.signal?.removeEventListener("abort", stop);
+		stopOnQuit?.();
+	};
+}
+
+/**
  * Execute a shell command and return stdout/stderr/code.
  * Supports timeout, abort signal, and an output cap (`maxBuffer`).
  *
@@ -107,18 +222,45 @@ export async function execCommand(
 		throw new RangeError(`maxBuffer must be an integer between 0 and ${bufferConstants.MAX_STRING_LENGTH} bytes`);
 	}
 
+	// Pass the environment explicitly. Bun snapshots the process environment
+	// at startup for spawns that omit `env`, so an inherited default would
+	// still carry values this process deleted from `process.env` — including
+	// the interactive-engine control variables and their --api-key. Preserve
+	// Atomic's child attribution in the same explicit environment.
+	const env = createChildProcessEnvironment();
+	/** How long the program's lookup took, which counts against the timeout. */
+	let lookupMs = 0;
+	// The arguments as they are now: a caller may reuse its array while the program is looked up.
+	const argv = [...args];
+	let launch: HelperLaunch = { file: command };
+	if (process.platform === "win32") {
+		// Windows looks for a program named without a path in the working directory before PATH (see windowsLaunch).
+		const lookup = new AbortController();
+		const releaseLookupStops = stopLookupOn(lookup, options, onQuit);
+		const lookupStarted = performance.now();
+		try {
+			launch = await windowsLaunch(command, env, cwd, lookup.signal);
+		} catch (error) {
+			if (!lookup.signal.aborted) throw error;
+		} finally {
+			// From here until the command's own stops are in place everything runs at once: no stop can arrive between.
+			releaseLookupStops();
+			lookupMs = performance.now() - lookupStarted;
+		}
+		// Stopped while it was looked up, or as the lookup finished: nothing starts, and the result is a command's that
+		// was stopped at once.
+		if (lookup.signal.aborted) {
+			return { stdout: "", stderr: "", code: 128 + osConstants.signals.SIGTERM, killed: true, truncated: false };
+		}
+	}
 	// Without fork where that costs the host time in proportion to its memory (#5345).
-	const proc = spawnHostProcess(command, args, {
+	const proc = spawnHostProcess(launch.file, argv, {
 		cwd,
-		// Pass the environment explicitly. Bun snapshots the process environment
-		// at startup for spawns that omit `env`, so an inherited default would
-		// still carry values this process deleted from `process.env` — including
-		// the interactive-engine control variables and their --api-key. Preserve
-		// Atomic's child attribution in the same explicit environment.
-		env: createChildProcessEnvironment(),
+		env,
 		stdio: ["ignore", "pipe", "pipe"],
 		// A command a quit would stop must not outlive this process when it is killed instead.
 		endWithParent: onQuit !== undefined,
+		...missingHelperOptions(launch),
 	});
 	// Until it settles; one that exited by then is left alone (see killQuitStoppableCommandsNow).
 	if (onQuit !== undefined && proc.pid !== undefined) quitStoppableCommands.add(proc);
@@ -210,7 +352,7 @@ export async function execCommand(
 	}
 
 	if (options?.timeout && options.timeout > 0) {
-		timeoutId = setTimeout(abort, options.timeout);
+		timeoutId = setTimeout(abort, Math.max(0, options.timeout - lookupMs));
 	}
 
 	// Keep only bytes within the combined cap (#11360). Close both pipes on overflow so writing

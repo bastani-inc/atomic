@@ -4,6 +4,7 @@ import { type GitUnavailableError, isGitUnavailableError } from "../../utils/git
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import {
+	adoptSubagentCaptures,
 	currentWorktreeSnapshots,
 	formatLapsedPinNotice,
 	formatMissingRecordNotice,
@@ -453,6 +454,8 @@ async function prepareResume(
 ): Promise<PreparedSessionResume> {
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	// A checkout the session's finished subagents captured after it last did is restored as they left it.
+	if (options.settings.enabled) await adoptSubagentCaptures(sessionManager, options.signal);
 	if (!options.settings.enabled || sessionManager.getLatestWorktreeSnapshots().size === 0) {
 		const missing = options.settings.enabled ? await missingSnapshotRecords(sessionManager) : [];
 		if (missing.length > 0) return continueWithoutRecords(sessionManager, missing, storeDir, options);
@@ -1335,6 +1338,8 @@ export async function continueSessionWhereItWorked(
 	await holdSessionWorktrees(opened, opened, storeDir, options.signal);
 	try {
 		options.signal?.throwIfAborted();
+		// What its finished subagents captured later than the session counts as the session's own, as in any resume.
+		if (options.settings.enabled) await adoptSubagentCaptures(opened, options.signal);
 		const cwd = await mapRestoredPathAsync(opened.getCwd(), opened.getWorktreeRootMappings());
 		const checkouts = await currentWorktreeSnapshots(opened);
 		const cancelled = await setAsideCancelledBuilds(opened, storeDir, options);
