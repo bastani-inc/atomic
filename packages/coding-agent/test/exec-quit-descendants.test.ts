@@ -42,11 +42,32 @@ async function recordedFrom(file: string): Promise<RecordedProcess> {
 	return recorded;
 }
 
+/** A program that records its pid in the file its first argument names, then runs until it is ended. */
+const RECORDS_ITS_PID =
+	'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/** {@link RECORDS_ITS_PID}, ignoring SIGTERM. */
+const RECORDS_ITS_PID_DEAF =
+	'process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/**
+ * Programs that start a process of their own running the program their second argument holds, with their first
+ * argument, a file, as its argument: one that then runs until it is ended, one that exits once the file exists, and one
+ * that starts the process detached and then runs until it is ended.
+ */
+const STARTS_A_PROCESS =
+	'require("node:child_process").spawn(process.execPath, ["-e", process.argv[2], process.argv[1]], { stdio: "ignore" }).unref(); setInterval(() => {}, 1000);';
+const STARTS_A_PROCESS_THEN_EXITS =
+	'require("node:child_process").spawn(process.execPath, ["-e", process.argv[2], process.argv[1]], { stdio: "ignore" }).unref(); const wait = setInterval(() => { if (require("node:fs").existsSync(process.argv[1])) { clearInterval(wait); process.exit(0); } }, 10);';
+const STARTS_A_DETACHED_PROCESS =
+	'require("node:child_process").spawn(process.execPath, ["-e", process.argv[2], process.argv[1]], { detached: true, stdio: "ignore" }).unref(); setInterval(() => {}, 1000);';
+
 /** A command that starts a process of its own, which records its pid in `file`; both run until they are ended. */
 function commandStartingAProcess(file: string, options: { deaf?: boolean; exitAfterStart?: boolean } = {}): string[] {
-	const child = `${options.deaf ? 'process.on("SIGTERM", () => {});' : ""}require("node:fs").writeFileSync(${JSON.stringify(file)}, String(process.pid)); setInterval(() => {}, 1000);`;
-	const root = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: "ignore" }).unref(); ${options.exitAfterStart ? `const wait = setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(file)})) { clearInterval(wait); process.exit(0); } }, 10);` : "setInterval(() => {}, 1000);"}`;
-	return ["-e", root];
+	return [
+		"-e",
+		options.exitAfterStart ? STARTS_A_PROCESS_THEN_EXITS : STARTS_A_PROCESS,
+		file,
+		options.deaf ? RECORDS_ITS_PID_DEAF : RECORDS_ITS_PID,
+	];
 }
 
 // On Windows the processes a command started end with the process that started the command.
@@ -126,10 +147,9 @@ test.skipIf(process.platform === "win32")(
 	"a command its session's quit ends leaves a program it started detached running",
 	async () => {
 		const file = pidFile();
-		const child = `require("node:fs").writeFileSync(${JSON.stringify(file)}, String(process.pid)); setInterval(() => {}, 1000);`;
-		const root = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { detached: true, stdio: "ignore" }).unref(); setInterval(() => {}, 1000);`;
 		let stop: (() => void) | undefined;
-		const running = execCommand(process.execPath, ["-e", root], process.cwd(), undefined, (registered) => {
+		const args = ["-e", STARTS_A_DETACHED_PROCESS, file, RECORDS_ITS_PID];
+		const running = execCommand(process.execPath, args, process.cwd(), undefined, (registered) => {
 			stop = registered;
 			return () => {};
 		});
