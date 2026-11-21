@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 // helper equivalents, and the async ones that do exist would not make the
 // descriptor plumbing any safer.
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
 	appendFileSync,
 	closeSync,
@@ -48,7 +49,12 @@ import {
 } from "../../packages/intercom/broker/start-announcement.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { keepProcessPidByStartTime, keptExitedPid } from "../helpers/exited-process.js";
-import { recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
+import {
+	currentProcessStart,
+	READS_PROCESS_STARTS,
+	recordProcess,
+	signalRecordedProcess,
+} from "../helpers/recorded-process.js";
 import { bunExecutable, removePathSync } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -588,7 +594,7 @@ describe("a broker behind a launcher that hides it", () => {
 		return pid;
 	}
 
-	const probe = (announced: { path: string; token: string }) => () => readBrokerStartAnnouncement(announced)?.pid;
+	const probe = (announced: { path: string; token: string }) => () => readBrokerStartAnnouncement(announced);
 
 	test("a crash after announcing is reported with the broker's log long before the start-up budget (#5332)", async () => {
 		writeFileSync(logPath, "");
@@ -662,6 +668,62 @@ describe("a broker behind a launcher that hides it", () => {
 		}
 	});
 
+	test.skipIf(!READS_PROCESS_STARTS)(
+		"an announced pid that now names a process created at another time is a crash, reported long before the start-up budget",
+		async () => {
+			// Windows gives the pid of a crashed broker to another process within seconds: a live process whose start is not
+			// the announced one stands in for it.
+			const later = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			await once(later, "spawn");
+			assert.ok(later.pid !== undefined);
+			const recorded = await recordProcess(later.pid);
+			onTestFinished(async () => {
+				await signalRecordedProcess(recorded);
+			});
+			const announcedStart = await currentProcessStart(process.pid);
+			assert.ok(announcedStart !== undefined);
+			const started = startedAt();
+
+			await assert.rejects(
+				() =>
+					spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => ({ pid: recorded.pid, started: announcedStart })),
+				/Intercom broker exited before startup \(pid \d+\)/u,
+			);
+			assert.ok(startedAt() - started < PROMPT_EXIT_BOUND_MS);
+		},
+	);
+
+	test.skipIf(!READS_PROCESS_STARTS)(
+		"a broker announced with its own start is waited for while it loads, not mistaken for a crash",
+		async () => {
+			const socketPath = pathsModule.getBrokerSocketPath();
+			const listenAfterMs = 1_500;
+			const loading = spawn(
+				process.execPath,
+				[
+					"-e",
+					`setTimeout(() => require("node:net").createServer((socket) => socket.on("error", () => {})).listen(${JSON.stringify(socketPath)}), ${listenAfterMs}); setTimeout(() => process.exit(0), 8000);`,
+				],
+				{ stdio: "ignore" },
+			);
+			await once(loading, "spawn");
+			assert.ok(loading.pid !== undefined);
+			const recorded = await recordProcess(loading.pid);
+			onTestFinished(async () => {
+				await signalRecordedProcess(recorded);
+				await eventually(async () => !(await connectable(socketPath)), 10_000);
+				removePathSync(socketPath, { force: true });
+			});
+			const started = startedAt();
+
+			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => ({
+				pid: recorded.pid,
+				started: recorded.started,
+			}));
+			assert.ok(startedAt() - started >= listenAfterMs - 100, "answered before the broker could have listened");
+		},
+	);
+
 	test("an announcement that is another spawn's is ignored, so the wait is the ordinary start-up budget", async () => {
 		const announced = {
 			path: pathsModule.getBrokerStartAnnouncementPath(),
@@ -691,7 +753,7 @@ describe("a broker behind a launcher that hides it", () => {
 				live ??= net
 					.createServer((socket) => socket.on("error", () => {}))
 					.listen(pathsModule.getBrokerSocketPath());
-				return dead.pid;
+				return { pid: dead.pid };
 			});
 			assert.ok(live);
 		} finally {

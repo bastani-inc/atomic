@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -21,6 +21,7 @@ import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
 import { keepProcessPid, keptExitedPid } from "../helpers/exited-process.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+import { recordProcess, signalRecordedProcess, stillRuns } from "../helpers/recorded-process.js";
 
 /**
  * `atomic storage status` and `atomic intercom restart` (#3856, #3857) talk to real broker processes through
@@ -385,6 +386,42 @@ test(
 		const outcome = await restartIntercomBroker(agentDir, { reconnectTimeoutMs: 200 });
 		assert.deepEqual(outcome, { status: "stopped", previous: { pid: legacy.pid } });
 		await exited(legacy);
+	},
+	BROKER_SCENARIO_TIMEOUT_MS,
+);
+
+/** How long before a process's start broker.pid is dated when a test stands in for a broker that wrote it and exited. */
+const WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS = 60_000;
+
+// Windows gives the pid of an exited process to another within seconds; elsewhere a pid is given out again only after
+// the whole range has been used, and the restart's check there is the start token it read when it found the broker.
+test.skipIf(process.platform !== "win32")(
+	"restart never ends a process that was given the pid broker.pid names after the broker wrote it",
+	async () => {
+		const agentDir = agentDirectory("reused-pid");
+		const socketPath = getBrokerSocketPath(process.platform, agentDir);
+		// A pipe that still accepts and drops a connection, as a terminated broker's can for a moment on Windows.
+		const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
+		await new Promise<void>((resolveListening) => server.listen(socketPath, resolveListening));
+		onTestFinished(() => new Promise<void>((resolveClosed) => server.close(() => resolveClosed())));
+		const later = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		await new Promise<void>((resolveSpawned) => later.once("spawn", () => resolveSpawned()));
+		assert.ok(later.pid !== undefined);
+		const recorded = await recordProcess(later.pid);
+		onTestFinished(async () => {
+			await signalRecordedProcess(recorded);
+		});
+		// broker.pid as the broker that held this pid wrote it, a minute before the pid was given to `later`.
+		const pidPath = getBrokerPidPath(agentDir);
+		writeFileSync(pidPath, String(later.pid));
+		const written = new Date(Date.now() - WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS);
+		utimesSync(pidPath, written, written);
+
+		assert.deepEqual(await queryIntercomBroker(agentDir), { state: "stopped" });
+		assert.deepEqual(await restartIntercomBroker(agentDir, { stopTimeoutMs: 1_000, reconnectTimeoutMs: 200 }), {
+			status: "not-running",
+		});
+		assert.equal(await stillRuns(recorded), true, "restart ended the process that now has the broker's pid");
 	},
 	BROKER_SCENARIO_TIMEOUT_MS,
 );

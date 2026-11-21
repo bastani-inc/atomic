@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `atomic intercom restart` ending an unrelated process on Windows when the broker did not acknowledge its shutdown request: Windows can give the pid of a broker that has exited to another process within seconds, and the restart ended whatever process had that pid. It now ends the broker only through a handle to the process it found, only if that process is the one that recorded itself as the broker, and only the broker itself, not a process it started. On Linux it signals the broker only while its pid still names the process it found. The restart's 10-second wait for the broker to exit, and a session's wait for a broker it is starting on Windows, now end as soon as the broker's pid names another process instead of running to their limit
+
 ## [0.10.3] - 2026-11-21
 
 ### Fixed
