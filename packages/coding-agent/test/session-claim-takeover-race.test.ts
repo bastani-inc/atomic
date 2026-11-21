@@ -32,21 +32,31 @@ const race = vi.hoisted(() => ({
 	claimFile: undefined as string | undefined,
 	beforeClaimRemoval: undefined as (() => void) | undefined,
 	beforeMutexRemoval: undefined as (() => void) | undefined,
+	/** What a hook threw: the code it runs inside treats a failed removal as a lost race and goes on. */
+	hookError: undefined as unknown,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
+	const run = (hook: (() => void) | undefined) => {
+		try {
+			hook?.();
+		} catch (error) {
+			race.hookError ??= error;
+			throw error;
+		}
+	};
 	const before = (path: unknown) => {
 		const target = String(path);
 		if (race.claimFile === undefined) return;
 		if (target === race.claimFile) {
 			const hook = race.beforeClaimRemoval;
 			race.beforeClaimRemoval = undefined;
-			hook?.();
+			run(hook);
 		} else if (target === `${race.claimFile}.takeover`) {
 			const hook = race.beforeMutexRemoval;
 			race.beforeMutexRemoval = undefined;
-			hook?.();
+			run(hook);
 		}
 	};
 	const renameSync: typeof actual.renameSync = (from, to) => {
@@ -97,6 +107,7 @@ beforeEach(() => {
 	setNativeLocksForTesting(null);
 	race.beforeClaimRemoval = undefined;
 	race.beforeMutexRemoval = undefined;
+	race.hookError = undefined;
 	mkdirSync(join(agentDir, "session-claims"), { recursive: true });
 	writeFileSync(claimFile, JSON.stringify({ token: "dead", ...exitedProcess(), host: hostname() }));
 });
@@ -142,7 +153,7 @@ type Outcome = { readonly held: true; readonly pid: number } | { readonly held: 
 function anotherProcessClaims(): () => Outcome | undefined {
 	const report = join(agentDir, `outcome-${randomUUID()}.json`);
 	const script = `
-		import { writeFileSync } from "node:fs";
+		import { renameSync, writeFileSync } from "node:fs";
 		import { claimSession } from ${JSON.stringify(SESSION_CLAIMS_MODULE)};
 		import { setNativeLocksForTesting } from ${JSON.stringify(LOCK_TAKEOVER_MODULE)};
 		if (!${native}) setNativeLocksForTesting(null);
@@ -153,7 +164,9 @@ function anotherProcessClaims(): () => Outcome | undefined {
 		} catch (error) {
 			outcome = { held: false, error: error?.name === "Error" ? String(error.code ?? error.message) : error?.name };
 		}
-		writeFileSync(${JSON.stringify(report)}, JSON.stringify(outcome));
+		// Whole or not at all: a report read while it is being written would read as no report.
+		writeFileSync(${JSON.stringify(`${report}.tmp`)}, JSON.stringify(outcome));
+		renameSync(${JSON.stringify(`${report}.tmp`)}, ${JSON.stringify(report)});
 		if (outcome.held) setInterval(() => {}, 1000);
 	`;
 	children.push(spawn("bun", ["--eval", script], { stdio: "ignore" }));
@@ -171,15 +184,18 @@ function outcomesOf(reports: readonly (() => Outcome | undefined)[]): Outcome[] 
 	}
 }
 
-/** How this process's claim of the session went. */
+/** How this process's claim of the session went. Rethrows what a hook it ran into threw. */
 function thisProcessClaims(): Outcome {
+	let outcome: Outcome;
 	try {
 		releases.push(claimSession(sessionId, { agentDir }));
-		return { held: true, pid: process.pid };
+		outcome = { held: true, pid: process.pid };
 	} catch (error) {
-		if (error instanceof SessionAlreadyOpenError) return { held: false, error: error.name };
-		return { held: false, error: String((error as NodeJS.ErrnoException).code ?? error) };
+		if (error instanceof SessionAlreadyOpenError) outcome = { held: false, error: error.name };
+		else outcome = { held: false, error: String((error as NodeJS.ErrnoException).code ?? error) };
 	}
+	if (race.hookError !== undefined) throw race.hookError;
+	return outcome;
 }
 
 function claimHolderPid(): number | undefined {
