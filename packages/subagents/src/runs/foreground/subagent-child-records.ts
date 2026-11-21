@@ -24,6 +24,7 @@ import {
 	isSubagentChildRecord,
 	isUnsavedSubagentChildRecord,
 	loadSubagentChildRecord,
+	mergeSubagentChildRecord,
 	observeSubagentChildRecord,
 	pendingSubagentChildWrites,
 	registerSubagentChildRecordReader,
@@ -1034,7 +1035,7 @@ export function readSubagentChildRecords(
 		const data = entry.data as SubagentChildRecord;
 		if (ownerSessionId !== undefined && data.owner?.sessionId !== ownerSessionId) continue;
 		const previous = records.get(data.childId);
-		records.set(data.childId, visibleWorktreeRecord(previous ? { ...previous, ...data } : data));
+		records.set(data.childId, visibleWorktreeRecord(previous ? mergeSubagentChildRecord(previous, data) : data));
 	}
 	return records;
 }

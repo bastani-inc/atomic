@@ -7,11 +7,12 @@
 
 import assert from "node:assert/strict";
 import { AsyncLocalStorage, createHook, executionAsyncId } from "node:async_hooks";
+import { ChildProcess, spawn } from "node:child_process";
 import { pbkdf2, pbkdf2Sync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BroadcastChannel, MessagePort } from "node:worker_threads";
 import {
 	type AssistantMessage,
@@ -19,7 +20,7 @@ import {
 	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
-import { afterEach, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { SubagentStartupHooks } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
@@ -91,7 +92,28 @@ const SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND = 200;
  * counted before and 300 after on this fixture.
  */
 const ASYNCHRONOUS_CHECK_FS_OPERATIONS = 300 - 116;
+/**
+ * The bound on a start's fs requests for a fixture whose directory is directly below a temporary directory directly
+ * below the root, such as /tmp/atomic-subagent-start-*: three directories from the child's cwd up to the root.
+ */
 const START_FS_OPERATION_BOUND = SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND + ASYNCHRONOUS_CHECK_FS_OPERATIONS;
+const START_FS_OPERATION_BOUND_DIRECTORIES = 3;
+/**
+ * The fs requests a start makes in each directory from its cwd up to the root, where it looks for project context
+ * files, skills and a repository: 20 in each. The fixture sits in the system's temporary directory, as deep as that
+ * is, so the bound grows by as many for each directory more it has above it.
+ */
+const FS_OPERATIONS_PER_DIRECTORY = 20;
+
+/** How many directories deeper than the system's a temporary directory can be, as on a CI runner or in a sandbox. */
+const DEEP_TEMPORARY_LEVELS = 12;
+
+/** How many directories a start in `cwd` looks in on its way up: `cwd`, each directory above it and the root. */
+function directoriesUpToRoot(cwd: string): number {
+	let count = 1;
+	for (let directory = cwd; dirname(directory) !== directory; directory = dirname(directory)) count++;
+	return count;
+}
 
 /**
  * The start budget of a child launched against an injected stall. It runs only once the child reaches its stall (see
@@ -211,8 +233,10 @@ function holdStartBudget(budgetMs: number, reached: Promise<void> | (() => Promi
 	});
 }
 
-async function startFixture(options: { readonly parentAdmission?: ResourceAdmission } = {}) {
-	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-start-"));
+async function startFixture(
+	options: { readonly parentAdmission?: ResourceAdmission; readonly parentDirectory?: string } = {},
+) {
+	const cwd = mkdtempSync(join(options.parentDirectory ?? tmpdir(), "atomic-subagent-start-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
 	const agentDir = join(cwd, "agent");
 	const model: Model<"anthropic-messages"> = {
@@ -511,9 +535,10 @@ function ownTurns(start: SaturatedStart): number {
 /**
  * Counts the requests work started in `launched` sends over long-lived channels: messages to another thread, such as
  * those to the thread every SQLite connection runs on (a worker's messages go through its port), messages on a
- * broadcast channel, and writes to a socket or pipe other than this process's own output. The answer to each arrives on the channel's handle, which was made before it and answers every request, so
- * {@link stepsOf} cannot tell one answer waited for after another from answers waited for together; each is counted as
- * a turn of its own. Returns the count so far and a restore for the channels.
+ * broadcast channel, messages to a child process over its IPC channel, and writes to a socket or pipe other than this
+ * process's own output. The answer to each arrives on the channel's handle, which was made before it and answers every
+ * request, so {@link stepsOf} cannot tell one answer waited for after another from answers waited for together; each is
+ * counted as a turn of its own. Returns the count so far and a restore for the channels.
  */
 function requestsOf(launched: AsyncLocalStorage<true>): { readonly count: () => number; readonly restore: () => void } {
 	const post = MessagePort.prototype.postMessage;
@@ -532,15 +557,50 @@ function requestsOf(launched: AsyncLocalStorage<true>): { readonly count: () => 
 		if (launched.getStore() && this !== process.stdout && this !== process.stderr) count++;
 		return write.apply(this, args);
 	} as typeof write;
+	onChildProcessMessage = () => {
+		if (launched.getStore()) count++;
+	};
 	return {
 		count: () => count,
 		restore: () => {
 			MessagePort.prototype.postMessage = post;
 			BroadcastChannel.prototype.postMessage = broadcast;
 			Socket.prototype.write = write;
+			onChildProcessMessage = undefined;
 		},
 	};
 }
+
+/** Told of each message sent to a child process over its IPC channel while {@link requestsOf} counts. */
+let onChildProcessMessage: (() => void) | undefined;
+
+/**
+ * Node gives each child process with an IPC channel a `send` of its own as it opens the channel. Defined before any
+ * test starts a process, this accessor wraps each of them as Node sets it, so {@link requestsOf} sees the messages sent
+ * over a channel opened before the launch it counts as well as during it. This worker's own channel to the test runner,
+ * `process.send`, belongs to no child process and is left alone.
+ */
+beforeAll(() => {
+	Object.defineProperty(ChildProcess.prototype, "send", {
+		configurable: true,
+		get: () => undefined,
+		set(this: ChildProcess, send: ChildProcess["send"]) {
+			Object.defineProperty(this, "send", {
+				configurable: true,
+				enumerable: true,
+				writable: true,
+				value(this: ChildProcess, ...args: Parameters<ChildProcess["send"]>) {
+					onChildProcessMessage?.();
+					return send.apply(this, args);
+				},
+			});
+		},
+	});
+});
+
+afterAll(() => {
+	Reflect.deleteProperty(ChildProcess.prototype, "send");
+});
 
 /** Async resources whose callbacks run in the turn that queued them: promise reactions, ticks and microtasks. */
 const SAME_TURN_RESOURCES: ReadonlySet<string> = new Set(["PROMISE", "TickObject", "Microtask"]);
@@ -633,6 +693,36 @@ test(
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
 
+test("a start's requests over long-lived channels include each message it sends a child process over IPC (#4319)", async () => {
+	// A child process that answers each message it gets, over the channel it was started with.
+	const child = spawn(process.execPath, ["-e", "process.on('message', (message) => process.send(message))"], {
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+	});
+	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+	cleanups.push(async () => {
+		// Its channel closed, the child has nothing left to wait for and exits.
+		if (child.connected) child.disconnect();
+		await exited;
+	});
+	const roundTrip = (message: number) =>
+		new Promise<void>((resolve) => {
+			child.once("message", () => resolve());
+			child.send(message);
+		});
+	const launched = new AsyncLocalStorage<true>();
+	const requests = requestsOf(launched);
+	try {
+		await roundTrip(0);
+		await launched.run(true, async () => {
+			for (let message = 1; message <= 3; message++) await roundTrip(message);
+		});
+	} finally {
+		requests.restore();
+	}
+
+	assert.equal(requests.count(), 3, "each round trip of the launch, and none from outside it");
+});
+
 test(
 	"a child started in a deeply nested directory runs its start in no more loop turns than one started above it, however long a loaded host holds its file requests (#5514, #5612)",
 	async () => {
@@ -655,31 +745,59 @@ test(
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
 
-test(
-	"a child's start makes a bounded number of fs requests up to its first provider request (#4319)",
-	async () => {
-		const fixture = await startFixture();
-		let operations = 0;
-		let atFirstRequest: number | undefined;
-		const hook = createHook({
-			init(_id, type) {
-				if (type === "FSREQPROMISE" || type === "FSREQCALLBACK") operations++;
-			},
-		});
-		fixture.onFirstRequest(() => {
-			atFirstRequest = operations;
-		});
-		hook.enable();
-		let result: SingleResult;
-		try {
-			result = await fixture.launch("start-fs-operations");
-		} finally {
-			hook.disable();
-		}
+/** The fs requests a child's start makes up to its first provider request, with the directory it started in. */
+async function startFsOperations(
+	runId: string,
+	parentDirectory?: string,
+): Promise<{ readonly operations: number; readonly cwd: string }> {
+	const fixture = await startFixture(parentDirectory === undefined ? {} : { parentDirectory });
+	let operations = 0;
+	let atFirstRequest: number | undefined;
+	const hook = createHook({
+		init(_id, type) {
+			if (type === "FSREQPROMISE" || type === "FSREQCALLBACK") operations++;
+		},
+	});
+	fixture.onFirstRequest(() => {
+		atFirstRequest = operations;
+	});
+	hook.enable();
+	let result: SingleResult;
+	try {
+		result = await fixture.launch(runId);
+	} finally {
+		hook.disable();
+	}
+	assert.equal(result.status, "ok", JSON.stringify(result));
+	assert.ok(atFirstRequest !== undefined, "the child reached its provider");
+	return { operations: atFirstRequest, cwd: fixture.cwd };
+}
 
-		assert.equal(result.status, "ok", JSON.stringify(result));
-		assert.ok(atFirstRequest !== undefined, "the child reached its provider");
-		assert.ok(atFirstRequest <= START_FS_OPERATION_BOUND, `the start made ${atFirstRequest} fs requests`);
+test(
+	"a child's start makes a bounded number of fs requests up to its first provider request, however deep the temporary directory it starts in (#4319)",
+	async () => {
+		const deepTemporary = mkdtempSync(join(tmpdir(), "atomic-deep-temporary-"));
+		cleanups.push(() => rmSync(deepTemporary, { recursive: true, force: true }));
+		const deep = join(
+			deepTemporary,
+			...Array.from({ length: DEEP_TEMPORARY_LEVELS }, (_, level) => `level-${level}`),
+		);
+		mkdirSync(deep, { recursive: true });
+
+		for (const [runId, parentDirectory] of [
+			["start-fs-operations", undefined],
+			["start-fs-operations-deep", deep],
+		] as const) {
+			const { operations, cwd } = await startFsOperations(runId, parentDirectory);
+			const directories = directoriesUpToRoot(cwd);
+			const bound =
+				START_FS_OPERATION_BOUND +
+				FS_OPERATIONS_PER_DIRECTORY * (directories - START_FS_OPERATION_BOUND_DIRECTORIES);
+			assert.ok(
+				operations <= bound,
+				`the start made ${operations} fs requests in ${cwd}, ${directories} directories up to the root`,
+			);
+		}
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
