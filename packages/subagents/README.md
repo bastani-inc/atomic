@@ -690,7 +690,7 @@ Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped t
 
 Metadata records timing, usage, typed status, termination cause, final model, attempted models, and fallback attempt outcomes.
 
-Child sessions are kept in the parent's session store, hidden from session lists, or as files under a per-run session directory when the parent's sessions are files or a session directory is configured. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
+Child sessions are kept in the parent's session store, a fresh child's hidden from session lists, or as files under a per-run session directory when the parent's sessions are files or a session directory is configured. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
 Owner-bound completions notify the originating session while its admission boundary remains open. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
 
