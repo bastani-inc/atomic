@@ -32,6 +32,7 @@ import {
 } from "../../intercom/intercom-bridge.js";
 import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
+import { childSessionStore } from "../../shared/child-session-store.js";
 import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
@@ -928,6 +929,8 @@ async function relaunchChild(
 	}
 	// Redispatched calls start the child; their task is never prompted, so it is only a fallback.
 	const taskFallback = redispatch && wakeFallback;
+	// A fresh child its launch created in its owner's store starts there, while the owner's store is not files.
+	const sessionStore = fresh?.ownerStore && !sessionManager ? childSessionStore(ctx.sessionManager) : undefined;
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -939,9 +942,14 @@ async function relaunchChild(
 		cwdVerdict,
 		runId: record.runId,
 		index: record.index,
-		sessionDir:
-			(fresh ? fresh.sessionDir : sessionManager?.getSessionDir()) ||
-			(await mkdtemp(join(tmpdir(), "atomic-subagent-restore-"))),
+		// Only a child that creates a session file of its own needs a directory: one reopened, or created in its owner's
+		// store, needs none.
+		...(sessionManager
+			? { ...(sessionManager.getSessionDir() ? { sessionDir: sessionManager.getSessionDir() } : {}) }
+			: sessionStore
+				? {}
+				: { sessionDir: fresh?.sessionDir || (await mkdtemp(join(tmpdir(), "atomic-subagent-restore-"))) }),
+		...(sessionStore ? { sessionStore } : {}),
 		...(sessionManager ? { sessionManager, ...(fresh ? {} : { resumeSession: true }) } : {}),
 		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
 		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),
