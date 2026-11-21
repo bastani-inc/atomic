@@ -177,11 +177,11 @@ export function assignGroups(modules, entries, importsOf) {
  * counted as an import.
  * @param {typeof import("esbuild")} esbuild
  * @param {string} packageDir
+ * @param {string} dist
  * @param {Map<string, string>} sources
  * @returns {Promise<{ exports: Map<string, string[]>, imports: Map<string, { static: string[], dynamic: string[], staticExternal: string[], dynamicExternal: string[] }> }>}
  */
-async function analyzeModules(esbuild, packageDir, sources) {
-	const dist = join(packageDir, "dist");
+async function analyzeModules(esbuild, packageDir, dist, sources) {
 	const result = await esbuild.build({
 		absWorkingDir: packageDir,
 		entryPoints: [...sources.keys()],
@@ -229,16 +229,23 @@ async function analyzeModules(esbuild, packageDir, sources) {
 /**
  * Bundles `packageDir`'s compiled `dist` in place.
  * @param {string} packageDir
- * @param {{ standalone?: readonly string[], cacheDir?: string, log?: (message: string) => void }} [options]
- *   `standalone`: modules, by path below `dist`, that keep their compiled files.
+ * @param {{ standalone?: readonly string[], dist?: string, cacheDir?: string, log?: (message: string) => void }} [options]
+ *   `standalone`: modules, by path below `dist`, that keep their compiled files. `dist`: a directory named `dist`
+ *   elsewhere that holds the compiled package instead, such as one staged for the package; the bundle is the same.
  */
 export async function bundlePackageDist(packageDir, options = {}) {
 	const { rolldown } = await import("rolldown");
 	const esbuild = await import("esbuild");
-	const dist = join(packageDir, "dist");
 	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
-	if (manifest.exports) checkExports(manifest.exports);
 	const cacheDir = options.cacheDir ?? join(packageDir, "node_modules", ".cache", "atomic-bundle-dist");
+	if (options.dist !== undefined) {
+		// The bundle names modules by their paths from the directory holding `dist`, so it is the same wherever that is.
+		const staged = resolve(packageDir, options.dist);
+		if (basename(staged) !== "dist") throw new Error(`bundle-package-dist: ${options.dist} is not named dist`);
+		packageDir = dirname(staged);
+	}
+	const dist = join(packageDir, "dist");
+	if (manifest.exports) checkExports(manifest.exports);
 	const stateFile = join(cacheDir, "state.json");
 	const compiledDir = join(cacheDir, "compiled");
 	/** @type {{ facades: Record<string, string> }} */
@@ -275,7 +282,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		if (map !== "") maps.set(file, map);
 	}
 
-	const analysis = await analyzeModules(esbuild, packageDir, sources);
+	const analysis = await analyzeModules(esbuild, packageDir, dist, sources);
 	const expectedExports = analysis.exports;
 	/** A standalone module, external to the bundle, as the bundled files name it: its path below dist. */
 	const asImported = (/** @type {string} */ path) => `./${toPosix(relative(dist, path))}`;
@@ -595,5 +602,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 		.filter((arg) => arg.startsWith("--standalone="))
 		.flatMap((arg) => arg.slice("--standalone=".length).split(","))
 		.filter(Boolean);
-	await bundlePackageDist(process.cwd(), { standalone });
+	const dist = process.argv
+		.slice(2)
+		.find((arg) => arg.startsWith("--dist="))
+		?.slice("--dist=".length);
+	await bundlePackageDist(process.cwd(), { standalone, dist });
 }

@@ -28,7 +28,7 @@ from scripts.atomic_cli import (
     remove_folder,
     run_main,
 )
-from scripts.utils import parse_skill_md
+from scripts.utils import parse_skill_md, write_output_in_utf8
 
 # A trailing read selector such as :raw, :conflicts, :12, :10-20, :5+3 or :1-5,9-12.
 _READ_SELECTOR = re.compile(r":(?:raw|conflicts|\d+(?:[-+]\d+)?(?:,\d+(?:[-+]\d+)?)*)$")
@@ -413,4 +413,5 @@ def main():
 
 
 if __name__ == "__main__":
+    write_output_in_utf8()
     run_main(main)
