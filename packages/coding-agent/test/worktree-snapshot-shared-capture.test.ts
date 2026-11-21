@@ -17,7 +17,12 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import { resolveWorktreeSnapshotSettings } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
-const captures = vi.hoisted(() => ({ calls: 0, previous: [] as (string | undefined)[] }));
+const captures = vi.hoisted(() => ({
+	calls: 0,
+	previous: [] as (string | undefined)[],
+	/** Captures of these checkouts wait until `until` settles. */
+	held: undefined as { readonly roots: ReadonlySet<string>; readonly until: Promise<void> } | undefined,
+}));
 
 vi.mock("../src/core/worktree-snapshot/capture.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("../src/core/worktree-snapshot/capture.ts")>();
@@ -26,6 +31,7 @@ vi.mock("../src/core/worktree-snapshot/capture.ts", async (importOriginal) => {
 		captureLocatedCheckout: async (...args: Parameters<typeof original.captureLocatedCheckout>) => {
 			captures.calls++;
 			captures.previous.push((args[1]?.previous as WorktreeSnapshot | undefined)?.id);
+			if (captures.held?.roots.has(args[0].root)) await captures.held.until;
 			return original.captureLocatedCheckout(...args);
 		},
 	};
@@ -39,20 +45,29 @@ beforeEach(() => {
 	sandbox = new GitSandbox();
 	captures.calls = 0;
 	captures.previous = [];
+	captures.held = undefined;
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
 	sandbox.dispose();
 });
 
-async function checkoutWithSessions(count: number) {
-	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+/** Structural cost: 33 real Git checkouts, each captured by its own session. */
+const MANY_CHECKOUTS_TIMEOUT_MS = 120_000;
+
+async function sessionStore(): Promise<SqlSessionStore> {
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 	const store = await SqlSessionStore.open(database);
 	cleanups.push(async () => {
 		await store.close();
 		await database.close();
 	});
+	return store;
+}
+
+async function checkoutWithSessions(count: number, name = "repo", existing?: SqlSessionStore) {
+	const { clone } = await sandbox.remoteWithClone(name, { "README.md": "hello\n" });
+	const store = existing ?? (await sessionStore());
 	const settings = resolveWorktreeSnapshotSettings(undefined, "sdk", "snapshots");
 	const sessions = [];
 	for (let index = 0; index < count; index++) {
@@ -70,7 +85,7 @@ async function checkoutWithSessions(count: number) {
 		});
 		sessions.push({ manager, recorder });
 	}
-	return { clone, sessions };
+	return { clone, store, sessions };
 }
 
 function wrote(path: string) {
@@ -107,3 +122,49 @@ test("a session's first capture of a checkout starts from the newest snapshot of
 	const childSnapshot = child!.manager.getLatestWorktreeSnapshots().get(clone);
 	assert.ok(childSnapshot && childSnapshot.id !== parentSnapshot.id);
 });
+
+test("a session that recorded a snapshot of a checkout captures it from its own snapshot, not another session's", async () => {
+	const { clone, sessions } = await checkoutWithSessions(2);
+	const [parent, child] = sessions;
+	sandbox.write(join(clone, "a.txt"), "parent\n");
+	await parent!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+	const parentSnapshot = parent!.manager.getLatestWorktreeSnapshots().get(clone);
+	assert.ok(parentSnapshot);
+	sandbox.write(join(clone, "b.txt"), "child\n");
+	await child!.recorder.recordTurn(wrote(join(clone, "b.txt")));
+
+	sandbox.write(join(clone, "a.txt"), "parent again\n");
+	await parent!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+	assert.equal(captures.previous.at(-1), parentSnapshot.id);
+});
+
+test(
+	"a checkout captured while as many others are being captured still gives its snapshot to the next session's first capture",
+	async () => {
+		const store = await sessionStore();
+		const busy = [];
+		for (let index = 0; index < 32; index++) busy.push(await checkoutWithSessions(1, `busy-${index}`, store));
+		const { clone, sessions } = await checkoutWithSessions(2, "last", store);
+		const release = Promise.withResolvers<void>();
+		captures.held = { roots: new Set(busy.map(({ clone }) => clone)), until: release.promise };
+		const running = busy.map(({ clone, sessions }) => {
+			sandbox.write(join(clone, "a.txt"), "busy\n");
+			return sessions[0]!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+		});
+		try {
+			await vi.waitFor(() => assert.equal(captures.calls, 32), { timeout: MANY_CHECKOUTS_TIMEOUT_MS, interval: 10 });
+			const [first, next] = sessions;
+			sandbox.write(join(clone, "a.txt"), "first\n");
+			await first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+			const firstSnapshot = first!.manager.getLatestWorktreeSnapshots().get(clone);
+			assert.ok(firstSnapshot);
+			sandbox.write(join(clone, "b.txt"), "next\n");
+			await next!.recorder.recordTurn(wrote(join(clone, "b.txt")));
+			assert.equal(captures.previous.at(-1), firstSnapshot.id);
+		} finally {
+			release.resolve();
+			await Promise.all(running);
+		}
+	},
+	MANY_CHECKOUTS_TIMEOUT_MS,
+);

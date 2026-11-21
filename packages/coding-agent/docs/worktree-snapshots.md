@@ -172,7 +172,7 @@ Each snapshot is also a Git commit in the checkout's repository. Atomic keeps th
 
 - moves to each new snapshot of that checkout, so it never keeps more than one snapshot commit alive per session and checkout;
 - is deleted when the session's work moves to a worktree restored from that checkout, or back from it, and records a snapshot there;
-- is deleted from every checkout on this machine when you delete the session from the session picker, `/resume`, or the SDK's `SessionManager.deleteSession`, together with the refs of the subagents it launched.
+- is deleted from every checkout on this machine when you delete the session from the session picker, `/resume`, or the SDK's `SessionManager.deleteSession`, together with the refs of the subagents it launched that are not running at that moment.
 
 A subagent's ref is kept while it can still be continued where it worked: while it runs, waits released, or is paused, quit or stopped by its session's exit. It is deleted once the subagent finished, failed or was killed and its session saved that. A finished subagent you resume later after `git gc` pruned its snapshot commit and the checkout changed restores into a fresh worktree, like a session recorded by an older Atomic that has no ref.
 

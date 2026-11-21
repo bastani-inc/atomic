@@ -175,7 +175,6 @@ function resultFromOutcome(
 						parentCwd: place.parentCwd,
 					}),
 				}),
-		...(outcome.snapshotRoots === undefined ? {} : { snapshotRoots: [...outcome.snapshotRoots] }),
 		progress: progressFor(agent, task, outcome, durationMs, index),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,

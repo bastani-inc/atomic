@@ -254,7 +254,13 @@ export function runOwnerlessChild(input: {
 		if (ownerClosed) record("running", undefined, pendingMessagesOfResult(child));
 		else {
 			record("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
-			await releaseEndedChildRefs(input.recordChild, childSession.childSessionId, child, stoppedByControl);
+			await releaseEndedChildRefs(
+				input.recordChild,
+				subagentChildId(runId, index),
+				childSession.childSessionId,
+				child,
+				stoppedByControl,
+			);
 		}
 		if (!swept) {
 			finish();

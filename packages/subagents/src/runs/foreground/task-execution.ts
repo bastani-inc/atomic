@@ -1054,6 +1054,7 @@ export async function runAgentTask(input: {
 							recordChild("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
 							await releaseEndedChildRefs(
 								input.recordChild,
+								childId,
 								childSession.childSessionId,
 								child,
 								stoppedByControl,

@@ -226,8 +226,6 @@ export interface SingleResult {
 	sessionFile?: string;
 	/** Where to read the child's session when it has no file of its own: its `history://sessions/<id>` URL. */
 	sessionUrl?: string;
-	/** The checkouts the child's run recorded snapshots of, whose refs go once the record that it ended is saved. */
-	snapshotRoots?: string[];
 	skills?: string[];
 	skillsWarning?: string;
 	progress?: AgentProgress;

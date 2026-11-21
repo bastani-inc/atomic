@@ -7,8 +7,10 @@ import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts"
 import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning, WorktreeSnapshotEntry } from "./session-manager-types.ts";
+import { findSessionOpenHolder } from "./session-open-markers.js";
 import { isStorageError } from "./storage/errors.js";
 import { readSessionTail } from "./storage/session/session-resume.js";
+import { storeSnapshotIndex } from "./storage/session/snapshot-records.js";
 import type { SessionRecordHeader, SessionStore } from "./storage/session/types.js";
 import {
 	type BestWorktreeRestore,
@@ -83,7 +85,14 @@ import {
 	verifyWorktree,
 } from "./worktree-snapshot/restore.ts";
 import { adoptPrebuiltSeed } from "./worktree-snapshot/seeds.ts";
-import { keepSessionSnapshotCommit, releaseSessionSnapshotRefs } from "./worktree-snapshot/session-refs.ts";
+import {
+	keepSessionSnapshotCommit,
+	releaseSessionSnapshotRefs,
+	releaseWrittenSessionSnapshotRefs,
+	restoreSessionSnapshotRefs,
+	retireSessionSnapshotRefs,
+	writtenSessionSnapshotRefs,
+} from "./worktree-snapshot/session-refs.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -318,15 +327,38 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 }
 
-/** The captures of one checkout this process runs under one set of snapshot settings in one blob table. */
-interface CheckoutCaptures {
-	/** The capture running now, and when it started: it holds every write that ended before then. */
-	running?: { readonly startedAt: number; readonly result: Promise<WorktreeSnapshotCapture> };
-	/** The newest snapshot of the checkout a capture of this process took. */
-	latest?: WorktreeSnapshot;
+/** A capture of a checkout that runs now, from one base snapshot, and when it started. */
+interface CheckoutCapture {
+	readonly startedAt: number;
+	readonly result: Promise<WorktreeSnapshotCapture>;
 }
 
+/** The captures of one checkout this process runs under one set of snapshot settings in one blob table. */
+interface CheckoutCaptures {
+	/** The capture running now from each base snapshot, by its id (`""`: from none). */
+	readonly running: Map<string, CheckoutCapture>;
+	/** The newest snapshot of the checkout a capture of this process took, and when that capture started. */
+	latest?: { readonly snapshot: WorktreeSnapshot; readonly startedAt: number };
+}
+
+/**
+ * How many checkouts of one blob table this process keeps the newest snapshot of, least recently captured dropped
+ * first: one per checkout that sessions of this process capture at once, as a session and its subagents' worktrees.
+ */
+const REMEMBERED_CHECKOUTS = 32;
+
 const checkoutCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCaptures>>();
+
+/**
+ * Forgets the least recently captured checkouts with no capture running, other than the one at `key`, past
+ * {@link REMEMBERED_CHECKOUTS}: more are remembered only while their captures run.
+ */
+function forgetIdleCheckouts(byCheckout: Map<string, CheckoutCaptures>, key: string): void {
+	for (const [other, captures] of byCheckout) {
+		if (byCheckout.size <= REMEMBERED_CHECKOUTS) return;
+		if (other !== key && captures.running.size === 0) byCheckout.delete(other);
+	}
+}
 
 /** Orders turn ends and capture starts in this process: a later tick happened after, even within one clock tick. */
 let captureTick = 0;
@@ -337,11 +369,11 @@ function nextCaptureTick(): number {
 
 /**
  * Captures the checkout at `root` for a turn whose writes ended at `wroteBy`, sharing the work with every session of
- * this process that captures it into the same blob table under the same settings, as a parent and its subagents do:
- * a capture that started after those writes serves the turn as it is, one that started before is waited for and the
- * next capture serves every turn waiting then, so turns that end while one capture runs share the next one. Each
- * capture starts from the newest snapshot of the checkout any of them took, or the session's own `previous`, so only the
- * first capture of a checkout in this process reads all of it.
+ * this process that captures it into the same blob table under the same settings from the same base snapshot, as a
+ * parent and its subagents do. A session's base is its own `previous` snapshot of the checkout; one that has none
+ * starts from the newest snapshot of it this process took, so only the first capture of a checkout reads all of it. A
+ * capture from that base that started after the turn's writes serves the turn as it is; one that started before is
+ * waited for, and the next one serves every turn waiting then, so turns that end while one capture runs share the next.
  */
 async function sharedCheckoutCapture(
 	blobs: SnapshotBlobStore,
@@ -357,28 +389,37 @@ async function sharedCheckoutCapture(
 		checkoutCaptures.set(blobs, byCheckout);
 	}
 	const key = JSON.stringify([resolve(root), settings]);
-	let state = byCheckout.get(key);
-	if (state === undefined) {
-		state = {};
-		byCheckout.set(key, state);
-	}
+	const state: CheckoutCaptures = byCheckout.get(key) ?? { running: new Map() };
+	// The most recently captured checkout comes last.
+	byCheckout.delete(key);
+	byCheckout.set(key, state);
+	forgetIdleCheckouts(byCheckout, key);
 	for (;;) {
-		const running = state.running;
-		if (running === undefined) break;
+		const base = previous ?? state.latest?.snapshot;
+		const baseId = base?.id ?? "";
+		const running = state.running.get(baseId);
+		if (running === undefined) {
+			const startedAt = nextCaptureTick();
+			const current: CheckoutCapture = { startedAt, result: capture(base) };
+			state.running.set(baseId, current);
+			try {
+				const value = await current.result;
+				if (
+					(value.status === "captured" || value.status === "unchanged") &&
+					startedAt > (state.latest?.startedAt ?? 0)
+				)
+					state.latest = { snapshot: value.snapshot, startedAt };
+				return value;
+			} finally {
+				if (state.running.get(baseId) === current) state.running.delete(baseId);
+				if (state.running.size === 0 && state.latest === undefined && byCheckout.get(key) === state)
+					byCheckout.delete(key);
+				forgetIdleCheckouts(byCheckout, key);
+			}
+		}
 		const result = await running.result.catch(() => undefined);
 		if (running.startedAt > wroteBy && (result?.status === "captured" || result?.status === "unchanged"))
 			return result;
-	}
-	const startedAt = nextCaptureTick();
-	const result = capture(state.latest ?? previous);
-	const current = { startedAt, result };
-	state.running = current;
-	try {
-		const value = await result;
-		if (value.status === "captured" || value.status === "unchanged") state.latest = value.snapshot;
-		return value;
-	} finally {
-		if (state.running === current) state.running = undefined;
 	}
 }
 
@@ -427,29 +468,39 @@ function restoredLineage(root: string, mappings: readonly WorktreeRootMapping[])
  * Deletes session `sessionId` from `store`, then the refs that kept its snapshot commits in the repositories of the
  * checkouts it recorded on this node (#4923). Rejects as `store.delete` does; releasing the refs never fails it.
  */
-export async function deleteSessionWithSnapshotRefs(
-	store: Pick<SessionStore, "load" | "delete">,
-	sessionId: string,
-): Promise<void> {
+export async function deleteSessionWithSnapshotRefs(store: SessionStore, sessionId: string): Promise<void> {
 	const entries = await store.load(sessionId).then(
 		({ entries }) => entries,
 		() => [],
 	);
 	await store.delete(sessionId);
 	await releaseSessionSnapshotRefs(sessionId, snapshotRoots(entries));
-	// The subagents it launched into its store, as their own internal sessions, kept refs of their own; they go with it.
-	// Refs of sessions an earlier release wrote for its subagents, which were not internal, stay as they are.
+	// The subagents it launched into its store as their own internal sessions kept refs of their own while they could be
+	// continued where they worked; they go with it, except a subagent's that runs now. Records of another session's
+	// subagents, as a fork copies them, are not its own; refs an earlier release left for its subagents, whose sessions
+	// were not internal, stay as they are.
 	const children = new Set<string>();
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== "subagent-child") continue;
-		const data = entry.data as { readonly childSessionId?: unknown; readonly childSessionFile?: unknown } | undefined;
-		if (typeof data?.childSessionId === "string" && data.childSessionFile === undefined)
+		const data = entry.data as
+			| {
+					readonly owner?: { readonly kind?: unknown; readonly sessionId?: unknown };
+					readonly childSessionId?: unknown;
+					readonly childSessionFile?: unknown;
+			  }
+			| undefined;
+		if (data?.owner?.kind !== "session" || data.owner.sessionId !== sessionId) continue;
+		if (typeof data.childSessionId === "string" && data.childSessionFile === undefined)
 			children.add(data.childSessionId);
 	}
 	for (const child of children) {
-		const snapshot = await store.load(child).catch(() => undefined);
-		if (snapshot?.header.internal !== true) continue;
-		await releaseSessionSnapshotRefs(child, snapshotRoots(snapshot.entries));
+		if ((await store.readHeader(child).catch(() => undefined))?.internal !== true) continue;
+		const open = await findSessionOpenHolder(child, { store }).then(
+			(holder) => holder !== undefined,
+			() => true,
+		);
+		if (open) continue;
+		await retireSessionSnapshotRefs(child, await recordedSnapshotRoots(store, child));
 	}
 }
 
@@ -458,11 +509,53 @@ function snapshotRoots(entries: readonly SessionEntry[]): Set<string> {
 }
 
 /**
- * @internal Releases the refs that keep session `sessionId`'s snapshot commits of the checkouts at `roots` on this
- * node, as deleting it does: for a subagent's session once the record that its run ended is saved. Never throws.
+ * The checkouts session `sessionId` of `store` recorded snapshots of: from its snapshot entries alone where the store
+ * keeps an index of them, otherwise from its whole history. None when it cannot be read.
  */
-export async function releaseSubagentSnapshotRefs(sessionId: string, roots: Iterable<string>): Promise<void> {
-	await releaseSessionSnapshotRefs(sessionId, roots).catch(() => {});
+async function recordedSnapshotRoots(store: SessionStore, sessionId: string): Promise<Set<string>> {
+	const cut = await store.readSnapshotCut?.(sessionId).catch(() => undefined);
+	const index =
+		cut === undefined
+			? undefined
+			: await storeSnapshotIndex(store, sessionId, cut.epoch, cut.lastSeq)?.().catch(() => undefined);
+	if (index !== undefined) {
+		const roots = new Set<string>();
+		let whole = true;
+		try {
+			for await (const items of index.read(index.seqs))
+				for (const item of items) {
+					if (!("entry" in item)) whole = false;
+					else if (item.entry.type === "worktree_snapshot") roots.add(item.entry.root);
+				}
+		} catch {
+			whole = false;
+		}
+		if (whole) return roots;
+	}
+	return store.load(sessionId).then(
+		({ entries }) => snapshotRoots(entries),
+		() => new Set(),
+	);
+}
+
+/**
+ * @internal Releases the refs this process wrote for session `sessionId`'s snapshot commits by now, each while it still
+ * names the commit written then, once `saved` settles true and `stillEnded` says no other run of the session began
+ * since: for a subagent's session once the record that its run ended is saved. A record that could not be saved keeps
+ * them, and so does a run begun since, also one that began while they were deleted. Never throws.
+ */
+export async function releaseSubagentSnapshotRefs(
+	sessionId: string,
+	saved: Promise<boolean>,
+	stillEnded: () => Promise<boolean>,
+): Promise<void> {
+	const written = writtenSessionSnapshotRefs(sessionId);
+	if (written.length === 0 || !(await saved.catch(() => false))) return;
+	// Another run of the subagent, here or in another process, records that it runs before any capture of it.
+	if (!(await stillEnded().catch(() => false))) return;
+	const deleted = await releaseWrittenSessionSnapshotRefs(sessionId, written).catch(() => []);
+	// One that recorded it runs while they were deleted keeps the refs it may have pointed to the same commits.
+	if (deleted.length > 0 && !(await stillEnded().catch(() => false))) await restoreSessionSnapshotRefs(deleted);
 }
 
 async function nearestExisting(directory: string): Promise<string> {

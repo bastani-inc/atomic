@@ -397,6 +397,8 @@ export interface SubagentChildRecordSink {
 	flushed?(): Promise<void>;
 	/** Settles once the latest record this sink was given is appended: `false` when it could not be. */
 	saved?(): Promise<boolean>;
+	/** Whether a record of child `childId` reached the owner's session from another process since this one wrote. */
+	recordedElsewhere?(childId: string): Promise<boolean>;
 	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
 	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
 	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
@@ -598,6 +600,7 @@ export function createSubagentChildRecordSink(
 		},
 		flushed: () => appended.then(() => undefined),
 		saved: () => appended,
+		recordedElsewhere: (childId) => childRecordedElsewhere(ctx.sessionManager, childId),
 		clearHeldToolResults: (childId, toolCallIds) =>
 			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
 		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),
@@ -975,18 +978,43 @@ export function subagentChildRecordRegistrySizes(): { readonly appendChains: num
 
 /**
  * Once the record that a child's run ended for good (done, failed or killed, not released, paused, quit or left for its
- * owner's restart) is saved, the refs that kept the snapshot commits its run recorded go, as a deleted session's do: it
- * is no longer continued where it worked. A record that could not be saved keeps them.
+ * owner's restart) is saved, the refs its captures in this process wrote for its snapshot commits go, as a deleted
+ * session's do: it is no longer continued where it worked. A record that could not be saved keeps them.
  */
 export async function releaseEndedChildRefs(
-	sink: Pick<SubagentChildRecordSink, "saved"> | undefined,
+	sink: Pick<SubagentChildRecordSink, "saved" | "recordedElsewhere"> | undefined,
+	childId: string,
 	childSessionId: string | undefined,
-	child: Pick<SingleResult, "status" | "snapshotRoots" | "released">,
+	child: Pick<SingleResult, "status" | "released">,
 	stoppedByControl: boolean,
 ): Promise<void> {
-	if (childSessionId === undefined || child.snapshotRoots === undefined || child.snapshotRoots.length === 0) return;
-	if (child.released !== undefined || stoppedByControl) return;
+	if (childSessionId === undefined || child.released !== undefined || stoppedByControl) return;
 	if (child.status !== "ok" && child.status !== "error" && child.status !== "killed") return;
-	if ((await sink?.saved?.()) === false) return;
-	await releaseSubagentSnapshotRefs(childSessionId, child.snapshotRoots);
+	await releaseSubagentSnapshotRefs(childSessionId, sink?.saved?.() ?? Promise.resolve(true), async () => {
+		const elsewhere = await sink?.recordedElsewhere?.(childId);
+		return elsewhere !== true;
+	});
+}
+
+/**
+ * Whether the owner's stored session holds a record of child `childId` past its last entry `owner` holds, as another
+ * process appends one when it runs the child. True when that cannot be read.
+ */
+async function childRecordedElsewhere(
+	owner: Pick<ExtensionContext["sessionManager"], "getSessionStore" | "getSessionId" | "getLastSeq">,
+	childId: string,
+): Promise<boolean> {
+	const store = owner.getSessionStore();
+	if (store.readRange === undefined) return false;
+	try {
+		const { entries } = await store.readRange(owner.getSessionId(), owner.getLastSeq() + 1, Number.MAX_SAFE_INTEGER);
+		return entries.some(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === SUBAGENT_CHILD_RECORD_TYPE &&
+				(entry.data as { readonly childId?: unknown } | undefined)?.childId === childId,
+		);
+	} catch {
+		return true;
+	}
 }
