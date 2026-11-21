@@ -132,6 +132,41 @@ describe("/reload runs the current code of edited extensions", () => {
 		assert.equal(await description(), "entry-2 helper-3");
 	});
 
+	for (const firstImport of ["transformed", "native"] as const) {
+		test(`a reload reads an edited JSON file the extension imports, and one it imports later (${firstImport} first import)`, async () => {
+			if (firstImport === "native") cleanups.push(replaceEnvironmentVariable("JITI_TRY_NATIVE", "true"));
+			const lazyJson = globalThis as typeof globalThis & { __lazyJsonVersion?: () => Promise<string> };
+			cleanups.push(() => {
+				delete lazyJson.__lazyJsonVersion;
+			});
+			const { cwd, agentDir, extensionDir } = workspace();
+			const writeJson = (name: string, version: string) =>
+				writeFileSync(join(extensionDir, "lib", name), JSON.stringify({ version }));
+			writeJson("config.json", "1");
+			writeJson("later.json", "1");
+			writeFileSync(
+				join(extensionDir, "index.ts"),
+				`import config from "./lib/config.json";
+export default function (pi: any) {
+	(globalThis as any).__lazyJsonVersion = async () => (await import("./lib/later.json")).default.version;
+	pi.registerCommand(${JSON.stringify(COMMAND)}, { description: "config-" + config.version, handler: async () => {} });
+}
+`,
+			);
+			const runtime = await startRuntime(cwd, agentDir);
+			assert.equal(probeDescription(runtime), "config-1");
+			assert.equal(await lazyJson.__lazyJsonVersion?.(), "1");
+
+			writeJson("config.json", "2");
+			await runtime.session.reload();
+			assert.equal(probeDescription(runtime), "config-2");
+
+			writeJson("later.json", "3");
+			await runtime.session.reload();
+			assert.equal(await lazyJson.__lazyJsonVersion?.(), "3");
+		});
+	}
+
 	// Bun (outside the compiled binary) first imports an extension natively. Node can strip the types of these
 	// fixtures too, so asking jiti for native imports here takes the same path Bun does.
 	test("a reload after a native first import runs an edited module the extension imports (#4986)", async () => {

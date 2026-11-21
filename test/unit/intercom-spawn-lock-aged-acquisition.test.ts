@@ -223,7 +223,10 @@ describe("aged spawn lock acquisition (#5220)", () => {
 			assert.equal(onDisk, owner);
 			releaseSpawnLock(owner, lockPath);
 		} else {
-			assert.ok(onDisk === undefined || !onDisk.startsWith(`${process.pid}\n`), `left ${JSON.stringify(onDisk)}`);
+			assert.ok(
+				onDisk === undefined || Number.parseInt(onDisk, 10) !== process.pid,
+				`left ${JSON.stringify(onDisk)}`,
+			);
 		}
 		assert.ok(firstReadAt.size <= 2, `${firstReadAt.size} lock files created`);
 		assert.ok(failedReads <= 52, `${failedReads} failed reads`);

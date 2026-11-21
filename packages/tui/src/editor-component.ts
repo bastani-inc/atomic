@@ -71,8 +71,15 @@ export interface EditorComponent extends Component {
 	// Autocomplete support (optional)
 	// =========================================================================
 
-	/** Set the autocomplete provider */
-	setAutocompleteProvider?(provider: AutocompleteProvider): void;
+	/**
+	 * Set the autocomplete provider. Atomic passes `{ preserveSelection: true, refreshMenu: true }` when it replaces the
+	 * provider while the prompt is in use, so that an open menu stays open (see Editor.setAutocompleteProvider); an
+	 * implementation may ignore it.
+	 */
+	setAutocompleteProvider?(
+		provider: AutocompleteProvider,
+		options?: { preserveSelection?: boolean; refreshMenu?: boolean },
+	): void;
 
 	// =========================================================================
 	// Appearance (optional)
