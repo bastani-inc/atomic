@@ -290,7 +290,7 @@ test("a checkout the session took from its subagent stays its own after the suba
 	const { child, finished } = await subagent(parent, store, clone);
 	sandbox.write(join(clone, "work.txt"), "child\n");
 	await finished(await capture(child, store, clone));
-	// A finished subagent keeps no ref to its snapshot commits.
+	// Nothing but the session's own ref keeps the commit once it took the capture.
 	await releaseSessionSnapshotRefs(child.getSessionId(), [clone]);
 	const first = await resume(store, parent, clone, false);
 	assert.equal(first.getCwd(), clone);

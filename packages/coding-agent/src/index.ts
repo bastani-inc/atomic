@@ -911,7 +911,6 @@ export {
 	mapRestoredPathAsync,
 	openSessionInWorktree,
 	type ResumeSessionWorktreeOptions,
-	releaseSubagentSnapshotRefs,
 	resumeSessionWorktree,
 	type SessionWorktreeResume,
 	type UnrestoredWorktree,

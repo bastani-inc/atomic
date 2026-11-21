@@ -88,10 +88,7 @@ import { adoptPrebuiltSeed } from "./worktree-snapshot/seeds.ts";
 import {
 	keepSessionSnapshotCommit,
 	releaseSessionSnapshotRefs,
-	releaseWrittenSessionSnapshotRefs,
-	restoreSessionSnapshotRefs,
 	retireSessionSnapshotRefs,
-	writtenSessionSnapshotRefs,
 } from "./worktree-snapshot/session-refs.ts";
 import type {
 	SnapshotBlob,
@@ -239,12 +236,8 @@ export class SessionWorktreeSnapshotRecorder {
 						const result =
 							located === undefined
 								? await captureWorktreeSnapshot(root, { settings, previous, blobs })
-								: await sharedCheckoutCapture(blobs, root, settings, wroteBy, previous, (base) =>
-										captureLocatedCheckout(checkout, {
-											settings,
-											...(base === undefined ? {} : { previous: base }),
-											blobs,
-										}),
+								: await sharedCheckoutCapture(blobs, root, settings, wroteBy, previous, () =>
+										captureLocatedCheckout(checkout, { settings, previous, blobs }),
 									);
 						located = undefined;
 						captureMs = Math.floor(performance.now() - started);
@@ -327,38 +320,17 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 }
 
-/** A capture of a checkout that runs now, from one base snapshot, and when it started. */
+/** A capture of a checkout that runs now, and when it started. */
 interface CheckoutCapture {
 	readonly startedAt: number;
 	readonly result: Promise<WorktreeSnapshotCapture>;
 }
 
-/** The captures of one checkout this process runs under one set of snapshot settings in one blob table. */
-interface CheckoutCaptures {
-	/** The capture running now from each base snapshot, by its id (`""`: from none). */
-	readonly running: Map<string, CheckoutCapture>;
-	/** The newest snapshot of the checkout a capture of this process took, and when that capture started. */
-	latest?: { readonly snapshot: WorktreeSnapshot; readonly startedAt: number };
-}
-
 /**
- * How many checkouts of one blob table this process keeps the newest snapshot of, least recently captured dropped
- * first: one per checkout that sessions of this process capture at once, as a session and its subagents' worktrees.
+ * The captures running now in this process into each blob table, by checkout, settings and the snapshot each starts
+ * from; one ends, it is forgotten.
  */
-const REMEMBERED_CHECKOUTS = 32;
-
-const checkoutCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCaptures>>();
-
-/**
- * Forgets the least recently captured checkouts with no capture running, other than the one at `key`, past
- * {@link REMEMBERED_CHECKOUTS}: more are remembered only while their captures run.
- */
-function forgetIdleCheckouts(byCheckout: Map<string, CheckoutCaptures>, key: string): void {
-	for (const [other, captures] of byCheckout) {
-		if (byCheckout.size <= REMEMBERED_CHECKOUTS) return;
-		if (other !== key && captures.running.size === 0) byCheckout.delete(other);
-	}
-}
+const runningCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCapture>>();
 
 /** Orders turn ends and capture starts in this process: a later tick happened after, even within one clock tick. */
 let captureTick = 0;
@@ -368,12 +340,13 @@ function nextCaptureTick(): number {
 }
 
 /**
- * Captures the checkout at `root` for a turn whose writes ended at `wroteBy`, sharing the work with every session of
- * this process that captures it into the same blob table under the same settings from the same base snapshot, as a
- * parent and its subagents do. A session's base is its own `previous` snapshot of the checkout; one that has none
- * starts from the newest snapshot of it this process took, so only the first capture of a checkout reads all of it. A
- * capture from that base that started after the turn's writes serves the turn as it is; one that started before is
- * waited for, and the next one serves every turn waiting then, so turns that end while one capture runs share the next.
+ * Captures the checkout at `root` from the session's own earlier snapshot of it, `previous`, for a turn whose writes
+ * ended at `wroteBy`, sharing the work with every session of this process that captures it into the same blob table
+ * under the same settings from the same snapshot, as a parent and its fresh subagents do. A session's first capture of a
+ * checkout records it from its commit, never from another session's snapshot, whose history is not this session's. A
+ * capture that started after the turn's writes serves the turn as it is. When the one running started before, the next
+ * starts at once and serves every turn that ends before it starts, so a turn waits for at most the capture running when
+ * it ended and one more.
  */
 async function sharedCheckoutCapture(
 	blobs: SnapshotBlobStore,
@@ -381,45 +354,31 @@ async function sharedCheckoutCapture(
 	settings: WorktreeSnapshotSettings,
 	wroteBy: number,
 	previous: WorktreeSnapshot | undefined,
-	capture: (previous: WorktreeSnapshot | undefined) => Promise<WorktreeSnapshotCapture>,
+	capture: () => Promise<WorktreeSnapshotCapture>,
 ): Promise<WorktreeSnapshotCapture> {
-	let byCheckout = checkoutCaptures.get(blobs);
-	if (byCheckout === undefined) {
-		byCheckout = new Map();
-		checkoutCaptures.set(blobs, byCheckout);
+	let running = runningCaptures.get(blobs);
+	if (running === undefined) {
+		running = new Map();
+		runningCaptures.set(blobs, running);
 	}
-	const key = JSON.stringify([resolve(root), settings]);
-	const state: CheckoutCaptures = byCheckout.get(key) ?? { running: new Map() };
-	// The most recently captured checkout comes last.
-	byCheckout.delete(key);
-	byCheckout.set(key, state);
-	forgetIdleCheckouts(byCheckout, key);
+	const key = JSON.stringify([resolve(root), settings, previous?.id ?? null]);
+	let failed: CheckoutCapture | undefined;
 	for (;;) {
-		const base = previous ?? state.latest?.snapshot;
-		const baseId = base?.id ?? "";
-		const running = state.running.get(baseId);
-		if (running === undefined) {
-			const startedAt = nextCaptureTick();
-			const current: CheckoutCapture = { startedAt, result: capture(base) };
-			state.running.set(baseId, current);
+		const flight = running.get(key);
+		// A capture that started after the turn's writes serves it; one that started before does not, and the next starts
+		// at once: its scan of the working files follows the running one's.
+		if (flight === undefined || flight === failed || flight.startedAt < wroteBy) {
+			const current: CheckoutCapture = { startedAt: nextCaptureTick(), result: capture() };
+			running.set(key, current);
 			try {
-				const value = await current.result;
-				if (
-					(value.status === "captured" || value.status === "unchanged") &&
-					startedAt > (state.latest?.startedAt ?? 0)
-				)
-					state.latest = { snapshot: value.snapshot, startedAt };
-				return value;
+				return await current.result;
 			} finally {
-				if (state.running.get(baseId) === current) state.running.delete(baseId);
-				if (state.running.size === 0 && state.latest === undefined && byCheckout.get(key) === state)
-					byCheckout.delete(key);
-				forgetIdleCheckouts(byCheckout, key);
+				if (running.get(key) === current) running.delete(key);
 			}
 		}
-		const result = await running.result.catch(() => undefined);
-		if (running.startedAt > wroteBy && (result?.status === "captured" || result?.status === "unchanged"))
-			return result;
+		const result = await flight.result.catch(() => undefined);
+		if (result?.status === "captured" || result?.status === "unchanged") return result;
+		failed = flight;
 	}
 }
 
@@ -536,26 +495,6 @@ async function recordedSnapshotRoots(store: SessionStore, sessionId: string): Pr
 		({ entries }) => snapshotRoots(entries),
 		() => new Set(),
 	);
-}
-
-/**
- * @internal Releases the refs this process wrote for session `sessionId`'s snapshot commits by now, each while it still
- * names the commit written then, once `saved` settles true and `stillEnded` says no other run of the session began
- * since: for a subagent's session once the record that its run ended is saved. A record that could not be saved keeps
- * them, and so does a run begun since, also one that began while they were deleted. Never throws.
- */
-export async function releaseSubagentSnapshotRefs(
-	sessionId: string,
-	saved: Promise<boolean>,
-	stillEnded: () => Promise<boolean>,
-): Promise<void> {
-	const written = writtenSessionSnapshotRefs(sessionId);
-	if (written.length === 0 || !(await saved.catch(() => false))) return;
-	// Another run of the subagent, here or in another process, records that it runs before any capture of it.
-	if (!(await stillEnded().catch(() => false))) return;
-	const deleted = await releaseWrittenSessionSnapshotRefs(sessionId, written).catch(() => []);
-	// One that recorded it runs while they were deleted keeps the refs it may have pointed to the same commits.
-	if (deleted.length > 0 && !(await stillEnded().catch(() => false))) await restoreSessionSnapshotRefs(deleted);
 }
 
 async function nearestExisting(directory: string): Promise<string> {

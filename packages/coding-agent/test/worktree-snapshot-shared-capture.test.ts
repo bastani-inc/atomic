@@ -1,16 +1,18 @@
 /**
  * Sessions of one process that capture the same checkout into the same blob table, as a session and its subagents do,
- * share the work: a burst of turns that end together costs at most two captures, every session records a snapshot
- * taken after its own writes, and a session's first capture starts from the newest snapshot of the checkout this
- * process took, so it reads only what changed. Real Git checkout and SQLite session store.
+ * share the work: turns that end together from the same earlier snapshot share at most two captures, every session
+ * records a snapshot taken after its own writes and from its own earlier snapshot, never another session's, and a turn
+ * that ends while a capture runs gets the next one at once. Real Git checkout and SQLite session store.
  */
 import assert from "node:assert/strict";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { exportSessions } from "../src/core/session-transfer.js";
 import { SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
@@ -52,9 +54,6 @@ afterEach(async () => {
 	sandbox.dispose();
 });
 
-/** Structural cost: 33 real Git checkouts, each captured by its own session. */
-const MANY_CHECKOUTS_TIMEOUT_MS = 120_000;
-
 async function sessionStore(): Promise<SqlSessionStore> {
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 	const store = await SqlSessionStore.open(database);
@@ -65,24 +64,27 @@ async function sessionStore(): Promise<SqlSessionStore> {
 	return store;
 }
 
-async function checkoutWithSessions(count: number, name = "repo", existing?: SqlSessionStore) {
-	const { clone } = await sandbox.remoteWithClone(name, { "README.md": "hello\n" });
-	const store = existing ?? (await sessionStore());
-	const settings = resolveWorktreeSnapshotSettings(undefined, "sdk", "snapshots");
+function recorderFor(manager: SessionManager, clone: string, subagent: boolean): SessionWorktreeSnapshotRecorder {
+	return new SessionWorktreeSnapshotRecorder({
+		sessionManager: manager,
+		cwd: () => clone,
+		settings: () => resolveWorktreeSnapshotSettings(undefined, "sdk", "snapshots"),
+		declaresWrites: () => false,
+		isSubagent: () => subagent,
+		onUnavailable: (reason) => {
+			throw new Error(`unexpected: ${reason.code}`);
+		},
+	});
+}
+
+async function checkoutWithSessions(count: number) {
+	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	const store = await sessionStore();
 	const sessions = [];
 	for (let index = 0; index < count; index++) {
 		const manager = await SessionManager.create(store, clone, { internal: index > 0 });
 		await manager.appendMessage({ role: "user", content: `work ${index}`, timestamp: Date.now() });
-		const recorder = new SessionWorktreeSnapshotRecorder({
-			sessionManager: manager,
-			cwd: () => clone,
-			settings: () => settings,
-			declaresWrites: () => false,
-			isSubagent: () => index > 0,
-			onUnavailable: (reason) => {
-				throw new Error(`unexpected: ${reason.code}`);
-			},
-		});
+		const recorder = recorderFor(manager, clone, index > 0);
 		sessions.push({ manager, recorder });
 	}
 	return { clone, store, sessions };
@@ -108,19 +110,19 @@ test("turns of sessions in one checkout that end together share at most two capt
 	assert.notEqual(later?.id, ids[0], "a turn after later writes gets a capture that holds them");
 });
 
-test("a session's first capture of a checkout starts from the newest snapshot of it this process took", async () => {
+test("a session's first capture of a checkout records it from its commit, never from another session's snapshot", async () => {
 	const { clone, sessions } = await checkoutWithSessions(2);
 	const [parent, child] = sessions;
 	sandbox.write(join(clone, "a.txt"), "parent\n");
 	await parent!.recorder.recordTurn(wrote(join(clone, "a.txt")));
-	const parentSnapshot = parent!.manager.getLatestWorktreeSnapshots().get(clone);
-	assert.ok(parentSnapshot);
+	assert.ok(parent!.manager.getLatestWorktreeSnapshots().get(clone));
 
 	sandbox.write(join(clone, "b.txt"), "child\n");
 	await child!.recorder.recordTurn(wrote(join(clone, "b.txt")));
-	assert.equal(captures.previous.at(-1), parentSnapshot.id, "the child's capture starts from the parent's snapshot");
+	assert.equal(captures.previous.at(-1), undefined);
 	const childSnapshot = child!.manager.getLatestWorktreeSnapshots().get(clone);
-	assert.ok(childSnapshot && childSnapshot.id !== parentSnapshot.id);
+	assert.equal(childSnapshot?.delta.base, "head");
+	assert.equal(childSnapshot?.chain.length, 1, "the child's snapshot holds no other session's history");
 });
 
 test("a session that recorded a snapshot of a checkout captures it from its own snapshot, not another session's", async () => {
@@ -138,33 +140,48 @@ test("a session that recorded a snapshot of a checkout captures it from its own 
 	assert.equal(captures.previous.at(-1), parentSnapshot.id);
 });
 
-test(
-	"a checkout captured while as many others are being captured still gives its snapshot to the next session's first capture",
-	async () => {
-		const store = await sessionStore();
-		const busy = [];
-		for (let index = 0; index < 32; index++) busy.push(await checkoutWithSessions(1, `busy-${index}`, store));
-		const { clone, sessions } = await checkoutWithSessions(2, "last", store);
-		const release = Promise.withResolvers<void>();
-		captures.held = { roots: new Set(busy.map(({ clone }) => clone)), until: release.promise };
-		const running = busy.map(({ clone, sessions }) => {
-			sandbox.write(join(clone, "a.txt"), "busy\n");
-			return sessions[0]!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+test("a turn that ends while a capture of its checkout runs from before its writes gets the next capture, started at once", async () => {
+	const { clone, sessions } = await checkoutWithSessions(2);
+	const [first, second] = sessions;
+	const release = Promise.withResolvers<void>();
+	captures.held = { roots: new Set([clone]), until: release.promise };
+	sandbox.write(join(clone, "a.txt"), "first\n");
+	const running = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+	let next: Promise<void> | undefined;
+	try {
+		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		next = second!.recorder.recordTurn(wrote(join(clone, "b.txt")));
+		await vi.waitFor(() => assert.equal(captures.calls, 2, "the next capture starts while the first still runs"), {
+			interval: 5,
 		});
-		try {
-			await vi.waitFor(() => assert.equal(captures.calls, 32), { timeout: MANY_CHECKOUTS_TIMEOUT_MS, interval: 10 });
-			const [first, next] = sessions;
-			sandbox.write(join(clone, "a.txt"), "first\n");
-			await first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
-			const firstSnapshot = first!.manager.getLatestWorktreeSnapshots().get(clone);
-			assert.ok(firstSnapshot);
-			sandbox.write(join(clone, "b.txt"), "next\n");
-			await next!.recorder.recordTurn(wrote(join(clone, "b.txt")));
-			assert.equal(captures.previous.at(-1), firstSnapshot.id);
-		} finally {
-			release.resolve();
-			await Promise.all(running);
-		}
-	},
-	MANY_CHECKOUTS_TIMEOUT_MS,
-);
+	} finally {
+		release.resolve();
+		await Promise.all([running, next]);
+	}
+	const snapshot = second!.manager.getLatestWorktreeSnapshots().get(clone);
+	assert.ok(snapshot);
+	assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:b.txt`), "second");
+});
+
+test("a fresh session's exported history holds none of another session's earlier snapshots of the checkout", async () => {
+	const { clone, store, sessions } = await checkoutWithSessions(2);
+	const [parent, child] = sessions;
+	// The session captures a file of its own, which is gone before its subagent ever works in the checkout.
+	sandbox.write(join(clone, "scratch.txt"), "the session's own scratch notes\n");
+	await parent!.recorder.recordTurn(wrote(join(clone, "scratch.txt")));
+	const parentSnapshot = parent!.manager.getLatestWorktreeSnapshots().get(clone);
+	assert.ok(parentSnapshot);
+	rmSync(join(clone, "scratch.txt"));
+
+	sandbox.write(join(clone, "child.txt"), "child\n");
+	await child!.recorder.recordTurn(wrote(join(clone, "child.txt")));
+	const childSnapshot = child!.manager.getLatestWorktreeSnapshots().get(clone);
+	assert.ok(childSnapshot);
+
+	await exportSessions(store, sandbox.path("export"));
+	const exported = readFileSync(sandbox.path("export", `${child!.manager.getSessionId()}.jsonl`), "utf8");
+	for (const { patch } of parentSnapshot.chain) if (patch !== null) assert.ok(!exported.includes(patch), patch);
+	for (const { patch } of childSnapshot.chain)
+		if (patch !== null) assert.ok(exported.includes(patch), "its own patch");
+});

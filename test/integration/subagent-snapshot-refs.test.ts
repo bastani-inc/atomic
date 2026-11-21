@@ -1,8 +1,7 @@
 /**
- * Subagents whose sessions are kept in their parent's store record worktree snapshots of the checkouts they change,
- * and keep a Git ref to each snapshot commit while they can still be continued where they worked. Once a subagent's
- * run ended for good its refs go, so the repository keeps only the refs of the session that launched them, as it did
- * when subagents recorded no snapshots. Real parent and child sessions in a Git checkout, on a local model.
+ * Subagents whose sessions are kept in their parent's store record worktree snapshots of the checkouts they change, and
+ * keep a Git ref to each snapshot commit, one per subagent and checkout, as long as the session that launched them:
+ * deleting that session deletes them with its own. Real parent and child sessions in a Git checkout, on a local model.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -141,7 +140,7 @@ async function snapshotRefs(cwd: string): Promise<string[]> {
 }
 
 test(
-	"subagents that finished leave no snapshot refs behind: only the refs of the session that launched them stay",
+	"the snapshot refs of subagents that finished stay, one per subagent and checkout, until the session that launched them is deleted",
 	async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
 		const session = await parentSession(clone);
@@ -154,23 +153,15 @@ test(
 			{ timeout: REAL_SUBAGENT_TIMEOUT_MS, interval: 20 },
 		);
 		const parentId = session.sessionManager.getSessionId();
-		// Their refs go once the records that they ended are saved, which the cleanup of their runs follows.
-		await vi.waitFor(
-			async () => {
-				const refs = await snapshotRefs(clone);
-				assert.ok(refs.length > 0, "the parent keeps its own ref");
-				assert.deepEqual(
-					refs.filter((ref) => !ref.startsWith(`refs/atomic/snapshots/${parentId}/`)),
-					[],
-					refs.join("\n"),
-				);
-			},
-			{ timeout: REAL_SUBAGENT_TIMEOUT_MS, interval: 50 },
-		);
+		const refs = await snapshotRefs(clone);
+		const owners = refs.map((ref) => ref.split("/")[3]);
+		assert.equal(owners.filter((owner) => owner === parentId).length, 1, refs.join("\n"));
+		assert.equal(owners.filter((owner) => owner !== parentId).length, CHILDREN, refs.join("\n"));
+		assert.equal(new Set(owners).size, CHILDREN + 1, "one ref per session and checkout");
 
 		const store = session.sessionManager.getSessionStore();
 		await deleteSessionWithSnapshotRefs(store, parentId);
-		assert.deepEqual(await snapshotRefs(clone), [], "deleting the session removes its refs");
+		assert.deepEqual(await snapshotRefs(clone), [], "deleting the session removes its refs and its subagents'");
 	},
 	REAL_SUBAGENT_TIMEOUT_MS,
 );

@@ -29,7 +29,7 @@ import {
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
-import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
+import { resolveHttpProxyUrlForTarget, resolveHttpsFallbackProxyUrl } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
 import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
@@ -1108,10 +1108,10 @@ async function getWebSocketConstructor(env?: ProviderEnv): Promise<WebSocketCons
 					_opts = { ...options };
 				}
 
-				const proxyUrl = resolveHttpProxyUrlForTarget(
-					url.toString().replace(/^wss:/, "https:").replace(/^ws:/, "http:"),
-					env,
-				);
+				const target = url.toString().replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+				// The proxy fetch takes in this process for the same endpoint, including the http proxy an https request
+				// takes when no https proxy is set, as on Node.js.
+				const proxyUrl = resolveHttpProxyUrlForTarget(target, env) ?? resolveHttpsFallbackProxyUrl(target, env);
 				super(url, { ..._opts, ...(proxyUrl ? { proxy: proxyUrl.toString() } : {}) } as any);
 			}
 		};
