@@ -19,6 +19,7 @@ import { getModel } from "../src/compat.ts";
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
 import { transportFailure } from "../src/utils/tls-certificate.ts";
+import { observeWebSocketTransport } from "../src/utils/websocket-transport.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -498,6 +499,64 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 });
 
 describe("failures that are not a refused certificate keep their retries (#6114)", () => {
+	it("a WebSocket's connection failure counts only from its last dispatch, before any response (#6114)", () => {
+		// Global dispatchers that fail or answer each request as told: an intermediary may dispatch a connection more
+		// than once, and only the last attempt's outcome is the connection's.
+		type Handler = { [callback: string]: ((...args: unknown[]) => unknown) | undefined };
+		const outcomes: ((handler: Handler) => void)[] = [];
+		const answering = { dispatch: (_options: object, handler: Handler) => (outcomes.shift()?.(handler), true) };
+		const keys = [Symbol.for("undici.globalDispatcher.1"), Symbol.for("undici.globalDispatcher.2")];
+		const globals = globalThis as { [key: symbol]: object | undefined };
+		// undici defines them writable but not configurable; one not defined yet is defined for the test only.
+		const saved = keys.map((key) => [key, key in globalThis, globals[key]] as const);
+		for (const key of keys)
+			if (key in globalThis) globals[key] = answering;
+			else Object.defineProperty(globalThis, key, { value: answering, writable: true, configurable: true });
+		try {
+			const refused = Object.assign(new Error("self-signed certificate"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
+			const run = (...steps: ((handler: Handler) => void)[]) => {
+				const transport = observeWebSocketTransport();
+				assert.ok(transport !== undefined);
+				const dispatcher = transport.dispatcher as typeof answering;
+				for (const step of steps) {
+					outcomes.push(step);
+					// As undici 8's fetch dispatches, and as undici 6 and 7 do.
+					dispatcher.dispatch({}, { onRequestStart() {}, onResponseStart() {}, onResponseError() {} });
+				}
+				return transport.failure();
+			};
+			const fail = (handler: Handler) => handler.onResponseError?.({}, refused);
+			const answer = (handler: Handler) => handler.onResponseStart?.({}, 403, {}, "Forbidden");
+			const answerThenFail = (handler: Handler) => {
+				answer(handler);
+				handler.onResponseError?.({}, refused);
+			};
+			assert.equal(run(fail), refused);
+			assert.equal(run(fail, answer), undefined);
+			const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+			assert.equal(
+				run(fail, (handler) => handler.onResponseError?.({}, reset)),
+				reset,
+			);
+			assert.equal(run(answerThenFail), undefined);
+			assert.equal(run(answer, fail), refused);
+			// A dispatch that has not reported yet has not failed.
+			assert.equal(
+				run(fail, () => {}),
+				undefined,
+			);
+			// The earlier callbacks undici 6 and 7 dispatch with.
+			const legacy = observeWebSocketTransport();
+			outcomes.push((handler) => handler.onError?.(refused));
+			(legacy?.dispatcher as typeof answering).dispatch({}, { onConnect() {}, onHeaders() {}, onError() {} });
+			assert.equal(legacy?.failure(), refused);
+		} finally {
+			for (const [key, defined, value] of saved) {
+				if (defined) globals[key] = value;
+				else delete globals[key];
+			}
+		}
+	});
 	it("a connection reset during the TLS handshake is retried, at the SDK and by the session (#6114)", async () => {
 		let connections = 0;
 		const server = createNetServer((socket: Socket) => {

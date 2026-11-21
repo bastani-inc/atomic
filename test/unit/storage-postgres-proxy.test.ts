@@ -678,9 +678,10 @@ describe("a password source's own failure is not the server's certificate (#6112
 		// What the source's own HTTPS request to a secret store could fail with.
 		const expired = () => Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
 		const shared = expired();
+		const sealed = new Error("the secret store is sealed");
 		const [plain, ...coded] = await Promise.all([
 			openWithPasswordSource(async () => {
-				throw new Error("the secret store is sealed");
+				throw sealed;
 			}),
 			openWithPasswordSource(async () => {
 				throw expired();
@@ -705,6 +706,8 @@ describe("a password source's own failure is not the server's certificate (#6112
 		]);
 		assert.ok(plain !== undefined && plain.connections > 1, String(plain?.error));
 		assert.equal(plain.error.name, "StorageTransientError");
+		// A failure without a certificate code reaches the connection failure as the source threw it.
+		assert.equal((plain.error.cause as Error | undefined)?.cause, sealed);
 		for (const { connections, error } of coded) {
 			const chain = messages(error);
 			assert.equal(error.name, "StorageTransientError", chain.join(" <- "));

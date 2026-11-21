@@ -212,4 +212,70 @@ describe("http dispatcher", () => {
 			]);
 		}
 	});
+	it("connects OpenAI Codex's WebSocket through the dispatcher the installed WebSocket uses by default (#6114)", async () => {
+		configureHttpDispatcher();
+		const dispatcher = undici.getGlobalDispatcher();
+		// Each global dispatcher, wrapped to record the requests sent through it.
+		interface Recorded {
+			dispatch(options: object, handler: object): boolean;
+		}
+		const globals = globalThis as { [key: symbol]: Recorded | undefined };
+		const used: string[] = [];
+		const restore: (() => void)[] = [];
+		for (const name of ["undici.globalDispatcher.1", "undici.globalDispatcher.2"]) {
+			const key = Symbol.for(name);
+			const real = globals[key];
+			if (real === undefined) continue;
+			globals[key] = Object.assign(Object.create(real) as Recorded, {
+				dispatch(options: object, handler: object) {
+					used.push(name);
+					return real.dispatch(options, handler);
+				},
+			});
+			restore.push(() => {
+				globals[key] = real;
+			});
+		}
+		const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
+		const endpoint = https.createServer({ cert: certificate.cert, key: certificate.key });
+		endpoint.on("tlsClientError", () => {});
+		await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+		const endpointAddress = endpoint.address();
+		if (!endpointAddress || typeof endpointAddress === "string")
+			throw new Error("Endpoint did not bind to a TCP port");
+		const originalWebSocket = globalThis.WebSocket;
+		const WebSocket = wrapCodexFastRouteWebSocket(undici.WebSocket as unknown as typeof globalThis.WebSocket);
+		globalThis.WebSocket = WebSocket;
+		try {
+			await new Promise<void>((resolve) => {
+				new WebSocket(`wss://localhost:${endpointAddress.port}/x`).addEventListener("error", () => resolve());
+			});
+			const byDefault = used.splice(0);
+			expect(byDefault).toHaveLength(1);
+
+			const token = `x.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.x`;
+			await streamOpenAICodexResponses(
+				{
+					id: "test-model",
+					name: "Test Model",
+					api: "openai-codex-responses",
+					provider: "test-provider",
+					baseUrl: `https://localhost:${endpointAddress.port}`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 10_000,
+					maxTokens: 1_000,
+				},
+				normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }),
+				{ apiKey: token, transport: "websocket", sessionId: "codex-websocket-default-dispatcher" },
+			).result();
+			expect(used).toEqual(byDefault);
+		} finally {
+			globalThis.WebSocket = originalWebSocket;
+			for (const undo of restore) undo();
+			await dispatcher.close();
+			await new Promise<void>((resolve) => endpoint.close(() => resolve()));
+		}
+	});
 });
