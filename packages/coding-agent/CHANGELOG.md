@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
+- On Node 22, where `AsyncLocalStorage` runs on promise hooks, each scope Atomic used and each session it ran made every `await` in the process slower, in an SDK host's own code too. Atomic now keeps all of its async context in one store, so the cost no longer grows: after a 300-prompt SDK session, 3 million awaits take about half as long as before. Node 24 and Bun were not affected. See [Node 22 hosts](docs/sdk.md#node-22-hosts) for the Node flag that removes the remaining cost ([#6111](https://github.com/bastani-inc/atomic/issues/6111)).
 - A resumed session no longer sends the `mcp_servers` part of the system prompt twice more while its MCP servers reconnect: a server without a configured `description` keeps the summary the session last showed for it until it connects, and the part changes only if the server's instructions did ([#6108](https://github.com/bastani-inc/atomic/issues/6108))
 - Sessions no longer store a hash of an MCP stdio server's arguments, which can hold a token, and changing such an argument no longer drops the server's tools from the first requests after a resume ([#6109](https://github.com/bastani-inc/atomic/issues/6109))
 
