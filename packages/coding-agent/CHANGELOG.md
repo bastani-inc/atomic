@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the first quit after installing or upgrading Atomic no longer takes several seconds. A session that finds Node's compile cache empty or out of date runs without it, as it would have anyway, and a short-lived background process writes the cache while the session runs, so later sessions start from it ([#6132](https://github.com/bastani-inc/atomic/issues/6132))
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.
