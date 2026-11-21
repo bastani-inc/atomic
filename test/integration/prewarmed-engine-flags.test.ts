@@ -223,16 +223,14 @@ async function quitWithEmptyCompileCache(args: readonly string[], env: Record<st
 
 // A host that would have run its prewarmed engine before that engine carried what main() derives from the arguments and
 // settings keeps its cache as it was: written as it quits. One that runs the engine only because it now carries that
-// environment would have written its cache before starting a second engine; on Windows it still writes it then, so
-// its quit does not wait for a cold cache.
+// environment would have written its cache before starting a second engine; it still writes it then, so its quit does
+// not wait for a cold cache.
 test(
-	"a host running an engine prewarmed for --offline writes a cold compile cache before input on Windows and quits at once",
+	"a host running an engine prewarmed for --offline writes a cold compile cache at the handover and quits at once",
 	async () => {
 		const run = await quitWithEmptyCompileCache(["--offline"], {});
 		assert.equal(engineChildren(run.lines).length, 1, "the host ran the engine it prewarmed");
-		if (process.platform === "win32")
-			assert.ok(run.cacheFilesBeforeQuit > 0, "the host wrote its cache at the handover");
-		else assert.equal(run.cacheFilesBeforeQuit, 0, "the cache waits for the quit");
+		assert.ok(run.cacheFilesBeforeQuit > 0, "the host wrote its cache at the handover");
 		assert.ok(run.quitMs < QUIT_BOUND_MS, `quitting took ${Math.round(run.quitMs)} ms`);
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,

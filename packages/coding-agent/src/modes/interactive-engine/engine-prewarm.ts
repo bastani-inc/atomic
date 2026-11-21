@@ -170,17 +170,12 @@ function setReferenced(child: ChildProcess, referenced: boolean): void {
  */
 export async function prewarmInteractiveEngineForArgs(args: readonly string[]): Promise<void> {
 	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args)) return;
-	// Only a Windows host acts on the basis (see `spawnRpcClientProcess`); elsewhere it costs nothing.
-	const unchanged =
-		process.platform === "win32"
-			? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true })
-			: undefined;
+	const unchanged = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 	await applyArgumentEnvironment(args);
 	const settingsEnv = await settingsEnvironmentForEarlyChild(getAgentDir());
 	const derived = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 	const launch = { ...derived, env: { ...derived.env, ...settingsEnv } };
-	const basis = unchanged !== undefined && !sameEngineLaunch(unchanged, launch) ? "derived" : "unchanged";
-	prewarmInteractiveEngine(args, { launch, basis });
+	prewarmInteractiveEngine(args, { launch, basis: sameEngineLaunch(unchanged, launch) ? "unchanged" : "derived" });
 }
 
 /** Start the engine child this interactive host will most likely run, before the host has loaded its own code. */

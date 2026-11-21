@@ -93,11 +93,11 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 					adoption.basis = adopted;
 				})
 			: undefined;
-		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. On
-		// Windows, where writing a cold cache takes seconds, so does a host running an engine prewarmed with environment
-		// its arguments or settings add: without that environment it would have written the cache here and started a
-		// fresh engine, and otherwise the write waits for its quit.
-		const writesCache = !prewarmed || (adoption.basis === "derived" && process.platform === "win32");
+		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. So does
+		// a host running an engine prewarmed with environment its arguments or settings add: without that environment it
+		// would have written the cache here and started a fresh engine, and otherwise the write waits for its quit, where
+		// a cold cache takes seconds on Windows.
+		const writesCache = !prewarmed || adoption.basis === "derived";
 		if (options.interactiveEngine && writesCache) flushPersistentCompileCache();
 		child =
 			prewarmed ??
