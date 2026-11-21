@@ -3107,6 +3107,53 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		);
 	});
 
+	test("a hand-over presented after its hold lapsed whose claim goes unanswered and whose binding write then fails leaves the session awaiting its id with the fresh id kept (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+		const knownSessions = here.state.knownSessions;
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(() => new Promise(() => {}));
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "unanswered" && claim.unanswered.recovery !== undefined, JSON.stringify(claim));
+
+		// Its registration's binding write fails: the session keeps the fresh id it was answered with, awaiting its id.
+		vi.spyOn(knownSessions, "reclaim").mockRejectedValueOnce(new Error("the database failed"));
+		const again = registeringAs(fresh, randomUUID());
+		let settled = false;
+		const registered = here.router.sessionRegistered(again, undefined, {
+			...claim.unanswered,
+			settle: (keep) => {
+				if (settled) return false;
+				settled = true;
+				const kept = keep && !here.sessions.has(claim.unanswered.sessionId);
+				if (kept) again.info.id = claim.unanswered.sessionId;
+				here.sessions.set(again.info.id, again);
+				return kept;
+			},
+			unsettled: () => !settled,
+		});
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered.catch(() => {});
+		assert.notEqual(again.info.id, live.info.id);
+		await untilMovedBack(here, again);
+		const back = await here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			here.handoffs.at(-1)!.handoff,
+		);
+		assert.ok(back.status === "granted", JSON.stringify(back));
+		assert.equal(back.grant.alias, fresh.info.id, "the id its asks were sent to");
+	});
+
 	test("a hand-over presented after its hold lapsed does not take the fresh id from a registration that took it once it went stale (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped();
 		await untilMovedBack(here, fresh);

@@ -1909,8 +1909,12 @@ export class MultiNodeRouter {
 						} catch (error) {
 							// #5607: the id this session was given (and answered under) is not confirmed its own: it takes it at the
 							// next check, as a session registered while routing was opening does.
-							if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry)
+							if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry) {
 								entry.adoption = adoption(owner.token);
+								// A lapsed hand-over whose id its binding write did not keep leaves it awaiting that id all the same.
+								if (reclaim?.recovery !== undefined && session.info.id !== reclaim.sessionId)
+									entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
+							}
 							throw error;
 						}
 						if (binding.status === "refused") {
