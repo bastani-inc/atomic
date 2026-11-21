@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
 - An extension command whose view takes longer than 250 ms to draw no longer shows an empty frame before it: the typed command stays until the view draws, for at most another 250 ms, also when another extension's change ends the wait early ([#6105](https://github.com/bastani-inc/atomic/issues/6105))
 - The "Working…" row leaves the screen as soon as an extension command ends after its view, overlay or dialog closed, instead of at the next key press ([#6134](https://github.com/bastani-inc/atomic/issues/6134))
 - Opening a subagent from `/tasks` no longer draws a frame without the agent panel and then moves the transcript up: the subagent is shown once the panel has drawn again ([#6123](https://github.com/bastani-inc/atomic/issues/6123))
