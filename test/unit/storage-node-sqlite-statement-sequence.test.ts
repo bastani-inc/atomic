@@ -289,20 +289,25 @@ test("a sequence whose signal aborts while one of its statements runs finishes t
 });
 
 /** Calls made in the memory tests below; on Node 22 a derived signal made per call kept about 200 bytes each. */
-const MEASURED_CALLS = 2_000;
+const MEASURED_CALLS = 10_000;
 
 /**
- * How much more heap stays in use after `MEASURED_CALLS` sequences of one statement each, made with the signal
- * `signalOf` gives for each call, than after as many made before. The first calls also compile and cache what every
- * later call uses.
+ * How much more heap stays in use after `MEASURED_CALLS` sequences made with the signal `signalOf` gives for each
+ * call, than after as many made before (the first calls also compile and cache what every later call uses). The
+ * sequences hold no statements: each watches its signal as any sequence does, and none waits for the connection's
+ * thread, so how busy the machine is changes only how long the calls take, not what they keep.
  */
 async function heapGrownByCalls(signalOf: () => AbortSignal): Promise<number> {
 	const database = await openFile();
-	const unchanged: SqliteStatement = { sql: "UPDATE items SET value = value WHERE 0", params: [] };
+	const { sent } = watchSequences();
+	let ended = false;
+	cleanups.push(() => {
+		ended = true;
+	});
 	const callAll = () =>
 		database.transaction(async (tx) => {
 			const run = runnerOf(tx);
-			for (let call = 0; call < MEASURED_CALLS; call++) await run({ statements: [unchanged], signal: signalOf() });
+			for (let call = 0; call < MEASURED_CALLS && !ended; call++) await run({ statements: [], signal: signalOf() });
 		});
 	const heapInUse = async () => {
 		await collectGarbage();
@@ -311,7 +316,9 @@ async function heapGrownByCalls(signalOf: () => AbortSignal): Promise<number> {
 	await callAll();
 	const before = await heapInUse();
 	await callAll();
-	return (await heapInUse()) - before;
+	const grown = (await heapInUse()) - before;
+	assert.equal(sent.length, 0, "no sequence went to the connection's thread");
+	return grown;
 }
 
 test("sequences made with one signal keep nothing of each call once it returned (#6106)", async () => {
