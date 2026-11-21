@@ -10,7 +10,6 @@ import {
 	prepareInstalledPackage,
 	readRecords,
 } from "../helpers/event-loop-guard-fixture.js";
-import { recordProcess, signalRecordedProcess, waitUntilGone } from "../helpers/recorded-process.js";
 import { fileExistsSync, makeTempDirectory, moduleDir, readTextSync } from "../helpers/runtime.js";
 import { type ClosedConsoleRun, runUntilConsoleClosed } from "../helpers/windows-console.js";
 
@@ -100,9 +99,11 @@ export default (pi) => {
 				ATOMIC_EVENT_LOOP_BLOCK_LOG: eventLoopLog,
 				TERM: "xterm-256color",
 			},
+			// The extension writes the engine's pid there once it runs in the engine.
 			readyFile: started,
 			readyText: "❯",
 			timeoutMs: CLI_TIMEOUT_MS,
+			readyProcessExitMs: PROCESS_GONE_MS,
 			directory: root,
 		});
 		const records = readRecords(eventLoopLog);
@@ -112,17 +113,13 @@ export default (pi) => {
 			host?.type === "start" && engine?.type === "start",
 			`the session ran in an engine process\n${run.screen}`,
 		);
-		const engineProcess = await recordProcess(engine.pid);
-		const engineGone = await waitUntilGone(engineProcess, PROCESS_GONE_MS);
-		if (!engineGone) await signalRecordedProcess(engineProcess, "SIGKILL");
-		if (run.exitCode === undefined) await signalRecordedProcess(await recordProcess(host.pid), "SIGKILL");
 		const calls = fileExistsSync(shutdown)
 			? readTextSync(shutdown, "utf8")
 					.split("\n")
 					.filter((line) => line.length > 0)
 					.map((line) => JSON.parse(line) as ShutdownRecord)
 			: [];
-		return { run, calls, records, enginePid: engine.pid, engineGone };
+		return { run, calls, records, enginePid: engine.pid, engineGone: run.readyProcessExited };
 	} finally {
 		await removeTempRootReleasingBroker(root, agentDir);
 	}
