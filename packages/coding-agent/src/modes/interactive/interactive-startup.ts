@@ -78,6 +78,7 @@ import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { showSessionNotices } from "./session-notices.ts";
+import { abortStartupShell, handOverStartupShell } from "./startup-shell.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
@@ -374,6 +375,9 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.ui.requestRender();
 	});
 
+	// Where the folder's trust may still be asked, nothing typed before the question may answer it or be sent after it:
+	// the early editor ends, and what was typed there is held in the prompt with a notice, as the capture holds it.
+	if (this.options.startupTrustPromptPossible) abortStartupShell();
 	const startupInput = consumeStartupInput(this.options.startupInputCapture, {
 		startupDecisionPending: this.options.startupTrustPromptPossible,
 	});
@@ -394,7 +398,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// The editor remains local and responsive; session binding and provider work
 	// still stay behind the engine-bound gate below.
 	markLifecycleTiming("tui-start");
+	// The early editor stops drawing and hands over its terminal and prompt; the keys it held reach this interface first.
+	const earlyEditor = this.options.terminal === undefined ? handOverStartupShell() : undefined;
 	this.ui.start();
+	if (earlyEditor) this.defaultEditor.restoreDraft(earlyEditor.draft);
 	markEventLoopStartupComplete();
 	this.programStatus.report();
 	ensurePngTranscoder(() => {

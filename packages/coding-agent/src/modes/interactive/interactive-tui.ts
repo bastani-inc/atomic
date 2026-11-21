@@ -605,7 +605,7 @@ class LifecycleTimingTerminal extends ProcessTerminal {
 	}
 }
 
-function createProcessTerminal(): ProcessTerminal {
+export function createProcessTerminal(): ProcessTerminal {
 	return isLifecycleTimingEnabled() ? new LifecycleTimingTerminal() : new ProcessTerminal();
 }
 
