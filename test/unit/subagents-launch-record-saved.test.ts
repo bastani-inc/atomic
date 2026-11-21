@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +110,27 @@ test("an attempt runs once its launch record is saved, after it", async () => {
 	assert.equal(attempt.status, "ok");
 	assert.equal(promptedBeforeSaved, false);
 	assert.equal(existsSync(promptLog), true);
+});
+
+test("an attempt that waited for its launch record leaves nothing listening on signals that outlive it", async () => {
+	const { root } = fixture();
+	const { control, admitted } = await admit(root, { testSession: { output: "done" } });
+	const abort = new AbortController();
+	const interrupt = new AbortController();
+
+	const attempt = await control.runChildAttempt(
+		admitted,
+		{},
+		{ abort: abort.signal, interrupt: interrupt.signal },
+		undefined,
+		{ reportActivity: () => {}, bindChildLaunch: () => Promise.resolve(undefined) },
+	);
+
+	assert.equal(attempt.status, "ok");
+	assert.deepEqual(
+		[getEventListeners(abort.signal, "abort").length, getEventListeners(interrupt.signal, "abort").length],
+		[0, 0],
+	);
 });
 
 test("an SDK child whose launch record could not be saved is not retried or run on another model", async () => {

@@ -1439,13 +1439,23 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 type TranscriptMessage = Extract<BranchEntry, { type: "message" }>["message"];
 
-/** Settles once the attempt is aborted or interrupted; its listeners go once either fires. */
-function attemptStopped(signals: AttemptSignals): Promise<"stopped"> {
-	const stopped = AbortSignal.any([signals.abort, signals.interrupt]);
-	return new Promise((resolve) => {
-		if (stopped.aborted) resolve("stopped");
-		else stopped.addEventListener("abort", () => resolve("stopped"), { once: true });
+/**
+ * Settles once the attempt is aborted or interrupted, until `dispose` removes what listens for that: call it once the
+ * wait it races is over, so a signal that outlives the attempt keeps nothing of it.
+ */
+function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<"stopped">; dispose(): void } {
+	let dispose = (): void => {};
+	const stopped = new Promise<"stopped">((resolve) => {
+		if (signals.abort.aborted || signals.interrupt.aborted) return resolve("stopped");
+		const stop = () => resolve("stopped");
+		signals.abort.addEventListener("abort", stop, { once: true });
+		signals.interrupt.addEventListener("abort", stop, { once: true });
+		dispose = () => {
+			signals.abort.removeEventListener("abort", stop);
+			signals.interrupt.removeEventListener("abort", stop);
+		};
 	});
+	return { stopped, dispose: () => dispose() };
 }
 
 /** Why an attempt whose launch record could not be saved ended before it ran, with the store's reason. */
@@ -2809,7 +2819,13 @@ export class SubagentControlRuntime {
 			);
 			if (launchSaves.length > 0) {
 				// A stop does not wait for the save: the attempt stops before it runs, as below.
-				const saved = await beforeStartDeadline(Promise.race([Promise.all(launchSaves), attemptStopped(signals)]));
+				const stop = attemptStopped(signals);
+				let saved: readonly (string | undefined)[] | "stopped";
+				try {
+					saved = await beforeStartDeadline(Promise.race([Promise.all(launchSaves), stop.stopped]));
+				} finally {
+					stop.dispose();
+				}
 				if (saved !== "stopped")
 					for (const failure of saved) if (failure !== undefined) throw new Error(launchNotSavedMessage(failure));
 			}
