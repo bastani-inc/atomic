@@ -570,10 +570,9 @@ function taskkillTree(pid: number, settled?: () => void): void {
 /**
  * Kill a process and all its children (cross-platform)
  */
-/** Ends process `pid` and its descendants: its process group on POSIX, its tree on Windows, where `settled` runs once the tree kill finished. */
-export function killProcessTree(pid: number, settled?: () => void): void {
+export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
-		taskkillTree(pid, settled);
+		taskkillTree(pid);
 	} else {
 		if (process.platform === "darwin") {
 			// macOS signals group members individually after releasing the group lock. A killed

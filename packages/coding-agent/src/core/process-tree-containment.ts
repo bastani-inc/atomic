@@ -8,7 +8,13 @@ export interface ProcessTreeContainment {
 	close(): void;
 }
 
-type ContainProcessTree = (pid: number) => ProcessTreeContainment | null;
+/** How a process tree is contained. */
+export interface ContainmentOptions {
+	/** Lets a process in the tree start a child outside it, as `CREATE_BREAKAWAY_FROM_JOB` asks; such a start fails otherwise. */
+	readonly allowBreakaway?: boolean;
+}
+
+type ContainProcessTree = (pid: number, options?: ContainmentOptions) => ProcessTreeContainment | null;
 
 let nativeContain: ContainProcessTree | null | undefined;
 
@@ -26,10 +32,10 @@ function containFunction(): ContainProcessTree | null {
 	return nativeContain;
 }
 
-export function containProcessTree(pid: number): ProcessTreeContainment | undefined {
+export function containProcessTree(pid: number, options?: ContainmentOptions): ProcessTreeContainment | undefined {
 	if (process.platform !== "win32") return undefined;
 	try {
-		return containFunction()?.(pid) ?? undefined;
+		return containFunction()?.(pid, options) ?? undefined;
 	} catch {
 		return undefined;
 	}

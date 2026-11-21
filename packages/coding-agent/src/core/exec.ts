@@ -7,7 +7,6 @@ import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
 import { type HostChildProcess, spawnHostProcess } from "../utils/host-spawn.ts";
-import { killProcessTree } from "../utils/shell.ts";
 import {
 	descendantsOf,
 	descendantsOfNow,
@@ -15,6 +14,7 @@ import {
 	signalIfSame,
 	signalIfSameNow,
 } from "./process-descendants.js";
+import { containProcessTree } from "./process-tree-containment.ts";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -123,6 +123,14 @@ export async function execCommand(
 	});
 	// Until it settles; one that exited by then is left alone (see killQuitStoppableCommandsNow).
 	if (onQuit !== undefined && proc.pid !== undefined) quitStoppableCommands.add(proc);
+	// On Windows such a command runs in a job of its own, which this process holds: a stop ends its process tree
+	// through the job, never through a process ID another process may have taken by then, and the tree ends with this
+	// process. A process the command starts in the first microseconds, before the command is in the job, is outside it;
+	// one that asks to leave the job, as `CREATE_BREAKAWAY_FROM_JOB` does, still can.
+	const job =
+		process.platform === "win32" && onQuit !== undefined && proc.pid !== undefined
+			? containProcessTree(proc.pid, { allowBreakaway: true })
+			: undefined;
 
 	let stdout = "";
 	let stderr = "";
@@ -140,7 +148,7 @@ export async function execCommand(
 
 	/** The processes the command had started when it was stopped, read while it still ran. */
 	let stoppedDescendants: readonly IdentifiedProcess[] = [];
-	/** Whether the command's process tree was ended on Windows, where the command then exits with taskkill's status. */
+	/** Whether the command's process tree was ended through its job on Windows, where the command then exits with status 1. */
 	let windowsTreeEnded = false;
 	let treeStop: Promise<boolean> | undefined;
 	/**
@@ -154,11 +162,12 @@ export async function execCommand(
 			const pid = proc.pid;
 			if (pid === undefined || exited()) return false;
 			if (process.platform === "win32") {
-				windowsTreeEnded = true;
-				// Should the tree kill fail, the command itself still ends.
-				killProcessTree(pid, () => {
-					if (!exited()) proc.kill("SIGTERM");
-				});
+				if (job?.terminate()) {
+					windowsTreeEnded = true;
+					return true;
+				}
+				// Without its job the command itself ends, through its own handle, as it always did.
+				proc.kill("SIGTERM");
 				return true;
 			}
 			// Read before the command is signalled: once it exits, the processes it started are no longer below it.
@@ -257,6 +266,9 @@ export async function execCommand(
 		code = 1;
 		if (!stderr) stderr = error.message;
 	} finally {
+		// What a command that ended left running keeps running, as it did before.
+		job?.release();
+		job?.close();
 		clearTimeout(timeoutId);
 		options?.signal?.removeEventListener("abort", abort);
 		stopOnQuit?.();
@@ -282,8 +294,8 @@ export async function execCommand(
 		stderr += stderrDecoder.end();
 	}
 
-	// Ended with its tree on Windows, the command exits with taskkill's status; report SIGTERM's code, as for a command
-	// `kill` ended.
+	// Ended with its tree through its job on Windows, the command exits with status 1; report SIGTERM's code, as for a
+	// command `kill` ended.
 	const endedByTreeKill = windowsTreeEnded && code === 1 && proc.signalCode === null;
 	const exitCode = endedByTreeKill
 		? 128 + osConstants.signals.SIGTERM
