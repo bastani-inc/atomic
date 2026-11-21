@@ -8,6 +8,7 @@ import type {
 	AutoCompactionRunOutcome,
 	AutoCompactionUrgency as CompactionUrgency,
 } from "./agent-session-methods.ts";
+import { pendingResumeUpdate } from "./agent-session-state.ts";
 import type { AgentQueueAccess } from "./agent-session-types.js";
 import {
 	calculateContextTokens,
@@ -730,6 +731,13 @@ export async function _compactBeforeResumedPrompt(
 	const checkpoint = this._resumeBudgetCheckpoint;
 	const model = this.model;
 	if (checkpoint && sendsPrompt) this._resumePromptUpdate = update ?? null;
+	else if (checkpoint && this._resumePromptUpdate === undefined && this._resumeHeldUpdate === undefined) {
+		// With no prompt update pending, this run's request ends the check, as a prompt's would; otherwise its turns
+		// hold back what the update adds until a request sends it through the check (see withoutResumeUpdate).
+		const pending = pendingResumeUpdate(this);
+		if (pending) this._resumeHeldUpdate = pending;
+		else this._resumePromptUpdate = null;
+	}
 	if (!checkpoint || !model || !this.settingsManager.getCompactionSettings(model).enabled) return false;
 	if (
 		this._compactionAbortController !== undefined ||
@@ -770,6 +778,7 @@ export async function _compactBeforeResumedPrompt(
 	if (this._resumeBudgetCheckpoint === checkpoint) {
 		this._resumeBudgetCheckpoint = undefined;
 		this._resumePromptUpdate = undefined;
+		this._resumeHeldUpdate = undefined;
 	}
 	return true;
 }

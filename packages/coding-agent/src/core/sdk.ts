@@ -896,6 +896,7 @@ async function constructAgentSession(
 				) {
 					internal._resumeBudgetCheckpoint = undefined;
 					internal._resumePromptUpdate = undefined;
+					internal._resumeHeldUpdate = undefined;
 				}
 				const prefix = [...agent.state.messages];
 				const warmOptions: ModelRuntimeSimpleStreamOptions = {

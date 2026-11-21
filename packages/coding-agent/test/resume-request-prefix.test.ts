@@ -868,23 +868,69 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		);
 	});
 
-	test("the turn after an interrupt's tool call keeps the interrupt's prompt, and the next prompt sends the new instructions after the clear", async () => {
-		let interrupt = (): Promise<void> => Promise.resolve();
-		const interrupting: ExtensionFactory = (pi) => {
-			interrupt = () =>
+	/** The snippet of `helper_tool`, a tool `enable_helper` turns on. */
+	const HELPER_SNIPPET = "Ask helper_tool for help.";
+
+	/** `helper_tool`, off at first, and `enable_helper`, which turns it on when called. */
+	const helperTools: ExtensionFactory = (pi) => {
+		pi.on("session_start", () => {
+			pi.registerTool({
+				name: "helper_tool",
+				label: "helper_tool",
+				description: "The helper tool",
+				promptSnippet: HELPER_SNIPPET,
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "helped" }], details: {} }),
+			});
+			pi.registerTool({
+				name: "enable_helper",
+				label: "enable_helper",
+				description: "Turns the helper tool on",
+				parameters: Type.Object({}),
+				execute: async () => {
+					pi.setActiveTools([...pi.getActiveTools(), "helper_tool"]);
+					return { content: [{ type: "text", text: "enabled" }], details: {} };
+				},
+			});
+			pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "helper_tool"));
+		});
+	};
+
+	/** An extension that sends an interrupt when `interrupt()` is called. */
+	function interrupter() {
+		const hooks = { interrupt: (): Promise<void> => Promise.resolve() };
+		const factory: ExtensionFactory = (pi) => {
+			hooks.interrupt = () =>
 				pi.sendMessage(
 					{ customType: "ping", content: "Interrupting.", display: true },
 					{ deliverAs: "interrupt", triggerTurn: true },
 				);
-			// A section of the prompt that only a prompt's start sets, as the MCP servers' section is.
+		};
+		return { hooks, factory };
+	}
+
+	/** The requests a run sends after `before`, once it has ended and sent `count` of them. */
+	async function runRequests(runtime: AgentSessionRuntime, before: number, count: number) {
+		await until(
+			() =>
+				server.requests.length >= before + count &&
+				!runtime.session.isStreaming &&
+				runtime.session.messages.at(-1)?.role === "assistant",
+		);
+		return server.requests.slice(before).map((request) => JSON.stringify(request.json));
+	}
+
+	test("the turn after an interrupt's tool call holds back the new instructions, and the next prompt sends them after the clear", async () => {
+		const { hooks, factory } = interrupter();
+		// A section of the prompt that only a prompt's start sets, as the MCP servers' section is.
+		const sectioning: ExtensionFactory = (pi) => {
 			pi.on("before_agent_start", (event) => {
-				const { sections } = event.systemPromptOptions;
-				sections.probe = "Probe section.";
+				event.systemPromptOptions.sections.probe = "Probe section.";
 			});
 		};
 		const { installation, sessionId } = await nearWindowSession(
 			{},
-			[interrupting],
+			[factory, sectioning],
 			MORE_INSTRUCTIONS,
 			NEAR_WINDOW_INPUT,
 			() => ["probe_tool"],
@@ -892,22 +938,16 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
 		const before = server.requests.length;
 		server.reply({ toolUse: { name: "probe_tool", input: { value: "x" } } }, { text: "done" });
-		await interrupt();
-		await until(
-			() =>
-				server.requests.length >= before + 2 &&
-				!resumed.session.isStreaming &&
-				resumed.session.messages.at(-1)?.role === "assistant",
-		);
-		const interruptRun = server.requests.slice(before).map((request) => request.json);
-		assert.equal(interruptRun.length, 2);
+		await hooks.interrupt();
+		const run = await runRequests(resumed, before, 2);
+		assert.equal(run.length, 2);
 		// Both requests of the interrupt's run keep the prompt and budget the interrupt was sent with.
-		for (const request of interruptRun) {
-			assert.equal(budgetOf(request), 8192);
-			assert.ok(!JSON.stringify(request).includes("Keep each change reviewed."), "the new instructions are sent");
-			assert.ok(JSON.stringify(request).includes("Probe section."), "a section a prompt set is dropped");
+		for (const request of run) {
+			assert.equal(budgetOf(JSON.parse(request)), 8192);
+			assert.ok(!request.includes("Keep each change reviewed."), "the new instructions are sent");
+			assert.ok(request.includes("Probe section."), "a section a prompt set is dropped");
 		}
-		assert.ok(JSON.stringify(interruptRun[1]!.messages).includes("probe_tool done"), "the tool result is not sent");
+		assert.ok(run[1]!.includes("probe_tool done"), "the tool result is not sent");
 		assert.equal(compactions(resumed), 0);
 
 		const prompted = await send(resumed, "four");
@@ -918,31 +958,79 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		assert.equal(sent.split("probe_tool done").length - 1, 1, "the tool result is not sent once");
 	});
 
-	test("once the first request after the resume went out, a tool turned on during a run is described in the prompt of the run's next request", async () => {
-		const toggling: ExtensionFactory = (pi) => {
-			pi.on("session_start", () => {
-				pi.registerTool({
-					name: "helper_tool",
-					label: "helper_tool",
-					description: "The helper tool",
-					promptSnippet: "Ask helper_tool for help.",
-					parameters: Type.Object({}),
-					execute: async () => ({ content: [{ type: "text", text: "helped" }], details: {} }),
-				});
-				pi.registerTool({
-					name: "enable_helper",
-					label: "enable_helper",
-					description: "Turns the helper tool on",
-					parameters: Type.Object({}),
-					execute: async () => {
-						pi.setActiveTools([...pi.getActiveTools(), "helper_tool"]);
-						return { content: [{ type: "text", text: "enabled" }], details: {} };
-					},
-				});
-				pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "helper_tool"));
-			});
+	test("while the new instructions are held back, a tool an interrupt's run turned on is still described", async () => {
+		const { hooks, factory } = interrupter();
+		const { installation, sessionId } = await nearWindowSession({}, [factory, helperTools]);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		server.reply({ toolUse: { name: "enable_helper", input: {} } }, { text: "done" });
+		await hooks.interrupt();
+		const run = await runRequests(resumed, before, 2);
+		assert.ok(!run[1]!.includes("Keep each change reviewed."), "the new instructions are sent");
+		assert.ok(run[1]!.includes(HELPER_SNIPPET), "the tool turned on is not described");
+	});
+
+	for (const [name, first] of [
+		["an interrupt", (_runtime: AgentSessionRuntime, interrupt: () => Promise<void>) => interrupt()],
+		["a message steered while idle", (runtime: AgentSessionRuntime) => runtime.session.steer("go on")],
+	] as const)
+		test(`with no prompt update pending, ${name} sent first after the resume describes a tool its run turned on`, async () => {
+			const { hooks, factory } = interrupter();
+			const { installation, sessionId } = await nearWindowSession(
+				{},
+				[factory, helperTools],
+				"Prefer small changes.\n",
+			);
+			const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+			const before = server.requests.length;
+			server.reply({ toolUse: { name: "enable_helper", input: {} } }, { text: "done" });
+			await first(resumed, hooks.interrupt);
+			const run = await runRequests(resumed, before, 2);
+			assert.ok(!run[0]!.includes(HELPER_SNIPPET));
+			assert.ok(run[1]!.includes(HELPER_SNIPPET), "the tool turned on is not described");
+		});
+
+	test("with no prompt update pending, an interrupt sent first after the resume ends the check, as a prompt would", async () => {
+		const { hooks, factory } = interrupter();
+		const recovering: ExtensionFactory = (pi) => {
+			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
 		};
-		const { installation, sessionId } = await nearWindowSession({}, [toggling]);
+		const { installation, sessionId } = await nearWindowSession(
+			{ defaultThinkingLevel: "high" },
+			[factory, recovering],
+			"Prefer small changes.\n",
+			HIGH_NEAR_WINDOW_INPUT,
+		);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		await hooks.interrupt();
+		await runRequests(resumed, before, 1);
+		await resumed.session.startPendingRecovery("resume");
+
+		const second = await send(resumed, "four");
+		assert.equal(compactions(resumed), 0);
+		assert.ok(budgetOf(second) < 16_384, `budget ${budgetOf(second)}`);
+	});
+
+	test("with no prompt update pending, a second interrupt's run describes a tool it turned on", async () => {
+		const { hooks, factory } = interrupter();
+		const { installation, sessionId } = await nearWindowSession(
+			{},
+			[factory, helperTools],
+			"Prefer small changes.\n",
+		);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		await hooks.interrupt();
+		await runRequests(resumed, before, 1);
+		server.reply({ toolUse: { name: "enable_helper", input: {} } }, { text: "done" });
+		await hooks.interrupt();
+		const run = await runRequests(resumed, before, 3);
+		assert.ok(run[2]!.includes(HELPER_SNIPPET), "the tool turned on is not described");
+	});
+
+	test("once the first request after the resume went out, a tool turned on during a run is described in the prompt of the run's next request", async () => {
+		const { installation, sessionId } = await nearWindowSession({}, [helperTools]);
 		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
 		await send(resumed, "three");
 		const before = server.requests.length;
@@ -950,8 +1038,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		await send(resumed, "four");
 		const run = server.requests.slice(before).map((request) => JSON.stringify(request.json));
 		assert.equal(run.length, 2);
-		assert.ok(!run[0]!.includes("Ask helper_tool for help."));
-		assert.ok(run[1]!.includes("Ask helper_tool for help."), "the tool turned on is not described");
+		assert.ok(!run[0]!.includes(HELPER_SNIPPET));
+		assert.ok(run[1]!.includes(HELPER_SNIPPET), "the tool turned on is not described");
 	});
 
 	test("a recovery notice added after the first prompt does not clear the context for the next one", async () => {

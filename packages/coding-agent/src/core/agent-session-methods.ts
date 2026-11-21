@@ -63,6 +63,7 @@ import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import type { ToolStatusReport } from "./tool-status.js";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
+import type { SystemMessageWithTransformedPrompt } from "./transformed-system-prompt.ts";
 import type { WorktreeRootMapping } from "./worktree-snapshot/types.ts";
 
 export interface SessionCompactOptions {
@@ -243,7 +244,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_preparePromptAndToolLoadout(
 		options: NormalizedBuildSystemPromptOptions,
 		messages?: AgentMessage[],
-	): import("@bastani/atomic-ai").SystemMessage | undefined;
+	): SystemMessageWithTransformedPrompt | undefined;
 	_restoreToolsFromTranscript(options?: { startup?: boolean }): void;
 	_refreshBaseSystemPromptFromActiveTools(): void;
 	_currentRunSystemPromptOptions(): NormalizedBuildSystemPromptOptions;
@@ -774,6 +775,12 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	 * update, at once when it is null; see `_compactBeforeResumedPrompt`.
 	 */
 	_resumePromptUpdate?: AgentMessage | null;
+	/**
+	 * The prompt update a resume needs, as the first check of a run that does not send the session's prompt (an
+	 * interrupt, queued input) found it while one was pending. Until the checkpoint retires, a later turn of such a run
+	 * leaves out what it changes or adds; see `withoutResumeUpdate`.
+	 */
+	_resumeHeldUpdate?: SystemMessageWithTransformedPrompt;
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
