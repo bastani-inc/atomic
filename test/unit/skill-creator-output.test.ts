@@ -165,6 +165,36 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 		},
 	);
 
+	test.skipIf(!pyyaml)(
+		"aggregate_benchmark, generate_report and quick_validate run by their path without their folder on the module path",
+		() => {
+			const box = sandbox();
+			const iteration = benchmarkFolder(box, "iteration-1");
+			const runs: [script: string, args: string[], expected: string][] = [
+				["aggregate_benchmark.py", [iteration], `Generated: ${join(iteration, "benchmark.md")}\n`],
+				["generate_report.py", [loopOutput(box), "--skill-name", "reports"], "<title>reports \u2014 "],
+				["quick_validate.py", [box.skill], "Skill is valid!\n"],
+			];
+			// Python 3.11's safe path, and runpy from another program: nothing puts the script's folder on the path.
+			const runpy = "import runpy, sys\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')";
+			for (const [script, args, expected] of runs) {
+				const path = join(skillCreatorDir, "scripts", script);
+				for (const command of [
+					[path, ...args],
+					["-c", runpy, path, ...args],
+				]) {
+					const result = spawnSyncCollect([python ?? "python3", ...command], {
+						cwd: box.project,
+						env: box.env({ ...ANSI_PIPE, PYTHONPATH: "", PYTHONSAFEPATH: "1" }),
+					});
+					const stdout = result.stdout.toString().replaceAll("\r\n", "\n");
+					assert.equal(result.exitCode, 0, `${script}: ${result.stderr.toString()}`);
+					assert.ok(stdout.includes(expected), `${script}: ${stdout}`);
+				}
+			}
+		},
+	);
+
 	test("the review viewer run with its errors captured in place, as by runpy, reports them there", () => {
 		const box = sandbox();
 		const program = [
@@ -240,21 +270,28 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 		"a script run without standard output or error, as under pythonw, runs",
 		() => {
 			const box = sandbox();
+			// Standard output and error closed: Python starts with sys.stdout and sys.stderr set to None.
+			const closed = (script: string, args: readonly string[]) =>
+				spawnSyncCollect(
+					[
+						"sh",
+						"-c",
+						'exec "$0" "$@" >&- 2>&-',
+						python ?? "python3",
+						join(skillCreatorDir, "scripts", script),
+						...args,
+					],
+					{ cwd: box.project, env: box.env(ANSI_PIPE) },
+				).exitCode;
 			const iteration = benchmarkFolder(box, "iteration-1");
-			const result = spawnSyncCollect(
-				[
-					"sh",
-					"-c",
-					// Standard output and error closed: Python starts with sys.stdout and sys.stderr set to None.
-					'exec "$0" "$@" >&- 2>&-',
-					python ?? "python3",
-					join(skillCreatorDir, "scripts", "aggregate_benchmark.py"),
-					iteration,
-				],
-				{ cwd: box.project, env: box.env(ANSI_PIPE) },
-			);
-			assert.equal(result.exitCode, 0);
+			assert.equal(closed("aggregate_benchmark.py", [iteration]), 0);
 			assert.ok(existsSync(join(iteration, "benchmark.json")));
+			const evalSet = box.writeEvalSet([{ query: "make a report", should_trigger: true }]);
+			assert.equal(
+				closed("run_eval.py", ["--eval-set", evalSet, "--skill-path", box.skill, "--runs-per-query", "1"]),
+				0,
+			);
+			assert.equal(box.records().length, 1, "the query ran");
 		},
 	);
 });
