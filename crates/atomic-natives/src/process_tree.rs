@@ -71,9 +71,23 @@ pub(crate) fn walk<H>(
 	kept
 }
 
+/// The `ProcessSequenceNumber` of a `PROCESS_TELEMETRY_ID_INFORMATION` that Windows wrote `written` bytes of into
+/// `buffer`: only when both those bytes and the structure's own `HeaderSize` reach past the field, so that a shorter
+/// structure of another Windows version never has part of what follows it taken for the number.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn sequence_number(buffer: &[u64], written: u32) -> Option<u64> {
+	/// The field's offset in the structure, in 8-byte words, and where it ends, in bytes.
+	const WORD: usize = 5;
+	const END: u32 = 48;
+	// `HeaderSize` is the structure's first 4 bytes, little-endian.
+	let header_size = (*buffer.first()? & 0xffff_ffff) as u32;
+	let sequence = *buffer.get(WORD)?;
+	(written >= END && header_size >= END && sequence != 0).then_some(sequence)
+}
+
 #[cfg(windows)]
 mod windows {
-	use super::{Opened, walk};
+	use super::{Opened, sequence_number, walk};
 	use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 	use windows_sys::Wdk::System::Threading::{
 		NtQueryInformationProcess, ProcessBasicInformation, ProcessTelemetryIdInformation,
@@ -131,8 +145,6 @@ mod windows {
 	/// the order of all process starts since boot, which the kernel counts up at each start. The structure's fixed part
 	/// is followed by strings of the process (its command line among them), so the buffer grows to what it needs.
 	fn started(process: &OwnedHandle) -> Option<u64> {
-		/// The field's offset in `PROCESS_TELEMETRY_ID_INFORMATION`, in 8-byte words.
-		const SEQUENCE_NUMBER_WORD: usize = 5;
 		let mut words = 512usize;
 		for _ in 0..4 {
 			let mut buffer = vec![0u64; words];
@@ -147,8 +159,7 @@ mod windows {
 				)
 			};
 			if status >= 0 {
-				let sequence = buffer[SEQUENCE_NUMBER_WORD];
-				return (sequence != 0).then_some(sequence);
+				return sequence_number(&buffer, needed);
 			}
 			let needed_words = (needed as usize).div_ceil(8);
 			if needed_words <= words {
@@ -233,6 +244,22 @@ mod tests {
 		let _ = cmd.wait();
 		// The ping, and a console host cmd.exe may have started.
 		assert!(ended >= 1, "nothing cmd.exe started was ended");
+	}
+
+	#[test]
+	fn reads_the_sequence_number_only_where_the_structure_reaches_it() {
+		let mut structure = [0u64; 12];
+		structure[0] = 96;
+		structure[5] = 103;
+		assert_eq!(super::sequence_number(&structure, 196), Some(103));
+		// A header that ends before the field: what is there belongs to what follows the header.
+		structure[0] = 40;
+		assert_eq!(super::sequence_number(&structure, 196), None);
+		structure[0] = 96;
+		assert_eq!(super::sequence_number(&structure, 40), None);
+		structure[5] = 0;
+		assert_eq!(super::sequence_number(&structure, 196), None);
+		assert_eq!(super::sequence_number(&[96], 196), None);
 	}
 
 	#[test]
