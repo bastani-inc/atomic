@@ -422,6 +422,8 @@ export interface QueuedSubagentChildStart {
 		readonly message?: string;
 		readonly supervisorAuthorization?: RunSyncOptions["supervisorAuthorization"];
 		readonly onTerminal: () => void;
+		/** See {@link runAgentTask}'s `onEnded`. */
+		readonly onEnded?: () => void;
 	}): Promise<ModelSingleResponse>;
 }
 
@@ -632,11 +634,13 @@ export async function runAgentTask(input: {
 	intentTask?: string;
 	options: RunSyncOptions;
 	runtime: SubagentExecutorRuntimeDeps;
+	onTerminal?: (result: SingleResult) => void;
 	/**
-	 * Called once when the launch ends: with the child's result when it ran, and with none when it never ran (stopped
-	 * or cancelled while it waited for its run's slot) or its execution failed.
+	 * Called once when the launch ends, however it ends: after its run ended (after `onTerminal`), when its execution
+	 * failed, or when it never runs (stopped or cancelled while it waited for its run's slot; a stopped one stays
+	 * restorable).
 	 */
-	onTerminal?: (result?: SingleResult) => void;
+	onEnded?: () => void;
 	schedule?: ExecutionScheduler;
 	recordChild?: SubagentChildRecordSink;
 	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
@@ -650,10 +654,10 @@ export async function runAgentTask(input: {
 }): Promise<ModelSingleResponse> {
 	const registered = Promise.withResolvers<WeakRef<TaskLease>>();
 	let ended = false;
-	const terminal = (result?: SingleResult): void => {
+	const end = (): void => {
 		if (ended) return;
 		ended = true;
-		input.onTerminal?.(result);
+		input.onEnded?.();
 	};
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
@@ -826,6 +830,7 @@ export async function runAgentTask(input: {
 				runtime: input.runtime,
 				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 				onTerminal: launch.onTerminal,
+				...(launch.onEnded ? { onEnded: launch.onEnded } : {}),
 				// It waits for a slot in its run, as its original launch did.
 				...(runSchedule ? { schedule: runSchedule } : {}),
 				recordChild: launch.recordChild,
@@ -1123,7 +1128,8 @@ export async function runAgentTask(input: {
 						}
 						// A stop keeps what its session did not save, a late result's notice included, for its resume (#5012).
 						if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
-						terminal(child);
+						input.onTerminal?.(child);
+						end();
 						if (ownerSessionId !== undefined && settled && !stoppedByControl && child.status !== "killed")
 							wakeForResultsHeldDuringRun(
 								input.wakeDispatcher ?? agentWakeDispatcher(),
@@ -1147,7 +1153,7 @@ export async function runAgentTask(input: {
 						const swept = finishDirectory("error", { rejected: error });
 						if (!ownerClosed()) recordChild("terminal", "error");
 						if (swept) await swept;
-						terminal();
+						end();
 						throw error;
 					} finally {
 						ticket?.onEntered();
@@ -1215,7 +1221,7 @@ export async function runAgentTask(input: {
 			start: queuedStart(),
 			stopped: false,
 			finishWorktree,
-			ended: () => terminal(),
+			ended: end,
 		});
 	const lease = new WeakRef(started.value.lease);
 	const register = () => registered.resolve(lease);

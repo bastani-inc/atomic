@@ -7728,3 +7728,40 @@ test("a resumed child whose run failed can be resumed again", async () => {
 	first.resolve();
 	await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
 });
+
+test("a launched child paused while it waits for its run's slot keeps the hold on what is sent to it until it starts", async () => {
+	const h = harness();
+	const aGate = Promise.withResolvers<void>();
+	const qGate = Promise.withResolvers<void>();
+	h.finishOn.set("hold-a-task", aGate);
+	h.finishOn.set("hold-q-task", qGate);
+	cleanups.push(async () => {
+		aGate.resolve();
+		qGate.resolve();
+	});
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "hold-a-task" },
+			{ agent: "worker", task: "hold-q-task" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childQ] = children();
+	assert.ok(childA && childQ);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId && candidate.state === "running");
+	const startHolds = h.startHolds.map((hold) => hold.reserve);
+
+	await h.call({ action: "pause", id: childQ.childId });
+
+	const released = h.holds.filter((hold) => "release" in hold && startHolds.includes(hold.release));
+	assert.deepEqual(released, [], "its pause releases no start hold, so what is sent to it waits for it");
+	aGate.resolve();
+	qGate.resolve();
+	await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
+});

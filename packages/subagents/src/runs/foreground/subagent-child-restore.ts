@@ -1051,13 +1051,15 @@ async function relaunchChild(
 		forked: record.forked === true,
 		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
-		// However it ends, also stopped before it started: the restoration is over.
 		onTerminal: (child) => {
 			release();
 			// Normally the child consumed the hold when it registered; one that never did must not keep it, and tells the
 			// senders still held why when its start failed.
-			void hold?.release(child && startFailureRefusal(record.intercomTarget, child));
+			void hold?.release(startFailureRefusal(record.intercomTarget, child));
 		},
+		// However it ends, also failed or stopped before it started: the restoration is over. A stopped one keeps its hold,
+		// so what is sent to it meanwhile waits for it to start.
+		onEnded: release,
 	});
 	const outcome = await relaunched(
 		deps,
@@ -1120,6 +1122,7 @@ async function startQueuedChild(
 			release();
 			void hold?.release();
 		},
+		onEnded: release,
 	});
 	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
 }
@@ -1156,7 +1159,9 @@ async function ownerlessRelaunched(
 			() => {},
 		)
 		// A report that fails ends nothing else.
-		.catch(() => {});
+		.catch(() => {})
+		// Normally the child consumed the hold when it registered; one that never did must not keep it.
+		.finally(() => void hold?.release());
 	// The restoration is over once the launch ended, however it ends, also stopped before it started, which its result
 	// reports only once its run's slot frees. A result handed off while the launch still runs is no end of it.
 	void Promise.race([
@@ -1165,11 +1170,7 @@ async function ownerlessRelaunched(
 			(child) => (child.detached ? launched.ended : undefined),
 			() => undefined,
 		),
-	]).then(() => {
-		release();
-		// Normally the child consumed the hold when it registered; one that never did must not keep it.
-		void hold?.release();
-	});
+	]).then(release);
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
 	const intercomLive =
