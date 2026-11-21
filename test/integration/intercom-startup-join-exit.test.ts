@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import { BROKER_READY_TIMEOUT_MS } from "../../packages/intercom/broker/startup-timeout.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
 import {
@@ -16,8 +17,13 @@ import { startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 
 const CLI = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/cli.js");
 const CLI_START_TIMEOUT_MS = 60_000;
-/** Quitting a session whose Intercom has not started yet takes about 0.2 s; a waited-for broker start takes seconds. */
-const EXIT_BOUND_MS = 3_000;
+/**
+ * A quit that waited for the broker to start would wait until the start's own wait ran out: the broker never listens,
+ * and the quit comes within seconds of its start. A quit that does not wait still stops the broker it started and waits
+ * until that broker is gone, and an isolated terminal also ends its engine: under 1 s on an idle machine, and up to
+ * several seconds on a loaded Windows machine even with no broker at all. Half the start's wait tells the two apart.
+ */
+const EXIT_BOUND_MS = BROKER_READY_TIMEOUT_MS / 2;
 const BROKER_GONE_BOUND_MS = 2_000;
 
 /** A broker that starts, announces itself as a real one does (with when it was created, when asked), and never listens. */
