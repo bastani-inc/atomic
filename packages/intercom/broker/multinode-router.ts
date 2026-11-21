@@ -493,8 +493,10 @@ interface ReservedId {
 	readonly alias: string;
 	readonly aliasToken?: string;
 	confirmed: ClockMark;
-	/** `performance.now()` past which the id is given back unused. */
-	readonly until: number;
+	/** When the hand-over was given (both clocks, so a sleep counts): past `RESERVED_ID_HOLD_MS` the id is given back. */
+	handedAt: ClockMark;
+	/** It was handed over again, once, after a registration presenting it could not take it. */
+	handedAgain?: true;
 }
 
 /** #5607: what a check of a registration's id found: still its own, another registration's, or no answer. */
@@ -986,13 +988,19 @@ export class MultiNodeRouter {
 				expired = true;
 				attempts.catch(() => {});
 			}
-			// #5607: a hand-over that did not take the id leaves it held for the session, for its next registration.
-			if (reserved !== undefined && (claimed.status === "held" || claimed.status === "refused"))
+			// #5607: a hand-over that did not take the id leaves it held for the session, which awaits it still and is
+			// handed it again: the registration gets a fresh id meanwhile.
+			if (reserved !== undefined && (claimed.status === "held" || claimed.status === "refused")) {
 				this.holdAgain(identity, reserved);
+				return { status: "held" };
+			}
 			return claimed;
 		} catch (error) {
 			this.report(error);
-			if (reserved !== undefined) this.holdAgain(identity, reserved);
+			if (reserved !== undefined) {
+				this.holdAgain(identity, reserved);
+				return { status: "held" };
+			}
 			return { status: "refused" };
 		} finally {
 			clearTimeout(bound);
@@ -1326,7 +1334,18 @@ export class MultiNodeRouter {
 			const { awaits } = entry;
 			if (awaits === undefined || entry.fenced === true) continue;
 			// What is queued for the id it awaits is queued for its identity, but woken on the broker still holding the id.
-			this.scanIdentity(deliveryTargetIdentity(session));
+			const identity = deliveryTargetIdentity(session);
+			this.scanIdentity(identity);
+			// Already held for it, by a hand-over its last registration could not use: it is handed over once more, with a
+			// new hold of its own.
+			const held = this.reservedIds.get(identity);
+			if (held !== undefined && held.id === awaits.id && held.handedAgain !== true) {
+				delete entry.awaits;
+				held.handedAgain = true;
+				held.handedAt = clockMark();
+				this.host.fence(session, "reclaimed", { sessionId: held.id, handoff: held.handoff });
+				continue;
+			}
 			const inFlight = (awaits.inFlight ??= []);
 			if (!this.mayWrite(inFlight)) continue;
 			void this.tracked(inFlight, () => this.reclaimAwaited(session, entry, awaits)).catch((error: Error) =>
@@ -1377,7 +1396,7 @@ export class MultiNodeRouter {
 				alias: session.info.id,
 				...(entry.owner === undefined ? {} : { aliasToken: entry.owner.token }),
 				confirmed,
-				until: performance.now() + RESERVED_ID_HOLD_MS,
+				handedAt: clockMark(),
 			});
 			this.host.fence(session, "reclaimed", { sessionId: awaits.id, handoff });
 			if (earlier !== undefined) await this.releaseOwner({ intercomSessionId: earlier.id, token: earlier.token });
@@ -1399,7 +1418,7 @@ export class MultiNodeRouter {
 		if (reserved === undefined || reserved.handoff !== handoff || sessionId !== reserved.id) return undefined;
 		this.reservedIds.delete(identity);
 		// A hand-over presented too late takes nothing: the id is given back, for any registration to claim as usual.
-		if (performance.now() > reserved.until) {
+		if (elapsedSince(reserved.handedAt) >= RESERVED_ID_HOLD_MS) {
 			void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
 			if (reserved.aliasToken !== undefined)
 				void this.releaseOwner({ intercomSessionId: reserved.alias, token: reserved.aliasToken });
@@ -1418,9 +1437,8 @@ export class MultiNodeRouter {
 	 * release runs on its own, so a release the store is slow to answer holds up no renewal.
 	 */
 	private releaseExpiredReservations(): void {
-		const now = performance.now();
 		for (const [identity, reserved] of [...this.reservedIds]) {
-			if (reserved.until > now) continue;
+			if (elapsedSince(reserved.handedAt) < RESERVED_ID_HOLD_MS) continue;
 			this.reservedIds.delete(identity);
 			// A token a registration here took meanwhile is that registration's, not given back.
 			if (!this.tokenInUse(reserved.token))

@@ -1298,11 +1298,10 @@ class IntercomBroker {
                 setId,
                 claimed.status === "unanswered" ? claimed.unanswered : undefined,
                 granted,
-                // #5607: held by another registration of this session, or a hand-over that did not take it this time: a
-                // client that takes ids back awaits it, and keeps asking for it rather than saving the fresh one.
-                takesIdHandoff && (claimed.status === "held" || (idHandoff !== undefined && claimed.status === "refused"))
-                  ? preferred
-                  : undefined,
+                // #5607: held by another registration of this session (or for this one, by a hand-over that did not take
+                // it this time): a client that takes ids back awaits it, and keeps asking for it rather than saving the
+                // fresh one.
+                claimed.status === "held" && takesIdHandoff ? preferred : undefined,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));

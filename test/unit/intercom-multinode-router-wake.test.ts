@@ -2783,6 +2783,46 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal(claim.grant.alias, fresh.info.id);
 	});
 
+	test("a hand-over whose registration could not take the id is handed over once more, keeping the same alias (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const { handoff } = here.handoffs[0]!;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const bind = vi
+			.spyOn(here.state.knownSessions, "bind")
+			.mockRejectedValueOnce(new Error("the shared database is busy"));
+		const failed = await here.router.claimSessionId(
+			live.info.id,
+			returnAddress,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		assert.equal(failed.status, "held", "it still awaits the id");
+		bind.mockRestore();
+
+		// It registers under a fresh id meanwhile, awaiting the id: it is handed the same hand-over again.
+		const interim: BrokerConnectedSession = {
+			...fresh,
+			socket: fakeSocket(),
+			info: { ...fresh.info, id: randomUUID() },
+		};
+		here.sessions.set(interim.info.id, interim);
+		const registered = here.router.sessionRegistered(interim, undefined, undefined, undefined, live.info.id);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		await untilMovedBack(here, interim);
+		assert.equal(here.handoffs.at(-1)?.handoff, handoff);
+
+		const claim = await here.router.claimSessionId(
+			live.info.id,
+			returnAddress,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		assert.ok(claim.status === "granted");
+		assert.equal(claim.grant.alias, fresh.info.id, "the alias is still the id it had first");
+	});
+
 	test("an id taken back for an awaiting session is not taken by a registration of another identity, and is given back unused after a while (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped();
 		await untilMovedBack(here, fresh);
