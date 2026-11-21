@@ -1,11 +1,13 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
+import { hideWidgetFramesUntilFresh } from "../../interactive-engine/remote-component.ts";
+import { AGENT_PANEL_WIDGET_KEY } from "../../rpc/agent-panel-bridge.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { setAgentViewBridge } from "./agent-view-bridge.ts";
 import { AgentViewSwitcher, type OpenAgentViewPort } from "./agent-view-switcher.ts";
 import { openAgentViewPort } from "./open-port.ts";
 import { installPromptRetarget } from "./prompt-retarget.ts";
-import { FIRST_FRAME_TIMEOUT_MS } from "./remote-port.ts";
+import { FIRST_FRAME_TIMEOUT_MS, PANEL_FIRST_FRAME_TIMEOUT_MS } from "./remote-port.ts";
 import { holdTranscriptDock, installTranscriptSlot } from "./transcript-slot.ts";
 import { installViewedCommandGates } from "./viewed-commands.ts";
 
@@ -37,6 +39,46 @@ export function agentViewSwitcher(
  * hotkey gates follow what the switcher shows, in that order. On the isolated host the engine's panel and `/tasks`
  * reach the switcher through `engine_view_agent`, and learn what it shows through `set_viewed_agent`.
  */
+/**
+ * Tells the engine what the screen shows, with `tell`: when it changes, and when a request ends without showing what
+ * it asked for, since the engine lists the subagent it asked to show while the screen is kept for it.
+ */
+export function tellEngineViewed(
+	switcher: Pick<AgentViewSwitcher, "onChange" | "onPending" | "viewedTaskId">,
+	tell: (taskId: TaskId | undefined) => void,
+	/** Runs before the screen the request kept is shown again, when the request ended without showing `taskId`. */
+	beforeCorrection?: (taskId: TaskId) => void,
+): () => void {
+	const stopChange = switcher.onChange(({ to }) => tell(to.kind === "agent" ? to.port.status().taskId : undefined));
+	const stopPending = switcher.onPending((pending, settled) => {
+		if (pending !== undefined || settled === undefined || settled.outcome === "shown") return;
+		beforeCorrection?.(settled.taskId);
+		tell(switcher.viewedTaskId());
+	});
+	return () => {
+		stopChange();
+		stopPending();
+	};
+}
+
+/**
+ * Shows what the engine asks for (`engine_view_agent`). While the screen is kept for it, the engine's panel is told
+ * first that the subagent is about to be shown (`tell`), so that the panel draws its row before the subagent is shown;
+ * a request that ends without showing it tells the engine what the screen shows instead (tellEngineViewed).
+ */
+export function showForEngine(
+	switcher: Pick<AgentViewSwitcher, "requestView">,
+	message: { taskId: string | null; keepScreen?: true; panel?: true; panelOnView?: true },
+	tell: (taskId: TaskId | undefined) => void,
+): TaskId | undefined {
+	const taskId = message.taskId === null ? undefined : (message.taskId as TaskId);
+	const keepScreen = message.keepScreen === true;
+	const panelOnView = keepScreen && taskId !== undefined && message.panelOnView === true;
+	if (panelOnView) tell(taskId);
+	switcher.requestView(taskId, { keepScreen, panel: message.panel === true || panelOnView });
+	return panelOnView ? taskId : undefined;
+}
+
 export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	const switcher = agentViewSwitcher(mode);
 	const undo: (() => void)[] = [
@@ -46,22 +88,25 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	];
 	const runtime = mode.runtimeHost;
 	if (runtime instanceof IsolatedInteractiveRuntime) {
+		let toldFirst: TaskId | undefined;
+		const tellViewed = (taskId: TaskId | undefined) => {
+			void runtime
+				.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
+				.catch(() => {
+					// A lost engine forgets what was shown; its replacement starts on main.
+				});
+		};
 		undo.push(
 			runtime.onEngineMessage((message) => {
-				if (message.type !== "engine_view_agent") return;
-				switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId), {
-					keepScreen: message.keepScreen === true,
-					panel: message.panel === true,
-				});
+				if (message.type === "engine_view_agent") toldFirst = showForEngine(switcher, message, tellViewed);
 			}),
 			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),
-			switcher.onChange(({ to }) => {
-				const taskId = to.kind === "agent" ? to.port.status().taskId : undefined;
-				void runtime
-					.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
-					.catch(() => {
-						// A lost engine forgets what was shown; its replacement starts on main.
-					});
+			tellEngineViewed(switcher, tellViewed, (taskId) => {
+				if (taskId !== toldFirst) return;
+				toldFirst = undefined;
+				// The engine's panel lists the subagent it was told about until it reads the correction: what it draws
+				// until then stays off screen, as main's panel listed nothing.
+				hideWidgetFramesUntilFresh(runtime, AGENT_PANEL_WIDGET_KEY, PANEL_FIRST_FRAME_TIMEOUT_MS);
 			}),
 		);
 	}
