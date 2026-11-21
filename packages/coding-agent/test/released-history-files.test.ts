@@ -248,7 +248,7 @@ test.skipIf(process.platform !== "linux")(
 	},
 );
 
-test("Windows boot and process start lookups preserve uncertainty and separate reused PIDs", async () => {
+test("Windows boot and PowerShell process start lookups preserve uncertainty and separate reused PIDs", async () => {
 	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
 	Object.defineProperty(process, "platform", { value: "win32" });
 	vi.spyOn(process, "kill").mockReturnValue(true);
@@ -282,6 +282,8 @@ test("Windows boot and process start lookups preserve uncertainty and separate r
 	});
 	try {
 		vi.resetModules();
+		// Without the native reader, start times come from PowerShell.
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
 		const module = await import("../src/core/storage/session/released-history-files.js");
 		const directory = await module.releasedHistoryFiles(root).createDirectory();
 		assert.ok(!(directory instanceof Error));
@@ -485,6 +487,8 @@ test.each([
 		}) as typeof childProcess.execFile);
 		try {
 			vi.resetModules();
+			// Without the native reader, Windows start times come from PowerShell too.
+			(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
 			const module = await import("../src/core/storage/session/released-history-files.js");
 			const directory = await module.releasedHistoryFiles(root).createDirectory();
 			assert.ok(!(directory instanceof Error));
@@ -498,3 +502,99 @@ test.each([
 		}
 	},
 );
+
+test.each(["win32", "darwin"])(
+	"%s startup with no released history to sweep starts no boot or start-time lookup",
+	async (value) => {
+		const caseRoot = join(root, `nothing-to-sweep-${value}`);
+		const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+		Object.defineProperty(process, "platform", { value });
+		vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+			const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+			const isBoot = args[0] === "sysctl" || (args[1] as string[]).at(-1)?.includes("Win32_OperatingSystem");
+			callback(
+				null,
+				isBoot ? (value === "darwin" ? "{ sec = 1730000000, usec = 123456 }" : "123456789") : "1000",
+				"",
+			);
+			return {} as childProcess.ChildProcess;
+		});
+		try {
+			vi.resetModules();
+			const tokens = await import("../src/core/process-start-token.js");
+			tokens.setNativeProcessCreationTimeForTesting(null);
+			const first = await import("../src/core/storage/session/released-history-files.js");
+			// No released-history directory at all: the default session stores never create one.
+			await first.sweepReleasedHistory(caseRoot);
+			assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 0, "nothing under the agent directory");
+			// A store released history and closed: this host's directory is left, empty.
+			const directory = await first.releasedHistoryFiles(caseRoot).createDirectory();
+			assert.ok(!(directory instanceof Error));
+			await directory.write(1, Buffer.from("released"));
+			await directory.remove();
+			const host = dirname(dirname(directory.path));
+			assert.deepEqual(fs.readdirSync(host), []);
+			vi.mocked(childProcess.execFile).mockClear();
+			vi.resetModules();
+			(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(null);
+			const next = await import("../src/core/storage/session/released-history-files.js");
+			await next.sweepReleasedHistory(caseRoot);
+			assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 0, "only an empty host directory");
+			// A directory a killed process left is still swept, after looking up the boot once.
+			const left = join(host, "2147483647-1000");
+			fs.mkdirSync(left);
+			vi.spyOn(process, "kill").mockImplementation(() => {
+				throw Object.assign(new Error("gone"), { code: "ESRCH" });
+			});
+			await next.sweepReleasedHistory(caseRoot);
+			assert.equal(fs.existsSync(left), false);
+			assert.equal(vi.mocked(childProcess.execFile).mock.calls.length, 1, "one boot lookup");
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+		}
+	},
+);
+
+test("Windows sweeps read process start times from the native module, not PowerShell", async () => {
+	const caseRoot = join(root, "native-start-times");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+	Object.defineProperty(process, "platform", { value: "win32" });
+	vi.spyOn(process, "kill").mockReturnValue(true);
+	vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+		const callback = args.at(-1) as (error: unknown, stdout: string, stderr: string) => void;
+		const isBoot = (args[1] as string[]).at(-1)?.includes("Win32_OperatingSystem");
+		callback(null, isBoot ? "123456789" : "1000", "");
+		return {} as childProcess.ChildProcess;
+	});
+	// Creation times as GetProcessTimes reports them; 403 cannot be read (gone or not queryable).
+	const created = new Map<number, string>([
+		[process.pid, "5000"],
+		[401, "1000"],
+		[402, "2000"],
+	]);
+	try {
+		vi.resetModules();
+		(await import("../src/core/process-start-token.js")).setNativeProcessCreationTimeForTesting(
+			(pid) => created.get(pid) ?? null,
+		);
+		const module = await import("../src/core/storage/session/released-history-files.js");
+		const directory = await module.releasedHistoryFiles(caseRoot).createDirectory();
+		assert.ok(!(directory instanceof Error));
+		assert.ok(directory.path.includes(`${process.pid}-5000-`), "this process's directory names its creation time");
+		const parent = dirname(dirname(directory.path));
+		for (const pid of [401, 402, 403]) fs.mkdirSync(join(parent, `${pid}-1000`));
+		await module.sweepReleasedHistory(caseRoot);
+		// 401 still runs, 402 is a later process given the same id, 403 cannot be told apart.
+		for (const pid of [401, 402, 403])
+			assert.equal(fs.existsSync(join(parent, `${pid}-1000`)), pid !== 402, `pid ${pid}`);
+		const queries = vi.mocked(childProcess.execFile).mock.calls.map(([, argv]) => (argv as string[]).at(-1) ?? "");
+		assert.deepEqual(
+			queries.map((query) => query.includes("Win32_OperatingSystem")),
+			[true],
+			"only the boot identity starts PowerShell",
+		);
+		await directory.remove();
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+	}
+});

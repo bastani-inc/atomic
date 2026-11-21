@@ -5,6 +5,7 @@ import { copyFile, mkdir, open, readdir, readFile, readlink, rename, rm, rmdir }
 import { hostname, release } from "node:os";
 import { join } from "node:path";
 import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
+import { nativeProcessCreationTime } from "../../process-start-token.ts";
 import { getErrnoCode } from "../../tools/errno.ts";
 import {
 	SESSION_TEMP_DIR_MODE,
@@ -76,6 +77,11 @@ function namespaceIdentity(): Promise<string | undefined> {
 	return identity;
 }
 
+/** The start of the name of every host directory this host's name gives, whatever its boot or namespace. */
+function hostDirectoryPrefix(host: string): string {
+	return `${sanitizeTempPathComponent(host, "host")}-`;
+}
+
 async function hostDirectory(agentDir: string): Promise<string> {
 	// An unknown identity is never swept; the process-directory nonce still isolates owners with identical PIDs.
 	const key = (await namespaceIdentity()) ?? `${process.platform}-unknown-${process.pid}-${await ownStartTime()}`;
@@ -84,7 +90,33 @@ async function hostDirectory(agentDir: string): Promise<string> {
 	const digest = createHash("sha256")
 		.update(JSON.stringify([host, key]))
 		.digest("hex");
-	return join(releasedHistoryDirectory(agentDir), `${sanitizeTempPathComponent(host, "host")}-${digest}`);
+	return join(releasedHistoryDirectory(agentDir), `${hostDirectoryPrefix(host)}${digest}`);
+}
+
+/**
+ * Whether a sweep could find anything under `agentDir`: false only when the released-history directory is absent, or
+ * holds one directory with this host's name and that one is empty. More than one such directory (one is left per boot)
+ * or anything unreadable counts as something to sweep. Telling this needs no boot or namespace identity, whose lookup
+ * starts a process on macOS and Windows.
+ */
+async function mayHoldReleasedHistory(agentDir: string): Promise<boolean> {
+	const parent = releasedHistoryDirectory(agentDir);
+	let names: string[];
+	try {
+		names = await readdir(parent);
+	} catch (error) {
+		return getErrnoCode(error) !== "ENOENT";
+	}
+	// Case-insensitive file systems (Windows, macOS by default) name one directory with names that differ only by case.
+	const prefix = hostDirectoryPrefix(hostname()).toLowerCase();
+	const hosts = names.filter((name) => name.toLowerCase().startsWith(prefix));
+	if (hosts.length === 0) return false;
+	if (hosts.length > 1) return true;
+	try {
+		return (await readdir(join(parent, hosts[0] as string))).length > 0;
+	} catch (error) {
+		return getErrnoCode(error) !== "ENOENT";
+	}
 }
 
 /**
@@ -104,6 +136,9 @@ async function processStartTime(pid: number): Promise<string | null | undefined>
 		}
 	}
 	if (process.platform === "win32") {
+		// The same creation time `Get-Process`'s StartTime.ToFileTimeUtc() reports, read without starting PowerShell.
+		const native = nativeProcessCreationTime(pid);
+		if (native !== undefined) return native;
 		for (const executable of powershellCandidates()) {
 			const output = await run(executable, [
 				"-NoProfile",
@@ -200,6 +235,7 @@ async function ownerMayRun(pid: number, start: string): Promise<boolean> {
  * now is left to the next sweep.
  */
 export async function sweepReleasedHistory(agentDir: string): Promise<void> {
+	if (!(await mayHoldReleasedHistory(agentDir))) return;
 	if ((await namespaceIdentity()) === undefined) return;
 	const host = await hostDirectory(agentDir);
 	let names: string[];
