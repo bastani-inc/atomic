@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, test } from "vitest";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
@@ -779,6 +780,49 @@ describe("synced upstream skill trees", () => {
 		assert.match(session, /\(root\.crypto \|\| crypto\)\.getRandomValues\(new Uint8Array\(4\)\)/u);
 		assert.match(session, /\(c \|\| crypto\)\.getRandomValues\(bytes\)/u, "randomUUID lost its CSPRNG fill");
 		assert.doesNotMatch(session, /Math\.random\(/u, "a session id helper fell back to Math.random");
+	});
+
+	test("keeps the synced live overlay loading its helper scripts from the origin that served live.js", () => {
+		const live = readFileSync(join(subagentSkills, "impeccable/scripts/live-browser.js"), "utf8");
+		// Upstream sets the src of the detector and screenshot scripts the overlay adds to `'http://localhost:' + PORT`.
+		// Atomic resolves both against the origin the page loaded live.js from, so no script URL is written out with
+		// plain http and both load from the origin the page's script-src already allows for live.js.
+		assert.match(live, /const LIVE_SCRIPT = document\.currentScript;/u, "live.js no longer reads its own script");
+		assert.match(live, /helperScriptUrl\('\/detect\.js'\)/u, "the detector script lost the helper origin");
+		assert.match(
+			live,
+			/helperScriptUrl\('\/modern-screenshot\.js'\)/u,
+			"the screenshot script lost the helper origin",
+		);
+		assert.doesNotMatch(live, /\.src = ['"`]http:/u, "a script src is written out with plain http");
+	});
+
+	test("resolves the synced live overlay's helper scripts against the live.js the page loaded, on any helper port", () => {
+		const live = readFileSync(join(subagentSkills, "impeccable/scripts/live-browser.js"), "utf8");
+		const start = live.indexOf("  function helperScriptUrl(path) {");
+		const end = live.indexOf("\n  }\n", start);
+		assert.ok(start !== -1 && end !== -1, "the live overlay lost helperScriptUrl");
+		const source = `${live.slice(start, end + 4)}\nhelperScriptUrl(path);`;
+		/** The URL the overlay gives `/detect.js`, run as it runs in a page with these scripts. */
+		const detectUrl = (port: number, running: string | null, scripts: readonly string[] = []): string | null =>
+			runInNewContext(source, {
+				URL,
+				PORT: port,
+				path: "/detect.js",
+				LIVE_SCRIPT: running === null ? null : { src: running },
+				document: { querySelectorAll: () => scripts.map((src) => ({ src })) },
+			});
+
+		assert.equal(detectUrl(8400, "http://localhost:8400/live.js?token=t"), "http://localhost:8400/detect.js");
+		// A browser leaves the default port out of a script's URL: live.js on port 80 is http://localhost/live.js.
+		assert.equal(detectUrl(80, "http://localhost/live.js?token=t"), "http://localhost/detect.js");
+		assert.equal(detectUrl(443, "https://localhost/live.js?token=t"), "https://localhost/detect.js");
+		// No running script element (a module script): the page's live.js script on the helper's port.
+		assert.equal(
+			detectUrl(8400, null, ["http://localhost:3000/app.js", "http://localhost:8400/live.js?token=t"]),
+			"http://localhost:8400/detect.js",
+		);
+		assert.equal(detectUrl(8400, "http://localhost:3000/bundle.js", ["http://localhost:3000/bundle.js"]), null);
 	});
 
 	test("keeps the vendored Impeccable launchers offline by default", () => {
