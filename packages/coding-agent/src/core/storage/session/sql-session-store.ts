@@ -2157,6 +2157,11 @@ export class SqlSessionStore implements SessionStore {
 				["owner", j("data", "owner")],
 				["tasks", j("data", "tasks")],
 				["groups", j("data", "groups")],
+				// Intercom's records of several asks at once: closed asks, and answered asks. They are parsed back from
+				// JSON text, which an extension's own text under the same name can look like: read them only as lists.
+				...["messageIds", "askIds"].map(
+					(key) => [key, `CASE WHEN ${jsonType("data", key)} = 'array' THEN ${j("data", key)} END`] as const,
+				),
 				...["queries", "urls"].map(
 					(key) => [key, `CASE WHEN ${jsonType("data", key)} = 'array' THEN '[]' ELSE NULL END`] as const,
 				),
@@ -2428,7 +2433,7 @@ export class SqlSessionStore implements SessionStore {
 								data.message = decode(data.message as SqliteValue);
 								data.owner = decode(data.owner as SqliteValue);
 								data.tasks = decode(data.tasks as SqliteValue);
-								for (const field of ["groups", "queries", "urls"])
+								for (const field of ["groups", "queries", "urls", "messageIds", "askIds"])
 									if (field in data) data[field] = decode(data[field] as SqliteValue);
 								if (
 									data.timestamp !== null &&
