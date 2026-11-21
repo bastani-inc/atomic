@@ -776,6 +776,13 @@ export class SessionManager {
 	getArchivedChildCatalog() {
 		return this.childArchive.rows();
 	}
+	/**
+	 * @internal The captures records of the session's finished subagents name, retired from its window while on its
+	 * active branch, and the window entry they preceded, which says whether they are still on it.
+	 */
+	getArchivedSubagentCaptures() {
+		return this.childArchive.archivedCaptures();
+	}
 	/** @internal An explicit terminal action obtains one logical child record, including legacy partial observations. */
 	async readArchivedChildRecord(entryId: string): Promise<SessionEntry | undefined> {
 		const seqs = this.childArchive.positions(entryId);
@@ -921,7 +928,13 @@ export class SessionManager {
 		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
 		this.fileEntries = [
-			createSessionHeader(this.sessionId, this.cwd, new Date().toISOString(), options?.parentSession),
+			createSessionHeader(
+				this.sessionId,
+				this.cwd,
+				new Date().toISOString(),
+				options?.parentSession,
+				options?.internal,
+			),
 		];
 		this.lastSeq = 0;
 		this.childArchive = new ChildCatalog();
@@ -990,6 +1003,7 @@ export class SessionManager {
 				this.cwd,
 				new Date().toISOString(),
 				options?.parentSession,
+				options?.internal,
 			);
 			const record = this.recordHeader(header);
 			const store = await this.storeForNewSession();
@@ -1297,9 +1311,16 @@ export class SessionManager {
 		const priorRecovery = this.recoveryState;
 		const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
 		const actual = entries.map((entry) => ({ entry, seq: this.entrySeqs.get(entry.id)! }));
+		// A child's record leaving the window is on the active branch when the session's branch, before the cut, holds it.
+		let active: Set<string> | undefined;
+		const onActiveBranch = (id: string): boolean => {
+			active ??= new Set(this.getBranch().map((entry) => entry.id));
+			return active.has(id);
+		};
 		const archived = this.childArchive.retire(
 			actual.filter(({ entry }) => !branchIds.has(entry.id)),
 			actual.filter(({ entry }) => branchIds.has(entry.id)),
+			onActiveBranch,
 		);
 		const keep = new Set(
 			[...resume.branch, ...resume.state].map(({ entry }) => entry.id).filter((id) => !archived.has(id)),
@@ -1566,7 +1587,14 @@ export class SessionManager {
 				this.leafId,
 				coveredThroughEntryId,
 			);
-			const projected = this.buildSessionProjection().messages;
+			// A boundary that covers the history only through an earlier entry of the current branch carries the prompt as
+			// of that entry; the entries after it, prompt changes among them, replay after the boundary. Any other boundary
+			// carries the prompt as it is now.
+			const covered =
+				coveredThroughEntryId !== undefined && this.getBranch().some((entry) => entry.id === coveredThroughEntryId)
+					? coveredThroughEntryId
+					: this.leafId;
+			const projected = this.buildSessionProjection("model", covered).messages;
 			const systemMessage = getCurrentSystemMessage(projected);
 			const transformedPrompt = carriedTransformedPrompt(projected);
 			if (systemMessage) {
@@ -1835,8 +1863,11 @@ export class SessionManager {
 		unrestored?: WorktreeUnrestored,
 		captureMs?: number,
 		degradedFrom?: string,
+		capturedAt?: string,
+		precondition?: () => void,
 	): Promise<string> {
 		return this.runMutation(async () => {
+			precondition?.();
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
 				throw new WorkspaceConfigError("sdk", "snapshot", "a snapshot whose id is snapshotId");
 			}
@@ -1873,6 +1904,7 @@ export class SessionManager {
 				unrestored,
 				captureMs,
 				degradedFrom,
+				capturedAt,
 			);
 			await this._appendEntry(entry);
 			return entry.id;

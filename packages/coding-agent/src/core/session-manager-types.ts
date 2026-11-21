@@ -42,6 +42,11 @@ export interface SessionHeader extends SessionRecordHeader {
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	/**
+	 * Mark the new session internal: `/resume`, `atomic -r`, `-c` and `history://sessions` leave it out, and it can still
+	 * be opened by its ID. A subagent's own session is created this way in its parent's store.
+	 */
+	internal?: boolean;
 }
 
 export interface SessionOpenOptions {
@@ -280,6 +285,11 @@ export interface WorktreeSnapshotEntry extends SessionEntryBase {
 	unrestored?: WorktreeUnrestored;
 	/** How long the turn's capture of this checkout took, in milliseconds; present on entries a turn's capture wrote. */
 	captureMs?: number;
+	/**
+	 * Present on an entry a resume wrote to take a capture one of the session's subagents recorded of this checkout:
+	 * when the subagent's session recorded it. A later resume compares the session's captures and its subagents' by it.
+	 */
+	capturedAt?: string;
 	/**
 	 * The snapshot a resume could restore only partly into this checkout (#4922): this entry records the partly restored
 	 * worktree as it is now, and `degradedFrom` stays the checkout's restore target, kept by collection, until a resume

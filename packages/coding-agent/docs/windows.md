@@ -52,7 +52,7 @@ PowerShell discovery checks these locations in order:
 3. `powershell.exe` on `PATH`
 4. `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 
-Atomic searches the current directory before `PATH`, as Windows shell discovery does. It checks each `PATH` directory in order. A directory never counts as a shell executable, including at a configured path or a known installation location. Relative `PATH` entries resolve against Atomic's current working directory, and the selected match is absolute so commands can run from a different directory.
+Atomic looks only in the absolute directories on `PATH`, in order. Unlike Windows itself it does not search the current directory first, so a shell a project contains never runs in place of yours. Empty and relative `PATH` entries are skipped; an absolute `PATH` entry is searched wherever it points, the project folder included. A directory never counts as a shell executable, including at a configured path or a known installation location. The selected match is absolute so commands can run from a different directory.
 
 ## Custom Shell Path
 

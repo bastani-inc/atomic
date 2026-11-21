@@ -423,7 +423,7 @@ const { session } = await createAgentSession({
 ### Custom Tools
 
 ```typescript
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic/typebox";
 import { createAgentSession, defineTool } from "@bastani/atomic";
 
 // Inline custom tool
@@ -520,7 +520,7 @@ Every error has `hint` with the remediation and `fields` with the JSON-safe fact
 `structured_output` is not registered in normal agent sessions by default. Register the factory when a caller needs a schema-validated decision inferred by a selected model:
 
 ```typescript
-import { Type } from "typebox";
+import { Type } from "@bastani/atomic/typebox";
 import { createAgentSession, createStructuredOutputTool } from "@bastani/atomic";
 
 const DecisionSchema = Type.Object({

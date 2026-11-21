@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { VERSION, VERSION_ADOPTION_ENDPOINT } from "../src/config.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { engineLaunch } from "../src/modes/interactive-engine/engine-prewarm.ts";
 import { preloadChangelog } from "../src/utils/changelog.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
+import { applyOfflineEnvironment } from "../src/utils/startup-environment.ts";
 
 const VERSION_ADOPTION_ORIGIN = "https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption";
 
@@ -281,10 +283,18 @@ describe("version-adoption opt-outs", () => {
 		assert.equal(fetchMock.mock.calls.length, 0);
 	});
 
-	it("maps --offline onto ENV_OFFLINE=1 in main.ts", () => {
-		const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-		assert.match(main, /args\.includes\("--offline"\)/);
-		assert.match(main, /setEnvValue\(ENV_OFFLINE,\s*"1"\)/);
+	it("maps --offline onto ENV_OFFLINE=1 for this process and the engine it starts", () => {
+		vi.stubEnv("ATOMIC_OFFLINE", undefined);
+		vi.stubEnv("PI_OFFLINE", undefined);
+		assert.equal(applyOfflineEnvironment(["--offline"]), true);
+		assert.equal(process.env.ATOMIC_OFFLINE, "1");
+		const launch = engineLaunch({
+			runtimeExecutable: "node",
+			cliPath: "cli.js",
+			cwd: tmpdir(),
+			interactiveEngine: true,
+		});
+		assert.equal(launch.env.ATOMIC_OFFLINE, "1");
 	});
 });
 

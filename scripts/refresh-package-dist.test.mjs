@@ -217,3 +217,53 @@ test("a package that ships bundled is bundled before its files move, so its dist
 	assert.match(refresh(directory), /: 0 of \d+ files changed/);
 	assert.deepEqual(fileStates(dist), before);
 });
+
+test("a refresh removes the shared files an earlier bundle wrote that this one does not", (t) => {
+	const directory = workspace(t);
+	writePackage(directory, 'import { helper } from "./helper.js";\nexport const answer: number = helper();\n');
+	writeFileSync(join(directory, "src", "helper.ts"), "export function helper(): number {\n\treturn 42;\n}\n");
+	writeFileSync(
+		join(directory, "package.json"),
+		JSON.stringify({
+			name: "fixture",
+			type: "module",
+			main: "./dist/index.js",
+			scripts: { "build:bundle": `node ${JSON.stringify(bundler)}` },
+		}),
+	);
+	refresh(directory);
+	const dist = join(directory, "dist");
+	const sharedFiles = () =>
+		readdirSync(dist)
+			.filter((name) => /^_main-[A-Z2-7]{8}\.js(\.map)?$/.test(name))
+			.sort();
+	const earlier = sharedFiles();
+	assert.equal(earlier.length, 2, earlier.join(", "));
+	// A shared file is named by its first module, so a module renamed in the source moves its code to a new one.
+	writeFileSync(
+		join(directory, "src", "index.ts"),
+		'import { helper } from "./aid.js";\nexport const answer: number = helper();\n',
+	);
+	rmSync(join(directory, "src", "helper.ts"));
+	writeFileSync(join(directory, "src", "aid.ts"), "export function helper(): number {\n\treturn 43;\n}\n");
+	writeFileSync(join(dist, "notes.js"), "export {};\n");
+	assert.match(refresh(directory), /, 2 removed/);
+	const now = sharedFiles();
+	assert.equal(now.length, 2, now.join(", "));
+	assert.deepEqual(
+		now.filter((name) => earlier.includes(name)),
+		[],
+	);
+	assert.match(readFileSync(join(dist, "index.js"), "utf8"), new RegExp(`from "\\./${now[0]}"`));
+	assert.ok(existsSync(join(dist, "notes.js")), "a file the bundle did not write stays");
+	const imported = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const m = await import(${JSON.stringify(pathToFileURL(join(dist, "index.js")).href)}); process.stdout.write(String(m.answer));`,
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(imported.stdout, "43", imported.stderr);
+});

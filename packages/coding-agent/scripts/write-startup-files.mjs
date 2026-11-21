@@ -2,7 +2,8 @@
 // Records the files an interactive session's startup loads, in the order it loads them, as dist/startup-files.json.
 // At startup Atomic reads them in parallel ahead of the module loader (src/utils/startup-prefetch.ts), so a cold start
 // does not wait for each file in turn. Each file is named by its package and its path inside that package, so the
-// list holds wherever npm or Bun put the packages.
+// list holds wherever npm or Bun put the packages. The build runs it once the package's files are in place, and
+// `npm pack` runs it again after its split, so the published list names the files that are published.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -53,18 +54,10 @@ if (process.argv[2] !== "--trace") {
 		},
 	});
 	const load = (path) => import(pathToFileURL(join(dist, path)).href);
-	// What `cli.js` loads for an interactive session, then what the session loads before its first frame: the host
-	// module map an extension sees, the extension loader and the bundled packages' extensions.
-	for (const entry of [
-		"cli/settings-startup.js",
-		"core/http-dispatcher.js",
-		"core/storage/node-sqlite-thread.js",
-		"modes/interactive-engine/engine-prewarm.js",
-		"main.js",
-		"index.js",
-		"core/extensions/loader-virtual-modules.js",
-	])
-		await load(entry);
+	// What `cli.js` imports for an interactive session, from the files it names (the split moves some of those modules
+	// into shared files), then what the session loads before its first frame: the host module map an extension sees,
+	// the extension loader and the bundled packages' extensions.
+	for (const entry of [...cliImports(), "index.js", "core/extensions/loader-virtual-modules.js"]) await load(entry);
 	await (await load("core/extensions/loader-host-modules.js")).getVirtualModules();
 	await import("jiti");
 	const builtin = join(dist, "builtin");
@@ -85,6 +78,15 @@ if (process.argv[2] !== "--trace") {
 		}),
 	);
 	process.exit(0);
+}
+
+/** The files `cli.js` imports as it runs (`import("./…")`), in its order, as paths inside `dist`. */
+function cliImports() {
+	const code = readFileSync(join(dist, "cli.js"), "utf8")
+		.split("\n")
+		.filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line))
+		.join("\n");
+	return [...code.matchAll(/\bimport\(\s*"(\.\/[^"]+)"\s*\)/g)].map((match) => match[1].slice(2));
 }
 
 /**

@@ -1,18 +1,35 @@
 /**
- * Starts the compile-cache helper of an interactive session that left a cold cache alone (see `compile-cache.ts`).
+ * Starts the compile-cache helpers of an interactive session that left a cold cache alone (see `compile-cache.ts`).
  *
  * The helper for the engine's runtime flags runs first and the helper for this host's own flags last, so the host's
- * marker, which decides whether later sessions defer, is written only once both caches are warm. Each helper ends
- * with this session: it is stopped when the session exits, and the system ends it when the session ends any other way
- * (it runs in a job that is closed with the session). Where that job cannot be made, it stops by itself once its stdin
- * ends, after the step it is in.
+ * marker, which decides whether later sessions defer, is written only once both caches are warm. The session starts
+ * the first helper; each helper starts the next one when it is done. A helper does not stop when its session ends: a
+ * session that ends before its helpers do still leaves the cache warm. Each helper ends by itself when it is done and
+ * after five minutes at most.
  */
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { parse } from "node:path";
 import { fileURLToPath } from "node:url";
-import { containProcessTree } from "../core/process-tree-containment.ts";
-import { type CompileCacheHelperRuntime, compileCacheDeferral } from "./compile-cache.ts";
-import { COMPILE_CACHE_WARMUP_DONE } from "./compile-cache-warmup-status.ts";
+import type { CompileCacheHelperRuntime } from "./compile-cache.ts";
+import { processCompileCacheDeferral } from "./compile-cache-deferral.ts";
+
+/** What a helper does after its own cache: the helpers still to run, and the markers that must still stand. */
+export interface CompileCacheWarmupPlan {
+	/** Runtimes of the helpers to start after this one, in order. */
+	readonly next: readonly CompileCacheHelperRuntime[];
+	/** Markers of earlier helpers; this helper marks its cache warm only while they all exist. */
+	readonly required: readonly string[];
+}
+
+export function encodeCompileCacheWarmupPlan(plan: CompileCacheWarmupPlan): string {
+	return Buffer.from(JSON.stringify(plan), "utf8").toString("base64url");
+}
+
+export function decodeCompileCacheWarmupPlan(encoded: string | undefined): CompileCacheWarmupPlan {
+	if (!encoded) return { next: [], required: [] };
+	const plan = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as CompileCacheWarmupPlan;
+	return { next: plan.next ?? [], required: plan.required ?? [] };
+}
 
 /** How a helper process starts: everything `spawn` gets. */
 export interface CompileCacheHelperLaunch {
@@ -33,76 +50,57 @@ export function compileCacheHelperLaunch(
 	buildId: string,
 	script: string = fileURLToPath(new URL("./compile-cache-warmup.js", import.meta.url)),
 	env: NodeJS.ProcessEnv = process.env,
+	plan: CompileCacheWarmupPlan = { next: [], required: [] },
 ): CompileCacheHelperLaunch {
 	const helperEnv = { ...env };
 	if (runtime.nodeOptions) helperEnv.NODE_OPTIONS = runtime.nodeOptions;
 	else delete helperEnv.NODE_OPTIONS;
 	return {
 		command: process.execPath,
-		args: [...runtime.execArgv, "--no-addons", script, buildId],
+		args: [...runtime.execArgv, "--no-addons", script, buildId, encodeCompileCacheWarmupPlan(plan)],
 		cwd: parse(script).root,
 		env: helperEnv,
 		detached: true,
 	};
 }
 
-/** Run one helper to its end. True when the cache for its runtime flags is warm. */
-function runHelper(runtime: CompileCacheHelperRuntime, buildId: string): Promise<boolean> {
-	let child: ChildProcess;
+/** Start a helper that runs on its own: nothing of it keeps this process alive, and it outlives this process. */
+export function startCompileCacheHelper(launch: CompileCacheHelperLaunch): boolean {
 	try {
-		const launch = compileCacheHelperLaunch(runtime, buildId);
-		child = spawn(launch.command, [...launch.args], {
+		const child = spawn(launch.command, [...launch.args], {
 			cwd: launch.cwd,
 			env: launch.env,
 			detached: launch.detached,
-			// The helper stops when this pipe ends, which it does when this process is gone.
-			stdio: ["pipe", "ignore", "ignore"],
+			stdio: "ignore",
 			windowsHide: true,
 		});
+		child.on("error", () => {});
+		child.unref();
+		return true;
 	} catch {
-		return Promise.resolve(false);
+		return false;
 	}
-	// The system ends the helper when this process ends, however it ends.
-	const containment = child.pid === undefined ? undefined : containProcessTree(child.pid);
-	const stopAtExit = () => {
-		try {
-			child.kill("SIGKILL");
-		} catch {
-			// Already gone.
-		}
-	};
-	process.once("exit", stopAtExit);
-	child.stdin?.on("error", () => {});
-	child.unref();
-	(child.stdin as { unref?: () => void } | null)?.unref?.();
-	return new Promise((resolve) => {
-		child.once("error", () => {
-			process.off("exit", stopAtExit);
-			containment?.close();
-			resolve(false);
-		});
-		child.once("exit", (code) => {
-			process.off("exit", stopAtExit);
-			containment?.close();
-			resolve(code === COMPILE_CACHE_WARMUP_DONE);
-		});
-	});
 }
+
+let warmupStarted = false;
 
 /**
  * Warm the cache this session left cold: first for the engine's runtime flags (`engineExecArgv`), then for this
- * process's own. A helper that finds another one warming this build, fails or is stopped ends the warmup; the next
- * session that finds the cache cold tries once more.
+ * process's own. Called once the session is on screen, and when it exits before that, so even a session that ends at
+ * once leaves the cache warm; only the first call starts the helpers. A helper that finds another one warming this
+ * build, or fails, ends the chain; the next session that finds the cache cold starts it again.
  */
-export async function warmCompileCache(engineExecArgv: readonly string[]): Promise<void> {
-	const deferral = compileCacheDeferral();
-	if (!deferral) return;
+export function warmCompileCache(engineExecArgv: readonly string[]): void {
+	const deferral = processCompileCacheDeferral();
+	if (!deferral?.helper || warmupStarted) return;
+	warmupStarted = true;
 	const own = deferral.runtime;
 	const engine = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };
 	const same =
 		engine.execArgv.length === own.execArgv.length &&
 		engine.execArgv.every((arg, index) => arg === own.execArgv[index]);
-	for (const runtime of same ? [own] : [engine, own]) {
-		if (!(await runHelper(runtime, deferral.buildId))) return;
-	}
+	const [first, ...next] = same ? [own] : [engine, own];
+	startCompileCacheHelper(
+		compileCacheHelperLaunch(first!, deferral.buildId, undefined, undefined, { next, required: [] }),
+	);
 }

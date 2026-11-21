@@ -35,6 +35,15 @@ export interface HelperExecutableOptions {
 	 * so a caller's cancellation and deadline hold while it looks.
 	 */
 	readonly signal?: AbortSignal;
+	/**
+	 * Windows: a directory searched before PATH, as Windows searches a program's working directory first, for a working
+	 * directory the user configured.
+	 */
+	readonly searchFirst?: string;
+	/** Windows: a name with an extension is tried only as it is, as a shell's lookup of such a name does. */
+	readonly exact?: boolean;
+	/** Windows: the name only as it is, with no extension added, as a script without an extension is looked up. */
+	readonly asIs?: boolean;
 }
 
 /** Windows' default PATHEXT, used when the environment has none. */
@@ -85,12 +94,15 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 	if (name === "" || /[\\/]/.test(name) || (windows && name.includes(":"))) return undefined;
 	const env = options.env ?? process.env;
 	const directories: string[] = [];
+	if (windows && options.searchFirst !== undefined && path.isAbsolute(options.searchFirst)) {
+		directories.push(windowsDirectory(options.searchFirst));
+	}
 	// Without PATH, a start by name searches the system's default directories, and on Windows this process's PATH,
 	// which the start gives the program.
 	const searched =
 		envValue(env, "PATH", windows) ?? (windows ? (envValue(process.env, "PATH", true) ?? "") : DEFAULT_POSIX_PATH);
 	for (const raw of searched.split(path.delimiter)) {
-		const entry = windows ? raw.replace(/^"(.*)"$/, "$1") : raw;
+		const entry = windows ? raw.trim().replace(/^"(.*)"$/, "$1") : raw;
 		// Empty and relative entries name the working directory, or a directory under it. Only those are skipped.
 		if (entry === "" || !path.isAbsolute(entry)) continue;
 		const directory = windows ? windowsDirectory(entry) : path.resolve(entry);
@@ -102,10 +114,11 @@ function searchFor(name: string, options: HelperExecutableOptions): Search | und
 		.map((extension) => extension.trim().toLowerCase())
 		.filter((extension) => extension.startsWith(".") && (options.shellScripts || DIRECT_EXTENSIONS.has(extension)));
 	const extensions = [...named, ...[...DIRECT_EXTENSIONS].filter((extension) => !named.includes(extension))];
-	const names = [
-		...(win32.extname(name) !== "" ? [name] : []),
-		...extensions.map((extension) => `${name}${extension}`),
-	];
+	const hasExtension = win32.extname(name) !== "";
+	const names =
+		options.asIs || (hasExtension && options.exact)
+			? [name]
+			: [...(hasExtension ? [name] : []), ...extensions.map((extension) => `${name}${extension}`)];
 	return { directories, names, windows };
 }
 

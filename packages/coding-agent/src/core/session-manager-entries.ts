@@ -84,6 +84,7 @@ export function createSessionHeader(
 	cwd: string,
 	timestamp: string = new Date().toISOString(),
 	parentSession?: string,
+	internal?: boolean,
 ): SessionHeader {
 	return {
 		type: "session",
@@ -92,6 +93,7 @@ export function createSessionHeader(
 		createdAt: timestamp,
 		cwd,
 		...(parentSession === undefined ? {} : { parentSessionId: parentSession }),
+		...(internal === true ? { internal: true } : {}),
 	};
 }
 
@@ -216,6 +218,7 @@ export function createWorktreeSnapshotEntry(
 	unrestored?: WorktreeUnrestored,
 	captureMs?: number,
 	degradedFrom?: string,
+	capturedAt?: string,
 ): WorktreeSnapshotEntry {
 	return {
 		type: "worktree_snapshot",
@@ -228,6 +231,7 @@ export function createWorktreeSnapshotEntry(
 		...(unrestored === undefined ? {} : { unrestored }),
 		...(captureMs === undefined ? {} : { captureMs }),
 		...(degradedFrom === undefined ? {} : { degradedFrom }),
+		...(capturedAt === undefined ? {} : { capturedAt }),
 	};
 }
 

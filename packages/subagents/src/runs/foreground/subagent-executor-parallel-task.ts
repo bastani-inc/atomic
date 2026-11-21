@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { ExtensionContext, SessionManager } from "@bastani/atomic";
+import type { ExtensionContext, SessionManager, SessionStore } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.js";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
@@ -47,6 +47,7 @@ interface ForegroundParallelRunInput {
 	signal: AbortSignal;
 	runId: string;
 	sessionDirForIndex: (idx?: number) => string | undefined;
+	sessionStore?: SessionStore;
 	sessionManagerForIndex: (idx?: number) => Promise<SessionManager | undefined>;
 	shareEnabled: boolean;
 	artifactConfig: ArtifactConfig;
@@ -248,6 +249,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			runId: input.runId,
 			index,
 			sessionDir: input.sessionDirForIndex(index),
+			...(input.sessionStore ? { sessionStore: input.sessionStore } : {}),
 			sessionManager: await input.sessionManagerForIndex(index),
 			share: input.shareEnabled,
 			artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
