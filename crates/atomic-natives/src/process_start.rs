@@ -96,7 +96,8 @@ fn hold(pid: u32) -> Option<Held> {
 }
 
 /// Every process and the id of the process that started it, as Windows lists them, with the time the list was taken:
-/// a process created after it is not in it.
+/// a process created after it is not in it. Read to the 100 ns of a creation time: the system clock read otherwise
+/// moves only at each tick (about 15.6 ms), so a process created since the last tick would look created after it.
 #[cfg(windows)]
 fn processes() -> Option<(Vec<(u32, u32)>, u64)> {
 	use windows_sys::Win32::{
@@ -106,7 +107,7 @@ fn processes() -> Option<(Vec<(u32, u32)>, u64)> {
 				CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
 				TH32CS_SNAPPROCESS,
 			},
-			SystemInformation::GetSystemTimeAsFileTime,
+			SystemInformation::GetSystemTimePreciseAsFileTime,
 		},
 	};
 	let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -114,7 +115,7 @@ fn processes() -> Option<(Vec<(u32, u32)>, u64)> {
 		return None;
 	}
 	let mut taken = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-	unsafe { GetSystemTimeAsFileTime(&mut taken) };
+	unsafe { GetSystemTimePreciseAsFileTime(&mut taken) };
 	// SAFETY: PROCESSENTRY32W is plain data; all zeroes is a valid value once its size is set.
 	let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
 	entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
