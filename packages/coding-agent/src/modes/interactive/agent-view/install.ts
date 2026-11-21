@@ -55,6 +55,23 @@ export function tellEngineViewed(
 	};
 }
 
+/**
+ * Shows what the engine asks for (`engine_view_agent`). While the screen is kept for it, the engine's panel is told
+ * first that the subagent is about to be shown (`tell`), so that the panel draws its row before the subagent is shown;
+ * a request that ends without showing it tells the engine what the screen shows instead (tellEngineViewed).
+ */
+export function showForEngine(
+	switcher: Pick<AgentViewSwitcher, "requestView">,
+	message: { taskId: string | null; keepScreen?: true; panel?: true; panelOnView?: true },
+	tell: (taskId: TaskId | undefined) => void,
+): void {
+	const taskId = message.taskId === null ? undefined : (message.taskId as TaskId);
+	const keepScreen = message.keepScreen === true;
+	const panelOnView = keepScreen && taskId !== undefined && message.panelOnView === true;
+	if (panelOnView) tell(taskId);
+	switcher.requestView(taskId, { keepScreen, panel: message.panel === true || panelOnView });
+}
+
 export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	const switcher = agentViewSwitcher(mode);
 	const undo: (() => void)[] = [
@@ -64,22 +81,19 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	];
 	const runtime = mode.runtimeHost;
 	if (runtime instanceof IsolatedInteractiveRuntime) {
+		const tellViewed = (taskId: TaskId | undefined) => {
+			void runtime
+				.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
+				.catch(() => {
+					// A lost engine forgets what was shown; its replacement starts on main.
+				});
+		};
 		undo.push(
 			runtime.onEngineMessage((message) => {
-				if (message.type !== "engine_view_agent") return;
-				switcher.requestView(message.taskId === null ? undefined : (message.taskId as TaskId), {
-					keepScreen: message.keepScreen === true,
-					panel: message.panel === true,
-				});
+				if (message.type === "engine_view_agent") showForEngine(switcher, message, tellViewed);
 			}),
 			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),
-			tellEngineViewed(switcher, (taskId) => {
-				void runtime
-					.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
-					.catch(() => {
-						// A lost engine forgets what was shown; its replacement starts on main.
-					});
-			}),
+			tellEngineViewed(switcher, tellViewed),
 		);
 	}
 	mode.disposeAgentView = () => {

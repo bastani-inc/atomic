@@ -3,7 +3,7 @@ import { describe, test } from "vitest";
 import type { TaskId } from "../src/core/tasks/contracts.js";
 import { AgentViewSwitcher, NOT_SHOWN } from "../src/modes/interactive/agent-view/agent-view-switcher.ts";
 import type { AgentViewChange, AgentViewPort } from "../src/modes/interactive/agent-view/contracts.ts";
-import { tellEngineViewed } from "../src/modes/interactive/agent-view/install.ts";
+import { showForEngine, tellEngineViewed } from "../src/modes/interactive/agent-view/install.ts";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 
 const id = (value: string) => value as TaskId;
@@ -54,6 +54,26 @@ describe("the single chat screen's switcher", () => {
 		assert.deepEqual(told, [undefined]);
 		assert.equal(await switcher.view(id("b"), { keepScreen: true }), true);
 		assert.deepEqual(told, [undefined, "b"]);
+	});
+
+	test("tells the engine first what it is about to show when its panel lists the subagent only once shown", () => {
+		const events: string[] = [];
+		const switcher = {
+			requestView: (taskId: TaskId | undefined, options?: { keepScreen?: boolean; panel?: boolean }) =>
+				events.push(`show ${taskId} keepScreen=${options?.keepScreen} panel=${options?.panel}`),
+		};
+		const tell = (taskId: TaskId | undefined) => events.push(`tell ${taskId}`);
+		showForEngine(switcher, { taskId: "a", keepScreen: true, panelOnView: true }, tell);
+		showForEngine(switcher, { taskId: "b", keepScreen: true, panel: true }, tell);
+		showForEngine(switcher, { taskId: "c" }, tell);
+		showForEngine(switcher, { taskId: null, keepScreen: true, panelOnView: true }, tell);
+		assert.deepEqual(events, [
+			"tell a",
+			"show a keepScreen=true panel=true",
+			"show b keepScreen=true panel=true",
+			"show c keepScreen=false panel=false",
+			"show undefined keepScreen=true panel=false",
+		]);
 	});
 
 	test("gives the screen back to main in the same tick when the shown subagent is gone", async () => {
