@@ -1,5 +1,5 @@
-import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { TLocalizedValidationError } from "@bastani/atomic-ai/utils/typebox/error";
+import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import { Errors } from "@bastani/atomic-ai/utils/typebox/value";
 
 export const SCHEMA_MISMATCH_PREFIX = "Invalid structured output: response does not match the decision schema.";
