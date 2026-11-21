@@ -77,9 +77,21 @@ if (heapArgs.length > 0) {
 			({ ThreadConnection }) => ThreadConnection.startSpare(),
 			() => {},
 		);
-	const started = interactiveHost
+	const prewarmed = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
+	// An interactive session shows its editor and takes typing before the rest of Atomic has loaded, where nothing it
+	// shows before its editor would come first (startup-shell.ts). Its modules load before the rest.
+	const started =
+		interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
+			? prewarmed
+					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
+					.then(async ({ planStartupShell }) => {
+						const plan = planStartupShell(args, process.cwd());
+						if (plan) (await import("./modes/interactive/startup-shell.ts")).startStartupShell(plan);
+					})
+					.catch(() => {})
+			: prewarmed;
 	const mainArgs = prewarmedEngine
 		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
 		: Promise.resolve(args);
