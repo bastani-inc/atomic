@@ -1,9 +1,10 @@
 // Covers when an incremental `npm run build` step reruns: input hashing, output fingerprints and the stamp decision.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { BUILD_STEPS, MODEL_CATALOG_MAX_AGE_MS, shouldForce, stepInputs } from "./build.mjs";
 import { decideStep, fingerprintOutputs, hashInputs, readStamp, writeStamp } from "./build-stamps.mjs";
 
@@ -194,4 +195,51 @@ test("each package builds after the forked packages and native step whose output
 	assert.deepEqual(BUILD_STEPS.find((step) => step.name === "agent")?.after, ["ai", "schema"]);
 	const atomic = BUILD_STEPS.find((step) => step.name === "atomic");
 	assert.deepEqual(atomic?.after, ["ai", "tui", "agent", "codemode", "natives"]);
+});
+
+test("the packages Atomic depends on are refreshed through a staging directory, never compiled into their dist in place", () => {
+	const root = fileURLToPath(new URL("..", import.meta.url));
+	const readManifest = (/** @type {string} */ packageDir) =>
+		JSON.parse(readFileSync(join(root, packageDir, "package.json"), "utf8"));
+	const manifests = new Map(BUILD_STEPS.map((step) => [step.packageDir, readManifest(step.packageDir)]));
+	/** Atomic's dependencies, with theirs among the packages the build compiles. */
+	const dependencies = new Set(Object.keys(readManifest("packages/coding-agent").dependencies ?? {}));
+	for (const name of dependencies) {
+		const manifest = [...manifests.values()].find((candidate) => candidate.name === name);
+		for (const dependency of Object.keys(manifest?.dependencies ?? {})) dependencies.add(dependency);
+	}
+	const staged = BUILD_STEPS.filter(
+		(step) =>
+			step.outputs.includes(`${step.packageDir}/dist`) && dependencies.has(manifests.get(step.packageDir).name),
+	);
+	assert.deepEqual(
+		staged.map((step) => step.name),
+		["schema", "telemetry", "ai", "tui", "agent", "codemode"],
+	);
+	for (const step of staged) {
+		assert.equal(step.staged, true, `${step.name} moves only changed files into its dist`);
+		assert.deepEqual(
+			step.scripts.filter((script) => script.tsc),
+			[],
+			`${step.name} runs no compiler into its dist`,
+		);
+		assert.ok(inputPaths(step).includes("scripts/refresh-package-dist.mjs"), `${step.name} hashes the refresh`);
+		// The refresh bundles a package that ships bundled from its staged files; a bundle step script would bundle the
+		// dist the refresh then overwrites with the compiler's files.
+		assert.deepEqual(
+			step.scripts.filter((script) => script.script === "build:bundle"),
+			[],
+			`${step.name} bundles inside the refresh`,
+		);
+		if (manifests.get(step.packageDir).scripts?.["build:bundle"] !== undefined) {
+			assert.ok(inputPaths(step).includes("scripts/bundle-package-dist.mjs"), `${step.name} hashes the bundler`);
+		}
+	}
+	// The packages Atomic loads from a few shared files each.
+	assert.deepEqual(
+		staged
+			.filter((step) => manifests.get(step.packageDir).scripts?.["build:bundle"] !== undefined)
+			.map((step) => step.name),
+		["schema", "telemetry", "ai", "tui", "agent"],
+	);
 });
