@@ -11,6 +11,7 @@ import {
 	registerHeldInput,
 	stopWaiting,
 } from "./agent-session-held-input.ts";
+import { queueWaitsAfterFailedStart } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
@@ -356,6 +357,11 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// A controlled pause is an admission gate, including the idle gap after
 		// abort settles. Queue the payload as input hooks leave it, without
 		// compaction or a provider turn; explicit resume makes it eligible again.
+		if (this._queuedMessagesPaused && options?.startTurnOnly) {
+			if (held) stopWaiting(this, held);
+			preflightResult?.(true, "handled");
+			return;
+		}
 		if (this._queuedMessagesPaused) {
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
 			let pausedText = text;
@@ -455,6 +461,10 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			assertCurrent();
 			// The queue may have been paused while the input waited. Keep it with the paused
 			// input instead of letting an abort that followed the pause drop it.
+			if (this._queuedMessagesPaused && options?.startTurnOnly) {
+				preflightResult?.(true, "handled");
+				return;
+			}
 			if (this._queuedMessagesPaused) {
 				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
 				else await this._queueSteer(expandedText, currentImages, text, currentText);
@@ -473,6 +483,11 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			(waited && (this._isEmittingAgentSettled || openRuns.has(this))) ||
 			queuesDuringAgentSettled(this, delivery) ||
 			(!busy && queuesBehindOpenRun(this, delivery));
+		if ((busy || settling) && options?.startTurnOnly) {
+			// Another turn runs or is about to: it is not queued behind it.
+			preflightResult?.(true, "handled");
+			return;
+		}
 		if (busy || settling) {
 			if (!delivery?.streamingBehavior) {
 				throw new AgentSessionBusyError();
@@ -883,8 +898,12 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 		if (session._stopAfterTurnBlockedContinuation) session.pauseQueuedMessages();
 	} while (
 		admission.hasPendingDeliveries() ||
-		// #4226: a child that could not save a message stops; its queued input waits for its next prompt.
-		(!session._queuedMessagesPaused && session._persistenceFailure === undefined && session.agent.hasQueuedMessages())
+		// #4226: a child that could not save a message stops; its queued input waits for its next prompt. So does input a
+		// run took and could not start.
+		(!session._queuedMessagesPaused &&
+			session._persistenceFailure === undefined &&
+			!queueWaitsAfterFailedStart(session) &&
+			session.agent.hasQueuedMessages())
 	);
 	// #5224: a turn the user interrupted from the child's chat is not the child's end. Its admission stays open for the
 	// next message, which starts a turn; the child's execution ending seals it.
@@ -937,7 +956,11 @@ function awaitsSubagentAnswer(
 		holdsTurnsForDetachedResults(session)
 	)
 		return false;
-	return admission.hasPendingDeliveries() || session._priorityInterruptPending || session.agent.hasQueuedMessages();
+	return (
+		admission.hasPendingDeliveries() ||
+		session._priorityInterruptPending ||
+		(!queueWaitsAfterFailedStart(session) && session.agent.hasQueuedMessages())
+	);
 }
 
 export function _sealMessageAdmissionIfDrained(this: AgentSession): boolean {
@@ -1053,7 +1076,13 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 	await preparePriorityContinuation(this);
 	if (closing()) return;
 
-	if (!this._agentRunAbortRequested && !stopped() && !this._queuedMessagesPaused && this.agent.hasQueuedMessages()) {
+	if (
+		!this._agentRunAbortRequested &&
+		!stopped() &&
+		!this._queuedMessagesPaused &&
+		!queueWaitsAfterFailedStart(this) &&
+		this.agent.hasQueuedMessages()
+	) {
 		while (
 			!this._agentRunAbortRequested &&
 			!closing() &&
@@ -1061,6 +1090,7 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 			// Nor on a call that detached and has no result yet: its hand-back continues the turn (#4580).
 			!holdsTurnsForDetachedResults(this) &&
 			!this._queuedMessagesPaused &&
+			!queueWaitsAfterFailedStart(this) &&
 			this.agent.hasQueuedMessages()
 		) {
 			await this._continueAgentAfterCompactionCheck();

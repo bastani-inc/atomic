@@ -52,9 +52,7 @@ export { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 /** How long a background child waits on a detachable tool call inline before it is released (#4326). */
 export const SUBAGENT_RELEASE_AFTER_MS = 60_000;
 
-/** What a woken child is told when no message of its own wakes it. */
-export const SUBAGENT_RELEASED_WAKE_PROMPT =
-	"You were released while you waited, and something you were waiting for arrived: read the new messages and tool results, then continue your task. If you have finished, stop.";
+export { SUBAGENT_RELEASED_WAKE_PROMPT } from "./released-wake-prompt.js";
 
 /** The result a still-running detached call gets when its child is woken by something else first. */
 export const SUBAGENT_STILL_RUNNING_RESULT =

@@ -5258,7 +5258,12 @@ test("messages a released child had queued and not read are delivered once, in o
 	h.releasedPendingMessages = queued;
 	const dispatcher = await releasedWithWakes(h, "queuedwake1");
 	const released = h.latest("queuedwake1:0");
-	assert.deepEqual(released?.heldMessages, { taskId: released?.taskId, messages: queued, taskExpands: false });
+	assert.deepEqual(released?.heldMessages, {
+		taskId: released?.taskId,
+		messages: queued,
+		taskExpands: false,
+		withoutWakePrompt: true,
+	});
 	const green = waitResult("CI green");
 
 	await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "queuedwake1:0"), {
@@ -5267,7 +5272,7 @@ test("messages a released child had queued and not read are delivered once, in o
 		toolResult: green,
 	});
 	assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(green));
-	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [...queued, SUBAGENT_RELEASED_WAKE_PROMPT]);
+	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, queued, "no wake prompt follows the messages it reads");
 	await h.waitForLatest("queuedwake1:0", clearedOk);
 
 	const again = await h.call({ action: "resume", id: "queuedwake1:0", message: "one more thing" });

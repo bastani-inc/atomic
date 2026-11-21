@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent woken while it waited no longer gets "You were released while you waited…" queued behind the turn it continues, nor a request just to read it: the results that wake it continue its turn, and messages sent to it arrive as their own. It is prompted with that text only when nothing else starts its turn.
+- A woken or resumed subagent keeps its original task as its label in heartbeats, completion notices, `/tasks` and the agent panel, whatever it continues with.
+
 ## [0.10.2] - 2026-11-20
 
 ### Breaking Changes

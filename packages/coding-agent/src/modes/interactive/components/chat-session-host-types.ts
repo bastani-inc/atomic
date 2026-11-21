@@ -107,6 +107,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 * `steer`, `followUp` and `send`; `commands.handleSlashCommand` still runs the chat's own commands first.
 	 */
 	steering?: ChatSteeringTarget;
+	/**
+	 * @internal Messages taken back from the agent's queue for the editor after the chat was closed: kept, steering
+	 * first, for the reader's next draft in this chat. Without it they are dropped with the chat.
+	 */
+	keepRestoredMessages?: (messages: readonly string[]) => void;
 	requestRender?: () => void;
 	getAgentSession?: () => AgentSession | undefined;
 	/**

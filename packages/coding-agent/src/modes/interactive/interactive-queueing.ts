@@ -510,6 +510,18 @@ export function engineLossRestoredNotice(count: number): string {
 	return `Engine restarted; ${queuedMessagesPhrase(count)} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
 }
 
+/**
+ * The messages a lost engine had taken and was delivering when nothing tells whether it saved them: each in full, so
+ * one that never arrived can be sent again by hand. None is sent again by itself.
+ */
+export function engineLossUnconfirmedNotice(messages: readonly string[], agent?: string): string {
+	const count = messages.length;
+	return [
+		`Engine restarted; ${count === 1 ? "this message" : `these ${count} messages`}${agent === undefined ? "" : ` to ${agent}`} may not have been delivered:`,
+		...messages,
+	].join("\n");
+}
+
 /** What a subagent had queued, or had on its way, when the engine that runs it was lost. */
 export interface LostSubagentQueue {
 	readonly agent: string;
@@ -561,18 +573,42 @@ function withoutEach(after: readonly string[], before: readonly string[]): strin
 /**
  * An isolated engine that is lost and replaced takes its queue with it. The messages the main chat showed as queued
  * come back to its editor, as Alt+Up would restore them, with a notice, unless the replacement's history shows the
- * lost engine delivered them. (What a shown subagent had queued is listed by `attachLostAgentQueueNotices`.) Nothing is
- * sent again. A deliberate replacement or stop changes nothing.
+ * lost engine delivered them. What it had already taken and was delivering, or showed without saving it, may have been
+ * saved: a notice gives each in full, as unconfirmed. (What a shown subagent had queued is listed by
+ * `attachLostAgentQueueNotices`.) Nothing is sent again. A deliberate replacement or stop, or a session the engine
+ * retires, changes nothing.
  */
 InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: InteractiveModeBase): () => void {
 	const runtime = this.runtimeHost;
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
 	/** The user messages the chat knew when the engine was lost, while its replacement is pending. */
 	let knownAtLoss: string[] | undefined;
+	/** What the lost engine was delivering, steering first, each lane in order, while its replacement is pending. */
+	let deliveringAtLoss: string[] = [];
+	/** User messages whose row the chat showed and whose save (`message_end`) it has not heard of, oldest first. */
+	let shownUnsaved: string[] = [];
+	let shownUnsavedAtLoss: string[] = [];
+	const stopShown = this.session.subscribe((event) => {
+		if (event.type === "message_start" && event.message.role === "user") {
+			const text = textOfUserMessage(event.message.content);
+			if (text !== undefined) shownUnsaved.push(text);
+		} else if (event.type === "message_end" && event.message.role === "user") {
+			const text = textOfUserMessage(event.message.content);
+			const index = text === undefined ? -1 : shownUnsaved.indexOf(text);
+			if (index >= 0) shownUnsaved.splice(index, 1);
+		} else if (event.type === "agent_end") shownUnsaved = [];
+	});
 	const stopEnded = runtime.onGenerationEnded((event) => {
-		if (event.expected) return;
+		if (event.expected) {
+			shownUnsaved = [];
+			return;
+		}
 		mainSteering(this).loseTarget();
 		runtime.discardLostQueue();
+		const delivering = runtime.takeDeliveringAtLoss();
+		if (delivering !== undefined) deliveringAtLoss.push(...delivering.steering, ...delivering.followUp);
+		shownUnsavedAtLoss.push(...shownUnsaved);
+		shownUnsaved = [];
 		knownAtLoss ??= userMessageTexts(this.session.messages);
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
@@ -584,10 +620,14 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 	});
 	const stopRecovered = runtime.onEngineRecovered((replaced) => {
 		const known = knownAtLoss;
+		const delivering = deliveringAtLoss;
+		const shown = shownUnsavedAtLoss;
 		knownAtLoss = undefined;
+		deliveringAtLoss = [];
+		shownUnsavedAtLoss = [];
 		if (known === undefined) return;
 		void (async () => {
-			let delivered: string[] = [];
+			let delivered: string[] | undefined;
 			if (replaced) {
 				try {
 					delivered = withoutEach(await runtime.engineUserMessages(), known);
@@ -595,8 +635,18 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 					// The replacement could not say what it holds: give everything back, nothing is resent.
 				}
 			}
-			const messages = mainSteering(this).recoverTarget(delivered);
-			if (messages === undefined) return;
+			// What the lost engine had taken from its queue may have been saved, and answered, whatever its replacement's
+			// history shows (a compaction can leave it out, and the engine may have saved it after the chat's last line):
+			// it is listed in full as unconfirmed, neither given back nor sent again. So is a message whose row was shown
+			// but whose save the chat never heard of. The replacement's history only accounts for what the chat still listed.
+			const remaining = delivered === undefined ? undefined : withoutEach(delivered, [...shown, ...delivering]);
+			const unconfirmed = [...shown, ...delivering];
+			const messages = mainSteering(this).recoverTarget(remaining ?? []) ?? [];
+			if (unconfirmed.length > 0) this.showWarning(engineLossUnconfirmedNotice(unconfirmed));
+			if (messages.length === 0) {
+				if (unconfirmed.length > 0) this.ui.requestRender();
+				return;
+			}
 			// Main's prompt, whatever the screen shows by the time the replacement answers.
 			const prompt = promptHandle(this, "main");
 			prompt.setText(combineQueuedMessagesForEditor(messages, prompt.getExpandedText()));
@@ -606,6 +656,7 @@ InteractiveModeBase.prototype.attachSteeringEngineRecovery = function (this: Int
 		})();
 	});
 	return () => {
+		stopShown();
 		stopEnded();
 		stopForgotten();
 		stopRecovered();

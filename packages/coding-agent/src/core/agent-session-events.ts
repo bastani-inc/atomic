@@ -4,6 +4,7 @@ import { cleanupSessionResources } from "@bastani/atomic-ai/compat";
 import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
+import { queueRunStarted, requeueQueuedMessagesNotStarted, startQueuedMessage } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import {
@@ -25,7 +26,6 @@ import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
 import { sessionClosing } from "./agent-session-release.ts";
 import { ensureRetryPromise, retryIsCurrent } from "./agent-session-retry.ts";
 import { recordExplicitToolDeactivations } from "./agent-session-state.ts";
-import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
@@ -60,7 +60,6 @@ import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 import {
-	beginQueuedMessageDelivery,
 	endQueuedMessageDelivery,
 	noteQueueUpdateDeliveries,
 	type QueuedMessageDelivery,
@@ -122,6 +121,8 @@ export function _emitQueueUpdate(this: AgentSession): void {
 
 /** The `message_start` of a queued message the turn took, with its delivery until that event reaches the listeners. */
 const consumedQueuedMessageEvents = new WeakMap<object, QueuedMessageDelivery>();
+/** Those whose taking was not announced yet: the session announces the queue without them as they start. */
+const unannouncedQueuedMessageEvents = new WeakSet<object>();
 /** Sessions whose run was just stopped at its request boundary, with the reported cause (#4226). */
 const pendingPersistenceStops = new WeakMap<object, string>();
 /** Agent-core's synthetic failure replies to those stops. */
@@ -184,6 +185,7 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	let event = withoutDetachedPlaceholders(this, received);
 	if (event === undefined) return;
 	if (event.type === "agent_start") {
+		queueRunStarted(this);
 		this._agentRunRetryGeneration = this._retryGeneration;
 		this._undeliveredAgentStarts += 1;
 		this._awaitingStartAfterInterrupt = false;
@@ -205,18 +207,19 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// Escape/abort can restore it from a stale queue while earlier hooks settle.
 	let delivery: QueuedMessageDelivery | undefined;
 	if (event.type === "message_start" && event.message.role === "user") {
+		// Only the queued message itself leaves the queue: a prompt with the same text is another message.
 		// Image-only messages have empty text, and still leave the queue (pi #8612).
-		const text = this._getUserMessageText(event.message);
-		const queue = [this._steeringMessages, this._followUpMessages].find((messages) => messages.includes(text));
-		if (queue) {
-			queue.splice(queue.indexOf(text), 1);
-			const lane = queue === this._steeringMessages ? "steer" : "followUp";
-			forgetTypedQueuedText(this, lane, text);
-			this._admittedQueuedMessageAwaitingReply = text;
-			delivery = beginQueuedMessageDelivery(this, lane, text);
-			consumedQueuedMessageEvents.set(event, delivery);
+		const started = startQueuedMessage(this, event.message);
+		if (started !== undefined) {
+			this._admittedQueuedMessageAwaitingReply = started.text;
+			delivery = started.delivery;
+			if (delivery !== undefined) consumedQueuedMessageEvents.set(event, delivery);
+			// The queue without it was announced when its run took it; otherwise it is announced as it starts.
+			if (delivery !== undefined && !started.announced) unannouncedQueuedMessageEvents.add(event);
 		}
 	}
+	// What the run took from the queue and never started is queued again before anything settles on the queue.
+	if (event.type === "agent_end") requeueQueuedMessagesNotStarted(this);
 	const awaitProtectedPersistence =
 		event.type === "message_end" && event.message.role === "custom"
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
@@ -361,7 +364,8 @@ export async function _processAgentEvent(
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
 		this._fallbackBlockedProviders.clear();
-		if (consumedQueuedMessageEvents.delete(event)) this._emitQueueUpdate();
+		consumedQueuedMessageEvents.delete(event);
+		if (unannouncedQueuedMessageEvents.delete(event)) this._emitQueueUpdate();
 		await normalizeQueuedMessageImages(this, event.message);
 	}
 

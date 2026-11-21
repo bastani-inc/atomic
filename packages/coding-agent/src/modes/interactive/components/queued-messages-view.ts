@@ -5,6 +5,8 @@ import type { SteeringLane, SteeringQueuedTexts, SteeringQueueLists } from "../s
 export interface QueuedMessageRow {
 	readonly lane: SteeringLane;
 	readonly text: string;
+	/** The agent already took it: drawn until its own row shows, but no longer queued, so no key takes it back. */
+	readonly delivering?: true;
 }
 
 /** The label a row starts with: `Steering:` for the next turn boundary, `Follow-up:` for after the run. */
@@ -20,13 +22,13 @@ export function queuedMessageRows(
 	queued: Readonly<SteeringQueuedTexts>,
 	delivering?: Readonly<SteeringQueueLists>,
 ): QueuedMessageRow[] {
+	const rows = (lane: SteeringLane, taken: readonly string[], waiting: readonly string[]): QueuedMessageRow[] => [
+		...taken.map((text): QueuedMessageRow => ({ lane, text, delivering: true })),
+		...waiting.map((text): QueuedMessageRow => ({ lane, text })),
+	];
 	return [
-		...[...(delivering?.steering ?? []), ...queued.steering].map(
-			(text): QueuedMessageRow => ({ lane: "steer", text }),
-		),
-		...[...(delivering?.followUp ?? []), ...queued.followUp].map(
-			(text): QueuedMessageRow => ({ lane: "followUp", text }),
-		),
+		...rows("steer", delivering?.steering ?? [], queued.steering),
+		...rows("followUp", delivering?.followUp ?? [], queued.followUp),
 	];
 }
 
@@ -37,8 +39,9 @@ export function queuedMessagesHint(dequeueKey: string): string {
 
 /**
  * The queued messages of one chat, drawn above its prompt: a blank line, one dim row per message cut to the width,
- * and the hint for the key that edits them. Draws nothing while nothing is queued. Rows are styled when the view is
- * built, so a chat rebuilds the view when its queue, key or theme changes.
+ * and, while one of them is still queued, the hint for the key that takes them back to edit. Draws nothing while
+ * nothing is queued. Rows are styled when the view is built, so a chat rebuilds the view when its queue, key or theme
+ * changes.
  */
 export class QueuedMessagesView implements Component {
 	private readonly lines: readonly TruncatedText[];
@@ -49,7 +52,9 @@ export class QueuedMessagesView implements Component {
 				? []
 				: [
 						...rows.map((row) => new TruncatedText(dim(`${queuedMessageLabel(row.lane)}: ${row.text}`), 1, 0)),
-						new TruncatedText(dim(queuedMessagesHint(dequeueKey)), 1, 0),
+						...(rows.some((row) => row.delivering !== true)
+							? [new TruncatedText(dim(queuedMessagesHint(dequeueKey)), 1, 0)]
+							: []),
 					];
 	}
 

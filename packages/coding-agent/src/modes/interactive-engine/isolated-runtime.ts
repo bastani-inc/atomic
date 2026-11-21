@@ -215,6 +215,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * draws them as queued until their own row arrives.
 	 */
 	private readonly queuedDeliveries = new QueuedDeliveryView();
+	/** What the engine was delivering when it was lost unexpectedly, until the main chat takes it. */
+	private deliveringAtLoss: QueuedMessageLanes | undefined;
 	/** Ends waiting for their event to reach the host's listeners, which a compaction can hold back. */
 	private readonly queuedDeliveryEnds = new WeakMap<object, QueuedDeliveryEnd>();
 	private readonly queuedDeliveryResetListeners = new Set<() => void>();
@@ -361,7 +363,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (event.generation === this.client.getGeneration()) {
 				this.panelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 				this.updateResources({});
-				// What the lost engine was delivering is gone with it; its replacement starts telling afresh.
+				// What a lost engine was delivering may have gone with it unsaved: kept for the chat to account for.
+				if (!event.expected) this.deliveringAtLoss = this.queuedDeliveries.texts;
+				// Its replacement starts telling afresh.
 				this.forgetQueuedDeliveries();
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -870,6 +874,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private forgetQueuedDeliveries(): void {
 		if (!this.queuedDeliveries.reset()) return;
 		for (const listener of [...this.queuedDeliveryResetListeners]) listener();
+	}
+
+	/**
+	 * The messages the engine had taken from its queue and was delivering when it was lost unexpectedly: the chat no
+	 * longer draws them, and the engine may or may not have saved them. Taken once; nothing after a deliberate stop.
+	 */
+	takeDeliveringAtLoss(): QueuedMessageLanes | undefined {
+		const delivering = this.deliveringAtLoss;
+		this.deliveringAtLoss = undefined;
+		return delivering;
 	}
 
 	/**

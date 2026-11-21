@@ -132,6 +132,8 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
+/** The page open on each task's chat, per source: where messages that come back after its last page closed go. */
+const openPages = new WeakMap<TaskViewSource, Map<TaskId, TaskAgentTranscriptPage>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
 const keptPromptHistories = new WeakMap<TaskViewSource, Map<TaskId, readonly string[]>>();
 
@@ -486,6 +488,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			// What the reader types goes to the subagent's own session as the main chat's goes to its own: queued in its
 			// lane while it works, else its next turn, and the dequeue key takes the queue back.
 			steering: this.steeringTarget(),
+			// Alt+Up's answer that comes after the reader left this chat: back in its prompt when they return.
+			keepRestoredMessages: (messages) => this.keepForReturn(messages),
 			// Esc paused it: the reader's next message continues it, as their send continues the main chat after Esc.
 			isPaused: () => this.paused(),
 			commands: { handleSlashCommand: (text) => this.runCommand(text) },
@@ -494,6 +498,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.seedPromptHistory(keptPromptHistories.get(source)?.get(taskId) ?? []);
 		this.restoreDraft();
 		this.restoreUndelivered();
+		const open = openPages.get(source) ?? new Map<TaskId, TaskAgentTranscriptPage>();
+		open.set(taskId, this);
+		openPages.set(source, open);
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
 			if (sessionId === this.childSessionId() || sessionId === this.shownPromptSessionId) this.requestRender();
 		});
@@ -549,6 +556,24 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.source.followTaskTranscript(this.taskId) !== undefined
 			? this.taskId
 			: live;
+	}
+
+	/**
+	 * Messages taken back from the subagent's queue after the reader left this chat: in front of what they typed here,
+	 * in this chat's prompt if it is open again, else for when they return.
+	 */
+	private keepForReturn(messages: readonly string[]): void {
+		if (messages.length === 0) return;
+		const id = this.liveTaskId();
+		const open = openPages.get(this.source)?.get(id);
+		if (open !== undefined && open !== this && !open.disposed) {
+			open.chat.setInputText(combineQueuedMessagesForEditor(messages, open.chat.inputText()));
+			open.requestRender();
+			return;
+		}
+		const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
+		kept.set(id, combineQueuedMessagesForEditor(messages, kept.get(id) ?? ""));
+		keptDrafts.set(this.source, kept);
 	}
 
 	/** Restores what was typed here before the reader left. */
@@ -1041,6 +1066,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptPromptHistories.set(this.source, kept);
 		}
 		this.disposed = true;
+		const open = openPages.get(this.source);
+		for (const [id, page] of open ?? []) if (page === this) open?.delete(id);
 		this.cancelAdjacent();
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
@@ -1124,14 +1151,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				else this.chat.showWarning(warning);
 			}
 			if (!this.disposed) this.restoreQueuedToEditor(paused.value);
-			else {
-				// The reader left while the turn ended: what came back waits in the prompt for their return.
-				const taken = [...paused.value.steering, ...paused.value.followUp];
-				const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
-				const id = this.liveTaskId();
-				if (taken.length > 0) kept.set(id, combineQueuedMessagesForEditor(taken, kept.get(id) ?? ""));
-				keptDrafts.set(this.source, kept);
-			}
+			// The reader left while the turn ended: what came back waits in the prompt for their return.
+			else this.keepForReturn([...paused.value.steering, ...paused.value.followUp]);
 			return { ok: true, value: undefined };
 		}
 		const interrupt = this.source.interruptTask;

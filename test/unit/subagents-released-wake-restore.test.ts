@@ -43,6 +43,7 @@ import {
 import {
 	createSubagentChildRecordSink,
 	holdInterruptedStillRunningCalls,
+	holdSubagentChildMessages,
 	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
 	recordSubagentChildStatus,
@@ -78,6 +79,8 @@ useTemporaryAgentDir();
 const ORIGINAL_TASK = "original task";
 const WAIT_CALL = { toolCallId: "ci-1", toolName: "wait_for_ci" } as const;
 const RECORD_WAIT_MS = 5_000;
+/** What the owner's wake handler restores a released child with when a message, a task or a timer wakes it. */
+const MESSAGE_WAKE = { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, wakeFallback: true } as const;
 const KEPT_SETTLE_MS = 150;
 
 const agent: AgentConfig = {
@@ -472,7 +475,7 @@ test("a released child whose session ends on its pending call is woken by that c
 	const result = waitResult("CI is green");
 
 	const run = await restored(h, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [result],
 		promptless: true,
 	});
@@ -480,10 +483,138 @@ test("a released child whose session ends on its pending call is woken by that c
 	assert.deepEqual(run.resumeToolResults, [result], "the result is recorded as the call's result");
 	assert.equal(run.skipTaskPrompt, true, "the continued turn is the whole run");
 	assert.equal(run.resumeFollowUps, undefined);
-	assert.equal(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+	assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT, "it is not given the wake prompt to read");
+	assert.equal(run.resumeTaskFallback, undefined);
 	assert.equal(run.resumeSession, true);
 	assert.equal(h.latest(record.childId)?.terminalStatus, "ok");
 	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "nothing is left held after the wake took it");
+});
+
+/** Wake a released child through its owner's wake handler, as the broker's notice of a message for it does. */
+async function wokenBy(
+	h: Harness,
+	record: SubagentChildRecord,
+	wake: {
+		readonly id: string;
+		readonly kind: "intercom" | "task-completion" | "tool-result";
+		toolResult?: DetachedToolResult;
+	},
+): Promise<RunSyncOptions & { task: string }> {
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	const runs = h.runs.length;
+	await dispatcher.deliver(`subagents/${h.sessionManager.getSessionId()}:${record.childId}`, wake);
+	await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.taskId !== record.taskId);
+	await dispatcher.whenIdle();
+	assert.equal(h.runs.length, runs + 1, "the wake relaunched the child once");
+	const run = h.runs.at(-1);
+	assert.ok(run);
+	return { ...run.options, task: run.task };
+}
+
+test("a message that wakes a released child waiting on a call continues that turn and queues no wake prompt behind it", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "wake-message-continues");
+
+	const run = await wokenBy(h, record, { id: "intercom:1", kind: "intercom" });
+
+	assert.deepEqual(run.resumeToolResults, [stillRunning], "the pending call is answered and its turn continues");
+	assert.equal(run.skipTaskPrompt, true, "the continued turn starts the child; the message arrives as its own");
+	assert.equal(run.resumeFollowUps, undefined, "nothing is queued behind the continued turn");
+	assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+});
+
+test("a message that wakes a released child with nothing to continue starts its turn with the wake prompt, never queued", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-message-alone");
+
+	const run = await wokenBy(h, record, { id: "intercom:1", kind: "intercom" });
+
+	assert.deepEqual(run.resumeToolResults, [], "nothing to continue");
+	assert.equal(run.task, SUBAGENT_RELEASED_WAKE_PROMPT, "the wake prompt is the turn's own prompt");
+	assert.equal(run.skipTaskPrompt, undefined);
+	assert.equal(run.resumeFollowUps, undefined);
+	assert.equal(run.resumeTaskFallback, true, "it only starts a turn when none runs, and is never handed back");
+});
+
+test("a woken child keeps its original task as its task's label, whatever it is woken with", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "wake-label");
+
+	await wokenBy(h, record, { id: "intercom:1", kind: "intercom" });
+
+	const latest = h.latest(record.childId);
+	assert.ok(latest?.taskId);
+	assert.notEqual(latest.taskId, record.taskId, "each wake runs as a new task");
+	const title = (taskId: string | undefined) =>
+		h.host.taskRecords().find((candidate) => candidate.ref.taskId === taskId)?.title;
+	assert.ok(title(record.taskId)?.includes(ORIGINAL_TASK), title(record.taskId));
+	assert.equal(title(latest.taskId), title(record.taskId));
+});
+
+for (const [kind, withoutWakePrompt, delivered] of [
+	["written by an earlier version", undefined, false],
+	["written now", true as const, true],
+] as const) {
+	test(`a message with the wake prompt's text held in a record ${kind} is ${delivered ? "delivered" : "not read again"} when a message wakes the child`, async () => {
+		const h = harness();
+		const record = await endedOnPendingCall(h, `wake-held-literal-${delivered}`);
+		assert.ok(record.taskId);
+		await appendRecord(h, {
+			...record,
+			heldMessages: {
+				taskId: record.taskId,
+				messages: [SUBAGENT_RELEASED_WAKE_PROMPT],
+				taskExpands: false,
+				...(withoutWakePrompt ? { withoutWakePrompt } : {}),
+			},
+		});
+
+		const run = await wokenBy(h, record, { id: "intercom:1", kind: "intercom" });
+
+		assert.deepEqual(run.resumeToolResults, [stillRunning]);
+		if (delivered) {
+			// It was sent to the child: read once, after the turn it continues.
+			assert.equal(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+			assert.equal(run.skipTaskPrompt, undefined);
+			assert.equal(run.resumeTaskFallback, undefined, "a message it was sent, not the wake's own prompt");
+		} else {
+			// That version's own wake prompt, held for its next wake: the continued turn is the whole wake.
+			assert.equal(run.skipTaskPrompt, true);
+			assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+		}
+		assert.equal(run.resumeFollowUps, undefined);
+	});
+}
+
+test("messages held after an earlier version's held wake prompt are all read, and that prompt is not", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "wake-held-mixed");
+	assert.ok(record.taskId);
+	await appendRecord(h, {
+		...record,
+		heldMessages: {
+			taskId: record.taskId,
+			messages: [SUBAGENT_RELEASED_WAKE_PROMPT, "held before"],
+			taskExpands: false,
+		},
+	});
+	assert.equal(
+		await holdSubagentChildMessages(h.deps.pi, record.owner.sessionId, record.childId, [
+			SUBAGENT_RELEASED_WAKE_PROMPT,
+			"held after",
+		]),
+		"released",
+	);
+
+	const run = await wokenBy(h, record, { id: "intercom:1", kind: "intercom" });
+
+	assert.deepEqual(
+		[run.task, ...(run.resumeFollowUps ?? [])],
+		["held before", SUBAGENT_RELEASED_WAKE_PROMPT, "held after"],
+		"each message it was sent, once, in order",
+	);
 });
 
 async function endedOnPendingCall(h: Harness, runId: string): Promise<SubagentChildRecord> {
@@ -498,7 +629,7 @@ test("a result that comes after its call was answered reaches a woken child as a
 	const late = waitResult("/deploy now");
 
 	const run = await restored(h, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [late],
 		promptless: true,
 	});
@@ -510,15 +641,16 @@ test("a result that comes after its call was answered reaches a woken child as a
 	assert.equal(run.skipTaskPrompt, undefined, "the late message is the prompt");
 });
 
-test("a late result and a message wake the child together: the result is read first, then the wake prompt (#4326)", async () => {
+test("a late result and a message wake the child together: the result is read, with no wake prompt after it (#4326)", async () => {
 	const h = harness();
 	const record = await releasedChild(h, "wake-both");
 	const late = waitResult("deployed");
 
-	const run = await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, toolResults: [late] });
+	const run = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [late] });
 
 	assert.equal(run.task, lateToolResultMessage(late));
-	assert.deepEqual(run.resumeFollowUps, [SUBAGENT_RELEASED_WAKE_PROMPT]);
+	assert.equal(run.resumeFollowUps, undefined, "the message arrives as its own; nothing generic follows the result");
+	assert.equal(run.resumeTaskFallback, undefined);
 	assert.equal(run.resumeTaskLiteral, true);
 	assert.equal(run.skipTaskPrompt, undefined);
 });
@@ -556,11 +688,12 @@ for (const stopped of stoppedAfterRelease) {
 		const record = await endedOnPendingCall(h, "wake-plan");
 		await stopped.prepare(h, record);
 
-		const run = await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+		const run = await restored(h, record.childId, MESSAGE_WAKE);
 
 		assert.deepEqual(run.resumeToolResults, stopped.expected);
-		assert.equal(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
-		assert.equal(run.skipTaskPrompt, undefined, "a message is prompted after the turn continues");
+		assert.notEqual(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+		assert.equal(run.skipTaskPrompt, true, "the continued turn starts it; the message arrives as its own");
+		assert.equal(run.resumeFollowUps, undefined, "nothing is queued behind the continued turn");
 	});
 }
 
@@ -860,7 +993,7 @@ test("a released child woken outside the work it was launched in still follows t
 		"the original launch ran inside the restores it was launched in",
 	);
 	assert.deepEqual(currentWorktreeRootMappings(), [], "the test itself is outside any work");
-	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+	await restored(h, record.childId, MESSAGE_WAKE);
 	assert.deepEqual(h.runs.at(-1)?.scope, [launchRestore]);
 	assert.deepEqual(h.latest(record.childId)?.worktreeRootMappings, [launchRestore], "a later wake keeps them too");
 });
@@ -900,7 +1033,7 @@ test("a woken child follows the restores its owner recorded since, over those of
 	const record = await withWorktreeRootMappings([launched], () => releasedChild(h, "wake-owner-scope"));
 	const ownerRestore = await ownerRestores(h, sandbox, "/node-a/repo", join(h.cwd, "restored-for-the-owner"));
 
-	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+	await restored(h, record.childId, MESSAGE_WAKE);
 
 	assert.deepEqual(h.runs.at(-1)?.scope, [ownerRestore]);
 });
@@ -1030,7 +1163,7 @@ test("a woken child follows only the well-formed restores its record holds (#432
 	] as unknown as SubagentChildRecord["worktreeRootMappings"];
 	await appendRecord(h, { ...record, worktreeRootMappings: damaged });
 
-	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+	await restored(h, record.childId, MESSAGE_WAKE);
 
 	assert.deepEqual(h.runs.at(-1)?.scope, [valid]);
 });
@@ -1045,7 +1178,7 @@ test("a woken child whose record holds something other than a list of restores f
 		worktreeRootMappings: "oops" as unknown as SubagentChildRecord["worktreeRootMappings"],
 	});
 
-	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+	await restored(h, record.childId, MESSAGE_WAKE);
 
 	assert.deepEqual(h.runs.at(-1)?.scope, []);
 });
@@ -1159,7 +1292,7 @@ async function wokenByResult(
 	const held = Promise.withResolvers<void>();
 	h.wokenGate = { gate, at, held };
 	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [result],
 		promptless: true,
 	});
@@ -1375,7 +1508,7 @@ test("a call a wake answered still running is reported interrupted after a resta
 	});
 	const lint: DetachedToolResult = { ...waitResult("lint clean"), ...LINT_CALL };
 	const run = await restored(h, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [lint],
 		promptless: true,
 	});
@@ -1454,7 +1587,7 @@ test("a result for a call the child was told is still running still reaches it, 
 	const late = waitResult("/deploy now");
 
 	const run = await restored(h, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [late],
 		promptless: true,
 	});
@@ -1537,7 +1670,7 @@ test("a wake keeps tracking the calls the child was told are still running until
 	const deployed: DetachedToolResult = { ...waitResult("deployed"), ...DEPLOY_CALL };
 
 	const run = await restored(h, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [waitResult("ci-1 green"), deployed],
 		promptless: true,
 	});
@@ -1558,7 +1691,7 @@ test("a late result a woken child was stopped before reading reaches it once whe
 	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
 	h.wokenGate = { gate: Promise.withResolvers<void>(), at: "before-start" };
 	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
-		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		...MESSAGE_WAKE,
 		toolResults: [late],
 		promptless: true,
 	});

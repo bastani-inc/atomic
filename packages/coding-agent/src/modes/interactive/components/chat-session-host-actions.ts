@@ -717,16 +717,20 @@ function restoreSteeredQueue<TExtraEntry extends ChatTranscriptEntryLike>(
 ): boolean {
 	const listed = steering.hasQueued();
 	const clear = options?.preserveUnprotectedCustomMessages ? { preserveUnprotectedCustomMessages: true } : undefined;
+	const listedBefore = { steering: state.pendingSteeringMessages, followUp: state.pendingFollowUpMessages };
 	void steering
 		.restoreAll(() => state.inputBuffer, clear)
 		.then(
 			(restored) => {
-				if (state.disposed) return;
+				if (state.disposed) {
+					// What the agent gave back is the reader's: it waits for them where their next draft is.
+					if (restored !== undefined) state.keepRestoredMessages?.(restored.messages);
+					return;
+				}
 				if (restored === undefined) {
 					if (!options?.suppressEmptyNotice) notifyChatSessionStatus(state, "No queued messages to restore");
 				} else {
-					state.pendingSteeringMessages = [];
-					state.pendingFollowUpMessages = [];
+					forgetListedQueue(state, listedBefore);
 					setChatSessionEditorText(state, restored.text);
 				}
 				state.requestRender?.();
@@ -738,6 +742,18 @@ function restoreSteeredQueue<TExtraEntry extends ChatTranscriptEntryLike>(
 		);
 	state.requestRender?.();
 	return listed;
+}
+
+/**
+ * The chat's listing of the agent's queue no longer holds what was taken back from it, unless the agent listed its
+ * queue again since (each listing replaces the lists): a message queued after the take stays as the agent listed it.
+ */
+function forgetListedQueue<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	listed: { readonly steering: readonly string[]; readonly followUp: readonly string[] },
+): void {
+	if (state.pendingSteeringMessages === listed.steering) state.pendingSteeringMessages = [];
+	if (state.pendingFollowUpMessages === listed.followUp) state.pendingFollowUpMessages = [];
 }
 
 /**
@@ -757,8 +773,7 @@ export function restoreTakenQueuedMessages<TExtraEntry extends ChatTranscriptEnt
 		...held.filter((message) => message.mode === "followUp").map((message) => message.text),
 	];
 	if (messages.length === 0) return 0;
-	state.pendingSteeringMessages = [];
-	state.pendingFollowUpMessages = [];
+	// The agent listed its queue without them when it gave them back; a listing after that is newer and stays.
 	setChatSessionEditorText(state, combineQueuedMessagesForEditor(messages, state.inputBuffer));
 	state.requestRender?.();
 	return messages.length;

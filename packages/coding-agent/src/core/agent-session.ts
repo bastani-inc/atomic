@@ -20,7 +20,7 @@ import { agentSessionDetachedToolMethods } from "./agent-session-detached-tools.
 import { agentSessionEventsMethods } from "./agent-session-events.ts";
 import { agentSessionExportMethods } from "./agent-session-export.ts";
 import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-bindings.ts";
-import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
+import { agentSessionMessageQueueMethods, installQueuedMessageTaking } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface, AgentSessionPublicSurface, TurnPause } from "./agent-session-methods.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
 import { agentSessionPersistenceFailureMethods } from "./agent-session-persistence-failures.ts";
@@ -480,6 +480,7 @@ class AgentSessionBase {
 			this._unsubscribeAgent = this.agent.subscribe(internals._handleAgentEvent);
 			internals._installAgentToolHooks();
 			internals._installAgentNextTurnRefresh();
+			installQueuedMessageTaking(internals);
 			internals._installAgentRequestProjection();
 			internals._installAgentBoundaryHooks();
 			internals._buildRuntime({

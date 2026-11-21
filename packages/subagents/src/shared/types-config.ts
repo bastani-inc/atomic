@@ -156,6 +156,11 @@ export interface RunSyncOptions {
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
 	/**
+	 * The task is only a wake's fallback prompt: it starts the child's turn when none runs yet, is never queued behind a
+	 * turn that runs, and is never handed back as a message the child holds.
+	 */
+	resumeTaskFallback?: boolean;
+	/**
 	 * The user had paused the child when Atomic restarted: it is restored paused, with nothing prompted. `false` restores
 	 * a child whose record still names a pause that no longer holds, and records that it is not paused.
 	 */

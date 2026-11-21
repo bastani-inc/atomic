@@ -431,6 +431,7 @@ async function launchSingleInProcess(
 		...(options.onBeforeRelease ? { onBeforeRelease: options.onBeforeRelease } : {}),
 		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
 		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),
+		...(options.resumeTaskFallback ? { resumeTaskFallback: true } : {}),
 		...(options.resumePaused ? { resumePaused: true } : {}),
 		...(options.redispatchDetachedCalls ? { redispatchDetachedCalls: true } : {}),
 		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),

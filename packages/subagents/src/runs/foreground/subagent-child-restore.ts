@@ -151,6 +151,12 @@ export interface SubagentChildResumeRequest {
 	readonly toolResults?: readonly DetachedToolResult[];
 	/** Only `toolResults` woke the child: nothing is prompted unless a result came too late for its call. */
 	readonly promptless?: boolean;
+	/**
+	 * A wake: `prompt` is never read beside what the wake brings. Unless `promptless`, it starts the child's turn when
+	 * nothing else the wake brings does (no turn it continues, no message held for the child, no late result), as that
+	 * turn's own prompt: never queued behind a turn, and never handed back as a held message.
+	 */
+	readonly wakeFallback?: true;
 	readonly redispatch?: true;
 	/**
 	 * Leave the wake's dispatcher slot while `wait` settles: a relaunch whose run has no free slot waits for one outside
@@ -422,25 +428,34 @@ interface ResumePrompts {
  */
 function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResumeRequest | undefined): ResumePrompts {
 	const prompt = resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT;
+	const recorded =
+		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages : undefined;
+	// A wake's prompt is never held now, so a held message with its text was sent to the child. One an earlier version
+	// held, in a record that does not say so, is that version's own wake prompt: not read again.
+	const heldAllSent = resume?.wakeFallback === true && recorded?.withoutWakePrompt === true;
 	const continuations = new Set([
 		SUBAGENT_RESUME_CONTINUATION_PROMPT,
 		resume?.continuation,
-		resume?.message ? undefined : prompt,
+		resume?.message || heldAllSent ? undefined : prompt,
 	]);
-	const recorded =
-		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages : undefined;
 	const held = recorded ? recorded.messages.filter((message) => !continuations.has(message)) : [];
 	// Only an original task the child never read keeps a fresh launch's handling; a held message it already received,
 	// or the resume's own message, is delivered as written whether or not anything was held (#4027).
 	const taskExpands =
 		recorded !== undefined && heldTaskExpands(recorded) && held.length > 0 && held[0] === recorded.messages[0];
-	const [task = prompt, ...followUps] = [
+	// A wake's fallback prompt is not among them: the wake decides whether it starts the turn (see wakeFallbackPrompts).
+	const [task = "", ...followUps] = [
 		...held,
-		prompt,
+		...(resume?.wakeFallback ? [] : [prompt]),
 		...(resume?.followUps ?? []),
 		...(resume?.continuation ? [resume.continuation] : []),
 	];
 	return { task, followUps, taskLiteral: !taskExpands };
+}
+
+/** Whether `prompts` give the child anything to read. */
+function promptsAnything(prompts: ResumePrompts): boolean {
+	return prompts.task !== "" || prompts.followUps.length > 0;
 }
 
 /**
@@ -781,7 +796,12 @@ async function relaunchChild(
 			latest.pausedAtLeafId,
 			latest.pausedAtLeafId === undefined ? pauseRecordedAt(ctx, record.childId) : undefined,
 		);
-	const promptless = resume?.promptless === true && heldMessages.length === 0;
+	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
+	// A wake's fallback prompt is not input of its own: such a wake is promptless unless it brings messages to read.
+	const wakeFallback = resume?.wakeFallback === true && !fresh;
+	const promptless = wakeFallback
+		? !promptsAnything(basePrompts)
+		: resume?.promptless === true && heldMessages.length === 0;
 	const wakePlan =
 		!redispatch &&
 		!restoredPaused &&
@@ -797,12 +817,23 @@ async function relaunchChild(
 					interruptedByRestart(record),
 				)
 			: undefined;
-	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
-	const prompts = redispatch
+	const wokenPrompts = redispatch
 		? { task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT, followUps: heldMessages, taskLiteral: true }
 		: wakePlan
 			? wakePrompts(basePrompts, wakePlan.lateMessages, promptless)
 			: basePrompts;
+	// The wake's own prompt starts the child only when nothing else does: no turn continues and nothing is to be read.
+	// It is never queued behind the continued turn as a follow-up the child would take a turn for (an extra request).
+	const fallback =
+		wakeFallback &&
+		resume?.promptless !== true &&
+		!redispatch &&
+		(wakePlan?.resumeToolResults.length ?? 0) === 0 &&
+		!promptsAnything(wokenPrompts) &&
+		resume !== undefined;
+	const prompts: ResumePrompts = fallback ? { task: resume.prompt, followUps: [], taskLiteral: true } : wokenPrompts;
+	// Redispatched calls start the child; their task is never prompted, so it is only a fallback too.
+	const taskFallback = fallback || (redispatch && wakeFallback);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -835,7 +866,8 @@ async function relaunchChild(
 					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
 				}
 			: {}),
-		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),
+		...(wakePlan?.skipPrompt && !fallback ? { skipTaskPrompt: true } : {}),
+		...(taskFallback ? { resumeTaskFallback: true } : {}),
 		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
@@ -905,7 +937,11 @@ async function relaunchChild(
 		agents: [agent],
 		agent: agent.name,
 		task: prompts.task,
-		...(fresh?.intentTask === undefined ? {} : { intentTask: fresh.intentTask }),
+		...(fresh
+			? fresh.intentTask === undefined
+				? {}
+				: { intentTask: fresh.intentTask }
+			: { intentTask: resumedTaskLabel(record) }),
 		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		runtime,
@@ -940,6 +976,15 @@ function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promp
 	if (lateMessages.length === 0) return base;
 	const [task = "", ...followUps] = promptless ? lateMessages : [...lateMessages, base.task, ...base.followUps];
 	return { task, followUps, taskLiteral: true };
+}
+
+/**
+ * What a resumed or woken child's task is labelled with: its launch's task, never the message, wake prompt or result
+ * it continues with. Its launch's label as the record keeps it; a record written before Atomic kept that has the
+ * task's one-line summary; failing both, its agent's name.
+ */
+function resumedTaskLabel(record: SubagentChildRecord): string {
+	return record.title || record.launch?.intentTask || record.launch?.task || record.task || record.agent;
 }
 
 /** A restored child that had no session started fresh on its launch rather than resuming one. */
