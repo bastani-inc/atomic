@@ -43,10 +43,13 @@ const PROCESS_START_WAIT_MS = 20_000;
  * Windows machine has refused to start Node for most of a second (#6124).
  */
 const PASSING_REFUSALS = process.platform === "win32" ? ["EPERM", "EBUSY"] : ["ETXTBSY"];
-/** How many times a test that needs a running process starts it: a step tries for two seconds, so about six in all. */
-const REFUSED_STARTS = 3;
-/** How many times, 50 ms apart, the process of such a test tries to start its own child: about six seconds. */
-const REFUSED_CHILD_TRIES = 120;
+/**
+ * How many times a test that needs a running process starts it: a step tries for two seconds, so about ten in all. A
+ * machine that refuses starts can also be scanning a program just written, as the copy a held program is.
+ */
+const REFUSED_STARTS = 5;
+/** How many times, 50 ms apart, the process of such a test tries to start its own child: about ten seconds. */
+const REFUSED_CHILD_TRIES = 200;
 /** The most tries a step makes of a program that stays refused: ten 50 ms apart, then at most six, further apart. */
 const MAX_REFUSED_TRIES = 16;
 /** Bound on the event-loop turns until a refused step is waiting to try again. */
