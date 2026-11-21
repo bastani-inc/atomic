@@ -251,6 +251,52 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		);
 	});
 
+	test("Submit made while a save is on its way is still sent, when the page moves to another run before it lands", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		const url = await startViewer(box, [current]);
+		const page = await openServedPage(url);
+		page.type("the title is missing");
+		page.press("ArrowRight");
+		page.click("done-btn");
+		page.press("ArrowLeft");
+		await page.settled();
+		assert.equal(savedFeedback(current).status, "complete");
+		assert.ok(page.doneShown());
+	});
+
+	test.skipIf(windows || process.getuid?.() === 0)(
+		"a save that lands after one that failed clears the failure from the page",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			// Nothing can be written in the workspace for a moment.
+			chmodSync(current, 0o555);
+			try {
+				page.type("the title is missing");
+				page.press("ArrowRight");
+				await page.settled();
+			} finally {
+				chmodSync(current, 0o755);
+			}
+			assert.ok(
+				page.notices().some((notice) => /^Not saved: /u.test(notice)),
+				page.notices().join("\n"),
+			);
+			page.type("add axis labels");
+			page.press("ArrowLeft");
+			await page.settled();
+			assert.deepEqual(page.notices(), []);
+			assert.equal(page.status(), "Saved");
+			assert.deepEqual(savedReviews(current), [
+				{ run_id: "eval-1-with_skill", feedback: "the title is missing" },
+				{ run_id: "eval-2-with_skill", feedback: "add axis labels" },
+			]);
+		},
+	);
+
 	test("unreadable files of a previous iteration and of the runs show as such instead of failing the viewer", async () => {
 		const box = sandbox();
 		const previous = iteration(box, "iteration-1", ["eval-1"]);
