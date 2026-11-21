@@ -2629,7 +2629,6 @@ export function registerReturningSessionConformance(
 		returnAddress: RETURN_ADDRESS,
 		claim,
 		retentionMs: LIVE_MS,
-		targetIdentity: RECIPIENT,
 		brokerId,
 		presenceStaleAfterMs: LIVE_MS,
 		freshId,
@@ -2724,6 +2723,23 @@ export function registerReturningSessionConformance(
 				status: "fresh",
 				binding: { status: "refused", returnAddress: "someone-else" },
 			});
+		},
+	);
+
+	check(
+		"an unanswered claim does not keep an id another broker presents in another group of the session (#5607)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const reclaim = a.knownSessions.reclaim;
+			assert.ok(reclaim !== undefined, "the store reclaims ids");
+			expectStatus(await a.knownSessions.bind("recipient-session", RETURN_ADDRESS, LIVE_MS, "claim-1"), "bound");
+			// A session whose return address only starts the same way is another session.
+			const lookalike = JSON.stringify(["return", `${RETURN_ADDRESS}-2`, "team"]);
+			expectStatus(await b.leases.acquire(presence(lookalike), "broker-b", LIVE_MS), "acquired");
+			assert.deepEqual(await reclaim(reclaimOf("claim-1", "fresh-1")), { status: "kept" });
+			const otherGroup = JSON.stringify(["return", RETURN_ADDRESS, "another group"]);
+			expectStatus(await b.leases.acquire(presence(otherGroup), "broker-b", LIVE_MS), "acquired");
+			expectStatus(await reclaim(reclaimOf("claim-1", "fresh-2")), "fresh");
 		},
 	);
 

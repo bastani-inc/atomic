@@ -852,8 +852,6 @@ export interface SessionIdReclaim {
 	/** The `claim` the registration's own `bind` was given. */
 	readonly claim: string;
 	readonly retentionMs: number;
-	/** The registering session's delivery identity (`deliveryTargetIdentity`), keyed as its presence lease is. */
-	readonly targetIdentity: string;
 	/** The broker reclaiming; a presence lease it holds itself does not count. */
 	readonly brokerId: string;
 	/** A presence lease renewed within this many milliseconds is live. */
@@ -901,8 +899,8 @@ export interface KnownSessionStore {
 	): Promise<KnownSessionBindResult>;
 	/**
 	 * #5607: the one write a returning registration makes when its `bind` did not answer in time. It keeps the id when
-	 * the binding is still the one that `bind` wrote (same return address and claim, within `retentionMs`) and no
-	 * other broker holds a live presence lease for the session's delivery identity, resetting the binding's age. Otherwise
+	 * the binding is still the one that `bind` wrote (same return address and claim, within `retentionMs`) and no other
+	 * broker holds a live presence lease for a session of that return address, in any group, resetting the binding's age. Otherwise
 	 * it binds `freshId` as `bind` does. Optional: without it such a registration gets a fresh id, bound as `bind` binds it.
 	 */
 	reclaim?(request: SessionIdReclaim): Promise<SessionIdReclaimResult>;

@@ -55,6 +55,9 @@ const isLive = (since: number, staleAfterMs: number): boolean => ageOf(since) <=
  */
 export type MemoryPresenceHolder = (targetIdentity: string, staleAfterMs: number) => string | undefined;
 
+/** #5607: the brokers holding a live presence lease of any delivery identity of a return address, in any group. */
+export type MemoryReturnAddressHolders = (returnAddress: string, staleAfterMs: number) => string[];
+
 function subjectId(subject: LeaseSubject): string {
 	return subject.kind === "broker" ? subject.brokerId : subject.targetIdentity;
 }
@@ -1072,7 +1075,7 @@ function knownSessionStore(
 	known: Map<string, KnownRecord>,
 	nextOrder: { value: number },
 	bindings: Map<string, BindingRecord>,
-	presence: MemoryPresenceHolder | undefined,
+	presence: MemoryReturnAddressHolders | undefined,
 ): KnownSessionStore {
 	const store: KnownSessionStore = {
 		async record(session) {
@@ -1138,13 +1141,15 @@ function knownSessionStore(
 						if (request.intercomSessionId.length === 0 || request.freshId.length === 0)
 							return invalid("empty-session-id");
 						const held = bindings.get(request.intercomSessionId);
-						const holder = presence(request.targetIdentity, request.presenceStaleAfterMs);
+						const elsewhere = presence(request.returnAddress, request.presenceStaleAfterMs).some(
+							(holder) => holder !== request.brokerId,
+						);
 						if (
 							held !== undefined &&
 							isLive(held.recordedAt, request.retentionMs) &&
 							held.returnAddress === request.returnAddress &&
 							held.latestClaim === request.claim &&
-							(holder === undefined || holder === request.brokerId)
+							!elsewhere
 						) {
 							held.recordedAt = Date.now();
 							return { status: "kept" };
@@ -1198,7 +1203,10 @@ function sharedFixture<Store>(connect: () => Store): Promise<SharedStoreFixture<
 }
 
 export async function openMemoryLeaseStoreFixture(): Promise<
-	SharedStoreFixture<BrokerLeaseStore> & { readonly presenceHolder: MemoryPresenceHolder }
+	SharedStoreFixture<BrokerLeaseStore> & {
+		readonly presenceHolder: MemoryPresenceHolder;
+		readonly returnAddressHolders: MemoryReturnAddressHolders;
+	}
 > {
 	const records = new Map<string, LeaseRecord>();
 	const nextOrder = { value: 1 };
@@ -1206,7 +1214,19 @@ export async function openMemoryLeaseStoreFixture(): Promise<
 		const holder = records.get(JSON.stringify(["presence", targetIdentity]))?.holder;
 		return holder !== undefined && isLive(holder.renewedAt, staleAfterMs) ? holder.holderId : undefined;
 	};
-	return { ...(await sharedFixture(() => leaseStore(records, nextOrder))), presenceHolder };
+	const returnAddressHolders: MemoryReturnAddressHolders = (returnAddress, staleAfterMs) => {
+		// Keys are `["presence", identity]`; every identity of the return address starts `["return",<address>,`.
+		const start = JSON.stringify(["presence", `${JSON.stringify(["return", returnAddress]).slice(0, -1)},`]).slice(
+			0,
+			-2,
+		);
+		return [...records.entries()].flatMap(([key, record]) =>
+			key.startsWith(start) && record.holder !== undefined && isLive(record.holder.renewedAt, staleAfterMs)
+				? [record.holder.holderId]
+				: [],
+		);
+	};
+	return { ...(await sharedFixture(() => leaseStore(records, nextOrder))), presenceHolder, returnAddressHolders };
 }
 
 /**
@@ -1249,7 +1269,7 @@ export function openMemorySentMessageFixture(): Promise<SharedStoreFixture<SentM
 
 /** `presence`: the lease fixture whose presence leases `reclaim` reads; without it the store has no `reclaim` (#5607). */
 export function openMemoryKnownSessionFixture(
-	presence?: MemoryPresenceHolder,
+	presence?: MemoryReturnAddressHolders,
 ): Promise<SharedStoreFixture<KnownSessionStore>> {
 	const known = new Map<string, KnownRecord>();
 	const nextOrder = { value: 1 };

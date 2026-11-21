@@ -15,6 +15,14 @@ import { ensureBrokerSchema } from "./sql-schema.js";
 
 type BindingRow = SqliteRow & { return_address: string };
 
+/**
+ * The start every delivery identity of a session with `returnAddress` shares, whatever its group (`deliveryTargetIdentity`
+ * writes `["return", returnAddress, group]`).
+ */
+function returnIdentityPrefix(returnAddress: string): string {
+	return `${JSON.stringify(["return", returnAddress]).slice(0, -1)},`;
+}
+
 type KnownRow = SqliteRow & {
 	target_identity: string;
 	intercom_session_id: string;
@@ -154,19 +162,22 @@ export async function openSqlKnownSessionStore({
 			return { status: "invalid", reason: "empty-session-id" };
 		return database.transaction(
 			async (tx) => {
+				// A session of this return address that another broker presents, in any group, holds the id there.
+				const identities = returnIdentityPrefix(request.returnAddress);
 				const { changes } = await tx.run(
 					`UPDATE ${bindings} SET recorded_at = ${nowMs}
 					 WHERE intercom_session_id = ? AND return_address = ? AND latest_claim = ? AND ${nowMs} - recorded_at <= ?
 						AND NOT EXISTS (
 							SELECT 1 FROM ${leases} presence
-							WHERE presence.kind = 'presence' AND presence.key = ? AND presence.holder_id IS NOT NULL
+							WHERE presence.kind = 'presence' AND substr(presence.key, 1, ?) = ? AND presence.holder_id IS NOT NULL
 								AND presence.holder_id <> ? AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?
 						)`,
 					request.intercomSessionId,
 					request.returnAddress,
 					request.claim,
 					request.retentionMs,
-					request.targetIdentity,
+					identities.length,
+					identities,
 					request.brokerId,
 					request.presenceStaleAfterMs,
 				);

@@ -150,7 +150,7 @@ async function cluster(): Promise<Cluster> {
 	const pendingAsks = await openMemoryPendingAskFixture();
 	const releasedAsks = await openMemoryReleasedAskFixture();
 	const sentMessages = await openMemorySentMessageFixture();
-	const knownSessions = await openMemoryKnownSessionFixture(leases.presenceHolder);
+	const knownSessions = await openMemoryKnownSessionFixture(leases.returnAddressHolders);
 	return {
 		async connectState() {
 			return {

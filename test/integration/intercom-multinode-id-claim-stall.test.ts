@@ -127,33 +127,40 @@ test(
 	TEST_TIMEOUT_MS,
 );
 
-test(
-	"a returning session whose broker stalls past the claim deadline gets a fresh id while a session on another broker presents its id (#5607)",
-	async () => {
-		assert.equal(harness.multiNodeRouting, true);
-		const original = await harness.connect("a", unique("returning"));
-		const id = original.sessionId;
-		await original.client.disconnect({ resumable: true });
-		original.disconnected = true;
-		// The same session is back on the other broker first, and stays connected there.
-		const live = await harness.connect("b", original.name, {
-			returnAddress: original.returnAddress,
-			preferredSessionId: id,
-		});
-		assert.equal(live.sessionId, id);
-		harness.stallIdClaim(original.returnAddress, 3_500, undefined, undefined, "serial bindings");
+for (const group of [undefined, "other"] as const) {
+	test(
+		`a returning session whose broker stalls past the claim deadline gets a fresh id while a session on another broker presents its id (${group === undefined ? "same" : "another"} group) (#5607)`,
+		async () => {
+			assert.equal(harness.multiNodeRouting, true);
+			const original = await harness.connect("a", unique("returning"));
+			const id = original.sessionId;
+			await original.client.disconnect({ resumable: true });
+			original.disconnected = true;
+			// The same session is back on the other broker first, and stays connected there.
+			const live = await harness.connect("b", original.name, {
+				...(group === undefined ? {} : { group: unique(group) }),
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+			});
+			assert.equal(live.sessionId, id);
+			harness.stallIdClaim(original.returnAddress, 3_500, undefined, undefined, "serial bindings");
 
-		const back = await harness.connect("a", original.name, {
-			returnAddress: original.returnAddress,
-			preferredSessionId: id,
-			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-		});
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
 
-		assert.equal(harness.idClaimStalled(original.returnAddress), true, "the broker stalled while it claimed the id");
-		assert.notEqual(back.sessionId, id, "a live session on another broker presents the id");
-	},
-	TEST_TIMEOUT_MS,
-);
+			assert.equal(
+				harness.idClaimStalled(original.returnAddress),
+				true,
+				"the broker stalled while it claimed the id",
+			);
+			assert.notEqual(back.sessionId, id, "a live session on another broker presents the id");
+		},
+		TEST_TIMEOUT_MS,
+	);
+}
 
 test(
 	"a returning session keeps the id the database wrote for it when another overdue callback stalls the broker after the id deadline (#5607)",

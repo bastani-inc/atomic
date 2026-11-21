@@ -675,7 +675,7 @@ export class MultiNodeRouter {
 	/**
 	 * #5607: the binding write of a registration whose claim of its preferred id went unanswered, in the slot today's
 	 * fresh-id binding takes. One write keeps the preferred id when the binding is still the one that claim wrote and no
-	 * other broker holds the session's live presence; otherwise it binds the fresh id. The session is then registered
+	 * other broker presents a session of its return address, in any group; otherwise it binds the fresh id. The session is then registered
 	 * here under the id the write chose, or under the fresh id when the claimed one can no longer be given (its
 	 * registration was answered meanwhile, or a session here holds it), which is then bound as today.
 	 */
@@ -698,7 +698,6 @@ export class MultiNodeRouter {
 				returnAddress,
 				claim: reclaim.claim,
 				retentionMs: KNOWN_SESSION_RETENTION_MS,
-				targetIdentity: deliveryTargetIdentity(session),
 				brokerId: this.brokerId,
 				presenceStaleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
 				freshId,
