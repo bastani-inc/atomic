@@ -28,6 +28,9 @@ pub struct HostProcessOptions {
 	pub pipe_stderr: bool,
 	/// Starts the process in a session of its own, as Node's `detached` does.
 	pub detached: bool,
+	/// Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
+	/// detached process.
+	pub end_with_parent: Option<bool>,
 }
 
 #[napi(string_enum = "kebab-case")]
@@ -415,6 +418,11 @@ mod linux {
 			SignalDefaults::All,
 		)
 		.map_err(to_error)?;
+		let request = if options.end_with_parent == Some(true) && !options.detached {
+			request.ending_with_parent()
+		} else {
+			request
+		};
 		let pipe = |piped: bool, write: bool| -> io::Result<(OwnedFd, Option<File>)> {
 			if !piped {
 				return Ok((OwnedFd::from(null_device(write)?), None));

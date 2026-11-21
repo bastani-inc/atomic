@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-telemetry`. Its history up 
 
 ## [Unreleased]
 
+### Changed
+
+- The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
+
 ## [0.9.88] - 2026-11-16
 
 ### Changed
