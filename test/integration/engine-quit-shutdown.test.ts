@@ -64,12 +64,16 @@ interface EndedSession {
 	readonly exitedAt: number;
 	/** The process the extension started in the engine's process group, when asked to, recorded while it ran. */
 	readonly groupChild: RecordedProcess | undefined;
+	/** The process the extension's `pi.exec` command started, when asked to, recorded while it ran. */
+	readonly execChild: RecordedProcess | undefined;
 }
 
 interface SessionOptions {
 	readonly groupChild?: boolean;
 	/** The extension runs a `pi.exec` command that starts a process of its own and then runs until it is ended. */
 	readonly execGrandchild?: boolean;
+	/** The extension runs a `pi.exec` command that starts a process of its own, which it leaves running, and exits. */
+	readonly execLeftover?: boolean;
 	/** Run the session in the host process, as for a project left untrusted. */
 	readonly inProcess?: boolean;
 	/** The handler works until the test calls `release()` rather than for a time. */
@@ -95,9 +99,11 @@ async function endSession(
 	const shutdown = join(root, "shutdown.jsonl");
 	const eventLoopLog = join(root, "event-loop.jsonl");
 	const groupChild = join(root, "group-child");
+	const execChild = join(root, "exec-child");
 	const released = join(root, "released");
 	let program: PtyProgram | undefined;
 	let groupChildProcess: RecordedProcess | undefined;
+	let execChildProcess: RecordedProcess | undefined;
 	try {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, installed);
@@ -116,7 +122,11 @@ export default (pi) => {
 		}
 		if (${options.execGrandchild === true}) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
-			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(groupChild)}]);
+			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(execChild)}]);
+		}
+		if (${options.execLeftover === true}) {
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
+			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(execChild)}]);
 		}
 		writeFileSync(${JSON.stringify(started)}, String(process.pid));
 	});
@@ -171,12 +181,17 @@ export default (pi) => {
 		else assert.ok(engine?.type === "start", "the session ran in an engine process");
 		const sessionPid = engine?.type === "start" ? engine.pid : host.pid;
 
-		if (options.groupChild || options.execGrandchild) {
-			while (!(fileExistsSync(groupChild) && readTextSync(groupChild, "utf8") !== "") && Date.now() < deadline)
-				await sleep(RECORD_POLL_MS);
+		if (options.groupChild) {
 			// The engine, and so its process group, is running: the pid names the extension's process.
 			groupChildProcess = await recordProcess(Number(readTextSync(groupChild, "utf8")));
 			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
+		}
+		if (options.execGrandchild || options.execLeftover) {
+			while (!(fileExistsSync(execChild) && readTextSync(execChild, "utf8") !== "") && Date.now() < deadline)
+				await sleep(RECORD_POLL_MS);
+			// The command, and so the process it started, is running: the pid names that process.
+			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
+			assert.ok(await stillRuns(execChildProcess), "the command started its process");
 		}
 		await end({
 			program,
@@ -201,6 +216,7 @@ export default (pi) => {
 			enginePid: sessionPid,
 			exitedAt,
 			groupChild: groupChildProcess,
+			execChild: execChildProcess,
 		};
 	} finally {
 		program?.kill();
@@ -421,25 +437,82 @@ describe.skipIf(process.platform === "win32")("a SIGHUP after a quit stopped the
 });
 
 test(
-	"a process that an extension's running pi.exec command started ends when you quit",
+	"a process that an extension's running pi.exec command started ends when you quit, and the extension's other processes keep running",
 	async () => {
 		const ended = await endSession(({ program }) => program.write("/quit\r"), HANDLER_WORK_MS, {
 			execGrandchild: true,
+			groupChild: true,
 		});
 
-		const child = ended.groupChild;
-		assert.ok(child !== undefined);
+		const { execChild, groupChild } = ended;
+		assert.ok(execChild !== undefined && groupChild !== undefined);
 		try {
 			assert.equal(ended.exit.timedOut, false, ended.screen);
 			assert.equal(ended.calls.length, 2, "the engine ran its extension's shutdown");
 			assert.equal(
-				await waitUntilGone(child, GROUP_CHILD_GONE_MS),
+				await waitUntilGone(execChild, GROUP_CHILD_GONE_MS),
 				true,
 				"the process the command started outlived the quit",
 			);
+			// As before: on Windows every process the engine started without detaching it ends with the engine.
+			if (process.platform === "win32")
+				assert.equal(
+					await waitUntilGone(groupChild, GROUP_CHILD_GONE_MS),
+					true,
+					"the engine's process outlived it",
+				);
+			else assert.equal(await stillRuns(groupChild), true, "the quit ended a process the command did not start");
 		} finally {
-			await signalRecordedProcess(child);
+			await signalRecordedProcess(execChild);
+			await signalRecordedProcess(groupChild);
 		}
 	},
 	CLI_TIMEOUT_MS + 10_000,
+);
+
+describe.skipIf(process.platform === "win32")(
+	"a process a pi.exec command left running when it ended on its own",
+	() => {
+		test(
+			"ends with the engine when the host is signalled",
+			async () => {
+				const ended = await endSession(
+					({ hostPid }) => {
+						process.kill(hostPid, "SIGTERM");
+					},
+					HANDLER_WORK_MS,
+					{ execLeftover: true },
+				);
+
+				const child = ended.execChild;
+				assert.ok(child !== undefined);
+				try {
+					assert.equal(ended.exit.timedOut, false, ended.screen);
+					assert.equal(await waitUntilGone(child, GROUP_CHILD_GONE_MS), true, "the process outlived the engine");
+				} finally {
+					await signalRecordedProcess(child);
+				}
+			},
+			CLI_TIMEOUT_MS + 10_000,
+		);
+
+		test(
+			"keeps running after you quit",
+			async () => {
+				const ended = await endSession(({ program }) => program.write("/quit\r"), HANDLER_WORK_MS, {
+					execLeftover: true,
+				});
+
+				const child = ended.execChild;
+				assert.ok(child !== undefined);
+				try {
+					assert.equal(ended.exit.exitCode, 0, ended.screen);
+					assert.equal(await stillRuns(child), true, "the quit ended the process");
+				} finally {
+					await signalRecordedProcess(child);
+				}
+			},
+			CLI_TIMEOUT_MS + 10_000,
+		);
+	},
 );

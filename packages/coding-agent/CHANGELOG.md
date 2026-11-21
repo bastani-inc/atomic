@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- An extension's `pi.exec` command still running when you quit no longer keeps the extensions' `session_shutdown` handlers from running: Atomic ends the command first (`SIGTERM`, then `SIGKILL` after one second). Commands the handlers run themselves are not ended ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- An extension's `pi.exec` command still running when you quit no longer keeps the extensions' `session_shutdown` handlers from running: Atomic ends the command, with the processes it started, first (`SIGTERM`, then `SIGKILL` after one second). Commands the handlers run themselves are not ended ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
 - Quitting or `SIGTERM` ends within about five seconds when a `session_shutdown` handler never finishes, also when the session runs in Atomic's own process, as in a project left untrusted; there a second `SIGTERM` now ends Atomic at once too. Atomic's own saving after the handlers still completes ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
 - A `SIGHUP` or `SIGTERM` that arrives after `/quit` cleared the screen no longer ends Atomic at once, cutting the extensions' shutdown short; the quit finishes as it started ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
 - The standalone binary started with `SIGHUP` ignored, as `nohup atomic -p ...` starts it, keeps running when its terminal closes ([#6178](https://github.com/bastani-inc/atomic/pull/6178))

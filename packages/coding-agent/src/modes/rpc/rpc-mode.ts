@@ -17,7 +17,6 @@ import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { bindBundledHintCommands, setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
-import { quitEndedACommand } from "../../core/exec.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
@@ -263,10 +262,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		if (interactiveEngineChild && cause === "input-end" && process.platform === "win32")
 			reportShutdownCompleteAtExit();
 		// SIGHUP is the hangup of the host this engine serves, which asks with it when it was itself signalled: the
-		// engine has no terminal of its own. It then ends its process group, as a hangup ends a terminal's job. So does
-		// an engine whose quit ended an extension's command still running: what that command started is in the group.
-		if (interactiveEngineChild && ((signal === "SIGHUP" && endsProcessOnly(cause)) || quitEndedACommand()))
-			endProcessGroupAtExit();
+		// engine has no terminal of its own. It then ends its process group, as a hangup ends a terminal's job.
+		if (interactiveEngineChild && signal === "SIGHUP" && endsProcessOnly(cause)) endProcessGroupAtExit();
 		process.exit(exitCode);
 	}
 
