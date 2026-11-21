@@ -43,7 +43,7 @@ A project entry without `command`, `url`, or `type` overrides only `enabled`, `e
 
 Both files use a top-level `mcpServers` object. Keep personal servers and credentials in the user-level file. `ATOMIC_CODING_AGENT_DIR` relocates the Atomic agent directory.
 
-Stdio servers use `command`, `args`, `env`, and `cwd`. `command` is one executable, not a shell command string. Relative `cwd` values resolve against the session directory.
+Stdio servers use `command`, `args`, `env`, and `cwd`. `command` is one executable, not a shell command string. A `command` with a path runs as written; one named without a path is looked up in the absolute directories on `PATH` from `env`, and on Windows first in `cwd` when that lies outside the project folder; the project folder counts only when `PATH` names it. A `command` found nowhere fails with `spawn <command> ENOENT`. Relative `cwd` values resolve against the session directory.
 
 HTTP servers use `url`, optional `headers`, and optional `oauth`. For bearer authentication:
 

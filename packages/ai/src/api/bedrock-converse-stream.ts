@@ -480,10 +480,25 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 	// Surface the raw HTTP body (with status) when the SDK did not fold it into
 	// the message; otherwise fall back to the message. This is what stops a
 	// gateway 403 from collapsing to `Unknown: UnknownError`.
-	const core =
+	const reported =
 		!norm.messageCarriesBody && norm.status !== undefined && norm.body !== undefined
 			? `${norm.status}: ${norm.body}`
 			: norm.message;
+	// An answer the SDK has no Bedrock exception for, such as a gateway's 503, names its status, as the other adapters'
+	// errors do, so the retry rules read it; a modeled exception's prefix already says what it is. Only the SDK's error
+	// for the answer this request's latest attempt got, which carries that answer: never a hook's or another value's.
+	// The status is the answer's own, never a `status` or `statusCode` its body or a wrapper gives.
+	const answered = (error as { $response?: unknown } | null)?.$response;
+	const status =
+		answered !== undefined && answered === connection.response
+			? (answered as { statusCode?: unknown }).statusCode
+			: undefined;
+	const core =
+		typeof status === "number" &&
+		!isModeledBedrockException(error) &&
+		!new RegExp(`^${status}(?::|$)`).test(reported)
+			? `${status}: ${reported}`
+			: reported;
 	const dataRetentionHint = /data retention mode/i.test(core)
 		? ` See ${BEDROCK_DATA_RETENTION_DOCS_URL} for supported data retention modes.`
 		: "";
@@ -495,12 +510,22 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 }
 
 /**
- * What one request's latest attempt failed with at Bedrock's HTTP handler, below every response: the request's own
- * connection failure. Cleared as each attempt starts, so an error a hook, a credential source or a later response
- * throws is never taken for it, even when it is the same object.
+ * Whether `error` is one of Bedrock's modeled exceptions, such as `ValidationException`, whose names all end in
+ * `Exception` (see `extractBedrockErrorCode`). An answer the SDK has no exception for comes as `Unknown`, under the code
+ * the answer gives, or as the error that parsing it failed with.
+ */
+function isModeledBedrockException(error: unknown): boolean {
+	return error instanceof Error && error.name.endsWith("Exception");
+}
+
+/**
+ * What one request's latest attempt got from Bedrock's HTTP handler, below every response: the request's own connection
+ * failure, or the answer it received. Cleared as each attempt starts, so an error a hook, a credential source or a later
+ * response throws is never taken for either, even when it is the same object.
  */
 interface ConnectionFailure {
 	failure?: object;
+	response?: object;
 }
 
 /** A connection error's code, such as `ECONNRESET`, as Node.js and Bun name them. */
@@ -524,6 +549,7 @@ function withConnectionCode(
 	const code = (error as { code?: unknown }).code;
 	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code)) return message;
 	const reported = code === "ERR_SOCKET_CLOSED" ? "ECONNRESET" : code;
+	if (message === "") return reported;
 	return message.includes(reported) ? message : `${message} (${reported})`;
 }
 
@@ -752,8 +778,12 @@ class ProxyHopHttpAgent extends HttpProxyAgent<string> {
 function addTransportFailureMiddleware(client: BedrockRuntimeClient, connection: ConnectionFailure): void {
 	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		connection.failure = undefined;
+		connection.response = undefined;
 		try {
-			return await next(args);
+			const result = await next(args);
+			const response: unknown = result.response;
+			if (typeof response === "object" && response !== null) connection.response = response;
+			return result;
 		} catch (error) {
 			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
 			const failure = request?.hostname

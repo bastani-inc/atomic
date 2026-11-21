@@ -11,8 +11,14 @@
  */
 import { APP_NAME, getPackageDir, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
+import { engineHeapRuntimeArgsForHost } from "./modes/interactive-engine/engine-heap.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
-import { COMPILE_CACHE_ENGINE_WARMUP_ENV, enablePersistentCompileCache } from "./utils/compile-cache.ts";
+import {
+	COMPILE_CACHE_ENGINE_WARMUP_ENV,
+	compileCacheDeferral,
+	enablePersistentCompileCache,
+} from "./utils/compile-cache.ts";
+import { warmCompileCache } from "./utils/compile-cache-warmup-host.ts";
 import { headlessHeapRelaunchArgs, isHeadlessInvocation, relaunchWithHeap } from "./utils/heap-relaunch.ts";
 import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
@@ -42,6 +48,10 @@ enablePersistentCompileCache({
 			: isPlainInteractiveSessionInvocation(args, terminal),
 	build: VERSION,
 });
+// A session that ends before it starts its compile-cache helpers starts them as it exits; they outlive it.
+if (compileCacheDeferral() && !prewarmedEngine && !hasInteractiveEngineBootstrapArg(args)) {
+	process.once("exit", () => warmCompileCache(engineHeapRuntimeArgsForHost(true)));
+}
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
@@ -77,9 +87,21 @@ if (heapArgs.length > 0) {
 			({ ThreadConnection }) => ThreadConnection.startSpare(),
 			() => {},
 		);
-	const started = interactiveHost
+	const prewarmed = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngine }) => prewarmInteractiveEngine(args)).catch(() => {})
 		: Promise.resolve();
+	// An interactive session shows its editor and takes typing before the rest of Atomic has loaded, where nothing it
+	// shows before its editor would come first (startup-shell.ts). Its modules load before the rest.
+	const started =
+		interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
+			? prewarmed
+					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
+					.then(async ({ planStartupShell }) => {
+						const plan = planStartupShell(args, process.cwd());
+						if (plan) (await import("./modes/interactive/startup-shell.ts")).startStartupShell(plan);
+					})
+					.catch(() => {})
+			: prewarmed;
 	const mainArgs = prewarmedEngine
 		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
 		: Promise.resolve(args);

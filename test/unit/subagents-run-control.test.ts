@@ -14,7 +14,7 @@ import {
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
+import type { DetachedToolCall, DetachedToolResult, ExtensionContext, SessionStore } from "@bastani/atomic";
 import { Agent } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { stripTerminalSequences } from "@bastani/atomic-tui";
@@ -249,6 +249,8 @@ interface Harness {
 	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
 	/** Runs whose prompt contains a key ignore a stop until its gate resolves, as a child stuck in a tool call does. */
 	readonly stuckOn: Map<string, PromiseWithResolvers<void>>;
+	/** Runs that read this marker fail: their execution throws. */
+	readonly throwOn: Set<string>;
 	/** Call the subagent tool as the parent's model does, in a turn that `signal`, when given, interrupts. */
 	call(
 		params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1],
@@ -402,6 +404,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 		agents: [agent],
 		finishOn: new Map(),
 		stuckOn: new Map(),
+		throwOn: new Set(),
 		call: (params, signal = new AbortController().signal) =>
 			executor.execute("run-control", params, signal, undefined, state.ctx),
 		async launch(runId) {
@@ -454,6 +457,8 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
 		const reads = readsOf({ task, options });
 		await [...state.stuckOn].find(([marker]) => reads.includes(marker))?.[1].promise;
+		const failure = [...state.throwOn].find((marker) => reads.includes(marker));
+		if (failure !== undefined) throw new Error(`run failed on ${failure}`);
 		const original = task === ORIGINAL_TASK;
 		if (options.redispatchDetachedCalls) {
 			state.redispatching.active += 1;
@@ -572,6 +577,13 @@ function text(result: SubagentToolResult): string {
 function transcript(record: SubagentChildRecord): string {
 	assert.ok(record.childSessionFile);
 	return readFileSync(record.childSessionFile, "utf8");
+}
+
+/** A child's whole session as its lines: its own file, or its entries in its parent's store, where a launch keeps it. */
+async function storedTranscript(record: SubagentChildRecord, store: SessionStore): Promise<string> {
+	if (record.childSessionFile) return transcript(record);
+	assert.ok(record.childSessionId);
+	return (await store.load(record.childSessionId)).entries.map((entry) => JSON.stringify(entry)).join("\n");
 }
 
 function occurrences(haystack: string, needle: string): number {
@@ -2675,7 +2687,8 @@ test("a child an SDK session without a task host resumed keeps running across th
 		(candidate) => candidate.taskId === outcome.taskId && candidate.state === "terminal",
 	);
 	assert.equal(finished.terminalStatus, "ok", "the reopened session restores it");
-	const delivered = transcript(finished);
+	const store = h.sessionManager.getSessionStore();
+	const delivered = await storedTranscript(finished, store);
 	assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
 	assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
 	assert.ok(delivered.indexOf(steer) < delivered.indexOf(followUp), "in the order it queued them");
@@ -2683,11 +2696,12 @@ test("a child an SDK session without a task host resumed keeps running across th
 	const again = await h.call({ action: "resume", id: running.childId });
 	assert.notEqual(again.isError, true, text(again));
 	const againTask = resumedTaskId(again);
-	const after = transcript(
+	const after = await storedTranscript(
 		await h.waitForLatest(
 			running.childId,
 			(candidate) => candidate.taskId === againTask && candidate.state === "terminal",
 		),
+		store,
 	);
 	assert.equal(occurrences(after, steer), 1, "a later resume does not deliver the steer again");
 	assert.equal(occurrences(after, followUp), 1, "a later resume does not deliver the follow-up again");
@@ -4284,7 +4298,7 @@ test("an SDK session without a task host can pause, resume, quit and resume agai
 	const call = sdkSession();
 
 	const launch = call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
-	const running = await waitForRecord((candidate) => candidate.state === "running" && !!candidate.childSessionFile);
+	const running = await waitForRecord((candidate) => candidate.state === "running" && !!candidate.childSessionId);
 	const steer = "STEER: report the permission error only";
 	const followUp = "FOLLOWUP: include the failing command";
 	const session = await live.promise;
@@ -4314,7 +4328,7 @@ test("an SDK session without a task host can pause, resume, quit and resume agai
 		(candidate) => candidate.taskId === secondResume && candidate.state === "terminal",
 	);
 	assert.equal(finished.terminalStatus, "ok");
-	const delivered = transcript(finished);
+	const delivered = await storedTranscript(finished, sessionManager.getSessionStore());
 	assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
 	assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
 	assert.equal(occurrences(delivered, "then wrap up"), 1, "the resume message is delivered exactly once");
@@ -7596,52 +7610,58 @@ test("a launch card in another session reads only where its owner's children sta
 	}
 });
 
-test("a resumed child of a session without a task host, stopped while it waited for its run's slot, reads the message it is resumed with next", async () => {
-	const h = harness({ ownerless: true });
-	const bGate = Promise.withResolvers<void>();
-	const aGate = Promise.withResolvers<void>();
-	h.finishOn.set("slot-b-task", bGate);
-	h.finishOn.set("slot-a-task", aGate);
-	cleanups.push(async () => {
+for (const ownerless of [true, false])
+	test(`a resumed child${ownerless ? " of a session without a task host" : ""}, stopped while it waited for its run's slot, reads the message it is resumed with next`, async () => {
+		const h = harness(ownerless ? { ownerless: true } : {});
+		const bGate = Promise.withResolvers<void>();
+		const aGate = Promise.withResolvers<void>();
+		h.finishOn.set("slot-b-task", bGate);
+		h.finishOn.set("slot-a-task", aGate);
+		cleanups.push(async () => {
+			aGate.resolve();
+			bGate.resolve();
+		});
+		const launched = h.call({
+			tasks: [
+				{ agent: "worker", task: "slot-b-task" },
+				{ agent: "worker", task: "slot-a-task" },
+			],
+			concurrency: 1,
+		});
+		const children = () =>
+			[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+				(left, right) => left.index - right.index,
+			);
+		const deadline = Date.now() + RECORD_WAIT_MS;
+		while (children().length < 2 && Date.now() < deadline) await sleep(10);
+		const [childB, childA] = children();
+		assert.ok(childA && childB);
+		await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+		await h.call({ action: "pause", id: childB.childId });
+		await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId && candidate.state === "running");
+		const startsOfB = () =>
+			h.runs.filter((run) => run.options.runId === childB.runId && run.options.index === childB.index);
+		// Resumed without a message, it waits behind its sibling for the run's only slot, and is paused there.
+		await h.call({ action: "resume", id: childB.childId });
+		await h.call({ action: "pause", id: childB.childId });
+		const resumed = h.call({ action: "resume", id: childB.childId, message: "then check the edge case" });
+		// Its earlier resume, which it never ran, is over: this one does not wait for it.
+		const answered = await Promise.race([resumed.then(() => true), sleep(RECORD_WAIT_MS).then(() => false)]);
+		assert.ok(answered, "the resume answers while its sibling still holds the slot");
 		aGate.resolve();
+		const until = Date.now() + RECORD_WAIT_MS;
+		while (startsOfB().length < 2 && Date.now() < until) await sleep(10);
 		bGate.resolve();
-	});
-	const launched = h.call({
-		tasks: [
-			{ agent: "worker", task: "slot-b-task" },
-			{ agent: "worker", task: "slot-a-task" },
-		],
-		concurrency: 1,
-	});
-	const children = () =>
-		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
-			(left, right) => left.index - right.index,
-		);
-	const deadline = Date.now() + RECORD_WAIT_MS;
-	while (children().length < 2 && Date.now() < deadline) await sleep(10);
-	const [childB, childA] = children();
-	assert.ok(childA && childB);
-	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
-	await h.call({ action: "pause", id: childB.childId });
-	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId && candidate.state === "running");
-	const startsOfB = () =>
-		h.runs.filter((run) => run.options.runId === childB.runId && run.options.index === childB.index);
-	// Resumed without a message, it waits behind its sibling for the run's only slot, and is paused there.
-	await h.call({ action: "resume", id: childB.childId });
-	await h.call({ action: "pause", id: childB.childId });
-	const resumed = h.call({ action: "resume", id: childB.childId, message: "then check the edge case" });
-	aGate.resolve();
-	const until = Date.now() + RECORD_WAIT_MS;
-	while (startsOfB().length < 2 && Date.now() < until) await sleep(10);
-	bGate.resolve();
-	await Promise.race([resumed, sleep(RECORD_WAIT_MS)]);
-	await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
+		await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
 
-	const run = startsOfB().at(-1);
-	assert.ok(run, "it starts");
-	assert.ok(run.task.includes("then check the edge case"), `its message is its prompt: ${JSON.stringify(run.task)}`);
-	assert.notEqual(run.options.skipTaskPrompt, true, "and is prompted");
-});
+		const run = startsOfB().at(-1);
+		assert.ok(run, "it starts");
+		assert.ok(
+			run.task.includes("then check the edge case"),
+			`its message is its prompt: ${JSON.stringify(run.task)}`,
+		);
+		assert.notEqual(run.options.skipTaskPrompt, true, "and is prompted");
+	});
 
 test("a child stopped while it waited for its run's slot and resumed with a message starts on it, its task first if it had one to prompt", () => {
 	const options = { cwd: "/repo", runId: "slot", resumeTaskLiteral: true } as RunSyncOptions;
@@ -7684,4 +7704,73 @@ test("a child stopped while it waited for its run's slot and resumed with a mess
 		task: SUBAGENT_RELEASED_WAKE_PROMPT,
 		options: { ...redispatch, resumeFollowUps: ["held", "and this"] },
 	});
+});
+
+test("a resumed child whose run failed can be resumed again", async () => {
+	const h = harness();
+	const first = Promise.withResolvers<void>();
+	h.finishOn.set("failing-run-task", first);
+	cleanups.push(async () => first.resolve());
+	const launched = h.call({ agent: "worker", task: "failing-run-task" });
+	const children = () => [...readSubagentChildRecords(h.sessionManager.getEntries()).values()];
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 1 && Date.now() < deadline) await sleep(10);
+	const [child] = children();
+	assert.ok(child);
+	await h.waitForLatest(child.childId, (candidate) => !!candidate.childSessionId);
+	await h.call({ action: "pause", id: child.childId });
+	h.throwOn.add("first resume message");
+	await h.call({ action: "resume", id: child.childId, message: "first resume message" });
+	await h.waitForLatest(child.childId, (candidate) => candidate.terminalStatus === "error");
+
+	const again = h.call({ action: "resume", id: child.childId, message: "second resume message" });
+
+	// Its failed relaunch is over: this resume does not wait for it.
+	const answered = await Promise.race([again.then(() => true), sleep(RECORD_WAIT_MS).then(() => false)]);
+	assert.ok(answered, "the resume answers");
+	const until = Date.now() + RECORD_WAIT_MS;
+	while (!h.runs.some((run) => run.task.includes("second resume message")) && Date.now() < until) await sleep(10);
+	assert.ok(
+		h.runs.some((run) => run.task.includes("second resume message")),
+		"and starts it",
+	);
+	first.resolve();
+	await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
+});
+
+test("a launched child paused while it waits for its run's slot keeps the hold on what is sent to it until it starts", async () => {
+	const h = harness();
+	const aGate = Promise.withResolvers<void>();
+	const qGate = Promise.withResolvers<void>();
+	h.finishOn.set("hold-a-task", aGate);
+	h.finishOn.set("hold-q-task", qGate);
+	cleanups.push(async () => {
+		aGate.resolve();
+		qGate.resolve();
+	});
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "hold-a-task" },
+			{ agent: "worker", task: "hold-q-task" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childQ] = children();
+	assert.ok(childA && childQ);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId && candidate.state === "running");
+	const startHolds = h.startHolds.map((hold) => hold.reserve);
+
+	await h.call({ action: "pause", id: childQ.childId });
+
+	const released = h.holds.filter((hold) => "release" in hold && startHolds.includes(hold.release));
+	assert.deepEqual(released, [], "its pause releases no start hold, so what is sent to it waits for it");
+	aGate.resolve();
+	qGate.resolve();
+	await Promise.race([launched, sleep(RECORD_WAIT_MS)]);
 });

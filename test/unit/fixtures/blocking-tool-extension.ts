@@ -4,8 +4,10 @@ import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { getKeybindings, Text } from "@bastani/atomic-tui";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
-import { formatKeyText, keyText } from "../../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
-import { trackDetachedChildPid } from "../../../packages/coding-agent/src/utils/shell.js";
+// The host's own instances, as an extension reaches them through its package name: the loader evaluates a module
+// imported by path again, so a detached child tracked there would not be the host's to stop.
+import { keyText, trackDetachedChildPid } from "@bastani/atomic";
+import { formatKeyText } from "../../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
 const extensionInitBlockMs = Number(process.env.ATOMIC_BLOCKING_EXTENSION_INIT_MS ?? 0);
 if (extensionInitBlockMs > 0) {
 	const deadline = performance.now() + extensionInitBlockMs;
