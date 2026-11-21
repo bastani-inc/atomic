@@ -1,6 +1,6 @@
 import { Script } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { startEventLoopMonitor, waitForEventLoopMonitorReady, markEventLoopShutdown } from '../../packages/coding-agent/dist/core/event-loop-monitor.js';
+import { startEventLoopMonitor, waitForEventLoopMonitorReady, markEventLoopShutdown } from '../../packages/coding-agent/src/core/event-loop-monitor.ts';
 
 startEventLoopMonitor('engine');
 await waitForEventLoopMonitorReady();

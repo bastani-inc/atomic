@@ -22,6 +22,7 @@
 - Atomic starts faster again: TypeBox loads from one file instead of about 670.
 - On Windows, the first start after a restart or an install reaches the editor much sooner: while Atomic loads, a short-lived helper reads the files it is about to load many at a time, so the antivirus scans them in parallel instead of one after another as Node opens them. It only reads, and it ends when Atomic does.
 - Interactive sessions reach the editor sooner: the thread that opens the session database starts while Atomic loads instead of after it, the native clipboard module loads the first time you copy or paste instead of at every start, and the `models.json` checker is built only when a `models.json` exists. With `--no-mcp`, the interactive window no longer loads the subagent and web tools that only its engine runs.
+- An npm or Bun install of Atomic writes about 2,170 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 4,480 files and 70 MB unpacked with them, 2,300 files and 40 MB now).
 
 ### Fixed
 
