@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
+import { isGone, type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import {
 	fileExists,
 	moduleDir,
@@ -169,7 +170,8 @@ export default function(pi) {
 					observer,
 					...(disabled ? ["--no-mcp"] : []),
 				);
-				let serverPid: number | undefined;
+				// #6125: recorded while it runs, so neither the assertion nor the cleanup takes a later process for it.
+				let mcpServer: RecordedProcess | undefined;
 				let scenarioObserved = false;
 				const scenarioDeadline = Date.now() + CLI_SCENARIO_TIMEOUT_MS;
 				try {
@@ -196,7 +198,7 @@ export default function(pi) {
 					);
 					if (!disabled) await waitUntil(() => hasContent(serverMarker), scenarioDeadline);
 					assert.equal(await hasContent(serverMarker), !disabled, "--no-mcp must not start the server");
-					if (!disabled) serverPid = Number(await readText(serverMarker));
+					if (!disabled) mcpServer = await recordProcess(Number(await readText(serverMarker)));
 					if (pending) {
 						tmux("send-keys", "-t", name, "-l", "/mcp");
 						const typedMcp = await waitForPane(name, (pane) => /^❯ \/mcp\s*$/m.test(pane), scenarioDeadline);
@@ -232,11 +234,11 @@ export default function(pi) {
 							tmux("send-keys", "-t", name, "C-d");
 							await waitUntil(sessionGone, Date.now() + CLI_EXIT_TIMEOUT_MS);
 							assert.ok(sessionGone(), `${name}: CLI must exit after Ctrl+D`);
-							if (serverPid) {
-								const pid = serverPid;
-								assert.throws(
-									() => process.kill(pid, 0),
-									`${name}: MCP server ${pid} must not survive CLI exit`,
+							if (mcpServer) {
+								assert.equal(
+									await isGone(mcpServer),
+									true,
+									`${name}: MCP server ${mcpServer.pid} must not survive CLI exit`,
 								);
 							}
 							assert.ok(
@@ -245,11 +247,7 @@ export default function(pi) {
 							);
 						}
 					} finally {
-						if (serverPid) {
-							try {
-								process.kill(serverPid, "SIGTERM");
-							} catch {}
-						}
+						if (mcpServer) await signalRecordedProcess(mcpServer, "SIGTERM");
 					}
 				}
 			}

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBunSubprocess } from "../../packages/web-access/subprocess.js";
+import { isGone, type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { sleep } from "../helpers/runtime.js";
 
 const DESCENDANT_STARTUP_MS = 5_000;
@@ -44,28 +45,25 @@ export async function inheritedPipes(mode: "abort" | "timeout" | "overflow"): Pr
 		signal: controller.signal,
 	});
 	const settled = pending.then(() => ({ code: "success" }), (error: Error & { code?: string }) => error);
-	const alive = (pid: number): boolean => {
-		try { process.kill(pid, 0); return true; }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; return false; }
-	};
+	// #6125: recorded as soon as they record their pids, so neither the assertion nor the cleanup takes a later
+	// process given one of their pids for them.
+	let recorded: RecordedProcess[] = [];
 	try {
 		const start = Date.now();
 		while (!existsSync(ready) && Date.now() - start < DESCENDANT_STARTUP_MS) await sleep(10);
 		assert.ok(existsSync(ready), "descendant must inherit pipes before cancellation");
+		recorded = await Promise.all((JSON.parse(readFileSync(ready, "utf8")) as number[]).map(recordProcess));
 		if (mode === "abort") controller.abort();
 		const remainingExecutionMs = mode === "timeout" ? Math.max(0, executionDeadline - Date.now()) : 0;
 		const result = await bounded(settled, remainingExecutionMs + PIPE_CLEANUP_BOUND_MS);
 		assert.equal(result.code, { abort: "ABORT_ERR", timeout: "ETIMEDOUT", overflow: "ENOBUFS" }[mode]);
-		const [pid] = JSON.parse(readFileSync(ready, "utf8")) as number[];
+		const [child] = recorded;
+		assert.ok(child !== undefined);
 		const exitDeadline = Date.now() + PROCESS_EXIT_VISIBILITY_MS;
-		while (alive(pid!) && Date.now() < exitDeadline) await sleep(10);
-		assert.equal(alive(pid!), false, "direct child must exit before cleanup completes");
+		while (!(await isGone(child)) && Date.now() < exitDeadline) await sleep(10);
+		assert.equal(await isGone(child), true, "direct child must exit before cleanup completes");
 	} finally {
-		if (existsSync(ready)) {
-			for (const pid of JSON.parse(readFileSync(ready, "utf8")) as number[]) {
-				try { process.kill(pid, "SIGKILL"); } catch { /* already reaped */ }
-			}
-		}
+		for (const descendant of recorded) await signalRecordedProcess(descendant);
 		controller.abort();
 		await bounded(settled, PIPE_CLEANUP_BOUND_MS);
 		rmSync(root, { recursive: true, force: true });

@@ -102,19 +102,27 @@ test("tool states remain distinguishable without color and degrade at narrow wid
 	const previous = process.env.NO_COLOR;
 	process.env.NO_COLOR = "1";
 	try {
-		for (const [status, glyph] of [
+		const glyphs = [
 			["running", "∀"],
 			["success", "●"],
 			["failure", "✗"],
 			["stopped", "◼"],
 			["warning", "!"],
-			["paused", "⏸"],
+			["paused", "‖"],
 			["info", "›"],
-		] as const) {
+			["waiting", "◌"],
+			["shell-running", "⧗"],
+			["input", "◆"],
+			["agent-running", "◯"],
+		] as const;
+		for (const [status, glyph] of [...glyphs, ["task-stopped", "◯"] as const]) {
 			const block = new ToolBlock({ status, title: "Sample", args: "value" });
 			assert.equal(plain(block.render(80))[0], ` ${glyph} Sample(value)`);
 			for (const width of [0, 1, 2, 8]) assert.ok(block.render(width).every((line) => visibleWidth(line) <= width));
 		}
+		// Each mark is its own, except the agent panel's pair: a running and a stopped subagent share the open circle,
+		// which colour and their words tell apart.
+		assert.equal(new Set(glyphs.map(([, glyph]) => glyph)).size, glyphs.length);
 	} finally {
 		if (previous === undefined) delete process.env.NO_COLOR;
 		else process.env.NO_COLOR = previous;

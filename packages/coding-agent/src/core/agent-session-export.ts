@@ -8,6 +8,7 @@ import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.js";
+import { adoptCommandSession } from "./command-deliveries.ts";
 import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
@@ -461,6 +462,8 @@ export function getLastAssistantText(this: AgentSession): string | undefined {
 // =========================================================================
 
 export function createReplacedSessionContext(this: AgentSession): ReplacedSessionContext {
+	// A command that switched sessions answers in the new one: print mode waits for what it sends there too (#6113).
+	adoptCommandSession(this);
 	const context = Object.defineProperties(
 		{},
 		Object.getOwnPropertyDescriptors(this._extensionRunner.createCommandContext()),

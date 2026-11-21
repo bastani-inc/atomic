@@ -102,7 +102,7 @@ function liveResult(overrides: Partial<AgentProgress>): AgentToolResult<Details>
 class LiveSubagentWidget implements Component {
 	result = liveResult({});
 	render(width: number): string[] {
-		return renderSubagentResult(this.result, { expanded: true, now: NOW, pulseFrame: 0 }, theme).render(width);
+		return renderSubagentResult(this.result, { expanded: true, now: NOW }, theme).render(width);
 	}
 	invalidate(): void {}
 }
