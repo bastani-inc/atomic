@@ -6,6 +6,7 @@ import type {
 	HeldSendStore,
 	InvalidStateInput,
 	KnownSession,
+	KnownSessionOwnership,
 	KnownSessionStore,
 	Lease,
 	LeaseKey,
@@ -1069,6 +1070,8 @@ interface BindingRecord {
 	recordedAt: number;
 	/** #5607: the claim of the registration that last bound the id, when it gave one. */
 	readonly latestClaim?: string;
+	/** #5607: the registration that owns the id, its broker, and when that broker last renewed it. */
+	owner?: { readonly token: string; readonly brokerId: string; renewedAt: number };
 }
 
 function knownSessionStore(
@@ -1098,6 +1101,7 @@ function knownSessionStore(
 					(record) =>
 						isLive(record.recordedAt, retentionMs) &&
 						(record.session.intercomSessionId === target ||
+							record.session.aliasSessionId === target ||
 							record.session.atomicSessionId === target ||
 							record.session.name?.toLowerCase() === name),
 				)
@@ -1109,7 +1113,7 @@ function knownSessionStore(
 				}));
 			return { status: "found", sessions };
 		},
-		async bind(intercomSessionId, returnAddress, retentionMs, claim) {
+		async bind(intercomSessionId, returnAddress, retentionMs, claim, owner) {
 			if (intercomSessionId.length === 0) return invalid("empty-session-id");
 			const held = bindings.get(intercomSessionId);
 			let holder = held !== undefined && isLive(held.recordedAt, retentionMs) ? held.returnAddress : undefined;
@@ -1127,12 +1131,51 @@ function knownSessionStore(
 					bindings.set(intercomSessionId, { returnAddress: holder, recordedAt: Date.now() });
 				return { status: "refused", returnAddress: holder };
 			}
+			const current = bindings.get(intercomSessionId)?.owner;
+			if (
+				owner !== undefined &&
+				current !== undefined &&
+				current.token !== owner.token &&
+				isLive(current.renewedAt, owner.staleAfterMs)
+			)
+				return { status: "held", ownerBroker: current.brokerId };
 			bindings.set(intercomSessionId, {
 				returnAddress,
 				recordedAt: Date.now(),
 				...(claim === undefined ? {} : { latestClaim: claim }),
+				...(owner !== undefined
+					? { owner: { token: owner.token, brokerId: owner.brokerId, renewedAt: Date.now() } }
+					: current !== undefined
+						? { owner: current }
+						: {}),
 			});
 			return { status: "bound" };
+		},
+		owners: {
+			async release({ intercomSessionId, token }) {
+				const held = bindings.get(intercomSessionId);
+				if (held?.owner?.token === token) delete held.owner;
+			},
+			async renew(ownerships) {
+				const renewed: KnownSessionOwnership[] = [];
+				for (const { intercomSessionId, token } of ownerships) {
+					const held = bindings.get(intercomSessionId);
+					if (held?.owner?.token !== token) continue;
+					held.owner.renewedAt = Date.now();
+					held.recordedAt = Date.now();
+					renewed.push({ intercomSessionId, token });
+				}
+				return renewed;
+			},
+			async retireBroker(brokerId) {
+				for (const held of bindings.values()) if (held.owner?.brokerId === brokerId) delete held.owner;
+			},
+			async ownerOf(intercomSessionId) {
+				const owner = bindings.get(intercomSessionId)?.owner;
+				return owner === undefined
+					? undefined
+					: { token: owner.token, brokerId: owner.brokerId, ageMs: ageOf(owner.renewedAt) };
+			},
 		},
 		...(presence === undefined
 			? {}
@@ -1144,19 +1187,35 @@ function knownSessionStore(
 						const elsewhere = presence(request.returnAddress, request.presenceStaleAfterMs).some(
 							(holder) => holder !== request.brokerId,
 						);
+						const { owner } = request;
+						const ownedElsewhere =
+							owner !== undefined &&
+							held?.owner !== undefined &&
+							held.owner.token !== owner.token &&
+							isLive(held.owner.renewedAt, owner.staleAfterMs);
 						if (
 							held !== undefined &&
 							isLive(held.recordedAt, request.retentionMs) &&
 							held.returnAddress === request.returnAddress &&
 							held.latestClaim === request.claim &&
-							!elsewhere
+							!elsewhere &&
+							!ownedElsewhere
 						) {
 							held.recordedAt = Date.now();
+							if (owner !== undefined)
+								held.owner = { token: owner.token, brokerId: owner.brokerId, renewedAt: Date.now() };
 							return { status: "kept" };
 						}
+						if (owner !== undefined && held?.owner?.token === owner.token) delete held.owner;
 						return {
 							status: "fresh",
-							binding: await store.bind(request.freshId, request.returnAddress, request.retentionMs),
+							binding: await store.bind(
+								request.freshId,
+								request.returnAddress,
+								request.retentionMs,
+								undefined,
+								owner,
+							),
 						};
 					},
 				}),

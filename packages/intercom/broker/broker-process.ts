@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import * as atomicHost from "@bastani/atomic";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 
@@ -38,6 +39,7 @@ const hostStarts = atomicHost as {
 	readonly readProcessStartToken?: (pid: number) => Promise<string | undefined>;
 	readonly readProcessCreationTime?: (pid: number) => Promise<string | undefined>;
 	readonly nativeProcessCreationTime?: (pid: number) => string | null | undefined;
+	readonly nativeTerminateProcess?: (pid: number, started: string, descendants: boolean) => number | null | undefined;
 };
 
 /** The start token of process `pid` (Linux `/proc`), read now and synchronously; undefined where it cannot be read. */
@@ -311,10 +313,15 @@ while ($level.Count -gt 0) {
 }
 `;
 
+/** How often a stop checks whether the process it ended is gone. */
+const WINDOWS_STOP_POLL_MS = 10;
+
 /**
- * End the Windows process `pid` created at `started`, as {@link stopWindowsProcessScript} does, and wait up to `waitMs`
- * for it to exit. A pid that already names another process is left alone without starting PowerShell. The caller waits
- * at most {@link WINDOWS_STOP_START_MS} for the check and PowerShell's start, `waitMs` for the process to exit, and
+ * End the Windows process `pid` created at `started` and, with `descendants`, every process it started, and wait up to
+ * `waitMs` for it to exit. The host's native module ends them at once, each through a handle checked first, as
+ * {@link stopWindowsProcessScript} does. Without it, a PowerShell running that script ends them: a pid that already
+ * names another process is left alone without starting PowerShell, and the caller waits at most
+ * {@link WINDOWS_STOP_START_MS} for the check and PowerShell's start, `waitMs` for the process to exit, and
  * {@link WINDOWS_STOP_MARGIN_MS}. It never ends the PowerShell: once the caller stops waiting, the PowerShell finishes on
  * its own, or ends with this process, which can only leave processes running.
  */
@@ -324,6 +331,20 @@ export async function stopWindowsProcess(
 	{ waitMs, descendants }: { readonly waitMs: number; readonly descendants: boolean },
 ): Promise<void> {
 	const entered = performance.now();
+	let ended: number | null | undefined;
+	try {
+		ended = hostStarts.nativeTerminateProcess?.(pid, started, descendants);
+	} catch {
+		ended = undefined;
+	}
+	// Not the process created then: it is left alone.
+	if (ended === null) return;
+	if (ended !== undefined) {
+		while (nativeProcessCreationTime(pid) === started && performance.now() - entered < waitMs) {
+			await delay(WINDOWS_STOP_POLL_MS);
+		}
+		return;
+	}
 	const bound = WINDOWS_STOP_START_MS + waitMs + WINDOWS_STOP_MARGIN_MS;
 	if ((await readProcessCreationTime(pid)) !== started) return;
 	if (performance.now() - entered >= WINDOWS_STOP_START_MS) return;
