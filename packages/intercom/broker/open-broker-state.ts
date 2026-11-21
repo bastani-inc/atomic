@@ -159,11 +159,11 @@ export async function openIntercomBrokerState(
 			knownSessions,
 			reserveAndEnqueue(reservation, request) {
 				// #5607: written again, without it, when only an offline recipient's wake-up hint failed.
-				return withoutFailedWake(() => database.transaction(async (tx) => {
+				return withoutFailedWake(request, (attempt) => database.transaction(async (tx) => {
 					const key = { messageId: reservation.messageId, digest: reservation.digest };
 					const earlier = await sentMessages.lookupIn(tx, key);
 					if (earlier.status === "conflict") return { status: "conflict", messageId: reservation.messageId } as const;
-					const enqueued = await outbox.enqueueIn(tx, request);
+					const enqueued = await outbox.enqueueIn(tx, attempt);
 					if (enqueued.status === "full") {
 						// Refused before anything was written, so the transaction has no commit to sync.
 						if (earlier.status === "match") await sentMessages.forgetIn(tx, key);
