@@ -1037,6 +1037,7 @@ function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | u
 		queued !== undefined &&
 		isJsonObject(queued) &&
 		isStringList(queued.steering) &&
-		isStringList(queued.followUp);
+		isStringList(queued.followUp) &&
+		(value.unsaved === undefined || isStringList(value.unsaved));
 	return valid ? (value as unknown as AgentViewStatus) : undefined;
 }
