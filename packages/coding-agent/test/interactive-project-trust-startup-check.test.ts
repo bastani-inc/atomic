@@ -161,11 +161,14 @@ test(
 	"a session picked in another folder shuts down the extensions that decided the startup folder before its own load",
 	() =>
 		resumeOtherFolder(false, async (cli, log, id) => {
+			// B's project extension loads after the user extension, so its factory is waited for too: on a loaded machine
+			// it can come well after that extension's timer has ticked.
 			await cli.waitForScreen(
 				(screen) =>
 					screen.includes("B RECEIPT") &&
 					screen.includes("❯") &&
-					log().filter((line) => line === "tick B").length >= 5,
+					log().filter((line) => line === "tick B").length >= 5 &&
+					log().includes("bonly factory"),
 				STARTUP_TIMEOUT_MS,
 				"B's session with its extensions running",
 			);

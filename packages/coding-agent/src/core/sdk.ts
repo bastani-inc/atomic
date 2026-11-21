@@ -14,6 +14,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
+import { assertNativeModuleAvailable } from "../utils/native-module.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { AgentSession } from "./agent-session.js";
@@ -227,6 +228,8 @@ function createScopedSession(
 ): Promise<CreateAgentSessionResult> {
 	let releaseWhenIdle: ReleaseWhenIdleOptions | undefined;
 	try {
+		// A session cannot run without Atomic's native module: say why it cannot load before anything opens.
+		assertNativeModuleAvailable();
 		releaseWhenIdle = parseReleaseWhenIdle(options.releaseWhenIdle);
 		if (options.intercom !== undefined) validateIntercomSessionOptions(options.intercom);
 	} catch (error) {

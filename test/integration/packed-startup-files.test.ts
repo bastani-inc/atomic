@@ -1,7 +1,8 @@
 /**
- * The list of files an interactive start reads ahead on Windows (`dist/startup-files.json`) in the package npm
- * publishes. A release compiles the modules its binaries need and lists them before `npm pack` splits the package, so
- * the published list must come from the files that are packed, not from what the build left before packing.
+ * What the build writes about an interactive start's modules, in the package npm publishes: the list of files the start
+ * reads ahead on Windows (`dist/startup-files.json`) and the stages it loads them in (`dist/startup-stages/`). A release
+ * compiles the modules its binaries need and writes both before `npm pack` splits the package, so the published ones
+ * must come from the files that are packed, not from what the build left before packing.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -86,35 +87,59 @@ function staticallyLoaded(dist: string, files: readonly string[]): Set<string> {
 	return seen;
 }
 
+/** The modules `cli.js` imports as it runs (`import("./…")`), as paths inside `dist`. */
+function cliImports(dist: string): string[] {
+	return [...codeOf(join(dist, "cli.js")).matchAll(/\bimport\(\s*"(\.\/[^"]+)"\s*\)/g)].map((match) =>
+		posix.normalize(match[1] as string),
+	);
+}
+
+interface Packed {
+	/** The copied package, as `npm pack` left it once it had packed it. */
+	readonly copy: string;
+	/** The paths of the packed files. */
+	readonly paths: Set<string>;
+}
+
+let packed: Packed | undefined;
+/**
+ * The built package packed as a release packs it: copied, then left a list and a stage written for the layout the
+ * build had before the split, then packed by `npm pack` with its lifecycle scripts.
+ */
+function packedPackage(): Packed {
+	if (packed) return packed;
+	workspace = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "atomic-packed-startup-files-")));
+	const copy = copiedPackage(workspace);
+	fs.writeFileSync(
+		join(copy, "dist", "startup-files.json"),
+		JSON.stringify({
+			version: 2,
+			self: "@bastani/atomic",
+			packages: [["@bastani/atomic", -1]],
+			files: [[0, "dist/compiled-before-the-split.js"]],
+		}),
+	);
+	fs.writeFileSync(join(copy, "dist", "startup-stages", "0.js"), 'import "../compiled-before-the-split.js";\n');
+	const out = join(workspace, "packed");
+	fs.mkdirSync(out);
+	const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
+	const result = spawnSyncCollect([...npmSpawnPrefix(), "pack", copy, "--json", "--pack-destination", out], {
+		cwd: workspace,
+		env,
+		timeout: PACK_TIMEOUT_MS,
+	});
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	const stdout = result.stdout.toString();
+	const [{ files }] = JSON.parse(stdout.slice(stdout.indexOf("[\n"))) as [{ files: { path: string }[] }];
+	packed = { copy, paths: new Set(files.map((file) => file.path)) };
+	return packed;
+}
+
 test(
 	"the packed package's startup list names only packed files and every file the CLI then imports to start",
 	() => {
-		workspace = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "atomic-packed-startup-files-")));
-		const copy = copiedPackage(workspace);
-		// What the release build leaves: a list of the files of the layout it built, which the pack then changes.
-		fs.writeFileSync(
-			join(copy, "dist", "startup-files.json"),
-			JSON.stringify({
-				version: 2,
-				self: "@bastani/atomic",
-				packages: [["@bastani/atomic", -1]],
-				files: [[0, "dist/compiled-before-the-split.js"]],
-			}),
-		);
-		const out = join(workspace, "packed");
-		fs.mkdirSync(out);
-		const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
-		const packed = spawnSyncCollect([...npmSpawnPrefix(), "pack", copy, "--json", "--pack-destination", out], {
-			cwd: workspace,
-			env,
-			timeout: PACK_TIMEOUT_MS,
-		});
-		assert.equal(packed.exitCode, 0, packed.stderr.toString());
-		const stdout = packed.stdout.toString();
-		const [{ files }] = JSON.parse(stdout.slice(stdout.indexOf("[\n"))) as [{ files: { path: string }[] }];
-		const paths = new Set(files.map((file) => file.path));
+		const { copy, paths } = packedPackage();
 		assert.ok(paths.has("dist/startup-files.json"), "the list is packed");
-
 		const list = JSON.parse(fs.readFileSync(join(copy, "dist", "startup-files.json"), "utf8")) as {
 			self: string;
 			packages: [string, number][];
@@ -130,15 +155,39 @@ test(
 		// The CLI starts the reader, then imports what it runs (`import("./…")`); each of those loads its static imports
 		// before it runs, and the reader must have them.
 		const dist = join(copy, "dist");
-		const imported = [...codeOf(join(dist, "cli.js")).matchAll(/\bimport\(\s*"(\.\/[^"]+)"\s*\)/g)].map((match) =>
-			posix.normalize(match[1] as string),
-		);
+		const imported = cliImports(dist);
 		assert.ok(imported.includes("main.js"), "the CLI imports main.js when it runs");
 		const listedSet = new Set(listed);
 		assert.deepEqual(
 			[...staticallyLoaded(dist, imported)].map((file) => `dist/${file}`).filter((path) => !listedSet.has(path)),
 			[],
 			"the list names every file the CLI's imports load",
+		);
+	},
+	PACK_TIMEOUT_MS,
+);
+
+// A stage that imported a file the CLI's own imports do not load would run a second copy of that module.
+test(
+	"the packed package's startup stages import only files that the CLI's imports load",
+	() => {
+		const { copy, paths } = packedPackage();
+		const dist = join(copy, "dist");
+		const stages = join(dist, "startup-stages");
+		const { stages: count } = JSON.parse(fs.readFileSync(join(stages, "stages.json"), "utf8")) as { stages: number };
+		assert.ok(count > 1, "the package loads its modules in stages");
+		const loaded = staticallyLoaded(dist, cliImports(dist));
+		const imported: string[] = [];
+		for (let index = 0; index < count; index++) {
+			assert.ok(paths.has(`dist/startup-stages/${index}.js`), `stage ${index} is packed`);
+			for (const match of codeOf(join(stages, `${index}.js`)).matchAll(/\bimport\s*"(\.\.\/[^"]+)"/g))
+				imported.push(posix.normalize(posix.join("startup-stages", match[1] as string)));
+		}
+		assert.ok(imported.includes("main.js"), "the stages load main.js");
+		assert.deepEqual(
+			imported.filter((file) => !loaded.has(file)),
+			[],
+			"every file a stage imports is one the CLI's imports load",
 		);
 	},
 	PACK_TIMEOUT_MS,
