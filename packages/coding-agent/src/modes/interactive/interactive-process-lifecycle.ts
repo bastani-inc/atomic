@@ -26,6 +26,7 @@ import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./intera
 import { handOffCompactionQueue, mainSteering, showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { chatHistoryBuilt } from "./interactive-startup-chat-container.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
+import { onWindowsSessionEnd } from "./windows-session-end.js";
 
 /** A second Ctrl+C on an empty, idle editor within this window exits. */
 const CTRL_C_EXIT_WINDOW_MS = 800;
@@ -82,25 +83,31 @@ function terminalLostExitCode(ending: HostEnding): number {
 }
 
 /**
- * The Windows console was closed: this host was told so (SIGHUP), or its interactive engine, which hears of it first,
- * said so. The session shuts down as when its terminal is gone, within a bound that ends before Windows would end
- * this process, and Atomic exits with the status Windows gives a process its console's close ended.
+ * The Windows console was closed, or the Windows session ended, `closedMsAgo` milliseconds ago: this host was told so
+ * (SIGHUP, or its hidden window at the end of the session), or its interactive engine, which hears of a closed console
+ * first, said so. The session shuts down as when its terminal is gone, within a bound that ends before Windows would
+ * end this process, counted from when Windows said so, and Atomic exits with the status Windows gives a console program
+ * it ends then.
  */
-function consoleClosed(mode: InteractiveModeBase): void {
+function consoleClosed(mode: InteractiveModeBase, closedMsAgo = 0): void {
 	const ending = hostEnding(mode);
 	if (ending.consoleClosed) return;
 	ending.consoleClosed = true;
-	setTimeout(() => mode.emergencyTerminalExit(), CONSOLE_CLOSED_SHUTDOWN_MS);
+	setTimeout(() => mode.emergencyTerminalExit(), Math.max(CONSOLE_CLOSED_SHUTDOWN_MS - closedMsAgo, 0));
 	mode.handleTerminalLost();
 }
 
-/** On Windows, shut the session down when its console is closed, adding the listeners' removal to `cleanups`. */
+/**
+ * On Windows, shut the session down when its console is closed or the user's session ends (signing out, restarting or
+ * shutting down), adding the listeners' removal to `cleanups`.
+ */
 function listenForConsoleClose(mode: InteractiveModeBase, cleanups: Array<() => void>): void {
 	if (process.platform !== "win32") return;
 	const handler = () => consoleClosed(mode);
 	process.prependListener("SIGHUP", handler);
 	cleanups.push(() => process.off("SIGHUP", handler));
 	cleanups.push(onEngineConsoleClosed(mode.runtimeHost, handler));
+	cleanups.push(onWindowsSessionEnd((endedMsAgo) => consoleClosed(mode, endedMsAgo)));
 }
 
 /**

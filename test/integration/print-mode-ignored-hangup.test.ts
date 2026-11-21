@@ -21,6 +21,24 @@ const CLI_TIMEOUT_MS = 90_000;
 const POLL_MS = 50;
 /** Longer than a signal takes to reach a running process's handlers, however loaded the machine. */
 const SIGNAL_HANDLED_MS = 1_000;
+/**
+ * The extension that adds `/hold`. Its source never changes: it reads the files to record into, and how often to look,
+ * from `fixture.json` beside it.
+ */
+const HOLD_EXTENSION = `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const fixture = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixture.json"), "utf8"));
+export default (pi) => {
+	pi.registerCommand("hold", {
+		description: "waits until released",
+		handler: async () => {
+			writeFileSync(fixture.started, String(process.pid));
+			while (!existsSync(fixture.released)) await new Promise((resolve) => setTimeout(resolve, fixture.pollMs));
+			writeFileSync(fixture.finished, "");
+		},
+	});
+};`;
 
 interface PrintRun {
 	readonly exitCode: number;
@@ -45,20 +63,8 @@ async function hangUpDuringPrintRun(ignoreHangup: boolean): Promise<PrintRun> {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, installed);
 		mkdirSync(project, { recursive: true });
-		writeFileSync(
-			extension,
-			`import { existsSync, writeFileSync } from "node:fs";
-export default (pi) => {
-	pi.registerCommand("hold", {
-		description: "waits until released",
-		handler: async () => {
-			writeFileSync(${JSON.stringify(started)}, String(process.pid));
-			while (!existsSync(${JSON.stringify(released)})) await new Promise((resolve) => setTimeout(resolve, ${POLL_MS}));
-			writeFileSync(${JSON.stringify(finished)}, "");
-		},
-	});
-};`,
-		);
+		writeFileSync(join(root, "fixture.json"), JSON.stringify({ started, released, finished, pollMs: POLL_MS }));
+		writeFileSync(extension, HOLD_EXTENSION);
 		const cli = [bunExecutable(), join(PACKAGE, "dist/cli.js"), "-p", "--offline", "--no-mcp", "--no-session"];
 		const command = ignoreHangup
 			? ["/bin/sh", "-c", `trap '' HUP; exec "$0" "$@"`, ...cli, "-e", extension, "/hold"]
