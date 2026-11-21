@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, describe, test } from "vitest";
-import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { removeTempDirectory, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 import {
 	createScriptSandbox,
 	python,
@@ -199,12 +199,20 @@ describe.skipIf(python === undefined)("skill-creator scripts' files and review v
 				chmodSync(dir, 0o500);
 			}
 			try {
-				const result = runPython(box, [
-					"-c",
-					"import sys\nfrom pathlib import Path\nfrom scripts.atomic_cli import remove_folder\nremove_folder(Path(sys.argv[1]))",
-					folder,
-				]);
+				const program = [
+					"import shutil, sys",
+					"from pathlib import Path",
+					"from scripts.atomic_cli import remove_folder",
+					// Counts the removal attempts: one on Linux and macOS, where an entry that cannot be removed stays so.
+					"attempts = []",
+					"rmtree = shutil.rmtree",
+					"shutil.rmtree = lambda *args, **kwargs: (attempts.append(args[0]), rmtree(*args, **kwargs))[1]",
+					"remove_folder(Path(sys.argv[1]))",
+					"print(len(attempts))",
+				].join("\n");
+				const result = runPython(box, ["-c", program, folder]);
 				assert.equal(result.exitCode, 0, result.stderr.toString());
+				assert.equal(result.stdout.toString().trim(), "1", "one removal attempt");
 				assert.deepEqual(listTree(folder), [
 					"one/",
 					"one/locked/",
@@ -274,6 +282,50 @@ describe.skipIf(python === undefined)("skill-creator scripts' files and review v
 				viewer?.kill("SIGTERM");
 				listener.kill("SIGKILL");
 				await Promise.allSettled([viewer?.exited, listener.exited]);
+			}
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"serve the review viewer and open it in the browser when the viewer has no output, as under pythonw",
+		async () => {
+			const box = sandbox();
+			const workspace = workspaceWithOneRun(box);
+			const opened = join(box.dir, "opened.txt");
+			const viewer = spawnProcess(
+				[
+					"sh",
+					"-c",
+					// Standard output and error closed: Python starts with sys.stdout and sys.stderr set to None.
+					'exec "$0" "$@" >&- 2>&-',
+					python ?? "python3",
+					join(skillCreatorDir, "eval-viewer", "generate_review.py"),
+					workspace,
+					"--port",
+					"0",
+				],
+				// The browser records the URL it was asked to open.
+				{ cwd: box.dir, env: box.env({ BROWSER: `sh -c 'echo "$0" > opened.txt' %s` }) },
+			);
+			try {
+				const browserOpened = async () => {
+					while (!existsSync(opened) || !readFileSync(opened, "utf8").endsWith("\n")) await sleep(25);
+					return readFileSync(opened, "utf8").trim();
+				};
+				const viewerEnded = viewer.exited.then((status): string => {
+					throw new Error(`the viewer exited with status ${status} before opening the browser`);
+				});
+				const url = await withTimeout(
+					Promise.race([browserOpened(), viewerEnded]),
+					VIEWER_START_MS,
+					"the browser is opened",
+				);
+				const page = await fetch(url);
+				assert.equal(page.status, 200);
+				assert.match(await page.text(), /EMBEDDED_DATA/u);
+			} finally {
+				viewer.kill("SIGTERM");
+				await viewer.exited;
 			}
 		},
 	);
