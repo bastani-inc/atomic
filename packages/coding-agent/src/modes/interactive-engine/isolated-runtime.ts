@@ -513,9 +513,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
 	}
-	/** The engine owns extensions and tools; the host session has neither. */
-	async getToolStatus(): Promise<ToolStatusReport> {
-		return this.client.requestInternal<ToolStatusReport>({ type: "get_tools" });
+	/**
+	 * The engine owns extensions and tools; the host session has neither. `withoutGit` leaves out the Git section, and the
+	 * git the engine runs to fill it; an engine of an earlier version sends it anyway.
+	 */
+	async getToolStatus(options?: { readonly withoutGit?: boolean }): Promise<ToolStatusReport> {
+		return this.client.requestInternal<ToolStatusReport>({
+			type: "get_tools",
+			...(options?.withoutGit === true ? { withoutGit: true } : {}),
+		});
 	}
 	async initializeFromEngine(
 		generation = this.client.getGeneration?.(),
