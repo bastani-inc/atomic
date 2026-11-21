@@ -394,6 +394,30 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 		},
 		EVENT_TEST_MS,
 	);
+
+	test(
+		"Ctrl+C after a query failed for missing credentials stops the script as before, without the credentials note",
+		async () => {
+			const box = sandbox();
+			// One query at a time: the first has failed before the second's Atomic runs its processes.
+			const args = [...evalArgs(box, ["one", "two"]), "--num-workers", "1"];
+			const outcome = runOnConsole(box, "ctrl-c", 1, "grandchild", args, {
+				FAKE_ATOMIC_PLAN: JSON.stringify({ one: "no-credentials", two: "hold-child" }),
+			});
+			assert.equal(outcome.ready, 1, `the second query's Atomic and its processes ran: ${outcome.screen}`);
+			assert.deepEqual(
+				box
+					.records()
+					.map((record) => record.scenario)
+					.sort(),
+				["hold-child", "no-credentials"],
+			);
+			assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
+			assert.doesNotMatch(outcome.screen, /no credentials/u);
+			await waitUntilGone(startedPids(box.records()), 5_000);
+		},
+		EVENT_TEST_MS,
+	);
 });
 
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
