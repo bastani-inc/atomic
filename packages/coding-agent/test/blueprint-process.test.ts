@@ -12,7 +12,6 @@ import {
 	readFileSync,
 	realpathSync,
 	renameSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -20,6 +19,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { removeFixtureTree } from "../../../test/helpers/fixture-removal.js";
 import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../../../test/helpers/recorded-process.js";
 import {
 	copiesOutputToLog,
@@ -76,8 +76,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.useRealTimers();
-	// Windows keeps a program's file in use for a moment after its process ended; rm tries again only when told to.
-	rmSync(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	// Windows keeps a program's file, and the directory it ran in, in use for a moment after its process ended.
+	removeFixtureTree(sandbox);
 });
 
 const path = (...segments: string[]) => join(sandbox, ...segments);
