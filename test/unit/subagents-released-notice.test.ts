@@ -357,7 +357,7 @@ test(
 		for (const width of [100, 40]) {
 			const shown = screen(width);
 			assert.match(shown, /alt\+w opens it/, `${width} columns: ${shown}`);
-			assert.match(shown, /wakes by itself when it finishes/, `${width} columns: ${shown}`);
+			assert.match(shown, /Wakes by itself when it finishes/, `${width} columns: ${shown}`);
 		}
 		inspector.handleInput(ALT_W);
 		await settle();
