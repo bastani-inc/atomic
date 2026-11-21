@@ -2689,6 +2689,66 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.notEqual((await claimed).status, "granted", "the id is the adopted session's");
 	});
 
+	test("a session that leaves while its adoption write is on its way gives back the id that write took (#5607)", async () => {
+		const shared = await cluster();
+		const early = session("early");
+		const written = Promise.withResolvers<void>();
+		const opening = await startNode(
+			{
+				...shared,
+				async connectState() {
+					const state = await shared.connectState();
+					const bind = state.knownSessions.bind.bind(state.knownSessions);
+					let held = 1;
+					state.knownSessions.bind = async (...args) => {
+						if (held-- > 0) await written.promise;
+						return bind(...args);
+					};
+					return state;
+				},
+			},
+			{ registeredBefore: [early] },
+		);
+		opening.sessions.delete(early.info.id);
+		opening.router.sessionLeft(early, undefined, false);
+		written.resolve();
+		await flush();
+
+		const elsewhere = await startNode(shared);
+		const twin = twinOf(early);
+		const claim = await elsewhere.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		assert.equal(claim.status, "granted", "nothing live owns the id");
+	});
+
+	test("a session whose first binding write failed takes its id at the next renewal, and is disconnected if another registration took it meanwhile (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const failing = await startNode({
+			...shared,
+			async connectState() {
+				const state = await shared.connectState();
+				const bind = state.knownSessions.bind.bind(state.knownSessions);
+				let failures = 1;
+				state.knownSessions.bind = async (...args) => {
+					if (failures-- > 0) throw new Error("the shared database is busy");
+					return bind(...args);
+				};
+				return state;
+			},
+		});
+		const fresh = session("fresh");
+		await registeredOn(failing, fresh);
+		// Its id was answered to it, but nothing shared names it the owner: another registration of it takes the id.
+		const elsewhere = await startNode(shared);
+		const twin = twinOf(fresh);
+		const claimed = await elsewhere.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		assert.equal(claimed.status, "granted");
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		assert.deepEqual(failing.fenced, [fresh]);
+	});
+
 	test("a session whose broker on this host stopped running keeps its id there: a pid that names a process never counts as exited (#5607)", async () => {
 		const shared = await cluster();
 		// The broker's pid names a process: the broker itself, paused, or a later process the host gave the pid to.
@@ -2710,6 +2770,38 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		const claim = await here.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
 
 		assert.notEqual(claim.status, "granted");
+	});
+
+	test("a claim whose look at an exited owner's broker answers after the claim's bound binds nothing more (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const shared = await cluster();
+		const EXITED = 2_000_000_003;
+		const isProcessAlive = (pid: number) => pid !== EXITED;
+		const exited = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "first-socket", pid: EXITED, isProcessAlive },
+		});
+		const live = session("live");
+		await registeredOn(exited, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
+		});
+		const read = here.state.leases.read.bind(here.state.leases);
+		const answered = Promise.withResolvers<void>();
+		vi.spyOn(here.state.leases, "read").mockImplementationOnce(async (key) => {
+			await answered.promise;
+			return read(key);
+		});
+		const binds = vi.spyOn(here.state.knownSessions, "bind");
+		const twin = twinOf(live);
+
+		const claim = here.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal((await claim).status, "unanswered");
+		const sent = binds.mock.calls.length;
+		answered.resolve();
+		await flush();
+
+		assert.equal(binds.mock.calls.length, sent, "nothing is bound once the claim has given up");
 	});
 
 	test("a session whose broker on this host exited gets its id back on another broker of this host at once (#5607)", async () => {

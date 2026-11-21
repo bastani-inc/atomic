@@ -644,6 +644,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			});
 			assert.deepEqual(await after.bind("owned-id", "address", 60_000, undefined, owner("fourth")), {
 				status: "held",
+				ownerBroker: "broker-third",
 			});
 			assert.deepEqual(statements.flatMap(ddl), [], "the runtime role ran no DDL");
 		});

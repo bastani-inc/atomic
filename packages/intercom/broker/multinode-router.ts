@@ -859,6 +859,8 @@ export class MultiNodeRouter {
 				// stale age.
 				if (!retired && !expired && (await this.retireIfExitedHere(result.ownerBroker))) {
 					retired = true;
+					// A broker that stalled through the check does not try again past the claim's bound.
+					if (expired || performance.now() >= deadline) return { status: "refused" };
 					continue;
 				}
 				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
@@ -1102,8 +1104,13 @@ export class MultiNodeRouter {
 			this.report(error);
 			return "unknown";
 		}
-		if (entry.fenced === true) return "lost";
-		if (this.presence.get(session) !== entry || entry.adoption !== adoption) return "unknown";
+		// The session left, or was disconnected, while the write was on its way: an id the write took is given back.
+		if (entry.fenced === true || this.presence.get(session) !== entry) {
+			if (binding.status === "bound")
+				await this.releaseOwner({ intercomSessionId: session.info.id, token: adoption.token });
+			return entry.fenced === true ? "lost" : "unknown";
+		}
+		if (entry.adoption !== adoption) return "unknown";
 		// Superseded by a later write: that one's answer is the verdict.
 		if (adoption.attempts !== attempt) return adoption.checking?.answered() ?? "unknown";
 		if (binding.status === "bound") {
@@ -1112,7 +1119,14 @@ export class MultiNodeRouter {
 			adoption.decided.resolve("own");
 			return "own";
 		}
-		if (binding.status === "held" && retryIfRetired && (await this.retireIfExitedHere(binding.ownerBroker)))
+		if (
+			binding.status === "held" &&
+			retryIfRetired &&
+			(await this.retireIfExitedHere(binding.ownerBroker)) &&
+			this.presence.get(session) === entry &&
+			entry.adoption === adoption &&
+			adoption.attempts === attempt
+		)
 			return this.adopt(session, entry, adoption, attempt, false);
 		if (binding.status === "held" || binding.status === "refused") {
 			this.lostSessionId(session, entry);
