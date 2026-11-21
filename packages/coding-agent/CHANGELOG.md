@@ -22,6 +22,7 @@
 - Opening a subagent from `/tasks` no longer draws a frame without the agent panel and then moves the transcript up: the subagent is shown once the panel has drawn again ([#6123](https://github.com/bastani-inc/atomic/issues/6123))
 - A resumed session no longer sends the `mcp_servers` part of the system prompt twice more while its MCP servers reconnect: a server without a configured `description` keeps the summary the session last showed for it until it connects, and the part changes only if the server's instructions did ([#6108](https://github.com/bastani-inc/atomic/issues/6108))
 - Sessions no longer store a hash of an MCP stdio server's arguments, which can hold a token, and changing such an argument no longer drops the server's tools from the first requests after a resume ([#6109](https://github.com/bastani-inc/atomic/issues/6109))
+- Running Atomic from a source checkout no longer freezes the interface for about a second shortly after startup. A bundled package's modules that load later, such as Intercom's when it joins, are compiled in a background thread, and `/reload` runs the current code of such a module after you edit it, also under Bun and on Windows ([#6118](https://github.com/bastani-inc/atomic/issues/6118))
 
 ## [0.10.2] - 2026-11-20
 
