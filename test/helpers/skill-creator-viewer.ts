@@ -76,6 +76,9 @@ export function openPage(html: string, server?: string) {
 	let nextTimer = 1;
 	// What the page downloads (a static page's feedback on Submit).
 	const downloads: Blob[] = [];
+	// While held, the page's requests wait until the test lets them go, one at a time.
+	let holding = false;
+	const held: (() => void)[] = [];
 	const context = {
 		window,
 		document,
@@ -98,15 +101,19 @@ export function openPage(html: string, server?: string) {
 			timers.delete(id);
 		},
 		fetch: (path: string, init?: RequestInit) => {
-			const request =
-				server === undefined
-					? Promise.reject(new TypeError("Failed to fetch"))
-					: fetch(new URL(path, server), init).then(async (response) => {
-							const body = await response.arrayBuffer();
-							return new Response(body, { status: response.status, headers: response.headers });
-						});
-			requests.push(request.catch(() => undefined));
-			return request;
+			const send = () => {
+				const request =
+					server === undefined
+						? Promise.reject(new TypeError("Failed to fetch"))
+						: fetch(new URL(path, server), init).then(async (response) => {
+								const body = await response.arrayBuffer();
+								return new Response(body, { status: response.status, headers: response.headers });
+							});
+				requests.push(request.catch(() => undefined));
+				return request;
+			};
+			if (!holding) return send();
+			return new Promise<Response>((resolve, reject) => held.push(() => send().then(resolve, reject)));
 		},
 	};
 	context.globalThis = context;
@@ -147,6 +154,17 @@ export function openPage(html: string, server?: string) {
 			const due = [...timers.values()];
 			timers.clear();
 			for (const callback of due) callback();
+		},
+		/** Holds the page's requests from now on, until released. */
+		hold() {
+			holding = true;
+		},
+		/** How many requests the page has waiting. */
+		waiting: () => held.length,
+		/** Lets the oldest waiting request go, and waits for the page to act on its answer. */
+		async release() {
+			held.shift()?.();
+			await this.settled();
 		},
 		async settled() {
 			for (let count = -1; count !== requests.length; ) {

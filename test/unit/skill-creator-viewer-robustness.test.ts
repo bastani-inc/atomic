@@ -6,7 +6,7 @@ import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/
 import {
 	createScriptSandbox,
 	python,
-	readLine,
+	readUntil,
 	type ScriptSandbox,
 	skillCreatorDir,
 } from "../helpers/skill-creator-scripts.js";
@@ -188,7 +188,8 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 				{ cwd: box.dir, env: box.env(), stdout: "pipe" },
 			);
 			viewers.push(holder);
-			assert.equal((await readLine(holder.stdout)).trim(), "held");
+			// Windows ends the line with CRLF.
+			assert.equal(await readUntil(holder.stdout, /(held)\r?\n/u), "held");
 			const started = Date.now();
 			page.type("the title is missing");
 			page.press("ArrowRight");
@@ -281,6 +282,87 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		page.click("done-close");
 		await page.settled();
 		assert.equal(savedFeedback(current).status, "in_progress");
+	});
+
+	test.skipIf(windows || process.getuid?.() === 0)(
+		"the done dialog shows only once the latest Submit has landed, and not when it failed",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			page.hold();
+			page.type("the title is missing");
+			page.click("done-btn");
+			// An edit after Submit, saved while Submit's own save is on its way.
+			page.type("the title is missing, and the axis labels");
+			page.elapse();
+			await page.release();
+			assert.equal(page.waiting(), 1, "the later save waits");
+			assert.ok(!page.doneShown(), "not done while a later save waits");
+			// Nothing can be written in the workspace when the later save arrives.
+			chmodSync(current, 0o555);
+			try {
+				await page.release();
+			} finally {
+				chmodSync(current, 0o755);
+			}
+			assert.ok(!page.doneShown(), "not done when the latest save failed");
+			assert.ok(
+				page.notices().some((notice) => /^Not saved: /u.test(notice)),
+				page.notices().join("\n"),
+			);
+		},
+	);
+
+	test.skipIf(windows || process.getuid?.() === 0)(
+		"a save behind the done dialog that fails takes the dialog away",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			page.type("the title is missing");
+			page.click("done-btn");
+			await page.settled();
+			assert.ok(page.doneShown());
+			chmodSync(current, 0o555);
+			try {
+				// A key behind the dialog moves to the next run, saving the review again.
+				page.press("ArrowRight");
+				await page.settled();
+			} finally {
+				chmodSync(current, 0o755);
+			}
+			assert.ok(!page.doneShown());
+			assert.ok(
+				page.notices().some((notice) => /^Not saved: /u.test(notice)),
+				page.notices().join("\n"),
+			);
+		},
+	);
+
+	test("a static page's Submit downloads the feedback as it is once nothing more waits to be saved", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		const output = join(box.dir, "review.html");
+		const result = spawnSyncCollect([python ?? "python3", viewerScript, current, "--static", output], {
+			cwd: box.dir,
+			env: box.env(),
+		});
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		const page = openPage(readFileSync(output, "utf8"));
+		page.hold();
+		page.type("the title is missing");
+		page.click("done-btn");
+		page.type("the title is missing, and the axis labels");
+		page.elapse();
+		await page.release();
+		await page.release();
+		assert.equal(page.downloads().length, 1);
+		const saved = JSON.parse((await page.downloads()[0]?.text()) ?? "{}") as { reviews: { feedback: string }[] };
+		assert.equal(saved.reviews[0]?.feedback, "the title is missing, and the axis labels");
+		assert.ok(page.doneShown());
 	});
 
 	test("a static page downloads the feedback once on Submit, as before, whatever the page does next", async () => {
