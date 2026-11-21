@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
 - Queued messages are listed exactly as they will be sent. A steering or follow-up message the agent already took for its next turn is shown as being delivered, without the hint to edit it, and is sent once instead of also coming back to the editor when you press Alt+Up or Esc meanwhile. A message you send with the text of a queued one no longer removes the queued one from the list. A message the agent took is queued again, first, when its turn fails before sending it, and waits for your next message instead of being lost. A message an extension's queue listener refuses is no longer listed.
 - When the engine stops unexpectedly while it delivers a queued message, or after it showed one it had not saved yet, a notice lists the message in full and says its delivery is unconfirmed: it is not sent again and not put back in the editor. Messages still queued come back to the editor as before; a deliberate restart or quit changes nothing.
 - In a subagent's chat, Alt+Up no longer clears a message queued after it from the list, and messages it takes back after you close the chat come back in that chat's prompt when you open it again.

@@ -5,6 +5,7 @@ import type { QueryResultData } from "./storage.js";
 import type { SummaryGenerationContext } from "./summary-review.js";
 import type { GlimpseWindow } from "./web-search-browser.js";
 import type { CuratorWorkflow, ProviderAvailability } from "./web-search-config.js";
+import type { SearchReturnPayload } from "./web-search-return.js";
 
 export interface WebSearchToolUpdate {
 	content: Array<{ type: string; text: string }>;
@@ -30,7 +31,7 @@ export interface PendingCurate {
 	onUpdate: ((update: WebSearchToolUpdate) => void) | undefined;
 	signal: AbortSignal | undefined;
 	abortSearches: () => void;
-	finish: (value: unknown) => void;
+	finish: (value: SearchReturnPayload | PromiseLike<SearchReturnPayload>) => void;
 	cancel: (reason?: "user" | "stale") => void;
 	/** The curator window could not be opened; the search should continue and return raw results. */
 	curatorUnavailable: (reason: string) => void;
