@@ -101,7 +101,7 @@
     "build:tsc": "tsc -p tsconfig.build.json",
     "build:split": "node scripts/split-dist.mjs",
     "build:declarations": "bun run scripts/unreachable-declarations.ts",
-    "build:assets": "node scripts/build-codemode-worker.mjs && node ../../scripts/package-files.mjs executable dist/cli.js dist/rpc-entry.js && bun run copy-assets && node scripts/write-startup-files.mjs",
+    "build:assets": "node scripts/build-codemode-worker.mjs && node ../../scripts/package-files.mjs executable dist/cli.js dist/rpc-entry.js && bun run copy-assets && node scripts/write-startup-files.mjs && node scripts/write-startup-stages.mjs",
     "bundle:dev": "bun build src/bun/cli.ts --target=bun --minify --external mupdf --define process.env.ATOMIC_BUNDLED_BUILD=\"'1'\" --outfile dist-dev/cli.js && bun build src/extensions/codemode/worker.ts --target=bun --format=esm --outfile dist-dev/codemode-worker.js && node ../../scripts/package-files.mjs copy ../../node_modules/quickjs-wasi/quickjs.wasm dist-dev/",
     "start:fast": "bun run bundle:dev && bun dist-dev/cli.js",
     "build:binary": "bun run clean && bun run build:tsc && bun run build:assets && bun build --target=bun --format=cjs --minify-syntax --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile dist/app.js && bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile dist/image-resize-worker.js && bun run build:codemode-worker && bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --compile-autoload-package-json ./dist/bun/split-loader.js --outfile dist/atomic && bun run copy-binary-assets && bun run assert-binary-assets",

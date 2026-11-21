@@ -92,7 +92,13 @@ if (heapArgs.length > 0) {
 					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
 					.then(async ({ planStartupShell }) => {
 						const plan = planStartupShell(args, process.cwd());
-						if (plan) (await import("./modes/interactive/startup-shell.ts")).startStartupShell(plan);
+						if (!plan) return;
+						const shell = await import("./modes/interactive/startup-shell.ts");
+						shell.startStartupShell(plan);
+						// While it shows, the rest loads in stages with turns of the event loop between, so it keeps
+						// answering keys: one import would run the whole module graph without a turn.
+						if (shell.startupShellTerminal() !== undefined)
+							await (await import("./utils/startup-stages.ts")).loadStartupStages();
 					})
 					.catch(() => {})
 			: prewarmed;
