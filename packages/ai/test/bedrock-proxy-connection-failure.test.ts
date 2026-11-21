@@ -189,6 +189,29 @@ describe("a Bedrock failure that is not its connection's", () => {
 			assert.equal(isRetryableAssistantError(message), false, code);
 		}
 	});
+
+	it("keeps an onResponse hook's own message, and does not retry it, though it carries a connection error's code", async () => {
+		const endpoint = createHttpServer((request, response) => {
+			request.resume();
+			response.writeHead(400, { "content-type": "application/json" }).end('{"message":"bad request"}');
+		});
+		const port = await listen(endpoint);
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		for (const code of ["ERR_SOCKET_CLOSED", "ECONNRESET", "EACCES"]) {
+			const message = await streamBedrock({ ...model, baseUrl: `http://127.0.0.1:${port}` }, context, {
+				cacheRetention: "none",
+				maxRetries: 0,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				onResponse: async () => {
+					throw Object.assign(new Error("Response check stopped"), { code });
+				},
+			}).result();
+
+			assert.equal(message.stopReason, "error");
+			assert.equal(message.errorMessage, "Response check stopped", code);
+			assert.equal(isRetryableAssistantError(message), false, code);
+		}
+	});
 });
 
 describe("a provider's answer that names a connection error", () => {
