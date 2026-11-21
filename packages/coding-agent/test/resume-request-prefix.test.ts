@@ -1035,6 +1035,33 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 		assert.ok(budgetOf(second) < 16_384, `budget ${budgetOf(second)}`);
 	});
 
+	test("with only a section a prompt's start sets differing, an interrupt sent first still ends the check", async () => {
+		const { hooks, factory } = interrupter();
+		const sectioning: ExtensionFactory = (pi) => {
+			pi.on("before_agent_start", (event) => {
+				event.systemPromptOptions.sections.probe = "Probe section.";
+			});
+		};
+		const recovering: ExtensionFactory = (pi) => {
+			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		};
+		const { installation, sessionId } = await nearWindowSession(
+			{ defaultThinkingLevel: "high" },
+			[factory, sectioning, recovering],
+			"Prefer small changes.\n",
+			HIGH_NEAR_WINDOW_INPUT,
+		);
+		const resumed = await start(installation, await openWithFlags(installation, ["--session", sessionId]));
+		const before = server.requests.length;
+		await hooks.interrupt();
+		await runRequests(resumed, before, 1);
+		await resumed.session.startPendingRecovery("resume");
+
+		const second = await send(resumed, "four");
+		assert.equal(compactions(resumed), 0);
+		assert.ok(budgetOf(second) < 16_384, `budget ${budgetOf(second)}`);
+	});
+
 	test("with no prompt update pending, a second interrupt's run describes a tool it turned on", async () => {
 		const { hooks, factory } = interrupter();
 		const { installation, sessionId } = await nearWindowSession(
