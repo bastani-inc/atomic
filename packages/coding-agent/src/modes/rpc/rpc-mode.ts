@@ -228,8 +228,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		// An engine stopped by a signal, as when its host was, records its shutdown as an explicit quit does.
-		if (interactiveEngineChild && cause === "signal") markEventLoopShutdown();
+		// An engine stopped by a signal or the end of its input, as when its host was signalled or, on Windows, its
+		// console was closed, records its shutdown as an explicit quit does.
+		if (interactiveEngineChild && cause !== "request") markEventLoopShutdown();
 		detachInput();
 		process.stdin.pause();
 		await handleCommand.disposeActiveBash();
