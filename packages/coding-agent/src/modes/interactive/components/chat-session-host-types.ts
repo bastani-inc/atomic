@@ -131,6 +131,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 * that runs elsewhere.
 	 */
 	getTaskSource?: () => TaskViewSource | undefined;
+	/**
+	 * A block the chat shows after its transcript, as a message of its own: a blank row above it, and it scrolls with the
+	 * transcript. Asked on every render; `undefined` shows nothing.
+	 */
+	transcriptEndBlock?: () => Component | undefined;
 	/** Custom hosts may retain live task rows; interactive subagent chats use footer-only status. */
 	taskRowsInChat?: boolean;
 	echoedInitialPrompt?: string | (() => string | undefined);
