@@ -14,6 +14,7 @@
 - On Windows, `skill-creator`'s `package_skill.py`, `aggregate_benchmark.py`, `generate_report.py` and `quick_validate.py` no longer fail when their output goes to a pipe or a file, as it does when Atomic runs them: `package_skill.py` failed on its first line, and the others on a path, name or mark outside the system's code page. The scripts and the review viewer now write their output and errors as UTF-8, so the evaluation's progress lines also show non-ASCII descriptions and queries as written. Output that is already UTF-8, such as a console's, is unchanged.
 - A background subagent woken by the result of a call that kept running in the background, or by a background shell it launched finishing, now gets it as a notice card in its chat (the tool, whether it finished or failed, and its output), as the main chat gets a finished background task. It no longer shows up as a queued `Follow-up: The bash call … that kept running in the background finished:` message you could edit with Alt+Up, or as a message from you in its transcript, and the subagent reads each result once. When the result is the only thing that woke it, the notice starts its turn.
 - A subagent you paused with Esc, restored paused after a restart, no longer answers a notice it had not read yet before you continue it.
+- A background subagent woken by a result it had already read before a compaction took that part of its conversation out of its context no longer gets the result a second time.
 
 ## [0.10.3] - 2026-11-21
 

@@ -9,6 +9,7 @@ import {
 	type DetachedToolCall,
 	type DetachedToolResult,
 	type ExtensionContext,
+	type SessionEntry,
 	type SessionManager,
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
@@ -304,6 +305,36 @@ function textOf(content: string | ReadonlyArray<{ readonly type: string; readonl
 		: content.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}]`)).join("\n");
 }
 
+/** A transcript message as {@link savedIn} reads it. */
+interface SavedMessage {
+	readonly role: string;
+	readonly toolCallId?: string;
+	readonly content?: Parameters<typeof textOf>[0];
+	readonly customType?: string;
+	readonly details?: unknown;
+}
+
+/** The ids of `results` that `messages` hold: see {@link savedToolResultIds}. */
+function savedIn(messages: readonly SavedMessage[], results: readonly DetachedToolResult[]): string[] {
+	const answered = new Set<string>();
+	const noticed = new Set<string>();
+	const read = new Set<string>();
+	for (const message of messages) {
+		if (message.role === "toolResult" && message.toolCallId !== undefined) {
+			if (textOf(message.content ?? "") !== SUBAGENT_STILL_RUNNING_RESULT) answered.add(message.toolCallId);
+		} else if (message.role === "custom") for (const id of lateToolResultNoticeIds(message)) noticed.add(id);
+		else if (message.role === "user") read.add(textOf(message.content ?? ""));
+	}
+	return results
+		.filter(
+			(result) =>
+				answered.has(result.toolCallId) ||
+				noticed.has(result.toolCallId) ||
+				read.has(legacyLateToolResultMessage(result)),
+		)
+		.map((result) => result.toolCallId);
+}
+
 /**
  * The ids of `results` the child's transcript already holds: recorded as their call's own result (one that is not
  * "still running"), or delivered as a late result, in the notice a woken child reads it in or as the message builds
@@ -315,26 +346,54 @@ export function savedToolResultIds(
 	results: readonly DetachedToolResult[],
 ): string[] {
 	if (results.length === 0) return [];
-	const messages = sessionManager.buildSessionProjection().messages;
-	const answered = new Set(
-		messages.flatMap((message) =>
-			message.role === "toolResult" && textOf(message.content) !== SUBAGENT_STILL_RUNNING_RESULT
-				? [message.toolCallId]
-				: [],
-		),
-	);
-	const noticed = new Set(
-		messages.flatMap((message) => (message.role === "custom" ? lateToolResultNoticeIds(message) : [])),
-	);
-	const read = new Set(messages.flatMap((message) => (message.role === "user" ? [textOf(message.content)] : [])));
-	return results
-		.filter(
-			(result) =>
-				answered.has(result.toolCallId) ||
-				noticed.has(result.toolCallId) ||
-				read.has(legacyLateToolResultMessage(result)),
-		)
-		.map((result) => result.toolCallId);
+	return savedIn(sessionManager.buildSessionProjection().messages, results);
+}
+
+/** The message a session entry holds, as {@link savedIn} reads it. */
+function savedMessageOf(entry: SessionEntry): SavedMessage | undefined {
+	if (entry.type === "message") return entry.message;
+	if (entry.type === "custom_message") return { role: "custom", customType: entry.customType, details: entry.details };
+	return undefined;
+}
+
+/**
+ * {@link savedToolResultIds}, also reading the part of the child's branch a compaction took out of its context: the
+ * entries the manager holds and, for a manager holding only its window, the stored branch from `fromSeq` (the child's
+ * launch). History is read only for results the context does not hold, and only until all of them are found.
+ */
+export async function savedToolResultIdsInHistory(
+	sessionManager: Pick<
+		SessionManager,
+		"buildSessionProjection" | "getBranch" | "hasFullHistory" | "readHistory" | "getLeafId" | "getEntrySeq"
+	>,
+	results: readonly DetachedToolResult[],
+	fromSeq?: number,
+): Promise<string[]> {
+	const saved = new Set(savedToolResultIds(sessionManager, results));
+	const missing = () => results.filter((result) => !saved.has(result.toolCallId));
+	if (missing().length === 0) return [...saved];
+	const held = sessionManager.getBranch().flatMap((entry) => {
+		const message = savedMessageOf(entry);
+		return message === undefined ? [] : [message];
+	});
+	for (const id of savedIn(held, missing())) saved.add(id);
+	if (missing().length === 0 || typeof sessionManager.hasFullHistory !== "function" || sessionManager.hasFullHistory())
+		return [...saved];
+	const leaf = sessionManager.getLeafId();
+	const branchLeafSeq = leaf === null ? undefined : sessionManager.getEntrySeq(leaf);
+	if (branchLeafSeq === undefined) return [...saved];
+	for await (const page of sessionManager.readHistory({
+		branchLeafSeq,
+		...(fromSeq === undefined ? {} : { fromSeq }),
+	})) {
+		const messages = page.items.flatMap((item) => {
+			const message = "entry" in item ? savedMessageOf(item.entry) : undefined;
+			return message === undefined ? [] : [message];
+		});
+		for (const id of savedIn(messages, missing())) saved.add(id);
+		if (missing().length === 0) break;
+	}
+	return [...saved];
 }
 
 /** How a woken child continues: results recorded as its pending calls' results, then its late results and prompt. */

@@ -10,6 +10,7 @@ import {
 } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import {
@@ -43,6 +44,7 @@ import {
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_STILL_RUNNING_RESULT,
 	savedToolResultIds,
+	savedToolResultIdsInHistory,
 	subagentReleasePolicy,
 	subagentWakeKey,
 	subagentWakeNamespace,
@@ -712,4 +714,41 @@ test("a held result counts as saved once the transcript holds it as its call's r
 		savedToolResultIds(sessionManager, [recorded, stillRunning, read, readWithImage, unseen, noticed, otherNotice]),
 		["ci-1", "lint-3", "img-4", "test-6"],
 	);
+});
+
+test("a late result the child read before a compaction took it out of its context still counts as saved, in every form (#5012)", async () => {
+	const late = result("ci-1", "tests green");
+	const noticed = result("ci-2", "lint clean");
+	const store = new MemorySessionStore();
+	const child = await SessionManager.create(store, "/repo");
+	await child.appendMessage({ role: "user", content: "watch CI", timestamp: 1 });
+	// What an earlier build delivered as a message, and what this one delivers as a notice.
+	await child.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: 2 });
+	const notice = lateToolResultNotice([noticed]);
+	await child.appendCustomMessageEntry(notice.customType, notice.content, notice.display, notice.details);
+	await child.appendMessage({ role: "user", content: "ok", timestamp: 3 });
+	await child.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 3,
+			linesDeleted: 3,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	await child.appendMessage({ role: "user", content: "after compaction", timestamp: 4 });
+	const reopened = await SessionManager.open(store, child.getSessionId(), "/repo", { history: "tail" });
+	assert.equal(reopened.hasFullHistory(), false, "the reopened session holds only its window");
+
+	for (const manager of [child, reopened]) {
+		assert.deepEqual(savedToolResultIds(manager, [late, noticed]), [], "its context no longer holds them");
+		assert.deepEqual(await savedToolResultIdsInHistory(manager, [late, noticed]), ["ci-1", "ci-2"]);
+	}
+	assert.deepEqual(await savedToolResultIdsInHistory(reopened, [result("ci-3")]), [], "one it never read is not");
 });
