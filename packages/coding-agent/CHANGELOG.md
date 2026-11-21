@@ -67,6 +67,7 @@
 - When Atomic's own handling of the engine's output fails the same way on every streamed update, the chat shows one error row with a count, such as `(42 times)`, instead of one row per update. A different failure, or one after other output, gets its own row.
 - An error while Atomic reports a malformed engine line, the engine's stderr output or a failed write to the engine no longer ends Atomic; a malformed line still restarts the engine.
 - A tool call in the main chat that finishes while a subagent's chat is on screen no longer keeps redrawing that chat several times a second: the call is drawn as finished at once, also while its chat is hidden ([#6243](https://github.com/bastani-inc/atomic/pull/6243))
+- When an update installs a new Atomic over the one a session runs from (`npm install -g`, `bun add -g`), a feature whose code then can no longer load (a tool's first call, `/tree`, `/fork`, `/export`, an extension on `/reload`) says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` instead of failing with the runtime's `SyntaxError: The requested module … does not provide an export named …` or `Cannot find module` error, and the interactive session keeps running instead of exiting. A session the update caught while it was starting prints the same message and exits. Sessions started on this release or a later one report it this way
 
 ## [0.10.3] - 2026-11-21
 

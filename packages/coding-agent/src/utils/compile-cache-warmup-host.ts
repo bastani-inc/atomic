@@ -11,7 +11,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import { containProcessTree } from "../core/process-tree-containment.ts";
-import { type CompileCacheHelperRuntime, compileCacheDeferral } from "./compile-cache.ts";
+import type { CompileCacheHelperRuntime } from "./compile-cache.ts";
+import { processCompileCacheDeferral } from "./compile-cache-deferral.ts";
 import { COMPILE_CACHE_WARMUP_DONE } from "./compile-cache-warmup-status.ts";
 
 /** How a helper process starts: everything `spawn` gets. */
@@ -95,7 +96,7 @@ function runHelper(runtime: CompileCacheHelperRuntime, buildId: string): Promise
  * session that finds the cache cold tries once more.
  */
 export async function warmCompileCache(engineExecArgv: readonly string[]): Promise<void> {
-	const deferral = compileCacheDeferral();
+	const deferral = processCompileCacheDeferral();
 	if (!deferral) return;
 	const own = deferral.runtime;
 	const engine = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };

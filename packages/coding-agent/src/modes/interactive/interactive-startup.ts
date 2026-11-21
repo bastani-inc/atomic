@@ -5,7 +5,7 @@ import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
-import { compileCacheDeferral } from "../../utils/compile-cache.ts";
+import { processCompileCacheDeferral } from "../../utils/compile-cache-deferral.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
@@ -556,7 +556,7 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, startupNoticesContainer);
 		}
 		// A session that left its cold compile cache alone has a helper write it now that the session is on screen.
-		if (compileCacheDeferral() && !this.isShuttingDown) {
+		if (processCompileCacheDeferral() && !this.isShuttingDown) {
 			void import("../../utils/compile-cache-warmup-host.ts")
 				.then(({ warmCompileCache }) => warmCompileCache(engineHeapRuntimeArgsForHost(true)))
 				.catch(() => {});

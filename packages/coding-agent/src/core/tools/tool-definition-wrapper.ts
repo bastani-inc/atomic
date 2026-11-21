@@ -1,5 +1,6 @@
 import type { AgentTool, AgentToolParams } from "@bastani/atomic-agent-core";
 import type { Static, TSchema } from "typebox";
+import { loadOnDemand } from "../../utils/updated-install.ts";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import type { ToolConcurrency } from "./tool-concurrency.ts";
@@ -52,15 +53,18 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 			: undefined,
 		executionMode: definition.executionMode,
 		concurrency: definition.concurrency as AgentTool<TParams>["concurrency"],
+		// A tool loads much of its code on its first call: one that can no longer load after an update says to restart.
 		execute: (toolCallId, params, signal, onUpdate, context?: ExtensionContext) =>
-			runCallback({ kind: "tool.execute", name: definition.name, toolCallId }, () =>
-				definition.execute(
-					toolCallId,
-					params as Static<TParams>,
-					signal,
-					onUpdate,
-					(context ??
-						ctxFactory?.(toolCallId, signal)) as import("../extensions/context-types.ts").ExtensionToolContext,
+			loadOnDemand(`the ${definition.name} tool`, () =>
+				runCallback({ kind: "tool.execute", name: definition.name, toolCallId }, () =>
+					definition.execute(
+						toolCallId,
+						params as Static<TParams>,
+						signal,
+						onUpdate,
+						(context ??
+							ctxFactory?.(toolCallId, signal)) as import("../extensions/context-types.ts").ExtensionToolContext,
+					),
 				),
 			),
 	};

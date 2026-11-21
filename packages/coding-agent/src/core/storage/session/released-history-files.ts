@@ -5,7 +5,7 @@ import { copyFile, mkdir, open, opendir, readdir, readFile, readlink, rename, rm
 import { hostname, release } from "node:os";
 import { join } from "node:path";
 import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
-import { nativeProcessCreationTime } from "../../process-start-token.js";
+import * as processStartToken from "../../process-start-token.js";
 import { getErrnoCode } from "../../tools/errno.ts";
 import {
 	SESSION_TEMP_DIR_MODE,
@@ -15,6 +15,13 @@ import {
 import { powershellCandidates } from "../../tools/windows-directory-security.ts";
 import { SessionSpillError } from "../errors.js";
 import type { SessionHistoryDirectory, SessionHistoryFiles } from "./memory-session-store.js";
+
+/**
+ * The native Windows creation-time reader of `process-start-token.ts`, which 0.10.3's copy lacks. A process that loaded
+ * that copy before an update replaced the installation keeps it, and can load this module from the update: a named
+ * import would fail to link there. Without it the start time is read as that copy read it, through PowerShell.
+ */
+const nativeCreationTime: Partial<Pick<typeof processStartToken, "nativeProcessCreationTime">> = processStartToken;
 
 /** The start time recorded for a process whose start time could not be told. */
 const UNKNOWN_START = "unknown";
@@ -160,7 +167,7 @@ async function processStartTime(pid: number): Promise<string | null | undefined>
 	}
 	if (process.platform === "win32") {
 		// The same creation time `Get-Process`'s StartTime.ToFileTimeUtc() reports, read without starting PowerShell.
-		const native = nativeProcessCreationTime(pid);
+		const native = nativeCreationTime.nativeProcessCreationTime?.(pid);
 		if (native !== undefined) return native;
 		for (const executable of powershellCandidates()) {
 			const output = await run(executable, [
