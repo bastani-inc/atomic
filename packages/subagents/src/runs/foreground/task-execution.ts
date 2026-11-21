@@ -484,6 +484,7 @@ function taskTranscriptSource(
 		...(session.getEarlierCursor ? { getEarlierCursor: session.getEarlierCursor.bind(session) } : {}),
 		...(session.getEntrySeq ? { getEntrySeq: session.getEntrySeq.bind(session) } : {}),
 		...(session.entryReceipt ? { entryReceipt: session.entryReceipt.bind(session) } : {}),
+		...(session.getSessionFile ? { getSessionFile: session.getSessionFile.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),

@@ -823,12 +823,17 @@ export class JsonlSessionStore implements SessionStore {
 		this.lockFs = lockFs;
 	}
 
+	/**
+	 * Open the store of `directory`, made when it is missing. With `createDirectory: false` a missing directory is left
+	 * missing, for a caller that only reads files that are there.
+	 */
 	static async open(
 		directory: string,
-		options?: { exactDirectory?: boolean; scanExisting?: boolean; lockFs?: SessionLockFs },
+		options?: { exactDirectory?: boolean; scanExisting?: boolean; lockFs?: SessionLockFs; createDirectory?: boolean },
 	): Promise<JsonlSessionStore> {
 		const store = new JsonlSessionStore(directory, options?.exactDirectory === true, options?.lockFs);
-		await store.run(() => mkdir(store.directory, { recursive: true }).then(() => {}), false);
+		if (options?.createDirectory !== false)
+			await store.run(() => mkdir(store.directory, { recursive: true }).then(() => {}), false);
 		if (options?.scanExisting !== false) {
 			await store.run(async () => {
 				for (const path of await store.paths()) {
