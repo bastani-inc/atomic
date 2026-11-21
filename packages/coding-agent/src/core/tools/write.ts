@@ -1,7 +1,7 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
+import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
-import { type Static, Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { withResolvingFileMutationQueue } from "./file-mutation-queue.ts";

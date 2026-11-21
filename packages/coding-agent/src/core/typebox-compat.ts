@@ -1,5 +1,5 @@
 import { StringEnum as PiStringEnum } from "@bastani/atomic-ai/compat";
-import type { TUnsafe } from "typebox";
+import type { TUnsafe } from "@bastani/atomic-ai/utils/typebox/index";
 
 export interface StringEnumOptions<TValue extends string> {
 	description?: string;
