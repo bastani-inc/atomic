@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
@@ -22,12 +22,14 @@ interface TraceLine {
 }
 
 /**
- * Starts the real interactive CLI on a terminal with `args`, lets it finish starting, and returns the startup trace:
+ * Starts the real interactive CLI on a terminal with `args`, `env` and global `settings`, lets it finish starting, and
+ * returns the startup trace:
  * one line per lifecycle mark of the host and of every engine child it started.
  */
 async function startInteractive(
 	args: readonly string[],
 	env: Record<string, string | undefined>,
+	settings: Record<string, unknown>,
 ): Promise<TraceLine[]> {
 	const root = makeTempDirectory("prewarmed-engine-flags-");
 	const agentDir = join(root, "agent");
@@ -38,9 +40,21 @@ async function startInteractive(
 	try {
 		mkdirSync(project, { recursive: true });
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
+		const settingsFile = join(agentDir, "settings.json");
+		writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(readFileSync(settingsFile, "utf8")), ...settings }));
 		prepareInstalledPackage(PACKAGE, packageDir);
 		// The native PTY starts the CLI with this process's environment underneath the one given here.
-		for (const name of ["ATOMIC_OFFLINE", "PI_OFFLINE", "ATOMIC_DEBUG", "PI_DEBUG", "ATOMIC_DEBUG_SETTING"])
+		for (const name of [
+			"ATOMIC_OFFLINE",
+			"PI_OFFLINE",
+			"ATOMIC_DEBUG",
+			"PI_DEBUG",
+			"ATOMIC_DEBUG_SETTING",
+			"HTTP_PROXY",
+			"HTTPS_PROXY",
+			"http_proxy",
+			"https_proxy",
+		])
 			vi.stubEnv(name, undefined);
 		for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
 		program = startPtyProgram({
@@ -93,13 +107,20 @@ function engineChildren(lines: readonly TraceLine[]): number[] {
 }
 
 test.each([
-	{ name: "--offline", args: ["--offline"], env: {} },
-	{ name: "PI_OFFLINE=true", args: [], env: { PI_OFFLINE: "true" } },
-	{ name: "--debug", args: ["--debug"], env: { ATOMIC_OFFLINE: "1" } },
+	{ name: "--offline", args: ["--offline"], env: {}, settings: {} },
+	{ name: "PI_OFFLINE=true", args: [], env: { PI_OFFLINE: "true" }, settings: {} },
+	{ name: "--debug", args: ["--debug"], env: { ATOMIC_OFFLINE: "1" }, settings: {} },
+	{ name: "the debug setting", args: [], env: { ATOMIC_OFFLINE: "1" }, settings: { debug: true } },
+	{
+		name: "an httpProxy setting",
+		args: [],
+		env: { ATOMIC_OFFLINE: "1" },
+		settings: { httpProxy: "http://127.0.0.1:9" },
+	},
 ])(
 	"a host started with $name runs the engine it prewarmed instead of starting a second one",
-	async ({ args, env }) => {
-		assert.equal(engineChildren(await startInteractive(args, env)).length, 1);
+	async ({ args, env, settings }) => {
+		assert.equal(engineChildren(await startInteractive(args, env, settings)).length, 1);
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,
 );

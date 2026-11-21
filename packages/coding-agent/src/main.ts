@@ -165,7 +165,6 @@ import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { ENGINE_SHUTDOWN_GRACE_MS } from "./modes/rpc/rpc-client-process.js";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { applyOfflineEnvironment } from "./utils/argument-environment.ts";
 import { canonicalizePath, canonicalizePathAsync } from "./utils/canonical-path.ts";
 import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
@@ -173,6 +172,7 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
+import { applyOfflineEnvironment } from "./utils/startup-environment.js";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";

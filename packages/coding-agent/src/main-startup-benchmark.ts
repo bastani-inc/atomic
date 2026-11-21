@@ -11,8 +11,8 @@ import { printTimings, time } from "./core/timings.ts";
 import type { AppMode } from "./main-app-mode.ts";
 import type { InteractiveMode } from "./modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.js";
-import { isTruthyEnvFlag } from "./utils/argument-environment.ts";
 import type { InteractiveEngineStartupEnv } from "./utils/interactive-engine-env.ts";
+import { isTruthyEnvFlag } from "./utils/startup-environment.js";
 
 /** Stable codes of StartupBenchmarkError. Codes are public API: never rename or reuse one. */
 export type StartupBenchmarkErrorCode = "unsupported-mode";
