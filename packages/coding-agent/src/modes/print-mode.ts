@@ -28,6 +28,7 @@ import {
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
 import { reportDiagnostics } from "../main-stdio.ts";
+import { startedWithHangupIgnored } from "../utils/inherited-hangup.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -186,7 +187,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		// stopped with its process tree instead of being left in its own process group.
 		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 		if (process.platform !== "win32") {
-			signals.push("SIGHUP");
+			// A run started with SIGHUP ignored, as under `nohup`, goes on when its terminal closes.
+			if (!startedWithHangupIgnored()) signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {

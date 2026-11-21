@@ -13,7 +13,8 @@ import { APP_NAME, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
-import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
+import { headlessHeapRelaunchArgs, isHeadlessInvocation, relaunchWithHeap } from "./utils/heap-relaunch.ts";
+import { noteInheritedHangup } from "./utils/inherited-hangup.ts";
 import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "./utils/interactive-engine-bootstrap.ts";
 
 installLifecycleTraceFromEnv();
@@ -35,6 +36,12 @@ if (args[0] === "--version" || args[0] === "-v") {
 
 // A prewarmed engine child loads the application now and learns its arguments from its host afterwards.
 const prewarmedEngine = args[0] === INTERACTIVE_ENGINE_PREWARM_FLAG;
+// A run without a terminal started under `nohup` keeps SIGHUP ignored; read that before anything listens for it.
+if (
+	!prewarmedEngine &&
+	isHeadlessInvocation(args, { stdinIsTTY: process.stdin.isTTY === true, stdoutIsTTY: process.stdout.isTTY === true })
+)
+	noteInheritedHangup();
 const heapArgs = prewarmedEngine ? [] : headlessHeapRelaunchArgs(args);
 if (heapArgs.length > 0) {
 	relaunchWithHeap(heapArgs, args);

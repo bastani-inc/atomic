@@ -37,8 +37,10 @@ import { assertSessionCwdExists, findMissingSessionCwdIssueAsync, MissingSession
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	abortSessionWork,
+	armSessionQuitStops,
 	drainSessionWorkWithin,
 	hasCallingSessionWork,
+	limitQuitShutdownHandlers,
 	ownedSessionManagerStores,
 	ownedSessionStores,
 	registerSessionRetirement,
@@ -139,6 +141,23 @@ function closeFailure(session: AgentSession, failure: Error): AgentRehydrateErro
  * and apply the next runtime. If creation fails, the error is propagated to the
  * caller. The caller is responsible for user-facing error handling.
  */
+/** How the interactive app quits a runtime: `handlerLimitMs` absent leaves the bound to the engine's host. */
+interface InteractiveQuit {
+	readonly handlerLimitMs?: number;
+}
+
+const interactiveQuits = new WeakMap<AgentSessionRuntime, InteractiveQuit>();
+
+/**
+ * @internal Makes `runtime`'s `dispose()` quit as the interactive app does, which gives the sessions' `session_shutdown`
+ * handlers about five seconds: an extension's `pi.exec` command still running is ended first, and with
+ * `handlerLimitMs` the handlers are waited for at most that long from the start of the dispose, as an interactive
+ * engine's are before its host ends it. The rest of each session's close still runs and is waited for.
+ */
+export function quitAsInteractiveApp(runtime: AgentSessionRuntime, quit: InteractiveQuit = {}): void {
+	interactiveQuits.set(runtime, quit);
+}
+
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
@@ -987,6 +1006,17 @@ export class AgentSessionRuntime {
 	dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
+		const interactiveQuit = interactiveQuits.get(this);
+		if (interactiveQuit) {
+			const deadline =
+				interactiveQuit.handlerLimitMs === undefined
+					? undefined
+					: performance.now() + interactiveQuit.handlerLimitMs;
+			for (const session of [this.session, ...this.candidates, ...this.rehydrated.values()]) {
+				armSessionQuitStops(session);
+				if (deadline !== undefined) limitQuitShutdownHandlers(session, deadline);
+			}
+		}
 		abortSessionWork(this, true);
 		this.endedBySignal = options?.fromSignal === true;
 		// Every graceful exit path (quit, signals, RPC shutdown, print mode) disposes the runtime before exiting.

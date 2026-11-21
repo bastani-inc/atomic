@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `signalIgnored(signal)`: whether this process ignores a signal, as a process started under `nohup` ignores `SIGHUP`; `null` on Windows.
+
 ## [0.10.1] - 2026-11-20
 
 ### Added

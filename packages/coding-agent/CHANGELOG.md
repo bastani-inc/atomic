@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- An extension's `pi.exec` command still running when you quit no longer keeps the extensions' `session_shutdown` handlers from running: Atomic ends the command first (`SIGTERM`, then `SIGKILL` after one second). Commands the handlers run themselves are not ended.
+- Quitting or `SIGTERM` ends within about five seconds when a `session_shutdown` handler never finishes, also when the session runs in Atomic's own process, as in a project left untrusted; there a second `SIGTERM` now ends Atomic at once too. Atomic's own saving after the handlers still completes.
+- A `SIGHUP` or `SIGTERM` that arrives after `/quit` cleared the screen no longer ends Atomic at once, cutting the extensions' shutdown short; the quit finishes as it started.
+- The standalone binary started with `SIGHUP` ignored, as `nohup atomic -p ...` starts it, keeps running when its terminal closes.
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

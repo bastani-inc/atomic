@@ -10,6 +10,11 @@ import { spawnHostProcess } from "../utils/host-spawn.ts";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
+/**
+ * How long a command its session's quit ends may take to exit after SIGTERM before it gets SIGKILL. Short, so that the
+ * session's shutdown handlers still have most of the quit's grace period once every such command has ended.
+ */
+const QUIT_FORCE_KILL_DELAY_MS = 1000;
 
 /**
  * Options for executing shell commands.
@@ -45,12 +50,18 @@ export interface ExecResult {
 /**
  * Execute a shell command and return stdout/stderr/code.
  * Supports timeout, abort signal, and an output cap (`maxBuffer`).
+ *
+ * `onQuit` registers a stop to run when the command's session starts to quit, and returns its unregistration. The stop
+ * ends a command still running so that it cannot hold the session's shutdown: it gets SIGTERM, and after
+ * {@link QUIT_FORCE_KILL_DELAY_MS} SIGKILL, and output its descendants still hold open is then no longer waited for. A
+ * command that already exited is left as it is.
  */
 export async function execCommand(
 	command: string,
 	args: string[],
 	cwd: string,
 	options?: ExecOptions,
+	onQuit?: (stop: () => void) => () => void,
 ): Promise<ExecResult> {
 	const maxBuffer = options?.maxBuffer ?? DEFAULT_EXEC_MAX_BUFFER;
 	if (!Number.isInteger(maxBuffer) || maxBuffer < 0 || maxBuffer > bufferConstants.MAX_STRING_LENGTH) {
@@ -80,6 +91,8 @@ export async function execCommand(
 	let killed = false;
 	let timeoutId: NodeJS.Timeout | undefined;
 	let forceKillId: NodeJS.Timeout | undefined;
+	let quitCutId: NodeJS.Timeout | undefined;
+	const exited = () => proc.exitCode !== null || proc.signalCode !== null;
 
 	const killProcess = () => {
 		if (killed) return;
@@ -87,11 +100,26 @@ export async function execCommand(
 		proc.kill("SIGTERM");
 		forceKillId = setTimeout(() => {
 			// `proc.killed` only says a signal was sent, so check whether the child actually exited.
-			if (proc.exitCode === null && proc.signalCode === null) {
+			if (!exited()) {
 				proc.kill("SIGKILL");
 			}
 		}, FORCE_KILL_DELAY_MS);
 	};
+
+	const stopForQuit = () => {
+		// A command that never started has nothing to end; its start failure settles it. One that already exited keeps
+		// its result, and the output its descendants still write is waited for as before.
+		if (proc.pid === undefined || exited() || quitCutId !== undefined) return;
+		killProcess();
+		// The command has a short window to end; then it gets SIGKILL, also when its caller already stopped it, and
+		// output its descendants still hold open is no longer waited for.
+		quitCutId = setTimeout(() => {
+			if (!exited()) proc.kill("SIGKILL");
+			proc.stdout?.destroy();
+			proc.stderr?.destroy();
+		}, QUIT_FORCE_KILL_DELAY_MS);
+	};
+	const stopOnQuit = onQuit?.(stopForQuit);
 
 	if (options?.signal) {
 		if (options.signal.aborted) {
@@ -144,7 +172,9 @@ export async function execCommand(
 	} finally {
 		clearTimeout(timeoutId);
 		clearTimeout(forceKillId);
+		clearTimeout(quitCutId);
 		options?.signal?.removeEventListener("abort", killProcess);
+		stopOnQuit?.();
 	}
 
 	// On truncation, discard any incomplete UTF-8 suffix buffered by either decoder.
