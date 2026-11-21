@@ -9,6 +9,8 @@ import { createScriptSandbox, python, type ScriptSandbox, skillCreatorDir } from
 const ANSI_PIPE = { PYTHONIOENCODING: "cp1252" };
 // Outside Windows' ANSI code page.
 const WIDE = "\u2713 \u65e5\u672c";
+// package_skill and quick_validate read SKILL.md's frontmatter with PyYAML.
+const pyyaml = python !== undefined && spawnSyncCollect([python, "-c", "import yaml"]).exitCode === 0;
 
 const sandboxes: ScriptSandbox[] = [];
 afterEach(() => {
@@ -71,7 +73,7 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 		assert.ok(existsSync(join(iteration, "benchmark.md")));
 	});
 
-	test("package_skill writes its output as UTF-8 to a pipe in Windows' ANSI code page", () => {
+	test.skipIf(!pyyaml)("package_skill writes its output as UTF-8 to a pipe in Windows' ANSI code page", () => {
 		const box = sandbox();
 		const dist = join(box.dir, `dist ${WIDE}`);
 		const result = runScript(box, "package_skill.py", [box.skill, dist], ANSI_PIPE);
@@ -93,7 +95,7 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 		assert.match(result.stdout, /<td class="result pass">\u2713<span class="rate">1\/1<\/span><\/td>/u);
 	});
 
-	test("quick_validate writes its message as UTF-8 to a pipe in Windows' ANSI code page", () => {
+	test.skipIf(!pyyaml)("quick_validate writes its message as UTF-8 to a pipe in Windows' ANSI code page", () => {
 		const box = sandbox();
 		writeFileSync(join(box.skill, "SKILL.md"), `---\nname: ${WIDE}\ndescription: Reports.\n---\n# Reports\n`);
 		const result = runScript(box, "quick_validate.py", [box.skill], ANSI_PIPE);
@@ -144,23 +146,47 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 		);
 	});
 
-	test("aggregate_benchmark, generate_report and quick_validate still run as files outside the skill-creator folder", () => {
+	test.skipIf(!pyyaml)(
+		"aggregate_benchmark, generate_report and quick_validate still run as files outside the skill-creator folder",
+		() => {
+			const box = sandbox();
+			// No PYTHONPATH: only the script's own folder is on the module path, as when it is run by its path.
+			const env = { ...ANSI_PIPE, PYTHONPATH: "" };
+			const iteration = benchmarkFolder(box, `iteration ${WIDE}`);
+			const aggregate = runScript(box, "aggregate_benchmark.py", [iteration], env);
+			assert.equal(aggregate.exitCode, 0, aggregate.stderr);
+			assert.ok(aggregate.stdout.includes(`Generated: ${join(iteration, "benchmark.md")}\n`), aggregate.stdout);
+			const report = runScript(box, "generate_report.py", [loopOutput(box), "--skill-name", WIDE], env);
+			assert.equal(report.exitCode, 0, report.stderr);
+			assert.ok(report.stdout.includes(`<title>${WIDE} \u2014 `), report.stdout);
+			const validate = runScript(box, "quick_validate.py", [box.skill], env);
+			assert.equal(validate.exitCode, 0, validate.stderr);
+			assert.equal(validate.stdout, "Skill is valid!\n");
+		},
+	);
+
+	test("the review viewer run with its errors captured in place, as by runpy, reports them there", () => {
 		const box = sandbox();
-		// No PYTHONPATH: only the script's own folder is on the module path, as when it is run by its path.
-		const env = { ...ANSI_PIPE, PYTHONPATH: "" };
-		const iteration = benchmarkFolder(box, `iteration ${WIDE}`);
-		const aggregate = runScript(box, "aggregate_benchmark.py", [iteration], env);
-		assert.equal(aggregate.exitCode, 0, aggregate.stderr);
-		assert.ok(aggregate.stdout.includes(`Generated: ${join(iteration, "benchmark.md")}\n`), aggregate.stdout);
-		const report = runScript(box, "generate_report.py", [loopOutput(box), "--skill-name", WIDE], env);
-		assert.equal(report.exitCode, 0, report.stderr);
-		assert.ok(report.stdout.includes(`<title>${WIDE} \u2014 `), report.stdout);
-		const validate = runScript(box, "quick_validate.py", [box.skill], env);
-		assert.equal(validate.exitCode, 0, validate.stderr);
-		assert.equal(validate.stdout, "Skill is valid!\n");
+		const program = [
+			"import contextlib, io, runpy, sys",
+			"captured = io.StringIO()",
+			"sys.argv = [sys.argv[1], sys.argv[2]]",
+			"with contextlib.redirect_stderr(captured):",
+			"    try:",
+			"        runpy.run_path(sys.argv[0], run_name='__main__')",
+			"    except SystemExit as exit:",
+			"        print(exit.code, captured.getvalue().strip())",
+		].join("\n");
+		const missing = join(box.dir, "missing");
+		const result = spawnSyncCollect(
+			[python ?? "python3", "-c", program, join(skillCreatorDir, "eval-viewer", "generate_review.py"), missing],
+			{ cwd: box.project, env: box.env(ANSI_PIPE) },
+		);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(result.stdout.toString().trim(), `1 Error: ${missing} is not a directory`);
 	});
 
-	test("importing the scripts leaves the process's output streams as they were", () => {
+	test.skipIf(!pyyaml)("importing the scripts leaves the process's output streams as they were", () => {
 		const box = sandbox();
 		const imported = spawnSyncCollect(
 			[
