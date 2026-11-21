@@ -194,6 +194,55 @@ describe.skipIf(python === undefined)("skill-creator review viewer feedback", ()
 		assert.equal(page.document.querySelectorAll("script:not([src])").length, 1);
 	});
 
+	test("the served page is never kept in the browser's cache, so a restored or revisited tab gets the saved feedback", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1"]);
+		const url = await startViewer(box, [current]);
+		const page = await fetch(url);
+		await page.arrayBuffer();
+		assert.equal(page.headers.get("cache-control"), "no-store");
+	});
+
+	test("feedback saved with a UTF-8 byte order mark is shown, and the next save keeps it", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		const reviews = [{ run_id: "eval-1-with_skill", feedback: "caf\u00e9 title" }];
+		writeFileSync(
+			join(current, "feedback.json"),
+			Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify({ reviews }))]),
+		);
+		const url = await startViewer(box, [current]);
+		const page = await openServedPage(url);
+		assert.equal(page.feedback(), "caf\u00e9 title");
+		page.press("ArrowRight");
+		page.type("axis labels");
+		page.press("ArrowLeft");
+		await page.settled();
+		assert.deepEqual(savedReviews(current), [
+			{ run_id: "eval-1-with_skill", feedback: "caf\u00e9 title" },
+			{ run_id: "eval-2-with_skill", feedback: "axis labels" },
+		]);
+	});
+
+	test("feedback that is neither UTF-8 nor in the system's encoding is shown with replacement marks and kept, as before", async () => {
+		const box = sandbox();
+		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+		// 0x81 is undefined in UTF-8 and in Windows' code page 1252.
+		const text = Buffer.from('{"reviews": [{"run_id": "eval-1-with_skill", "feedback": "caf\x81 title"}]}', "latin1");
+		writeFileSync(join(current, "feedback.json"), text);
+		const url = await startViewer(box, [current]);
+		const page = await openServedPage(url);
+		assert.equal(page.feedback(), "caf\ufffd title");
+		page.press("ArrowRight");
+		page.type("axis labels");
+		page.press("ArrowLeft");
+		await page.settled();
+		assert.deepEqual(savedReviews(current), [
+			{ run_id: "eval-1-with_skill", feedback: "caf\ufffd title" },
+			{ run_id: "eval-2-with_skill", feedback: "axis labels" },
+		]);
+	});
+
 	test("a static page starts with no feedback, as before", () => {
 		const box = sandbox();
 		const current = iteration(box, "iteration-1", ["eval-1"], [{ run_id: "eval-1-with_skill", feedback: "saved" }]);
