@@ -2,15 +2,17 @@
 /**
  * Builds the two shipped forms of Atomic from a built checkout, as users install them, for the startup benchmark:
  *
- *   --npm DIR     packs every workspace package `@bastani/atomic` depends on and installs the tarballs together under
- *                 DIR, as `npm install -g` lays them out. Its bin directory is DIR/node_modules/.bin.
+ *   --npm DIR     packs every workspace package `@bastani/atomic` depends on, and this host's platform package of
+ *                 `@bastani/atomic-natives` (the binary the build wrote, as publish.yml packs it), and installs the
+ *                 tarballs together under DIR, as `npm install -g` lays them out. Its bin directory is
+ *                 DIR/node_modules/.bin.
  *   --binary DIR  builds this platform's release archive contents (the compiled launcher, `app.js` and assets)
  *                 into DIR, as the installer unpacks them.
  *
  * --repo DIR names the checkout (default: this one). It must already be built (`npm run build`).
  */
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const NPM_WORKSPACES = [
@@ -36,12 +38,36 @@ async function prepareNpm(repo: string, prefix: string): Promise<void> {
 	for (const workspace of NPM_WORKSPACES) {
 		run("npm", ["pack", `--workspace=${workspace}`, "--pack-destination", packs, "--ignore-scripts"], repo);
 	}
+	await packNativePlatformPackage(repo, join(prefix, "platform-package"), packs);
 	await writeFile(
 		join(prefix, "package.json"),
 		`${JSON.stringify({ name: "atomic-startup-benchmark", private: true })}\n`,
 	);
 	const tarballs = (await readdir(packs)).filter((name) => name.endsWith(".tgz")).map((name) => join(packs, name));
 	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", ...tarballs], prefix);
+}
+
+/** This host's napi target, as the platform package of `@bastani/atomic-natives` names it. */
+function hostNativeTarget(): string {
+	if (process.platform === "win32") return `win32-${process.arch}-msvc`;
+	if (process.platform !== "linux") return `${process.platform}-${process.arch}`;
+	const header = (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header;
+	return `linux-${process.arch}-${header?.glibcVersionRuntime ? "gnu" : "musl"}`;
+}
+
+/** `@bastani/atomic-natives` carries no binary of its own: pack this host's platform package from the built one. */
+async function packNativePlatformPackage(repo: string, directory: string, packs: string): Promise<void> {
+	const natives = join(repo, "packages", "natives");
+	const target = hostNativeTarget();
+	const binary = `atomic_natives.${target}.node`;
+	const { version } = JSON.parse(await readFile(join(natives, "package.json"), "utf8")) as { version: string };
+	await mkdir(directory, { recursive: true });
+	await copyFile(join(natives, "native", binary), join(directory, binary));
+	await writeFile(
+		join(directory, "package.json"),
+		`${JSON.stringify({ name: `@bastani/atomic-natives-${target}`, version, main: binary, files: [binary] })}\n`,
+	);
+	run("npm", ["pack", "--pack-destination", packs, "--ignore-scripts"], directory);
 }
 
 function hostPlatform(): string {

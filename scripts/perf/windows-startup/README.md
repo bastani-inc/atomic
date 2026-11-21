@@ -18,16 +18,10 @@ The raw record also retains `launchToProviderFirstByteMs`, the contiguous proces
 Build and install every comparison arm before a timed batch. A Windows bytecode experiment uses the same optimized product SHA and `app.js` as the non-bytecode arm; only its x64 launcher differs. Do not build, install, alter antivirus settings, or perform source operations while samples run. Put each wrapper directory on its own immutable path:
 
 - Release archive: reproduce the installer `atomic.cmd` and `atomic-current` junction layout. Pass the directory containing `atomic.cmd`.
-- Node package: on a versionless base, pack `@bastani/atomic-natives`, `@bastani/atomic-ai`, and `@bastani/atomic`, then install all three `0.0.0` tarballs together under one prefix. Installing only the Atomic tarball cannot resolve its unpublished placeholder dependencies. Pass the prefix's `node_modules\.bin` directory. The benchmark invokes that directory's `atomic.cmd`, not `node dist/cli.js`.
+- Node package: on a versionless base, `bun scripts/perf/startup/prepare.ts --npm DIR` packs every workspace package `@bastani/atomic` depends on, and this host's platform package of `@bastani/atomic-natives` from the binary the build wrote, then installs the tarballs together under DIR. Installing only the Atomic tarball cannot resolve its unpublished placeholder dependencies, and `@bastani/atomic-natives` carries no binary of its own. Pass DIR's `node_modules\.bin` directory. The benchmark invokes that directory's `atomic.cmd`, not `node dist/cli.js`.
 
 ```powershell
-npm pack --workspace=@bastani/atomic-natives --pack-destination C:\atomic-perf\packs
-npm pack --workspace=@bastani/atomic-ai --pack-destination C:\atomic-perf\packs
-npm pack --workspace=@bastani/atomic --pack-destination C:\atomic-perf\packs
-npm install --prefix C:\atomic-perf\node-baseline --ignore-scripts `
-  C:\atomic-perf\packs\bastani-atomic-natives-0.0.0.tgz `
-  C:\atomic-perf\packs\bastani-pi-ai-0.0.0.tgz `
-  C:\atomic-perf\packs\bastani-atomic-0.0.0.tgz
+bun scripts/perf/startup/prepare.ts --npm C:\atomic-perf\node-baseline
 ```
 
 Create one metadata JSON file per build. Hash the ZIP or package tarball, executable, `app.js`, and wrapper before timing.

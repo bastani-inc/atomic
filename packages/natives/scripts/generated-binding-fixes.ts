@@ -13,6 +13,79 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 		if (!declarations.includes(marker)) throw new Error("Review updated napi binding marker declaration");
 		declarations = declarations.replace(marker, `${marker} | undefined`);
 	}
+	// napi's miss message blames an npm bug and advises a reinstall that does not help. Say why the module did not load,
+	// from the loader's own attempts: the platform package an install left out (one of this package's optional
+	// dependencies) and how to reinstall Atomic with it, an installed platform package whose binary fails to load, a
+	// platform Atomic publishes no package for (such as Android, FreeBSD or Windows under a MinGW build of Node), or a
+	// NAPI_RS_NATIVE_LIBRARY_PATH override that fails. Atomic stops at startup with this message
+	// (packages/coding-agent/src/utils/native-module.ts). Each platform package's require records its own failure with the
+	// package, so no message or path is read for it.
+	const platformRequire =
+		/(const binding = require\('(@bastani\/atomic-natives-[a-z0-9-]+)'\)[\s\S]*?\} catch \(e\) \{\n\s*)loadErrors\.push\(e\)/g;
+	const platformRequires = loader.split("const binding = require('@bastani/atomic-natives-").length - 1;
+	const markedRequires = loader.split("loadErrors.push(__atomicPlatformPackageAttempt(e, '").length - 1;
+	if (markedRequires !== platformRequires) {
+		if (markedRequires !== 0 || [...loader.matchAll(platformRequire)].length !== platformRequires)
+			throw new Error("Review updated napi platform package requires");
+		loader = loader.replace(platformRequire, "$1loadErrors.push(__atomicPlatformPackageAttempt(e, '$2'))");
+	}
+	const markPlatformPackage = `// Each platform package this loader tried and how it failed, where the loader required it.
+const __atomicPlatformPackageAttempts = []
+function __atomicPlatformPackageAttempt(error, platformPackage) {
+  __atomicPlatformPackageAttempts.push({ platformPackage, error })
+  return error
+}`;
+	const requireNative = "function requireNative() {";
+	if (!loader.includes(markPlatformPackage)) {
+		if (!loader.includes(requireNative)) throw new Error("Review updated napi requireNative");
+		loader = loader.replace(requireNative, `${markPlatformPackage}\n\n${requireNative}`);
+	}
+	const misleadingMiss = [
+		"    const error = new Error(",
+		"      `Cannot find native binding. ` +",
+		"        `npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). ` +",
+		"        'Please try `npm i` again after removing both package-lock.json and node_modules directory.',",
+		"    )",
+	].join("\n");
+	const platformPackageMiss = `    const firstLine = (loadError) => String(loadError && loadError.message).split(/\\r?\\n/)[0]
+    let publishedPackages = []
+    try {
+      publishedPackages = Object.keys(require('../package.json').optionalDependencies || {})
+    } catch { /* Without its package metadata the loader knows of no platform package. */ }
+    // The platform package this loader tried: a published one first (macOS tries an unpublished universal build before
+    // the build for its architecture), else the first it tried.
+    const attempt =
+      __atomicPlatformPackageAttempts.find((tried) => publishedPackages.includes(tried.platformPackage)) ||
+      __atomicPlatformPackageAttempts[0]
+    const attempted = attempt && attempt.platformPackage
+    const attemptError = attempt && attempt.error
+    let installed = true
+    if (attempted && publishedPackages.includes(attempted)) {
+      try {
+        require.resolve(\`\${attempted}/package.json\`)
+      } catch (resolveError) {
+        installed = !(resolveError && resolveError.code === 'MODULE_NOT_FOUND')
+      }
+    }
+    const platformOf = (name) => name.slice('@bastani/atomic-natives-'.length)
+    const error = new Error(
+      process.env.NAPI_RS_NATIVE_LIBRARY_PATH
+        ? \`Cannot load Atomic's native module from NAPI_RS_NATIVE_LIBRARY_PATH (\${process.env.NAPI_RS_NATIVE_LIBRARY_PATH}): \${firstLine(loadErrors[0])}\`
+        : attempted && publishedPackages.includes(attempted)
+          ? installed
+            ? \`Cannot load Atomic's native module from \${attempted}: \${firstLine(attemptError)}\`
+            : \`Atomic's native module is not installed: this install of Atomic omitted optional dependencies, which leaves out \${attempted}. \` +
+              'Reinstall Atomic with optional dependencies: npm install -g @bastani/atomic, pnpm add -g @bastani/atomic or ' +
+              'bun add -g @bastani/atomic, without --omit=optional (npm, Bun) or --no-optional (pnpm); in a project, run its ' +
+              'install without those options.'
+          : attempted && publishedPackages.length > 0
+            ? \`Atomic has no native module for \${platformOf(attempted)}: it is published for \${publishedPackages.map(platformOf).join(', ')}.\`
+            : \`Cannot load Atomic's native module: \${firstLine(loadErrors[0])}\`,
+    )`;
+	if (!loader.includes(platformPackageMiss)) {
+		if (!loader.includes(misleadingMiss)) throw new Error("Review updated napi binding miss message");
+		loader = loader.replace(misleadingMiss, platformPackageMiss);
+	}
 	// A clock sample may use an already-loaded binding, but must never trigger package resolution or installation.
 	const loadedTemporaryFiles = `if (process.platform === 'win32' && module.exports.readWindowsClockProbe && module.exports.windowsClockTick && module.exports.pinWindowsFile) {
   try {
