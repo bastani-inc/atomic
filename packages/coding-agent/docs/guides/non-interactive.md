@@ -20,6 +20,8 @@ Atomic's session engine supports three non-interactive entry points. Use the tab
 
 If a text response reaches the model's output token limit, print mode keeps the partial text on stdout, writes a truncation warning to stderr, and exits with code `1`. Check the exit code before treating redirected output as complete.
 
+An extension command works as a prompt too: `atomic --session <id> -p "/curator off"` prints the command's answer. When the command answers with a message, or with a turn that message starts, print mode waits for it, prints it, and only then runs the next prompt or exits.
+
 ## JSON events
 
 When you need to observe a run rather than read it, the JSON event stream emits one structured record per message, tool call, and result. Use it for logging, CI annotations, or piping into another tool. The event shapes are in [JSON event stream](/json).
