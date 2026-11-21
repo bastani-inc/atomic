@@ -11,6 +11,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Changed
 
 - An installed Atomic starts its Intercom broker from prebuilt JavaScript instead of compiling the broker's TypeScript at every start. The broker is ready in under 0.1 s instead of 0.5 to 2.8 s on Linux and Windows, so the first Intercom use after a session opens waits that much less, and the broker no longer competes with the end of Atomic's startup ([#6193](https://github.com/bastani-inc/atomic/pull/6193)).
+- On Windows, closing a session while its Intercom broker is still starting no longer waits about half a second for a PowerShell to stop that broker: Atomic's native module stops it, and what it started, at once, still only while its pid names the broker that announced itself. Without the native module PowerShell stops it as before.
 
 ### Fixed
 
