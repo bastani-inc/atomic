@@ -735,7 +735,8 @@ describe("running a logged process (#4588)", () => {
 
 	/**
 	 * Starts `script` as `launch` runs it, aborts it once its grandchild runs, and checks that both stopped and the step
-	 * rejected with the reason. `onRefused` runs each time the system refused to start the step's process.
+	 * rejected with the reason, only once its own process had ended. `onRefused` runs each time the system refused to
+	 * start the step's process.
 	 */
 	async function abortsRunningProcess(
 		launch: (script: string, scriptArgs: string[]) => LoggedProcess,
@@ -758,12 +759,19 @@ describe("running a logged process (#4588)", () => {
 		].join("\n");
 		const controller = new AbortController();
 		const reason = new Error("resume cancelled");
+		// The step tells its build of its process's start and, once that process has ended, of its end.
+		const startedPids: number[] = [];
+		const endedPids: number[] = [];
 		let pending: Promise<{ exit: ProcessExit; output: string }>;
 		for (let start = 1; ; start++) {
-			const running = execute(launch(script, [path("grandchild.pid")]), {
-				timeoutMs: STEADY_TIMEOUT_MS,
-				signal: controller.signal,
-			});
+			const running = stepProcessWatcher.run(
+				(pid, isRunning) => (isRunning ? startedPids : endedPids).push(pid),
+				() =>
+					execute(launch(script, [path("grandchild.pid")]), {
+						timeoutMs: STEADY_TIMEOUT_MS,
+						signal: controller.signal,
+					}),
+			);
 			// A process that ends, or cannot start, before its grandchild starts fails the wait at once with how it ended.
 			const ended: { first?: unknown; refused?: boolean } = {};
 			running.then(
@@ -790,8 +798,12 @@ describe("running a logged process (#4588)", () => {
 		// #6125: recorded while it waits to be stopped, so a later process given its pid is never taken for it.
 		const grandchildProcess = await recordProcess(Number(readFileSync(path("grandchild.pid"), "utf8")));
 		try {
+			const stepProcess = startedPids.at(-1);
+			assert.ok(stepProcess !== undefined, "the step's process started");
 			controller.abort(reason);
 			await assert.rejects(pending, (error: unknown) => error === reason);
+			// A caller removes the step's files once it rejects, which Windows refuses while its program is still running.
+			assert.ok(endedPids.includes(stepProcess), "the step rejected before its process ended");
 			assert.equal(
 				await waitUntilGone(grandchildProcess, STEADY_TIMEOUT_MS),
 				true,
