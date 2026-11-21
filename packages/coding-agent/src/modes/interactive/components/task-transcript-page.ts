@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	getKeybindings,
 	isHintActivation,
@@ -9,6 +10,8 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
+import type { AgentSessionEvent } from "../../../core/agent-session.js";
+import { startsQueuedMessage } from "../../../core/agent-session-events.ts";
 import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -133,6 +136,71 @@ function observeChatWrite(write: Promise<void>, view: WeakRef<ObservedChatWrites
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
 /** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
 const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
+/**
+ * Per followed session: its queued messages whose row shows and whose save has not arrived yet, oldest first. Kept with
+ * the session, not the page, so a page opened again while a save is on its way reports the same ones.
+ */
+const shownUnsaved = new WeakMap<TaskTranscriptSource, AgentMessage[]>();
+/** Saves already accounted for: every page following the session hears each, and each lets one message go. */
+const savesHeard = new WeakSet<object>();
+
+/**
+ * A page follows `session`'s events: a queued message's row shows at its `message_start`, and its save arrives with its
+ * `message_end`. A message saved while no page followed the session is let go when a page follows it again.
+ */
+function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEvent | undefined): void {
+	let shown = shownUnsaved.get(session);
+	if (event === undefined) {
+		if (shown !== undefined && session.entryReceipt !== undefined) {
+			const receipt = session.entryReceipt.bind(session);
+			shown = shown.filter((message) => receipt(message) === undefined);
+			shownUnsaved.set(session, shown);
+		}
+		return;
+	}
+	if (event.type === "message_start" && event.message.role === "user" && startsQueuedMessage(event)) {
+		// Every page following the session hears the same event: the message is kept once.
+		const list = shown ?? [];
+		if (!list.includes(event.message)) list.push(event.message);
+		shownUnsaved.set(session, list);
+	} else if (
+		event.type === "message_end" &&
+		event.message.role === "user" &&
+		shown !== undefined &&
+		shown.length > 0 &&
+		!savesHeard.has(event)
+	) {
+		savesHeard.add(event);
+		const saved = event.message;
+		const raw = (saved as { readonly rawText?: unknown }).rawText;
+		const text = userMessageText(saved);
+		let index = shown.indexOf(saved);
+		if (index < 0)
+			index = shown.findIndex((message) => {
+				const queued = userMessageText(message);
+				return queued === raw || queued === text || text.startsWith(`${queued}\n\n`);
+			});
+		if (index >= 0) shown.splice(index, 1);
+	}
+}
+
+/** What a page's status reports of `session`'s queued messages shown but not saved yet; nothing when there are none. */
+function unsavedOf(session: TaskTranscriptSource | undefined): { unsaved?: readonly string[] } {
+	const shown = session === undefined ? undefined : shownUnsaved.get(session);
+	return shown === undefined || shown.length === 0 ? {} : { unsaved: shown.map(userMessageText) };
+}
+
+function userMessageText(message: object): string {
+	const content = (message as { readonly content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
+			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("\n");
+}
+
 /** The page open on each subagent's chat, by the subagent across its attempts, per source: where messages that come back after an earlier page closed go. */
 const openPages = new WeakMap<TaskViewSource, Map<string, TaskAgentTranscriptPage>>();
 /** What Up recalled in a task's chat when the reader left it, oldest first, for when they come back. */
@@ -923,6 +991,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			...(delivering.steering.length === 0 && delivering.followUp.length === 0
 				? {}
 				: { delivering: { steering: [...delivering.steering], followUp: [...delivering.followUp] } }),
+			...unsavedOf(this.followed),
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
 			...(working === undefined ? {} : { working }),
@@ -1206,6 +1275,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.unsubscribe?.();
 			this.unsubscribe = undefined;
 			this.followed = session;
+			// Its queued messages shown unsaved as a page last saw them, without those saved since.
+			if (session !== undefined) noteShownUnsaved(session, undefined);
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
@@ -1275,6 +1346,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
+			noteShownUnsaved(session, event);
 			if (event.type === "message_end") {
 				// The receipt arrives with the end of the message the row was drawn from as it streamed.
 				const sent = event as { seq?: unknown };

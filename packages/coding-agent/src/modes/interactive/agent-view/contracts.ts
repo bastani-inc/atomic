@@ -50,6 +50,12 @@ export interface AgentViewStatus {
 	 * `queued` until it does, so a message is never off screen. Drawing only; left out when there are none.
 	 */
 	readonly delivering?: SteeringQueueLists;
+	/**
+	 * Queued messages it took whose own row its transcript shows and whose save has not been seen yet, oldest first.
+	 * Drawn as nothing more than their row; if the engine running it is lost meanwhile, they are listed as unconfirmed.
+	 * Left out when there are none.
+	 */
+	readonly unsaved?: readonly string[];
 	/** Why messages cannot reach it any more; undefined while they can. */
 	readonly readOnlyReason?: string;
 	/** It waits on a question form, drawn in the transcript area, which takes the keys meanwhile. */
