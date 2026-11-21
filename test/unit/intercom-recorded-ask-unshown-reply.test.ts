@@ -36,7 +36,15 @@ const COMPACTION: VerbatimCompactionDetails = {
 	form: "compacted",
 };
 
-const peer = { id: "peer-session", name: "subagent-worker-1", cwd: "/p", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+const peer = {
+	id: "peer-session",
+	name: "subagent-worker-1",
+	cwd: "/p",
+	model: "m",
+	pid: 1,
+	startedAt: 1,
+	lastActivity: 1,
+};
 
 async function sqliteSession(): Promise<{ manager: SessionManager; reopen: () => Promise<SessionManager> }> {
 	const directory = await mkdtemp(join(tmpdir(), "atomic-recorded-ask-"));
