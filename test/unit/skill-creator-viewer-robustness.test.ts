@@ -220,6 +220,51 @@ describe.skipIf(python === undefined)("skill-creator review viewer robustness", 
 		LOCK_TEST_MS,
 	);
 
+	test.skipIf(windows || process.getuid?.() === 0)(
+		"a lock file this viewer cannot write is still waited for, never skipped",
+		async () => {
+			const box = sandbox();
+			const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
+			// Another viewer's lock file, which this one may read but not write.
+			const lock = join(current, ".feedback.json.lock");
+			writeFileSync(lock, "");
+			chmodSync(lock, 0o444);
+			const url = await startViewer(box, [current]);
+			const page = await openServedPage(url);
+			const holder = spawnProcess(
+				[
+					python ?? "python3",
+					"-c",
+					[
+						"import fcntl, sys, time",
+						"lock = open(sys.argv[1], 'rb')",
+						"fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)",
+						"print('held', flush=True)",
+						"time.sleep(120)",
+					].join("\n"),
+					lock,
+				],
+				{ cwd: box.dir, env: box.env(), stdout: "pipe" },
+			);
+			viewers.push(holder);
+			assert.equal(await readUntil(holder.stdout, /(held)\r?\n/u), "held");
+			page.type("the title is missing");
+			page.press("ArrowRight");
+			await page.settled();
+			assert.ok(
+				page.notices().some((notice) => /Not saved: another viewer/u.test(notice)),
+				page.notices().join("\n"),
+			);
+			assert.ok(!existsSync(join(current, "feedback.json")), "nothing was written");
+			holder.kill("SIGKILL");
+			await holder.exited;
+			page.press("ArrowLeft");
+			await page.settled();
+			assert.deepEqual(savedReviews(current), [{ run_id: "eval-1-with_skill", feedback: "the title is missing" }]);
+		},
+		LOCK_TEST_MS,
+	);
+
 	test("one tab's saves land in order and never refuse each other, however fast they follow", async () => {
 		const box = sandbox();
 		const current = iteration(box, "iteration-1", ["eval-1", "eval-2"]);
