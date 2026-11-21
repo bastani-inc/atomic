@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent restored after Atomic stopped unexpectedly continues on the model and thinking level it was running on, also when that attempt started on another model than the one before it (a `context: "fork"` launch, or a restored subagent whose own model is gone). A subagent now starts only once its launch is saved in the session that launched it. When that save fails, it does not start and sends nothing to its model: its result names the storage error and `subagent status` shows `record-append-failed`.
+
 ## [0.10.3] - 2026-11-21
 
 ### Changed

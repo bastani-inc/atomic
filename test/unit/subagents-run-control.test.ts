@@ -2632,6 +2632,7 @@ test("a child an SDK session without a task host resumed keeps running across th
 	const paused = await h.call({ action: "pause", id: running.childId });
 	assert.notEqual(paused.isError, true, text(paused));
 	await launch;
+	const pausedLaunch = h.latest(running.childId)?.launchLeafSeq ?? 0;
 
 	const live = Promise.withResolvers<TestSessionQueue>();
 	h.onSession = (session) => live.resolve(session);
@@ -2640,9 +2641,13 @@ test("a child an SDK session without a task host resumed keeps running across th
 	const resumedTask = resumedTaskId(resumed);
 	const session = await live.promise;
 	h.onSession = undefined;
+	// It runs its resumed task once its launch is saved.
 	await h.waitForLatest(
 		running.childId,
-		(candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId,
+		(candidate) =>
+			candidate.taskId === resumedTask &&
+			!!candidate.childSessionId &&
+			(candidate.launchLeafSeq ?? 0) > pausedLaunch,
 	);
 	const steer = "STEER: report the permission error only";
 	const followUp = "FOLLOWUP: include the failing command";
