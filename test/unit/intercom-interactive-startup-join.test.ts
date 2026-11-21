@@ -272,6 +272,27 @@ async function untilRegistered(registrations: readonly Registration[], count: nu
 	while (registrations.length < count && performance.now() < deadline) await realDelay(JOIN_POLL_MS);
 }
 
+/**
+ * Waits in real time, with the fake clock where it is, until the startup join waits on the clock for its next attempt
+ * (its timer is the only one this file fakes) or `finished` holds: an attempt in progress loads Intercom and reaches the
+ * broker in real time.
+ */
+async function untilJoinWaits(finished: () => boolean = () => false): Promise<void> {
+	const deadline = performance.now() + JOIN_REAL_TIME_BUDGET_MS;
+	while (vi.getTimerCount() === 0 && !finished()) {
+		assert.ok(performance.now() < deadline, "the startup join neither waited for another attempt nor finished");
+		await realDelay(JOIN_POLL_MS);
+	}
+}
+
+/** {@link elapse}, moving the clock on only once the join's attempt in progress, if any, has ended. */
+async function elapseAttempts(ms: number, finished: () => boolean): Promise<void> {
+	for (let elapsed = 0; elapsed < ms; elapsed += 250) {
+		await untilJoinWaits(finished);
+		await elapse(250);
+	}
+}
+
 describe("what the startup join leaves to the session", () => {
 	test("it saves the Intercom id it joined under, so a resumed session asks for the same id", async () => {
 		const session = intercomSession();
@@ -451,7 +472,7 @@ describe("a startup join that cannot reach the broker", () => {
 		const ctx = sessionContext({ mode: "tui" }, notices);
 		try {
 			assert.deepEqual(await session.start(ctx), []);
-			await elapse(60_000);
+			await elapseAttempts(60_000, () => attempts === 6);
 			assert.equal(attempts, 6, "one join and five retries");
 			await elapse(120_000);
 			assert.equal(attempts, 6, "no background reconnect for a session that never used Intercom");
@@ -504,6 +525,7 @@ describe("a startup join that cannot reach the broker", () => {
 		const retryingCtx = sessionContext({ mode: "tui" }, []);
 		await retrying.start(retryingCtx);
 		await elapse(4_500);
+		await untilJoinWaits();
 		const before = attempts;
 		await retrying.shutdown(retryingCtx);
 		await elapse(60_000);
