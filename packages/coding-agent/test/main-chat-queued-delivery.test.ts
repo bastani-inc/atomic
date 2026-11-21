@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { afterEach, beforeAll, describe, test } from "vitest";
+import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { waitFor } from "./helpers/busy-submission-rig.js";
@@ -166,6 +166,96 @@ describe.each(["in-process", "isolated"] as const)(
 		);
 
 		test(
+			"taken and lost twice before it is sent, it comes back to the editor as typed, with a notice",
+			async () => {
+				const chat = await busyChat(host);
+				const session = chat.pair?.engine.session ?? chat.mode.session;
+				const agent = session.agent;
+				// The turn after the tool call fails while it prepares, and from then on every run fails as it starts,
+				// before the queued message does: taken and lost once (queued again), then a second time (dropped).
+				const prepare = agent.prepareNextTurnWithContext;
+				let failedPreparation = false;
+				agent.prepareNextTurnWithContext = async (context, signal) => {
+					if (!failedPreparation) {
+						failedPreparation = true;
+						throw new Error("turn preparation failed");
+					}
+					return prepare?.(context, signal);
+				};
+				let refusals = 0;
+				const stopRefusing = agent.subscribe((event) => {
+					if (event.type === "agent_start" && failedPreparation) {
+						refusals++;
+						throw new Error("refused at start");
+					}
+				});
+				cleanups.push(stopRefusing);
+				chat.press("later one");
+				chat.press("\r");
+				await chat.settled(/Steering: later one/);
+
+				chat.gate.release.resolve();
+				const returned = await chat.settled(/1 queued message wasn't sent and is back in the editor/);
+				// Lost as its turn failed to prepare, queued again, and lost as the next run started: no run tries it again.
+				assert.equal(refusals, 1);
+				assert.equal(chat.mode.editor.getText(), "later one", returned.join("\n"));
+				assert.deepEqual(shown(returned, "later one"), { echoes: 0, rows: 0 }, returned.join("\n"));
+				assert.equal(
+					chat.requests.filter((request) => request.includes("later one")).length,
+					0,
+					chat.requests.join("\n"),
+				);
+			},
+			MAIN_CHAT_TEST_TIMEOUT_MS,
+		);
+
+		test(
+			"two messages each lost twice come back in the order they were queued, ahead of what is being typed",
+			async () => {
+				const chat = await busyChat(host, { settings: { steeringMode: "one-at-a-time" } });
+				const session = chat.pair?.engine.session ?? chat.mode.session;
+				const agent = session.agent;
+				// As above, for each message in turn: the first loss as its turn fails to prepare or its run starts, the
+				// second as the next run starts.
+				const prepare = agent.prepareNextTurnWithContext;
+				let failedPreparation = false;
+				agent.prepareNextTurnWithContext = async (context, signal) => {
+					if (!failedPreparation) {
+						failedPreparation = true;
+						throw new Error("turn preparation failed");
+					}
+					return prepare?.(context, signal);
+				};
+				cleanups.push(
+					agent.subscribe((event) => {
+						if (event.type === "agent_start" && failedPreparation) throw new Error("refused at start");
+					}),
+				);
+				chat.press("first steer");
+				chat.press("\r");
+				chat.press("second steer");
+				chat.press("\r");
+				await chat.settled(/Steering: second steer/);
+				chat.press("unfinished draft");
+
+				chat.gate.release.resolve();
+				await vi.waitFor(() => assert.match(chat.mode.editor.getText(), /second steer/), { timeout: 20_000 });
+				const returned = await chat.settled();
+				assert.equal(
+					chat.mode.editor.getText(),
+					"first steer\n\nsecond steer\n\nunfinished draft",
+					returned.join("\n"),
+				);
+				assert.equal(
+					chat.requests.filter((request) => request.includes("steer")).length,
+					0,
+					chat.requests.join("\n"),
+				);
+			},
+			MAIN_CHAT_TEST_TIMEOUT_MS,
+		);
+
+		test(
 			"Alt+Up while it is taken gives nothing back and it is sent once, as before the row stayed",
 			async () => {
 				const hook = gate();
@@ -278,6 +368,117 @@ describe("a queued message the isolated engine's main session takes", () => {
 			assert.match(after.join("\n"), /this message may not have been delivered:\s+later one/);
 			assert.equal(shown(after, "later one").rows, 0, "no longer drawn as queued");
 			assert.equal(chat.mode.editor.getText(), "draft", "not given back to edit");
+		},
+		MAIN_CHAT_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"comes back to the editor, as typed, when the replacement's saved session shows the lost engine never saved it",
+		async () => {
+			const hook = gate();
+			gates.push(hook);
+			const chat = await busyChat("isolated", { extensions: [holdMessageStart("later one", hook)] });
+			// The engine's session is kept the way a session file keeps it: what the lost engine did not write by the time it
+			// exited is not there. (Its replacement here reads the same store, as a replacement reads the lost one's file.)
+			const store = chat.pair?.engine.sessionManager.getSessionStore();
+			assert.ok(store);
+			Object.defineProperty(store, "descriptor", { value: { adapter: "jsonl", location: "sessions" } });
+			chat.press("later one");
+			chat.press("\r");
+			await chat.settled(/Steering: later one/);
+			chat.gate.release.resolve();
+			await hook.entered.promise;
+			await chat.settled();
+			chat.mode.editor.setText("draft");
+
+			chat.pair?.crash();
+			// The lost engine took it and never saved it, and its session files say so: nothing to report as unconfirmed.
+			const after = await chat.settled(/wasn't sent and is back in the\s+editor/);
+			assert.match(after.join("\n"), /1 queued message wasn't sent and is back in the\s+editor/);
+			assert.doesNotMatch(after.join("\n"), /may not have been delivered/);
+			assert.equal(chat.mode.editor.getText(), "later one\n\ndraft");
+		},
+		MAIN_CHAT_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"rewritten by an input hook, comes back once, as typed, when the lost engine never saved it",
+		async () => {
+			const hook = gate();
+			gates.push(hook);
+			const rewrite: ExtensionFactory = (pi) => {
+				pi.on("input", (event) => ({ action: "transform", text: `rewritten: ${event.text}` }));
+			};
+			const chat = await busyChat("isolated", {
+				extensions: [rewrite, holdMessageStart("rewritten: later one", hook)],
+			});
+			const store = chat.pair?.engine.sessionManager.getSessionStore();
+			assert.ok(store);
+			Object.defineProperty(store, "descriptor", { value: { adapter: "jsonl", location: "sessions" } });
+			chat.press("later one");
+			chat.press("\r");
+			await chat.settled(/Steering: rewritten: later one/);
+			chat.gate.release.resolve();
+			await hook.entered.promise;
+			await chat.settled();
+
+			chat.pair?.crash();
+			const after = await chat.settled(/wasn't sent and is back in the\s+editor/);
+			assert.equal(chat.mode.editor.getText(), "later one", after.join("\n"));
+			assert.doesNotMatch(after.join("\n"), /may not have been delivered/);
+		},
+		MAIN_CHAT_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"is neither given back nor reported once the replacement's session shows the lost engine saved it",
+		async () => {
+			const chat = await busyChat("isolated");
+			const pair = chat.pair;
+			assert.ok(pair);
+			chat.press("later one");
+			chat.press("\r");
+			await chat.settled(/Steering: later one/);
+			// The engine saves it, but its message_end never reaches the host before the engine is lost.
+			pair.holdHostTrafficFrom(
+				(record) =>
+					record.type === "message_end" &&
+					"message" in record &&
+					record.message.role === "user" &&
+					getMessageText(record.message) === "later one",
+			);
+			chat.gate.release.resolve();
+			// The chat shows the message as its turn starts it.
+			await chat.settled(echoOf("later one"));
+			await waitFor("the engine to save the message", () =>
+				pair.engine.sessionManager
+					.getEntries()
+					.some((entry) => entry.type === "message" && getMessageText(entry.message) === "later one"),
+			);
+			chat.mode.editor.setText("draft");
+			// The chat accounts for the lost engine's messages once the replacement answered which it saved.
+			const answered = Promise.withResolvers<void>();
+			const find = pair.runtime.findQueuedMessages.bind(pair.runtime);
+			Object.assign(pair.runtime, {
+				findQueuedMessages: async (messages: Parameters<typeof find>[0]) => {
+					try {
+						return await find(messages);
+					} finally {
+						answered.resolve();
+					}
+				},
+			});
+
+			pair.crash();
+			await answered.promise;
+			const after = await chat.settled();
+			assert.doesNotMatch(after.join("\n"), /may not have been delivered|back in the\s+editor/);
+			assert.equal(chat.mode.editor.getText(), "draft");
+			assert.equal(
+				chat.requests.filter((request) => request.includes("later one")).length,
+				1,
+				chat.requests.join("\n"),
+			);
 		},
 		MAIN_CHAT_TEST_TIMEOUT_MS,
 	);
