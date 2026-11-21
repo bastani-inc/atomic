@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a turn that adds 20 or more content blocks, such as many parallel tool calls and their results, missing the prompt cache on its next request on Anthropic, Amazon Bedrock and OpenAI-compatible Claude routes. That request now also marks where the previous request ended, so Claude still finds the cached conversation ([#6103](https://github.com/bastani-inc/atomic/issues/6103))
+- Fixed resuming a session near the context window lowering the thinking budget, and losing the prompt cache, because of what only the resume added, such as a longer `AGENTS.md`. On Claude models that think within a fixed budget, the first prompt after the resume now clears the earlier conversation first, as automatic compaction does, and keeps the budget; what the resume added stays in the context. With automatic compaction off the request still lowers the budget to fit ([#6117](https://github.com/bastani-inc/atomic/issues/6117))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

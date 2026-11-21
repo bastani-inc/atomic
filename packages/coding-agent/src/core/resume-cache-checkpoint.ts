@@ -1,5 +1,13 @@
 import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
-import type { AssistantMessage, Message, ThinkingBudgets } from "@bastani/atomic-ai";
+import {
+	type AssistantMessage,
+	fittedThinkingBudget,
+	type Message,
+	type ThinkingBudgets,
+	type TranscriptContext,
+} from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { convertToLlm } from "./messages.ts";
 import { BLUEPRINT_CONTEXT_TYPE } from "./resume/blueprint/context.ts";
 
 /**
@@ -55,6 +63,62 @@ export function withCacheCheckpoint(
 		return { converted: marked, keep: true };
 	}
 	return { converted, keep: true };
+}
+
+/** What the first request after a resume would send, split by where it comes from. */
+export interface ResumedRequest {
+	model: Model<Api>;
+	thinkingLevel: ThinkingLevel;
+	thinkingBudgets: ThinkingBudgets | undefined;
+	/** The restored history, through the restored checkpoint. */
+	history: readonly AgentMessage[];
+	/** What only the resume added after it: blueprint context, notices, prompt updates. */
+	resumeOnly: readonly AgentMessage[];
+	/** The input of the request itself. */
+	prompt: readonly AgentMessage[];
+	/** The context right after an automatic clear, with what the resume added carried over. */
+	cleared: readonly AgentMessage[];
+}
+
+/**
+ * Whether to clear the context before the first request after a resume. Near the context window, what only the resume
+ * added can leave too little room for the thinking budget the restored history was sent with, so the request would go
+ * out with a lower one and the provider would read the whole history again. A clear first keeps the budget, when:
+ * the restored history's last reply was sent with a fixed budget on this model and level; the request would change
+ * that budget; the history and the input alone would not; and the cleared context with the resume's additions and
+ * the input keeps the whole requested budget.
+ */
+export function clearsForResumedBudget(request: ResumedRequest): boolean {
+	const reasoning = request.thinkingLevel;
+	if (reasoning === "off") return false;
+	const sent = lastSentBudget(request.history, request.model, reasoning);
+	if (sent === undefined) return false;
+	const budgetFor = (messages: readonly AgentMessage[]) =>
+		fittedThinkingBudget(request.model, { messages: convertToLlm([...messages]) } as TranscriptContext, {
+			reasoning,
+			thinkingBudgets: request.thinkingBudgets,
+		});
+	if (budgetFor([...request.history, ...request.resumeOnly, ...request.prompt]).sent === sent) return false;
+	if (budgetFor([...request.history, ...request.prompt]).sent !== sent) return false;
+	const cleared = budgetFor([...request.cleared, ...request.prompt]);
+	return cleared.sent === cleared.requested;
+}
+
+/** The fixed thinking budget the last reply of `history` was sent with, when it was on `model` at `thinkingLevel`. */
+function lastSentBudget(
+	history: readonly AgentMessage[],
+	model: { provider: string; id: string },
+	thinkingLevel: ThinkingLevel,
+): number | undefined {
+	for (let index = history.length - 1; index >= 0; index--) {
+		const message = history[index]!;
+		if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") continue;
+		const level = (message as AssistantMessage & { thinkingLevel?: string }).thinkingLevel;
+		return message.provider === model.provider && message.model === model.id && level === thinkingLevel
+			? message.thinkingBudgetTokens
+			: undefined;
+	}
+	return undefined;
 }
 
 /**

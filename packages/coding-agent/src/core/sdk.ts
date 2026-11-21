@@ -799,6 +799,8 @@ async function constructAgentSession(
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, streamOptions) => {
+			// The first request after a resume is on its way: a later prompt is no longer the first.
+			(session as unknown as AgentSessionInternalSurface)._resumeBudgetCheckpoint = undefined;
 			let first: OpeningRequest | undefined;
 			if (openingPair) {
 				if (requestForkBoundaries && streamOptions?.onPayload === onPayload && acceptsForkReplay(model)) {
@@ -1111,6 +1113,9 @@ async function constructAgentSession(
 			(session as unknown as AgentSessionInternalSurface)._requestContextProjectionTransform =
 				requestContextProjectionTransform;
 		}
+		// A fork's opening request continues its parent's request and is not a resume.
+		if (cacheCheckpoint && !openingPair)
+			(session as unknown as AgentSessionInternalSurface)._resumeBudgetCheckpoint = cacheCheckpoint;
 	} catch (error) {
 		// The constructor releases its own leases/subscriptions; restore borrowed provider state here.
 		const cleanup = await Promise.allSettled([providerRollback.commit(), settingsManager.flush()]);
