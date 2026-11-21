@@ -138,7 +138,12 @@ export const ModelsJsonSchemas = {
 	modelOverride: ModelOverrideSchema,
 };
 
-const validateModelsConfig = Compile(ModelsConfigSchema);
+let modelsConfigValidator: ReturnType<typeof Compile<typeof ModelsConfigSchema>> | undefined;
+/** The models.json validator, compiled when a models.json is first read rather than whenever this module loads. */
+function validateModelsConfig() {
+	modelsConfigValidator ??= Compile(ModelsConfigSchema);
+	return modelsConfigValidator;
+}
 
 export type ModelsJsonModel = Static<typeof ModelDefinitionSchema>;
 export type ModelsJsonModelOverride = Static<typeof ModelOverrideSchema>;
@@ -218,9 +223,10 @@ export class ModelConfig {
 		const removed = removedProvidersIn(parsed);
 		if (removed) return new ModelConfig(new Map(), `${removed}\n\nFile: ${path}`);
 
-		if (!validateModelsConfig.Check(parsed)) {
+		const validator = validateModelsConfig();
+		if (!validator.Check(parsed)) {
 			const errors =
-				validateModelsConfig
+				validator
 					.Errors(parsed)
 					.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
 					.join("\n") || "Unknown schema error";

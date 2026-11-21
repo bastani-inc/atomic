@@ -22,6 +22,7 @@ import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
 	hasInteractiveEngineBootstrapArg,
 	INTERACTIVE_ENGINE_PREWARM_FLAG,
+	INTERACTIVE_ENGINE_PREWARM_NO_DATABASE,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
 import { startStartupPrefetch } from "./utils/startup-prefetch.js";
@@ -70,6 +71,16 @@ if (heapArgs.length > 0) {
 	if (interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)) startStartupPrefetch(getPackageDir());
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
+	// An interactive session's database opens on a thread of its own: start that thread now, while the modules load.
+	// `--no-session` keeps the session in memory and opens no database; a prewarmed engine learns it from its host.
+	const opensDatabase = prewarmedEngine
+		? args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE
+		: isPlainInteractiveSessionInvocation(args, terminal) && !args.includes("--no-session");
+	if (opensDatabase)
+		void import("./core/storage/node-sqlite-thread.js").then(
+			({ ThreadConnection }) => ThreadConnection.startSpare(),
+			() => {},
+		);
 	const started = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
