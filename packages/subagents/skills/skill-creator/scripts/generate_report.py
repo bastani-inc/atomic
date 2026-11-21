@@ -7,7 +7,9 @@ Distinguishes between train and test queries.
 """
 
 import argparse
+import codecs
 import html
+import io
 import json
 import sys
 from pathlib import Path
@@ -324,4 +326,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Output in UTF-8, as write_output_in_utf8() in utils.py sets it up; repeated here because this script
+    # also runs on its own, without its folder on the module path.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()
