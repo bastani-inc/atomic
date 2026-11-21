@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
 - Fixed SQLite selectors in the `read` tool, the SQLite session store, diagnostic logs, settings locks, history search and the engine's child-process guardian failing in a Node process whose `NODE_OPTIONS` contains `--input-type=module`, for example an SDK script run with `NODE_OPTIONS=--input-type=module node --eval`. Their worker threads now start however Node evaluates their source, also in a process started with `--input-type=module` under Node's permission model, and keep the process's flags and `NODE_OPTIONS` as before ([#6110](https://github.com/bastani-inc/atomic/issues/6110))
 
 ## [0.10.2] - 2026-11-20
