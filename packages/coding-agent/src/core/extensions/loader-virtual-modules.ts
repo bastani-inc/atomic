@@ -807,9 +807,15 @@ async function importExtensionModule(
 	// does. One whose parsed content the load cannot vouch for is recorded with a digest no content has, so a reload
 	// evaluates the extension again.
 	observeJsonReads(jiti, (file, content) => {
-		const digest = content === undefined ? CHANGED_WHILE_READ : sha256Hex(content);
-		if (retained) recordLateDigest(extensionPath, retained, file, digest);
-		else recordObservedDigest(file, digest);
+		if (retained)
+			recordLateDigest(
+				extensionPath,
+				retained,
+				file,
+				content === undefined ? CHANGED_WHILE_READ : sha256Hex(content),
+			);
+		// While the graph is recorded, the recording took the content from the read itself.
+		else if (content === undefined) recordObservedDigest(file, CHANGED_WHILE_READ);
 	});
 	if (sourceBuiltin) registerSourceBuiltinLoad(jiti, { createJiti: createJitiImpl, cacheDir });
 	const specifier = extensionImportSpecifier(importPath, cacheToken);

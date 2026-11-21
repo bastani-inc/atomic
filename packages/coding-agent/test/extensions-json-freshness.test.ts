@@ -53,6 +53,8 @@ export default function () {
 }
 
 async function load(entry: string, agentDir: string): Promise<JsonValues> {
+	// An agent directory that exists, where the load records its graph and a reload may reuse the evaluation.
+	fs.mkdirSync(agentDir, { recursive: true });
 	const factory = await extensionLoaderTestHooks.loadTransformedExtensionModule(entry, undefined, agentDir);
 	assert.equal(typeof factory, "function");
 	return (factory as unknown as () => JsonValues)();
@@ -231,6 +233,79 @@ export default function () {
 		);
 
 		assert.equal(await load(entry, path.join(root, "agent")), "0.0.0-local-copy");
+	});
+
+	it("leave an edit of the extension's package.json, which it does not import, out of its graph", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const project = path.join(root, "project");
+		fs.mkdirSync(project, { recursive: true });
+		fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ name: "project" }));
+		const entry = path.join(project, ".atomic", "extensions", "probe", "index.ts");
+		fs.mkdirSync(path.dirname(entry), { recursive: true });
+		// A package the host provides, imported by name: the load looks for the extension's package for it.
+		fs.writeFileSync(
+			entry,
+			`import { Type } from "@sinclair/typebox";\nexport default function () {\n\treturn typeof Type.String;\n}\n`,
+		);
+		const agentDir = path.join(root, "agent");
+		fs.mkdirSync(agentDir);
+		const first = await extensionLoaderTestHooks.loadTransformedExtensionModule(entry, undefined, agentDir);
+		assert.equal(
+			await extensionLoaderTestHooks.loadTransformedExtensionModule(entry, undefined, agentDir),
+			first,
+			"an unchanged extension was evaluated again",
+		);
+
+		fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ name: "project", scripts: { a: "b" } }));
+		const second = await extensionLoaderTestHooks.loadTransformedExtensionModule(entry, undefined, agentDir);
+
+		assert.equal(second, first, "the extension was evaluated again");
+	});
+
+	it("of a workspace package inside the extension's own are one value however they are named, as the runtime gives it", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const shared = path.join(root, "packages", "shared");
+		fs.mkdirSync(shared, { recursive: true });
+		fs.mkdirSync(path.join(root, "node_modules", "@ws"), { recursive: true });
+		fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "workspace-root" }));
+		fs.writeFileSync(
+			path.join(shared, "package.json"),
+			JSON.stringify({ name: "@ws/shared", exports: { ".": "./index.ts", "./settings": "./config.json" } }),
+		);
+		fs.writeFileSync(path.join(shared, "config.json"), JSON.stringify({ seen: 0 }));
+		fs.writeFileSync(
+			path.join(shared, "index.ts"),
+			`import config from "./config.json";\nconfig.seen += 1;\nexport default config;\n`,
+		);
+		fs.symlinkSync(shared, path.join(root, "node_modules", "@ws", "shared"), "junction");
+		const entry = path.join(root, "extension.ts");
+		fs.writeFileSync(
+			entry,
+			`import shared from "@ws/shared";\nimport byExport from "@ws/shared/settings";\nimport byPath from "./packages/shared/config.json";\nexport default function () {\n\treturn { byExport: byExport === shared, byPath: byPath === shared, seen: shared.seen };\n}\n`,
+		);
+
+		const loaded = (await load(entry, path.join(root, "agent"))) as unknown as Record<string, unknown>;
+
+		assert.deepEqual(loaded, { byExport: true, byPath: true, seen: 1 });
+	});
+
+	it("whose names start with two dots are read again too", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const write = (value: string) => fs.writeFileSync(path.join(root, "..snapshot.json"), JSON.stringify({ value }));
+		write("one");
+		const entry = path.join(root, "extension.ts");
+		fs.writeFileSync(
+			entry,
+			`import snapshot from "./..snapshot.json";\nexport default function () {\n\treturn snapshot.value;\n}\n`,
+		);
+		const agentDir = path.join(root, "agent");
+
+		assert.equal(await load(entry, agentDir), "one");
+		write("two");
+		assert.equal(await load(entry, agentDir), "two");
 	});
 
 	it("leave JSON in a package the extension depends on to the runtime, as before", async () => {

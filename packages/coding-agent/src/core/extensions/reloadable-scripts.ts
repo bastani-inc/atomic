@@ -74,10 +74,16 @@ interface LoadContext {
 	packageRoot: string;
 	/** The package whose JSON files the load reads itself, found when it first reads one. */
 	jsonPackage?: JsonPackage;
+	/** Per directory, the directory of its nearest `package.json`, as the load found it. */
+	manifestDirs: Map<string, string | undefined>;
 }
 
-/** The extension's own package: the directory of the `package.json` nearest its entry, and that package's name. */
+/**
+ * The extension's own package: the directory of the `package.json` nearest its entry (undefined when there is none),
+ * the directory its JSON files are in, and that package's name.
+ */
 interface JsonPackage {
+	readonly manifestDir: string | undefined;
 	readonly root: string;
 	readonly name: string | undefined;
 }
@@ -143,7 +149,13 @@ function loadContextOf(module: ModuleRecord): LoadContext {
 	let context = loadContexts.get(root);
 	if (!context) {
 		const filename = path.normalize(root.filename);
-		context = { entry: filename, cache: { [filename]: root }, json: new Map(), packageRoot: packageRootOf(filename) };
+		context = {
+			entry: filename,
+			cache: { [filename]: root },
+			json: new Map(),
+			packageRoot: packageRootOf(filename),
+			manifestDirs: new Map(),
+		};
 		loadContexts.set(root, context);
 	}
 	return context;
@@ -168,36 +180,64 @@ function ownFile(id: string, require: Jiti, context: LoadContext): OwnFile | und
 	return json === undefined ? undefined : { kind: "json", filename: json };
 }
 
-/**
- * The package a load's JSON files belong to: the directory of the `package.json` nearest the load's entry, outside
- * `node_modules` the entry's own directory when there is none.
- */
-function jsonPackageOf(context: LoadContext): JsonPackage {
-	if (context.jsonPackage) return context.jsonPackage;
-	let root = path.dirname(context.entry);
-	let name: string | undefined;
-	for (let dir = root; ; dir = path.dirname(dir)) {
-		const manifest = path.join(dir, "package.json");
-		if (fsExports.existsSync(manifest)) {
-			root = dir;
-			try {
-				const declared = (JSON.parse(fsExports.readFileSync(manifest, "utf8")) as { name?: unknown }).name;
-				name = typeof declared === "string" ? declared : undefined;
-			} catch {
-				// A package without a readable name is still the extension's package.
-			}
-			break;
-		}
-		if (path.dirname(dir) === dir) break;
+/** The directory of the `package.json` nearest `directory` (a real path), up to the file system's root. */
+function manifestDirOf(directory: string, context: LoadContext): string | undefined {
+	if (context.manifestDirs.has(directory)) return context.manifestDirs.get(directory);
+	const parent = path.dirname(directory);
+	const found = fsExports.existsSync(path.join(directory, "package.json"))
+		? directory
+		: parent === directory
+			? undefined
+			: manifestDirOf(parent, context);
+	context.manifestDirs.set(directory, found);
+	return found;
+}
+
+/** Reads `file` through a descriptor, which the graph recording does not take for a file the extension read. */
+function readUnrecorded(file: string): string {
+	const descriptor = fsExports.openSync(file, "r");
+	try {
+		return fsExports.readFileSync(descriptor, "utf8");
+	} finally {
+		fsExports.closeSync(descriptor);
 	}
-	context.jsonPackage = { root: path.normalize(fsExports.realpathSync(root)), name };
-	return context.jsonPackage;
 }
 
 /**
- * The real path of JSON file `resolved` when it lies in the extension's own package, outside the `node_modules` of
- * its dependencies, so that every specifier naming the file reads the one value of the load. JSON anywhere else, as
- * in a workspace package linked in, is left to the runtime, which gives every specifier its one cached value.
+ * The package a load's JSON files belong to: the one whose `package.json` is nearest the load's entry. Its name comes
+ * from a read the extension's graph does not record, so an edit of the manifest alone does not make a reload evaluate
+ * the extension again.
+ */
+function jsonPackageOf(context: LoadContext): JsonPackage {
+	if (context.jsonPackage) return context.jsonPackage;
+	const entryDir = path.normalize(fsExports.realpathSync(path.dirname(context.entry)));
+	const manifestDir = manifestDirOf(entryDir, context);
+	let name: string | undefined;
+	if (manifestDir !== undefined) {
+		try {
+			const declared = (JSON.parse(readUnrecorded(path.join(manifestDir, "package.json"))) as { name?: unknown })
+				.name;
+			name = typeof declared === "string" ? declared : undefined;
+		} catch {
+			// A package without a readable name is still the extension's package.
+		}
+	}
+	context.jsonPackage = { manifestDir, root: manifestDir ?? entryDir, name };
+	return context.jsonPackage;
+}
+
+/** Whether `file` lies in directory `root`, also in a file or directory whose name starts with two dots. */
+function isWithin(root: string, file: string): boolean {
+	const relative = path.relative(root, file);
+	return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/**
+ * The real path of JSON file `resolved` when it belongs to the extension's own package: the package whose
+ * `package.json` is nearest it is the extension's (outside a package, it lies in the entry's directory). Every
+ * specifier naming the file then reads the one value of the load. JSON of any other package, a dependency or a
+ * workspace package beside or inside the extension's, is left to the runtime, which gives every specifier its one
+ * cached value.
  */
 function ownJson(resolved: string, context: LoadContext): string | undefined {
 	let real: string;
@@ -206,9 +246,10 @@ function ownJson(resolved: string, context: LoadContext): string | undefined {
 	} catch {
 		return undefined;
 	}
-	const inPackage = path.relative(jsonPackageOf(context).root, real);
-	if (inPackage.startsWith("..") || path.isAbsolute(inPackage)) return undefined;
-	return inPackage.split(path.sep).includes("node_modules") ? undefined : real;
+	const own = jsonPackageOf(context);
+	const owner = manifestDirOf(path.dirname(real), context);
+	if (owner !== own.manifestDir || !isWithin(own.root, real)) return undefined;
+	return path.relative(own.root, real).split(path.sep).includes("node_modules") ? undefined : real;
 }
 
 /**
