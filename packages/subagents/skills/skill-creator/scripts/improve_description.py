@@ -14,7 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Owner, remove_path, run_main
+from scripts.atomic_cli import ISOLATED_RUN, AtomicProcess, Cancellation, Owner, remove_folder, run_main
 from scripts.utils import parse_skill_md
 
 
@@ -46,7 +46,7 @@ def _call_atomic(prompt: str, model: str | None, timeout: int = 300, cancellatio
                     raise RuntimeError(f"atomic -p exited {status}\nstderr: {atomic.stderr_tail()}")
             return output.decode("utf-8", errors="replace")
         finally:
-            remove_path(folder)
+            remove_folder(folder)
 
 
 def improve_description(
@@ -189,7 +189,7 @@ Please respond with only the new description text in <new_description> tags, not
     if log_dir:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"improve_iter_{iteration or 'unknown'}.json"
-        log_file.write_text(json.dumps(transcript, indent=2))
+        log_file.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
 
     return description
 
