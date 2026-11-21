@@ -3097,6 +3097,16 @@ export class SubagentControlRuntime {
 					) {
 						taskPending = false;
 						startBudget.end();
+						// A real session's notices and note start its turn, which its run drains (below); a scripted session runs
+						// that turn as an empty prompt, which saves no message.
+						if (
+							prepared === undefined &&
+							admitted.spec.skipTaskPrompt &&
+							(lateResults.length > 0 ||
+								(admitted.spec.resumeNotices?.length ?? 0) > 0 ||
+								admitted.spec.resumeNote !== undefined)
+						)
+							await session.prompt("");
 					} else {
 						const prompting = session.prompt(admitted.spec.task, {
 							streamingBehavior: "steer",

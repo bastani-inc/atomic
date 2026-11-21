@@ -498,17 +498,8 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
 		const disposeGate = state.disposeGate;
 		const dispose = gate && disposeGate ? { dispose: () => disposeGate.promise } : {};
-		// A real session's notice of late results or finished tasks starts its own turn when nothing else does; this
-		// scripted session runs that turn as its prompt.
-		const noticeTurn =
-			options.skipTaskPrompt === true &&
-			!options.resumeToolResults?.length &&
-			((options.resumeLateToolResults?.length ?? 0) > 0 ||
-				(options.resumeNotices?.length ?? 0) > 0 ||
-				options.resumeNote !== undefined);
 		const result = await runSync(parentCwd, agents, agentName, task, {
 			...options,
-			...(noticeTurn ? { skipTaskPrompt: false } : {}),
 			testSession: gate
 				? {
 						output: answer?.(task) ?? "finished",
