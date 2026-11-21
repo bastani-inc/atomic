@@ -3,12 +3,15 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
 	closeSync,
 	constants,
+	copyFileSync,
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -405,6 +408,31 @@ function copyInstallation(target: string): string {
 	return join(target, "dist", "utils", "compile-cache-warmup.js");
 }
 
+/**
+ * Move a package directory aside as npm does before it replaces or removes a package (`moveFile` in `@npmcli/fs`).
+ * Windows refuses to rename a directory with EPERM while a process has a file in it open, as a process loading the
+ * package's modules does for a moment for each one. npm then moves the directory's entries one by one, and removes what
+ * is left.
+ */
+function moveAsideAsNpmDoes(from: string, to: string, top = true): void {
+	mkdirSync(dirname(to), { recursive: true });
+	try {
+		renameSync(from, to);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "EPERM" && code !== "EXDEV") throw error;
+		const entry = lstatSync(from);
+		if (entry.isDirectory()) {
+			for (const name of readdirSync(from)) moveAsideAsNpmDoes(join(from, name), join(to, name), false);
+		} else if (entry.isSymbolicLink()) {
+			symlinkSync(readlinkSync(from), to, "junction");
+		} else {
+			copyFileSync(from, to);
+		}
+	}
+	if (top) rmSync(from, { recursive: true, force: true });
+}
+
 /** A copied installation and a helper that loads the whole module graph from it. */
 const HELPER_RUN_TIMEOUT_MS = 180_000;
 
@@ -483,7 +511,7 @@ test.skipIf(!onNode).each(["moves the old package aside", "puts a new package be
 			const changedAt = Date.now();
 			if (change === "moves the old package aside") {
 				// What npm does first when it replaces or removes a package.
-				renameSync(installation, join(root, "node_modules", ".atomic-retired"));
+				moveAsideAsNpmDoes(installation, join(root, "node_modules", ".atomic-retired"));
 			} else {
 				// An installer that unpacks the new package next to the old one before it swaps them.
 				mkdirSync(join(root, "node_modules", ".atomic-staged"));
@@ -543,8 +571,8 @@ test.skipIf(!windows || !onNode).each(["an uninstall", "an upgrade"])(
 				rmSync(installation, { recursive: true });
 				assert.equal(existsSync(installation), false);
 			} else {
-				// An upgrade moves the installation aside, puts the new one in its place and removes the old one.
-				renameSync(installation, `${installation}.old`);
+				// An upgrade moves the installation aside as npm does, puts the new one in its place and removes the old one.
+				moveAsideAsNpmDoes(installation, `${installation}.old`);
 				copyInstallation(installation);
 				rmSync(`${installation}.old`, { recursive: true });
 				assert.equal(existsSync(`${installation}.old`), false);
