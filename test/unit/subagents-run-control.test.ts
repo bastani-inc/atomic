@@ -5226,7 +5226,7 @@ for (const heartbeatMs of [0, 120_000]) {
 	});
 }
 
-test("results a woken child is given stay held in its record until its run has them (#4326)", async () => {
+test("results a woken child is given stay held in its record until its run saved them (#4326)", async () => {
 	const h = harness();
 	await releasedWithWakes(h, "heldwake1");
 	await h.call({ action: "pause", id: "heldwake1:0" });
@@ -5238,17 +5238,29 @@ test("results a woken child is given stay held in its record until its run has t
 
 	const resumed = await h.call({ action: "resume", id: "heldwake1:0", message: "go on" });
 	const taskId = resumedTaskId(resumed);
-	const running = await h.waitForLatest(
+	await h.waitForLatest(
 		"heldwake1:0",
 		(record) => record.state === "running" && record.taskId === taskId && record.launchLeafId !== undefined,
 	);
-	assert.deepEqual(running.heldToolResults, [green], "the result is still held while the run has not read it");
 	assert.deepEqual(h.runs.at(-1)?.options.wakeToolResultIds, ["ci-1"]);
 
 	gate.resolve();
 	await settled(h, taskId);
 	const done = await h.waitForLatest("heldwake1:0", clearedOk);
 	assert.equal(done.taskId, taskId);
+	// The records the owner saved, in order: the resumed run starts holding the result, and lets it go only after.
+	const ofResumedRun = h.sessionManager
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom" &&
+			entry.customType === SUBAGENT_CHILD_RECORD_TYPE &&
+			(entry.data as SubagentChildRecord).childId === "heldwake1:0" &&
+			(entry.data as SubagentChildRecord).taskId === taskId
+				? [entry.data as SubagentChildRecord]
+				: [],
+		);
+	assert.deepEqual(ofResumedRun[0]?.heldToolResults, [green], "still held when its run starts, before it saved it");
+	assert.deepEqual(ofResumedRun.at(-1)?.heldToolResults, [], "let go once its run saved it");
 	assert.equal(h.runs.filter((run) => readsLate(run, green)).length, 1);
 });
 
@@ -6883,7 +6895,7 @@ test("a resume while a wake that did not reopen the child still finishes queues 
 	await wake;
 });
 
-test("a wake saves the results it carries in the child's record before the child is restored, and the record no longer holds them once its run has them (#4326)", async () => {
+test("a wake saves the results it carries in the child's record before the child is restored, and the record no longer holds them once its run saved them (#4326)", async () => {
 	const h = harness();
 	const dispatcher = await releasedWithWakes(h, "save-first");
 	const owner = h.sessionManager.getSessionId();
@@ -6903,17 +6915,26 @@ test("a wake saves the results it carries in the child's record before the child
 		kind: "tool-result",
 		toolResult: green,
 	});
-	const running = await h.waitForLatest(
-		"save-first:0",
-		(record) => record.state === "running" && record.launchLeafId !== undefined,
-	);
-
-	assert.deepEqual(heldWhenRestoreBegan, [[green]], "stored before the child is reopened");
-	assert.deepEqual(running.heldToolResults, [green], "still held while its run has not read it");
+	await h.waitForLatest("save-first:0", (record) => record.state === "running" && record.launchLeafId !== undefined);
 	gate.resolve();
 	await woken;
 	const done = await h.waitForLatest("save-first:0", clearedOk);
 	await settled(h, done.taskId ?? "");
+
+	assert.deepEqual(heldWhenRestoreBegan, [[green]], "stored before the child is reopened");
+	// The records the owner saved, in order: the woken run starts holding the result, and lets it go only after.
+	const saved = h.sessionManager
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom" &&
+			entry.customType === SUBAGENT_CHILD_RECORD_TYPE &&
+			(entry.data as SubagentChildRecord).childId === "save-first:0"
+				? [entry.data as SubagentChildRecord]
+				: [],
+		);
+	const ofWokenRun = saved.filter((record) => record.taskId === done.taskId);
+	assert.deepEqual(ofWokenRun[0]?.heldToolResults, [green], "still held when its run starts, before it saved it");
+	assert.deepEqual(ofWokenRun.at(-1)?.heldToolResults, [], "let go once its run saved it");
 	assert.equal(h.runs.filter((run) => readsLate(run, green)).length, 1);
 });
 
