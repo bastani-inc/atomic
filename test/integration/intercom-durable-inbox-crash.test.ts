@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SessionEntry } from "@bastani/atomic";
 import { afterAll, beforeAll, test, vi } from "vitest";
+import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -16,7 +17,7 @@ const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 
-const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
@@ -67,16 +68,15 @@ afterAll(async () => {
 		await broker.cleanup();
 	} finally {
 		try {
-			const pid = Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10);
-			if (Number.isFinite(pid) && pid > 0) process.kill(pid, "SIGKILL");
-		} catch {
-			// The fixture's broker removed its pid file on the way out, and no other broker was spawned.
+			// #6125: only the broker that answers in this agent dir, and only while its pid still names it.
+			await stopDetachedBroker(agentDir);
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+			if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
+			removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 		}
-		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-		if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-		removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 	}
 });
 

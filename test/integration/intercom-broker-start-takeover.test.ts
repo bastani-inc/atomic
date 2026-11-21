@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { isProcessAlive } from "../../packages/intercom/broker/broker-stop.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { makeTempDirectory, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 import { type ChatRequest, messageText, startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 
@@ -113,7 +113,7 @@ quitStopsTheStart(
 			cols: 160,
 			rows: 40,
 		});
-		let firstBrokerPid: number | undefined;
+		let firstBroker: RecordedProcess | undefined;
 		try {
 			await sessionA.waitForScreen((s) => s.includes("❯"), CLI_START_TIMEOUT_MS, "session A's prompt");
 			const deadline = Date.now() + CLI_START_TIMEOUT_MS;
@@ -121,7 +121,8 @@ quitStopsTheStart(
 				assert.ok(Date.now() < deadline, "session A never started its broker");
 				await sleep(50);
 			}
-			firstBrokerPid = Number(readFileSync(marker, "utf8"));
+			// #6125: recorded while it waits to be stopped, so a later process given its pid is never taken for it.
+			firstBroker = await recordProcess(Number(readFileSync(marker, "utf8")));
 
 			const sessionB = spawnProcess([process.execPath, CLI, ...args, "--no-session", "-p", "SESSION-B"], {
 				cwd,
@@ -153,11 +154,7 @@ quitStopsTheStart(
 			assert.match(stdout, /B-DONE .*Current session/s, diagnostics);
 		} finally {
 			sessionA.kill();
-			if (firstBrokerPid !== undefined && isProcessAlive(firstBrokerPid)) {
-				try {
-					process.kill(firstBrokerPid, "SIGKILL");
-				} catch {}
-			}
+			if (firstBroker !== undefined) await signalRecordedProcess(firstBroker);
 			try {
 				await server.close();
 			} finally {

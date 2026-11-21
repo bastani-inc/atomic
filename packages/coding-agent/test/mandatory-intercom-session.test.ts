@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { stopDetachedBroker } from "../../../test/helpers/detached-broker.js";
 import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { getMandatoryBuiltinExtensionPaths } from "../src/core/builtin-packages.ts";
@@ -39,23 +40,6 @@ function createTempDir(prefix: string): string {
 	linkSharedTranspileCache(join(dir, "agent"));
 	tempDirs.push(dir);
 	return dir;
-}
-
-function stopBrokerAt(agentDir: string): void {
-	const pidPath = join(agentDir, "intercom", "broker.pid");
-	if (!existsSync(pidPath)) return;
-	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	if (!Number.isFinite(pid) || pid <= 0) return;
-	try {
-		process.kill(pid, "SIGTERM");
-	} catch {
-		// The detached broker already exited.
-	}
-	try {
-		process.kill(pid, "SIGKILL");
-	} catch {
-		// SIGTERM was enough, or the process was already gone.
-	}
 }
 
 function restoreAgentDirEnv(): void {
@@ -98,16 +82,17 @@ function asCustomLoader(
 
 // #3105: collision and broker checks explicitly select Intercom; suppression is covered by SDK parity.
 describe("trusted ordinary Intercom sessions", () => {
-	afterEach(() => {
+	afterEach(async () => {
 		for (const dir of tempDirs.splice(0)) {
-			stopBrokerAt(join(dir, "agent"));
+			// #6125: only the broker that answers in that agent dir, and only while its pid still names it.
+			await stopDetachedBroker(join(dir, "agent"));
 			if (!existsSync(dir)) continue;
 			removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
 		}
 	});
 
-	afterAll(() => {
-		stopBrokerAt(isolatedBrokerAgentDir);
+	afterAll(async () => {
+		await stopDetachedBroker(isolatedBrokerAgentDir);
 		restoreAgentDirEnv();
 		removeTestDirectory(isolatedBrokerAgentDir, { retries: 20, retryDelayMs: 50 });
 	});

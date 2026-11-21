@@ -20,6 +20,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../../../test/helpers/recorded-process.js";
 import {
 	copiesOutputToLog,
 	LOG_TAIL_BYTES,
@@ -127,15 +128,6 @@ function heldNode(): {
 			open = false;
 		},
 	};
-}
-
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
 }
 
 test("an ordinary elapsed time matches the wall sample even if the thread is descheduled between reads (#5707)", () => {
@@ -664,13 +656,18 @@ describe("running a logged process (#4588)", () => {
 			assert.equal(endedFirst, undefined, "the process ended before its grandchild started");
 			return existsSync(path("grandchild.pid")) && readFileSync(path("grandchild.pid"), "utf8") !== "";
 		}, "the grandchild starting");
-		const grandchildPid = Number(readFileSync(path("grandchild.pid"), "utf8"));
+		// #6125: recorded while it waits to be stopped, so a later process given its pid is never taken for it.
+		const grandchildProcess = await recordProcess(Number(readFileSync(path("grandchild.pid"), "utf8")));
 		try {
 			controller.abort(reason);
 			await assert.rejects(pending, (error: unknown) => error === reason);
-			await waitFor(() => !isAlive(grandchildPid), "the grandchild stopping");
+			assert.equal(
+				await waitUntilGone(grandchildProcess, STEADY_TIMEOUT_MS),
+				true,
+				"the grandchild is still running",
+			);
 		} finally {
-			if (isAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+			await signalRecordedProcess(grandchildProcess);
 		}
 	});
 
@@ -698,14 +695,14 @@ describe("running a logged process (#4588)", () => {
 				() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
 				"the background sleep starting",
 			);
-			const sleeper = Number(readFileSync(pidFile, "utf8").trim());
+			const sleeper = await recordProcess(Number(readFileSync(pidFile, "utf8").trim()));
 			try {
 				controller.abort(reason);
 				await assert.rejects(pending, (error: unknown) => error === reason);
-				assert.equal(isAlive(sleeper), false, "the sleep holding a file in the step's directory has ended");
+				assert.equal(await isGone(sleeper), true, "the sleep holding a file in the step's directory has ended");
 				renameSync(work, path("work-moved"));
 			} finally {
-				if (isAlive(sleeper)) process.kill(sleeper, "SIGKILL");
+				await signalRecordedProcess(sleeper);
 			}
 		},
 	);

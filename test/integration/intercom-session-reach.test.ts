@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -476,15 +475,9 @@ test(
 	REAL_BROKER_SESSION_TIMEOUT_MS,
 );
 
+/** Kills the broker as a crash does, and waits until it is gone. #6125: only the broker that answers in this agent dir. */
 async function killBroker(): Promise<void> {
-	const pid = Number.parseInt(readFileSync(join(agentDir, "intercom", "broker.pid"), "utf8").trim(), 10);
-	process.kill(pid, "SIGKILL");
-	await vi.waitFor(
-		() => {
-			assert.throws(() => process.kill(pid, 0));
-		},
-		{ timeout: BROKER_START_TIMEOUT_MS },
-	);
+	assert.equal(await stopDetachedBroker(agentDir, { signals: ["SIGKILL"] }), true, "no broker answered to be killed");
 }
 
 interface RawRegistration {

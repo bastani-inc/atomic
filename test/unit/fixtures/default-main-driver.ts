@@ -8,6 +8,12 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	waitUntilGone,
+} from "../../helpers/recorded-process.js";
 import { bunExecutable, decodeStream, moduleDir, readStreamText, sleep, type SpawnedProcess, spawnProcess } from "../../helpers/runtime.js";
 
 export const PREFIX = "@@ATOMIC_TEST@@";
@@ -42,6 +48,8 @@ export class DefaultMainDriver {
 	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
+	/** #6125: each engine the host reported, recorded as it was reported, while it ran. */
+	private readonly engines = new Map<number, Promise<RecordedProcess>>();
 	private stderr = "";
 
 	constructor(args: string[], env: Record<string, string>) {
@@ -123,7 +131,8 @@ export class DefaultMainDriver {
 		const currentEnginePid = this.currentEnginePid();
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
 		await this.process.exited;
-		if (currentEnginePid !== undefined) await killAndReap(currentEnginePid);
+		const engine = currentEnginePid === undefined ? undefined : await this.engines.get(currentEnginePid);
+		if (engine !== undefined) await killAndReap(engine);
 	}
 
 	private currentEnginePid(): number | undefined {
@@ -147,7 +156,12 @@ export class DefaultMainDriver {
 				const marker = line.indexOf(PREFIX);
 				if (marker === -1) continue;
 				try {
-					this.reports.push(JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport);
+					const report = JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport;
+					this.reports.push(report);
+					const enginePid = report.enginePid;
+					if (enginePid !== undefined && !this.engines.has(enginePid)) {
+						this.engines.set(enginePid, recordProcess(enginePid));
+					}
 					for (const waiter of this.waiters) waiter();
 				} catch {}
 			}
@@ -186,11 +200,8 @@ export async function waitForExit(pid: number, timeoutMs = 4_000): Promise<void>
 	throw new Error(`PID ${pid} remained alive`);
 }
 
-async function killAndReap(pid: number): Promise<void> {
-	try {
-		process.kill(pid, "SIGKILL");
-	} catch {
-		return;
-	}
-	await waitForExit(pid);
+/** Kills `engine` only while its pid still names it (#6125), and waits until it is gone. */
+async function killAndReap(engine: RecordedProcess): Promise<void> {
+	if (!(await signalRecordedProcess(engine))) return;
+	if (!(await waitUntilGone(engine, 4_000))) throw new Error(`PID ${engine.pid} remained alive`);
 }

@@ -25,6 +25,7 @@ import {
 import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import {
   BROKER_ANNOUNCE_PATH_ENV,
+  BROKER_ANNOUNCE_START_ENV,
   BROKER_ANNOUNCE_TOKEN_ENV,
   type BrokerStartAnnouncement,
   readBrokerStartAnnouncementAsync,
@@ -36,9 +37,11 @@ import {
   isIntercomBrokerStopTimeoutError,
   processSharedStorageSelection,
   processSharedStorageSelectionAsync,
+  readProcessCreationTime,
   takeTakeoverMutex,
   takeTakeoverMutexAsync,
 } from "@bastani/atomic";
+import { hostCommandEnvironment } from "./host-command-environment.js";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
@@ -298,7 +301,8 @@ export function getBrokerLaunchSpec(
  *
  * The broker routes through the shared storage this process was launched with (`--storage`,
  * `--storage-file` or `ATOMIC_STORAGE`), passed as `ATOMIC_STORAGE`; without one it reads settings.
- * With `announcement` it also gets the file and token it announces its pid with (`start-announcement.ts`).
+ * With `announcement` it also gets the file and token it announces its pid with, and asks it to add when it was created
+ * (`start-announcement.ts`).
  */
 function buildBrokerSpawnOptions(
   storage: string | undefined,
@@ -321,7 +325,11 @@ function buildBrokerSpawnOptions(
       ...(storage === undefined ? {} : { [BROKER_STORAGE_ENV]: storage }),
       ...(announcement === undefined
         ? {}
-        : { [BROKER_ANNOUNCE_PATH_ENV]: announcement.path, [BROKER_ANNOUNCE_TOKEN_ENV]: announcement.token }),
+        : {
+            [BROKER_ANNOUNCE_PATH_ENV]: announcement.path,
+            [BROKER_ANNOUNCE_TOKEN_ENV]: announcement.token,
+            [BROKER_ANNOUNCE_START_ENV]: "1",
+          }),
     }),
     windowsHide: true,
   };
@@ -641,7 +649,9 @@ async function spawnBrokerHoldingLock(
       // returns while that broker is writing its start-up files.
       waitForBroker(
         readyTimeoutMs,
-        announcement === undefined ? undefined : () => readBrokerStartAnnouncementAsync(announcement),
+        announcement === undefined
+          ? undefined
+          : async () => (await readBrokerStartAnnouncementAsync(announcement))?.pid,
         cancelSignal,
       ).then(() => {
         cleanup();
@@ -651,14 +661,22 @@ async function spawnBrokerHoldingLock(
         const starting = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
         // #4727: the session that launched this broker is gone and the broker did not start in time; it is stopped
         // before this call returns, so it never writes into an agent directory its host may already be removing. Behind
-        // the Windows launcher the broker is found by the pid it announced; one that never announced cannot be found.
-        let abandonedPid: number | undefined;
+        // the Windows launcher the broker is found by the pid it announced; one that never announced cannot be found,
+        // and one that did not announce when it was created cannot be told apart from a later process given its pid
+        // (#6133), so neither is stopped.
+        let abandoned: StartingBroker | undefined;
         if (signal?.aborted) {
-          if (launch.kind === "direct") abandonedPid = starting ? child.pid : undefined;
-          else if (announcement !== undefined) abandonedPid = await readBrokerStartAnnouncementAsync(announcement);
+          if (launch.kind === "direct") {
+            if (starting && child.pid !== undefined) abandoned = { kind: "group", pid: child.pid };
+          } else if (announcement !== undefined) {
+            const announced = await readBrokerStartAnnouncementAsync(announcement);
+            if (announced?.started !== undefined) {
+              abandoned = { kind: "announced", pid: announced.pid, started: announced.started };
+            }
+          }
         }
-        if (abandonedPid !== undefined) {
-          void stopStartingBroker(abandonedPid).finally(() => reject(toError(error)));
+        if (abandoned !== undefined) {
+          void stopStartingBroker(abandoned).finally(() => reject(toError(error)));
           return;
         }
         // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
@@ -685,29 +703,130 @@ const STARTING_BROKER_KILL_WAIT_MS = 5_000;
 /** A killed process is gone within milliseconds, and a session that is closing waits for it. */
 const STARTING_BROKER_KILL_POLL_MS = 10;
 
+/** A broker that has not started listening, as the spawner that launched it finds it. */
+type StartingBroker =
+  /**
+   * Spawned directly and detached, so it leads a process group of its own. A custom broker command can run the broker
+   * as its own child rather than replacing itself with it; the group holds both. Its pid is read while the spawner's
+   * child has not been reaped, so it still names that child.
+   */
+  | { readonly kind: "group"; readonly pid: number }
+  /** Behind the Windows launcher: the pid the broker announced, and when that process was created. */
+  | { readonly kind: "announced"; readonly pid: number; readonly started: string };
+
+/** How long the check and Windows PowerShell's start may take before the session stops waiting for the broker. */
+const ANNOUNCED_BROKER_STOP_START_MS = 5_000;
+/** Beyond the PowerShell's own bounds, how much longer the session waits for it to end. */
+const ANNOUNCED_BROKER_STOP_MARGIN_MS = 1_000;
+
 /**
- * Kill a broker that has not started listening, with every process it started, and wait until they are gone. A custom
- * broker command can run the broker as its own child rather than replacing itself with it. Elsewhere than Windows the
- * broker was spawned detached, so it leads a process group of its own; on Windows `pid` is the broker's announced pid,
- * and `taskkill /T` ends its process tree.
+ * The PowerShell that stops the Windows broker `pid` created at `started` (#6133), with every process it started. Each
+ * process is ended only through a handle this PowerShell holds to it, opened before it is checked and kept until the
+ * PowerShell ends: Windows gives a pid to no other process while a handle to it is open, so a check made through the
+ * handle stays true for the process it ends. So a PowerShell that is itself ended part way leaves processes running,
+ * and never ends one that is not the broker's.
+ *
+ * The broker is the process whose creation time is `started`. Its processes are found from one `Win32_Process`
+ * snapshot by parent pid: a process counts as a child only if it was created no earlier than its parent (an older
+ * process naming that pid as its parent was started by an earlier holder of the pid), and only if the process its
+ * handle holds was created when the snapshot says (not a later process given the snapshot's pid). Without a snapshot it
+ * ends the broker alone. It waits up to `waitMs` for the broker to exit. A process it may not open, or one created at
+ * another time, is left alone.
  */
-async function stopStartingBroker(pid: number): Promise<void> {
-  const deadline = Date.now() + STARTING_BROKER_KILL_WAIT_MS;
-  if (process.platform === "win32") {
-    await new Promise<void>((resolve) => {
-      const taskkill = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      taskkill.once("error", () => resolve());
-      taskkill.once("exit", () => resolve());
-    });
-    while (isProcessAlive(pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
-    return;
+function stopAnnouncedBrokerScript(pid: number, started: string, waitMs: number): string {
+  return `$ErrorActionPreference = 'Stop'
+function Hold([int]$id) {
+  try { $p = [System.Diagnostics.Process]::GetProcessById($id); $null = $p.Handle; $p } catch { $null }
+}
+function Created($p) {
+  try { $p.StartTime.ToFileTimeUtc() } catch { $null }
+}
+function Micros([datetime]$time) { $time.ToUniversalTime().ToString('yyyyMMddHHmmssffffff') }
+$broker = Hold ${pid}
+if ($null -eq $broker) { exit 3 }
+$brokerCreated = Created $broker
+if ($null -eq $brokerCreated -or $brokerCreated -ne [long]'${started}') { exit 3 }
+$held = New-Object System.Collections.ArrayList
+[void]$held.Add($broker)
+$ids = New-Object 'System.Collections.Generic.HashSet[int]'
+[void]$ids.Add($broker.Id)
+$snapshot = @()
+try { $snapshot = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, CreationDate) } catch { }
+$level = @(, @($broker, $brokerCreated))
+while ($level.Count -gt 0) {
+  $next = @()
+  foreach ($parent in $level) {
+    foreach ($entry in $snapshot) {
+      if ($entry.ParentProcessId -ne $parent[0].Id -or $ids.Contains([int]$entry.ProcessId) -or $null -eq $entry.CreationDate) { continue }
+      $child = Hold $entry.ProcessId
+      if ($null -eq $child) { continue }
+      $created = Created $child
+      if ($null -eq $created -or $created -lt $parent[1]) { continue }
+      if ((Micros $child.StartTime) -ne (Micros $entry.CreationDate)) { continue }
+      [void]$held.Add($child)
+      [void]$ids.Add($child.Id)
+      $next += , @($child, $created)
+    }
   }
+  $level = $next
+}
+foreach ($p in $held) { try { $p.Kill() } catch { } }
+if ($broker.WaitForExit(${waitMs})) { exit 0 } else { exit 4 }
+`;
+}
+
+/**
+ * Stop the Windows broker found by its announcement, as {@link stopAnnouncedBrokerScript} does. A pid that already names
+ * another process is left alone without starting PowerShell. The session waits at most
+ * {@link ANNOUNCED_BROKER_STOP_START_MS} for the check and PowerShell's start, {@link STARTING_BROKER_KILL_WAIT_MS} for
+ * the broker to exit, and {@link ANNOUNCED_BROKER_STOP_MARGIN_MS}. It never ends the PowerShell: once the session stops
+ * waiting, the PowerShell finishes on its own, or ends with this process, which can only leave processes running.
+ */
+async function stopAnnouncedBroker(pid: number, started: string): Promise<void> {
+  const entered = performance.now();
+  const bound = ANNOUNCED_BROKER_STOP_START_MS + STARTING_BROKER_KILL_WAIT_MS + ANNOUNCED_BROKER_STOP_MARGIN_MS;
+  if ((await readProcessCreationTime(pid)) !== started) return;
+  if (performance.now() - entered >= ANNOUNCED_BROKER_STOP_START_MS) return;
+  const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  await new Promise<void>((resolve) => {
+    const powershell = spawn(
+      join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(stopAnnouncedBrokerScript(pid, started, STARTING_BROKER_KILL_WAIT_MS), "utf16le").toString("base64"),
+      ],
+      { cwd: systemRoot, env: hostCommandEnvironment(), stdio: "ignore", windowsHide: true },
+    );
+    powershell.unref();
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, bound - (performance.now() - entered));
+    powershell.once("error", done);
+    powershell.once("exit", done);
+  });
+}
+
+/**
+ * Kill a broker that has not started listening, with every process it started, and wait until they are gone.
+ *
+ * #6133: on Windows the broker is found by the pid it announced, which Windows gives to another process within seconds
+ * once the broker has exited. It is stopped only through a handle to the process whose creation time is the one it
+ * announced ({@link stopAnnouncedBroker}), never by its pid alone; a pid that names another process, or a process this
+ * one may not open, counts as a broker that has already exited.
+ */
+async function stopStartingBroker(broker: StartingBroker): Promise<void> {
+  if (broker.kind === "announced") return stopAnnouncedBroker(broker.pid, broker.started);
+  const deadline = Date.now() + STARTING_BROKER_KILL_WAIT_MS;
   try {
-    process.kill(-pid, "SIGKILL");
+    process.kill(-broker.pid, "SIGKILL");
   } catch {
     return;
   }
-  while (isProcessAlive(-pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
+  while (isProcessAlive(-broker.pid) && Date.now() < deadline) await sleep(STARTING_BROKER_KILL_POLL_MS);
 }
 
 /** How often a session waiting to upgrade the broker checks whether the spawn lock is free. */
