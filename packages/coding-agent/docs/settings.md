@@ -176,6 +176,19 @@ Use `--debug` or `ATOMIC_DEBUG=1` for a single run (displays a `debug` badge in 
 { "httpProxy": "http://127.0.0.1:7890" }
 ```
 
+Both the npm-installed `atomic` and the standalone binary send an `https://` request through `HTTP_PROXY` when `HTTPS_PROXY` is unset, and skip the hosts `NO_PROXY` names. The binary sends requests with Bun's own HTTP client, which reads the proxy variables differently in these cases:
+
+| Setup | npm-installed `atomic` | Standalone binary |
+| --- | --- | --- |
+| `ALL_PROXY` naming an `http://` or `https://` proxy | Not read | Used when the request's own variable is unset |
+| An empty lowercase variable (`http_proxy=""`, `no_proxy=""`) with the uppercase one set | The empty value counts: no proxy, no exemptions | The uppercase value is used |
+| An address block in `NO_PROXY` (`10.0.0.0/8`) | Not matched | Exempts the addresses in it |
+| Proxy variables changed while Atomic runs | Read at startup and when `httpIdleTimeoutMs` changes | Read for each request |
+| An `http://` endpoint through a proxy | Sent through a `CONNECT` tunnel | Sent to the proxy with the full URL |
+| A SOCKS proxy (`socks5://`) in `HTTP_PROXY` or `HTTPS_PROXY` | Used | Requests fail with `UnsupportedProxyProtocol` |
+
+The OpenAI Codex WebSocket takes the same proxy as the install's other requests. In the binary it also reads the proxy variables of a credential's [`env`](/providers#auth-file), and an `ALL_PROXY` naming a SOCKS proxy leaves it unused: those requests are sent over SSE instead.
+
 ### Warnings
 
 | Setting | Type | Default | Description |
@@ -253,7 +266,7 @@ See [Worktree snapshots](/worktree-snapshots).
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-hinted retry delay before failing fast (`0` disables cap; legacy `retry.maxDelayMs` migrates here) |
 
 - **Server retry hints:** Honors `Retry-After-Ms`, `Retry-After`, Cloudflare 5xx `retry_after`, and Google `RetryInfo.retryDelay` up to `retry.provider.maxRetryDelayMs` (failing immediately if the server requests longer, e.g. a 5-hour quota reset). Covers OpenAI, OpenAI-compatible, Codex, Anthropic, Azure OpenAI, Mistral, Google/Vertex, and Bedrock. Cloudflare 520–524 and connection resets count as transient; non-retryable 4xx and quota errors fail immediately. `retry.maxRetries` still limits the number of retries, so with the defaults a hinted outage can take up to about 3 × 60s before the turn fails or switches to a configured `fallbackModels` entry.
-- **Refused TLS certificates:** A request refused because the endpoint's certificate is not trusted, for example a self-signed certificate or a corporate TLS-inspecting proxy, is never retried, at the SDK level or by `retry.maxRetries`. The error names the host, the code (such as `SELF_SIGNED_CERT_IN_CHAIN`) and the fix: to trust a private or corporate CA, set [`NODE_EXTRA_CA_CERTS`](/environment-variables#tls-certificates) and restart Atomic. A connection reset during the TLS handshake is still retried.
+- **Refused TLS certificates:** A request refused because the endpoint's certificate is not trusted, for example a self-signed certificate or a corporate TLS-inspecting proxy, is never retried, at the SDK level or by `retry.maxRetries`. The error names the host (the proxy's, when it is the `https://` proxy's own certificate), the code (such as `SELF_SIGNED_CERT_IN_CHAIN`) and the fix: to trust a private or corporate CA, set [`NODE_EXTRA_CA_CERTS`](/environment-variables#tls-certificates) and restart Atomic. A connection reset during the TLS handshake is still retried.
 - **GitHub Copilot long cuts:** A stream cut after ≥5 minutes gets 1 retry; a second consecutive long cut switches to `fallbackModels` (or fails suggesting smaller steps / lower effort). See [GitHub Copilot errors](/providers#streams-cut-after-a-long-attempt).
 - **SDK `retryDeadline`:** Pass `retryDeadline: performance.now() + budgetMs` (or `{ at, onExpired }`) alongside `signal` on provider requests or `retryAssistantCall()` to prevent starting backoff retries past a local process deadline (do not use `Date.now()`).
 
@@ -279,7 +292,7 @@ See [Worktree snapshots](/worktree-snapshots).
 | --- | --- | --- | --- |
 | `httpIdleTimeoutMs` | number or string | `600000` | Global HTTP dispatcher idle timeout in ms, duration string (`"30s"`, `"5m"`, `"1h"`), or `"disabled"`/`0`. |
 
-Applies to `fetch`, provider SDK HTTP clients, and the default total wall-clock budget for one [structured decision](/sdk/structured-decisions#cancellation-and-failures) (`structured_output`, `generateStructuredOutput()`, `decide()`). `/settings` presets: `30 sec` (`30000`), `1 min` (`60000`), `5 min` (`300000`), `10 min` (`600000`), `30 min` (`1800000`), `Disabled` (`"disabled"` / `0`).
+Applies to `fetch`, provider SDK HTTP clients, and the default total wall-clock budget for one [structured decision](/sdk/structured-decisions#cancellation-and-failures) (`structured_output`, `generateStructuredOutput()`, `decide()`). `/settings` presets: `30 sec` (`30000`), `1 min` (`60000`), `5 min` (`300000`), `10 min` (`600000`), `30 min` (`1800000`), `Disabled` (`"disabled"` / `0`). The standalone binary checks the timeout on a coarse timer, so it ends a silent request up to about 8 seconds after the timeout runs out, or up to about two minutes after it for timeouts longer than four minutes.
 
 ### Message Delivery
 

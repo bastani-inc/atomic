@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -6,13 +6,11 @@ import { stream as streamOpenAICodexResponses } from "@bastani/atomic-ai/api/ope
 import { normalizeContext } from "@bastani/atomic-ai/utils/transcript";
 import * as undici from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type ConnectProxy, startConnectProxy } from "../../../test/helpers/http-connect-proxy.js";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.js";
 import { wrapCodexFastRouteWebSocket } from "../src/core/fast-model-routing-transport.ts";
 import { configureHttpDispatcher, createHttpDispatcherOptions } from "../src/core/http-dispatcher.ts";
 import { bunExecutable } from "./cli-test-helpers.ts";
-
-/** Structural: starts Bun to exercise its ESM view of undici, which differs from Node's. */
-const BUN_HTTP_SETUP_TIMEOUT_MS = 10_000;
 
 describe("createHttpDispatcherOptions", () => {
 	it("disables undici's default fixed connect timeout", () => {
@@ -30,30 +28,26 @@ describe("createHttpDispatcherOptions", () => {
 		expect(typeof options.clientFactory).toBe("function");
 		expect(typeof options.factory).toBe("function");
 	});
-
-	it(
-		"installs the configured undici fetch under Bun",
-		() => {
-			const moduleUrl = new URL("../src/core/http-dispatcher.ts", import.meta.url).href;
-			const script = [
-				`const originalFetch = globalThis.fetch;`,
-				`const { configureHttpDispatcher } = await import(${JSON.stringify(moduleUrl)});`,
-				`configureHttpDispatcher();`,
-				`console.log(JSON.stringify({ replaced: globalThis.fetch !== originalFetch }));`,
-			].join("\n");
-			const child = spawnSync(bunExecutable(), ["--eval", script], {
-				encoding: "utf8",
-				timeout: BUN_HTTP_SETUP_TIMEOUT_MS,
-			});
-
-			expect(child.error).toBeUndefined();
-			expect(child.status).toBe(0);
-			expect(child.stderr).toBe("");
-			expect(JSON.parse(child.stdout)).toEqual({ replaced: true });
-		},
-		BUN_HTTP_SETUP_TIMEOUT_MS,
-	);
 });
+
+function codexModel(baseUrl: string) {
+	return {
+		id: "test-model",
+		name: "Test Model",
+		api: "openai-codex-responses" as const,
+		provider: "test-provider",
+		baseUrl,
+		reasoning: false,
+		input: ["text" as const],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 10_000,
+		maxTokens: 1_000,
+	};
+}
+
+function codexToken(): string {
+	return `x.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.x`;
+}
 
 const DISPATCHER_PROXY_ENV_KEYS = [
 	"HTTP_PROXY",
@@ -212,6 +206,154 @@ describe("http dispatcher", () => {
 			]);
 		}
 	});
+	it("names an https proxy whose own certificate was refused, not the endpoint the proxy never reached, over fetch and over OpenAI Codex's WebSocket", async () => {
+		// The proxy shows a self-signed certificate; the endpoint behind it is never connected to.
+		const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost", "127.0.0.1"] });
+		let proxyConnections = 0;
+		const proxy = https.createServer({ cert: certificate.cert, key: certificate.key });
+		proxy.on("connection", () => proxyConnections++);
+		proxy.on("tlsClientError", () => {});
+		let endpointConnections = 0;
+		const endpoint = net.createServer((socket) => {
+			endpointConnections++;
+			socket.destroy();
+		});
+		for (const server of [proxy, endpoint])
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const portOf = (server: net.Server) => {
+			const address = server.address();
+			if (!address || typeof address === "string") throw new Error("Server did not bind to a TCP port");
+			return address.port;
+		};
+		// The proxy URL's credentials are never repeated.
+		process.env.HTTPS_PROXY = `https://agent:s3cret@localhost:${portOf(proxy)}`;
+		configureHttpDispatcher();
+		const dispatcher = undici.getGlobalDispatcher();
+		const originalWebSocket = globalThis.WebSocket;
+		globalThis.WebSocket = wrapCodexFastRouteWebSocket(undici.WebSocket as unknown as typeof globalThis.WebSocket);
+		try {
+			const sse = vi.fn(async () => new Response("unavailable", { status: 503 }));
+			for (const [transport, fetch] of [
+				["auto", sse],
+				["sse", undefined],
+			] as const) {
+				const message = await streamOpenAICodexResponses(
+					codexModel(`https://localhost:${portOf(endpoint)}`),
+					normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }),
+					{ apiKey: codexToken(), transport, fetch, maxRetries: 2, sessionId: `codex-https-proxy-${transport}` },
+				).result();
+
+				expect(message.errorMessage).toMatch(
+					new RegExp(
+						`^The TLS certificate of the proxy localhost:${portOf(proxy)} was not accepted \\(DEPTH_ZERO_SELF_SIGNED_CERT: .*\\)\\. If the proxy uses a certificate from a private or corporate CA, set NODE_EXTRA_CA_CERTS`,
+					),
+				);
+				expect(message.errorMessage).not.toContain("s3cret");
+				expect(proxyConnections, transport).toBe(1);
+				proxyConnections = 0;
+			}
+			expect(sse).not.toHaveBeenCalled();
+			expect(endpointConnections).toBe(0);
+		} finally {
+			globalThis.WebSocket = originalWebSocket;
+			await dispatcher.close();
+			await Promise.all(
+				[proxy, endpoint].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+			);
+		}
+	});
+
+	it("names the endpoint whose certificate was refused through a trusted https proxy, and the proxy whose certificate names another host", async () => {
+		// A proxy whose certificate a CA the client trusts for proxies issued, which opens the tunnel to an endpoint showing a
+		// self-signed certificate.
+		const ca = createTestCertificate({
+			subject: "Proxy CA",
+			ca: true,
+			keyUsage: ["keyCertSign", "digitalSignature"],
+		});
+		const issue = (name: string) =>
+			createTestCertificate({
+				subject: name,
+				issuer: ca,
+				ca: false,
+				extendedKeyUsage: ["serverAuth"],
+				altNames: [name],
+			});
+		const endpointCertificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
+		const endpoint = https.createServer({ cert: endpointCertificate.cert, key: endpointCertificate.key });
+		endpoint.on("tlsClientError", () => {});
+		await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+		const endpointAddress = endpoint.address();
+		if (!endpointAddress || typeof endpointAddress === "string")
+			throw new Error("Endpoint did not bind to a TCP port");
+		const proxyFor = async (certificate: ReturnType<typeof createTestCertificate>) => {
+			const tunnels: string[] = [];
+			const proxy = https.createServer({ cert: certificate.cert, key: certificate.key });
+			proxy.on("tlsClientError", () => {});
+			proxy.on("connect", (request: http.IncomingMessage, client: net.Socket) => {
+				tunnels.push(request.url ?? "");
+				client.on("error", () => {});
+				const upstream = net.connect(endpointAddress.port, "127.0.0.1", () => {
+					client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+					client.pipe(upstream).pipe(client);
+				});
+				upstream.on("error", () => client.destroy());
+			});
+			await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+			const address = proxy.address();
+			if (!address || typeof address === "string") throw new Error("Proxy did not bind to a TCP port");
+			return { proxy, port: address.port, tunnels };
+		};
+		const trusted = await proxyFor(issue("localhost"));
+		const misnamed = await proxyFor(issue("proxy.test"));
+		const request = async (proxyPort: number) => {
+			const dispatcher = new undici.EnvHttpProxyAgent({
+				...createHttpDispatcherOptions(60_000),
+				httpsProxy: `https://localhost:${proxyPort}`,
+				noProxy: "none.invalid",
+				proxyTls: { ca: ca.cert },
+			});
+			undici.setGlobalDispatcher(dispatcher);
+			try {
+				return await streamOpenAICodexResponses(
+					codexModel(`https://localhost:${endpointAddress.port}`),
+					normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }),
+					{
+						apiKey: codexToken(),
+						transport: "sse",
+						fetch: undici.fetch as unknown as typeof fetch,
+						maxRetries: 0,
+					},
+				).result();
+			} finally {
+				await dispatcher.close();
+			}
+		};
+		try {
+			const throughTrusted = await request(trusted.port);
+			expect(trusted.tunnels).toEqual([`localhost:${endpointAddress.port}`]);
+			expect(throughTrusted.errorMessage).toMatch(
+				new RegExp(
+					`^The TLS certificate for localhost:${endpointAddress.port} was not accepted \\(DEPTH_ZERO_SELF_SIGNED_CERT: `,
+				),
+			);
+
+			const throughMisnamed = await request(misnamed.port);
+			expect(misnamed.tunnels).toEqual([]);
+			expect(throughMisnamed.errorMessage).toMatch(
+				new RegExp(
+					`^The TLS certificate of the proxy localhost:${misnamed.port} was not accepted \\(ERR_TLS_CERT_ALTNAME_INVALID: .*\\)\\. Use a proxy URL whose host name the certificate names\\. The request is not retried$`,
+				),
+			);
+		} finally {
+			await Promise.all(
+				[trusted.proxy, misnamed.proxy, endpoint].map(
+					(server) => new Promise<void>((resolve) => server.close(() => resolve())),
+				),
+			);
+		}
+	});
+
 	it("connects OpenAI Codex's WebSocket through the dispatcher the installed WebSocket uses by default (#6114)", async () => {
 		configureHttpDispatcher();
 		const dispatcher = undici.getGlobalDispatcher();
@@ -278,4 +420,287 @@ describe("http dispatcher", () => {
 			await new Promise<void>((resolve) => endpoint.close(() => resolve()));
 		}
 	});
+});
+
+/**
+ * Structural: each case starts Bun, as the standalone binary runs, and waits for Bun's socket idle timer, which fires
+ * only on a sweep every few seconds (up to about 8 s after a 1 s deadline).
+ */
+const BUN_IDLE_TIMER_TEST_MS = 60_000;
+/** How long the slow servers stay silent: well past the deadline Bun is given, and past its sweep. */
+const SILENT_MS = 12_000;
+const PROXY_ENV_KEYS = [
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"ALL_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"all_proxy",
+	"no_proxy",
+];
+
+/** Runs `script` under Bun with the http dispatcher configured as the binary configures it, and returns what it prints. */
+function runUnderBun(script: string, env: Readonly<Record<string, string>>): Promise<string> {
+	const moduleUrl = new URL("../src/core/http-dispatcher.ts", import.meta.url).href;
+	const childEnv: NodeJS.ProcessEnv = { ...process.env };
+	for (const key of [...PROXY_ENV_KEYS, "BUN_CONFIG_HTTP_IDLE_TIMEOUT"]) delete childEnv[key];
+	Object.assign(childEnv, env);
+	const source = [
+		`const { configureHttpDispatcher } = await import(${JSON.stringify(moduleUrl)});`,
+		`const outcome = async (request) => { const started = performance.now(); try { const response = await request; return { text: await response.text(), ms: performance.now() - started }; } catch (error) { return { error: error?.name ?? String(error), ms: performance.now() - started }; } };`,
+		script,
+	].join("\n");
+	return new Promise((resolve, reject) => {
+		execFile(
+			bunExecutable(),
+			["--eval", source],
+			{ cwd: new URL("..", import.meta.url), env: childEnv, timeout: BUN_IDLE_TIMER_TEST_MS, encoding: "utf8" },
+			(error, stdout, stderr) => (error ? reject(new Error(`${error.message}\n${stderr}`)) : resolve(stdout)),
+		);
+	});
+}
+
+/** Servers that answer after `SILENT_MS`: one before its headers, one between two body chunks. */
+async function silentServers(): Promise<{ headers: string; body: string; close(): Promise<void> }> {
+	const timers = new Set<NodeJS.Timeout>();
+	const later = (run: () => void) => {
+		const timer = setTimeout(() => {
+			timers.delete(timer);
+			run();
+		}, SILENT_MS);
+		timers.add(timer);
+	};
+	const headers = http.createServer((_request, response) => later(() => response.end("late headers")));
+	const body = http.createServer((_request, response) => {
+		response.writeHead(200, { "content-type": "text/plain" });
+		response.write("first chunk, ");
+		later(() => response.end("late chunk"));
+	});
+	for (const server of [headers, body]) await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const urlOf = (server: http.Server) => `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/`;
+	return {
+		headers: urlOf(headers),
+		body: urlOf(body),
+		async close() {
+			for (const timer of timers) clearTimeout(timer);
+			await Promise.all(
+				[headers, body].map((server) => {
+					server.closeAllConnections();
+					return new Promise<void>((resolve) => server.close(() => resolve()));
+				}),
+			);
+		},
+	};
+}
+
+describe("the standalone binary's fetch (Bun)", () => {
+	it(
+		"ends a response that stays silent longer than httpIdleTimeoutMs, before its headers and between body chunks",
+		async () => {
+			const servers = await silentServers();
+			try {
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher(1_000);`,
+						`console.log(JSON.stringify(await Promise.all([outcome(fetch(${JSON.stringify(servers.headers)})), outcome(fetch(${JSON.stringify(servers.body)}))])));`,
+					].join("\n"),
+					{},
+				);
+				const [headers, body] = JSON.parse(printed) as { error?: string; text?: string; ms: number }[];
+				for (const outcome of [headers, body]) {
+					expect(outcome?.error, JSON.stringify(outcome)).toBe("TimeoutError");
+					expect(outcome?.ms).toBeLessThan(SILENT_MS);
+				}
+			} finally {
+				await servers.close();
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"waits for a response silent for less than httpIdleTimeoutMs, or for any time when it is disabled, past Bun's own idle timeout",
+		async () => {
+			const servers = await silentServers();
+			try {
+				// Bun's own idle timeout, one second here, would end both requests long before the servers answer.
+				const run = (timeoutMs: number) =>
+					runUnderBun(
+						[
+							`configureHttpDispatcher(${timeoutMs});`,
+							`console.log(JSON.stringify(await Promise.all([outcome(fetch(${JSON.stringify(servers.headers)})), outcome(fetch(${JSON.stringify(servers.body)}))])));`,
+						].join("\n"),
+						{ BUN_CONFIG_HTTP_IDLE_TIMEOUT: "1" },
+					);
+				for (const printed of await Promise.all([run(60_000), run(0)])) {
+					const outcomes = (JSON.parse(printed) as { error?: string; text?: string }[]).map(
+						(outcome) => outcome.text ?? outcome.error,
+					);
+					expect(outcomes).toEqual(["late headers", "first chunk, late chunk"]);
+				}
+			} finally {
+				await servers.close();
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"passes a request's own options as Bun reads them: inherited, not enumerable, frozen, getters left unread, and a Request's",
+		async () => {
+			const echo = http.createServer(async (request, response) => {
+				let body = "";
+				for await (const chunk of request) body += chunk;
+				response.end(
+					JSON.stringify({ method: request.method, marker: request.headers["x-fixture"] ?? null, body }),
+				);
+			});
+			await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+			const url = `http://127.0.0.1:${(echo.address() as net.AddressInfo).port}/`;
+			try {
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher(30_000);`,
+						`let reads = 0;`,
+						`let optionReads = 0;`,
+						`const options = { method: "POST", headers: { "x-fixture": "ok" }, body: "hello" };`,
+						`const inits = {`,
+						`	inherited: Object.create(options),`,
+						`	notEnumerable: Object.defineProperties({}, { method: { value: "POST" }, headers: { value: { "x-fixture": "ok" } }, body: { value: "hello" } }),`,
+						`	frozen: Object.freeze({ ...options }),`,
+						`	frozenWithoutTimeout: Object.freeze({ ...options, timeout: undefined, proxy: undefined }),`,
+						`	unreadGetter: { ...options, get traceMetadata() { reads++; throw new Error("read"); } },`,
+						`	ownTimeoutAndProxy: { ...options, get timeout() { optionReads++; return false; }, get proxy() { optionReads++; return false; } },`,
+						`};`,
+						`const results = {};`,
+						`for (const [name, init] of Object.entries(inits)) results[name] = await outcome(fetch(${JSON.stringify(url)}, init));`,
+						`results.request = await outcome(fetch(new Request(${JSON.stringify(url)}, options)));`,
+						`console.log(JSON.stringify({ results, reads, optionReads }));`,
+					].join("\n"),
+					{},
+				);
+				const { results, reads, optionReads } = JSON.parse(printed) as {
+					results: Record<string, { text?: string }>;
+					reads: number;
+					optionReads: number;
+				};
+				expect(reads).toBe(0);
+				// Bun reads a request's own `timeout` and `proxy` once each; so does the binary's fetch, through to Bun.
+				expect(optionReads).toBe(2);
+				for (const [name, result] of Object.entries(results))
+					expect(JSON.parse(result.text ?? "{}"), name).toEqual({ method: "POST", marker: "ok", body: "hello" });
+			} finally {
+				echo.closeAllConnections();
+				await new Promise<void>((resolve) => echo.close(() => resolve()));
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"sends an https request through HTTP_PROXY when no https proxy is set, as on Node.js, keeping NO_PROXY, ALL_PROXY and HTTPS_PROXY",
+		async () => {
+			const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
+			const endpoints: https.Server[] = [];
+			for (let i = 0; i < 4; i++) {
+				const endpoint = https.createServer(
+					{ cert: certificate.cert, key: certificate.key },
+					(_request, response) => response.end("endpoint"),
+				);
+				await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+				endpoints.push(endpoint);
+			}
+			const ports = endpoints.map((endpoint) => (endpoint.address() as net.AddressInfo).port);
+			const routes = (target: string) => ({ host: "127.0.0.1", port: Number(target.split(":")[1]) });
+			const proxies: ConnectProxy[] = [await startConnectProxy({ routes }), await startConnectProxy({ routes })];
+			const [httpProxy, otherProxy] = proxies as [ConnectProxy, ConnectProxy];
+			try {
+				// Each case sets the environment for its own endpoint; Bun reads it at each request.
+				const cases = [
+					{ HTTP_PROXY: httpProxy.url },
+					{ HTTP_PROXY: httpProxy.url, NO_PROXY: "localhost" },
+					{ HTTP_PROXY: httpProxy.url, ALL_PROXY: otherProxy.url },
+					{ HTTP_PROXY: httpProxy.url, HTTPS_PROXY: otherProxy.url },
+				];
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher();`,
+						`const cases = ${JSON.stringify(cases)};`,
+						`const ports = ${JSON.stringify(ports)};`,
+						`const keys = ${JSON.stringify(PROXY_ENV_KEYS)};`,
+						`const results = [];`,
+						`for (let i = 0; i < cases.length; i++) {`,
+						`	for (const key of keys) delete process.env[key];`,
+						`	Object.assign(process.env, cases[i]);`,
+						`	results.push(await outcome(fetch("https://localhost:" + ports[i] + "/", { tls: { ca: ${JSON.stringify(certificate.cert)} } })));`,
+						`}`,
+						`console.log(JSON.stringify(results.map((result) => result.text ?? result.error)));`,
+					].join("\n"),
+					{},
+				);
+				expect(JSON.parse(printed)).toEqual(["endpoint", "endpoint", "endpoint", "endpoint"]);
+				const [toHttpProxy, exempt, toAllProxy, toHttpsProxy] = ports.map((port) => `localhost:${port}`);
+				expect(httpProxy.requests.map((request) => request.target)).toEqual([toHttpProxy]);
+				expect(otherProxy.requests.map((request) => request.target)).toEqual([toAllProxy, toHttpsProxy]);
+				expect([...httpProxy.requests, ...otherProxy.requests].map((request) => request.target)).not.toContain(
+					exempt,
+				);
+			} finally {
+				await Promise.all([
+					...proxies.map((proxy) => proxy.close()),
+					...endpoints.map((endpoint) => new Promise<void>((resolve) => endpoint.close(() => resolve()))),
+				]);
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
+
+	it(
+		"connects OpenAI Codex's WebSocket through HTTP_PROXY when no https proxy is set, as its requests over fetch go",
+		async () => {
+			let endpointConnections = 0;
+			const endpoint = net.createServer((socket) => {
+				endpointConnections++;
+				socket.destroy();
+			});
+			await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+			const port = (endpoint.address() as net.AddressInfo).port;
+			// The proxy refuses the tunnel, so the request goes on over SSE, which the test answers.
+			const proxy = await startConnectProxy({ routes: () => undefined });
+			try {
+				const model = {
+					id: "test-model",
+					name: "Test Model",
+					api: "openai-codex-responses",
+					provider: "test-provider",
+					baseUrl: `https://localhost:${port}`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 10_000,
+					maxTokens: 1_000,
+				};
+				const token = `x.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.x`;
+				const printed = await runUnderBun(
+					[
+						`configureHttpDispatcher();`,
+						`const { stream } = await import("@bastani/atomic-ai/api/openai-codex-responses");`,
+						`const { normalizeContext } = await import("@bastani/atomic-ai/utils/transcript");`,
+						`let sse = 0;`,
+						`const message = await stream(${JSON.stringify(model)}, normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }), { apiKey: ${JSON.stringify(token)}, transport: "auto", sessionId: "codex-bun-http-proxy", fetch: async () => { sse++; return new Response("unavailable", { status: 503 }); } }).result();`,
+						`console.log(JSON.stringify({ stopReason: message.stopReason, sse }));`,
+					].join("\n"),
+					{ HTTP_PROXY: proxy.url },
+				);
+				expect(JSON.parse(printed)).toMatchObject({ stopReason: "error" });
+				expect(proxy.requests.map((request) => request.target)).toEqual([`localhost:${port}`]);
+				expect(endpointConnections).toBe(0);
+			} finally {
+				await proxy.close();
+				await new Promise<void>((resolve) => endpoint.close(() => resolve()));
+			}
+		},
+		BUN_IDLE_TIMER_TEST_MS,
+	);
 });

@@ -14,6 +14,8 @@ No dependencies beyond the Python stdlib are required.
 
 import argparse
 import base64
+import codecs
+import io
 import json
 import mimetypes
 import os
@@ -245,13 +247,46 @@ def load_previous_iteration(workspace: Path) -> dict[str, dict]:
     return result
 
 
+def load_saved_feedback(feedback_path: Path) -> dict[str, str]:
+    """The feedback already saved for the workspace under review, by run ID.
+
+    The page starts from it, so reopening or reloading the page, or starting the viewer again, shows
+    it, and the next save keeps it. A missing or unreadable file means no feedback yet.
+    """
+    try:
+        raw = feedback_path.read_bytes()
+    except OSError:
+        return {}
+    # As the page's own request read it before: UTF-8, with or without a byte order mark (as Windows
+    # PowerShell 5 and older Notepad save it), and a replacement mark for what is not UTF-8.
+    text = raw.decode("utf-8-sig", errors="replace")
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        # Not JSON, or nested too deeply to read.
+        return {}
+    reviews = data.get("reviews") if isinstance(data, dict) else None
+    if not isinstance(reviews, list):
+        return {}
+    return {
+        review["run_id"]: review["feedback"]
+        for review in reviews
+        if isinstance(review, dict) and isinstance(review.get("run_id"), str) and isinstance(review.get("feedback"), str)
+    }
+
+
 def generate_html(
     runs: list[dict],
     skill_name: str,
     previous: dict[str, dict] | None = None,
     benchmark: dict | None = None,
+    saved_feedback: dict[str, str] | None = None,
 ) -> str:
-    """Generate the complete standalone HTML page with embedded data."""
+    """Generate the complete standalone HTML page with embedded data.
+
+    saved_feedback is the reviewed workspace's own feedback, which the served page starts from; a
+    static page has none.
+    """
     template_path = Path(__file__).parent / "viewer.html"
     template = template_path.read_text(encoding="utf-8")
 
@@ -270,11 +305,14 @@ def generate_html(
         "runs": runs,
         "previous_feedback": previous_feedback,
         "previous_outputs": previous_outputs,
+        "saved_feedback": saved_feedback or {},
     }
     if benchmark:
         embedded["benchmark"] = benchmark
 
-    data_json = json.dumps(embedded)
+    # Inside the page's script element, "</script>" or "<!--" in an output or in feedback would end the script
+    # or change how it is read: "</" and "<!" are written with JSON escapes, which read back as the same text.
+    data_json = json.dumps(embedded).replace("</", "<\\/").replace("<!", "\\u003c!")
 
     return template.replace("/*__EMBEDDED_DATA__*/", f"const EMBEDDED_DATA = {data_json};")
 
@@ -340,10 +378,15 @@ class ReviewHandler(BaseHTTPRequestHandler):
                     benchmark = json.loads(self.benchmark_path.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
                     pass
-            html = generate_html(runs, self.skill_name, self.previous, benchmark)
+            html = generate_html(
+                runs, self.skill_name, self.previous, benchmark, load_saved_feedback(self.feedback_path)
+            )
             content = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # Never kept in the browser's cache: a tab it restores, or a page revisited through its history, is made
+            # again here with the feedback saved since, rather than shown with what it embedded at first.
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -467,4 +510,7 @@ if __name__ == "__main__":
     # output to set up under pythonw or with standard output closed; print() then writes nothing.
     if sys.stdout is not None:
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
+    # Errors in UTF-8 too, unless they already are or go to a stream that replaced the standard one.
+    if isinstance(sys.stderr, io.TextIOWrapper) and codecs.lookup(sys.stderr.encoding).name != "utf-8":
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()

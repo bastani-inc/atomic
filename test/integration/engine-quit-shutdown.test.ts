@@ -37,6 +37,43 @@ const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
  */
 const BOUNDED_SHUTDOWN_MS = 6 * ENGINE_SHUTDOWN_GRACE_MS;
 
+/**
+ * The extension every session here loads. Its source never changes: it reads what to do, and the files to record
+ * into, from `fixture.json` beside it.
+ */
+const SHUTDOWN_EXTENSION = `import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const fixture = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixture.json"), "utf8"));
+export default (pi) => {
+	pi.on("session_start", () => {
+		if (fixture.groupChild) {
+			// A process the extension starts in the engine's process group, neither detached nor stopped at shutdown.
+			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			child.unref();
+			writeFileSync(fixture.files.groupChild, String(child.pid));
+		}
+		if (fixture.execGrandchild) {
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
+			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild]);
+		}
+		if (fixture.execLeftover) {
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
+			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild]);
+		}
+		writeFileSync(fixture.files.started, String(process.pid));
+	});
+	pi.on("session_shutdown", async (event) => {
+		const call = { pid: process.pid, reason: event.reason, fromSignal: event.fromSignal };
+		appendFileSync(fixture.files.shutdown, JSON.stringify({ ...call, finished: false }) + "\\n");
+		if (fixture.waitForRelease) {
+			while (!existsSync(fixture.files.released)) await new Promise((resolve) => setTimeout(resolve, fixture.pollMs));
+		} else await new Promise((resolve) => setTimeout(resolve, fixture.handlerWorkMs));
+		appendFileSync(fixture.files.shutdown, JSON.stringify({ ...call, finished: true }) + "\\n");
+	});
+};`;
+
 interface ShutdownRecord {
 	readonly pid: number;
 	readonly reason: string;
@@ -47,6 +84,9 @@ interface ShutdownRecord {
 interface SessionEnd {
 	readonly program: PtyProgram;
 	readonly hostPid: number;
+	/** With `execGrandchild`, the running `pi.exec` command and the process it started. */
+	readonly execRoot?: RecordedProcess;
+	readonly execChild?: RecordedProcess;
 	/** Whether the shutdown handler has started. */
 	handlerStarted(): boolean;
 	/** Lets a handler started with `waitForRelease` finish. */
@@ -66,6 +106,8 @@ interface EndedSession {
 	readonly groupChild: RecordedProcess | undefined;
 	/** The process the extension's `pi.exec` command started, when asked to, recorded while it ran. */
 	readonly execChild: RecordedProcess | undefined;
+	/** The extension's running `pi.exec` command itself, with `execGrandchild`, recorded while it ran. */
+	readonly execRoot: RecordedProcess | undefined;
 }
 
 interface SessionOptions {
@@ -104,42 +146,24 @@ async function endSession(
 	let program: PtyProgram | undefined;
 	let groupChildProcess: RecordedProcess | undefined;
 	let execChildProcess: RecordedProcess | undefined;
+	let execRootProcess: RecordedProcess | undefined;
 	try {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, installed);
 		mkdirSync(project, { recursive: true });
 		writeFileSync(
-			extension,
-			`import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-export default (pi) => {
-	pi.on("session_start", () => {
-		if (${options.groupChild === true}) {
-			// A process the extension starts in the engine's process group, neither detached nor stopped at shutdown.
-			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-			child.unref();
-			writeFileSync(${JSON.stringify(groupChild)}, String(child.pid));
-		}
-		if (${options.execGrandchild === true}) {
-			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
-			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(execChild)}]);
-		}
-		if (${options.execLeftover === true}) {
-			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
-			void pi.exec(process.execPath, ["-e", command, ${JSON.stringify(execChild)}]);
-		}
-		writeFileSync(${JSON.stringify(started)}, String(process.pid));
-	});
-	pi.on("session_shutdown", async (event) => {
-		const call = { pid: process.pid, reason: event.reason, fromSignal: event.fromSignal };
-		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: false }) + "\\n");
-		if (${options.waitForRelease === true}) {
-			while (!existsSync(${JSON.stringify(released)})) await new Promise((resolve) => setTimeout(resolve, ${RECORD_POLL_MS}));
-		} else await new Promise((resolve) => setTimeout(resolve, ${handlerWorkMs}));
-		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: true }) + "\\n");
-	});
-};`,
+			join(root, "fixture.json"),
+			JSON.stringify({
+				groupChild: options.groupChild === true,
+				execGrandchild: options.execGrandchild === true,
+				execLeftover: options.execLeftover === true,
+				waitForRelease: options.waitForRelease === true,
+				pollMs: RECORD_POLL_MS,
+				handlerWorkMs,
+				files: { started, shutdown, groupChild, execChild, released },
+			}),
 		);
+		writeFileSync(extension, SHUTDOWN_EXTENSION);
 		program = startPtyProgram({
 			executable: process.execPath,
 			args: [
@@ -192,9 +216,15 @@ export default (pi) => {
 			// The command, and so the process it started, is running: the pid names that process.
 			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
 			assert.ok(await stillRuns(execChildProcess), "the command started its process");
+			if (options.execGrandchild) {
+				execRootProcess = await recordProcess(Number(readTextSync(`${execChild}.root`, "utf8")));
+				assert.ok(await stillRuns(execRootProcess), "the command runs");
+			}
 		}
 		await end({
 			program,
+			...(execRootProcess ? { execRoot: execRootProcess } : {}),
+			...(execChildProcess ? { execChild: execChildProcess } : {}),
 			hostPid: host.pid,
 			handlerStarted: () => fileExistsSync(shutdown),
 			release: () => writeFileSync(released, ""),
@@ -217,6 +247,7 @@ export default (pi) => {
 			exitedAt,
 			groupChild: groupChildProcess,
 			execChild: execChildProcess,
+			execRoot: execRootProcess,
 		};
 	} finally {
 		program?.kill();
@@ -469,6 +500,37 @@ test(
 	},
 	CLI_TIMEOUT_MS + 10_000,
 );
+
+for (const inProcess of [false, true]) {
+	test(
+		`an extension's running pi.exec command ends with the process it started when the host is killed${inProcess ? ", in the host process" : ""}`,
+		async () => {
+			const ended = await endSession(
+				async ({ hostPid }) => {
+					await signalRecordedProcess(await recordProcess(hostPid), "SIGKILL");
+				},
+				HANDLER_WORK_MS,
+				{ execGrandchild: true, inProcess },
+			);
+
+			const { execChild, execRoot } = ended;
+			assert.ok(execChild !== undefined && execRoot !== undefined);
+			try {
+				assert.equal(ended.exit.timedOut, false, ended.screen);
+				assert.equal(await waitUntilGone(execRoot, GROUP_CHILD_GONE_MS), true, "the command outlived its host");
+				assert.equal(
+					await waitUntilGone(execChild, GROUP_CHILD_GONE_MS),
+					true,
+					"the process the command started outlived its host",
+				);
+			} finally {
+				await signalRecordedProcess(execChild);
+				await signalRecordedProcess(execRoot);
+			}
+		},
+		CLI_TIMEOUT_MS + 10_000,
+	);
+}
 
 describe.skipIf(process.platform === "win32")(
 	"a process a pi.exec command left running when it ended on its own",
