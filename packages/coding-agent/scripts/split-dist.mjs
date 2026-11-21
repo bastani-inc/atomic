@@ -16,7 +16,7 @@
  * Source maps chain to the TypeScript sources through the compiled files' maps.
  */
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
@@ -35,16 +35,42 @@ const META_URL_SYMBOL = "__atomicDistModuleUrl";
 
 if (!existsSync(join(dist, "cli.js"))) throw new Error("split-dist: run tsc first; dist/cli.js is missing");
 
-/** The entries as this build writes them: a second run on the same output, as `npm pack` makes, changes nothing. */
-const STAMP = join(dist, SHARED_DIRECTORY, ".entries");
-const entriesDigest = () => {
-	const hash = createHash("sha256");
-	for (const entry of SPLIT_ENTRIES) hash.update(readFileSync(join(dist, `${entry}.js`)));
-	return hash.digest("hex");
-};
-if (existsSync(STAMP) && readFileSync(STAMP, "utf8") === entriesDigest()) {
-	console.log("split-dist: dist is already split");
-	process.exit(0);
+/**
+ * What the last split left: the digest of each entry it wrote, and the shared files it wrote. An entry whose file
+ * still has that digest was not compiled again since, and is bundled from the compiled copy saved beside it: the
+ * incremental build compiles only what changed, and must still bundle what changed below an entry it left alone.
+ */
+const STATE_FILE = join(dist, SHARED_DIRECTORY, ".split-state.json");
+/** The compiled entries, saved before the split overwrites them. */
+const COMPILED_ENTRIES = join(dist, SHARED_DIRECTORY, ".compiled");
+const prune = process.argv.includes("--prune");
+const digest = (content) => createHash("sha256").update(content).digest("hex");
+/** @type {{ entries: Record<string, string>, outputs: string[] }} */
+const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : { entries: {}, outputs: [] };
+/** Each entry's compiled code with its compiled source map inlined, by its path in `dist`. */
+const compiledEntries = new Map();
+for (const entry of SPLIT_ENTRIES) {
+	const file = join(dist, `${entry}.js`);
+	const saved = join(COMPILED_ENTRIES, `${entry}.js`);
+	const current = readFileSync(file);
+	if (state.entries[entry] !== digest(current)) {
+		mkdirSync(dirname(saved), { recursive: true });
+		writeFileSync(saved, current);
+		if (existsSync(`${file}.map`)) writeFileSync(`${saved}.map`, readFileSync(`${file}.map`));
+		else rmSync(`${saved}.map`, { force: true });
+	} else if (!existsSync(saved)) {
+		throw new Error(`split-dist: ${entry}.js is an earlier split's output and its compiled copy is gone; rebuild from clean`);
+	}
+	compiledEntries.set(file, inlineSourceMap(readFileSync(saved, "utf8"), `${saved}.map`));
+}
+
+/** `source` with the source map in `mapFile`, if there is one, inlined in place of its `sourceMappingURL` comment. */
+function inlineSourceMap(source, mapFile) {
+	if (!existsSync(mapFile)) return source;
+	return source.replace(
+		/\/\/# sourceMappingURL=[^\r\n]*\s*$/,
+		`//# sourceMappingURL=data:application/json;base64,${readFileSync(mapFile).toString("base64")}\n`,
+	);
 }
 
 const result = await build({
@@ -72,16 +98,11 @@ const result = await build({
 				context.onResolve({ filter: /^#dist-module-url$/ }, () => ({ path: MODULE_URL_SPECIFIER, external: true }));
 				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
 					if (!path.startsWith(dist + sep) || path === MODULE_URL_FILE) return undefined;
-					const source = readFileSync(path, "utf8");
-					if (!source.includes("import.meta")) return undefined;
+					const entry = compiledEntries.get(path);
+					const source = entry ?? readFileSync(path, "utf8");
+					if (!source.includes("import.meta")) return entry === undefined ? undefined : { contents: entry, loader: "js" };
 					// The compiled file's own map, inlined, so the transformed code still maps to its TypeScript source.
-					const mapFile = `${path}.map`;
-					const withMap = existsSync(mapFile)
-						? source.replace(
-								/\/\/# sourceMappingURL=[^\r\n]*\s*$/,
-								`//# sourceMappingURL=data:application/json;base64,${readFileSync(mapFile).toString("base64")}\n`,
-							)
-						: source;
+					const withMap = entry ?? inlineSourceMap(source, `${path}.map`);
 					const options = {
 						loader: "js",
 						format: "esm",
@@ -93,7 +114,7 @@ const result = await build({
 					// Token-aware: a mention in a comment is not a use. Any meta property but `url` stops the build.
 					const probe = (await transform(withMap, { ...options, sourcemap: false })).code;
 					if (probe.includes("import.meta")) throw new Error(`split-dist: ${relative(dist, path)} uses import.meta beyond import.meta.url`);
-					if (!probe.includes(META_URL_SYMBOL)) return undefined;
+					if (!probe.includes(META_URL_SYMBOL)) return entry === undefined ? undefined : { contents: entry, loader: "js" };
 					const url = relative(dist, path).split(sep).map(encodeURIComponent).join("/");
 					const transformed = await transform(withMap, {
 						...options,
@@ -106,15 +127,30 @@ const result = await build({
 	],
 });
 
-// Shared code of an earlier build goes first; then each file is written whole before it takes its name.
-rmSync(join(dist, SHARED_DIRECTORY), { recursive: true, force: true });
+// Each file is written whole before it takes its name. Shared files of earlier builds stay, for processes started
+// from them that load a chunk later; `--prune`, which packing passes, removes them.
+const written = [];
 for (const file of result.outputFiles) {
 	mkdirSync(dirname(file.path), { recursive: true });
 	writeFileSync(`${file.path}.split`, file.contents);
 	renameSync(`${file.path}.split`, file.path);
+	written.push(relative(dist, file.path).split(sep).join("/"));
 }
 for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
-writeFileSync(STAMP, entriesDigest());
+if (prune) {
+	const keep = new Set(written);
+	for (const name of readdirSync(join(dist, SHARED_DIRECTORY))) {
+		const path = `${SHARED_DIRECTORY}/${name}`;
+		if (!name.startsWith(".") && !keep.has(path)) rmSync(join(dist, SHARED_DIRECTORY, name), { force: true });
+	}
+}
+writeFileSync(
+	STATE_FILE,
+	JSON.stringify({
+		entries: Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, digest(readFileSync(join(dist, `${entry}.js`)))])),
+		outputs: written,
+	}),
+);
 
 const outputs = Object.keys(result.metafile.outputs).filter((output) => output.endsWith(".js"));
 console.log(

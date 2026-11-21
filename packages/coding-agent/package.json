@@ -73,7 +73,7 @@
     "test": "vitest --run",
     "shrinkwrap": "bun run ../../scripts/generate-coding-agent-shrinkwrap.mjs",
     "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap",
-    "prepack": "node scripts/split-dist.mjs"
+    "prepack": "node scripts/split-dist.mjs --prune"
   },
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
