@@ -258,6 +258,11 @@ export interface ChildSpec {
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
 	/**
+	 * `task` is only a wake's fallback: prompted when no turn runs yet, never queued behind one, and never handed back as
+	 * a message the child holds when it stops before it was sent.
+	 */
+	readonly resumeTaskFallback?: boolean;
+	/**
 	 * The user had paused the child (Esc in its chat) when Atomic restarted: its reopened session comes back paused, as
 	 * it was, with nothing prompted and no turn started, and waits for the user to continue it.
 	 */
@@ -1736,6 +1741,11 @@ interface UnsentInput {
 	readonly followUps: string[];
 }
 
+/** The task a stop before it is sent hands back: none when it is not prompted or is only a wake's fallback. */
+function unsentTask(spec: Pick<ChildSpec, "task" | "skipTaskPrompt" | "resumeTaskFallback">): string | undefined {
+	return spec.skipTaskPrompt || spec.resumeTaskFallback ? undefined : spec.task;
+}
+
 /**
  * Recover what the child's earlier process left unfinished in its session. A child woken onto the turn it was waiting
  * in answers that turn before anything else (#4326), whether it is handed the calls' results or runs the calls again:
@@ -2246,7 +2256,10 @@ export class SubagentControlRuntime {
 									cause: PARENT_CANCEL_CAUSE,
 									...pendingMessagesOf(
 										undefined,
-										{ task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] },
+										{
+											task: unsentTask(admitted.spec),
+											followUps: [...(admitted.spec.resumeFollowUps ?? [])],
+										},
 										admitted.spec.resumeTaskLiteral,
 									),
 								}
@@ -2305,7 +2318,10 @@ export class SubagentControlRuntime {
 		// Until the session has its task, a turn that settles leaves message admission open for it (#5224).
 		let taskPending = true;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
-		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
+		const unsent: UnsentInput = {
+			task: unsentTask(admitted.spec),
+			followUps: [...(admitted.spec.resumeFollowUps ?? [])],
+		};
 		let terminating: Promise<void> | undefined;
 		let terminationWasKill = false;
 		let unsubscribe: (() => void) | undefined;
@@ -2812,8 +2828,11 @@ export class SubagentControlRuntime {
 				markTaskDispatched = () => resolve();
 			});
 			eventLog = admitted.spec.artifactJsonlPath ? createEventLog(admitted.spec.artifactJsonlPath) : undefined;
+			/** Whether a turn of this attempt started before its task was dispatched, such as one its recovery replayed. */
+			let turnStartedBeforeTask = false;
 			unsubscribe = session.subscribe((event) => {
 				eventLog?.append(event);
+				if (event.type === "agent_start") turnStartedBeforeTask = true;
 				if (event.type === "message_start" && event.message.role === "assistant")
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
@@ -2959,13 +2978,21 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
-					if (admitted.spec.skipTaskPrompt) {
+					// A wake's fallback prompt only starts a turn: one that already runs (a message that arrived first started
+					// it) is never told it was woken by a steering message queued behind it.
+					if (
+						admitted.spec.skipTaskPrompt ||
+						(admitted.spec.resumeTaskFallback &&
+							(turnStartedBeforeTask || session.isStreaming || session._activePromptCount > 0))
+					) {
 						taskPending = false;
 						startBudget.end();
 					} else {
 						const prompting = session.prompt(admitted.spec.task, {
 							streamingBehavior: "steer",
 							...(admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : {}),
+							// A wake's fallback only starts a turn: one that something else starts first takes its place.
+							...(admitted.spec.resumeTaskFallback ? { startTurnOnly: true } : {}),
 						});
 						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
 						// extension, ends dispatch too.

@@ -235,9 +235,12 @@ export class QueuedDeliveryView {
 			: { ended: change.ended, resets: this.resets };
 	}
 
-	/** The event that carried `end` reaches the chat now: the oldest messages it ended leave. */
-	end(end: QueuedDeliveryEnd): void {
-		if (end.resets === this.resets) this.set(this.entries.slice(end.ended));
+	/** The event that carried `end` reaches the chat now: the oldest messages it ended leave. Answers them. */
+	end(end: QueuedDeliveryEnd): readonly QueuedDeliveryEntry[] {
+		if (end.resets !== this.resets) return [];
+		const ended = this.entries.slice(0, end.ended);
+		this.set(this.entries.slice(end.ended));
+		return ended;
 	}
 
 	/** Forget every message; an end read before now never applies. Answers whether any was listed. */

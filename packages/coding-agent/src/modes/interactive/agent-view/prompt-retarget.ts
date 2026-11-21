@@ -11,7 +11,7 @@ import { WorkingStatusComponent } from "../components/working-status.ts";
 import { isPhysicalCtrlC, isPhysicalEscape } from "../interactive-key-identity.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
-import { engineLossSubagentNotice } from "../interactive-queueing.ts";
+import { engineLossSubagentNotice, engineLossUnconfirmedNotice } from "../interactive-queueing.ts";
 import { theme } from "../theme/theme.js";
 import {
 	appendPromptText,
@@ -372,6 +372,10 @@ export function attachLostAgentQueueNotices(
 	return runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
 		for (const { port, controller } of liveAgentSteering(mode)) {
+			// What it had taken and was delivering may or may not have been saved with its session: listed in full.
+			const delivering = port.status().delivering;
+			const taken = delivering === undefined ? [] : [...delivering.steering, ...delivering.followUp];
+			if (taken.length > 0) mode.showWarning(engineLossUnconfirmedNotice(taken, port.status().name));
 			// Its listed queue, what it took before listing, and what was on its way: steering first, each lane in order.
 			controller.loseTarget();
 			const messages = controller.recoverTarget() ?? [];

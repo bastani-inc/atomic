@@ -5,6 +5,7 @@
 ### Added
 
 - `ToolBlock` and `NoticeLine` take the states `agent-running`, `shell-running`, `input` and `task-stopped`, which draw a subagent's or background task's state with the marks of the agent panel and `/tasks`, and `TASK_MARKS` gives those marks for text an extension draws itself ([#6122](https://github.com/bastani-inc/atomic/issues/6122)).
+- SDK: `AgentSession.prompt()` takes `startTurnOnly`, which starts a turn with the input only when none runs: it is never queued behind one.
 
 ### Changed
 
@@ -39,6 +40,9 @@
 - Quitting no longer waits on writing the interactive engine's stop file, so a stalled temporary directory cannot hold it up, and a write that fails no longer leaves the engine running after Atomic has exited ([#6115](https://github.com/bastani-inc/atomic/issues/6115)).
 - SDK: `session.dispose()` now waits for the notice lines the session is still saving, such as the "Retry failed" line that stopping a retry saves, when you passed your own `sessionManager`. Removing the session's folder right after `dispose()` resolves no longer fails with `ENOTEMPTY` ([#6128](https://github.com/bastani-inc/atomic/issues/6128), [#6150](https://github.com/bastani-inc/atomic/pull/6150))
 - Blueprint steps on a busy Windows machine no longer fail when starting their program is briefly refused. A program refused for a moment (`EPERM` or `EBUSY` on Windows, `ETXTBSY` on Linux) is now tried again for up to two seconds instead of half a second, every 50 ms at first and then less often. A program that stays refused fails its step at most two seconds later ([#6124](https://github.com/bastani-inc/atomic/issues/6124), [#6150](https://github.com/bastani-inc/atomic/pull/6150))
+- Queued messages are listed exactly as they will be sent. A steering or follow-up message the agent already took for its next turn is shown as being delivered, without the hint to edit it, and is sent once instead of also coming back to the editor when you press Alt+Up or Esc meanwhile. A message you send with the text of a queued one no longer removes the queued one from the list. A message the agent took is queued again, first, when its turn fails before sending it, and the queue goes on as before; only a message whose turn fails that way a second time is dropped, as it always was. A message an extension's queue listener refuses is no longer listed.
+- When the engine stops unexpectedly after it took a queued message and before Atomic saw it saved (while delivering it, or, in the main chat, after showing it), a notice lists the message in full and says its delivery is unconfirmed: it is not sent again and not put back in the editor. Messages still queued come back to the editor as before; a deliberate restart or quit changes nothing.
+- In a subagent's chat, Alt+Up no longer clears a message queued after it from the list, and messages it takes back after you close the chat come back in that chat's prompt when you open it again.
 
 ## [0.10.2] - 2026-11-20
 

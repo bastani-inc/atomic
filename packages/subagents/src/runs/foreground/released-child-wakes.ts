@@ -272,6 +272,9 @@ export function bindReleasedChildWakes(
 					{
 						prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
 						toolResults: decision.toolResults,
+						// The prompt only starts a turn nothing else the wake brings starts, and only a wake by a message, a task
+						// or a timer may start one with it: a wake by results alone is promptless.
+						wakeFallback: true,
 						...(decision.prompt ? {} : { promptless: true }),
 					},
 					slot,
@@ -290,7 +293,7 @@ export function bindReleasedChildWakes(
 				return outcome;
 			},
 			redispatch: (record, slot) =>
-				restore(record, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, redispatch: true }, slot),
+				restore(record, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, wakeFallback: true, redispatch: true }, slot),
 			fail: (record, toolResults, failure) =>
 				recordSubagentChildWakeFailure(deps.pi, ownerSessionId, record.childId, toolResults, failure),
 		},

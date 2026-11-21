@@ -133,6 +133,14 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	for (const message of state.compactionQueuedMessages) {
 		lines.push(...pendingMessageLine(state, width, "Queued", message.text));
 	}
+	// Messages the agent already took are no longer queued: no key takes them back.
+	if (
+		state.pendingSteeringMessages.length === 0 &&
+		state.pendingFollowUpMessages.length === 0 &&
+		state.unconfirmedQueuedMessages.length === 0 &&
+		state.compactionQueuedMessages.length === 0
+	)
+		return lines;
 	const hint = state.getActionKeyDisplay?.("app.message.dequeue") ?? "alt+up";
 	lines.push(...new Text(state.style.dim(`↳ ${hint} to edit all queued messages`), 1, 0).render(width));
 	return lines;

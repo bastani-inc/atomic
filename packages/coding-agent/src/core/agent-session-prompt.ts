@@ -11,6 +11,7 @@ import {
 	registerHeldInput,
 	stopWaiting,
 } from "./agent-session-held-input.ts";
+import { sessionRunsStarted } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
@@ -303,6 +304,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	};
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+	// Input that only starts a turn sends nothing once any turn started while it was being prepared.
+	const runsAtEntry = sessionRunsStarted(this);
+	const anotherTurnStarted = () => options?.startTurnOnly === true && sessionRunsStarted(this) !== runsAtEntry;
 	let preflightReported = false;
 	// Reported once: input held while the session compacts is accepted as queued before it is admitted.
 	const preflightResult = (success: boolean, disposition?: PromptDisposition): void => {
@@ -357,6 +361,11 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// A controlled pause is an admission gate, including the idle gap after
 		// abort settles. Queue the payload as input hooks leave it, without
 		// compaction or a provider turn; explicit resume makes it eligible again.
+		if (this._queuedMessagesPaused && options?.startTurnOnly) {
+			if (held) stopWaiting(this, held);
+			preflightResult?.(true, "handled");
+			return;
+		}
 		if (this._queuedMessagesPaused) {
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
 			let pausedText = text;
@@ -456,6 +465,10 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			assertCurrent();
 			// The queue may have been paused while the input waited. Keep it with the paused
 			// input instead of letting an abort that followed the pause drop it.
+			if (this._queuedMessagesPaused && options?.startTurnOnly) {
+				preflightResult?.(true, "handled");
+				return;
+			}
 			if (this._queuedMessagesPaused) {
 				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
 				else await this._queueSteer(expandedText, currentImages, text, currentText);
@@ -474,6 +487,11 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			(waited && (this._isEmittingAgentSettled || openRuns.has(this))) ||
 			queuesDuringAgentSettled(this, delivery) ||
 			(!busy && queuesBehindOpenRun(this, delivery));
+		if (((busy || settling) && options?.startTurnOnly) || anotherTurnStarted()) {
+			// Another turn runs or is about to: it is not queued behind it.
+			preflightResult?.(true, "handled");
+			return;
+		}
 		if (busy || settling) {
 			if (!delivery?.streamingBehavior) {
 				throw new AgentSessionBusyError();

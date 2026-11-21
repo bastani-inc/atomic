@@ -236,35 +236,51 @@ describe("a queued message the isolated engine's main session takes", () => {
 		MAIN_CHAT_TEST_TIMEOUT_MS,
 	);
 
-	for (const [what, end] of [
-		["the engine is lost", (chat: MainChatTerminal) => chat.pair?.crash()],
-		[
-			"the engine retires the session",
-			(chat: MainChatTerminal) => chat.pair?.engineMessage({ type: "engine_extension_ui_reset" }),
-		],
-	] as const) {
-		test(
-			`is no longer listed once ${what} while delivering it, as before (#6080)`,
-			async () => {
-				const hook = gate();
-				gates.push(hook);
-				const chat = await busyChat("isolated", { extensions: [holdMessageStart("later one", hook)] });
-				chat.press("later one");
-				chat.press("\r");
-				await chat.settled(/Steering: later one/);
-				chat.gate.release.resolve();
-				await hook.entered.promise;
-				await chat.settled();
+	test(
+		"is no longer listed once the engine retires the session while delivering it, as before (#6080)",
+		async () => {
+			const hook = gate();
+			gates.push(hook);
+			const chat = await busyChat("isolated", { extensions: [holdMessageStart("later one", hook)] });
+			chat.press("later one");
+			chat.press("\r");
+			await chat.settled(/Steering: later one/);
+			chat.gate.release.resolve();
+			await hook.entered.promise;
+			await chat.settled();
 
-				end(chat);
-				const after = await chat.settled();
-				// Its session will never show it here: nothing lists it, and nothing gives it back.
-				assert.deepEqual(shown(after, "later one"), { echoes: 0, rows: 0 }, after.join("\n"));
-				assert.equal(chat.mode.editor.getText(), "");
-			},
-			MAIN_CHAT_TEST_TIMEOUT_MS,
-		);
-	}
+			chat.pair?.engineMessage({ type: "engine_extension_ui_reset" });
+			const after = await chat.settled();
+			// Its session will never show it here: nothing lists it, and nothing gives it back.
+			assert.deepEqual(shown(after, "later one"), { echoes: 0, rows: 0 }, after.join("\n"));
+			assert.equal(chat.mode.editor.getText(), "");
+		},
+		MAIN_CHAT_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"is listed in full as unconfirmed, and neither given back nor sent again, once the engine is lost while delivering it",
+		async () => {
+			const hook = gate();
+			gates.push(hook);
+			const chat = await busyChat("isolated", { extensions: [holdMessageStart("later one", hook)] });
+			chat.press("later one");
+			chat.press("\r");
+			await chat.settled(/Steering: later one/);
+			chat.gate.release.resolve();
+			await hook.entered.promise;
+			await chat.settled();
+			chat.mode.editor.setText("draft");
+
+			chat.pair?.crash();
+			// The engine took it: it may have saved it, and the replacement's history cannot always tell.
+			const after = await chat.settled(/may not have been delivered/);
+			assert.match(after.join("\n"), /this message may not have been delivered:\s+later one/);
+			assert.equal(shown(after, "later one").rows, 0, "no longer drawn as queued");
+			assert.equal(chat.mode.editor.getText(), "draft", "not given back to edit");
+		},
+		MAIN_CHAT_TEST_TIMEOUT_MS,
+	);
 
 	test(
 		"is on the host's screen after every event line the host reads, queued or in the transcript (#6080)",

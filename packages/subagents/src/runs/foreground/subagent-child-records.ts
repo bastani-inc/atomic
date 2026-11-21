@@ -17,6 +17,7 @@ import {
 	type ReleasedChildErrorCode,
 	releasedChildErrorSubject,
 } from "./released-child-errors.js";
+import { SUBAGENT_RELEASED_WAKE_PROMPT } from "./released-wake-prompt.js";
 import { type SubagentChildWorktree, visibleWorktreeRecord } from "./run-worktrees.js";
 import {
 	findAppendedSubagentChildRecord,
@@ -54,12 +55,18 @@ export interface SubagentChildHeldMessages {
 	readonly taskId: string;
 	readonly messages: readonly string[];
 	readonly taskExpands?: boolean;
+	/**
+	 * Every message is one the child was sent: written since a wake's own prompt is never held, so a message with that
+	 * prompt's text is delivered like any other. Absent in records written before, which may hold the wake prompt.
+	 */
+	readonly withoutWakePrompt?: true;
 }
 
 /** The held messages a finished child attempt reports, in the form `recordChild` takes them. */
 export interface SubagentChildPendingMessages {
 	readonly messages: readonly string[];
 	readonly taskExpands: boolean;
+	readonly withoutWakePrompt?: true;
 }
 
 /**
@@ -76,7 +83,11 @@ export function pendingMessagesOfResult(result: {
 	readonly pendingTaskExpands?: boolean;
 }): SubagentChildPendingMessages | undefined {
 	if (!result.pendingMessages?.length) return undefined;
-	return { messages: result.pendingMessages, taskExpands: result.pendingTaskExpands === true };
+	return {
+		messages: result.pendingMessages,
+		taskExpands: result.pendingTaskExpands === true,
+		withoutWakePrompt: true,
+	};
 }
 
 /** A detached tool call a released child waits on. */
@@ -147,6 +158,11 @@ export interface SubagentChildRecord {
 	 * is not its task, and in records written before Atomic recorded it.
 	 */
 	readonly task?: string;
+	/**
+	 * The label its launch's task had (the task's first line), which every later attempt's task keeps whatever it
+	 * resumes or wakes with. Absent for a resumed child's record and in records written before Atomic recorded it.
+	 */
+	readonly title?: string;
 	readonly intercomTarget?: string;
 	readonly intercomGroup?: string;
 	readonly orchestratorTarget?: string;
@@ -282,6 +298,24 @@ export function summarizeSubagentTask(task: string): string {
 /** The task a record keeps for a launch with these options; a resumed child keeps none, since its message is not a task. */
 export function subagentChildTask(task: string, options: RunSyncOptions): Pick<SubagentChildRecord, "task"> {
 	return options.resumeSession === true || task.trim() === "" ? {} : { task: summarizeSubagentTask(task) };
+}
+
+/**
+ * The label a record keeps for a launch with these options: its task's first line, as its task is labelled. A resumed
+ * child keeps none: its message is not its task, and its launch's label stays the record's.
+ */
+export function subagentChildTitle(task: string, options: RunSyncOptions): Pick<SubagentChildRecord, "title"> {
+	const title = options.resumeSession === true ? undefined : firstLine(task);
+	if (title === undefined) return {};
+	return { title: title.length > TASK_SUMMARY_LIMIT ? `${sliceHead(title, TASK_SUMMARY_LIMIT - 1)}…` : title };
+}
+
+/** The first line of `text` with anything other than white space on it, as a task's label is. */
+function firstLine(text: string): string | undefined {
+	return text
+		.split("\n")
+		.find((line) => line.trim() !== "")
+		?.replace(/\r$/, "");
 }
 
 /** What a launch with these options inherits from its owner; see {@link SubagentChildInheritance}. */
@@ -599,14 +633,27 @@ export async function holdSubagentChildMessages(
 				...latest,
 				heldMessages: {
 					taskId: latest.taskId,
-					messages: [...(held?.messages ?? []), ...messages],
+					messages: [...messagesSent(held), ...messages],
 					taskExpands: held?.taskExpands ?? false,
+					withoutWakePrompt: true,
 				},
 			}),
 		);
 		outcome = kind;
 	});
 	return outcome;
+}
+
+/**
+ * The messages `held` keeps that the child was sent. A record written before wakes stopped holding their prompt may
+ * hold that version's own wake prompt, which its next wake would not have read: it is left out once, here, so the
+ * messages held from now on are all read.
+ */
+function messagesSent(held: SubagentChildHeldMessages | undefined): readonly string[] {
+	if (held === undefined) return [];
+	return held.withoutWakePrompt
+		? held.messages
+		: held.messages.filter((message) => message !== SUBAGENT_RELEASED_WAKE_PROMPT);
 }
 
 /** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */
