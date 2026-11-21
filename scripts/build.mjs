@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // Incremental `npm run build`: runs each build step only when its inputs or outputs changed.
 //
-// Steps run the same package.json scripts a full build runs. Each step keeps a content-hash stamp
-// under node_modules/.cache/atomic-build (see build-stamps.mjs); TypeScript steps also keep their
+// Steps run the same package.json scripts a full build runs. The packages Atomic depends on are
+// compiled into a staging directory instead, and only the files whose bytes changed are moved into
+// their dist (see refresh-package-dist.mjs), so a process importing one of them while a build runs
+// never reads a missing or half-written file. Each step keeps a content-hash stamp under
+// node_modules/.cache/atomic-build (see build-stamps.mjs); TypeScript steps also keep their
 // tsBuildInfo there, outside the shipped dist directories.
 //
 // `npm run build -- --force`, ATOMIC_BUILD_FORCE=1 or a CI environment rebuilds every step.
@@ -19,6 +22,7 @@ import {
 	removeStamp,
 	writeStamp,
 } from "./build-stamps.mjs";
+import { refreshPackageDist } from "./refresh-package-dist.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BUILD_CACHE_DIR = join(root, "node_modules", ".cache", "atomic-build");
@@ -45,6 +49,12 @@ const SHARED_INPUTS = [
 	"scripts/package-files.mjs",
 ];
 
+/** Compiles a staged step's package into a staging directory and moves the changed files into its dist. */
+const STAGED_DIST_REFRESH = "scripts/refresh-package-dist.mjs";
+
+/** Bundles each forked package's compiled modules into a few shared files (see the script). */
+const BUNDLER = "scripts/bundle-package-dist.mjs";
+
 /** @param {string} relative */
 const isGeneratedModelSource = (relative) =>
 	relative.startsWith("packages/ai/src/providers/data/") ||
@@ -63,6 +73,8 @@ const NATIVE_ENV =
  * @property {Array<string | import("./build-stamps.mjs").PathSpec>} inputs
  * @property {Array<string | import("./build-stamps.mjs").PathSpec>} outputs
  * @property {Array<{ script: string, tsc?: boolean }>} scripts Package scripts to run in order. `tsc` appends incremental flags.
+ * @property {true} [staged] After `scripts`, the package's dist is compiled into a staging directory, with the step's
+ *   tsBuildInfo, and only the files whose bytes differ are moved into it (see refresh-package-dist.mjs).
  * @property {ReadonlyArray<"bun" | "rustc">} [toolchains]
  * @property {RegExp} [env] Environment variables whose values are inputs.
  * @property {ReadonlyArray<string>} [after] Steps whose output fingerprints are inputs.
@@ -74,16 +86,23 @@ export const BUILD_STEPS = [
 	{
 		name: "schema",
 		packageDir: "packages/schema",
-		inputs: ["packages/schema/src", "packages/schema/package.json", "packages/schema/tsconfig.build.json"],
+		inputs: ["packages/schema/src", "packages/schema/package.json", "packages/schema/tsconfig.build.json", BUNDLER],
 		outputs: ["packages/schema/dist"],
-		scripts: [{ script: "build", tsc: true }],
+		scripts: [],
+		staged: true,
 	},
 	{
 		name: "telemetry",
 		packageDir: "packages/telemetry",
-		inputs: ["packages/telemetry/src", "packages/telemetry/package.json", "packages/telemetry/tsconfig.build.json"],
+		inputs: [
+			"packages/telemetry/src",
+			"packages/telemetry/package.json",
+			"packages/telemetry/tsconfig.build.json",
+			BUNDLER,
+		],
 		outputs: ["packages/telemetry/dist"],
-		scripts: [{ script: "build", tsc: true }],
+		scripts: [],
+		staged: true,
 	},
 	{
 		name: "ai-models",
@@ -117,24 +136,29 @@ export const BUILD_STEPS = [
 			"packages/ai/tsconfig.base.json",
 			"packages/ai/tsconfig.build.json",
 			"packages/ai/tsconfig.json",
+			BUNDLER,
 		],
 		outputs: ["packages/ai/dist"],
-		scripts: [{ script: "check:model-data" }, { script: "build:tsc", tsc: true }, { script: "build:model-data" }],
+		// The data the ai-models step left is checked as is: a stale catalog fails the build rather than being fetched again.
+		scripts: [{ script: "check:model-data" }],
+		staged: true,
 		after: ["schema", "telemetry"],
 	},
 	{
 		name: "tui",
 		packageDir: "packages/tui",
-		inputs: ["packages/tui/src", "packages/tui/package.json", "packages/tui/tsconfig.build.json"],
+		inputs: ["packages/tui/src", "packages/tui/package.json", "packages/tui/tsconfig.build.json", BUNDLER],
 		outputs: ["packages/tui/dist"],
-		scripts: [{ script: "build", tsc: true }],
+		scripts: [],
+		staged: true,
 	},
 	{
 		name: "agent",
 		packageDir: "packages/agent",
-		inputs: ["packages/agent/src", "packages/agent/package.json", "packages/agent/tsconfig.build.json"],
+		inputs: ["packages/agent/src", "packages/agent/package.json", "packages/agent/tsconfig.build.json", BUNDLER],
 		outputs: ["packages/agent/dist"],
-		scripts: [{ script: "build", tsc: true }],
+		scripts: [],
+		staged: true,
 		after: ["ai", "schema"],
 	},
 	{
@@ -142,7 +166,8 @@ export const BUILD_STEPS = [
 		packageDir: "packages/codemode",
 		inputs: ["packages/codemode/src", "packages/codemode/package.json", "packages/codemode/tsconfig.build.json"],
 		outputs: ["packages/codemode/dist"],
-		scripts: [{ script: "build", tsc: true }],
+		scripts: [],
+		staged: true,
 	},
 	{
 		name: "natives",
@@ -175,7 +200,7 @@ export const BUILD_STEPS = [
 			"packages/intercom",
 		],
 		outputs: ["packages/coding-agent/dist"],
-		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:assets" }],
+		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:declarations" }, { script: "build:assets" }],
 		toolchains: ["bun"],
 		after: ["ai", "tui", "agent", "codemode", "natives"],
 	},
@@ -183,7 +208,7 @@ export const BUILD_STEPS = [
 
 /** Every input of `step`, shared inputs first. @param {BuildStep} step */
 export function stepInputs(step) {
-	return [...SHARED_INPUTS, ...step.inputs];
+	return [...SHARED_INPUTS, ...(step.staged ? [STAGED_DIST_REFRESH] : []), ...step.inputs];
 }
 
 /**
@@ -268,6 +293,9 @@ export function build({ force }) {
 			if (!decision.incremental) rmSync(tsBuildInfo, { force: true });
 			for (const { script, tsc } of step.scripts) {
 				runScript(step.packageDir, script, tsc ? ["--incremental", "--tsBuildInfoFile", tsBuildInfo] : []);
+			}
+			if (step.staged) {
+				refreshPackageDist(join(root, step.packageDir), { generateModelData: false, tsBuildInfoFile: tsBuildInfo });
 			}
 			const outputs = fingerprintOutputs(root, step.outputs);
 			if (outputs.missing.length > 0) throw new Error(`${step.name} did not produce ${outputs.missing.join(", ")}`);

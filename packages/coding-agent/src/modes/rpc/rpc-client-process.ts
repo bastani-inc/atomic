@@ -188,9 +188,9 @@ function guardianStopFile(path: string): { write(): void; remove(): Promise<void
  *
  * The ask is SIGTERM, which a started engine handles by running its shutdown. On Windows Node ends a process at
  * once for any signal, so there an engine stopped with `graceful` has its stdin closed instead: every engine version
- * treats the end of its input as the end of its session and shuts down as it does on SIGTERM elsewhere. Pass
- * `graceful` only for an engine that has reported ready; before that it handles neither, and a SIGTERM ends it at
- * once on every platform.
+ * treats the end of its input as the end of its session and shuts down as it does on SIGTERM elsewhere, as one its
+ * host was signalled for unless the host announced a quit first. Pass `graceful` only for an engine that has reported
+ * ready; before that it handles neither, and a SIGTERM ends it at once on every platform.
  *
  * `shutdownComplete` settles when such an engine says its shutdown has run. It is then given
  * {@link ENGINE_KILL_STEP_MS} to exit and otherwise ended alone, rather than waited for while the runtime does its
