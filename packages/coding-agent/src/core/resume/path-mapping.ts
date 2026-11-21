@@ -1,13 +1,13 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { asyncScope } from "../async-scope.ts";
 import { mapRestoredPath, mapRestoredPathAsync } from "../session-worktree-snapshots.ts";
 import type { PathContinuation, WorktreeRootMapping } from "../worktree-snapshot/types.ts";
 
 /** The restores that apply to the paths resolved by the current work: its own, after those of any work it runs in. */
-const scopedMappings = new AsyncLocalStorage<readonly WorktreeRootMapping[]>();
+const scopedMappings = asyncScope<readonly WorktreeRootMapping[]>();
 
 /** Where the current session continued instead of checkouts it worked in, which its file tools follow (#5379). */
-const scopedContinuations = new AsyncLocalStorage<readonly PathContinuation[]>();
+const scopedContinuations = asyncScope<readonly PathContinuation[]>();
 
 /** Whether `child` is `parent` or a path below it. */
 export function isInside(parent: string, child: string): boolean {
@@ -39,7 +39,7 @@ export function withWorktreeRootMappings<T>(
 }
 
 /** The notices of checkouts the current work's sessions and runs hold only part of, or continued without (#4738). */
-const scopedRestoreNotices = new AsyncLocalStorage<readonly string[]>();
+const scopedRestoreNotices = asyncScope<readonly string[]>();
 
 /**
  * The notices of the checkouts that the sessions and runs work started here runs in hold less of than their recorded
