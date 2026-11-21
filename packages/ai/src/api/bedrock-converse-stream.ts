@@ -480,10 +480,16 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 	// Surface the raw HTTP body (with status) when the SDK did not fold it into
 	// the message; otherwise fall back to the message. This is what stops a
 	// gateway 403 from collapsing to `Unknown: UnknownError`.
-	const core =
+	const reported =
 		!norm.messageCarriesBody && norm.status !== undefined && norm.body !== undefined
 			? `${norm.status}: ${norm.body}`
 			: norm.message;
+	// An answer the SDK has no Bedrock exception for, such as a gateway's 503, names its status, as the other adapters'
+	// errors do, so the retry rules read it; a modeled exception's prefix already says what it is.
+	const core =
+		norm.status !== undefined && !isModeledBedrockException(error) && !reported.startsWith(`${norm.status}`)
+			? `${norm.status}: ${reported}`
+			: reported;
 	const dataRetentionHint = /data retention mode/i.test(core)
 		? ` See ${BEDROCK_DATA_RETENTION_DOCS_URL} for supported data retention modes.`
 		: "";
@@ -492,6 +498,17 @@ function formatBedrockError(error: unknown, connection: ConnectionFailure): stri
 		return `${prefix}: ${core}${dataRetentionHint}`;
 	}
 	return `${withConnectionCode(core, error, norm.status, connection)}${dataRetentionHint}`;
+}
+
+/**
+ * Whether `error` is one of Bedrock's modeled exceptions, such as `ValidationException`: the SDK throws its base
+ * service exception for an answer it has no exception for, under whatever name the answer gives.
+ */
+function isModeledBedrockException(error: unknown): boolean {
+	return (
+		error instanceof BedrockRuntimeServiceException &&
+		Object.getPrototypeOf(error) !== BedrockRuntimeServiceException.prototype
+	);
 }
 
 /**
@@ -524,6 +541,7 @@ function withConnectionCode(
 	const code = (error as { code?: unknown }).code;
 	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code)) return message;
 	const reported = code === "ERR_SOCKET_CLOSED" ? "ECONNRESET" : code;
+	if (message === "") return reported;
 	return message.includes(reported) ? message : `${message} (${reported})`;
 }
 
