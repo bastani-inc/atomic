@@ -191,6 +191,18 @@ export function runsInteractiveEngine(runtime: AgentSessionRuntime): boolean {
 }
 
 /**
+ * Call `listener` when the interactive engine says its Windows console was closed: the engine shares the host's
+ * console and hears of the close before the host does. Returns how to stop listening; an in-process runtime has no
+ * engine to say so.
+ */
+export function onEngineConsoleClosed(runtime: AgentSessionRuntime, listener: () => void): () => void {
+	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
+	return runtime.onEngineMessage((message) => {
+		if (message.type === "engine_console_closed") listener();
+	});
+}
+
+/**
  * Command catalog the engine child exposes to the isolated host. Returns an
  * empty list for non-isolated runtimes so callers can merge unconditionally.
  */

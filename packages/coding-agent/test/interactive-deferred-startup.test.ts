@@ -57,7 +57,7 @@ async function completeDeferredStartup(mode: { options: InteractiveMode["options
 	Object.assign(mode.session, {
 		reload: async () => {},
 		resourceLoader: { getThemes: () => ({ themes: [] }) },
-		getToolStatusAsync: () => ({ missing: [] }),
+		_getToolStatusWithoutGit: () => ({ missing: [] }),
 		...mode.session,
 	});
 	const harness = Object.assign(
@@ -469,7 +469,7 @@ describe("applyDeferredModelScope", () => {
 					session: {
 						reload,
 						startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
-						getToolStatusAsync: () => ({ missing: [] }),
+						_getToolStatusWithoutGit: () => ({ missing: [] }),
 						resourceLoader: { getThemes: () => ({ themes: [] }) },
 						extensionRunner: {},
 						modelRuntime: {
@@ -545,7 +545,7 @@ describe("deprecation warnings during deferred startup", () => {
 					session: {
 						reload: async () => {},
 						startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
-						getToolStatusAsync: () => ({ missing: [] }),
+						_getToolStatusWithoutGit: () => ({ missing: [] }),
 						resourceLoader: { getThemes: () => ({ themes: [] }) },
 						extensionRunner: {},
 						modelRuntime: {

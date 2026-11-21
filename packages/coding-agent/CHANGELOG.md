@@ -6,6 +6,7 @@
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
 - Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless a session uses the memory session store (`--no-session`, `ATOMIC_STORAGE=memory` or `{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
+- Starting Atomic runs fewer processes before you can type: the check that fd, rg and git are ready (`fd`, `fdfind`, `rg` and `git --version`) now starts once the editor takes input, or before a prompt given on the command line runs, and the notice of tools a resumed session was using that are not available no longer runs `git --version`. `/tools` still reports which git Atomic uses.
 
 ### Fixed
 
@@ -42,6 +43,7 @@
 - On Windows, the first quit after installing or upgrading Atomic no longer takes several seconds. A session that finds Node's compile cache empty or out of date for this version runs without it, and a short-lived background process writes the cache while the session runs, so later sessions start from it ([#6132](https://github.com/bastani-inc/atomic/issues/6132))
 - A subagent released while it waits shows that in its own chat as the main chat does: the `◌ <name> is waiting on <tool>` notice as a block of its own after the transcript, with that it wakes by itself and which of its shells still run under it. Before, this was an unindented line pressed against the prompt, under the last message.
 - `session.dispose()` now waits, for up to about five seconds, until the extension transpile cache has finished storing what the session's own extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
+- Closing the console window on Windows now lets extensions' `session_shutdown` handlers run, with `fromSignal: true`, as closing a terminal does on Linux and macOS. Windows ends the process about five seconds after the window closes, so the shutdown is cut short after four, and Atomic exits with status `0xC000013A` (`STATUS_CONTROL_C_EXIT`), as Windows ends such a process. Signing out of Windows, or restarting or shutting it down, still ends Atomic without running them ([#6185](https://github.com/bastani-inc/atomic/pull/6185))
 
 ## [0.10.3] - 2026-11-21
 

@@ -513,9 +513,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
 	}
-	/** The engine owns extensions and tools; the host session has neither. */
-	async getToolStatus(): Promise<ToolStatusReport> {
-		return this.client.requestInternal<ToolStatusReport>({ type: "get_tools" });
+	/**
+	 * The engine owns extensions and tools; the host session has neither. `withoutGit` leaves out the Git section, and the
+	 * git the engine runs to fill it; an engine of an earlier version sends it anyway.
+	 */
+	async getToolStatus(options?: { readonly withoutGit?: boolean }): Promise<ToolStatusReport> {
+		return this.client.requestInternal<ToolStatusReport>({
+			type: "get_tools",
+			...(options?.withoutGit === true ? { withoutGit: true } : {}),
+		});
 	}
 	async initializeFromEngine(
 		generation = this.client.getGeneration?.(),
@@ -1250,8 +1256,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			// from this process being signalled or ending.
 			// Optional like the other transport surfaces focused test doubles omit.
 			const unrecordedQuit = !options?.fromSignal && (await this.client.announceExplicitQuit?.()) === false;
-			// A quit lets the engine run its extensions' shutdown on every platform. After a
-			// signal, Windows still ends the engine at once. A disposal after a failed start is not one for a signal.
+			// A quit, a signal, a lost terminal and a closed Windows console all let a ready engine run its extensions'
+			// shutdown. A disposal after a failed start is not one for a signal.
 			const stop =
 				options?.fromSignal && !this.startupFailure
 					? { graceful: false, hostSignaled: true }
