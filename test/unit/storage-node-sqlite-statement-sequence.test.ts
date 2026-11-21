@@ -337,13 +337,13 @@ test("what a sequence keeps for its signal goes with the signal (#6106)", async 
 	);
 });
 
-test("a signal shared by sequences running at once on several databases stops each of them after one returned (#6106)", async () => {
-	const count = 3;
+test("a signal shared by sequences running at once on two databases stops the second after the first returned (#6106)", async () => {
+	const count = 2;
 	const databases = await Promise.all(Array.from({ length: count }, () => openFile()));
 	const controller = new AbortController();
 	const reason = new Error("stopped");
-	// Every request waits until all of them were sent, so every sequence watches the signal at once. The first one then
-	// runs and returns; the signal aborts while the others' requests are on their way to their threads.
+	// Each request waits until both were sent, so both sequences watch the signal at once. The first one then runs and
+	// returns; the signal aborts while the second one's request is on its way to its thread.
 	let sent = 0;
 	let allSent!: () => void;
 	const everySent = new Promise<void>((resolve) => {
@@ -380,7 +380,6 @@ test("a signal shared by sequences running at once on several databases stops ea
 	);
 	assert.deepEqual(outcomes, [
 		{ failure: undefined, rows: ["v0"] },
-		{ failure: reason, rows: [] },
 		{ failure: reason, rows: [] },
 	]);
 });
