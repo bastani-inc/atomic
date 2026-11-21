@@ -804,7 +804,8 @@ async function importExtensionModule(
 		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
 	});
 	// A JSON file the evaluation reads joins its graph, also after the graph was recorded, as a module it evaluates then
-	// does. One that changed while it was read is recorded with a digest no content has, so a reload evaluates again.
+	// does. One whose parsed content the load cannot vouch for is recorded with a digest no content has, so a reload
+	// evaluates the extension again.
 	observeJsonReads(jiti, (file, content) => {
 		const digest = content === undefined ? CHANGED_WHILE_READ : sha256Hex(content);
 		if (retained) recordLateDigest(extensionPath, retained, file, digest);

@@ -24,10 +24,11 @@ import type { createJiti } from "jiti";
  *   resolved it from the importing file, and the runtime loads what it finds, once per process.
  *   Only when that finds nothing does jiti resolve it (host aliases and
  *   virtual modules), as jiti did after a failed native load.
- * - A JSON file it imports or requires by path is read once per load, as the
- *   file is then, under the same rule, by the runtime's `require` as jiti
- *   would, but around that `require`'s cache, which would keep the content
- *   first read until the process exits; the cache is left as it is.
+ * - A JSON file it imports or requires by path, or by a package name that
+ *   leads into the load's package, is read once per load, as the file is then,
+ *   and parsed as the runtime's `require` parses it. jiti would load it through
+ *   that `require`, whose cache keeps the content first read until the process
+ *   exits; the cache is left as it is.
  * - Everything else (Node builtins, TypeScript files, bare specifiers in
  *   TypeScript, JSON a bare specifier names) keeps jiti's handling.
  *
@@ -72,8 +73,8 @@ interface LoadContext {
 }
 
 /**
- * Told of each JSON file a load reads, with the content it parsed, or `undefined` when the file changed while it was
- * read; keyed by the options of the load's jiti.
+ * Told of each JSON file a load reads, with the content it parsed, or `undefined` when it cannot vouch for what it
+ * parsed; keyed by the options of the load's jiti.
  */
 const jsonReadObservers = new WeakMap<object, (file: string, content: Buffer | undefined) => void>();
 
@@ -184,9 +185,24 @@ function ownJsonByName(id: string, require: Jiti, context: LoadContext): string 
 }
 
 /**
- * The value of a JSON file as the runtime's `require` gives it, parsed by that `require` itself (Bun reads a
- * `package.json` or `tsconfig.json` as JSON with comments), without leaving or replacing its cache entry.
+ * The JSON files Bun's `require` reads as JSON with comments: a `package.json`, and a `tsconfig.json` or `jsconfig.json`,
+ * also with a further name part (`tsconfig.base.json`), in any letter case.
  */
+const BUN_JSONC_NAME = /^(?:package|tsconfig(?:\..*)?|jsconfig(?:\..*)?)\.json$/i;
+
+interface BunJsonc {
+	readonly JSONC: { parse(text: string): unknown };
+}
+
+/** The value the runtime's `require` gives for a JSON file with this content: Node's and Bun's read it the same way. */
+function parseJson(filename: string, content: Buffer): unknown {
+	const text = content.toString("utf8");
+	const json = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+	const bun = (globalThis as { Bun?: BunJsonc }).Bun;
+	return bun !== undefined && BUN_JSONC_NAME.test(path.basename(filename)) ? bun.JSONC.parse(json) : JSON.parse(json);
+}
+
+/** The value of a JSON file from the runtime's own `require`, leaving its cache entry as it was. */
 function requireAfresh(filename: string): unknown {
 	const runtimeRequire = createRequire(filename);
 	const key = runtimeRequire.resolve(filename);
@@ -206,11 +222,19 @@ function requireAfresh(filename: string): unknown {
  */
 function readJson(filename: string, require: Jiti, context: LoadContext): unknown {
 	if (context.json.has(filename)) return context.json.get(filename);
-	// The graph recording observes both reads around the parse; the load records what it parsed only when they agree.
-	const before = fsExports.readFileSync(filename);
-	const value = requireAfresh(filename);
-	const after = fsExports.readFileSync(filename);
-	jsonReadObservers.get(require.options)?.(filename, before.equals(after) ? before : undefined);
+	// One read gives the value and what the load records about the file, which the graph recording also observes.
+	const content = fsExports.readFileSync(filename);
+	const onRead = jsonReadObservers.get(require.options);
+	let value: unknown;
+	try {
+		value = parseJson(filename, content);
+		onRead?.(filename, content);
+	} catch {
+		// The runtime's own `require` throws its own error. Should it read the file, which then changed since, its value
+		// is used, and the load records the file as changed.
+		onRead?.(filename, undefined);
+		value = requireAfresh(filename);
+	}
 	// As jiti's own JSON load, including its TypeError for a value `in` cannot search.
 	if (value && !("default" in (value as object)))
 		Object.defineProperty(value, "default", { value, enumerable: false });
@@ -293,8 +317,8 @@ function bindReloadableScriptLoaders(
 }
 
 /**
- * Tells `onRead` of each JSON file a load by `jiti` reads by path, with the content the load then uses, or `undefined`
- * when the file changed while it was read.
+ * Tells `onRead` of each JSON file a load by `jiti` reads, with the content the load then uses, or `undefined` when it
+ * cannot vouch for what it parsed.
  */
 export function observeJsonReads(jiti: Jiti, onRead: (file: string, content: Buffer | undefined) => void): void {
 	jsonReadObservers.set(jiti.options, onRead);
