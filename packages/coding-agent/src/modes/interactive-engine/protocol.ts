@@ -1050,6 +1050,7 @@ function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | u
 
 function isAgentViewReceipts(value: JsonValue): boolean {
 	if (!isJsonObject(value) || typeof value.sessionId !== "string" || !Array.isArray(value.taken)) return false;
+	if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") return false;
 	return value.taken.every(
 		(receipt) =>
 			receipt === null ||

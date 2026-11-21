@@ -165,6 +165,33 @@ test("a shown queued message not seen saved is reported with its receipt and its
 	}
 });
 
+test("a shown queued message saved while no chat of it was open is not reported when one opens again, whatever its session's window holds", async () => {
+	const held = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const live = await sessionEvents({
+		onQueuedSave: async () => {
+			held.resolve();
+			await release.promise;
+		},
+	});
+	// Its session cannot say where it stored the message (as after a compaction left it out of the window).
+	const child = followedChild();
+	const first = await child.open();
+	await held.promise;
+	for (const event of live.events) child.emit(event);
+	assert.deepEqual(first.viewStatus("worker").unsaved, ["queued while it worked"]);
+	first.dispose();
+	release.resolve();
+	await live.done;
+	const reopened = await child.open();
+	try {
+		assert.equal(reopened.viewStatus("worker").unsaved, undefined);
+		assert.equal(reopened.viewStatus("worker").receipts, undefined);
+	} finally {
+		reopened.dispose();
+	}
+});
+
 test("another message saved with a queued message's text is not that message's save", async () => {
 	const events = await sessionEvents();
 	const child = followedChild();
@@ -185,12 +212,18 @@ test("another message saved with a queued message's text is not that message's s
 });
 
 test("a chat opened again while a shown queued message's save is on its way still reports it", async () => {
-	const events = await sessionEvents();
+	const held = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const live = await sessionEvents({
+		onQueuedSave: async () => {
+			held.resolve();
+			await release.promise;
+		},
+	});
 	const child = followedChild();
 	const first = await child.open();
-	child.emit(events[0]);
-	child.emit(events[1]);
-	child.emit(events[2]);
+	await held.promise;
+	for (const event of live.events) child.emit(event);
 	assert.deepEqual(first.viewStatus("worker").unsaved, ["queued while it worked"]);
 	first.dispose();
 
@@ -201,9 +234,12 @@ test("a chat opened again while a shown queued message's save is on its way stil
 			["queued while it worked"],
 			"the same child, not saved yet",
 		);
-		child.emit(events[3]);
+		release.resolve();
+		await live.done;
+		child.emit(live.events.at(-1));
 		assert.equal(reopened.viewStatus("worker").unsaved, undefined, "saved");
 	} finally {
+		release.resolve();
 		reopened.dispose();
 	}
 });

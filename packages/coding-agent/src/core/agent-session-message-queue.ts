@@ -136,9 +136,17 @@ export function queuedMessageReceipt(message: AgentMessage): QueuedMessageReceip
 	return takenReceipts.get(message);
 }
 
+/** Queued messages a run took that were saved, by the message object: none is ever reported unsaved again. */
+const savedQueuedMessages = new WeakSet<AgentMessage>();
+
 /** `message` was saved: nothing needs to find its save any more, so its receipt (and the text it keeps) goes. */
 export function forgetQueuedMessageReceipt(message: AgentMessage): void {
-	takenReceipts.delete(message);
+	if (takenReceipts.delete(message)) savedQueuedMessages.add(message);
+}
+
+/** Whether `message` is a queued message a run took and saved. */
+export function queuedMessageSaved(message: AgentMessage): boolean {
+	return savedQueuedMessages.has(message);
 }
 /** Per session, oldest first: the queued messages runs took whose `message_start` has not reached the session. */
 const takenNotStarted = new WeakMap<AgentSession, AgentMessage[]>();

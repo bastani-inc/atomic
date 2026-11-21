@@ -76,6 +76,8 @@ export interface AgentViewStatus {
 /** See {@link AgentViewStatus.receipts}. */
 export interface AgentViewReceipts {
 	readonly sessionId: string;
+	/** The file the session is kept in, when it has its own, as a subagent's session does. */
+	readonly sessionFile?: string;
 	readonly taken: readonly (QueuedMessageReceipt | null)[];
 }
 

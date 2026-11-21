@@ -391,6 +391,7 @@ export function attachLostAgentQueueNotices(
 		Partial<Pick<IsolatedInteractiveRuntime, "onEngineRecovered" | "findQueuedMessages">>,
 ): () => void {
 	const stops = new Set<() => void>();
+	let detached = false;
 	const stopEnded = runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
 		// Two chats of one subagent report the same message with the same receipt: it is accounted for once.
@@ -427,9 +428,15 @@ export function attachLostAgentQueueNotices(
 				stop();
 				stops.delete(stop);
 				void (async () => {
+					const session = {
+						sessionId: receipts.sessionId,
+						...(receipts.sessionFile === undefined ? {} : { sessionFile: receipts.sessionFile }),
+					};
 					const found = replaced
-						? await settledWithin(find(taken, receipts.sessionId), RECEIPT_LOOKUP_TIMEOUT_MS)
+						? await settledWithin(find(taken, session), RECEIPT_LOOKUP_TIMEOUT_MS)
 						: undefined;
+					// A chat that stopped meanwhile shows nothing more.
+					if (detached) return;
 					showLostAgentNotices(mode, name, taken, listed, found);
 					mode.ui.requestRender();
 				})();
@@ -440,6 +447,7 @@ export function attachLostAgentQueueNotices(
 		mode.ui.requestRender();
 	});
 	return () => {
+		detached = true;
 		stopEnded();
 		for (const stop of [...stops]) stop();
 		stops.clear();

@@ -1088,8 +1088,8 @@ describe("the main prompt while a subagent is shown", () => {
 						recovered.add(listener);
 						return () => recovered.delete(listener);
 					},
-					findQueuedMessages: async (_messages, sessionId) => {
-						asked.push(sessionId);
+					findQueuedMessages: async (_messages, session) => {
+						asked.push(session?.sessionId);
 						return { saved: new Set(["saved-id"]), absent: new Set(["never-id"]) };
 					},
 				});
@@ -1121,6 +1121,51 @@ describe("the main prompt while a subagent is shown", () => {
 			},
 			HOST_TIMEOUT_MS,
 		);
+
+	test(
+		"a chat stopped while a lost engine's replacement looks a subagent's messages up shows nothing for them",
+		async () => {
+			screen = await mainScreen();
+			worker({
+				busy: true,
+				delivering: { steering: ["never saved"], followUp: [] },
+				receipts: { sessionId: "worker-session", taken: [{ id: "never-id", after: 3, local: true }] },
+			});
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			const recovered = new Set<(replaced: boolean) => void>();
+			const answer = Promise.withResolvers<{ saved: Set<string>; absent: Set<string> }>();
+			const looked = Promise.withResolvers<void>();
+			const detach = attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+				onEngineRecovered: (listener) => {
+					recovered.add(listener);
+					return () => recovered.delete(listener);
+				},
+				findQueuedMessages: () => {
+					looked.resolve();
+					return answer.promise;
+				},
+			});
+			await view(WORKER);
+			for (const listener of ended)
+				listener({
+					generation: 1,
+					error: new Error("engine stopped"),
+					kind: "exit",
+					expected: false,
+				} as InteractiveEngineGenerationEnded);
+			for (const listener of [...recovered]) listener(true);
+			await looked.promise;
+			detach();
+			answer.resolve({ saved: new Set(), absent: new Set(["never-id"]) });
+			await settle();
+			assert.deepEqual(screen.warnings, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
 
 	test(
 		"a lost engine accounts once for a message two chats of one subagent report with the same receipt",

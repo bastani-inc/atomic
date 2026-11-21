@@ -12,7 +12,11 @@ import {
 } from "@bastani/atomic-tui";
 import type { AgentSessionEvent } from "../../../core/agent-session.js";
 import { startsQueuedMessage } from "../../../core/agent-session-events.ts";
-import { queuedMessageReceipt, queuedMessageReceiptId } from "../../../core/agent-session-message-queue.ts";
+import {
+	queuedMessageReceipt,
+	queuedMessageReceiptId,
+	queuedMessageSaved,
+} from "../../../core/agent-session-message-queue.ts";
 import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -153,9 +157,11 @@ const savesHeard = new WeakSet<object>();
 function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEvent | undefined): void {
 	let shown = shownUnsaved.get(session);
 	if (event === undefined) {
-		if (shown !== undefined && session.entryReceipt !== undefined) {
-			const receipt = session.entryReceipt.bind(session);
-			shown = shown.filter((message) => receipt(message) === undefined);
+		if (shown !== undefined) {
+			// A message saved while no page followed the session: its session's receipt says so while the message is in
+			// its window, and the queue remembers it after that.
+			const receipt = session.entryReceipt?.bind(session);
+			shown = shown.filter((message) => receipt?.(message) === undefined && !queuedMessageSaved(message));
 			shownUnsaved.set(session, shown);
 		}
 		return;
@@ -1021,7 +1027,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const taken = [...unsavedReceiptsOf(this.followed), ...delivering.steering, ...delivering.followUp].map(
 			(receipt) => receipt ?? null,
 		);
-		return taken.some((receipt) => receipt !== null) ? { receipts: { sessionId, taken } } : {};
+		if (!taken.some((receipt) => receipt !== null)) return {};
+		const sessionFile = this.followed?.getSessionFile?.();
+		return { receipts: { sessionId, ...(sessionFile === undefined ? {} : { sessionFile }), taken } };
 	}
 
 	/** The chat box of a subagent's chat: the transcript, then pending, working, usage, the named editor and the footer. */

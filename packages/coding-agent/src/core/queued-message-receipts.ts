@@ -1,4 +1,7 @@
+import { stat } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { SessionManager } from "./session-manager.ts";
+import { bindSessionFile, JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { readSessionRange } from "./storage/session/session-resume.ts";
 import type { SessionStore } from "./storage/session/types.js";
 
@@ -89,4 +92,29 @@ export async function findQueuedMessagesInStore(
 	}
 	const certain = complete && writesEndWithWriter(store);
 	return { saved: [...saved], absent: certain ? query.ids.filter((id) => !saved.has(id)) : [] };
+}
+
+/**
+ * As {@link findQueuedMessagesInStore}, for a session kept in its own session file, as a subagent's is: the file is read
+ * where it is, and only when it is the session `sessionId` names.
+ */
+export async function findQueuedMessagesInFile(
+	sessionFile: string,
+	sessionId: string,
+	query: { readonly ids: readonly string[]; readonly after: number; readonly epoch?: string },
+): Promise<QueuedMessagesFound> {
+	let store: JsonlSessionStore | undefined;
+	try {
+		// Only a file that is there is read: opening its store must not make its folder again.
+		if (!(await stat(sessionFile)).isFile()) return { saved: [], absent: [] };
+		store = await JsonlSessionStore.open(dirname(sessionFile), { exactDirectory: true, scanExisting: false });
+		if ((await store.readHeaderFile(sessionFile)).id !== sessionId) return { saved: [], absent: [] };
+		store[bindSessionFile](sessionId, sessionFile);
+		return await findQueuedMessagesInStore(store, sessionId, query);
+	} catch {
+		// A file that cannot be read proves nothing.
+		return { saved: [], absent: [] };
+	} finally {
+		await store?.close().catch(() => {});
+	}
 }
