@@ -483,6 +483,8 @@ test("artifacts-disabled parent cancel still removes run-scoped progress storage
 		const execute = createSubagentExecutor({
 			pi: {
 				events: { on: () => () => {}, emit: () => {} },
+				// The launching session keeps its children's records, as an extension's session does.
+				appendEntry: async () => {},
 				getSessionName: () => "parent",
 			} as unknown as ExecutorDeps["pi"],
 			state,
@@ -530,6 +532,8 @@ test("artifacts-disabled parent cancel still removes run-scoped progress storage
 					getSessionFile: () => join(root, "parent-session.jsonl"),
 					getSessionId: () => "parent-session",
 					getLeafId: () => null,
+					getLeafEntry: () => undefined,
+					getEntry: () => undefined,
 					getEntries: () => [],
 				},
 				isIdle: () => true,

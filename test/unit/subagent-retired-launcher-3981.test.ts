@@ -74,6 +74,8 @@ function retirableContext(root: string) {
 			getSessionFile: () => join(root, "parent.jsonl"),
 			getSessionId: () => "session-parent",
 			getLeafId: () => null,
+			getLeafEntry: () => undefined,
+			getEntry: () => undefined,
 			getEntries: () => [],
 		},
 		isIdle: () => true,
@@ -100,6 +102,8 @@ function executorFor(root: string, emitter: EventEmitter, runtimeRunSync: RunSyn
 	const notified = Promise.withResolvers<void>();
 	const pi = {
 		events: eventBus(emitter),
+		// The launching session keeps its children's records, as an extension's session does.
+		appendEntry: async () => {},
 		getSessionName: () => "parent",
 		sendMessage(message: { content?: string }) {
 			notifications.push(message.content ?? "");

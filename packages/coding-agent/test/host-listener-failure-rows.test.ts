@@ -140,6 +140,26 @@ describe("host listener failures in the chat", () => {
 		assert.deepEqual(errors(), [row("could not save the update", 3)]);
 	});
 
+	test("one listener failing on the same input for another reason starts another series", () => {
+		const reported: ActivityWatchdogDiagnostic[] = [];
+		const failures = new HostListenerFailures((diagnostic) => reported.push(diagnostic));
+		let reason = "could not draw it";
+		const listener = () => {
+			throw new Error(reason);
+		};
+
+		failures.call(listener, update, "event");
+		reason = "could not measure it";
+		failures.call(listener, update, "event");
+		reason = "x".repeat(300);
+		failures.call(listener, update, "event");
+		reason = `${"x".repeat(299)}y`;
+		failures.call(listener, update, "event");
+
+		const series = reported.map((diagnostic) => diagnostic.series);
+		assert.equal(new Set(series).size, 4, "each reason, long ones too, has a series of its own");
+	});
+
 	test("a listener adapted to each call is counted as the listener the host registered", () => {
 		const reported: ActivityWatchdogDiagnostic[] = [];
 		const failures = new HostListenerFailures((diagnostic) => reported.push(diagnostic));

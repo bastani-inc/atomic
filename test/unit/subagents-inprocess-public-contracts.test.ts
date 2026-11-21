@@ -91,6 +91,8 @@ function context(cwd: string): ExtensionContext {
 			getSessionFile: () => join(cwd, "parent-session.jsonl"),
 			getSessionId: () => "parent-session",
 			getLeafId: () => null,
+			getLeafEntry: () => undefined,
+			getEntry: () => undefined,
 			getLastSeq: () => 0,
 			hasFullHistory: () => true,
 			getEntries: () => [],
@@ -115,6 +117,8 @@ function executor(
 	const execute = createSubagentExecutor({
 		pi: {
 			events,
+			// The launching session keeps its children's records, as an extension's session does.
+			appendEntry: async () => {},
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state: currentState,

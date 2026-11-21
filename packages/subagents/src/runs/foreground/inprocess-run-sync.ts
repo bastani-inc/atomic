@@ -437,6 +437,7 @@ async function launchSingleInProcess(
 		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),
 		...(options.onChildLaunch ? { onChildLaunch: options.onChildLaunch } : {}),
 		...(options.recordChildLaunch ? { recordChildLaunch: options.recordChildLaunch } : {}),
+		...(options.madeUpPrompts?.length ? { madeUpPrompts: options.madeUpPrompts } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),
 		...(options.progressArtifactPath
 			? { progressArtifactPath: options.progressArtifactPath }

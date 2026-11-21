@@ -206,6 +206,8 @@ export interface ChildSpec {
 	readonly onChildLaunch?: RunSyncOptions["onChildLaunch"];
 	/** Records the launch, as a task host's `bindChildLaunch` does: nothing runs until it is saved. */
 	readonly recordChildLaunch?: RunSyncOptions["recordChildLaunch"];
+	/** See {@link RunSyncOptions.madeUpPrompts}. */
+	readonly madeUpPrompts?: RunSyncOptions["madeUpPrompts"];
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -1437,6 +1439,15 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 type TranscriptMessage = Extract<BranchEntry, { type: "message" }>["message"];
 
+/** Settles once the attempt is aborted or interrupted; its listeners go once either fires. */
+function attemptStopped(signals: AttemptSignals): Promise<"stopped"> {
+	const stopped = AbortSignal.any([signals.abort, signals.interrupt]);
+	return new Promise((resolve) => {
+		if (stopped.aborted) resolve("stopped");
+		else stopped.addEventListener("abort", () => resolve("stopped"), { once: true });
+	});
+}
+
 /** Why an attempt whose launch record could not be saved ended before it ran, with the store's reason. */
 function launchNotSavedMessage(reason: string): string {
 	return `Subagent did not start: its launch could not be saved in this session: ${reason.replace(/\.+$/, "")}. Nothing was run.`;
@@ -1746,7 +1757,10 @@ const LITERAL_TEXT = { expandPromptTemplates: false } as const;
 
 interface UnsentInput {
 	task: string | undefined;
+	/** The rest of the resume follow-ups not sent yet, in order; only their first is ever taken. */
 	readonly followUps: string[];
+	/** `task` is the first of those follow-ups, taken as the task when the task itself was not prompted. */
+	taskFromFollowUps?: boolean;
 }
 
 /** The task a stop before it is sent hands back: none when it is not prompted or is only a wake's fallback. */
@@ -1779,19 +1793,26 @@ async function recoverChildSession(
 /**
  * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
  * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
+ * A prompt its resume made up (`madeUpPrompts`) and it never read is not handed back: its next run brings its own.
  */
 function pendingMessagesOf(
 	session: AgentSession | undefined,
 	unsent: UnsentInput,
-	taskLiteral: boolean | undefined,
+	spec: Pick<ChildSpec, "resumeTaskLiteral" | "resumeFollowUps" | "madeUpPrompts">,
 ): { pendingMessages?: readonly string[]; pendingTaskExpands?: true } {
 	const queued = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
-	const pending = [...(unsent.task === undefined ? [] : [unsent.task]), ...queued, ...unsent.followUps];
+	// Positions in [task, ...resumeFollowUps]: follow-ups are only ever taken from the front.
+	const madeUp = new Set(spec.madeUpPrompts);
+	const taken = (spec.resumeFollowUps?.length ?? 0) - unsent.followUps.length;
+	const task =
+		unsent.task !== undefined && !madeUp.has(unsent.taskFromFollowUps ? taken : 0) ? unsent.task : undefined;
+	const followUps = unsent.followUps.filter((_, index) => !madeUp.has(taken + 1 + index));
+	const pending = [...(task === undefined ? [] : [task]), ...queued, ...followUps];
 	if (pending.length === 0) return {};
 	// Only an original task it never read keeps a fresh launch's handling; everything else is delivered as written.
 	return {
 		pendingMessages: pending,
-		...(unsent.task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}),
+		...(task !== undefined && !spec.resumeTaskLiteral ? { pendingTaskExpands: true } : {}),
 	};
 }
 
@@ -2268,7 +2289,7 @@ export class SubagentControlRuntime {
 											task: unsentTask(admitted.spec),
 											followUps: [...(admitted.spec.resumeFollowUps ?? [])],
 										},
-										admitted.spec.resumeTaskLiteral,
+										admitted.spec,
 									),
 								}
 							: {}),
@@ -2787,8 +2808,10 @@ export class SubagentControlRuntime {
 				(save) => save !== undefined,
 			);
 			if (launchSaves.length > 0) {
-				for (const failure of await beforeStartDeadline(Promise.all(launchSaves)))
-					if (failure !== undefined) throw new Error(launchNotSavedMessage(failure));
+				// A stop does not wait for the save: the attempt stops before it runs, as below.
+				const saved = await beforeStartDeadline(Promise.race([Promise.all(launchSaves), attemptStopped(signals)]));
+				if (saved !== "stopped")
+					for (const failure of saved) if (failure !== undefined) throw new Error(launchNotSavedMessage(failure));
 			}
 			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
 			else startBudget.enter("dispatching-task");
@@ -2957,6 +2980,7 @@ export class SubagentControlRuntime {
 			} else if (redispatched !== undefined) {
 				taskPending = false;
 				unsent.task = unsent.followUps.shift();
+				unsent.taskFromFollowUps = true;
 			} else if (!termination && admitted.spec.resumeToolResults?.length) {
 				if (!admitted.spec.skipTaskPrompt) {
 					await session.followUp(
@@ -3068,7 +3092,7 @@ export class SubagentControlRuntime {
 									),
 								}),
 					},
-					...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
+					...pendingMessagesOf(session, unsent, admitted.spec),
 					stats,
 					path: admitted.identity.path,
 					envelope: releasedEnvelope(waitingOn),
@@ -3135,7 +3159,7 @@ export class SubagentControlRuntime {
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
 						? {
 								cause: PARENT_CANCEL_CAUSE,
-								...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
+								...pendingMessagesOf(session, unsent, admitted.spec),
 							}
 						: {}),
 					stats,
@@ -3177,7 +3201,7 @@ export class SubagentControlRuntime {
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
 						? {
 								cause: PARENT_CANCEL_CAUSE,
-								...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
+								...pendingMessagesOf(session, unsent, admitted.spec),
 							}
 						: {}),
 					stats,

@@ -186,6 +186,12 @@ export interface RunSyncOptions {
 	 * the attempt runs nothing until the returned promise settles, and ends before it runs when it settles with why the launch could not be saved.
 	 */
 	recordChildLaunch?: (launch: ChildLaunch) => Promise<string | undefined> | undefined;
+	/**
+	 * Positions in `[task, ...resumeFollowUps]` of the prompts a resume made up, such as its continuation prompt,
+	 * rather than messages to the child. One the child is stopped before reading is not held for its next run, which
+	 * brings its own.
+	 */
+	madeUpPrompts?: readonly number[];
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
