@@ -111,6 +111,15 @@ export function interactiveEngineClientOptions(cwd: string): {
 }
 
 /**
+ * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG} for a prewarmed child whose host would otherwise have started a fresh
+ * engine from its own written compile cache: the child writes its compile cache once it has loaded, if its host has
+ * not taken it over by then, so that its exit has little left to write. Defined here, from the one flag every version
+ * exports, and read by `cli.ts` from this module's namespace, so that a process holding an earlier version of either
+ * module, loaded before an update replaced the installation, never fails to link; an earlier version ignores it.
+ */
+export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-write-cache`;
+
+/**
  * How a prewarmed engine's launch compares with the one a host prewarmed before it gave the prewarm the environment
  * `main()` derives from the arguments and the global settings: `"unchanged"` when that environment added nothing, so
  * such a host would have run the prewarmed engine too, and `"derived"` when it added something, so such a host would
@@ -189,9 +198,15 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 	try {
 		launch =
 			options.launch ?? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
-		const prewarmArgs = args.includes("--no-session")
-			? [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_NO_DATABASE]
-			: [INTERACTIVE_ENGINE_PREWARM_FLAG];
+		// Off Windows a host waits for its engine's exit as it quits, the exit-time write of a cold compile cache included;
+		// a fresh engine would have started from the host's written cache instead (Windows ends an engine without it).
+		const writeCache = options.basis === "derived" && process.platform !== "win32";
+		// The no-database marker stays the second argument: the engine reads it there.
+		const prewarmArgs = [
+			INTERACTIVE_ENGINE_PREWARM_FLAG,
+			...(args.includes("--no-session") ? [INTERACTIVE_ENGINE_PREWARM_NO_DATABASE] : []),
+			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
+		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,
 			env: launch.env,

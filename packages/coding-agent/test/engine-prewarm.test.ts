@@ -9,11 +9,13 @@ import {
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
 	type PrewarmLaunchBasis,
 	prewarmInteractiveEngine,
 	sameEngineLaunch,
 	shouldPrewarmInteractiveEngine,
 } from "../src/modes/interactive-engine/engine-prewarm.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../src/utils/interactive-engine-bootstrap.ts";
 
 /** How long a stand-in engine may take to start, or to be gone once stopped, on a loaded runner. */
 const ENGINE_START_OR_EXIT_WAIT_MS = 30_000;
@@ -41,6 +43,7 @@ function writeEngineScript(): string {
 		path,
 		`import { writeFileSync } from "node:fs";\n` +
 			`writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));\n` +
+			`writeFileSync(${JSON.stringify(join(dir, "prewarm-argv"))}, JSON.stringify(process.argv.slice(2)));\n` +
 			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
 			"const args = await readPrewarmedEngineArgs();\n" +
@@ -184,6 +187,9 @@ describe("adopting a prewarmed engine child", () => {
 		assert.ok(child, "the prewarmed child is adopted");
 		children.push(child);
 		assert.deepEqual(bases, ["unchanged"]);
+		assert.deepEqual(JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")), [
+			INTERACTIVE_ENGINE_PREWARM_FLAG,
+		]);
 		assert.equal(child.pid, pid);
 		const output = readLines(child, 2);
 		child.stdin!.write('{"id":"1"}\n');
@@ -199,6 +205,13 @@ describe("adopting a prewarmed engine child", () => {
 		assert.ok(child, "the prewarmed child is adopted");
 		children.push(child);
 		assert.deepEqual(bases, ["derived"]);
+		// Off Windows its host waits for its exit, so it writes its compile cache before that if it can.
+		assert.deepEqual(
+			JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")),
+			process.platform === "win32"
+				? [INTERACTIVE_ENGINE_PREWARM_FLAG]
+				: [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG],
+		);
 	});
 
 	// The host's environment may change between the prewarm at its first line and the engine it settles on. A child
