@@ -270,6 +270,8 @@ declare module "./interactive-mode-base.ts" {
 		showManagedToolStatus(status: ToolStatus): void;
 		/** Bring fd/rg to readiness after first paint; progress lands in the transcript. */
 		ensureManagedToolsReady(): Promise<void>;
+		/** Start `ensureManagedToolsReady` unless it started already (see `managedToolReadiness`). */
+		startManagedToolReadiness(): void;
 		chatMessageRenderOptions(): ChatMessageRenderOptions;
 		addRenderedChatEntry(entry: ChatMessageEntry): Component;
 		addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
