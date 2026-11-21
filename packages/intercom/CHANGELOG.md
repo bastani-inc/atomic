@@ -4,6 +4,15 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- `intercom({ action: "cancel", replyTo })` closes an ask sent to you that you will not answer: it leaves `pending` and stays closed after restarts, and nothing is sent to its sender ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+
+### Fixed
+
+- An ask sent to you no longer stays in `pending` for good once no reply can reach it. A reply that Intercom refuses for good (`Pending question route does not authorize this public reply`) now closes the ask, and so does a refused reply to one of your subagents that has ended. A restart closes the asks of your subagents that ended and lists them once in the recovery notice. A subagent that is released waiting for your answer, or paused, keeps its ask ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+- Replies that your waiting asks already received are no longer shown again after a restart of a long session. Once a compaction had left the entry that received a reply out of the reopened session, the reply came back as history, or as a new turn when its sender was still connected ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+
 ## [0.10.3] - 2026-11-21
 
 ### Fixed
