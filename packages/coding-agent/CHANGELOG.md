@@ -20,6 +20,8 @@
 - An extension command whose view takes longer than 250 ms to draw no longer shows an empty frame before it: the typed command stays until the view draws, for at most another 250 ms, also when another extension's change ends the wait early ([#6105](https://github.com/bastani-inc/atomic/issues/6105))
 - The "Working…" row leaves the screen as soon as an extension command ends after its view, overlay or dialog closed, instead of at the next key press ([#6134](https://github.com/bastani-inc/atomic/issues/6134))
 - Opening a subagent from `/tasks` no longer draws a frame without the agent panel and then moves the transcript up: the subagent is shown once the panel has drawn again ([#6123](https://github.com/bastani-inc/atomic/issues/6123))
+- A resumed session no longer sends the `mcp_servers` part of the system prompt twice more while its MCP servers reconnect: a server without a configured `description` keeps the summary the session last showed for it until it connects, and the part changes only if the server's instructions did ([#6108](https://github.com/bastani-inc/atomic/issues/6108))
+- Sessions no longer store a hash of an MCP stdio server's arguments, which can hold a token, and changing such an argument no longer drops the server's tools from the first requests after a resume ([#6109](https://github.com/bastani-inc/atomic/issues/6109))
 
 ## [0.10.2] - 2026-11-20
 
@@ -6680,7 +6682,6 @@ Cumulative release of the `0.9.18-alpha.1` through `0.9.18-alpha.7` prereleases.
 - Fixed a forced tool choice being ignored rather than rejected on Amazon Bedrock when the request carried no tools. The validation ran after an early return, so the instruction was discarded in silence; it now runs first.
 - Fixed Atomic silently giving up on restoring exact Anthropic reasoning bytes for two kinds of turn it had not been taught about. Atomic re-inserts a replayed thinking block's original bytes after the provider payload is built, and verifies the message shape first so it can never splice reasoning into the wrong turn. That verification did not know that a model which delegates thinking-block binding replays another Claude model's signed reasoning even when its text is empty — Claude Fable 5.1's default, since its thinking display is `"omitted"` — nor that a server-side fallback marker is now sent on the wire. Either one made the check abandon repair for the whole request. No incorrect bytes were ever sent; the repair simply stopped running. Both shapes are now recognized, reasoning and unexecuted tool calls from before a fallback boundary stay dropped as Anthropic requires, and a genuinely mismatched turn is still left untouched.
 
-
 ## [0.9.18-alpha.4] - 2026-09-01
 
 ### Changed
@@ -6935,13 +6936,11 @@ Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. Th
 
 - Workflow stages on installed/prebundled builds now resolve credentials from `~/.atomic/agent` again. The companion extension bundle was treating `@bastani/workflows` as the app package, so stages created an empty `~/.workflows/agent` and reported `No API key found` for every provider.
 
-
 ## [0.9.16-alpha.3] - 2026-08-23
 
 ### Changed
 
 - Installed builtin extensions (`workflows`, `subagents`, `mcp`, `web-access`, `intercom`) now ship as prebundled ESM entry files. Resource trees (`skills/`, `agents/`, workflow builtins) stay on disk; leftover extension TypeScript is pruned from the npm/binary payload. Source maps stay in the published `dist/`, matching upstream pi.
-
 
 ## [0.9.16-alpha.2] - 2026-08-23
 
@@ -6953,7 +6952,6 @@ Cumulative release of the `0.9.16-alpha.1` – `0.9.16-alpha.11` prereleases. Th
 
 - Removed the bundled writing-rule set from the default system prompt's `Guidelines` section. The unrelated "Be concise in your responses" and "Show file paths clearly when working with files" guidelines remain.
 - Removed the bundled `/subagents-doctor`, `/run`, and `/parallel` entries from the slash-command catalog, and dropped `/parallel-review` and `/parallel-cleanup` suggestions from the `/atomic` guide. Launch children with the `subagent` tool.
-
 
 ## [0.9.16-alpha.1] - 2026-08-23
 
@@ -7382,7 +7380,6 @@ Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The
 - Fixed the scroll anchor in `ScrollableComponentViewport` drifting when its content changes height. The offset is stored as a distance from the bottom and was compensated only when content grew, so a component losing rows — such as a live subagent widget dropping its current-tool row at the end of each tool call — slid the rows a scrolled-up viewer was reading. The offset is now re-derived from the anchored row, which also keeps the anchor still when rows change *above* it; a plain height-delta adjustment moved the viewer in that case. Because the chat host renders the entire transcript as a single component, the anchored row is normally *inside* one component, where per-component row counts cannot say whether rows changed above or below it; a windowed component can now report a row map (`rowSegments`) identifying each run of rows by the entry that produced it, so a compaction that deletes entries above the viewer — renumbering every positional cache key — still leaves the viewer on the entry they were reading. If the anchored entry itself was compacted away, the viewer lands on the nearest surviving entry above it. A viewer already at the bottom still sticks to the bottom. This affects the workflow stage chat view and any extension surface built on `ChatSessionHost`; it is not the path the normal interactive chat uses, so it does not by itself preserve main-chat terminal scrollback ([#2214](https://github.com/bastani-inc/atomic/pull/2214), regression source [#2205](https://github.com/bastani-inc/atomic/pull/2205)).
 - Fixed a GitHub Copilot `openai-responses` session hard-stopping with `400 invalid_request_body` once a replayed tool call entered its context. The outbound payload sanitizer treated an *absent* `function_call.id` the same as a malformed one and synthesized a replacement from `call_id`; on the Copilot path across a model-identity mismatch (a mid-session model switch, a session resumed under another model, or an aliased model id) that synthesized value was always exactly 64 characters, and the server rejected it. Because the value is a pure function of the tool call, every resend rebuilt the identical rejected identifier and nothing retries HTTP 400, so the session could not recover without hand-editing its context. An absent id is now left absent, and only an id that is actually present and malformed is repaired. The synthesized-length budget and the id validator were also tightened to agree on a single maximum of 63 characters, below the 64-character length the server was observed to reject rather than at it, so the sanitizer can no longer bless a value the server refuses ([#2204](https://github.com/bastani-inc/atomic/issues/2204)).
 - Fixed the model list widening to a provider's whole built-in catalog after an extension registered an additive provider override, so a GitHub Copilot account entitled to one model could be offered every catalog model. Availability is a per-model fact — a credential can entitle an account to a subset of a provider's catalog — but the model-list refresh and registration projections rebuilt it from the provider's *configured* status, which reads as "every model this provider has". Registering an override recomposes the provider and republishes, so the credential-filtered result was replaced by the full catalog, and it stayed replaced whenever the background refresh that the registration schedules superseded the availability pass a caller was awaiting. Republishing the model list now carries the previous availability projection across by model ID, including an empty one, and a registration exposes a provider's catalog provisionally only when that registration is what newly configures the provider.
-
 
 - Fixed a `null` request-header suppression marker being discarded instead of suppressing the provider default header. pi types request headers as `ProviderHeaders` (`Record<string, string | null>`) and documents a `null` value as suppressing the provider or API default header of the same name. Atomic narrowed that to `Record<string, string>` and enforced the narrowing at runtime in **two** places — `getApiKeyAndHeaders` on `ModelRegistry`, and `_getRequiredRequestAuth` on the agent session — each filtering every `null` entry out before the headers reached the request layer. The provider default was then sent anyway, and a header map consisting only of suppression markers arrived as `{}`, which reads as nothing configured. Both filters are gone and markers now pass through untouched. Note that this is **not** reachable from `models.json`: that schema declares headers as `Record<string, string>` and rejects a `null` value outright, so a marker has to come from a source that speaks `ProviderHeaders` — pi's provider-level catalog headers, the credential-derived request auth pi returns from `getAuth()`, or the `before_provider_headers` extension hook. The agent-session filter additionally affected every request that resolves auth through that path rather than through the registry: compaction, auto-compaction, post-tool-compaction, and branch-summary requests each discarded the marker on every call.
 - Fixed a chat surface built on `ChatSessionHost` — the workflow stage chat, and any extension pane using it — showing no assistant text at all when it was opened onto a session that was already streaming. Now that `message_update` carries only the next delta, a host mounted part-way through a turn sees neither the `message_start` that opened the assistant message nor the fragments that already went past, and nothing later restates them; the message itself reaches the transcript only when the turn ends, so a stage held mid-turn stayed blank for as long as it streamed. A host now adopts the session's in-flight assistant message when it mounts, and the deltas that arrive afterwards continue that message instead of opening a second one. Streaming consumers also assemble into their own copy of the message: an in-process subscriber is handed the provider's live partial, whose `content` array pi-ai keeps appending to, so applying deltas in place wrote each fragment on top of the accumulation the provider had already done and doubled the visible text (regression from the delta-only `message_update` change above).
@@ -7833,7 +7830,6 @@ Cumulative release of the `0.9.11-alpha.1` – `0.9.11-alpha.12` prereleases. Th
 - Fixed newly authenticated providers remaining unavailable in the model selector until Atomic restarted. API-key and OAuth login now reload the isolated engine's credentials and refresh its authoritative model catalog immediately, including credential-dependent dynamic discovery ([#1918](https://github.com/bastani-inc/atomic/issues/1918)).
 - Added actionable `/logout` and `/login` recovery guidance when OpenAI Codex invalidates or revokes a locally unexpired OAuth token, and prevented an earlier WebSocket-to-SSE transport diagnostic from making the definitive authentication rejection retryable ([#1922](https://github.com/bastani-inc/atomic/issues/1922)).
 
-
 ## [0.9.10] - 2026-07-20
 
 ### Breaking Changes
@@ -8045,7 +8041,6 @@ Cumulative release of the `0.9.11-alpha.1` – `0.9.11-alpha.12` prereleases. Th
 - Changed `compression_ratio` to explicitly represent the fraction of compactable lines to keep. `preserve_recent` is enforced client-side, widens the tail to a user-turn start, and always protects the final logical turn. Role headers are now ordinary ranked lines; only explicit protected spans are split out of model-selected deletion ranges.
 - Simplified resume reconstruction to load the persisted compacted string followed by original messages from `firstKeptEntryId`; no deletion filters, signed-thinking repair pass, or tool dependency repair is re-derived.
 - Retuned the one-pass compaction classifier's retention guidance to surgically thin long tool results, preserve compact diagnostic/code/state anchors, prune repeated retry and superseded bodies, and treat formatting, stack position, markers, and query matches as contextual rather than hard categories.
-
 
 ### Fixed
 
