@@ -11,6 +11,8 @@
 - `skill-creator`'s `run_loop.py --holdout 0` finishes and writes its report, instead of failing after its first iteration when a report is written (the default).
 - `skill-creator`'s review viewer prints its URL as soon as it serves when its output goes to a pipe or a file, and on Windows no longer fails before serving when that output is not the console. `SKILL.md` now starts the viewer as a background shell that keeps serving after the call that started it, and reads the URL from its output.
 - `skill-creator`'s scripts write `feedback.json`, `benchmark.json`, `benchmark.md` and the improvement transcripts as UTF-8, and read grading, timing and eval metadata files and `SKILL.md` as UTF-8, falling back to the system's encoding for files saved in it. On Windows, `aggregate_benchmark.py` no longer fails or garbles non-ASCII text.
+- A background subagent woken by the result of a call that kept running in the background, or by a background shell it launched finishing, now gets it as a notice card in its chat (the tool, whether it finished or failed, and its output), as the main chat gets a finished background task. It no longer shows up as a queued `Follow-up: The bash call … that kept running in the background finished:` message you could edit with Alt+Up, or as a message from you in its transcript, and the subagent reads each result once. When the result is the only thing that woke it, the notice starts its turn.
+- A subagent you paused with Esc, restored paused after a restart, no longer answers a notice it had not read yet before you continue it.
 
 ## [0.10.3] - 2026-11-21
 

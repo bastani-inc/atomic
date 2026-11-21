@@ -40,6 +40,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../shared/start-progress.js";
+import { savedNoticeIds, withoutLegacyLateMessages } from "./late-tool-result-notice.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import {
@@ -61,6 +62,7 @@ import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHol
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import { type ChildOwnerAPI, subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
+	clearSubagentChildHeldNotices,
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
@@ -414,6 +416,27 @@ async function ownSessionModelCandidate(
 	return resolveCandidateModel(candidate)?.model ? candidate : undefined;
 }
 
+/** The entry a session saves once a turn read a notice saved before it (see `holdsUnreadNotice`). */
+const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
+
+/**
+ * Whether the child's session holds a notice saved for a turn that never read it, as when its process stopped between
+ * saving the notice and the turn that reads it: the reopened session reads it, so the child has to run.
+ */
+function holdsUnreadNotice(sessionManager: SessionManager): boolean {
+	const branch = sessionManager.getBranch();
+	const read = new Set(sessionManager.getSessionRecoveryState?.().reconciledCardIds ?? []);
+	for (const entry of branch) {
+		if (entry.type !== "custom_message" || entry.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) continue;
+		const card = (entry.details as { readonly protectedReconciliationOf?: unknown } | undefined)
+			?.protectedReconciliationOf;
+		if (typeof card === "string") read.add(card);
+	}
+	return branch.some(
+		(entry) => entry.type === "custom_message" && entry.protectedReconciliation !== undefined && !read.has(entry.id),
+	);
+}
+
 /** What a restored child is prompted with: its task, then follow-ups delivered as written. */
 interface ResumePrompts {
 	readonly task: string;
@@ -758,6 +781,11 @@ async function relaunchChild(
 	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>
 		results.filter((result) => !saved.includes(result.toolCallId));
+	// So were the notices of finished background tasks held for it that its transcript already holds.
+	const heldNotices = latest.heldNotices ?? [];
+	const savedNotices = sessionManager && !fresh ? savedNoticeIds(sessionManager, heldNotices) : [];
+	if (savedNotices.length > 0)
+		await clearSubagentChildHeldNotices(deps.pi, record.owner.sessionId, record.childId, savedNotices);
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
 	const redispatch = resume?.redispatch === true && !fresh && sessionManager !== undefined;
 	const supervisorAuthorization =
@@ -783,8 +811,6 @@ async function relaunchChild(
 	const toolResults = sessionManager
 		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
 		: heldResults;
-	const heldMessages =
-		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
 	// Session recovery of a child the user had paused: it comes back paused, prompted with nothing, as it was.
 	const restoredPaused =
 		resume === undefined &&
@@ -796,13 +822,8 @@ async function relaunchChild(
 			latest.pausedAtLeafId,
 			latest.pausedAtLeafId === undefined ? pauseRecordedAt(ctx, record.childId) : undefined,
 		);
-	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
-	// A wake's fallback prompt is not input of its own: such a wake is promptless unless it brings messages to read.
-	const wakeFallback = resume?.wakeFallback === true && !fresh;
-	const promptless = wakeFallback
-		? !promptsAnything(basePrompts)
-		: resume?.promptless === true && heldMessages.length === 0;
-	const wakePlan =
+	// The calls a woken child's transcript waits on: a released child, one waiting on a call, or one results are held for.
+	const pending =
 		!redispatch &&
 		!restoredPaused &&
 		!fresh &&
@@ -810,28 +831,70 @@ async function relaunchChild(
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? planReleasedChildWake(
-					pendingToolCalls(sessionManager),
-					toolResults,
-					!promptless,
-					interruptedByRestart(record),
-				)
+			? pendingToolCalls(sessionManager)
 			: undefined;
+	// A late result an earlier build held for the child as a message is read in its notice now, so that copy is not.
+	const heldRecord =
+		pending === undefined
+			? record
+			: withoutLegacyLateMessages(
+					record,
+					toolResults.filter((result) => !pending.has(result.toolCallId)),
+				);
+	const heldMessages =
+		heldRecord.heldMessages && heldRecord.heldMessages.taskId === heldRecord.taskId
+			? heldRecord.heldMessages.messages
+			: [];
+	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(heldRecord, resume);
+	// A wake's fallback prompt is not input of its own: such a wake is promptless unless it brings messages to read.
+	const wakeFallback = resume?.wakeFallback === true && !fresh;
+	const promptless = wakeFallback
+		? !promptsAnything(basePrompts)
+		: resume?.promptless === true && heldMessages.length === 0;
+	const wakePlan =
+		pending === undefined
+			? undefined
+			: planReleasedChildWake(pending, toolResults, !promptless, interruptedByRestart(record));
+	// Each reaches it as the notice a running child gets, with its next turn, once. A paused child keeps them held.
+	const notices =
+		!redispatch && !restoredPaused && !fresh && sessionManager
+			? heldNotices.filter((notice) => !savedNotices.includes(notice.details.completionId))
+			: [];
 	const wokenPrompts = redispatch
 		? { task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT, followUps: heldMessages, taskLiteral: true }
-		: wakePlan
-			? wakePrompts(basePrompts, wakePlan.lateMessages, promptless)
-			: basePrompts;
-	// The wake's own prompt starts the child only when nothing else does: no turn continues and nothing is to be read.
-	// It is never queued behind the continued turn as a follow-up the child would take a turn for (an extra request).
+		: basePrompts;
+	// The wake's own prompt starts the child only when nothing else does: no turn continues, no late result starts one
+	// and nothing is to be read. It is never queued behind the continued turn as a follow-up the child would take a turn
+	// for (an extra request).
 	const fallback =
 		wakeFallback &&
 		resume?.promptless !== true &&
 		!redispatch &&
 		(wakePlan?.resumeToolResults.length ?? 0) === 0 &&
+		(wakePlan?.lateResults.length ?? 0) === 0 &&
+		notices.length === 0 &&
 		!promptsAnything(wokenPrompts) &&
 		resume !== undefined;
 	const prompts: ResumePrompts = fallback ? { task: resume.prompt, followUps: [], taskLiteral: true } : wokenPrompts;
+	// A wake by results alone of a child that finished on its own, all of them already in its transcript, leaves it
+	// nothing to continue, read or answer: it is not run again. One with a notice it has not read yet is, to read it.
+	if (
+		resume?.wakeFallback === true &&
+		resume.promptless === true &&
+		latest.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS &&
+		!redispatch &&
+		!fresh &&
+		sessionManager !== undefined &&
+		(wakePlan?.resumeToolResults.length ?? 0) === 0 &&
+		(wakePlan?.lateResults.length ?? 0) === 0 &&
+		notices.length === 0 &&
+		!fallback &&
+		!promptsAnything(prompts) &&
+		!holdsUnreadNotice(sessionManager)
+	) {
+		await hold?.release();
+		return { kind: "terminal", record: latest };
+	}
 	// Redispatched calls start the child; their task is never prompted, so it is only a fallback too.
 	const taskFallback = fallback || (redispatch && wakeFallback);
 	const options: RunSyncOptions = {
@@ -862,10 +925,12 @@ async function relaunchChild(
 		...(wakePlan
 			? {
 					resumeToolResults: wakePlan.resumeToolResults,
+					...(wakePlan.lateResults.length > 0 ? { resumeLateToolResults: wakePlan.lateResults } : {}),
 					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
 					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
 				}
 			: {}),
+		...(notices.length > 0 ? { resumeNotices: notices } : {}),
 		...(wakePlan?.skipPrompt && !fallback ? { skipTaskPrompt: true } : {}),
 		...(taskFallback ? { resumeTaskFallback: true } : {}),
 		...(redispatch ? { redispatchDetachedCalls: true } : {}),
@@ -969,16 +1034,6 @@ async function relaunchChild(
 		intercomGroup,
 	);
 	return fresh ? startedFresh(outcome) : outcome;
-}
-
-/**
- * What a woken child is prompted with: results that came too late for their calls first, as messages, then what the
- * resume or wake brought. A wake by tool results alone prompts only the late results.
- */
-function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promptless: boolean): ResumePrompts {
-	if (lateMessages.length === 0) return base;
-	const [task = "", ...followUps] = promptless ? lateMessages : [...lateMessages, base.task, ...base.followUps];
-	return { task, followUps, taskLiteral: true };
 }
 
 /**
