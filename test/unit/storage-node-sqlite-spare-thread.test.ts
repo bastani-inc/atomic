@@ -32,7 +32,14 @@ function runChild(body: string, nodeFlags: readonly string[] = []): ChildRun {
 		script,
 		`const { ThreadConnection } = await import(${JSON.stringify(threadModule)});
 const workers = [];
-process.on("worker", (worker) => workers.push(worker));
+// Each worker's start and end, watched from the moment it exists so neither event can pass unseen.
+const online = [];
+const exited = [];
+process.on("worker", (worker) => {
+	workers.push(worker);
+	online.push(new Promise((resolve) => worker.once("online", resolve)));
+	exited.push(new Promise((resolve) => worker.once("exit", resolve)));
+});
 // Node reports a new worker on a later turn.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const report = {};
@@ -122,9 +129,9 @@ test("an idle spare thread neither keeps the process running nor outlives releas
 const holdOpen = setInterval(() => {}, 1000);
 ThreadConnection.startSpare();
 await settle();
-await new Promise((resolve) => workers[0].once("online", resolve));
+await online[0];
 ThreadConnection.releaseSpare();
-await new Promise((resolve) => workers[0].once("exit", resolve));
+await exited[0];
 clearInterval(holdOpen);
 report.released = true;
 ThreadConnection.startSpare();
