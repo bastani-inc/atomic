@@ -104,14 +104,6 @@ export interface ParentAskHandoffRequest {
 // Execution Options
 // ============================================================================
 
-/** The model and thinking level a child's session started on, and its leaf entry (and that entry's position) then. */
-export interface ChildLaunch {
-	model: string | undefined;
-	thinking: string | undefined;
-	leafId: string | null;
-	leafSeq?: number;
-}
-
 export interface RunSyncOptions {
 	runningCapacity?: number;
 	getChildSessionOptions?: import("@bastani/atomic").ExtensionContext["getChildSessionOptions"];
@@ -180,18 +172,12 @@ export interface RunSyncOptions {
 	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
 	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;
 	/** Told the model and thinking level the child's session started on, and its leaf entry then, as `onChildSession`. */
-	onChildLaunch?: (launch: ChildLaunch) => void;
-	/**
-	 * Records that launch for a child no task host records (an SDK session), as a task host's `bindChildLaunch` does:
-	 * the attempt runs nothing until the returned promise settles, and ends before it runs when it settles with why the launch could not be saved.
-	 */
-	recordChildLaunch?: (launch: ChildLaunch) => Promise<string | undefined> | undefined;
-	/**
-	 * Positions in `[task, ...resumeFollowUps]` of the prompts a resume made up, such as its continuation prompt,
-	 * rather than messages to the child. One the child is stopped before reading is not held for its next run, which
-	 * brings its own.
-	 */
-	madeUpPrompts?: readonly number[];
+	onChildLaunch?: (launch: {
+		model: string | undefined;
+		thinking: string | undefined;
+		leafId: string | null;
+		leafSeq?: number;
+	}) => void;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;

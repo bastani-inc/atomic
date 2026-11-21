@@ -84,7 +84,6 @@ import {
 	type ArtifactPaths,
 	DEFAULT_MAX_OUTPUT,
 	type MaxOutputConfig,
-	type RunSyncOptions,
 	type TaskExecutionHooks,
 	type TestSessionQueue,
 	truncateOutput,
@@ -203,11 +202,7 @@ export interface ChildSpec {
 	readonly resumeTaskLiteral?: boolean;
 	/** Told the child's own session, and the model it started on, for a launch no task host records. */
 	readonly onChildSession?: TaskExecutionHooks["bindChildSession"];
-	readonly onChildLaunch?: RunSyncOptions["onChildLaunch"];
-	/** Records the launch, as a task host's `bindChildLaunch` does: nothing runs until it is saved. */
-	readonly recordChildLaunch?: RunSyncOptions["recordChildLaunch"];
-	/** See {@link RunSyncOptions.madeUpPrompts}. */
-	readonly madeUpPrompts?: RunSyncOptions["madeUpPrompts"];
+	readonly onChildLaunch?: TaskExecutionHooks["bindChildLaunch"];
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -420,6 +415,56 @@ function modelIdForSession(session: AgentSession | undefined): string | undefine
 function thinkingLevelForSession(session: AgentSession | undefined): string | undefined {
 	const thinking = session?.thinkingLevel;
 	return typeof thinking === "string" ? thinking : undefined;
+}
+
+/**
+ * Settles once the attempt is aborted or interrupted, until `dispose` removes what listens for that: call it once the
+ * wait it races is over, so a signal that outlives the attempt keeps nothing of it.
+ */
+function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<void>; dispose(): void } {
+	let dispose = (): void => {};
+	const stopped = new Promise<void>((resolve) => {
+		if (signals.abort.aborted || signals.interrupt.aborted) return resolve();
+		const stop = () => resolve();
+		signals.abort.addEventListener("abort", stop, { once: true });
+		signals.interrupt.addEventListener("abort", stop, { once: true });
+		dispose = () => {
+			signals.abort.removeEventListener("abort", stop);
+			signals.interrupt.removeEventListener("abort", stop);
+		};
+	});
+	return { stopped, dispose: () => dispose() };
+}
+
+/** The model and thinking level a child's session records last on its branch. */
+function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
+	if (typeof sessionManager.getLatestBranchSettings === "function") {
+		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
+		return {
+			...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+			...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+		};
+	}
+	const context = sessionManager.buildSessionContext();
+	return {
+		...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}),
+		thinking: context.thinkingLevel,
+	};
+}
+
+/**
+ * Write the model and thinking level `session` starts on into its own session, as `/model` does, where the session
+ * records others. A new session recorded them as it started, and one that already runs on them needs nothing.
+ */
+async function recordLaunchSettings(sessionManager: SessionManager, session: AgentSession): Promise<void> {
+	const model = session.model;
+	const thinking = thinkingLevelForSession(session);
+	if (model === undefined && thinking === undefined) return;
+	const recorded = recordedSettings(sessionManager);
+	if (model !== undefined && recorded.model !== `${model.provider}/${model.id}`)
+		await sessionManager.appendModelChange(model.provider, model.id);
+	if (thinking !== undefined && recorded.thinking !== thinking)
+		await sessionManager.appendThinkingLevelChange(thinking);
 }
 
 function initialThinkingForAttempt(
@@ -1439,30 +1484,6 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
 type TranscriptMessage = Extract<BranchEntry, { type: "message" }>["message"];
 
-/**
- * Settles once the attempt is aborted or interrupted, until `dispose` removes what listens for that: call it once the
- * wait it races is over, so a signal that outlives the attempt keeps nothing of it.
- */
-function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<"stopped">; dispose(): void } {
-	let dispose = (): void => {};
-	const stopped = new Promise<"stopped">((resolve) => {
-		if (signals.abort.aborted || signals.interrupt.aborted) return resolve("stopped");
-		const stop = () => resolve("stopped");
-		signals.abort.addEventListener("abort", stop, { once: true });
-		signals.interrupt.addEventListener("abort", stop, { once: true });
-		dispose = () => {
-			signals.abort.removeEventListener("abort", stop);
-			signals.interrupt.removeEventListener("abort", stop);
-		};
-	});
-	return { stopped, dispose: () => dispose() };
-}
-
-/** Why an attempt whose launch record could not be saved ended before it ran, with the store's reason. */
-function launchNotSavedMessage(reason: string): string {
-	return `Subagent did not start: its launch could not be saved in this session: ${reason.replace(/\.+$/, "")}. Nothing was run.`;
-}
-
 /** Where an attempt began: its session's leaf when it launched, and that leaf's position in the session. */
 interface AttemptLaunch {
 	readonly leafId: string | null;
@@ -1767,10 +1788,7 @@ const LITERAL_TEXT = { expandPromptTemplates: false } as const;
 
 interface UnsentInput {
 	task: string | undefined;
-	/** The rest of the resume follow-ups not sent yet, in order; only their first is ever taken. */
 	readonly followUps: string[];
-	/** `task` is the first of those follow-ups, taken as the task when the task itself was not prompted. */
-	taskFromFollowUps?: boolean;
 }
 
 /** The task a stop before it is sent hands back: none when it is not prompted or is only a wake's fallback. */
@@ -1803,26 +1821,19 @@ async function recoverChildSession(
 /**
  * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
  * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
- * A prompt its resume made up (`madeUpPrompts`) and it never read is not handed back: its next run brings its own.
  */
 function pendingMessagesOf(
 	session: AgentSession | undefined,
 	unsent: UnsentInput,
-	spec: Pick<ChildSpec, "resumeTaskLiteral" | "resumeFollowUps" | "madeUpPrompts">,
+	taskLiteral: boolean | undefined,
 ): { pendingMessages?: readonly string[]; pendingTaskExpands?: true } {
 	const queued = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
-	// Positions in [task, ...resumeFollowUps]: follow-ups are only ever taken from the front.
-	const madeUp = new Set(spec.madeUpPrompts);
-	const taken = (spec.resumeFollowUps?.length ?? 0) - unsent.followUps.length;
-	const task =
-		unsent.task !== undefined && !madeUp.has(unsent.taskFromFollowUps ? taken : 0) ? unsent.task : undefined;
-	const followUps = unsent.followUps.filter((_, index) => !madeUp.has(taken + 1 + index));
-	const pending = [...(task === undefined ? [] : [task]), ...queued, ...followUps];
+	const pending = [...(unsent.task === undefined ? [] : [unsent.task]), ...queued, ...unsent.followUps];
 	if (pending.length === 0) return {};
 	// Only an original task it never read keeps a fresh launch's handling; everything else is delivered as written.
 	return {
 		pendingMessages: pending,
-		...(task !== undefined && !spec.resumeTaskLiteral ? { pendingTaskExpands: true } : {}),
+		...(unsent.task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}),
 	};
 }
 
@@ -2299,7 +2310,7 @@ export class SubagentControlRuntime {
 											task: unsentTask(admitted.spec),
 											followUps: [...(admitted.spec.resumeFollowUps ?? [])],
 										},
-										admitted.spec,
+										admitted.spec.resumeTaskLiteral,
 									),
 								}
 							: {}),
@@ -2797,6 +2808,16 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			// A restart restores the child on the model and thinking level its own session records. Those a launch applies
+			// without an entry (a fork's or a relaunch's own model, a resumed session's other effort) are recorded now,
+			// before its first request, so a restart finds them whatever its record in its owner's session says yet.
+			// A stop does not wait for that write: the attempt stops before it runs, as below.
+			const stop = attemptStopped(signals);
+			try {
+				await beforeStartDeadline(Promise.race([recordLaunchSettings(sessionManager, session), stop.stopped]));
+			} finally {
+				stop.dispose();
+			}
 			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
@@ -2809,26 +2830,8 @@ export class SubagentControlRuntime {
 							? sessionManager.getEntrySeq(currentLeafId)
 							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startBudget.signal)),
 			};
-			// A restart restores the child from the launch its record names. Nothing of this attempt runs until that record
-			// is saved, so a restart never finds this attempt's turns behind an earlier launch, on a model that launch does
-			// not name. One that could not be saved runs nothing, as a chat message that could not be saved starts no turn.
-			const taskLaunchSave = taskHooks?.bindChildLaunch?.(childLaunch);
+			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
-			const launchSaves = [taskLaunchSave, admitted.spec.recordChildLaunch?.(childLaunch)].filter(
-				(save) => save !== undefined,
-			);
-			if (launchSaves.length > 0) {
-				// A stop does not wait for the save: the attempt stops before it runs, as below.
-				const stop = attemptStopped(signals);
-				let saved: readonly (string | undefined)[] | "stopped";
-				try {
-					saved = await beforeStartDeadline(Promise.race([Promise.all(launchSaves), stop.stopped]));
-				} finally {
-					stop.dispose();
-				}
-				if (saved !== "stopped")
-					for (const failure of saved) if (failure !== undefined) throw new Error(launchNotSavedMessage(failure));
-			}
 			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
 			else startBudget.enter("dispatching-task");
 			const progressState: AgentProgress = {
@@ -2996,7 +2999,6 @@ export class SubagentControlRuntime {
 			} else if (redispatched !== undefined) {
 				taskPending = false;
 				unsent.task = unsent.followUps.shift();
-				unsent.taskFromFollowUps = true;
 			} else if (!termination && admitted.spec.resumeToolResults?.length) {
 				if (!admitted.spec.skipTaskPrompt) {
 					await session.followUp(
@@ -3108,7 +3110,7 @@ export class SubagentControlRuntime {
 									),
 								}),
 					},
-					...pendingMessagesOf(session, unsent, admitted.spec),
+					...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
 					stats,
 					path: admitted.identity.path,
 					envelope: releasedEnvelope(waitingOn),
@@ -3175,7 +3177,7 @@ export class SubagentControlRuntime {
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
 						? {
 								cause: PARENT_CANCEL_CAUSE,
-								...pendingMessagesOf(session, unsent, admitted.spec),
+								...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
 							}
 						: {}),
 					stats,
@@ -3217,7 +3219,7 @@ export class SubagentControlRuntime {
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
 						? {
 								cause: PARENT_CANCEL_CAUSE,
-								...pendingMessagesOf(session, unsent, admitted.spec),
+								...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
 							}
 						: {}),
 					stats,

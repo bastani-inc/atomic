@@ -122,7 +122,6 @@ import {
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
-	SUBAGENT_RESUME_CONTINUATION_PROMPT,
 	type SubagentReleaseRestoringChildRequest,
 	type SubagentReserveRestoringChildRequest,
 	subagentChildRestoreNotices,
@@ -2633,7 +2632,6 @@ test("a child an SDK session without a task host resumed keeps running across th
 	const paused = await h.call({ action: "pause", id: running.childId });
 	assert.notEqual(paused.isError, true, text(paused));
 	await launch;
-	const pausedLaunch = h.latest(running.childId)?.launchLeafSeq ?? 0;
 
 	const live = Promise.withResolvers<TestSessionQueue>();
 	h.onSession = (session) => live.resolve(session);
@@ -2642,13 +2640,9 @@ test("a child an SDK session without a task host resumed keeps running across th
 	const resumedTask = resumedTaskId(resumed);
 	const session = await live.promise;
 	h.onSession = undefined;
-	// It runs its resumed task once its launch is saved.
 	await h.waitForLatest(
 		running.childId,
-		(candidate) =>
-			candidate.taskId === resumedTask &&
-			!!candidate.childSessionId &&
-			(candidate.launchLeafSeq ?? 0) > pausedLaunch,
+		(candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId,
 	);
 	const steer = "STEER: report the permission error only";
 	const followUp = "FOLLOWUP: include the failing command";
@@ -2692,86 +2686,6 @@ test("a child an SDK session without a task host resumed keeps running across th
 	assert.equal(occurrences(after, steer), 1, "a later resume does not deliver the steer again");
 	assert.equal(occurrences(after, followUp), 1, "a later resume does not deliver the follow-up again");
 });
-
-/** The user messages a child's saved session holds, in order. */
-function userMessages(record: SubagentChildRecord): string[] {
-	return transcript(record)
-		.split("\n")
-		.filter((line) => line.trim() !== "")
-		.map((line) => JSON.parse(line) as { type?: string; message?: { role?: string; content?: unknown } })
-		.flatMap((entry) => (entry.type === "message" && entry.message?.role === "user" ? [entry.message.content] : []))
-		.map((content) =>
-			typeof content === "string"
-				? content
-				: (content as { type: string; text?: string }[]).map((part) => part.text ?? "").join(""),
-		);
-}
-
-// The steer is also sent as the very text of the resume's own prompt: a message, which arrives as any other.
-for (const steer of ["STEER: report the permission error only", SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT])
-	test(`a resumed child its owner closes while its launch is saved reads, once reopened, what was queued for it and then the restart's prompt (steer: ${steer.slice(0, 12)})`, async () => {
-		const h = harness({ ownerless: true });
-		h.resumedRunsWait = true;
-		const launch = h.call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
-		const running = await (async () => {
-			const deadline = Date.now() + RECORD_WAIT_MS;
-			while (Date.now() < deadline) {
-				const [record] = readSubagentChildRecords(h.sessionManager.getEntries()).values();
-				if (record?.childSessionId) return record;
-				await sleep(10);
-			}
-			throw new Error("the child never started");
-		})();
-		const paused = await h.call({ action: "pause", id: running.childId });
-		assert.notEqual(paused.isError, true, text(paused));
-		await launch;
-		const pausedLaunch = h.latest(running.childId)?.launchLeafSeq ?? 0;
-		// The owner's session takes the resumed launch's record only once the test lets it.
-		const saving = Promise.withResolvers<void>();
-		const save = Promise.withResolvers<void>();
-		const append = h.deps.pi.appendEntry.bind(h.deps.pi);
-		h.deps.pi.appendEntry = async (type, data) => {
-			const row = data as SubagentChildRecord | undefined;
-			if (type === SUBAGENT_CHILD_RECORD_TYPE && (row?.launchLeafSeq ?? 0) > pausedLaunch) {
-				saving.resolve();
-				await save.promise;
-			}
-			await append(type, data);
-		};
-
-		const live = Promise.withResolvers<TestSessionQueue>();
-		h.onSession = (session) => live.resolve(session);
-		const resumed = await h.call({ action: "resume", id: running.childId });
-		assert.notEqual(resumed.isError, true, text(resumed));
-		const resumedTask = resumedTaskId(resumed);
-		const session = await live.promise;
-		h.onSession = undefined;
-		await saving.promise;
-		const followUp = "FOLLOWUP: include the failing command";
-		await session.steer(steer);
-		await session.followUp(followUp);
-
-		h.closeOwnerSessionAndReopen();
-		save.resolve();
-		const kept = await h.waitForLatest(
-			running.childId,
-			(candidate) => candidate.taskId === resumedTask && candidate.heldMessages !== undefined,
-		);
-		const before = userMessages(kept);
-		h.resumedRunsWait = false;
-		const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
-		assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
-		const finished = await h.waitForLatest(
-			running.childId,
-			(candidate) => candidate.taskId === outcome.taskId && candidate.state === "terminal",
-		);
-
-		assert.deepEqual(userMessages(finished).slice(before.length), [
-			steer,
-			followUp,
-			SUBAGENT_RESUME_CONTINUATION_PROMPT,
-		]);
-	});
 
 test("a clean paused worktree child's worktree is removed when its session closes, and resume recreates it from the run's base (#3760 run control)", async () => {
 	const h = harness();

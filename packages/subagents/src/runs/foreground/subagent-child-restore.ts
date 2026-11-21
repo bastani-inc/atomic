@@ -456,8 +456,6 @@ interface ResumePrompts {
 	readonly followUps: readonly string[];
 	/** The task is delivered as written rather than as a fresh launch's task. */
 	readonly taskLiteral: boolean;
-	/** Positions in `[task, ...followUps]` of the prompts this resume made up rather than messages to the child. */
-	readonly madeUp: readonly number[];
 }
 
 /**
@@ -482,19 +480,13 @@ function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResume
 	const taskExpands =
 		recorded !== undefined && heldTaskExpands(recorded) && held.length > 0 && held[0] === recorded.messages[0];
 	// A wake's fallback prompt is not among them: the wake decides whether it starts the turn (see wakeFallbackPrompts).
-	const prompts = [
+	const [task = "", ...followUps] = [
 		...held,
 		...(resume?.wakeFallback ? [] : [prompt]),
 		...(resume?.followUps ?? []),
 		...(resume?.continuation ? [resume.continuation] : []),
 	];
-	const [task = "", ...followUps] = prompts;
-	// The resume's prompt is made up unless it is the caller's message, and so is its continuation.
-	const madeUp = [
-		...(resume?.wakeFallback || resume?.message ? [] : [held.length]),
-		...(resume?.continuation ? [prompts.length - 1] : []),
-	];
-	return { task, followUps, taskLiteral: !taskExpands, madeUp };
+	return { task, followUps, taskLiteral: !taskExpands };
 }
 
 /** Whether `prompts` give the child anything to read. */
@@ -521,7 +513,6 @@ function freshPrompts(
 		task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task,
 		followUps: heldTask ? held.slice(1) : held,
 		taskLiteral: false,
-		madeUp: [],
 	};
 }
 
@@ -862,13 +853,8 @@ async function relaunchChild(
 					interruptedByRestart(record),
 				)
 			: undefined;
-	const wokenPrompts: ResumePrompts = redispatch
-		? {
-				task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT,
-				followUps: heldMessages,
-				taskLiteral: true,
-				madeUp: resume?.message ? [] : [0],
-			}
+	const wokenPrompts = redispatch
+		? { task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT, followUps: heldMessages, taskLiteral: true }
 		: wakePlan
 			? wakePrompts(basePrompts, wakePlan.lateMessages, promptless)
 			: basePrompts;
@@ -881,9 +867,7 @@ async function relaunchChild(
 		(wakePlan?.resumeToolResults.length ?? 0) === 0 &&
 		!promptsAnything(wokenPrompts) &&
 		resume !== undefined;
-	const prompts: ResumePrompts = fallback
-		? { task: resume.prompt, followUps: [], taskLiteral: true, madeUp: [0] }
-		: wokenPrompts;
+	const prompts: ResumePrompts = fallback ? { task: resume.prompt, followUps: [], taskLiteral: true } : wokenPrompts;
 	// Redispatched calls start the child; their task is never prompted, so it is only a fallback too.
 	const taskFallback = fallback || (redispatch && wakeFallback);
 	const options: RunSyncOptions = {
@@ -908,7 +892,6 @@ async function relaunchChild(
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 && !restoredPaused ? { resumeFollowUps: prompts.followUps } : {}),
 		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
-		...(prompts.madeUp.length > 0 ? { madeUpPrompts: prompts.madeUp } : {}),
 		// A pause its record still names but that no longer holds is cleared, so the record says what the child is.
 		...(restoredPaused ? { resumePaused: true } : latest.pausedByUser === true ? { resumePaused: false } : {}),
 		// Present, even empty, whenever the wake took the results its record held: they are cleared once delivered.
@@ -1031,12 +1014,7 @@ async function relaunchChild(
 function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promptless: boolean): ResumePrompts {
 	if (lateMessages.length === 0) return base;
 	const [task = "", ...followUps] = promptless ? lateMessages : [...lateMessages, base.task, ...base.followUps];
-	return {
-		task,
-		followUps,
-		taskLiteral: true,
-		madeUp: promptless ? [] : base.madeUp.map((position) => position + lateMessages.length),
-	};
+	return { task, followUps, taskLiteral: true };
 }
 
 /**

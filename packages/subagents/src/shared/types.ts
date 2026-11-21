@@ -21,7 +21,7 @@ import type {
 } from "../../../coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AttemptOutcome, TestSessionOptions } from "../runs/inprocess/runner.js";
-import type { RunSyncOptions as BaseRunSyncOptions, ChildLaunch } from "./types-config.js";
+import type { RunSyncOptions as BaseRunSyncOptions } from "./types-config.js";
 
 /** Optional bridge for an already-admitted task; does not admit or replace execution. */
 export interface TaskExecutionHooks {
@@ -34,12 +34,13 @@ export interface TaskExecutionHooks {
 	/** The child session ended: drop the statuses it set. */
 	clearExtensionStatuses?(): void;
 	bindChildSession?(session: { sessionId: string; sessionFile: string | undefined }): void;
-	/**
-	 * The model and thinking level the child's session started on, and the session's leaf entry at that moment. A
-	 * restart restores the child from this launch, so the attempt runs nothing until the returned promise settles: once
-	 * its record is saved (`undefined`), or with why it could not be, which ends the attempt before it runs.
-	 */
-	bindChildLaunch?(launch: ChildLaunch): Promise<string | undefined> | undefined;
+	/** The model and thinking level the child's session started on, and the session's leaf entry at that moment. */
+	bindChildLaunch?(launch: {
+		model: string | undefined;
+		thinking: string | undefined;
+		leafId: string | null;
+		leafSeq?: number;
+	}): void;
 	toolResultsSaved?(toolCallIds: readonly string[]): void;
 	/**
 	 * The user paused the child from its chat (Esc), or its next turn started after that: recorded so a restart restores

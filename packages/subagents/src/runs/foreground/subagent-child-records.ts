@@ -390,24 +390,9 @@ export interface SubagentChildRecordSink {
 	flushed?(): Promise<void>;
 	/** Settles once the latest record this sink was given is appended: `false` when it could not be. */
 	saved?(): Promise<boolean>;
-	/** Settles once the latest record this sink was given is appended: `undefined`, or why it could not be. */
-	saveFailure?(): Promise<string | undefined>;
-	/** Its owner keeps no records at all (it cannot append entries): nothing it is given is saved, or waited for. */
-	readonly recordless?: true;
 	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
 	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
 	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
-}
-
-/**
- * Settles once the latest record `sink` was given is appended: `undefined`, or why it could not be. A sink that only
- * answers whether it saved gives no reason of its own; one that answers nothing about its saves, or keeps no records, leaves nothing to wait
- * for (`undefined`). Call it right after `record`, before anything else is recorded.
- */
-export function latestRecordSaved(sink: SubagentChildRecordSink | undefined): Promise<string | undefined> | undefined {
-	if (sink?.recordless) return undefined;
-	if (sink?.saveFailure) return sink.saveFailure();
-	return sink?.saved?.().then((saved) => (saved ? undefined : "the session store did not save it"));
 }
 
 /** Session recovery restores children that had not settled. */
@@ -523,15 +508,8 @@ function asRecordFailure(record: SubagentChildRecord, error: Error): ReleasedChi
 	return isReleasedChildError(error) ? error : recordAppendFailure(record, error);
 }
 
-/**
- * Append `record`, already observed as its child's full latest record, and point the index at its entry. `appended`
- * is told once the owner's session saved it, before the index is pointed at it.
- */
-async function appendObserved(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	record: SubagentChildRecord,
-	appended?: () => void,
-): Promise<void> {
+/** Append `record`, already observed as its child's full latest record, and point the index at its entry. */
+async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
 	pendingSubagentChildWrites.add(record);
 	try {
 		await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
@@ -540,7 +518,6 @@ async function appendObserved(
 	} finally {
 		pendingSubagentChildWrites.delete(record);
 	}
-	appended?.();
 	settleSubagentChildRecord(record);
 }
 
@@ -549,29 +526,15 @@ async function appendObserved(
  * it records merged over its latest one, so the index points at one entry (#4395). A failed append is counted, not
  * lost.
  */
-/**
- * Settles once `record` is appended: `undefined`, or, when appending it failed, which is reported as a failure, the
- * store's reason as text. Only the text is kept: the error can reach the session that failed to append (#5570). A
- * record its owner's session saved is saved, also when pointing the index at it failed afterwards (reported too).
- */
-function appendInOrder(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	record: SubagentChildRecord,
-): Promise<string | undefined> {
+/** Settles once `record` is appended: `true`, or `false` when appending it failed, which is reported as a failure. */
+function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<boolean> {
 	const full = observeSubagentChildRecord(record);
 	pendingSubagentChildWrites.add(full);
-	let saved = false;
-	return inOrder(full.owner.sessionId, () =>
-		appendObserved(pi, full, () => {
-			saved = true;
-		}),
-	).then(
-		() => undefined,
+	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).then(
+		() => true,
 		(error: Error) => {
-			const failure = asRecordFailure(full, error);
-			observeChildRecordFailure(full.owner.sessionId, failure);
-			if (saved) return undefined;
-			return failure.cause instanceof Error ? failure.cause.message : failure.message;
+			observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
+			return false;
 		},
 	);
 }
@@ -613,10 +576,9 @@ export function createSubagentChildRecordSink(
 	pi = subagentChildOwnerWriter(pi, ctx.sessionManager);
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	const worktreeRootMappings = currentWorktreeRootMappings();
-	let appended: Promise<string | undefined> = Promise.resolve(undefined);
+	let appended: Promise<boolean> = Promise.resolve(true);
 	return {
 		ownerSessionId: owner.sessionId,
-		...(typeof pi.appendEntry === "function" ? {} : { recordless: true as const }),
 		record(input) {
 			const record: SubagentChildRecord = {
 				version: 1,
@@ -628,8 +590,7 @@ export function createSubagentChildRecordSink(
 			appended = appendInOrder(pi, record);
 		},
 		flushed: () => appended.then(() => undefined),
-		saved: () => appended.then((failure) => failure === undefined),
-		saveFailure: () => appended,
+		saved: () => appended,
 		clearHeldToolResults: (childId, toolCallIds) =>
 			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
 		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),
