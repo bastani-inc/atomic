@@ -110,6 +110,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getSessionContextMeter: ChatSessionHostOpts<TExtraEntry>["getSessionContextMeter"];
 	readonly getPromptEntries: ChatSessionHostOpts<TExtraEntry>["getPromptEntries"];
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
+	readonly transcriptEndBlock: (() => Component | undefined) | undefined;
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly workingTokenCount: (() => number | undefined) | undefined;
@@ -337,6 +338,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getSessionContextMeter = opts.getSessionContextMeter;
 		this.getPromptEntries = opts.getPromptEntries;
 		this.getTaskSource = opts.getTaskSource;
+		this.transcriptEndBlock = opts.transcriptEndBlock;
 		this.echoedInitialPrompt = opts.echoedInitialPrompt;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingTokenCount = opts.workingTokenCount;
