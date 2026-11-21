@@ -20,6 +20,8 @@
  *   module stays the same.
  * - A module named with `--standalone=<path below dist>,...` keeps its compiled file and code: the release build of
  *   the single-file binary copies such files beside the binary and loads them from there.
+ * - A package named with `--inline=<package>,...` is bundled in, its modules grouped apart from the package's own:
+ *   the package's compiled modules that import it then share one copy of it, loaded from the shared files.
  *
  * A package with an exports map also keeps its compiled modules, one file each, under `dist/_modules/`, and each of its
  * exports names them with the `module` and `browser` conditions, ahead of `import`. Bundlers resolve those conditions
@@ -40,6 +42,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -177,9 +180,10 @@ export function assignGroups(modules, entries, importsOf) {
  * @param {typeof import("esbuild")} esbuild
  * @param {string} packageDir
  * @param {Map<string, string>} sources
+ * @param {(specifier: string) => boolean} isExternal Whether a bare specifier names a package that stays external.
  * @returns {Promise<{ exports: Map<string, string[]>, imports: Map<string, { static: string[], dynamic: string[], staticExternal: string[], dynamicExternal: string[] }> }>}
  */
-async function analyzeModules(esbuild, packageDir, sources) {
+async function analyzeModules(esbuild, packageDir, sources, isExternal) {
 	const dist = join(packageDir, "dist");
 	const result = await esbuild.build({
 		absWorkingDir: packageDir,
@@ -190,7 +194,6 @@ async function analyzeModules(esbuild, packageDir, sources) {
 		splitting: true,
 		format: "esm",
 		platform: "node",
-		packages: "external",
 		metafile: true,
 		write: false,
 		logLevel: "silent",
@@ -198,6 +201,9 @@ async function analyzeModules(esbuild, packageDir, sources) {
 			{
 				name: "compiled-sources",
 				setup(build) {
+					build.onResolve({ filter: /^[^./]/ }, ({ path }) =>
+						isExternal(path) ? { path, external: true } : undefined,
+					);
 					build.onLoad({ filter: /\.js$/ }, ({ path }) => {
 						const contents = sources.get(path);
 						return contents === undefined ? undefined : { contents, loader: "js" };
@@ -228,8 +234,8 @@ async function analyzeModules(esbuild, packageDir, sources) {
 /**
  * Bundles `packageDir`'s compiled `dist` in place.
  * @param {string} packageDir
- * @param {{ standalone?: readonly string[], cacheDir?: string, log?: (message: string) => void }} [options]
- *   `standalone`: modules, by path below `dist`, that keep their compiled files.
+ * @param {{ standalone?: readonly string[], inline?: readonly string[], cacheDir?: string, log?: (message: string) => void }} [options]
+ *   `standalone`: modules, by path below `dist`, that keep their compiled files. `inline`: packages bundled in.
  */
 export async function bundlePackageDist(packageDir, options = {}) {
 	const { rolldown } = await import("rolldown");
@@ -243,6 +249,33 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	/** @type {{ facades: Record<string, string> }} */
 	const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : { facades: {} };
 	const standalone = new Set((options.standalone ?? []).map((rel) => join(dist, rel)));
+	const inline = options.inline ?? [];
+	/** Whether a bare specifier names a package that stays external, rather than one bundled in. */
+	const isExternal = (/** @type {string} */ id) =>
+		!id.startsWith(".") &&
+		!isAbsolute(id) &&
+		!id.startsWith("\0") &&
+		!inline.some((name) => id === name || id.startsWith(`${name}/`));
+	const requireFromPackage = createRequire(join(packageDir, "package.json"));
+	/** Each inlined package's directory, found from its main entry. */
+	const inlinedRoots = inline.map((name) => {
+		for (let dir = dirname(requireFromPackage.resolve(name)); dir !== dirname(dir); dir = dirname(dir)) {
+			const manifestPath = join(dir, "package.json");
+			if (existsSync(manifestPath) && JSON.parse(readFileSync(manifestPath, "utf8")).name === name) {
+				return { name, dir: resolve(dir) };
+			}
+		}
+		throw new Error(`bundle-package-dist: cannot find the directory of the inlined package ${name}`);
+	});
+	const inlinedRootOf = (/** @type {string} */ id) => inlinedRoots.find(({ dir }) => id.startsWith(dir + sep));
+	/** Whether a module is bundled: the package's own, but for a standalone one, or an inlined package's. */
+	const isBundled = (/** @type {string} */ id) =>
+		(id.startsWith(dist + sep) && !standalone.has(id)) || inlinedRootOf(id) !== undefined;
+	/** A module's name in shared files' names: its path in the package, or `<inlined package>/<path in it>`. */
+	const memberName = (/** @type {string} */ id) => {
+		const root = inlinedRootOf(id);
+		return root ? `${root.name}/${toPosix(relative(root.dir, id))}` : toPosix(relative(packageDir, id));
+	};
 	for (const file of standalone) {
 		if (!existsSync(file))
 			throw new Error(`bundle-package-dist: standalone module ${relative(dist, file)} does not exist`);
@@ -274,7 +307,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		if (map !== "") maps.set(file, map);
 	}
 
-	const analysis = await analyzeModules(esbuild, packageDir, sources);
+	const analysis = await analyzeModules(esbuild, packageDir, sources, isExternal);
 	const expectedExports = analysis.exports;
 	/** A standalone module, external to the bundle, as the bundled files name it: its path below dist. */
 	const asImported = (/** @type {string} */ path) => `./${toPosix(relative(dist, path))}`;
@@ -303,8 +336,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		),
 		// Not "node": the shared helpers would import `node:module` for a `require` no module makes.
 		platform: "neutral",
-		external: (id) =>
-			!id.startsWith(".") && !id.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(id) && !id.startsWith("\0"),
+		external: isExternal,
 		makeAbsoluteExternalsRelative: true,
 		preserveEntrySignatures: "allow-extension",
 		treeshake: { moduleSideEffects: true },
@@ -322,6 +354,16 @@ export async function bundlePackageDist(packageDir, options = {}) {
 					if (!importer || !source.startsWith(".")) return null;
 					const resolved = await this.resolve(source, importer, { ...extra, skipSelf: true });
 					return resolved && standalone.has(resolved.id) ? { id: resolved.id, external: true } : resolved;
+				},
+				transform(code, id) {
+					// An inlined package's module keeps its code, so it cannot need its own URL once in a shared file.
+					const root = inlinedRootOf(normalizeId(id));
+					if (root && code.includes("import.meta")) {
+						throw new Error(
+							`bundle-package-dist: the inlined module ${memberName(normalizeId(id))} uses import.meta`,
+						);
+					}
+					return null;
 				},
 				async load(id) {
 					const code = sources.get(normalizeId(id));
@@ -357,10 +399,13 @@ export async function bundlePackageDist(packageDir, options = {}) {
 				},
 				buildEnd() {
 					// Every module of the package, its JSON files included; anything else it imports is another package.
-					const internal = [...this.getModuleIds()]
-						.map(normalizeId)
-						.filter((id) => id.startsWith(dist + sep) && !standalone.has(id));
+					const internal = [...this.getModuleIds()].map(normalizeId).filter(isBundled);
 					groups = assignGroups(internal, entries, importsOf);
+					// An inlined package's modules share files only with each other.
+					for (const [id, group] of groups) {
+						const root = inlinedRootOf(id);
+						if (root) groups.set(id, `${group}|${root.name}`);
+					}
 				},
 			},
 		],
@@ -372,10 +417,11 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		chunkFileNames: (chunk) => {
 			const own = chunk.moduleIds
 				.map(normalizeId)
-				.filter((id) => id.startsWith(dist + sep))
-				.map((id) => toPosix(relative(packageDir, id)));
-			const first = own.sort()[0] ?? [...chunk.moduleIds].sort()[0] ?? chunk.name;
-			const group = groups.get(join(packageDir, first));
+				.filter(isBundled)
+				.map((id) => /** @type {const} */ ([memberName(id), id]))
+				.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+			const first = own[0]?.[0] ?? [...chunk.moduleIds].sort()[0] ?? chunk.name;
+			const group = own[0] === undefined ? undefined : groups.get(own[0][1]);
 			const label =
 				group === undefined ? chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_") : group.slice(0, group.indexOf(":"));
 			return `_${label}-${stableName(`module:${first}`)}.js`;
@@ -553,10 +599,11 @@ function checkExports(exportsMap) {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-	const standalone = process.argv
-		.slice(2)
-		.filter((arg) => arg.startsWith("--standalone="))
-		.flatMap((arg) => arg.slice("--standalone=".length).split(","))
-		.filter(Boolean);
-	await bundlePackageDist(process.cwd(), { standalone });
+	const list = (/** @type {string} */ flag) =>
+		process.argv
+			.slice(2)
+			.filter((arg) => arg.startsWith(`--${flag}=`))
+			.flatMap((arg) => arg.slice(flag.length + 3).split(","))
+			.filter(Boolean);
+	await bundlePackageDist(process.cwd(), { standalone: list("standalone"), inline: list("inline") });
 }

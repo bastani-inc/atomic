@@ -37,7 +37,7 @@
     "@bastani/atomic-ai": "*",
     "@bastani/atomic-agent-core": "*",
     "@bastani/atomic-tui": "*",
-    "typebox": "*"
+    "@bastani/atomic-schema": "*"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {

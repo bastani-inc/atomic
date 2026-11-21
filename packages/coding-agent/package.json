@@ -38,6 +38,51 @@
       "types": "./dist/rpc-entry.d.ts",
       "import": "./dist/rpc-entry.js",
       "default": "./dist/rpc-entry.js"
+    },
+    "./typebox": {
+      "types": "./dist/typebox/index.d.ts",
+      "import": "./dist/typebox/index.js",
+      "default": "./dist/typebox/index.js"
+    },
+    "./typebox/compile": {
+      "types": "./dist/typebox/compile.d.ts",
+      "import": "./dist/typebox/compile.js",
+      "default": "./dist/typebox/compile.js"
+    },
+    "./typebox/error": {
+      "types": "./dist/typebox/error.d.ts",
+      "import": "./dist/typebox/error.js",
+      "default": "./dist/typebox/error.js"
+    },
+    "./typebox/format": {
+      "types": "./dist/typebox/format.d.ts",
+      "import": "./dist/typebox/format.js",
+      "default": "./dist/typebox/format.js"
+    },
+    "./typebox/guard": {
+      "types": "./dist/typebox/guard.d.ts",
+      "import": "./dist/typebox/guard.js",
+      "default": "./dist/typebox/guard.js"
+    },
+    "./typebox/schema": {
+      "types": "./dist/typebox/schema.d.ts",
+      "import": "./dist/typebox/schema.js",
+      "default": "./dist/typebox/schema.js"
+    },
+    "./typebox/system": {
+      "types": "./dist/typebox/system.d.ts",
+      "import": "./dist/typebox/system.js",
+      "default": "./dist/typebox/system.js"
+    },
+    "./typebox/type": {
+      "types": "./dist/typebox/type.d.ts",
+      "import": "./dist/typebox/type.js",
+      "default": "./dist/typebox/type.js"
+    },
+    "./typebox/value": {
+      "types": "./dist/typebox/value.d.ts",
+      "import": "./dist/typebox/value.js",
+      "default": "./dist/typebox/value.js"
     }
   },
   "files": [
@@ -73,6 +118,7 @@
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
     "@bastani/atomic-ai": "0.0.0",
+    "@bastani/atomic-schema": "0.0.0",
     "@bastani/atomic-agent-core": "0.0.0",
     "@bastani/atomic-codemode": "0.0.0",
     "@bastani/atomic-tui": "0.0.0",

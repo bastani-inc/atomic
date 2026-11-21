@@ -2,14 +2,24 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Atomic now ships its own copy of TypeBox, so an SDK app installed with Bun or with pnpm hoisting no longer shares its own `typebox` package with Atomic (with npm it already did not). Schemas built with that `typebox` still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. Extensions are not affected: their `typebox` imports already resolve to Atomic's copy.
+
+### Added
+
+- `@bastani/atomic/typebox` and its subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) export the copy of TypeBox Atomic uses, for SDK apps that register formats or settings for their tool schemas.
+
 ### Changed
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
 - Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless a session uses the memory session store (`--no-session`, `ATOMIC_STORAGE=memory` or `{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
 - Atomic starts faster, most of all on Windows: the packages it ships for models, the terminal UI, the agent loop, schemas and telemetry (`@bastani/atomic-ai`, `-tui`, `-agent-core`, `-schema`, `-telemetry`) now load from a few files each instead of one file per module, so a start reads about 290 fewer files. Their import paths, deep paths included, are unchanged. A bundler (esbuild, Vite, webpack, rolldown) that bundles `@bastani/atomic-ai`, `-agent-core`, `-schema` or `-telemetry` into an app still gets one file per module and leaves out what the app does not use. One that bundles `@bastani/atomic-tui` gets its modules in the shared files and can no longer leave the unused ones out: importing only `visibleWidth` grows from about 198 KB to 345 KB minified.
+- Atomic starts faster again: TypeBox loads from one file instead of about 670.
 
 ### Fixed
 
+- An extension's `typebox/format`, `typebox/system` and TypeBox's other subpaths besides `typebox/compile` and `typebox/value` now resolve to Atomic's copy of TypeBox, so a format an extension registers with `Format.Set()` applies to its tools' validation.
 - After a restart, a long session no longer replays an Intercom message, reply or ask that it had already taken in a turn, or an ask it had already answered, once a compaction had left the entry that recorded this out of the reopened session. Such a message came back as a new turn when its sender was still connected, and as history otherwise, after every restart ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
 - Fixed the first run after a resume near the context window lowering the thinking budget when an extension starts it, or a queued message or session recovery continues it: like a typed prompt, it now compacts once first when only what the resume added would lower the budget. What an extension adds after the session opened counts as the conversation's, as in a session that kept running, so it no longer causes that compaction.
 - A subagent whose own prompt replaces the default now names the project's session folder in a section at the end of its prompt, so its Session memory section reads the same in every project. A session recorded with the folder in Session memory keeps it there.

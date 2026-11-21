@@ -14,6 +14,7 @@ import {
 	FORKED_PACKAGE_WORKSPACE_DIRS,
 	type ForkedPackageManifest,
 	forkedPackageExportAliases,
+	TYPEBOX_SUBPATHS,
 	withLegacyPackageNames,
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
@@ -571,10 +572,6 @@ async function computeAliases(): Promise<Record<string, string>> {
 	const __dirname = currentModuleDir();
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
-	const typeboxEntry = require.resolve("typebox");
-	const typeboxCompileEntry = require.resolve("typebox/compile");
-	const typeboxValueEntry = require.resolve("typebox/value");
-
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = async (workspaceRelativePath: string, packageName: string): Promise<string> => {
 		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
@@ -693,13 +690,25 @@ async function computeAliases(): Promise<Record<string, string>> {
 		"@bastani/atomic-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
 		"@bastani/atomic-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@bastani/atomic-ai": piAiEntry,
-		typebox: typeboxEntry,
-		"typebox/compile": typeboxCompileEntry,
-		"typebox/value": typeboxValueEntry,
-		"@sinclair/typebox": typeboxEntry,
-		"@sinclair/typebox/compile": typeboxCompileEntry,
-		"@sinclair/typebox/value": typeboxValueEntry,
+		...typeboxAliases(forkedPackageAliases, path.resolve(__dirname, "../..", "typebox")),
 	});
+}
+
+/**
+ * Every `typebox` specifier, the SDK's re-exports of it (`@bastani/atomic/typebox`), and TypeBox 0.x's name for the
+ * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-schema`.
+ */
+function typeboxAliases(forkedPackageAliases: Record<string, string>, sdkTypeboxDir: string): Record<string, string> {
+	const aliases: Record<string, string> = {};
+	for (const subpath of TYPEBOX_SUBPATHS) {
+		const target = forkedPackageAliases[`@bastani/atomic-schema/typebox${subpath}`];
+		if (target === undefined) throw new Error(`@bastani/atomic-schema does not export ./typebox${subpath}`);
+		aliases[`typebox${subpath}`] = target;
+		aliases[`@bastani/atomic/typebox${subpath}`] = path.join(sdkTypeboxDir, `${subpath.slice(1) || "index"}.js`);
+	}
+	for (const subpath of ["", "/compile", "/value"])
+		aliases[`@sinclair/typebox${subpath}`] = aliases[`typebox${subpath}`]!;
+	return aliases;
 }
 
 /**

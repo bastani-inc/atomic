@@ -1,9 +1,9 @@
 import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
+import { type Static, Type } from "@bastani/atomic-schema/typebox";
 import { Text } from "@bastani/atomic-tui";
 import { Minimatch } from "minimatch";
-import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { spawnHostProcess } from "../../utils/host-spawn.ts";
