@@ -2,6 +2,7 @@ import { type ExecFileException, execFile } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { pathExists } from "../../../core/tools/path-utils.ts";
 import { createChildProcessEnvironment } from "../../../utils/child-process.ts";
+import { helperLaunchAsync, missingHelperOptions } from "../../../utils/helper-command.ts";
 
 export interface DeleteSessionFileResult {
 	ok: boolean;
@@ -17,12 +18,14 @@ interface TrashResult {
 	error?: Error;
 }
 
-function runTrash(args: string[]): Promise<TrashResult> {
+async function runTrash(args: string[]): Promise<TrashResult> {
+	const env = createChildProcessEnvironment();
+	const launch = await helperLaunchAsync("trash", { env });
 	return new Promise((resolve) => {
 		execFile(
-			"trash",
+			launch.file,
 			args,
-			{ encoding: "utf-8", env: createChildProcessEnvironment(), timeout: TRASH_TIMEOUT_MS },
+			{ encoding: "utf-8", env, timeout: TRASH_TIMEOUT_MS, ...missingHelperOptions(launch) },
 			(error: ExecFileException | null, _stdout: string, stderr: string) => {
 				if (!error) {
 					resolve({ status: 0, stderr });

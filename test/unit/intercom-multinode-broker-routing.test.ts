@@ -55,6 +55,7 @@ import {
 import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
 import type { BrokerOutboundFrame } from "../../packages/intercom/broker/socket-writes.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
+import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
@@ -68,6 +69,7 @@ import {
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type OpenSharedStoreFixture,
+	registerIdOwnerConformance,
 	registerKnownSessionStoreConformance,
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
@@ -143,6 +145,7 @@ class Node {
 				dispatch: (socket, clientMessage, senderId) => node.dispatch(socket, clientMessage, senderId),
 				revokeReleasedReservation: (key, ownerSessionId) => node.revoked.push({ key, ownerSessionId }),
 				holdsReservation: (capability) => !node.dropped.has(capability),
+				fence: () => {},
 			},
 		});
 		return node;
@@ -892,6 +895,8 @@ function knownSessionFixture(): OpenSharedStoreFixture<Awaited<ReturnType<typeof
 				const database = await openNodeSqliteDatabase(join(directory, "intercom.sqlite"));
 				connections.push(database);
 				const options: IntercomBrokerStateOptions = { database, prefix: "team_" };
+				// The lease store's table, which a broker opens first: an unanswered claim's `reclaim` reads it.
+				await openSqlBrokerLeaseStore(options);
 				return openSqlKnownSessionStore(options);
 			},
 			async close() {
@@ -903,6 +908,7 @@ function knownSessionFixture(): OpenSharedStoreFixture<Awaited<ReturnType<typeof
 }
 
 registerKnownSessionStoreConformance(test, "SQL on two node:sqlite connections to one file", knownSessionFixture());
+registerIdOwnerConformance(test, "SQL on two node:sqlite connections to one file", knownSessionFixture());
 
 /** Wait until no live presence lease names this session, so a send to it is queued for an offline session. */
 async function waitOffline(node: Node, session: BrokerConnectedSession): Promise<void> {
@@ -1024,7 +1030,9 @@ test("a reply whose ask's only route is on another broker is refused as retryabl
 	const ask = message({ expectsReply: true });
 	b!.send(asker, "recipient", ask);
 	await waitFor(() => messageFrames(recipient, ask.id)[0]);
-	// Broker b stops answering: both sessions come back on broker a, whose routes do not have the ask.
+	// Broker b stops answering: both sessions come back on broker a, whose routes do not have the ask. #5607: their ids
+	// are free once b's ownership of them lapsed, as when it is down long enough or restarted.
+	await b!.opened.state.knownSessions.owners?.retireBroker(b!.router.brokerId);
 	const askerOnA = await a!.connect("asker", { returnAddress: asker.registrationReturnAddress!, id: asker.info.id });
 	const recipientOnA = await a!.connect("recipient", {
 		returnAddress: recipient.registrationReturnAddress!,
@@ -1091,6 +1099,61 @@ test(
 	},
 	LOCAL_RETRY_LOOKUP_BOUND_MS + 2 * PRESENCE_REGISTRATION_BOUND_MS + 10_000,
 );
+
+test("a reply the shared database never decides is refused as retryable within one bound, before its sender stops waiting (#5607)", async () => {
+	vi.useFakeTimers({
+		toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"],
+	});
+	try {
+		const [a] = await cluster(1);
+		const asker = await a!.connect("asker");
+		const replier = await a!.connect("replier");
+		const { outbox, pendingAsks } = a!.opened.state;
+		// Whether the reply is a retry, its ask's route in the shared state, and whether that ask was answered: no
+		// answer until the end of the test, when they answer, late.
+		const stalled: Array<() => void> = [];
+		const stall =
+			<A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+			(...args: A) =>
+				new Promise<R>((resolve, reject) => stalled.push(() => read(...args).then(resolve, reject)));
+		const reads = {
+			outbox: { read: outbox.read.bind(outbox) },
+			pendingAsks: {
+				matchesReply: pendingAsks.matchesReply.bind(pendingAsks),
+				isSettled: pendingAsks.isSettled.bind(pendingAsks),
+			},
+		};
+		Object.assign(outbox, { read: stall(reads.outbox.read) });
+		Object.assign(pendingAsks, {
+			matchesReply: stall(reads.pendingAsks.matchesReply),
+			isSettled: stall(reads.pendingAsks.isSettled),
+		});
+		cleanups.push(async () => {
+			Object.assign(outbox, reads.outbox);
+			Object.assign(pendingAsks, reads.pendingAsks);
+			for (const answer of stalled.splice(0)) answer();
+		});
+
+		const reply = message({ replyTo: randomUUID(), content: { text: "answer" } });
+		a!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+		const stepMs = 100;
+		const refused = await advanceUntil(() => outcomeOf(replier, reply.id), SEND_RESPONSE_TIMEOUT_MS, stepMs);
+		assert.ok(refused !== undefined, "the reply was answered only after its sender stopped waiting");
+		assert.equal(
+			refused.value.type === "delivery_failed" && refused.value.routeUnavailable,
+			true,
+			reasonOf(refused.value),
+		);
+		// The retry lookup's bound, then one bound for both lookups of the ask's route.
+		assert.ok(
+			refused.elapsedMs <= LOCAL_RETRY_LOOKUP_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS + stepMs,
+			`answered ${refused.elapsedMs} ms after it was sent`,
+		);
+		assert.deepEqual(messageFrames(asker, reply.id), []);
+	} finally {
+		vi.useRealTimers();
+	}
+});
 
 test("a same-id retry of a message delivered locally is not delivered again after its recipient moves to another broker", async () => {
 	const [a, b] = await cluster();

@@ -439,6 +439,8 @@ export type BrokerMessage =
   | { type: "session_left"; sessionId: string }
   | { type: "peer_disconnected"; replyTo: string; peerSessionId: string; peerName?: string }
   | { type: "peer_rebound"; replyTo: string; previousSessionId: string; sessionId: string }
+  /** #5607: the id this session awaited is held for it; its next registration presents `handoff` to take it. */
+  | { type: "id_handoff"; sessionId: string; handoff: string }
   | { type: "presence_ack"; requestId: string; group: string }
   | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }
