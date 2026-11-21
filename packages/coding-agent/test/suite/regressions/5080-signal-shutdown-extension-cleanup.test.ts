@@ -21,6 +21,8 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 type ShutdownThis = {
 	isShuttingDown: boolean;
 	unregisterSignalHandlers: () => void;
+	/** The quit keeps its signal handlers once the screen stopped; removed after each test. */
+	signalCleanupHandlers: Array<() => void>;
 	runtimeHost: { dispose: (options?: { fromSignal?: boolean }) => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
 	themeController: { disableAutoSync: () => void };
@@ -70,10 +72,13 @@ function restoreStdoutIsTTY(): void {
 	}
 }
 
+const contexts: ShutdownThis[] = [];
+
 function createContext(order: string[], sessionManager = createSessionManager()): ShutdownThis {
-	return {
+	const context: ShutdownThis = {
 		isShuttingDown: false,
 		unregisterSignalHandlers: vi.fn(),
+		signalCleanupHandlers: [],
 		runtimeHost: {
 			dispose: vi.fn(async () => {
 				order.push("dispose");
@@ -92,6 +97,8 @@ function createContext(order: string[], sessionManager = createSessionManager())
 		}),
 		sessionManager,
 	};
+	contexts.push(context);
+	return context;
 }
 
 async function callShutdown(context: ShutdownThis, options?: { fromSignal?: boolean }): Promise<void> {
@@ -109,6 +116,8 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		sessionStore = await JsonlSessionStore.open(dir, { exactDirectory: true });
 	});
 	afterEach(async () => {
+		for (const context of contexts.splice(0))
+			for (const cleanup of context.signalCleanupHandlers.splice(0)) cleanup();
 		await sessionStore.close();
 		vi.restoreAllMocks();
 		restoreStdoutIsTTY();

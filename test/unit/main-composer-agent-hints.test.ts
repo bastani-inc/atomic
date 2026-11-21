@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { setKeybindings, stripTerminalSequences, type TUI } from "@bastani/atomic-tui";
+import {
+	isKittyProtocolActive,
+	setKeybindings,
+	setKittyProtocolActive,
+	stripTerminalSequences,
+	type TUI,
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
@@ -11,6 +17,7 @@ import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import {
 	MainComposerKeyOverlay,
+	mainComposerFooterHints,
 	mainComposerHintSegments,
 	mainComposerKeys,
 } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
@@ -70,6 +77,12 @@ function createHarness(options: { working?: boolean; initialItems?: AgentPanelIt
 	};
 	const listeners: Array<(data: string) => { consume?: boolean } | undefined> = [];
 	const customs: Array<unknown> = [];
+	const closers: Array<() => void> = [];
+	/** Close every view the harness opened, as Esc does, and let their closing run. */
+	const closeCustoms = async () => {
+		for (const close of closers.splice(0)) close();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	};
 	const tui = { requestRender: () => {}, hasOverlay: () => false } as unknown as TUI & {
 		hasOverlay(): boolean;
 		setFocus(component: unknown): void;
@@ -131,7 +144,7 @@ function createHarness(options: { working?: boolean; initialItems?: AgentPanelIt
 		disposeActiveSelector: () => {},
 		showExtensionCustom: (factory: unknown) => {
 			customs.push(factory);
-			return new Promise<void>(() => {});
+			return new Promise<void>((resolve) => closers.push(resolve));
 		},
 		showStatus: () => {},
 		showWarning: () => {},
@@ -164,6 +177,7 @@ function createHarness(options: { working?: boolean; initialItems?: AgentPanelIt
 		footer,
 		defaultEditor,
 		customs,
+		closeCustoms,
 		setItems,
 		setWorking,
 		setNavigationActive,
@@ -296,8 +310,8 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		assert.equal(stripTerminalSequences(footer.render(80)[0] ?? ""), "esc to interrupt · ? keys");
 	});
 
-	test("Down arrow is left to a custom editor with an empty getText() and opens the agent panel again once the default editor is restored (#5239)", async () => {
-		const { mode, keybindings, customs, pressDown } = createHarness({
+	test("Down arrow is left to a custom editor with an empty getText() first, which leaves it to the prompt's base, and opens the agent panel again once the default editor is restored (#5239)", async () => {
+		const { mode, keybindings, customs, closeCustoms, pressDown } = createHarness({
 			initialItems: [{ id: "run:1", kind: "agent", state: "running", name: "other-flow", task: "stage one" }],
 		});
 		await mode.setupKeyHandlers();
@@ -318,6 +332,9 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		assert.equal(customs.length, 0);
 		mode.editor.handleInput(DOWN);
 		assert.equal(inlineReceivedDown, 1);
+		// The editor left the key to its base, which focuses the agent panel from its empty prompt.
+		assert.equal(customs.length, 1);
+		await closeCustoms();
 
 		const directInline = new CustomEditor({ requestRender: () => {} } as TUI, getEditorTheme(), keybindings);
 		mode.editorComponentFactory = undefined;
@@ -326,13 +343,105 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		mode.editorContainer.addChild(directInline as never);
 		assert.equal(mode.editor.getText(), "");
 		assert.equal(pressDown(), false);
-		assert.equal(customs.length, 0);
+		assert.equal(customs.length, 1);
 
 		mode.setCustomEditorComponent(undefined);
 		assert.equal(mode.editor, mode.defaultEditor);
 		assert.equal(mode.editor.getText(), "");
 		assert.equal(pressDown(), true);
+		assert.equal(customs.length, 2);
+	});
+
+	test("an extension's editor built on the prompt's editor focuses the agent panel with Down on its empty prompt, once, and keeps Down when it takes it or holds text", async () => {
+		const { mode, customs, closeCustoms, pressDown } = createHarness({
+			initialItems: [{ id: "run:1", kind: "agent", state: "running", name: "other-flow", task: "stage one" }],
+		});
+		await mode.setupKeyHandlers();
+		let takesDown = false;
+		let ownDown = 0;
+		mode.setCustomEditorComponent((tui, _theme, kb) => {
+			const editor = new (class extends CustomEditor {
+				override handleInput(data: string): boolean {
+					if (takesDown && data === DOWN) {
+						ownDown += 1;
+						return true;
+					}
+					return super.handleInput(data);
+				}
+			})(tui, getEditorTheme(), kb);
+			return editor as never;
+		});
+		const press = (data: string) => {
+			if (!pressDown()) mode.editor.handleInput(data);
+		};
+
+		press(DOWN);
+		assert.equal(customs.length, 1, "Down on the empty prompt focuses the panel once");
+		await closeCustoms();
+
+		takesDown = true;
+		press(DOWN);
+		assert.equal(ownDown, 1, "the editor's own use of Down comes first");
 		assert.equal(customs.length, 1);
+
+		takesDown = false;
+		// A release of ↓, which an editor that asks for releases gets too, focuses nothing.
+		const wasKitty = isKittyProtocolActive();
+		setKittyProtocolActive(true);
+		try {
+			mode.editor.handleInput("\x1b[1;1:3B");
+		} finally {
+			setKittyProtocolActive(wasKitty);
+		}
+		assert.equal(customs.length, 1, "a key release is not a press");
+
+		mode.editor.setText("first line\nsecond");
+		press(DOWN);
+		assert.equal(customs.length, 1, "with text typed Down is the editor's");
+		assert.equal(mode.editor.getText(), "first line\nsecond");
+	});
+
+	test("a shown subagent's narrow footer keeps ← main chat and ↓ 1 agent ahead of ? keys and its status, and the main chat's footer keeps its own order", async () => {
+		const { session, keybindings, setItems } = createHarness({ working: true });
+		setItems([{ id: "ext:t1", kind: "agent", state: "running", name: "debugger", task: "#5220 spawn lock" }]);
+		const footerData = {
+			getGitBranch: () => "main",
+			getExtensionStatuses: () => new Map<string, string>(),
+			getAvailableProviderCount: () => 1,
+			onBranchChange: () => () => {},
+		};
+		const footerFor = (back: boolean) => {
+			const footer = new FooterComponent(
+				session as never,
+				footerData as never,
+				undefined,
+				() => false,
+				undefined,
+				() =>
+					mainComposerFooterHints(
+						keybindings,
+						session as never,
+						back ? { keys: ["left"], label: "main chat" } : undefined,
+					),
+			);
+			if (back) footer.setViewedWork(() => ({ working: true, stopVerb: "pause" }));
+			return (width: number) => stripTerminalSequences(footer.render(width)[0] ?? "");
+		};
+		const viewed = footerFor(true);
+		assert.equal(viewed(47), "esc to pause · ← main chat · ↓ 1 agent · ? keys");
+		assert.equal(viewed(46), "esc to pause · ← main chat · ↓ 1 agent");
+		assert.equal(viewed(38), "esc to pause · ← main chat · ↓ 1 agent");
+		assert.equal(viewed(37), "← main chat · ↓ 1 agent");
+		assert.equal(viewed(23), "← main chat · ↓ 1 agent");
+		// Too narrow for both: the panel hint gives way, and what fits stays beside the way back, as before.
+		assert.equal(viewed(22), "← main chat · ? keys");
+		assert.equal(viewed(20), "← main chat · ? keys");
+		assert.equal(viewed(19), "← main chat");
+
+		const main = footerFor(false);
+		assert.equal(main(37), "esc to interrupt · ↓ 1 agent · ? keys");
+		assert.equal(main(36), "↓ 1 agent · ? keys");
+		assert.equal(main(17), "? keys");
 	});
 
 	test("remapping app.agents.focus or app.keys.help to Escape never steals physical Escape or advertises dead esc hints (#5224)", async () => {

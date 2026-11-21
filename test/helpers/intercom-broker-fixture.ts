@@ -6,18 +6,27 @@ import { fileURLToPath } from "node:url";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { stopDetachedBroker } from "./detached-broker.js";
 import { removeTestDirectory } from "./test-directory-removal.js";
+import { TEST_TIMEOUT_MS } from "./test-timeout.js";
 
 const BROKER_TERMINATE_GRACE_MS = 1_000;
-const BROKER_CLEANUP_TIMEOUT_MS = 5_000;
+/** How long the suite's own client cleanups may take; each ends its connection itself well within it. */
+const CLIENT_CLEANUP_TIMEOUT_MS = 5_000;
+/**
+ * How long a broker killed at teardown may take to exit. A killed process exits once the system has ended it, which a
+ * loaded machine slows, so this only names a kill that never took, well inside the hook's own timeout.
+ */
+const BROKER_EXIT_TIMEOUT_MS = TEST_TIMEOUT_MS / 2;
+/** How long an exited broker's inherited stdio may stay open: only a process it started can hold it longer. */
+const BROKER_STDIO_RELEASE_TIMEOUT_MS = 5_000;
 const BROKER_READY_POLL_MS = 25;
 
-async function bounded<T>(operation: Promise<T>, message: string): Promise<T> {
+async function bounded<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
 			operation,
 			new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new Error(message)), BROKER_CLEANUP_TIMEOUT_MS);
+				timer = setTimeout(() => reject(new Error(message)), timeoutMs);
 			}),
 		]);
 	} finally {
@@ -28,6 +37,7 @@ async function bounded<T>(operation: Promise<T>, message: string): Promise<T> {
 /** Lifecycle ownership for the raw-child broker suites (including inherited log fds). */
 export class IntercomBrokerFixture {
 	private broker: ChildProcess | undefined;
+	private exited: Promise<void> = Promise.resolve();
 	private closed: Promise<void> = Promise.resolve();
 	private hasClosed = false;
 	private processError: Error | undefined;
@@ -60,6 +70,11 @@ export class IntercomBrokerFixture {
 		// Attach at spawn, not teardown: close/error may precede readiness or afterAll.
 		broker.on("error", (error: Error) => {
 			this.processError = error;
+		});
+		// Close follows exit; a process that closed has exited even when its exit was not reported first.
+		this.exited = new Promise<void>((resolveExited) => {
+			broker.once("exit", () => resolveExited());
+			broker.once("close", () => resolveExited());
 		});
 		this.closed = new Promise<void>((resolveClosed) => {
 			broker.once("close", () => {
@@ -175,8 +190,17 @@ export class IntercomBrokerFixture {
 		const force = setTimeout(() => signal("SIGKILL"), BROKER_TERMINATE_GRACE_MS);
 		try {
 			signal("SIGTERM");
+			await bounded(
+				this.exited,
+				BROKER_EXIT_TIMEOUT_MS,
+				"Broker did not close before cleanup deadline (it had not exited); keeping its files",
+			);
 			// Unlike exit or kill success, close also proves inherited stdio was released.
-			await bounded(this.closed, "Broker did not close before cleanup deadline; keeping its files");
+			await bounded(
+				this.closed,
+				BROKER_STDIO_RELEASE_TIMEOUT_MS,
+				"Broker did not close before cleanup deadline; keeping its files",
+			);
 		} finally {
 			clearTimeout(force);
 		}
@@ -195,6 +219,7 @@ export class IntercomBrokerFixture {
 			try {
 				await bounded(
 					Promise.all(this.cleanups.splice(0).map(async (cleanup) => cleanup())),
+					CLIENT_CLEANUP_TIMEOUT_MS,
 					"Broker clients did not close before cleanup deadline",
 				);
 			} finally {

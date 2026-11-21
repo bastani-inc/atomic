@@ -254,8 +254,8 @@ function pausable(mode: InteractiveModeBase, port: AgentViewPort): boolean {
 /** Do what {@link viewedAgentKeyAction} decided for `key` on the subagent `port` shows; `editor` leaves the key to it. */
 function actOnViewedAgent(mode: InteractiveModeBase, port: AgentViewPort, key: ViewedAgentKey): ViewedAgentKeyAction {
 	const action = viewedAgentKeyAction(key);
-	if (action === "pause" || action === "pauseAndShowMain") pauseViewedAgent(mode, port);
-	if (action === "showMain" || action === "pauseAndShowMain") void mode.agentView?.view(undefined);
+	if (action === "pause") pauseViewedAgent(mode, port);
+	if (action === "showMain") void mode.agentView?.view(undefined);
 	return action;
 }
 
@@ -306,8 +306,8 @@ export function backFromViewedAgent(mode: InteractiveModeBase, input: NavBackInp
 }
 
 /**
- * Ctrl+C on an empty prompt while a subagent is shown: it pauses the subagent's running work, as Esc does, and shows
- * main, in one press. It never counts toward exiting Atomic. Answers false while main is shown.
+ * Ctrl+C on an empty prompt while a subagent is shown: it pauses the subagent's running work, as Esc does, and keeps it
+ * shown. It never counts toward exiting Atomic. Answers false while main is shown.
  */
 export function leaveViewedAgent(mode: InteractiveModeBase): boolean {
 	const viewed = mode.agentView?.viewed;
