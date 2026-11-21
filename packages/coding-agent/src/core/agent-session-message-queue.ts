@@ -43,6 +43,7 @@ import {
 	type UserMessageWithRawText,
 } from "./agent-session-types.js";
 import { noticeOvertookPrompt } from "./chat-admission-order.js";
+import { joinCommandSend, noteCommandAnswer } from "./command-deliveries.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
@@ -169,7 +170,16 @@ export function _throwIfExtensionCommand(this: AgentSession, text: string): void
  * @param options.deliverAs Delivery mode: "steer", "followUp", "nextTurn", or "interrupt"
  */
 
-export async function sendCustomMessage<T = unknown>(
+export function sendCustomMessage<T = unknown>(
+	this: AgentSession,
+	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	options?: SendMessageOptions,
+): Promise<void> {
+	// #6113: print mode waits for what an extension command sends before it prints and closes the session.
+	return joinCommandSend(this, sendCustomMessageNow.call(this, message, options));
+}
+
+async function sendCustomMessageNow<T>(
 	this: AgentSession,
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
@@ -226,7 +236,15 @@ async function admittedCustomMessage<T>(
 }
 
 /** Atomically admits a custom-message batch in array order. */
-export async function sendCustomMessages<T = unknown>(
+export function sendCustomMessages<T = unknown>(
+	this: AgentSession,
+	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+	options?: SendMessagesOptions,
+): Promise<void> {
+	return joinCommandSend(this, sendCustomMessagesNow.call(this, messages, options));
+}
+
+async function sendCustomMessagesNow<T>(
 	this: AgentSession,
 	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 	options?: SendMessagesOptions,
@@ -330,6 +348,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
+	noteCommandAnswer(this);
 }
 
 const pendingCustomMessageDrains = new WeakMap<AgentSession, Promise<void>>();

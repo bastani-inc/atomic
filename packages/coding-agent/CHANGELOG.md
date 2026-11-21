@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Print mode prints an extension command's answer.** `atomic -p "/curator off"`, `/google-account` and other commands that answer with a message they send now print that message, or the reply of the turn it starts, instead of the session's earlier reply, and that turn is no longer cut off and saved as aborted. A later `-p` message waits for the turn instead of being refused, and an earlier reply that reached the output limit no longer marks the command's answer as truncated ([#6113](https://github.com/bastani-inc/atomic/issues/6113))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.
