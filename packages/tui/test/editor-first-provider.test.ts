@@ -81,6 +81,37 @@ describe("Editor completion typed before it has a provider", () => {
 		}
 	});
 
+	it("looks up nothing after any other key, even one that brings the same text and cursor back", async () => {
+		for (const keys of [
+			[" ", "\x1f"],
+			["\x1b[H", "\x1b[F"],
+			["\x1b[A", "\x1b[B"],
+		] as const) {
+			const asked: string[] = [];
+			const editor = createEditor();
+			editor.addToHistory("older prompt");
+			type(editor, "/mo");
+			for (const key of keys) editor.handleInput(key);
+			assert.equal(editor.getText(), "/mo", JSON.stringify(keys));
+			editor.setAutocompleteProvider(catalog(asked));
+			await settle();
+			assert.equal(editor.isShowingAutocomplete(), false, JSON.stringify(keys));
+			assert.deepEqual(asked, [], JSON.stringify(keys));
+		}
+	});
+
+	it("looks up nothing for a prompt put back after it was sent", async () => {
+		const asked: string[] = [];
+		const editor = createEditor();
+		type(editor, "/mo");
+		// Sent, then put back as it was (as Atomic does when a command cannot run yet).
+		editor.setText("/mo");
+		editor.setAutocompleteProvider(catalog(asked));
+		await settle();
+		assert.equal(editor.isShowingAutocomplete(), false);
+		assert.deepEqual(asked, []);
+	});
+
 	it("carries the lookup in the prompt it hands to another editor, whichever gets there first", async () => {
 		for (const order of ["provider first", "prompt first"] as const) {
 			const early = createEditor();
