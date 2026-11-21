@@ -21,6 +21,7 @@ import {
 	registerCrossNodeHeldRoundTripConformance,
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
+	registerIdOwnerConformance,
 	registerKnownSessionStoreConformance,
 	registerOutboxStoreConformance,
 	registerPendingAskStoreConformance,
@@ -200,6 +201,7 @@ for (const backend of storageBackends) {
 	const intercom = `Intercom routing on ${name}`;
 	registerBrokerLeaseStoreConformance(run, intercom, scopeFixture(backend, openSqlBrokerLeaseStore));
 	registerKnownSessionStoreConformance(run, intercom, scopeFixture(backend, openSqlKnownSessionStore));
+	registerIdOwnerConformance(run, intercom, scopeFixture(backend, openSqlKnownSessionStore));
 	registerOutboxStoreConformance(run, intercom, scopeFixture(backend, openSqlOutboxStore));
 	registerPendingAskStoreConformance(run, intercom, scopeFixture(backend, openSqlPendingAskStore));
 	registerReleasedAskStoreConformance(run, intercom, scopeFixture(backend, openSqlReleasedAskStore));

@@ -6,6 +6,7 @@ import {
 	registerCrossNodeHeldRoundTripConformance,
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
+	registerIdOwnerConformance,
 	registerKnownSessionStoreConformance,
 	registerOutboxStoreConformance,
 	registerPendingAskStoreConformance,
@@ -38,6 +39,7 @@ registerReleasedAskStoreConformance(test, "memory reference", openMemoryReleased
 registerSentMessageAuthorityConformance(test, "memory reference", openMemorySentMessageFixture);
 registerWakeUpBusConformance(test, "memory reference", openMemoryWakeUpBusFixture);
 registerKnownSessionStoreConformance(test, "memory reference", openMemoryKnownSessionFixture);
+registerIdOwnerConformance(test, "memory reference", openMemoryKnownSessionFixture);
 registerCrossNodeRoundTripConformance(test, "memory reference", {
 	openOutbox: openMemoryOutboxFixture,
 	openPendingAsks: openMemoryPendingAskFixture,

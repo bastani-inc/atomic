@@ -1046,6 +1046,8 @@ interface KnownRecord {
 interface BindingRecord {
 	readonly returnAddress: string;
 	readonly recordedAt: number;
+	/** #5607: the registration that owns the id, its broker, and when that broker last renewed it. */
+	owner?: { readonly token: string; readonly brokerId: string; renewedAt: number };
 }
 
 function knownSessionStore(
@@ -1085,7 +1087,7 @@ function knownSessionStore(
 				}));
 			return { status: "found", sessions };
 		},
-		async bind(intercomSessionId, returnAddress, retentionMs) {
+		async bind(intercomSessionId, returnAddress, retentionMs, owner) {
 			if (intercomSessionId.length === 0) return invalid("empty-session-id");
 			const held = bindings.get(intercomSessionId);
 			let holder = held !== undefined && isLive(held.recordedAt, retentionMs) ? held.returnAddress : undefined;
@@ -1103,8 +1105,40 @@ function knownSessionStore(
 					bindings.set(intercomSessionId, { returnAddress: holder, recordedAt: Date.now() });
 				return { status: "refused", returnAddress: holder };
 			}
-			bindings.set(intercomSessionId, { returnAddress, recordedAt: Date.now() });
+			const current = bindings.get(intercomSessionId)?.owner;
+			if (owner === undefined) {
+				bindings.set(intercomSessionId, {
+					returnAddress,
+					recordedAt: Date.now(),
+					...(current ? { owner: current } : {}),
+				});
+				return { status: "bound" };
+			}
+			if (current !== undefined && current.token !== owner.token && isLive(current.renewedAt, owner.staleAfterMs))
+				return { status: "held" };
+			bindings.set(intercomSessionId, {
+				returnAddress,
+				recordedAt: Date.now(),
+				owner: { token: owner.token, brokerId: owner.brokerId, renewedAt: Date.now() },
+			});
 			return { status: "bound" };
+		},
+		owners: {
+			async release({ intercomSessionId, token }) {
+				const held = bindings.get(intercomSessionId);
+				if (held?.owner?.token === token) delete held.owner;
+			},
+			async renew(ownerships) {
+				for (const { intercomSessionId, token } of ownerships) {
+					const held = bindings.get(intercomSessionId);
+					if (held?.owner?.token !== token) continue;
+					held.owner.renewedAt = Date.now();
+					bindings.set(intercomSessionId, { ...held, recordedAt: Date.now() });
+				}
+			},
+			async retireBroker(brokerId) {
+				for (const held of bindings.values()) if (held.owner?.brokerId === brokerId) delete held.owner;
+			},
 		},
 		async binding(intercomSessionId, retentionMs) {
 			if (intercomSessionId.length === 0) return invalid("empty-session-id");

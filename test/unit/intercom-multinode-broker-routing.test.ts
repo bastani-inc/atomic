@@ -68,6 +68,7 @@ import {
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type OpenSharedStoreFixture,
+	registerIdOwnerConformance,
 	registerKnownSessionStoreConformance,
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
@@ -903,6 +904,7 @@ function knownSessionFixture(): OpenSharedStoreFixture<Awaited<ReturnType<typeof
 }
 
 registerKnownSessionStoreConformance(test, "SQL on two node:sqlite connections to one file", knownSessionFixture());
+registerIdOwnerConformance(test, "SQL on two node:sqlite connections to one file", knownSessionFixture());
 
 /** Wait until no live presence lease names this session, so a send to it is queued for an offline session. */
 async function waitOffline(node: Node, session: BrokerConnectedSession): Promise<void> {

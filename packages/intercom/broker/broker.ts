@@ -814,6 +814,7 @@ class IntercomBroker {
     id: string,
     supervisorId: string | undefined,
     setId: (id: string | null) => void,
+    ownerToken?: string,
   ): void {
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -984,6 +985,7 @@ class IntercomBroker {
                       groups: sessionGroups(info),
                       ...(supervisorId ? { authorizedBy: supervisorId } : {}),
                     },
+                ownerToken,
               );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS, and by ENDED_QUEUE_ROUTING_WAIT_MS with a shared `storage`).
@@ -1155,20 +1157,31 @@ class IntercomBroker {
           this.claimingSessionIds.add(socket);
           void multiNode
             .claimSessionId(preferred, returnAddress)
-            .then((claimed) => {
+            .then((ownerToken) => {
               this.claimingSessionIds.delete(socket);
-              if (socket.destroyed || socket.writableEnded) return;
+              // #5607: an id this registration took but does not use is given back at once.
+              const granted = ownerToken !== undefined && !this.sessions.has(preferred);
+              const giveBack = () => {
+                if (ownerToken !== undefined) void multiNode.releaseOwner({ intercomSessionId: preferred, token: ownerToken });
+              };
+              if (socket.destroyed || socket.writableEnded) {
+                giveBack();
+                return;
+              }
               if (this.shuttingDown) {
+                giveBack();
                 writeMessageIfOpen(socket, RETIRING_REFUSAL);
                 socket.end();
                 return;
               }
+              if (!granted) giveBack();
               this.completeSessionRegistration(
                 socket,
                 registration,
-                claimed && !this.sessions.has(preferred) ? preferred : randomUUID(),
+                granted ? preferred : randomUUID(),
                 supervisorId,
                 setId,
+                granted ? ownerToken : undefined,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));

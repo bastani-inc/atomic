@@ -1,17 +1,22 @@
 import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
-import { addMissingColumns } from "./sql-add-column.js";
+import { addMissingColumns, addOptionalColumn } from "./sql-add-column.js";
 import type {
 	IntercomBrokerStateOptions,
 	KnownSessionBindingResult,
 	KnownSessionBindResult,
 	KnownSessionLookupResult,
 	KnownSessionRecordResult,
+	KnownSessionOwner,
+	KnownSessionOwnership,
 	KnownSessionState,
 	KnownSessionStore,
 } from "./multinode-state-store.js";
 import { ensureBrokerSchema } from "./sql-schema.js";
 
-type BindingRow = SqliteRow & { return_address: string };
+type BindingRow = SqliteRow & { return_address: string; owner_token?: string | null };
+
+/** How many ids one owner renewal names: two parameters each, within SQLite's oldest bound of 999. */
+const OWNER_RENEWAL_BATCH = 400;
 
 type KnownRow = SqliteRow & {
 	target_identity: string;
@@ -89,8 +94,44 @@ export async function openSqlKnownSessionStore({
 	// #5154: added later: set, by store clock, once the session's broker was retired before it recorded the session
 	// leaving. An older broker ignores it, and its `record` leaves it set.
 	await addMissingColumns(database, table, { lost_at: types.int });
+	// #5607: added later: the registration that owns each id, its broker, and when that broker last renewed it. An older
+	// broker's `bind` leaves them as they are. A role that may not add them keeps binding as before, with no owners.
+	const owned =
+		(await addOptionalColumn(database, bindings, "owner_token", "TEXT")) &&
+		(await addOptionalColumn(database, bindings, "owner_broker", "TEXT")) &&
+		(await addOptionalColumn(database, bindings, "owner_renewed_at", types.int));
+	const ownerAge = greatest("0", `${nowMs} - ${bindings}.owner_renewed_at`);
 	const columns = `target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
 					recipient_purpose, reply_capability, ${age} AS age_ms`;
+
+	/** #5607: the owner methods, on a store that keeps owners. */
+	const owners: NonNullable<KnownSessionStore["owners"]> = {
+		async release({ intercomSessionId, token }) {
+			await database.run(
+				`UPDATE ${bindings} SET owner_token = NULL, owner_broker = NULL, owner_renewed_at = NULL
+				 WHERE intercom_session_id = ? AND owner_token = ?`,
+				intercomSessionId,
+				token,
+			);
+		},
+		async renew(ownerships: readonly KnownSessionOwnership[]) {
+			for (let start = 0; start < ownerships.length; start += OWNER_RENEWAL_BATCH) {
+				const batch = ownerships.slice(start, start + OWNER_RENEWAL_BATCH);
+				await database.run(
+					`UPDATE ${bindings} SET owner_renewed_at = ${nowMs}, recorded_at = ${nowMs}
+					 WHERE ${batch.map(() => "(intercom_session_id = ? AND owner_token = ?)").join(" OR ")}`,
+					...batch.flatMap(({ intercomSessionId, token }) => [intercomSessionId, token]),
+				);
+			}
+		},
+		async retireBroker(brokerId) {
+			await database.run(
+				`UPDATE ${bindings} SET owner_token = NULL, owner_broker = NULL, owner_renewed_at = NULL
+				 WHERE owner_broker = ?`,
+				brokerId,
+			);
+		},
+	};
 
 	return {
 		async record(session): Promise<KnownSessionRecordResult> {
@@ -142,8 +183,9 @@ export async function openSqlKnownSessionStore({
 			);
 			return { status: "found", sessions: rows.map(stateFromRow) };
 		},
-		async bind(intercomSessionId, returnAddress, retentionMs): Promise<KnownSessionBindResult> {
+		async bind(intercomSessionId, returnAddress, retentionMs, owner): Promise<KnownSessionBindResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
+			const owning: KnownSessionOwner | undefined = owned ? owner : undefined;
 			const bound = await database.transaction(
 				async (tx) => {
 					await tx.run(
@@ -161,23 +203,48 @@ export async function openSqlKnownSessionStore({
 						intercomSessionId,
 						retentionMs,
 					);
+					if (owning === undefined) {
+						await tx.run(
+							`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at) VALUES (?, ?, ${nowMs})
+							 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at
+							 WHERE ${bindings}.return_address = excluded.return_address`,
+							intercomSessionId,
+							returnAddress,
+						);
+						return tx.get<BindingRow>(
+							`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ?`,
+							intercomSessionId,
+						);
+					}
+					// #5607: one conditional write takes the id for this registration, unless another live one owns it.
 					await tx.run(
-						`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at) VALUES (?, ?, ${nowMs})
-						 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at
-						 WHERE ${bindings}.return_address = excluded.return_address`,
+						`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at, owner_token, owner_broker,
+							owner_renewed_at)
+						 VALUES (?, ?, ${nowMs}, ?, ?, ${nowMs})
+						 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at,
+							owner_token = excluded.owner_token, owner_broker = excluded.owner_broker,
+							owner_renewed_at = excluded.owner_renewed_at
+						 WHERE ${bindings}.return_address = excluded.return_address
+							AND (${bindings}.owner_token IS NULL OR ${bindings}.owner_token = excluded.owner_token
+								OR ${bindings}.owner_renewed_at IS NULL OR ${ownerAge} > ?)`,
 						intercomSessionId,
 						returnAddress,
+						owning.token,
+						owning.brokerId,
+						owning.staleAfterMs,
 					);
 					return tx.get<BindingRow>(
-						`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ?`,
+						`SELECT return_address, owner_token FROM ${bindings} WHERE intercom_session_id = ?`,
 						intercomSessionId,
 					);
 				},
 				{ concurrency: { kind: "serial", domain: bindings } },
 			);
-			if (bound === undefined || bound.return_address === returnAddress) return { status: "bound" };
-			return { status: "refused", returnAddress: bound.return_address };
+			if (bound === undefined) return { status: "bound" };
+			if (bound.return_address !== returnAddress) return { status: "refused", returnAddress: bound.return_address };
+			return owning === undefined || bound.owner_token === owning.token ? { status: "bound" } : { status: "held" };
 		},
+		...(owned ? { owners } : {}),
 		async binding(intercomSessionId, retentionMs): Promise<KnownSessionBindingResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
 			const bound = await database.get<BindingRow>(

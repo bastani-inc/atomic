@@ -1850,6 +1850,16 @@ describe("released child sends queued across faults (#4401)", () => {
 });
 
 describe("an Intercom id bound to the return address that registered it", () => {
+	/** A claim grants the id when it hands back the registration's owner token. */
+	const granted = (ownerToken: string | undefined): boolean => ownerToken !== undefined;
+
+	/** A claim of `id` granted to `returnAddress`, whose registration then left again, giving the id up (#5607). */
+	async function claimedAndLeft(node: Node, id: string, returnAddress: string): Promise<void> {
+		const token = await node.router.claimSessionId(id, returnAddress);
+		assert.ok(token !== undefined, "granted");
+		await node.router.releaseOwner({ intercomSessionId: id, token });
+	}
+
 	/** A session on another broker registering under `original`'s id with a return address of its own. */
 	function underTheSameId(original: BrokerConnectedSession): BrokerConnectedSession {
 		const other = session("other");
@@ -1993,26 +2003,26 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
-		assert.equal(await node.router.claimSessionId(id, "return-2"), false);
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		await claimedAndLeft(node, id, "return-1");
+		assert.equal(granted(await node.router.claimSessionId(id, "return-2")), false);
+		await claimedAndLeft(node, id, "return-1");
 
 		const bind = vi.spyOn(node.state.knownSessions, "bind");
 		bind.mockRejectedValueOnce(new Error("the shared database is down"));
-		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a failed binding grants nothing");
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), false, "a failed binding grants nothing");
 		bind.mockReturnValueOnce(new Promise(() => {}));
 		const claim = node.router.claimSessionId(id, "return-1");
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
-		assert.equal(await claim, false, "a binding that does not answer in time grants nothing");
+		assert.equal(granted(await claim), false, "a binding that does not answer in time grants nothing");
 
 		await node.router.close();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a closed router grants nothing");
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), false, "a closed router grants nothing");
 	});
 
 	test("an expired claim does not bind an unused id while its confirmation is pending (#5607)", async () => {
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		await claimedAndLeft(node, id, "return-1");
 		const knownSessions = node.state.knownSessions;
 		const bind = knownSessions.bind.bind(knownSessions);
 		const requests = vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
@@ -2035,7 +2045,7 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		await claimedAndLeft(node, id, "return-1");
 		const knownSessions = node.state.knownSessions;
 		const bind = knownSessions.bind.bind(knownSessions);
 		let answer!: () => void;
@@ -2049,14 +2059,14 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		});
 
 		const claim = node.router.claimSessionId(id, "return-1");
-		let granted: boolean | undefined;
+		let grantedId: boolean | undefined;
 		void claim.then((result) => {
-			granted = result;
+			grantedId = granted(result);
 		});
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 1);
-		assert.equal(granted, undefined);
+		assert.equal(grantedId, undefined);
 		answer();
-		assert.equal(await claim, true);
+		assert.equal(granted(await claim), true);
 	});
 
 	test("an ended session's unanswered presence check expires on the first turn after its wall-clock deadline (#5607)", async () => {
@@ -2071,26 +2081,132 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		);
 	});
 
+	/** `session` registered live on `node` under its id and return address. */
+	async function registeredLive(node: Node, target: BrokerConnectedSession): Promise<void> {
+		node.sessions.set(target.info.id, target);
+		await node.router.sessionRegistered(target);
+		await flush();
+	}
+
+	test("a session that registers again while another live registration of it holds its id gets a fresh id (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const shared = await cluster();
+		const [first, second] = [await startNode(shared), await startNode(shared)];
+		const live = session("live");
+		await registeredLive(first, live);
+
+		const claim = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+
+		assert.equal(granted(await claim), false, "one live registration per id");
+	});
+
+	test("a session gets its id back on another broker at once once its registration there left (#5607)", async () => {
+		const shared = await cluster();
+		const [first, second] = [await startNode(shared), await startNode(shared)];
+		const live = session("live");
+		await registeredLive(first, live);
+		first.sessions.delete(live.info.id);
+		first.router.sessionLeft(live, undefined, false);
+		await flush();
+
+		assert.equal(granted(await second.router.claimSessionId(live.info.id, live.registrationReturnAddress!)), true);
+	});
+
+	test("a session gets its id back while its earlier registration's broker is still giving it up, within the claim's wait (#5607)", async () => {
+		const shared = await cluster();
+		const [first, second] = [await startNode(shared), await startNode(shared)];
+		const live = session("live");
+		await registeredLive(first, live);
+		const owners = first.state.knownSessions.owners!;
+		const release = owners.release.bind(owners);
+		const released = Promise.withResolvers<void>();
+		vi.spyOn(owners, "release").mockImplementationOnce(async (ownership) => {
+			await released.promise;
+			return release(ownership);
+		});
+		first.sessions.delete(live.info.id);
+		first.router.sessionLeft(live, undefined, false);
+		await flush();
+
+		const claim = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		released.resolve();
+
+		assert.equal(granted(await claim), true);
+	});
+
+	test("an id whose owning broker stopped renewing it is free once its owner went stale, not before (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+		const shared = await cluster();
+		const [first, second] = [await startNode(shared), await startNode(shared)];
+		const live = session("live");
+		await registeredLive(first, live);
+		// Its broker stops, as a crashed one does: nothing renews or releases what it owned.
+		vi.spyOn(first.state.knownSessions.owners!, "renew").mockResolvedValue(undefined);
+
+		const early = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await early), false);
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS);
+		const late = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await late), true);
+	});
+
+	test("an owner kept renewed by its live registration's broker keeps its id past the stale age (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+		const shared = await cluster();
+		const [first, second] = [await startNode(shared), await startNode(shared)];
+		const live = session("live");
+		await registeredLive(first, live);
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS * 2);
+
+		const claim = second.router.claimSessionId(live.info.id, live.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await claim), false);
+	});
+
+	test("an id a claim takes after it gave up is given back, so the session can take it again (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		const answered = Promise.withResolvers<void>();
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await answered.promise;
+			return bind(...args);
+		});
+		const claim = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await claim), false);
+		answered.resolve();
+		await flush();
+
+		assert.equal(granted(await node.router.claimSessionId(id, "return-1")), true, "nothing still owns it");
+	});
+
 	test("a database that does not answer still ends the claim of a broker that keeps running late, with a fresh id (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
 		const id = randomUUID();
-		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		await claimedAndLeft(node, id, "return-1");
 		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
 
 		const claim = node.router.claimSessionId(id, "return-1");
-		let granted: boolean | undefined;
+		let grantedId: boolean | undefined;
 		void claim.then((result) => {
-			granted = result;
+			grantedId = granted(result);
 		});
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
 		// From here every tick of the broker comes late: it is slow, not stalled once, and the claim must not wait for good.
-		for (let tick = 0; tick < 2 && granted === undefined; tick++) {
+		for (let tick = 0; tick < 2 && grantedId === undefined; tick++) {
 			stallEventLoop(STALL_PAST_BOUND_MS / 5);
 			await vi.advanceTimersByTimeAsync(100);
 		}
 
-		assert.equal(granted, false, "a late broker still ends an unanswered claim");
+		assert.equal(grantedId, false, "a late broker still ends an unanswered claim");
 	});
 
 	test("a presence taken under an id bound to another return address is not routed to by that id", async () => {

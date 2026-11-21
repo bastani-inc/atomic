@@ -35,6 +35,8 @@ import {
 	holdsSessionId,
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
+	type KnownSessionOwner,
+	type KnownSessionOwnership,
 	type KnownSessionState,
 	type Lease,
 	type LeaseState,
@@ -146,6 +148,12 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
  * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
+/**
+ * #5607: waits between a returning registration's attempts at an id that another registration of the same session
+ * still owns, as when its broker is still releasing it after that session moved here. Tried while within the claim's
+ * bound; still owned after that, the session gets a fresh id.
+ */
+const SESSION_ID_OWNER_RETRY_MS = [50, 100, 200, 400, 800] as const;
 /**
  * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
  * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
@@ -339,6 +347,8 @@ interface PresenceEntry {
 	 * id across nodes, and its departure leaves that session's shared state alone.
 	 */
 	unbound?: true;
+	/** #5607: the id this registration owns in the shared store, renewed while it is live and released as it leaves. */
+	owner?: KnownSessionOwnership;
 }
 
 interface UnfinishedRegistration {
@@ -608,27 +618,58 @@ export class MultiNodeRouter {
 	/**
 	 * Whether a registration with `returnAddress` may take the Intercom id `sessionId`, binding the id to it when free.
 	 * In multi-node mode an id carries authority (shared ask routes and known sessions name sessions by id), so only the
-	 * session that registered it gets it back. False when the shared store does not answer in time.
+	 * session that registered it gets it back, and (#5607) only while no other live registration of that session owns
+	 * it. The granted registration's owner token, to hand to `sessionRegistered`; undefined when the shared store does
+	 * not grant the id in time, and the session gets a fresh id.
 	 */
-	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
-		if (this.closed) return false;
+	async claimSessionId(sessionId: string, returnAddress: string): Promise<string | undefined> {
+		if (this.closed) return undefined;
+		const owner: KnownSessionOwner = {
+			token: randomUUID(),
+			brokerId: this.brokerId,
+			staleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
+		};
+		const deadline = performance.now() + SESSION_ID_CLAIM_BOUND_MS;
+		let expired = false;
+		const claim = (async () => {
+			for (let attempt = 0; ; attempt++) {
+				const result = await this.state.knownSessions.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS, owner);
+				if (result.status !== "held") return result.status === "bound";
+				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
+				if (expired || performance.now() + wait >= deadline) return false;
+				await new Promise<void>((resolve) => setTimeout(resolve, wait).unref());
+			}
+		})();
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		try {
-			return await Promise.race([
-				this.state.knownSessions
-					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
-					.then((result) => result.status === "bound"),
-				new Promise<boolean>((resolve) => {
+			const granted = await Promise.race([
+				claim,
+				new Promise<false>((resolve) => {
 					bound = setTimeout(() => resolve(false), SESSION_ID_CLAIM_BOUND_MS);
 					bound.unref?.();
 				}),
 			]);
+			if (granted) return owner.token;
+			// #5607: a grant that lands after the claim gave up is given back, so no registration that is not live owns it.
+			expired = true;
+			void claim
+				.then((late) => (late ? this.releaseOwner({ intercomSessionId: sessionId, token: owner.token }) : undefined))
+				.catch(() => {});
+			return undefined;
 		} catch (error) {
 			this.report(error);
-			return false;
+			return undefined;
 		} finally {
 			clearTimeout(bound);
 		}
+	}
+
+	/**
+	 * #5607: give an owned id back; a store without owners has nothing to give back. A failure is reported: the id is free
+	 * again once its owner is no longer renewed.
+	 */
+	async releaseOwner(ownership: KnownSessionOwnership): Promise<void> {
+		await this.state.knownSessions.owners?.release(ownership).catch((error: Error) => this.report(error));
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -643,9 +684,16 @@ export class MultiNodeRouter {
 	sessionRegistered(
 		session: BrokerConnectedSession,
 		consumed?: ConsumedReservation,
+		ownerToken?: string,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
+		// #5607: the token its claim took the id with, or one of its own for an id given here.
+		const owner: KnownSessionOwner = {
+			token: ownerToken ?? randomUUID(),
+			brokerId: this.brokerId,
+			staleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
+		};
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
 		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
@@ -661,11 +709,17 @@ export class MultiNodeRouter {
 						session.info.id,
 						session.registrationReturnAddress ?? "",
 						KNOWN_SESSION_RETENTION_MS,
+						owner,
 					);
-					if (binding.status === "refused") {
+					// #5607: an id another live registration of the same session owns is that registration's across nodes, as
+					// an id bound to another session's is (a claim's grant that went stale meanwhile, or a session registered
+					// before the shared store was open).
+					if (binding.status === "refused" || binding.status === "held") {
 						entry.unbound = true;
 						return;
 					}
+					if (this.state.knownSessions.owners !== undefined)
+						entry.owner = { intercomSessionId: session.info.id, token: owner.token };
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
 						await this.acquirePresence(session, entry);
@@ -1100,6 +1154,8 @@ export class MultiNodeRouter {
 		const sessionId = session.info.id;
 		this.serial(identity, async () => {
 			if (unbound) return;
+			// #5607: first, so the session is free to take its id again on any broker while the rest of its departure runs.
+			if (entry.owner !== undefined) await this.releaseOwner(entry.owner);
 			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
 			// send to an offline session, and its own recipient may still answer once it is back.
 			const away = session.supervisorId === undefined && !ended;
@@ -3069,6 +3125,8 @@ export class MultiNodeRouter {
 				present.map((presence) => (presence.subject as RecipientPresenceSubject).targetIdentity),
 			);
 			await this.state.leases.retireHolder(lease.holderId);
+			// #5607: the ids its registrations owned are free for those sessions to take again.
+			await this.state.knownSessions.owners?.retireBroker(lease.holderId);
 			await this.state.outbox.releaseClaimsOf(lease.holderId);
 		}
 	}
@@ -3086,6 +3144,9 @@ export class MultiNodeRouter {
 			);
 			if (acquired.status === "acquired") this.membership = acquired.lease;
 		}
+		// #5607: the ids this broker's live registrations own, in one write, so none of them goes stale meanwhile.
+		const owned = [...this.presence.values()].flatMap((entry) => (entry.owner === undefined ? [] : [entry.owner]));
+		if (owned.length > 0) await this.state.knownSessions.owners?.renew(owned).catch((error: Error) => this.report(error));
 		for (const [session, entry] of this.presence) {
 			if (entry.lease !== undefined) {
 				const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));

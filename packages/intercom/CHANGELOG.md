@@ -6,6 +6,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 
+- With multi-node routing, two registrations of the same session on different brokers no longer both get the Intercom ID it had: while one is connected, the other gets a fresh ID. A session that left gets its ID back on any broker at once. One whose broker crashed gets it back once that broker restarts, or about 30 seconds after the crash. Brokers of earlier versions, and a PostgreSQL runtime role without permission to change tables until `atomic storage migrate` is run as the owner role, behave as before ([#5607](https://github.com/bastani-inc/atomic/issues/5607)).
+
+### Fixed
+
 - When the session that kept a released subagent lets it go, a session whose question to that subagent was still open is told `Session "<subagent>" ended before replying`. It used to get a malformed failure that closed its Intercom connection, or a notice that did not name the subagent ([#6131](https://github.com/bastani-inc/atomic/issues/6131)).
 
 ## [0.10.2] - 2026-11-20
