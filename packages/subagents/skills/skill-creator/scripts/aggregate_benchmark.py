@@ -404,4 +404,10 @@ def main():
 
 
 if __name__ == "__main__":
+    if __package__:
+        from .utils import write_output_in_utf8
+    else:
+        # Run as a file: the module next to it, its folder being first on the module path.
+        from utils import write_output_in_utf8
+    write_output_in_utf8()
     main()

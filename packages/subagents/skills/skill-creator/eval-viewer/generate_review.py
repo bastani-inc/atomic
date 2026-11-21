@@ -14,6 +14,7 @@ No dependencies beyond the Python stdlib are required.
 
 import argparse
 import base64
+import codecs
 import json
 import mimetypes
 import os
@@ -467,4 +468,7 @@ if __name__ == "__main__":
     # output to set up under pythonw or with standard output closed; print() then writes nothing.
     if sys.stdout is not None:
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
+    # Errors in UTF-8 too, unless they already are.
+    if sys.stderr is not None and codecs.lookup(sys.stderr.encoding).name != "utf-8":
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()
