@@ -125,6 +125,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
@@ -169,6 +170,23 @@ test("web_search falls back to raw results when the curator cannot open, instead
 	assert.match(text, /\/curator off/);
 	assert.ok(execCalls.length > 0, "the curator browser launch should have been attempted");
 	if (process.platform !== "win32") assert.equal(execCalls[0], join(launchers, launcher));
+});
+
+test("web_search falls back to raw results when no browser opener is installed at all (#4087)", async () => {
+	writeConfig({ workflow: "summary-review" });
+	// A headless machine: neither xdg-open, open nor cmd on PATH.
+	const noOpener = join(home, "no-opener");
+	mkdirSync(noOpener, { recursive: true });
+	vi.stubEnv("PATH", noOpener);
+
+	const result = await search({ hasUI: true, hasHumanInput: true });
+
+	const text = result.content[0]?.text ?? "";
+	assert.notEqual(result.details.cancelled, true);
+	assert.doesNotMatch(text, /curation cancelled/i);
+	assert.match(text, /Atomic is a coding agent\./);
+	assert.match(text, /curator/i);
+	assert.match(text, /\/curator off/);
 });
 
 test("web_search names the provider settings and /curator when no provider can be reached (#4087)", async () => {
