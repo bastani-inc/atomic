@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.3-alpha.1] - 2026-11-21
+
 ### Fixed
 
 - The web search activity shortcut (Ctrl+Shift+W by default) shows the activity widget and hides it again. It failed with "content is not a function" when Atomic runs extensions in the terminal process, and showed only a warning that the widget is unavailable otherwise ([#6131](https://github.com/bastani-inc/atomic/issues/6131)).

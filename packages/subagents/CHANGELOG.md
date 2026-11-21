@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.3-alpha.1] - 2026-11-21
+
 ### Changed
 
 - `skill-creator`'s description optimization runs Atomic: `run_eval.py`, `run_loop.py` and `improve_description.py` start `atomic -p` with your Atomic models and credentials, and never start `claude`. Each trigger query loads the candidate description as a temporary skill, with only the read tool and no extensions or MCP servers, so the model has no tool that runs commands or edits files, and nothing is written into your project. A query counts as triggered when the model's first tool call reads that skill's `SKILL.md`. `--model` takes an Atomic model pattern such as `provider/id` ([#5625](https://github.com/bastani-inc/atomic/issues/5625)).
