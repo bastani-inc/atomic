@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test, vi } from "vitest";
@@ -45,4 +45,32 @@ test("a compiled binary starts the Intercom broker from its shipped builtin, not
 	assert.equal(intercomDir, join(executableDir, "builtin", "intercom"));
 	const brokerPath = resolveBrokerEntrypoint(intercomDir as string);
 	assert.equal(validateInternalIntercomBrokerPath(brokerPath, executable, "linux"), brokerPath);
+});
+
+test("a compiled binary starts the prebuilt Intercom broker it ships", async () => {
+	const { getBuiltinPackagePaths } = await import("../src/core/builtin-packages.js");
+	const [intercomDir] = getBuiltinPackagePaths({
+		subagents: false,
+		mcp: false,
+		"web-access": false,
+	});
+	const bundlePath = join(executableDir, "builtin", "intercom", "broker", "broker.bundle.mjs");
+	writeFileSync(bundlePath, "", "utf-8");
+	try {
+		const brokerPath = resolveBrokerEntrypoint(intercomDir as string);
+		assert.equal(brokerPath, bundlePath);
+		assert.equal(validateInternalIntercomBrokerPath(brokerPath, executable, "linux"), brokerPath);
+		// Only the broker's own entry: a chunk beside it, or the build tree's copy, is not started.
+		for (const other of [
+			join(executableDir, "builtin", "intercom", "broker", "broker-abc123.mjs"),
+			join(buildTree, "builtin", "intercom", "broker", "broker.bundle.mjs"),
+		]) {
+			assert.throws(
+				() => validateInternalIntercomBrokerPath(other, executable, "linux"),
+				/must resolve to the bundled intercom broker module/,
+			);
+		}
+	} finally {
+		rmSync(bundlePath, { force: true });
+	}
 });
