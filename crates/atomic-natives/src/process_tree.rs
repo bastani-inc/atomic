@@ -307,21 +307,54 @@ mod tests {
 
 	#[cfg(windows)]
 	#[test]
-	fn ends_nothing_below_a_cmd_that_exited_while_held() {
-		// The ping runs 3 seconds; cmd.exe exits once it ends.
-		let mut cmd = std::process::Command::new("cmd.exe")
-			.args(["/d", "/c", "ping -n 3 127.0.0.1 > nul"])
+	fn ends_nothing_below_a_process_that_exited_by_itself_while_held() {
+		use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+		use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+		use windows_sys::Win32::System::Threading::{
+			OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+		};
+		let dir = std::env::temp_dir().join(format!("atomic-process-tree-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).expect("a directory for the test");
+		let gate = dir.join("gate");
+		let pid_file = dir.join("ping.pid");
+		// PowerShell starts a ping (30 seconds at most), records its id, and exits by itself once the gate exists, or
+		// after a minute.
+		let script = format!(
+			"$p = Start-Process ping -ArgumentList '-n','30','127.0.0.1' -WindowStyle Hidden -PassThru; \
+			 Set-Content -NoNewline -Path '{}' -Value $p.Id; $end = (Get-Date).AddSeconds(60); \
+			 while (-not (Test-Path '{}') -and (Get-Date) -lt $end) {{ Start-Sleep -Milliseconds 50 }}; exit 0",
+			pid_file.display(),
+			gate.display()
+		);
+		let mut root = std::process::Command::new("powershell.exe")
+			.args(["-NoProfile", "-NonInteractive", "-Command", &script])
 			.spawn()
-			.expect("cmd.exe starts");
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+			.expect("PowerShell starts");
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 		let mut held = None;
 		while held.is_none() && std::time::Instant::now() < deadline {
 			std::thread::sleep(std::time::Duration::from_millis(100));
-			held = super::hold_process_descendants(cmd.id()).filter(|held| held.count() > 0);
+			if pid_file.exists() {
+				held = super::hold_process_descendants(root.id()).filter(|held| held.count() > 0);
+			}
 		}
-		let mut held = held.expect("nothing cmd.exe started was held");
-		cmd.wait().expect("cmd.exe exits by itself");
-		assert!(!held.end_all(), "a cmd.exe that exited by itself was taken as ended");
+		let ping_pid: u32 =
+			std::fs::read_to_string(&pid_file).expect("the ping's id").trim().parse().expect("an id");
+		// The ping's own handle, while it still runs: it tells whether it runs, and ends it at the end.
+		let ping = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, ping_pid) };
+		assert!(!ping.is_null(), "the ping could not be opened");
+		let ping = unsafe { OwnedHandle::from_raw_handle(ping) };
+		let mut held = held.expect("nothing PowerShell started was held");
+
+		std::fs::write(&gate, "").expect("the gate opens");
+		root.wait().expect("PowerShell exits by itself");
+		let ended = held.end_all();
+		let ping_runs = unsafe { WaitForSingleObject(ping.as_raw_handle(), 0) } == WAIT_TIMEOUT;
+		unsafe { TerminateProcess(ping.as_raw_handle(), 1) };
+		let _ = std::fs::remove_dir_all(&dir);
+
+		assert!(!ended, "a PowerShell that exited by itself was taken as ended");
+		assert!(ping_runs, "what a process that exited by itself left running was ended");
 	}
 
 	#[cfg(windows)]
