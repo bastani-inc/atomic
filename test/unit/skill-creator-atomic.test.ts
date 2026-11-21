@@ -82,6 +82,11 @@ describe.skipIf(python === undefined)("skill-creator scripts run Atomic", () => 
 		assert.equal(record.prompt, query);
 		assert.equal(realpathSync(record.cwd), realpathSync(box.project));
 		assert.equal(record.heap, "0", "a single Atomic process, without a larger-heap restart");
+		if (process.platform === "linux") {
+			// Started with SIGTSTP blocked, so a Ctrl+Z before it runs its program cannot stop it while the script
+			// waits for that start; the runtime clears the mask.
+			assert.equal(record.tstp_blocked_at_start, true);
+		}
 		assert.match(basename(skillDir), /^sample-skill-[0-9a-f]{8}$/u);
 		assert.equal(
 			record.skill,

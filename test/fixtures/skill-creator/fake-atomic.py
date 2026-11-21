@@ -36,6 +36,12 @@ from pathlib import Path
 if os.environ.get("FAKE_ATOMIC_STARTUP"):
     # Slow to start: nothing is printed before this has passed.
     time.sleep(float(os.environ["FAKE_ATOMIC_STARTUP"]))
+# Whether SIGTSTP was blocked when this process started (Linux), before it clears the mask.
+started_with_tstp_blocked = None
+if os.path.exists("/proc/self/status"):
+    for status_line in open("/proc/self/status"):
+        if status_line.startswith("SigBlk:"):
+            started_with_tstp_blocked = bool(int(status_line.split()[1], 16) & (1 << (signal.SIGTSTP - 1)))
 if hasattr(signal, "pthread_sigmask"):
     # Atomic's runtime starts with every signal unblocked, whatever mask its parent had.
     signal.pthread_sigmask(signal.SIG_SETMASK, set())
@@ -53,6 +59,7 @@ record = {
     "prompt": prompt,
     "scenario": scenario,
     "heap": os.environ.get("ATOMIC_HEAP_MB"),
+    "tstp_blocked_at_start": started_with_tstp_blocked,
     "skill": (skill_dir / "SKILL.md").read_text(encoding="utf-8") if skill_dir else None,
 }
 log = Path(os.environ["FAKE_ATOMIC_LOG"])

@@ -601,9 +601,10 @@ def _install_console_close_handler() -> None:
         if _owners == 0:
             return False  # Nothing to clean up: Windows ends the process.
         _on_stop_signal(signal.SIGINT, None)
-        # Windows ends the process about five seconds after a close event.
+        # Windows ends the process about five seconds after a close event: exit with the
+        # console-interrupt status once the cleanup is done, before Windows ends it with another.
         _finished.wait(4)
-        return True
+        os._exit(WINDOWS_INTERRUPTED_STATUS)
 
     _console_handler = handler
     ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(handler, True)

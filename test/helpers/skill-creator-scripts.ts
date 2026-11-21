@@ -33,6 +33,7 @@ export interface FakeAtomicRecord {
 	readonly prompt: string;
 	readonly scenario: string;
 	readonly heap: string | null;
+	readonly tstp_blocked_at_start: boolean | null;
 	readonly skill: string | null;
 	readonly child?: number;
 	readonly grandchild?: number;

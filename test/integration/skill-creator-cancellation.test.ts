@@ -144,6 +144,25 @@ describe.skipIf(python === undefined || process.platform === "win32")(
 			STALLED_TEST_MS,
 		);
 
+		test("a query's Atomic stopped on its own still acts on the stop request at once (#5625)", async () => {
+			const box = sandbox();
+			const script = spawnProcess([python ?? "python3", ...evalArgs(box, ["paused"])], {
+				cwd: box.project,
+				env: box.env({ FAKE_ATOMIC_SCENARIO: "hold-child" }),
+			});
+			const records = await box.waitForRecords(1, START_MS);
+			const [record] = records;
+			assert.ok(record);
+			process.kill(record.pid, "SIGSTOP");
+			const stoppedAt = Date.now();
+			script.kill("SIGTERM");
+			await script.exited;
+			assert.equal(script.signalCode, "SIGTERM");
+			// Continued with its stop request, it ends at once instead of after the grace period.
+			assert.ok(Date.now() - stoppedAt < STOP_ESCALATION_MS / 2);
+			await waitUntilGone(startedPids(records), 5_000);
+		});
+
 		test("keeps an ignored SIGHUP ignored, so a nohup run finishes (#5625)", async () => {
 			const box = sandbox();
 			// nohup: the script starts with SIGHUP ignored.
