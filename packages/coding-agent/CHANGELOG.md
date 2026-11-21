@@ -6,6 +6,7 @@
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
 - Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless a session uses the memory session store (`--no-session`, `ATOMIC_STORAGE=memory` or `{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
+- On Windows, the first start after a restart or an install reaches the editor much sooner: while Atomic loads, a short-lived helper reads the files it is about to load many at a time, so the antivirus scans them in parallel instead of one after another as Node opens them. It only reads, and it ends when Atomic does.
 
 ### Fixed
 
