@@ -633,9 +633,13 @@ describe("replacing an older broker (#4538)", () => {
 		"an older broker still running past the stop bound fails the replacement at the stop, typed, and the spawn lock follows its process",
 		async () => {
 			const legacy = await startFakeLegacyBroker({ shutdown: "ignored" });
-			// broker.pid as the broker writes it once it runs: on Windows its write time proves the pid named the broker then.
-			writeFileSync(join(agentDir, "intercom", "broker.pid"), String(legacy.pid));
+			// broker.pid as the broker writes it once it runs: on Windows its write time proves the pid named the broker then
+			// (dated now, off the coarse steps FAT and exFAT keep, which prove nothing).
 			const found = await recordProcess(legacy.pid);
+			const pidPath = join(agentDir, "intercom", "broker.pid");
+			writeFileSync(pidPath, String(legacy.pid));
+			const written = Date.now() / 1_000 + SUB_MILLISECOND_S;
+			utimesSync(pidPath, written, written);
 			const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
 			const { isSpawnLockStale, upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 			const error = await upgradeBroker("bun", [], 30_000, undefined, BROKER_PROTOCOL, 2_000).catch(
@@ -707,8 +711,11 @@ describe("replacing an older broker (#4538)", () => {
 				LATER_PROCESS_STOP_BOUND_MS,
 			).catch((caught: unknown) => caught);
 			const { isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
-			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
-			assert.equal(error.phase, "start", "the replacement waited for the later process until the stop bound");
+			// It went on to start this version's broker: Windows starts it through its own launcher, so it may run.
+			if (error !== "upgraded") {
+				assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+				assert.equal(error.phase, "start", "the replacement waited for the later process until the stop bound");
+			}
 			assert.ok(performance.now() - startedAt < LATER_PROCESS_STOP_BOUND_MS);
 			assert.equal(await stillRuns(later), true, "the later process given the broker's pid was ended");
 			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
