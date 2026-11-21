@@ -1,0 +1,274 @@
+/**
+ * Reads the files an interactive session's startup loads, many at once, so that a cold start does not wait for each
+ * file in turn: an antivirus scans a file when it is first opened, and the module loader opens one file at a time.
+ * Runs as a short-lived process of its own (see `startup-prefetch.ts`), started with the list
+ * `scripts/write-startup-files.mjs` wrote and Atomic's package directory. It only reads: what it reads is discarded,
+ * and a file it cannot find or read is skipped.
+ *
+ * Imports nothing but Node's own modules, so starting it reads no file of Atomic's but itself.
+ */
+import { existsSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { homedir, uptime } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Reads in flight at once: as many as the I/O pool the process that started this one gave it. */
+const READ_CONCURRENCY = Math.max(1, Math.min(32, Number(process.env.UV_THREADPOOL_SIZE) || 32));
+
+/** The largest file read: Atomic's native addon is the largest file startup loads, at about 20 MB. */
+const MAX_FILE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The startup file list: each package as its name and the package it is imported from (the index of an earlier one, or
+ * -1 for Atomic's own), and each file as the index of its package and its path inside it.
+ */
+interface StartupFileList {
+	readonly version: 2;
+	/** Atomic's own package, which is `packageDir`. */
+	readonly self: string;
+	readonly packages: readonly (readonly [string, number])[];
+	readonly files: readonly (readonly [number, string])[];
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+	try {
+		return (await stat(path)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The `node_modules` directory Atomic's own package is installed in: the reader looks for no package above it. In a
+ * source checkout, which is in none, it looks up to the home directory, never in it or above.
+ */
+function installationRoot(packageDir: string): string | undefined {
+	for (let dir = packageDir; dirname(dir) !== dir; dir = dirname(dir))
+		if (basename(dir) === "node_modules") return dir;
+	return undefined;
+}
+
+/**
+ * Where a package is installed, as Node finds it from a module in `fromDir`: in the `node_modules` directories from
+ * `fromDir` up, but none above the installation's own (`limit`), nor the home directory or above it. A package found
+ * nowhere there is not read.
+ */
+async function packageRoot(name: string, fromDir: string, limit: string | undefined): Promise<string | undefined> {
+	const home = homedir();
+	for (let dir = fromDir; dir !== home && dirname(dir) !== dir; dir = dirname(dir)) {
+		// A `node_modules` directory holds packages itself; Node does not look in one inside it.
+		const candidate = basename(dir) === "node_modules" ? join(dir, name) : join(dir, "node_modules", name);
+		if (await isDirectory(candidate)) return candidate;
+		if (dir === limit) return undefined;
+	}
+	return undefined;
+}
+
+/** The native addon packages startup loads, with the name of their binaries (`<name>.<build>.node`). */
+const NATIVE_ADDON_PACKAGES = new Map([["@bastani/atomic-natives", "atomic_natives"]]);
+
+async function isFile(path: string): Promise<boolean> {
+	try {
+		return (await stat(path)).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The build of a native addon that Node loads here, as the addon's own loader (`native/index.js`) picks it on Windows,
+ * the only platform the reader runs on: `win32-<arch>-msvc`, or `-gnu` for an x64 Node built as a shared library.
+ */
+function windowsNativeBuild(): string | undefined {
+	if (process.platform !== "win32") return undefined;
+	const variables = (process.config as { variables?: { shlib_suffix?: string; node_target_type?: string } }).variables;
+	const gnu =
+		process.arch === "x64" &&
+		(variables?.shlib_suffix === "dll.a" || variables?.node_target_type === "shared_library");
+	return `win32-${process.arch}-${gnu ? "gnu" : "msvc"}`;
+}
+
+/**
+ * The one binary of a native addon that Node loads here, as its loader looks for it: the package's own build for this
+ * platform, else the platform package beside it. A package can ship the builds of every platform; the others are never
+ * loaded, and are not read.
+ */
+async function nativeAddonFiles(
+	name: string,
+	binary: string,
+	root: string,
+	limit: string | undefined,
+): Promise<string[]> {
+	const build = windowsNativeBuild();
+	if (build === undefined) return [];
+	const own = join(root, "native", `${binary}.${build}.node`);
+	if (await isFile(own)) return [own];
+	const platformPackage = await packageRoot(`${name}-${build}`, root, limit);
+	if (platformPackage === undefined) return [];
+	const manifest = JSON.parse(await readFile(join(platformPackage, "package.json"), "utf8").catch(() => "{}")) as {
+		main?: unknown;
+	};
+	const main = typeof manifest.main === "string" ? manifest.main : `${binary}.${build}.node`;
+	// A file inside the platform package only.
+	if (isAbsolute(main) || main.split(/[\\/]/).includes("..")) return [];
+	return [join(platformPackage, main)];
+}
+
+/**
+ * The files the list names, where this installation has them: the modules startup loads, in the order it loads them,
+ * then the one binary of each native addon that Node loads here.
+ */
+export async function startupFilePaths(
+	listPath: string,
+	packageDir: string,
+): Promise<{ modules: string[]; binaries: string[] }> {
+	const list = JSON.parse(await readFile(listPath, "utf8")) as StartupFileList;
+	if (list.version !== 2) return { modules: [], binaries: [] };
+	const limit = installationRoot(packageDir);
+	// Each package from the package it is imported from, as Node resolves it there: an earlier one in the list.
+	const roots: (string | undefined)[] = [];
+	for (const [index, [name, from]] of list.packages.entries()) {
+		const fromDir = from >= 0 && from < index ? roots[from] : packageDir;
+		roots.push(
+			name === list.self && from < 0
+				? packageDir
+				: fromDir === undefined
+					? undefined
+					: await packageRoot(name, fromDir, limit),
+		);
+	}
+	const modules: string[] = [];
+	for (const [index, path] of list.files) {
+		const root = roots[index];
+		// A path inside its package only: the list never names one above it.
+		if (root === undefined || isAbsolute(path) || path.split(/[\\/]/).includes("..")) continue;
+		modules.push(join(root, path));
+	}
+	const binaries: string[] = [];
+	for (const [index, [name]] of list.packages.entries()) {
+		const root = roots[index];
+		const binary = NATIVE_ADDON_PACKAGES.get(name);
+		if (root !== undefined && binary !== undefined)
+			binaries.push(...(await nativeAddonFiles(name, binary, root, limit)));
+	}
+	return { modules, binaries };
+}
+
+/**
+ * Modules read one at a time and timed, to tell whether the files are already in memory: the last ones startup loads,
+ * since Atomic itself may already have loaded (and so made fast) the first ones.
+ */
+const WARM_PROBE_FILES = 16;
+/**
+ * A median read faster than this found its files in memory: a warm start, where reading the rest ahead of the module
+ * loader gains nothing and only takes CPU and memory from Atomic's own start. Measured one at a time, a read of a
+ * startup file in memory takes about 0.2 ms on Windows (median; at most about 1.2 ms), and 0.45-1 ms on a heavily
+ * loaded Linux machine; a first read after a restart on Windows waits for the antivirus to scan the file: about 12 ms
+ * on average there, up to 190 ms.
+ */
+const WARM_READ_MS = 3;
+
+/** The fewest timed reads that can tell a warm start: a file missing or skipped is no read and tells nothing. */
+const WARM_PROBE_MIN_READS = 8;
+
+/** Whether reads that took these times (ms) found their files already in memory, by their median. */
+export function readsFoundFilesInMemory(timesMs: readonly number[]): boolean {
+	if (timesMs.length < WARM_PROBE_MIN_READS) return false;
+	const sorted = [...timesMs].sort((a, b) => a - b);
+	return sorted[Math.floor((sorted.length - 1) / 2)]! < WARM_READ_MS;
+}
+
+/** Reads one file, a regular one of a bounded size only, never a FIFO or device a different install could name. */
+async function readOne(path: string): Promise<boolean> {
+	try {
+		const stats = await stat(path);
+		if (!stats.isFile() || stats.size > MAX_FILE_BYTES) return false;
+		await readFile(path);
+		return true;
+	} catch {
+		// Not installed here, or not readable: the module loader reports it if it ever needs it.
+		return false;
+	}
+}
+
+/**
+ * Reads the files many at once and returns how many it read. Meanwhile it times reads, one at a time, of the last
+ * modules on the list, which startup reaches last: when those were already in memory, so are the others, and it stops.
+ */
+export async function readStartupFiles(listPath: string, packageDir: string): Promise<number> {
+	const { modules, binaries } = await startupFilePaths(listPath, packageDir);
+	const paths = [...modules, ...binaries];
+	let read = 0;
+	let warm = false;
+	const probed = new Set(modules.length > 2 * WARM_PROBE_FILES ? modules.slice(-WARM_PROBE_FILES) : []);
+	const probe = async () => {
+		const times: number[] = [];
+		// One at a time: a read's own time, not its wait behind the others. Only files actually read count.
+		for (const path of probed) {
+			const started = performance.now();
+			if (await readOne(path)) {
+				read++;
+				times.push(performance.now() - started);
+			}
+		}
+		warm = readsFoundFilesInMemory(times);
+	};
+	let next = 0;
+	const reader = async () => {
+		while (!warm && next < paths.length) {
+			const path = paths[next++]!;
+			if (!probed.has(path) && (await readOne(path))) read++;
+		}
+	};
+	await Promise.all([probe(), ...Array.from({ length: READ_CONCURRENCY }, reader)]);
+	return read;
+}
+
+/** Whether this module is the process's entry script, as the runtime resolved it: through any symbolic link. */
+function isEntry(script: string | undefined): boolean {
+	try {
+		return script !== undefined && realpathSync(resolve(script)) === fileURLToPath(import.meta.url);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Records, in `markerPath`, that this installation's startup files were read since the machine started (see
+ * `startup-prefetch.ts`): only where its directory, the agent directory, already exists, written whole (to another file
+ * first, then renamed over it), and on any failure not at all.
+ */
+export function recordStartupFilesRead(markerPath: string, version: string, install: string): void {
+	if (!existsSync(dirname(markerPath))) return;
+	const written = `${markerPath}.${process.pid}.tmp`;
+	try {
+		writeFileSync(written, JSON.stringify({ version, install, bootTimeMs: Date.now() - uptime() * 1000 }));
+		renameSync(written, markerPath);
+	} catch {
+		try {
+			unlinkSync(written);
+		} catch {
+			// Nothing was written.
+		}
+	}
+}
+
+// Started as a process's entry: `<runtime> startup-prefetch-reader.js <list> <packageDir> [<marker> <version>]`.
+const [entry, listPath, packageDir, markerPath, version] = process.argv.slice(1);
+if (isEntry(entry) && listPath && packageDir) {
+	// The process that started this one holds the other end of standard input: when it ends, however it ends, so does
+	// this reader.
+	process.stdin.on("end", () => process.exit(0));
+	process.stdin.on("close", () => process.exit(0));
+	process.stdin.on("error", () => process.exit(0));
+	process.stdin.resume();
+	void readStartupFiles(listPath, packageDir).then(
+		(read) => {
+			// A list it could not use, or files it could not read, says nothing about the next start.
+			if (read > 0 && markerPath && version) recordStartupFilesRead(markerPath, version, packageDir);
+			process.exit(0);
+		},
+		() => process.exit(0),
+	);
+}

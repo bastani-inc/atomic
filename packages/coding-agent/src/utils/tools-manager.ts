@@ -38,6 +38,12 @@ import {
 } from "./git-errors.ts";
 import { gitInstallCommand, type OsRelease, readOsRelease, readOsReleaseAsync } from "./git-install-command.ts";
 import {
+	findHelperExecutableAsync,
+	type HelperLaunch,
+	helperLaunchAsync,
+	missingHelperOptions,
+} from "./helper-command.ts";
+import {
 	isManagedToolError,
 	ManagedToolDownloadError,
 	type ManagedToolError,
@@ -99,11 +105,17 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// Check if a command exists in PATH by trying to run it
-function commandExists(cmd: string): Promise<boolean> {
+/**
+ * The absolute path of `cmd` in PATH's absolute directories (never the working directory), when it runs
+ * `cmd --version` successfully; null otherwise.
+ */
+async function systemCommandPath(cmd: string): Promise<string | null> {
+	const env = createChildProcessEnvironment();
+	const file = await findHelperExecutableAsync(cmd, { env });
+	if (file === undefined) return null;
 	return new Promise((resolvePromise) => {
-		execFile(cmd, ["--version"], { env: createChildProcessEnvironment() }, (error) => {
-			resolvePromise(error === null || error === undefined);
+		execFile(file, ["--version"], { env }, (error) => {
+			resolvePromise(error === null || error === undefined ? file : null);
 		});
 	});
 }
@@ -122,12 +134,11 @@ export async function getToolPath(tool: "fd" | "rg" | "git", options?: ResolveGi
 		return localPath;
 	}
 
-	// Check system PATH - if found, just return the command name (it's in PATH)
+	// Then PATH: the tool's absolute path there, so it never starts from the working directory.
 	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
 	for (const systemBinaryName of systemBinaryNames) {
-		if (await commandExists(systemBinaryName)) {
-			return systemBinaryName;
-		}
+		const systemPath = await systemCommandPath(systemBinaryName);
+		if (systemPath !== null) return systemPath;
 	}
 
 	return null;
@@ -268,15 +279,21 @@ function runExtractionCommand(
 	args: string[],
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<string | null> {
-	return new Promise((resolvePromise) => {
-		execFile(command, args, { env: createChildProcessEnvironment(undefined, env) }, (error, stdout, stderr) => {
-			if (!error) {
-				resolvePromise(null);
-				return;
-			}
-			resolvePromise(`${command}: ${formatExecFileFailure(error, String(stdout ?? ""), String(stderr ?? ""))}`);
-		});
-	});
+	const childEnv = createChildProcessEnvironment(undefined, env);
+	return helperLaunchAsync(command, { env: childEnv }).then(
+		(launch) =>
+			new Promise((resolvePromise) => {
+				execFile(launch.file, args, { env: childEnv, ...missingHelperOptions(launch) }, (error, stdout, stderr) => {
+					if (!error) {
+						resolvePromise(null);
+						return;
+					}
+					resolvePromise(
+						`${command}: ${formatExecFileFailure(error, String(stdout ?? ""), String(stderr ?? ""))}`,
+					);
+				});
+			}),
+	);
 }
 
 async function extractTarGzArchive(archivePath: string, extractDir: string, assetName: string): Promise<void> {
@@ -2068,7 +2085,7 @@ function firstLine(text: string): string {
 }
 
 /** Run a provisioning step; cancellation rejects with `signal.reason`, the time limit with a typed timeout. */
-function runProvisionStep(
+async function runProvisionStep(
 	command: string,
 	args: readonly string[],
 	options: {
@@ -2080,30 +2097,49 @@ function runProvisionStep(
 ): Promise<BoundedRunResult> {
 	const startedAt = Date.now();
 	const timeout = AbortSignal.timeout(options.timeoutMs);
+	const timedOut = async (cause: unknown): Promise<never> => {
+		throw new GitProvisionTimeoutError(
+			{
+				phase: options.phase,
+				timeoutMs: options.timeoutMs,
+				elapsedMs: Date.now() - startedAt,
+				...(await installCommandFieldAsync()),
+			},
+			{ cause },
+		);
+	};
+	let launch: HelperLaunch;
+	try {
+		// The lookup counts against the step's time limit and ends with its cancellation; then nothing starts.
+		launch = await helperLaunchAsync(command, {
+			env: options.env,
+			signal: AbortSignal.any([options.signal, timeout]),
+		});
+	} catch (error) {
+		if (options.signal.aborted) throw options.signal.reason;
+		if (timeout.aborted) return timedOut(error);
+		throw error;
+	}
+	// A cancellation or the time limit that came as the lookup finished still starts nothing.
+	if (options.signal.aborted) throw options.signal.reason;
+	if (timeout.aborted) return timedOut(timeout.reason);
 	return new Promise((resolvePromise, rejectPromise) => {
 		execFile(
-			command,
+			launch.file,
 			[...args],
-			{ env: options.env, maxBuffer: 16 * 1024 * 1024, signal: AbortSignal.any([options.signal, timeout]) },
+			{
+				env: options.env,
+				maxBuffer: 16 * 1024 * 1024,
+				signal: AbortSignal.any([options.signal, timeout]),
+				...missingHelperOptions(launch),
+			},
 			(error, stdout, stderr) => {
 				if (options.signal.aborted) {
 					rejectPromise(options.signal.reason);
 					return;
 				}
 				if (timeout.aborted) {
-					void installCommandFieldAsync().then((installField) =>
-						rejectPromise(
-							new GitProvisionTimeoutError(
-								{
-									phase: options.phase,
-									timeoutMs: options.timeoutMs,
-									elapsedMs: Date.now() - startedAt,
-									...installField,
-								},
-								{ cause: error },
-							),
-						),
-					);
+					timedOut(error).catch(rejectPromise);
 					return;
 				}
 				if (error === null) {

@@ -431,6 +431,8 @@ class IntercomBroker {
   private readonly endedQueue = new DurableEndedQueue({
     openStore: () => this.openEndedQueueStore(),
     routingStarted: () => (this.sharedStorageSetting === undefined ? undefined : this.multiNodeFirstAttempt),
+    // #6126: the local store's code can take longer to load than the open wait on a busy machine; the wait counts from it.
+    storeCodeLoaded: () => (this.sharedStorageSetting === undefined ? loadEndedChildQueueStore() : undefined),
     retireStore: () => this.retireEndedQueueStore(),
     budget: this.wakeBudget,
     delivered: (held) => this.queuedMessageState(held),
@@ -1078,7 +1080,7 @@ class IntercomBroker {
           recovery,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
-        // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS, and by ENDED_QUEUE_ROUTING_WAIT_MS with a shared `storage`).
+        // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS once the store can open, and by ENDED_QUEUE_TOTAL_WAIT_MS in all).
         const keeper = this.endedQueue.decided
           ? undefined
           : this.endedQueue.decide((snapshot) => this.restoreEndedQueue(snapshot));
