@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
+
+### Fixed
+
+- Opening or closing `/tasks` or the focused agent panel no longer draws a frame without the agent panel, the footer's hints, or both. This includes Esc, Enter on the subagent already shown, and opening `/tasks` from a subagent's chat. The screen now changes from the prompt to the view and back in one frame.
+- While viewing a subagent, a narrow footer keeps `← main chat` and `↓ N agents` longer than `? keys` and the working status. Before, `↓ 1 agent` was dropped below 47 columns.
+- ↓ on the empty prompt of an extension's editor built on Atomic's editor (`ctx.ui.setEditorComponent`) now focuses the agent panel, as it does on the default prompt, unless the editor uses the key itself.
+- A task stopped by its execution timeout shows the stopped mark (a red `◯`) in its completion notice, as the agent panel and `/tasks` show it, instead of `!`. Saved sessions keep their notices unchanged.
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

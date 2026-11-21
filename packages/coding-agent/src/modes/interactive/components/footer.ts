@@ -33,6 +33,12 @@ export interface FooterHints {
 	segments: string[];
 	/** Insert this hint only if it fits beside the already laid-out footer. */
 	optionalIndex?: number;
+	/**
+	 * The first two segments lead together, as a subagent's way back and its agent panel hint do: a narrow footer drops
+	 * the segments after them first, then the status, then the second of them. Otherwise it drops the segments between the
+	 * first and the last first.
+	 */
+	leadPair?: boolean;
 }
 
 type FooterHintSource = () => readonly string[] | FooterHints;
@@ -306,7 +312,8 @@ export class FooterComponent implements Component {
 	private declare session: ChatBoxSession;
 	private declare footerData: ReadonlyFooterDataProvider;
 	private declare readonly renderStyle: FooterRenderStyle;
-	private readonly navigationActive: () => boolean;
+	/** Whether a navigation view takes the prompt's place in the frame drawn at a width: the hints give way to it. */
+	private readonly navigationActive: (width: number) => boolean;
 	private readonly backgroundTasks: (() => Parameters<typeof renderTaskFooter>[0] | undefined) | undefined;
 	private readonly hintSegments: FooterHintSource | undefined;
 	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
@@ -321,7 +328,7 @@ export class FooterComponent implements Component {
 		session: ChatBoxSession,
 		footerData: ReadonlyFooterDataProvider,
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
-		navigationActive: () => boolean = () => false,
+		navigationActive: (width: number) => boolean = () => false,
 		backgroundTasks?: () => Parameters<typeof renderTaskFooter>[0] | undefined,
 		hintSegments?: FooterHintSource,
 		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
@@ -409,7 +416,7 @@ export class FooterComponent implements Component {
 		const viewed = this.viewedWork?.();
 		const working = viewed?.working ?? isChatSessionWorking(this.session);
 		const lines: string[] = [];
-		if (!working || !this.navigationActive()) {
+		if (!working || !this.navigationActive(width)) {
 			const interruptKey = working ? keyText("app.interrupt") : "";
 			let statusText = working
 				? interruptKey
@@ -423,21 +430,23 @@ export class FooterComponent implements Component {
 				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
 			}
 			const hintSeparator = this.renderStyle.dim(" · ");
-			const hints = this.navigationActive() ? [] : (this.hintSegments?.() ?? []);
+			const hints = this.navigationActive(width) ? [] : (this.hintSegments?.() ?? []);
 			const segments = ("segments" in hints ? hints.segments : hints).map((text) => this.renderStyle.muted(text));
 			const optionalIndex = "segments" in hints ? hints.optionalIndex : undefined;
 			const kept = segments.filter((_, index) => index !== optionalIndex);
+			// The segments kept longest: the first, or the first two leading together. The others go first.
+			const lead = "segments" in hints && hints.leadPair === true && optionalIndex === undefined ? 2 : 1;
 			if (statusText && kept.length > 0) {
 				const required = working ? visibleWidth(statusText) : MIN_STATUS_WIDTH;
 				const room = () => width - visibleWidth(hintSeparator + kept.join(hintSeparator));
-				while (kept.length > 2 && room() < required) kept.splice(1, 1);
+				while (kept.length > 2 && room() < required) kept.splice(lead, 1);
 				const available = room();
 				if (available < required) statusText = "";
 				else if (!working) statusText = truncateToWidth(statusText, available, this.renderStyle.dim("..."));
 			}
 			if (!statusText) {
 				while (kept.length > 1 && visibleWidth(kept.join(hintSeparator)) > width) {
-					kept.splice(kept.length > 2 ? 1 : 0, 1);
+					kept.splice(kept.length > 2 ? lead : lead - 1, 1);
 				}
 			}
 			// Fit the optional hint around what survived, never the other way round.

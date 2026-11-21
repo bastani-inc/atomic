@@ -18,6 +18,7 @@ import type { ScrollableWidgetComponent, WidgetScrollRequest } from "../../core/
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
+import { agentPanelReturning } from "../interactive/agent-panel-return.ts";
 import { runRendererCleanup } from "../interactive/components/renderer-disposal.js";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
@@ -817,6 +818,8 @@ export class EngineCustomUiService {
 			type: "engine_custom_done",
 			componentId,
 			result: jsonResult(result as object | boolean | null | number | string | undefined),
+			// The view that hid the agent panel closes, and the panel opens again in the same step.
+			...(agentPanelReturning() ? { panel: true as const } : {}),
 		});
 	}
 

@@ -5,6 +5,7 @@ import {
 	type EditorOptions,
 	type EditorTheme,
 	isHintActivation,
+	isKeyRelease,
 	isKeyRepeat,
 	type Keybinding,
 	type KeyId,
@@ -131,6 +132,14 @@ const KEYS_TAKEN_BEFORE_BACK: readonly Keybinding[] = [
  */
 export type ExtensionShortcutHandler = ((data: string) => boolean) & { readonly takes?: (data: string) => boolean };
 
+/** What the prompt holds when the agent panel's key (`app.agents.focus`) arrives. */
+export interface AgentsFocusInput {
+	/** Nothing typed (whitespace, a newline or a paste is text) and no completion menu; asked only when it matters. */
+	promptEmpty(): boolean;
+	/** A click on the key's hint pressed it. */
+	readonly clicked: boolean;
+}
+
 /** What the prompt holds when the back key arrives. */
 export interface NavBackInput {
 	/** Nothing typed (whitespace, a newline or a paste is text) and no completion menu. */
@@ -173,6 +182,12 @@ export class CustomEditor extends Editor {
 	 * whether it went back. When it did not, the key moves the cursor as usual.
 	 */
 	public onNavBack?: (input: NavBackInput) => boolean;
+	/**
+	 * The agent panel's key (`app.agents.focus`) that nothing before it took, set on an extension's editor built on this
+	 * one: answers whether it focused the agent panel. When it did not, the key moves the cursor as usual. The prompt's
+	 * own editor has the key taken before it reaches it.
+	 */
+	public onAgentsFocus?: (input: AgentsFocusInput) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: CustomEditorOptions) {
 		const editorTheme = { ...theme };
@@ -518,6 +533,19 @@ export class CustomEditor extends Editor {
 				handler();
 				return true;
 			}
+		}
+
+		// The agent panel's key focuses the panel from an empty prompt, or from a click on its hint.
+		if (
+			this.onAgentsFocus &&
+			!isKeyRelease(data) &&
+			this.keybindings.matches(data, "app.agents.focus") &&
+			this.onAgentsFocus({
+				promptEmpty: () => this.getText().length === 0 && !this.isShowingAutocomplete(),
+				clicked: isHintActivation(),
+			})
+		) {
+			return true;
 		}
 
 		// The back key goes back from an empty prompt, or from a click on its hint; otherwise it moves the cursor.

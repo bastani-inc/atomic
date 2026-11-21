@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent's launch card shows `Queued` with the queued mark (`○`) while it waits for its turn to run, and `Stopping` with the stopping mark (`◼`) while it is being stopped, as the agent panel shows it, instead of `Running`.
+- A subagent that finished without text output shows the done mark (`●`) in result rows and summaries instead of `!`. Its label still says `Done (no text output)`.
+
 ## [0.10.3] - 2026-11-21
 
 ### Changed

@@ -18,7 +18,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
+import { bindAgentPanel, showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
 import {
 	agentPanelBoardSource,
 	showEngineTaskInspector,
@@ -322,7 +322,8 @@ test("showTaskInspector hides the agent panel in-process, across a task reopenin
 		});
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(mounts.length, 1);
-		assert.equal(mounts[0]!.mountedWhilePanelVisible, false);
+		// Asked for while the panel shows: the panel hides once the view is mounted, so no frame shows neither.
+		assert.equal(mounts[0]!.mountedWhilePanelVisible, true);
 		assert.equal(widgetMounted, false);
 		mounts[0]!.component.handleInput?.("\x1b");
 		await inProcess;
@@ -396,5 +397,71 @@ test("re-registering a source after subscribe threw clears the stored subscribe 
 		assert.deepEqual(errors, []);
 	} finally {
 		second.dispose();
+	}
+});
+
+test("closing /tasks or the focused agent panel shows the agent panel again in the step the view closes", async () => {
+	initTheme("dark");
+	const previousKeys = getKeybindings();
+	const keys = new KeybindingsManager();
+	setKeybindings(keys);
+	const fixture = taskFixture();
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () => [{ id: "run:wf-1", kind: "agent", state: "running", name: "alpha", task: "stage build" }],
+		subscribe: () => () => {},
+	});
+	const session = {
+		getAgentTaskHost() {},
+		extensionRunner: { getAgentPanelSourceHub: () => hub },
+	} as unknown as AgentSession;
+	bindOwnerTaskStore(session, fixture.store);
+	let widgetMounted = false;
+	const disposePanel = bindAgentPanel(session, {
+		setWidget(_key: string, content: unknown) {
+			widgetMounted = content !== undefined;
+		},
+		requestRender() {},
+	});
+	/** Whether the panel was mounted at the moment each view closed: the frame after the close draws it. */
+	const shownAtClose: boolean[] = [];
+	const views: Component[] = [];
+	const ui: Pick<ExtensionUIContext, "custom" | "notify"> = {
+		custom<T>(factory: Parameters<ExtensionUIContext["custom"]>[0]): Promise<T> {
+			return new Promise<T>((resolve) => {
+				const done = () => {
+					shownAtClose.push(widgetMounted);
+					resolve(undefined as T);
+				};
+				void Promise.resolve(
+					factory(
+						{ terminal: { rows: 24, columns: 100 }, requestRender() {} } as Parameters<typeof factory>[0],
+						theme,
+						keys,
+						done as (result: unknown) => void,
+					),
+				).then((component) => views.push(component));
+			});
+		},
+		notify: () => {},
+	};
+	try {
+		const tasks = showTaskInspector(ui, fixture.store, undefined, { board: agentPanelBoardSource(session) });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(widgetMounted, false, "/tasks hides the panel");
+		views.at(-1)!.handleInput?.("\x1b");
+		await tasks;
+		assert.deepEqual(shownAtClose, [true]);
+
+		const focused = showAgentPanel(session, ui);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(widgetMounted, false, "the focused panel hides the idle one");
+		views.at(-1)!.handleInput?.("\x1b");
+		await focused;
+		assert.deepEqual(shownAtClose, [true, true]);
+	} finally {
+		disposePanel();
+		setKeybindings(previousKeys);
+		await fixture.dispose();
 	}
 });
