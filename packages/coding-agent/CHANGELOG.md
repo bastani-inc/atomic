@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
 - Closing the terminal, or sending Atomic `SIGTERM` or `SIGHUP`, gives extensions' `session_shutdown` handlers the same few seconds to finish as quitting does, with `fromSignal: true`, also when the session runs in the interactive engine, and the engine writes its last diagnostics records. A second signal ends the session at once. On Windows, closing the console window still ends Atomic at once ([#6104](https://github.com/bastani-inc/atomic/issues/6104)).
 - Quitting no longer waits on writing the interactive engine's stop file, so a stalled temporary directory cannot hold it up, and a write that fails no longer leaves the engine running after Atomic has exited ([#6115](https://github.com/bastani-inc/atomic/issues/6115)).
 

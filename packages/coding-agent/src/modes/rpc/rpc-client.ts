@@ -14,6 +14,7 @@ import type {
 	InteractiveEngineGenerationEndKind,
 } from "../interactive-engine/engine-generation.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
+import { HostListenerFailures, type HostListenerInput } from "../interactive-engine/host-listener-failures.ts";
 import {
 	type EngineKeybindingState,
 	type InteractiveEngineCommand,
@@ -131,12 +132,17 @@ export class RpcClient extends RpcClientApi {
 	private stoppedEngine: { generation: number; shutdownComplete: PromiseWithResolvers<void> } | undefined;
 	/** The ready engine child an explicit stop is ending, until that stop has finished. */
 	private stoppingEngine: ChildProcess | undefined;
+	/** Contains and reports what the listeners of an interactive engine's host throw; a raw client has none. */
+	private readonly listenerFailures: HostListenerFailures | undefined;
 
 	private declare options: RpcClientOptions;
 
 	constructor(options: RpcClientOptions = {}) {
 		super();
 		this.options = options;
+		this.listenerFailures = options.interactiveEngine
+			? new HostListenerFailures((diagnostic) => this.options.interactiveEngine?.onDiagnostic(diagnostic))
+			: undefined;
 	}
 
 	async start(restartPermit?: number): Promise<void> {
@@ -342,13 +348,7 @@ export class RpcClient extends RpcClientApi {
 		// (handleStoppedEngineLine). A generation that already ended on its own keeps its terminal drain.
 		const shutdownComplete = Promise.withResolvers<void>();
 		if (terminateTree && endedGeneration > this.lastEndedGeneration) {
-			for (const event of this.eventBuffer?.drain() ?? []) {
-				try {
-					this.emitEvent(event);
-				} catch {
-					// As for a line read while the engine is stopped, a listener that throws does not end the stop.
-				}
-			}
+			for (const event of this.eventBuffer?.drain() ?? []) this.emitEvent(event);
 			this.stoppedEngine = { generation: endedGeneration, shutdownComplete };
 		}
 		// Publish before terminating so host controllers tear down this generation's
@@ -370,7 +370,7 @@ export class RpcClient extends RpcClientApi {
 		this.eventBuffer?.dispose();
 		this.eventBuffer = undefined;
 		this.activeActivityIds.clear();
-		this.options.interactiveEngine?.onActivityChange?.(false);
+		this.notifyActivity(false);
 	}
 
 	/** Subscribe to agent events. */
@@ -395,7 +395,8 @@ export class RpcClient extends RpcClientApi {
 
 	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
 		this.extensionUIListeners.push(listener);
-		for (const request of this.pendingExtensionUIRequests.drain(this.generation)) listener(request);
+		for (const request of this.pendingExtensionUIRequests.drain(this.generation))
+			this.notify(listener, request, "extension UI request");
 		return () => {
 			const index = this.extensionUIListeners.indexOf(listener);
 			if (index !== -1) this.extensionUIListeners.splice(index, 1);
@@ -408,7 +409,8 @@ export class RpcClient extends RpcClientApi {
 
 	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		this.engineMessageListeners.push(listener);
-		for (const message of this.pendingEngineMessages.drain(this.generation)) listener(message);
+		for (const message of this.pendingEngineMessages.drain(this.generation))
+			this.notify(listener, message, "message");
 		return () => {
 			const index = this.engineMessageListeners.indexOf(listener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
@@ -416,11 +418,11 @@ export class RpcClient extends RpcClientApi {
 	}
 
 	onInteractiveEngineKeybindingState(listener: (state: EngineKeybindingState) => void): () => void {
-		const messageListener = (message: InteractiveEngineMessage): void => {
-			if (message.type === "engine_keybindings_reloaded") listener(message.state);
-		};
+		const messageListener = (message: InteractiveEngineMessage): void =>
+			message.type === "engine_keybindings_reloaded" ? listener(message.state) : undefined;
 		this.engineMessageListeners.push(messageListener);
-		if (this.latestEngineKeybindingState) listener(this.latestEngineKeybindingState);
+		const state = this.latestEngineKeybindingState;
+		if (state) this.notify(messageListener, { type: "engine_keybindings_reloaded", state }, "message");
 		return () => {
 			const index = this.engineMessageListeners.indexOf(messageListener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
@@ -438,7 +440,7 @@ export class RpcClient extends RpcClientApi {
 		const retained = this.retainedGenerationEnd;
 		// Only while it still describes the live generation: once stop()/start()
 		// has moved on, that death belongs to a replaced child.
-		if (retained && retained.generation === this.generation) listener(retained);
+		if (retained && retained.generation === this.generation) this.notify(listener, retained, "end");
 		return () => {
 			const index = this.generationEndedListeners.indexOf(listener);
 			if (index !== -1) this.generationEndedListeners.splice(index, 1);
@@ -576,27 +578,35 @@ export class RpcClient extends RpcClientApi {
 		}
 		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
 		if (this.engineMonitor?.handleLine(line)) return;
+		// Until the line has been read, an exception means the engine wrote something that is not a message. Once it has
+		// been read, only a raw client's listener can still throw here: an interactive engine's host contains what its
+		// listeners throw, and a raw client drops the rest of that line's delivery, as it always has.
+		let read = false;
 		try {
 			const data = JSON.parse(line) as { type?: string; id?: string };
 			if (data.type === "extension_ui_request") {
+				read = true;
 				const request = data as RpcExtensionUIRequest;
 				if (this.extensionUIListeners.length === 0) this.pendingExtensionUIRequests.push(generation, request);
-				for (const listener of this.extensionUIListeners) listener(request);
+				for (const listener of this.extensionUIListeners) this.notify(listener, request, "extension UI request");
 				return;
 			}
 			if (data.type === "response" && data.id && this.pendingRequests.resolve(data.id, data as RpcResponse)) return;
 			if (this.engineMonitor && "atomicChatReceipt" in data) receiveChatReceipt(data);
 			const queuedDeliveries = this.engineMonitor ? takeQueuedDeliveryChange(data) : undefined;
+			read = true;
+			const event = data as RpcEvent;
 			if (queuedDeliveries !== undefined) {
 				// Older tool updates the buffer still holds reach their listeners first, with the queue they were sent with.
 				this.eventBuffer?.flush();
-				for (const listener of [...this.queuedDeliveryListeners]) listener(queuedDeliveries, data as RpcEvent);
+				for (const listener of [...this.queuedDeliveryListeners])
+					this.notify((change: QueuedDeliveryChange) => listener(change, event), queuedDeliveries, "event", event);
 			}
-			const event = data as RpcEvent;
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);
 		} catch {
-			if (this.engineMonitor) this.failTransport(rpcTransportError("Interactive engine emitted malformed JSONL"));
+			if (!read && this.engineMonitor)
+				this.failTransport(rpcTransportError("Interactive engine emitted malformed JSONL"));
 		}
 	}
 	/**
@@ -617,12 +627,31 @@ export class RpcClient extends RpcClientApi {
 			if (data.type === "response" && data.id) this.pendingRequests.resolve(data.id, data as RpcResponse);
 			else if (data.type === "shutdown_error") this.emitEvent(data as RpcEvent);
 		} catch {
-			// A malformed line, or a listener that throws, is ignored as for any line once the engine monitor is gone.
+			// A malformed line is ignored, as for any line once the engine monitor is gone.
 		}
 	}
 	private emitEvent(event: RpcEvent): void {
 		// Iterate a snapshot so listeners that unsubscribe during dispatch do not make later listeners miss this event.
-		for (const listener of [...this.eventListeners]) listener(event);
+		for (const listener of [...this.eventListeners]) this.notify(listener, event, "event");
+	}
+	/**
+	 * Call one of the host's listeners with `value`, about `about` (by default the value itself): see
+	 * HostListenerFailures. A raw client calls it as it always has.
+	 */
+	private notify<T>(listener: (value: T) => void, value: T, input: HostListenerInput, about: unknown = value): void {
+		if (this.listenerFailures) this.listenerFailures.call(listener, value, input, about);
+		else listener(value);
+	}
+	/** Tell the host whether the engine is running one of its callbacks, while handling `message` or the engine's end. */
+	private notifyActivity(active: boolean, message?: InteractiveEngineMessage): void {
+		const engine = this.options.interactiveEngine;
+		if (engine?.onActivityChange)
+			this.notify(
+				(value: boolean) => engine.onActivityChange?.(value),
+				active,
+				message ? "message" : "end",
+				message,
+			);
 	}
 	private emitInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
 		if (
@@ -631,7 +660,7 @@ export class RpcClient extends RpcClientApi {
 		) {
 			this.pendingEngineMessages.push(generation, message);
 		}
-		for (const listener of this.engineMessageListeners) listener(message);
+		for (const listener of this.engineMessageListeners) this.notify(listener, message, "message");
 	}
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return rpcTransportError(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
@@ -656,7 +685,9 @@ export class RpcClient extends RpcClientApi {
 			return;
 		}
 		if (generation !== this.generation || generation <= this.lastEndedGeneration) return;
-		if (message.type === "engine_heartbeat") this.options.interactiveEngine?.onHeartbeat?.();
+		const engine = this.options.interactiveEngine;
+		if (message.type === "engine_heartbeat" && engine?.onHeartbeat)
+			this.notify(() => engine.onHeartbeat?.(), message, "message");
 		if (message.type === "engine_ready") this.enginePid = message.pid;
 		if (message.type === "engine_bound") {
 			this.boundGeneration = generation;
@@ -667,7 +698,7 @@ export class RpcClient extends RpcClientApi {
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
-		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);
+		this.notifyActivity(this.activeActivityIds.size > 0, message);
 		this.emitInteractiveEngineMessage(message, generation);
 	}
 	/**
@@ -682,7 +713,7 @@ export class RpcClient extends RpcClientApi {
 		this.engineMonitor?.fail(error);
 		if (kind === "exit") {
 			this.activeActivityIds.clear();
-			this.options.interactiveEngine?.onActivityChange?.(false);
+			this.notifyActivity(false);
 		}
 		this.beginTerminalDrain(generation, error);
 		this.publishGenerationEnded(generation, error, kind, false);
@@ -709,7 +740,7 @@ export class RpcClient extends RpcClientApi {
 		this.pendingEngineMessages.dropGeneration(generation);
 		this.pendingExtensionUIRequests.dropGeneration(generation);
 		this.pendingProjectTrustFrames.dropGeneration(generation);
-		for (const listener of [...this.generationEndedListeners]) listener(event);
+		for (const listener of [...this.generationEndedListeners]) this.notify(listener, event, "end");
 	}
 	private failTransport(rawError: Error): void {
 		this.options.interactiveEngine?.onDiagnostic({

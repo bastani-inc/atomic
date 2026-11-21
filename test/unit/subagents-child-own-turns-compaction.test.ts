@@ -15,7 +15,7 @@ import {
 	getModel,
 	type Message,
 } from "@bastani/atomic-ai/compat";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -47,6 +47,29 @@ interface Turn {
 	readonly errorMessage?: string;
 	readonly contextTokens?: number;
 }
+
+/** Where a child's attempt began, as its launch reports it. */
+interface ChildLaunch {
+	readonly leafId: string | null;
+	readonly leafSeq?: number;
+}
+
+/** The boundary a context clear saves. */
+const CLEARED = {
+	strategy: "verbatim-lines",
+	form: "cleared",
+	promptVersion: 7,
+	parameters: { query: "clear" },
+	stats: {
+		linesBefore: 2,
+		linesDeleted: 2,
+		linesKept: 0,
+		rangeCount: 0,
+		tokensBefore: 300,
+		tokensAfter: 20,
+		percentReduction: 93,
+	},
+} as const;
 
 type StoreKind = "jsonl" | "memory";
 const STORE_KINDS: readonly StoreKind[] = ["jsonl", "memory"];
@@ -184,7 +207,7 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 		stopReason: "stop",
 		timestamp: Date.now(),
 	});
-	const run = (task: string, sessionManager: SessionManager) =>
+	const run = (task: string, sessionManager: SessionManager, onChildLaunch?: (launch: ChildLaunch) => void) =>
 		runSingleInProcess(cwd, worker(cwd), task, {
 			cwd,
 			runId: "child-own-turns",
@@ -195,6 +218,7 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 			resolveCandidateModel: () => ({ model }),
 			getChildSessionOptions: parent.extensionRunner.createContext().getChildSessionOptions,
 			sessionManager,
+			...(onChildLaunch === undefined ? {} : { onChildLaunch }),
 			...(options.compactedText === undefined
 				? {}
 				: {
@@ -231,7 +255,58 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 		const childManager = await newManager();
 		return { result: await run("do the task", childManager), childManager };
 	};
-	return { requests, runForked, runContinued, runNew };
+	/**
+	 * A child continued in the session of its previous run, which ended with a context clear: the clear is the session's
+	 * last entry and, opened again, the first one it holds in memory. Returns the clear's position, where an opened copy
+	 * of the session starts holding entries, the launches the child reported, and the reads of the session's saved
+	 * history the child made with the lookups of an entry's position in it, from its launch on.
+	 */
+	const runAfterClear = async () => {
+		const childManager = await newManager();
+		const sessionId = childManager.getSessionId();
+		// Saved before the clear, which keeps it, so starting the child adds no entry after the clear.
+		await childManager.appendThinkingLevelChange("off");
+		await childManager.appendMessage({ role: "user", content: "the previous task", timestamp: Date.now() });
+		await childManager.appendMessage(assistant(EARLIER_ANSWER));
+		const clearId = await childManager.appendCompaction(
+			"The previous run's context was cleared.",
+			null,
+			300,
+			CLEARED,
+		);
+		const opened = await SessionManager.open(childManager.getSessionStore(), sessionId, cwd, { history: "tail" });
+		const clearSeq = opened.getEntrySeq(clearId);
+		const heldFrom = opened.getHeldTail().fromSeq;
+		// The child opens its session again from the store, so reads are counted on every manager of this session.
+		const storeReads = { historyReads: 0, positionLookups: 0 };
+		let launched = false;
+		const { readHistory, findEntrySeq } = SessionManager.prototype;
+		const historyReads = vi.spyOn(SessionManager.prototype, "readHistory").mockImplementation(function (
+			this: SessionManager,
+			...args
+		) {
+			if (launched && this.getSessionId() === sessionId) storeReads.historyReads += 1;
+			return readHistory.apply(this, args);
+		});
+		const positionLookups = vi.spyOn(SessionManager.prototype, "findEntrySeq").mockImplementation(function (
+			this: SessionManager,
+			...args
+		) {
+			if (launched && this.getSessionId() === sessionId) storeReads.positionLookups += 1;
+			return findEntrySeq.apply(this, args);
+		});
+		cleanups.push(() => {
+			historyReads.mockRestore();
+			positionLookups.mockRestore();
+		});
+		const launches: ChildLaunch[] = [];
+		const result = await run("continue with the next step", childManager, (launch) => {
+			launches.push(launch);
+			launched = true;
+		});
+		return { result, clear: { id: clearId, seq: clearSeq }, heldFrom, launches, storeReads };
+	};
+	return { requests, runForked, runContinued, runNew, runAfterClear };
 }
 
 /** The compactions the child's saved session holds, in order. */
@@ -378,6 +453,27 @@ for (const storeKind of STORE_KINDS) {
 			assert.equal(result.status, "error", JSON.stringify(result));
 			assert.match(result.error ?? "", /503 fixture provider unavailable/);
 			assert.doesNotMatch(JSON.stringify(result), /EARLIER_ANSWER/);
+		},
+		REAL_CHILD_SESSION_TIMEOUT_MS,
+	);
+
+	test(
+		`a child launched from the first entry its session holds after a clear counts its own turns without reading saved history (#6120, ${storeKind} sessions)`,
+		async () => {
+			// Neither turn has text, so its turns in memory alone do not settle the result: only a launch held in memory does.
+			const child = await fixture(storeKind, [{ readPath: "missing-file.txt" }, {}]);
+			const { result, clear, heldFrom, launches, storeReads } = await child.runAfterClear();
+
+			assert.equal(clear.seq, heldFrom, "the clear is the first entry the opened session holds");
+			assert.deepEqual(
+				launches.map(({ leafId, leafSeq }) => ({ leafId, leafSeq })),
+				[{ leafId: clear.id, leafSeq: clear.seq }],
+				"the child launched from the clear",
+			);
+			assert.equal(child.requests.length, 2);
+			assert.equal(result.status, "ok", JSON.stringify(result));
+			assert.doesNotMatch(JSON.stringify(result), /EARLIER_ANSWER/);
+			assert.deepEqual(storeReads, { historyReads: 0, positionLookups: 0 });
 		},
 		REAL_CHILD_SESSION_TIMEOUT_MS,
 	);

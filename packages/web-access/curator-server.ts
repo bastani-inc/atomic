@@ -322,7 +322,8 @@ export function startCuratorServer(
 
 				try {
 					const result = await callbacks.onSummarize(parsed.indices, controller.signal, model, feedback);
-					if (requestId !== summarizeRequestSeq || state === "COMPLETED") {
+					// The session can complete while the summary is generated: read the state as it is now.
+					if (requestId !== summarizeRequestSeq || (state as ServerState) === "COMPLETED") {
 						sendJson(res, 409, { ok: false, error: "Summarize request superseded" });
 						return;
 					}

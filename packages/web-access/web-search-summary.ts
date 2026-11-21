@@ -1,9 +1,10 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import { getModel, type Model } from "@bastani/atomic-ai/compat";
+import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
 import type { ProviderHeaders } from "@bastani/atomic-ai";
 import type { QueryResultData } from "./storage.js";
 import {
 	buildDeterministicSummary,
+	type CatalogModelLookup,
 	generateSummaryDraft,
 	type SummaryGenerationContext,
 	type SummaryMeta,
@@ -14,9 +15,9 @@ import { filterByQueryIndices, normalizeSummaryMeta } from "./web-search-formatt
 async function resolveFirstAvailableModel(
 	ctx: SummaryGenerationContext,
 	candidates: Array<{ provider: string; id: string }>,
-): Promise<{ model: Model; apiKey: string; headers?: ProviderHeaders }> {
+): Promise<{ model: Model<Api>; apiKey: string; headers?: ProviderHeaders }> {
 	for (const { provider, id } of candidates) {
-		const model = getModel(provider, id);
+		const model = (getModel as CatalogModelLookup)(provider, id);
 		if (!model) continue;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (auth.ok && auth.apiKey) {
@@ -54,7 +55,7 @@ export async function rewriteSearchQuery(
 	if (response.stopReason === "aborted") throw new Error("Aborted");
 	const contentParts = Array.isArray(response.content) ? response.content : [];
 	const text = contentParts
-		.map(p => {
+		.map((p: unknown) => {
 			if (!p || typeof p !== "object") return "";
 			const part = p as Record<string, unknown>;
 			return typeof part.text === "string" ? part.text : "";
