@@ -50,6 +50,35 @@ export interface ExecResult {
 }
 
 /**
+ * `command`'s launch, looked up as Atomic's own helper programs are; undefined when the command's abort signal, its
+ * timeout or its session's quit stopped it during the lookup, which they end as they end a running command.
+ */
+async function lookUpBeforeStart(
+	command: string,
+	env: NodeJS.ProcessEnv,
+	cwd: string,
+	options: ExecOptions | undefined,
+	onQuit: ((stop: () => void) => () => void) | undefined,
+): Promise<HelperLaunch | undefined> {
+	const lookup = new AbortController();
+	const stop = () => lookup.abort();
+	options?.signal?.addEventListener("abort", stop, { once: true });
+	if (options?.signal?.aborted) stop();
+	const timer = options?.timeout && options.timeout > 0 ? setTimeout(stop, options.timeout) : undefined;
+	const stopOnQuit = onQuit?.(stop);
+	try {
+		return await helperLaunchAsync(command, { env, cwd, signal: lookup.signal });
+	} catch (error) {
+		if (lookup.signal.aborted) return undefined;
+		throw error;
+	} finally {
+		clearTimeout(timer);
+		options?.signal?.removeEventListener("abort", stop);
+		stopOnQuit?.();
+	}
+}
+
+/**
  * Execute a shell command and return stdout/stderr/code.
  * Supports timeout, abort signal, and an output cap (`maxBuffer`).
  *
@@ -79,8 +108,12 @@ export async function execCommand(
 	const env = createChildProcessEnvironment();
 	// Windows looks for a program named without a path in the working directory before PATH: look it up in PATH's
 	// absolute directories instead, so a project folder cannot supply it. A name found nowhere fails as before (ENOENT).
-	const launch: HelperLaunch =
-		process.platform === "win32" ? await helperLaunchAsync(command, { env, cwd }) : { file: command };
+	const launch: HelperLaunch | undefined =
+		process.platform === "win32" ? await lookUpBeforeStart(command, env, cwd, options, onQuit) : { file: command };
+	// Stopped while it was looked up: nothing starts, and the result is a command's that was stopped at once.
+	if (launch === undefined) {
+		return { stdout: "", stderr: "", code: 128 + osConstants.signals.SIGTERM, killed: true, truncated: false };
+	}
 	// Without fork where that costs the host time in proportion to its memory (#5345).
 	const proc = spawnHostProcess(launch.file, args, {
 		cwd,
