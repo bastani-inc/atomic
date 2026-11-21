@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- SDK: `session.dispose()` now waits for the notice lines the session is still saving, such as the "Retry failed" line that stopping a retry saves, when you passed your own `sessionManager`. Removing the session's folder right after `dispose()` resolves no longer fails with `ENOTEMPTY` ([#6128](https://github.com/bastani-inc/atomic/issues/6128))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

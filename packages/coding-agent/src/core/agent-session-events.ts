@@ -35,6 +35,7 @@ import {
 } from "./agent-session-types.js";
 import { recordPromptOrder } from "./chat-admission-order.js";
 import { bindChatReceipt } from "./chat-receipts.js";
+import { chatRecordSavesSettled, trackChatRecordSave } from "./chat-record-saves.ts";
 import { formatCodexProviderError } from "./codex-errors.ts";
 import { assignMissingToolCallIds } from "./context-tool-pairing.js";
 import {
@@ -94,13 +95,14 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	const notice = hostNoticeForEvent(event, this._compactionReason);
 	if (notice && !this._disposed && !sessionGenerationClosing.has(this)) {
 		// Capture the branch position before listeners run. The event, not this best-effort record,
-		// owns the live line; persistence, subsequent prompts and model decisions never await it.
+		// owns the live line; persistence, subsequent prompts and model decisions never await it. Closing does.
 		const manager = this.sessionManager;
 		const scope = manager.chatRecordScope();
 		if (scope) {
 			const anchor = manager.getLeafId() ?? "",
 				id = crypto.randomUUID();
 			const saved = saveChatRecord(scope, anchor, { kind: "line", id, ...notice });
+			trackChatRecordSave(this, saved);
 			bindChatReceipt(event, { anchor, id }, saved);
 		}
 	}
@@ -898,6 +900,9 @@ export function closeAgentSession(
 		});
 		// Empty stored IDs have no provider cache key; empty-key cleanup would close other sessions' caches.
 		if (session.sessionId !== "") await attempt("provider", () => cleanupSessionResources(session.sessionId));
+		// #6128: a closed session no longer saves display records, and the ones it started finish while it is still
+		// marked open, so nothing it began writes to a store its caller may remove once dispose() resolves.
+		await attempt("notice lines", () => chatRecordSavesSettled(session));
 		await attempt("storage", async () => {
 			session._tempStorageLease?.release();
 			session._tempStorageLease = undefined;
