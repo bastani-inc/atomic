@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, type TuiMouseEvent, type TuiMouseEventResult } from "@bastani/atomic-tui";
-import { afterEach, beforeAll, beforeEach, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -220,6 +220,47 @@ test("the shown subagent stays listed once it finished, marked, with main above 
 	assert.deepEqual(idlePanel(main.session).lines(), []);
 });
 
+/** How many frames the panel below the prompt asks for over `seconds` with nothing else happening. */
+function framesAskedOver(session: object, seconds: number): number {
+	let frames = 0;
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date", "performance"] });
+	try {
+		let widget: IdleWidget | undefined;
+		disposers.push(
+			bindAgentPanel(
+				session as never,
+				{
+					setWidget(_key: string, content: unknown) {
+						widget = typeof content === "function" ? (content({} as never, {} as never) as never) : undefined;
+					},
+					requestRender() {
+						frames++;
+					},
+				} as never,
+			),
+		);
+		widget?.render(100);
+		frames = 0;
+		for (let second = 0; second < seconds; second++) {
+			vi.advanceTimersByTime(1_000);
+			widget?.render(100);
+		}
+		return frames;
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+test("the shown subagent's finished row asks for no frames while it stays shown", () => {
+	const shown = panelSession([done(agent("a1"))], "a1");
+	assert.equal(framesAskedOver(shown.session, 30), 0);
+});
+
+test("a shown subagent still running asks for a frame every second, for its time", () => {
+	const shown = panelSession([agent("a1")], "a1");
+	assert.ok(framesAskedOver(shown.session, 5) >= 5);
+});
+
 test("the panel below the prompt always draws the shown subagent: past its four rows it takes the last place", () => {
 	const tasks = ["a1", "a2", "a3", "a4", "a5", "a6"].map((id) => agent(id, `w${id.slice(1)}`));
 	const { session } = panelSession(tasks, "a1");
@@ -351,6 +392,47 @@ test("Enter on a subagent in /tasks asks for it before /tasks closes, keeping th
 	}).ui;
 	await openTasks(engineSession, engineStore, engineUi, "a1");
 	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a1", keepScreen: true }]);
+});
+
+test("Enter on a finished subagent in /tasks, while the panel lists nothing, says the panel lists it once shown", async () => {
+	for (const dismissed of [false, true]) {
+		const engineSession = { extensionRunner: {} } as never as AgentSession;
+		const engineStore = new FakeOwnerTaskStore([done(agent("a1"))]);
+		bindOwnerTaskStore(engineSession, engineStore);
+		if (dismissed) dismissedAgentPanelItems(engineSession).add("task:a1");
+		const sent: InteractiveEngineMessage[] = [];
+		const context = {
+			session: engineSession,
+			send: (message: InteractiveEngineMessage) => sent.push(message),
+		} as never;
+		disposers.push(installEngineAgentViewBridge(context));
+		let widget: IdleWidget | undefined;
+		disposers.push(
+			bindAgentPanel(engineSession, {
+				setWidget(_key: string, content: unknown) {
+					widget = typeof content === "function" ? (content({} as never, {} as never) as never) : undefined;
+				},
+				requestRender() {},
+			} as never),
+		);
+		// The key comes after /tasks is on screen, which has hidden the panel by then.
+		const engineUi = hostUi(async (component) => {
+			await new Promise((resolve) => setImmediate(resolve));
+			component.handleInput(ENTER);
+		}).ui;
+		await openTasks(engineSession, engineStore, engineUi, "a1");
+		// `panel` keeps its meaning for older hosts; a host that tells the engine first what it is about to show waits.
+		assert.deepEqual(
+			sent,
+			[{ type: "engine_view_agent", taskId: "a1", keepScreen: true, ...(dismissed ? {} : { panelOnView: true }) }],
+			`dismissed: ${dismissed}`,
+		);
+		// Told that a1 is about to be shown, the panel back from /tasks lists it as shown: the frame the host waits for.
+		await handleSetViewedAgent({ type: "set_viewed_agent", taskId: "a1" }, context);
+		const lines = (widget?.render(100) ?? []).map((line) => stripVTControlCharacters(line).trimEnd());
+		if (dismissed) assert.deepEqual(lines, []);
+		else assert.match(lines[1] ?? "", /^ {2}● worker +job a1 +done$/, lines.join("\n"));
+	}
 });
 
 function asking(task: TaskRecord): TaskRecord {

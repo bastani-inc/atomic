@@ -1,5 +1,6 @@
 import { type ActivityWatchdogDiagnostic, ENGINE_UNRESPONSIVE_MS } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEnded } from "./engine-generation.ts";
+import { reportContained } from "./host-listener-failures.js";
 
 export type EngineDiagnosticListener = (diagnostic: ActivityWatchdogDiagnostic) => void;
 
@@ -86,7 +87,7 @@ export class EngineHealthController {
 	}
 
 	onDiagnostic(listener: EngineDiagnosticListener): () => void {
-		for (const diagnostic of this.pending.splice(0)) listener(diagnostic);
+		for (const diagnostic of this.pending.splice(0)) reportContained(() => listener(diagnostic));
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
@@ -310,8 +311,9 @@ export class EngineHealthController {
 		this.deliver({ activity: undefined, elapsedMs: 0, level: "blocking", message, source: "recovery" });
 	}
 
+	/** Each listener gets it whatever another one throws or rejects with; neither goes further than this. */
 	private deliver(diagnostic: ActivityWatchdogDiagnostic): void {
 		if (this.listeners.size === 0) this.pending.push(diagnostic);
-		for (const listener of this.listeners) listener(diagnostic);
+		for (const listener of this.listeners) reportContained(() => listener(diagnostic));
 	}
 }

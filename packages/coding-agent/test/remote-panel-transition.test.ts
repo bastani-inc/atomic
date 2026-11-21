@@ -204,3 +204,32 @@ test("a view that hid the agent panel and closes as it opens again keeps the pro
 		vi.useRealTimers();
 	}
 });
+
+test("an agent panel told its frames may show what the screen no longer does draws nothing until a fresh frame or the cap", () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	try {
+		const screen = host();
+		const panel = screen.openPanel("remote_widget_1");
+		panel.render(80);
+		screen.answerFrame("remote_widget_1", PANEL_ROWS);
+		assert.deepEqual(panel.render(80).map(stripHintMarkers), PANEL_ROWS);
+
+		screen.controller.hideWidgetFramesUntilFresh(AGENT_PANEL_WIDGET_KEY, 250);
+		const asked = screen.sent.length;
+		assert.deepEqual(panel.render(80), [], "its frames stay off screen");
+		assert.equal(screen.sent.length, asked + 1, "and it asks for a fresh one");
+		screen.answerFrame("remote_widget_1", ["  ◯ main"]);
+		assert.deepEqual(panel.render(80).map(stripHintMarkers), ["  ◯ main"], "the fresh frame shows");
+
+		// A panel the engine opens within the window starts hidden; the cap ends the wait for a frame that never comes.
+		screen.controller.hideWidgetFramesUntilFresh(AGENT_PANEL_WIDGET_KEY, 250);
+		screen.deliver({ type: "engine_custom_close", componentId: "remote_widget_1" });
+		const reopened = screen.openPanel("remote_widget_2");
+		assert.deepEqual(reopened.render(80), []);
+		vi.advanceTimersByTime(250);
+		screen.answerFrame("remote_widget_2", PANEL_ROWS);
+		assert.deepEqual(reopened.render(80).map(stripHintMarkers), PANEL_ROWS);
+	} finally {
+		vi.useRealTimers();
+	}
+});

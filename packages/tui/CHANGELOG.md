@@ -20,6 +20,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - A completion lookup whose provider throws or rejects finds nothing instead of raising an unhandled rejection and stopping every later lookup, and a provider that ignores its abort signal holds the next lookup for at most 100 ms instead of indefinitely ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - `setAutocompleteProvider(..., { preserveSelection: true })` asks the new provider for a lookup still under way also when a menu is open, so the rows that follow come from the new provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - A lookup's answer shows at the next render. Keys pressed before then act on the menu as it was drawn while it answers the prompt's text, so an answer that reorders the rows, or that the replacement of a provider brings, no longer changes which row Enter or Tab takes or opens a menu the user has not seen; a press or click on rows that changed since they were drawn chooses nothing ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
+- A completion lookup typed before the editor had a provider (`/`, an `@` token, a trigger character, Tab) starts when `setAutocompleteProvider` gives it one, unless a later key that starts no lookup itself (an edit, a cursor move, undo, a history step, Esc) came first; `snapshotDraft()` and `restoreDraft()` carry it to the editor that takes the prompt ([#6224](https://github.com/bastani-inc/atomic/pull/6224))
 
 ## [0.10.3] - 2026-11-21
 
