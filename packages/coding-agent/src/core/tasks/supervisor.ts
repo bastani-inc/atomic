@@ -131,6 +131,8 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	getEntrySeq?(id: string): number | undefined;
 	/** The save receipt of a message the session emitted: where it was stored. Absent while the message is unsaved. */
 	entryReceipt?(message: AgentMessage): { readonly seq: number } | undefined;
+	/** The file the session is kept in, when it has its own. */
+	getSessionFile?(): string | undefined;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
