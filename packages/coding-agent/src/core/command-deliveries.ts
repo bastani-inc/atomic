@@ -86,10 +86,18 @@ export class CommandDeliveries {
 	}
 }
 
+/**
+ * Where a send or a turn starts: in a command's handler while it runs (`open` until the handler settles), or in a
+ * message the command sent while it ran, which the turns it starts belong to.
+ */
+type CommandContext =
+	| { readonly kind: "handler"; readonly deliveries: CommandDeliveries; open: boolean }
+	| { readonly kind: "delivery"; readonly deliveries: CommandDeliveries };
+
 /** Entered by print mode around each prompt. */
-const promptScope = asyncScope<CommandDeliveries>();
-/** Entered around an extension command's handler, only inside a print-mode prompt. */
-const commandScope = asyncScope<CommandDeliveries>();
+const promptScope = asyncScope<CommandDeliveries | undefined>();
+/** Entered around an extension command's handler, and around each message it sends, only inside a print-mode prompt. */
+const commandScope = asyncScope<CommandContext | undefined>();
 
 /** Runs one print-mode prompt on `session` so that what its extension commands queue joins `deliveries`. */
 export function collectCommandDeliveries<T>(
@@ -103,35 +111,60 @@ export function collectCommandDeliveries<T>(
 
 /**
  * Runs an extension command's handler for `session`. Inside a print-mode prompt on that session, the messages the
- * handler queues join that prompt's deliveries; anywhere else (interactive, RPC, SDK, a child session) it just runs.
+ * handler sends until it settles join that prompt's deliveries; anywhere else (interactive, RPC, SDK, a child session)
+ * it just runs. Timers and tasks the handler leaves running keep its context, but what they send after it settled is
+ * not waited for.
  */
 export function runCommandHandler<T>(session: object, handler: () => Promise<T>): Promise<T> {
-	const deliveries = commandScope.getStore() ?? promptScope.getStore();
+	const deliveries = commandScope.getStore()?.deliveries ?? promptScope.getStore();
 	if (deliveries?.owns(session) !== true) return handler();
-	return commandScope.run(deliveries, handler);
+	return runOpenHandler(deliveries, handler);
+}
+
+async function runOpenHandler<T>(deliveries: CommandDeliveries, handler: () => Promise<T>): Promise<T> {
+	const context: CommandContext = { kind: "handler", deliveries, open: true };
+	try {
+		return await commandScope.run(context, handler);
+	} finally {
+		context.open = false;
+	}
 }
 
 /** A session a command was handed after switching to it (`withSession`): its messages are the command's too. */
 export function adoptCommandSession(session: object): void {
-	commandScope.getStore()?.adopt(session);
+	const context = commandScope.getStore();
+	if (context?.kind === "handler" && context.open) context.deliveries.adopt(session);
 }
 
-/** Joins a message an extension command sends to `session`; returns the delivery unchanged. */
-export function joinCommandSend<T>(session: object, delivery: Promise<T>): Promise<T> {
-	const deliveries = commandScope.getStore();
-	if (deliveries?.owns(session)) deliveries.join(delivery, "send");
+/**
+ * Sends a message of an extension command to `session` with `send`. A message its handler sends while it runs joins
+ * the prompt's deliveries, and runs in its own context so the turns it starts join too; a message sent from the
+ * command's context after the handler settled (or from inside a message's turn) runs outside it and is not waited for.
+ */
+export function joinCommandSend<T>(session: object, send: () => Promise<T>): Promise<T> {
+	const context = commandScope.getStore();
+	if (context === undefined) return send();
+	if (context.kind !== "handler" || !context.open || !context.deliveries.owns(session))
+		// Nothing it leads to, not even a command it runs, is waited for.
+		return promptScope.run(undefined, () => commandScope.run(undefined, send));
+	const delivery = commandScope.run({ kind: "delivery", deliveries: context.deliveries }, send);
+	context.deliveries.join(delivery, "send");
 	return delivery;
+}
+
+function joinable(session: object): CommandDeliveries | undefined {
+	const context = commandScope.getStore();
+	if (context === undefined || (context.kind === "handler" && !context.open)) return undefined;
+	return context.deliveries.owns(session) ? context.deliveries : undefined;
 }
 
 /** Notes that a command's message was saved to `session`: the command answered. */
 export function noteCommandAnswer(session: object): void {
-	const deliveries = commandScope.getStore();
-	if (deliveries?.owns(session)) deliveries.noteAnswer();
+	joinable(session)?.noteAnswer();
 }
 
 /** Joins a turn of `session` that a command's message started and that its delivery does not wait for. */
 export function joinCommandTurn<T>(session: object, turn: Promise<T>): Promise<T> {
-	const deliveries = commandScope.getStore();
-	if (deliveries?.owns(session)) deliveries.join(turn, "turn");
+	joinable(session)?.join(turn, "turn");
 	return turn;
 }

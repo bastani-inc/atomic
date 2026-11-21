@@ -176,7 +176,7 @@ export function sendCustomMessage<T = unknown>(
 	options?: SendMessageOptions,
 ): Promise<void> {
 	// #6113: print mode waits for what an extension command sends before it prints and closes the session.
-	return joinCommandSend(this, sendCustomMessageNow.call(this, message, options));
+	return joinCommandSend(this, () => sendCustomMessageNow.call(this, message, options));
 }
 
 async function sendCustomMessageNow<T>(
@@ -241,7 +241,7 @@ export function sendCustomMessages<T = unknown>(
 	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 	options?: SendMessagesOptions,
 ): Promise<void> {
-	return joinCommandSend(this, sendCustomMessagesNow.call(this, messages, options));
+	return joinCommandSend(this, () => sendCustomMessagesNow.call(this, messages, options));
 }
 
 async function sendCustomMessagesNow<T>(

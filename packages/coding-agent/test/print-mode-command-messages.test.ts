@@ -15,7 +15,10 @@ import { createHarness, type Harness } from "./suite/harness.js";
 
 const harnesses: Harness[] = [];
 const directories: string[] = [];
+const timers = new Set<ReturnType<typeof setInterval>>();
 afterEach(async () => {
+	for (const timer of timers) clearInterval(timer);
+	timers.clear();
 	vi.restoreAllMocks();
 	while (harnesses.length > 0) await harnesses.pop()?.cleanup();
 	while (directories.length > 0) removeTestDirectory(directories.pop()!, { retries: 10, retryDelayMs: 100 });
@@ -104,6 +107,26 @@ function answeringCommands(pi: ExtensionAPI): void {
 				{ customType: "urgent", content: "Check the account now", display: true },
 				{ triggerTurn: true, deliverAs: "interrupt" },
 			);
+		},
+	});
+	pi.registerCommand("ticker", {
+		description: "Confirms, and leaves a timer that keeps sending messages that start turns",
+		handler: async () => {
+			void pi.sendMessage(
+				{ customType: "toggle", content: [{ type: "text", text: "Ticker started" }], display: true },
+				{ triggerTurn: false, deliverAs: "followUp" },
+			);
+			const timer = setInterval(() => {
+				try {
+					void Promise.resolve(
+						pi.sendMessage(
+							{ customType: "tick", content: "tick", display: true },
+							{ triggerTurn: true, deliverAs: "followUp" },
+						),
+					).catch(() => {});
+				} catch {}
+			}, 50);
+			timers.add(timer);
 		},
 	});
 	pi.registerCommand("later", {
@@ -346,6 +369,33 @@ test("a command that answers nothing still reports an earlier reply cut at the o
 	assert.equal(exitCode, 1);
 	assert.equal(output.stdout.join(""), "earlier, cut\n");
 	assert.deepEqual(output.stderr, ["Response was truncated: the model reached its output token limit."]);
+});
+
+test("a timer a command leaves running does not keep the run going (#6113)", async () => {
+	// Each tick's turn outlasts the tick interval, and saving the command's confirmation takes a moment, so ticks keep
+	// arriving while the run waits for that confirmation.
+	const harness = await sessionWithEarlierReply(
+		fauxAssistantMessage("earlier answer"),
+		...Array.from({ length: 40 }, () => async () => {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			return fauxAssistantMessage("tock");
+		}),
+	);
+	const append = harness.sessionManager.appendCustomMessageEntry.bind(harness.sessionManager);
+	vi.spyOn(harness.sessionManager, "appendCustomMessageEntry").mockImplementation(async (customType, ...rest) => {
+		if (customType === "toggle") await new Promise((resolve) => setTimeout(resolve, 150));
+		return append(customType, ...rest);
+	});
+	captureOutput();
+
+	await runPrintMode(runtimeHostFor(harness), { mode: "text", initialMessage: "/ticker" });
+
+	for (const timer of timers) clearInterval(timer);
+	assert.ok(
+		harness.sessionManager
+			.getBranch()
+			.some((entry) => entry.type === "custom_message" && entry.customType === "toggle"),
+	);
 });
 
 test("a command that only adds context to the next turn starts no turn (#6113)", async () => {

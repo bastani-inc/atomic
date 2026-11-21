@@ -1409,7 +1409,7 @@ export function sendUserMessage(
 	},
 ): Promise<void> {
 	// #6113: print mode waits for what an extension command sends before it prints and closes the session.
-	return joinCommandSend(this, sendUserMessageNow.call(this, content, options));
+	return joinCommandSend(this, () => sendUserMessageNow.call(this, content, options));
 }
 
 async function sendUserMessageNow(
