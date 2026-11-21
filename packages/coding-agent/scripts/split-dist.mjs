@@ -43,7 +43,8 @@ if (!existsSync(join(dist, "cli.js"))) throw new Error("split-dist: run tsc firs
 const STATE_FILE = join(dist, SHARED_DIRECTORY, ".split-state.json");
 /** The compiled entries, saved before the split overwrites them. */
 const COMPILED_ENTRIES = join(dist, SHARED_DIRECTORY, ".compiled");
-const prune = process.argv.includes("--prune");
+/** Packing drops the shared files of earlier builds, which stay otherwise for processes still running from them. */
+const prune = process.argv.includes("--prune") || process.env.npm_lifecycle_event === "prepack";
 const digest = (content) => createHash("sha256").update(content).digest("hex");
 /** @type {{ entries: Record<string, string>, outputs: string[] }} */
 const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : { entries: {}, outputs: [] };

@@ -73,7 +73,7 @@
     "test": "vitest --run",
     "shrinkwrap": "bun run ../../scripts/generate-coding-agent-shrinkwrap.mjs",
     "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap",
-    "prepack": "node scripts/split-dist.mjs --prune"
+    "prepack": "node -e \"import('./scripts/split-dist.mjs').catch((error) => { if (error?.code !== 'ERR_MODULE_NOT_FOUND' || !String(error.message).includes('split-dist')) throw error; })\""
   },
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
