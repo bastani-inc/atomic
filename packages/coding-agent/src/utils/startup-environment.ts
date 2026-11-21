@@ -9,8 +9,15 @@ import {
 	getEnvValue,
 	setEnvValue,
 } from "../config.js";
-import { DEBUG_SETTING_ENV, inheritsDebugSetting } from "../core/debug-setting.ts";
+import { inheritsDebugSetting } from "../core/debug-setting.ts";
 import { parseJsonFileContent } from "./json.ts";
+
+/**
+ * `DEBUG_SETTING_ENV` of `core/debug-setting.ts`, written here rather than imported: a session that started before an
+ * update replaced the installation still holds the earlier code its startup loaded, which did not offer that name to
+ * the code loaded later, and a name it lacks would fail to link.
+ */
+const DEBUG_SETTING_ENV = "ATOMIC_DEBUG_SETTING";
 
 /** Whether an environment flag is on: `1`, `true` or `yes`, the last two in any case. */
 export function isTruthyEnvFlag(value: string | undefined): boolean {

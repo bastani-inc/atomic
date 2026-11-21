@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
+import { DEBUG_SETTING_ENV } from "../src/core/debug-setting.ts";
 import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../src/utils/startup-environment.ts";
 
 const tempDirs: string[] = [];
@@ -128,4 +129,16 @@ describe("the environment the command line sets before main()", () => {
 		await applyArgumentEnvironment(["--debug"]);
 		assert.equal(process.env.ATOMIC_DEBUG, "1");
 	});
+});
+
+test("passes the debug setting in the variable core/debug-setting.ts names", async () => {
+	for (const name of ["HTTP_PROXY", "HTTPS_PROXY", DEBUG_SETTING_ENV]) vi.stubEnv(name, undefined);
+	try {
+		assert.deepEqual(
+			Object.keys(await settingsEnvironmentForEarlyChild(agentDirWith(JSON.stringify({ debug: true })))),
+			[DEBUG_SETTING_ENV],
+		);
+	} finally {
+		vi.unstubAllEnvs();
+	}
 });
