@@ -17,6 +17,10 @@
 - Fixed the interactive engine and headless runs on Node not getting their larger heap when `NODE_OPTIONS` names `--max-old-space-size` where Node does not apply it: after a tab, which Node does not treat as a separator, or after a word that ends Node's reading of `NODE_OPTIONS`. A heap size that Node applies still takes precedence ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 - Fixed Atomic ending on an unrelated unhandled promise rejection after an agent panel source failed, although `NODE_OPTIONS` sets `--unhandled-rejections` to `warn` or `none` in quotes or as `--unhandled_rejections` ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 - On Windows, a command stopped or failing while the machine is heavily loaded is no longer reported as exiting with status 0.
+- An extension's `pi.exec` command still running when you quit no longer keeps the extensions' `session_shutdown` handlers from running: Atomic ends the command, with the processes it started, first (`SIGTERM`, then `SIGKILL` after one second). Commands the handlers run themselves are not ended ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- Quitting or `SIGTERM` ends within about five seconds when a `session_shutdown` handler never finishes, also when the session runs in Atomic's own process, as in a project left untrusted; there a second `SIGTERM` now ends Atomic at once too. Atomic's own saving after the handlers still completes ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- A `SIGHUP` or `SIGTERM` that arrives after `/quit` cleared the screen no longer ends Atomic at once, cutting the extensions' shutdown short; the quit finishes as it started ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
+- The standalone binary started with `SIGHUP` ignored, as `nohup atomic -p ...` starts it, keeps running when its terminal closes ([#6178](https://github.com/bastani-inc/atomic/pull/6178))
 
 ## [0.10.3] - 2026-11-21
 

@@ -20,6 +20,8 @@ Atomic's session engine supports three non-interactive entry points. Use the tab
 
 If a text response reaches the model's output token limit, print mode keeps the partial text on stdout, writes a truncation warning to stderr, and exits with code `1`. Check the exit code before treating redirected output as complete.
 
+On Linux and macOS, `SIGTERM` or `SIGHUP` ends a print-mode run once its session has shut down, with code `143` or `129`. The standalone binary started with `SIGHUP` ignored, as `nohup atomic -p ...` starts it, keeps running when its terminal closes. An npm installation runs on Node, which does not keep an ignored `SIGHUP`; start it with `setsid` to keep it running instead.
+
 An extension command works as a prompt too: `atomic --session <id> -p "/curator off"` prints the command's answer. When the command answers with a message, or with a turn that message starts, print mode waits for it, prints it, and only then runs the next prompt or exits.
 
 ## JSON events
