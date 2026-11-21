@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { join } from "node:path";
 import process from "node:process";
 import crossSpawn from "cross-spawn";
 import { type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
@@ -22,10 +23,11 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
 		if (child.exitCode !== null) return;
 		// Windows has no graceful signals, and cross-spawn runs `.cmd` shims through cmd.exe; killing only
 		// that would leave the server running.
-		spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on(
-			"error",
-			() => {},
-		);
+		const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+		spawn(join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
+			stdio: "ignore",
+			windowsHide: true,
+		}).on("error", () => {});
 		return;
 	}
 	if (USE_PROCESS_GROUPS && pid !== undefined) {

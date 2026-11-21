@@ -41,8 +41,15 @@ import { RemoteComponentController } from "../../packages/coding-agent/src/modes
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import { sleep } from "../helpers/runtime.js";
 
-/** Keys per view: enough that the p99 is not the slowest key alone, few enough to type in about three seconds. */
+/** Keys per view: enough that the slow end is not the slowest keys alone, few enough to type in about three seconds. */
 const KEYS_PER_VIEW = 200;
+/**
+ * The slow end of each view's latencies is read with this many keys slower than it. On a loaded machine the system can
+ * stop the process for tens of milliseconds at any moment, and a key typed then is slow in whichever view it was typed;
+ * a key in an engine-drawn view crosses the pipe twice, so it is caught by such a stop more often. One or two keys must
+ * not decide the comparison: it takes more than this many slow keys to fail it.
+ */
+const TAIL_KEYS = 5;
 const KEY_INTERVAL_MS = 15;
 /** Keys per word: a word stays on one row of the 100-column composer, so its prefix is found whole. */
 const WORD_LENGTH = 40;
@@ -361,9 +368,10 @@ test("a key in an engine-drawn view paints within a small factor of a key in the
 	await sleep(100);
 	const remoteLatencies = await typeAndTime(views.terminal, KEYS_PER_VIEW);
 
+	const tail = 1 - TAIL_KEYS / KEYS_PER_VIEW;
 	for (const [label, percentile] of [
 		["p50", 0.5],
-		["p99", 0.99],
+		[`p${tail * 100}`, tail],
 	] as const) {
 		const mainLatency = quantile(mainLatencies, percentile);
 		const remoteLatency = quantile(remoteLatencies, percentile);
