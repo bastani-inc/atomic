@@ -579,16 +579,6 @@ function hashThreadPrefix(
 	return shortHash(settings + conversation);
 }
 
-/**
- * Normalizes one message so messages that mean the same to the API compare equal. Only message and
- * content-block fields are touched; tool inputs and every other value compare exactly as sent.
- *
- * - Cache markers don't change what a message means, but they move: Atomic puts one on the newest
- *   message, so the message that had it in the last request has none in this one.
- * - To attach that marker, the newest user message's string content is sent as one text block; the
- *   next request sends the same message as a string: "hi" vs [{ type: "text", text: "hi" }]. The
- *   same holds for a tool result's content.
- */
 /** The identity blocks OAuth requests send before the system prompt. */
 const oauthIdentityBlocks = new WeakSet<object>();
 
@@ -607,6 +597,16 @@ function normalizeThreadSystem(system: MessageCreateParamsStreaming["system"]): 
 	return [rest, ...system.slice(1)];
 }
 
+/**
+ * Normalizes one message so messages that mean the same to the API compare equal. Only message and
+ * content-block fields are touched; tool inputs and every other value compare exactly as sent.
+ *
+ * - Cache markers don't change what a message means, but they move: Atomic puts one on the newest
+ *   message, so the message that had it in the last request has none in this one.
+ * - To attach that marker, the newest user message's string content is sent as one text block; the
+ *   next request sends the same message as a string: "hi" vs [{ type: "text", text: "hi" }]. The
+ *   same holds for a tool result's content.
+ */
 function normalizeThreadMessage(message: unknown): unknown {
 	if (message === null || typeof message !== "object") return message;
 	const { content, ...rest } = message as { content?: unknown };
@@ -1814,6 +1814,14 @@ function buildParams(
 		model.reasoning && options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null;
 	// Effort cannot change between messages while thinking is disabled, so "off" sends no effort markers.
 	const effortMessages = supportsMidConvoEffort(model) && !thinkingDisabled;
+	// The fixed thinking budget the request sends below, when it thinks with one.
+	const thinkingBudget =
+		!effortMessages &&
+		model.reasoning &&
+		(options?.thinkingEnabled || thinkingOffFallback) &&
+		model.compat?.forceAdaptiveThinking !== true
+			? options?.thinkingBudgetTokens || 1024
+			: undefined;
 	const converted = convertMessages(
 		conversationMessages,
 		isOAuthToken,
@@ -1821,6 +1829,8 @@ function buildParams(
 		compat.allowEmptySignature,
 		effortMessages ? model.provider : undefined,
 		nativeToolChanges ? convertToolDefinitions : undefined,
+		model,
+		thinkingBudget,
 	);
 	const activeEffort = options?.effort ?? thinkingOffFallback?.effort ?? "high";
 	const params: MessageCreateParamsStreaming = {
@@ -1916,7 +1926,7 @@ function buildParams(
 				// Budget-based thinking for older models
 				params.thinking = {
 					type: "enabled",
-					budget_tokens: options?.thinkingBudgetTokens || 1024,
+					budget_tokens: thinkingBudget ?? 1024,
 					display,
 				};
 			}
@@ -1992,7 +2002,9 @@ function buildParams(
 		params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
 	}
 
-	if (converted.checkpointBlock) fitCheckpointInBreakpointLimit(params, converted.checkpointBlock);
+	if (converted.checkpointBlock || converted.replyBlock) {
+		fitCheckpointInBreakpointLimit(params, converted.checkpointBlock, converted.replyBlock);
+	}
 
 	return { params, hasPreferredStrictTools, providerThinkingLevel: effortMessages ? activeEffort : undefined };
 }
@@ -2018,7 +2030,13 @@ function convertMessages(
 	allowEmptySignature = false,
 	managedProvider?: string,
 	convertToolDefinitions?: (tools: Tool[]) => BetaTool[],
+	/** The model the request goes to; without it, no breakpoint is put where an earlier request ended. */
+	model?: Model<"anthropic-messages">,
+	/** The fixed thinking budget the request sends, when it thinks with one. */
+	thinkingBudget?: number,
 ): ConvertedAnthropicMessages {
+	// The Claude API counts a run of tool calls or tool results as one lookback position.
+	const countsToolRuns = model !== undefined && isAnthropicApiHost(model.baseUrl);
 	const params: MessageParam[] = [];
 	const assistantLevels = new Map<number, AnthropicEffort>();
 	// Later system messages are held back and emitted directly before the next assistant
@@ -2040,6 +2058,15 @@ function convertMessages(
 	let checkpoint: CacheCut | undefined;
 	// Where the request the last sent reply answered ended: its newest input got that request's last breakpoint.
 	let replyCut: CacheCut | undefined;
+	// Whether that reply came from this request's model with the same fixed thinking budget, which is part of the cached
+	// prefix, so that prefix is cached where this request can read it.
+	let replyFromModel = false;
+	const answeredBy = (reply: AssistantMessage): boolean =>
+		model !== undefined &&
+		reply.api === model.api &&
+		reply.provider === model.provider &&
+		reply.model === model.id &&
+		reply.thinkingBudgetTokens === thinkingBudget;
 	const inputCut = (): CacheCut | undefined => {
 		const index = params.length - 1;
 		const last = params[index];
@@ -2140,11 +2167,18 @@ function convertMessages(
 			});
 			if (blocks.length === 0) {
 				if (msg.cacheBreakpoint) markCheckpoint();
+				// A reply that sends nothing still answered its request. Held system messages ended that request, and
+				// they now follow later input instead, so then the request's end is not in this one.
+				if (pendingSystemMessages.length === 0 && inputCut()) {
+					replyCut = inputCut();
+					replyFromModel = answeredBy(msg);
+				}
 				continue;
 			}
 			flushPendingSystemMessages();
 			if (msg.cacheBreakpoint) markCheckpoint();
 			replyCut = inputCut();
+			replyFromModel = answeredBy(msg);
 			const messageIndex = params.length;
 			params.push({
 				role: "assistant",
@@ -2193,20 +2227,33 @@ function convertMessages(
 	// Add cache_control to the last user or system message to cache conversation history
 	const lastMessage = params.at(-1);
 	const tailBlock = cacheControl && lastMessage ? addCacheControl(lastMessage, cacheControl) : undefined;
-	let checkpointBlock: { cache_control?: CacheControlEphemeral | null } | undefined;
-	if (cacheControl && checkpoint) {
-		checkpointBlock = addCacheControlAtCut(checkpoint, lastMessage, cacheControl);
-	} else if (
-		cacheControl &&
-		tailBlock &&
-		replyCut &&
-		positionsAfterCut(params, replyCut, assistantLevels) >= CACHE_LOOKBACK_POSITIONS
-	) {
-		// One turn added so many blocks that the newest breakpoint no longer reaches back to the previous request's.
-		checkpointBlock = addCacheControlAtCut(replyCut, lastMessage, cacheControl);
-	}
+	const outOfReach = (from: CacheCut, to: CacheCut): boolean =>
+		positionsBetween(params, from, to, assistantLevels, countsToolRuns) >= CACHE_LOOKBACK_POSITIONS;
+	const checkpointBlock =
+		cacheControl && checkpoint ? addCacheControlAtCut(checkpoint, lastMessage, cacheControl) : undefined;
+	// The newest breakpoint before which the last answered request's prefix has to be found: the checkpoint's, or the
+	// last message's. A checkpoint ends a request no reply answered, so its prefix may never have been cached; the last
+	// answered request's is, when this model answered it.
+	const newest: CacheCut | undefined =
+		checkpoint && checkpointBlock
+			? replyFromModel
+				? checkpoint
+				: undefined
+			: lastMessage && tailBlock
+				? { message: lastMessage, index: params.length - 1, blocks: blockCount(lastMessage) }
+				: undefined;
+	// One turn can add so many blocks that the newest breakpoint no longer reaches back to the last answered request's.
+	const replyBlock =
+		cacheControl && newest && replyCut && precedes(replyCut, newest) && outOfReach(replyCut, newest)
+			? addCacheControlAtCut(replyCut, lastMessage, cacheControl)
+			: undefined;
 
-	return { messages: params, assistantLevels, ...(checkpointBlock ? { checkpointBlock } : {}) };
+	return {
+		messages: params,
+		assistantLevels,
+		...(checkpointBlock ? { checkpointBlock } : {}),
+		...(replyBlock ? { replyBlock } : {}),
+	};
 }
 
 /** The end of the input a request sent: a message, its index, and how many of its blocks were sent then. */
@@ -2220,27 +2267,54 @@ function blockCount(message: MessageParam): number {
 	return typeof message.content === "string" ? 1 : message.content.length;
 }
 
+/** Whether `cut` ends before `other` does. */
+function precedes(cut: CacheCut, other: CacheCut): boolean {
+	return cut.index < other.index || (cut.index === other.index && cut.blocks < other.blocks);
+}
+
 /**
  * Claude finds an earlier request's cached prefix from a breakpoint only within this many positions, the breakpoint
- * included. Every block counts as one position here, as on Bedrock; the Claude API also counts a run of tool calls
- * or tool results as one, so this never counts fewer positions than the provider does.
+ * included.
  */
 const CACHE_LOOKBACK_POSITIONS = 20;
 
 /**
- * Positions after the last block of `cut` through the last block of the request, counted until they reach the
- * lookback: blocks, and the effort marker the request sends before each assistant message with a recorded level.
+ * Positions after the last block of `from` through the last block of `to`, counted until they reach the lookback:
+ * blocks, and the effort marker the request sends before each assistant message with a recorded level. The Claude API
+ * counts a run of `tool_use` blocks as one position, and so a run of `tool_result` blocks; with `countsToolRuns` a run
+ * within one message counts once here too, and otherwise every block counts, as on Bedrock. A run is never joined with
+ * the last block of `from`, so this never counts fewer positions than Claude does.
  */
-function positionsAfterCut(
+function positionsBetween(
 	messages: MessageParam[],
-	cut: CacheCut,
+	from: CacheCut,
+	to: CacheCut,
 	assistantLevels: Map<number, AnthropicEffort>,
+	countsToolRuns: boolean,
 ): number {
-	let positions = blockCount(cut.message) - cut.blocks;
-	for (let index = cut.index + 1; index < messages.length && positions < CACHE_LOOKBACK_POSITIONS; index++) {
-		positions += blockCount(messages[index]) + (assistantLevels.has(index) ? 1 : 0);
+	// Positions of blocks `start` to `end` of `message`, counted until `counted` and they reach the lookback.
+	const positionsOf = (message: MessageParam, start: number, end: number, counted: number): number => {
+		if (!countsToolRuns || typeof message.content === "string") return end - start;
+		let positions = 0;
+		for (let index = start; index < end && counted + positions < CACHE_LOOKBACK_POSITIONS; index++) {
+			const type = message.content[index]!.type;
+			const continuesRun =
+				index > start &&
+				(type === "tool_use" || type === "tool_result") &&
+				message.content[index - 1]!.type === type;
+			if (!continuesRun) positions++;
+		}
+		return positions;
+	};
+	if (from.index === to.index) return positionsOf(from.message, from.blocks, to.blocks, 0);
+	let positions = positionsOf(from.message, from.blocks, blockCount(from.message), 0);
+	for (let index = from.index + 1; index < to.index && positions < CACHE_LOOKBACK_POSITIONS; index++) {
+		const message = messages[index]!;
+		positions += assistantLevels.has(index) ? 1 : 0;
+		positions += positionsOf(message, 0, blockCount(message), positions);
 	}
-	return positions;
+	if (positions >= CACHE_LOOKBACK_POSITIONS) return positions;
+	return positions + positionsOf(to.message, 0, to.blocks, positions);
 }
 
 /**
@@ -2271,11 +2345,13 @@ function hasCacheControl(block: unknown): block is { cache_control: CacheControl
 /**
  * Keeps a request with a checkpoint breakpoint within Anthropic's breakpoint limit. OAuth requests mark the short
  * identity block before the system prompt; the breakpoint after the system prompt caches everything it would, so it
- * gives way first. Otherwise the checkpoint does.
+ * gives way first. Otherwise the checkpoint does, and when the last answered request's end took one too, that end
+ * keeps it: its prefix is known to be cached, and the checkpoint's may never have been.
  */
 function fitCheckpointInBreakpointLimit(
 	params: MessageCreateParamsStreaming,
-	checkpointBlock: { cache_control?: CacheControlEphemeral | null },
+	checkpointBlock: { cache_control?: CacheControlEphemeral | null } | undefined,
+	replyBlock: { cache_control?: CacheControlEphemeral | null } | undefined,
 ): void {
 	const system = Array.isArray(params.system) ? params.system : [];
 	const blocks = [
@@ -2290,7 +2366,13 @@ function fitCheckpointInBreakpointLimit(
 		delete (identity as { cache_control?: CacheControlEphemeral | null }).cache_control;
 		count--;
 	}
-	if (count > MAX_CACHE_BREAKPOINTS) delete checkpointBlock.cache_control;
+	for (const block of [checkpointBlock, replyBlock]) {
+		if (count <= MAX_CACHE_BREAKPOINTS) return;
+		if (block?.cache_control != null) {
+			delete block.cache_control;
+			count--;
+		}
+	}
 }
 
 /** Puts `cacheControl` on the last block of a user or system message; returns that block, or undefined if it can't take one. */
@@ -2328,6 +2410,8 @@ interface ConvertedAnthropicMessages {
 	assistantLevels: Map<number, AnthropicEffort>;
 	/** The block that took the breakpoint a `cacheBreakpoint` hint asked for, when it is not the last message. */
 	checkpointBlock?: { cache_control?: CacheControlEphemeral | null };
+	/** The block at the end of the last answered request's input, when it took a breakpoint the newest one can't reach. */
+	replyBlock?: { cache_control?: CacheControlEphemeral | null };
 }
 
 function isAnthropicEffort(value: string | undefined): value is AnthropicEffort {

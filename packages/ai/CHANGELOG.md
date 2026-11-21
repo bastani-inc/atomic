@@ -4,6 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the first request after resuming a session whose last request got no reply missing the prompt cache of the last answered request on Anthropic, Amazon Bedrock and OpenAI-compatible Claude routes, when that request's end is 20 or more positions before the hinted one. That end now gets a breakpoint too; when only one is left, it keeps it if the same model answered it. A reply that sent nothing still counts as answering its request, and on OpenAI-compatible routes a hint on a message with only images goes where that request put its newest breakpoint.
+- On the Claude API, a run of tool calls or of tool results counts as one lookback position, as Claude counts it, so a turn of many parallel tool calls no longer takes an extra breakpoint, and an OAuth request keeps the identity block's breakpoint.
+- `declarationsEqual()`, `getToolStateChanges()` and `jsonSchemasEqual()` treat a schema's list of `type`s and the names `dependentRequired` and `dependencies` list as sets, so a tool that lists them in another order is no longer declared again.
+
 ## [0.10.3] - 2026-11-21
 
 ### Added
