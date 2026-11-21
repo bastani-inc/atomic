@@ -14,12 +14,12 @@ import { createCloudPasswordProvider } from "./auth.js";
 import { createPostgresListener } from "./listen.js";
 import {
 	isLocalTarget,
+	isRefusedCertificate,
 	OpenedSocket,
 	ProxySettingError,
 	ProxyTunnelError,
 	postgresTransport,
 	socketOpener,
-	TLS_VERIFICATION_CODES,
 } from "./proxy.js";
 
 /**
@@ -69,7 +69,8 @@ const MINIMUM_SERVER_VERSION = 140000;
 
 /**
  * The permanent failure a connection refused by TLS verification is (#5218), with the reason and the fix: a host name
- * the certificate names, or the CA in `sslrootcert`. Undefined for any other failure.
+ * the certificate names, or the CA in `sslrootcert`. Undefined for any other failure, and for an https proxy's own
+ * certificate, which its tunnel failure names with the proxy's fix (#6112).
  * @param {unknown} cause
  * @returns {StorageError | undefined}
  */
@@ -77,8 +78,9 @@ function tlsVerificationFailure(cause) {
 	/** @type {unknown} */
 	let current = cause;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		const code = /** @type {{ code?: unknown }} */ (current).code;
-		if (typeof code === "string" && TLS_VERIFICATION_CODES.has(code)) {
+		if (current instanceof ProxyTunnelError) return undefined;
+		const { code, message } = /** @type {{ code?: unknown, message?: unknown }} */ (current);
+		if (typeof code === "string" && isRefusedCertificate(code, typeof message === "string" ? message.trim() : "")) {
 			const fix =
 				code === "ERR_TLS_CERT_ALTNAME_INVALID" || code === "HOSTNAME_MISMATCH"
 					? "Connect by a host name the certificate names, or, for an address it does not name such as a private IP address, add sslmode=verify-ca with sslrootcert=<CA file> to the URL"
@@ -91,6 +93,22 @@ function tlsVerificationFailure(cause) {
 		current = /** @type {{ cause?: unknown }} */ (current).cause;
 	}
 	return undefined;
+}
+
+/**
+ * What a connection attempt that failed with `cause` throws, wherever the adapter opens one (the pool, the reconnect
+ * after a refused token, the schema's own connection): a certificate TLS verification refused, or a tunnel a proxy
+ * refused, fails at once; anything else is a connection that could not be made for now (#6112).
+ * @param {unknown} cause
+ * @returns {Error}
+ */
+function connectFailure(cause) {
+	const tls = tlsVerificationFailure(cause);
+	if (tls !== undefined) return tls;
+	// A proxy that refused the tunnel refuses it again: permanent, never retried as unreachable (#5473).
+	const tunnel = proxyTunnelFailure(cause);
+	if (tunnel?.permanent === true) return new StorageError(tunnel.message, { cause: /** @type {Error} */ (cause) });
+	return new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
 }
 
 /**
@@ -838,15 +856,10 @@ export async function openPostgresDatabase(options) {
 				try {
 					return await pool.connect();
 				} catch (retried) {
-					throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (retried));
+					throw connectFailure(retried);
 				}
 			}
-			const tls = tlsVerificationFailure(cause);
-			if (tls !== undefined) throw tls;
-			// A proxy that refused the tunnel refuses it again: permanent, never retried as unreachable (#5473).
-			const tunnel = proxyTunnelFailure(cause);
-			if (tunnel?.permanent === true) throw new StorageError(tunnel.message, { cause: /** @type {Error} */ (cause) });
-			throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
+			throw connectFailure(cause);
 		}
 	};
 
@@ -1006,9 +1019,7 @@ export async function openPostgresDatabase(options) {
 					client.connect((/** @type {Error | undefined} */ error) => (error ? reject(error) : resolve(undefined))),
 				);
 			} catch (cause) {
-				const tunnel = proxyTunnelFailure(cause);
-				if (tunnel?.permanent === true) throw new StorageError(tunnel.message, { cause: /** @type {Error} */ (cause) });
-				throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
+				throw connectFailure(cause);
 			}
 			try {
 				await watched(

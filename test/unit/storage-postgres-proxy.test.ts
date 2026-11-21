@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { createServer, type Server, type Socket } from "node:net";
+import { Duplex } from "node:stream";
 import { buffer } from "node:stream/consumers";
+import {
+	TLS_VERIFICATION_CODES as MODEL_REQUEST_CODES,
+	UNSPECIFIED_CERTIFICATE_REASONS as MODEL_REQUEST_REASONS,
+} from "@bastani/atomic-ai";
 import { describe, test } from "vitest";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import {
 	authorityOf,
+	isRefusedCertificate,
 	noProxyMatches,
 	openProxyTunnel,
 	ProxySettingError,
@@ -12,6 +18,8 @@ import {
 	parseProxy,
 	postgresTransport,
 	proxySetting,
+	TLS_VERIFICATION_CODES,
+	UNSPECIFIED_CERTIFICATE_REASONS,
 } from "../../packages/storage-postgres/proxy.js";
 import { closedPort } from "../helpers/http-connect-proxy.js";
 
@@ -564,4 +572,70 @@ describe("PostgreSQL connection resets (#6074)", () => {
 			server.close();
 		}
 	});
+});
+
+describe("PostgreSQL certificates reported as UNSPECIFIED (#6112)", () => {
+	/**
+	 * Opens a database whose every connection fails, as a TLS handshake fails, with `failure`; resolves with how many
+	 * connections were made and the error the open ended in.
+	 */
+	async function openFailingWith(failure: () => Error): Promise<{ connections: number; error: Error }> {
+		let connections = 0;
+		const error = await openPostgresDatabase({
+			url: "postgresql://atomic@127.0.0.1:5432/atomic",
+			password: "fixture-password",
+			socket: () => {
+				connections++;
+				return new Duplex({
+					read() {},
+					write(_chunk, _encoding, callback) {
+						callback();
+						this.destroy(failure());
+					},
+				});
+			},
+		}).then(
+			async (database) => {
+				await database.close();
+				return assert.fail("the database opened");
+			},
+			(caught: Error) => caught,
+		);
+		return { connections, error };
+	}
+
+	const verificationError = (message: string, code: string) => Object.assign(new Error(message), { code });
+
+	test("a certificate refused as UNSPECIFIED fails at once with its reason; OpenSSL's own failures, OUT_OF_MEM and an UNSPECIFIED that is not TLS's are retried (#6112)", async () => {
+		const [refused, ...transient] = await Promise.all([
+			openFailingWith(() => verificationError("key usage does not include certificate signing", "UNSPECIFIED")),
+			openFailingWith(() => verificationError("unspecified certificate verification error", "UNSPECIFIED")),
+			openFailingWith(() => verificationError("issuer certificate lookup error", "UNSPECIFIED")),
+			openFailingWith(() => verificationError("invalid certificate verification context", "UNSPECIFIED")),
+			openFailingWith(() => verificationError("out of memory", "OUT_OF_MEM")),
+			// Another library's code that happens to read UNSPECIFIED, as a credential helper's could.
+			openFailingWith(() => verificationError("credential helper is temporarily offline", "UNSPECIFIED")),
+		]);
+		assert.equal(refused?.connections, 1, String(refused?.error));
+		assert.equal(refused?.error.name, "StorageUnavailableError");
+		const reason = String((refused?.error.cause as Error | undefined)?.message);
+		assert.ok(
+			reason.startsWith(
+				"The server's TLS certificate was not accepted (UNSPECIFIED: key usage does not include certificate signing). Add sslrootcert=",
+			),
+			reason,
+		);
+		for (const { connections, error } of transient) {
+			assert.ok(connections > 1, `not retried: ${String(error)}`);
+			assert.equal(error.name, "StorageTransientError", String(error));
+		}
+	});
+});
+
+test("the adapter refuses the certificates model requests refuse: the same codes and UNSPECIFIED reasons (#6112)", () => {
+	assert.deepEqual([...TLS_VERIFICATION_CODES].sort(), [...MODEL_REQUEST_CODES].sort());
+	assert.deepEqual([...UNSPECIFIED_CERTIFICATE_REASONS].sort(), [...MODEL_REQUEST_REASONS].sort());
+	// Read as Node writes them, and as BoringSSL capitalizes some of them.
+	assert.equal(isRefusedCertificate("UNSPECIFIED", "Different CRL scope"), true);
+	assert.equal(isRefusedCertificate("UNSPECIFIED", "unknown certificate verification error"), false);
 });
