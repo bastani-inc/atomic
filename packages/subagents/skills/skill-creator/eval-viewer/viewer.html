@@ -1011,7 +1011,8 @@
     let savedRevision = EMBEDDED_DATA.saved_revision ?? null;
     // Saving, as a state machine:
     //   idle    --save-->            sending (one request at a time)
-    //   sending --save-->            sending, with the latest wanted save waiting as `next`
+    //   sending --save-->            sending, with the latest wanted save waiting as `next` (a Submit waiting
+    //                                stays one: later edits go into it, as it is built when it is sent)
     //   sending --answer-->          idle, or sending `next`, from the revision the answer returned
     //   any     --refused (412)-->   conflict: nothing more is sent; the page says to reload
     // A save is built when it is sent, from the feedback as it is then.
@@ -1043,7 +1044,7 @@
         return;
       }
       if (saving.state === "sending") {
-        saving.next = status;
+        saving.next = saving.next === "complete" ? "complete" : status;
         return;
       }
       sendSave(status);
@@ -1097,6 +1098,8 @@
     }
 
     function saved(status) {
+      // A failure shown for an earlier save is over once one lands.
+      document.getElementById("save-problem").hidden = true;
       const next = finishSave();
       if (status === "complete") document.getElementById("done-overlay").classList.add("visible");
       // "Saved" only when what the box shows is what was saved, and nothing waits to be.
