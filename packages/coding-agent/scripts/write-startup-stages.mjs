@@ -24,8 +24,11 @@ const dist = join(packageRoot, "dist");
 const distUrl = pathToFileURL(`${dist}/`).href;
 const stagesDir = join(dist, "startup-stages");
 
-/** About how much module source one stage loads: a turn of the event loop between stages, ~25 stages in all. */
-const STAGE_BYTES = 512 * 1024;
+/**
+ * About how much module source one stage loads: on Windows, where each file costs most, a stage of this size keeps a
+ * typed key's echo at about 50 ms (and the first one at about 80 ms) with no later session; larger stages wait longer.
+ */
+const STAGE_BYTES = 192 * 1024;
 
 if (process.argv[2] === "--trace") {
 	await trace(process.argv[3]);
