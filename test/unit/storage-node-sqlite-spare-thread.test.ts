@@ -83,6 +83,8 @@ test("an open whose spare thread is lost before it answers opens on a thread of 
 	const { report } = runChild(`
 ThreadConnection.startSpare();
 await settle();
+// Hold the open request back from the spare thread, so the thread is surely gone before it could answer.
+workers[0].postMessage = () => {};
 const opening = ThreadConnection.open(${JSON.stringify(join(dir, "a.db"))}, { readOnly: false });
 await workers[0].terminate();
 const opened = await opening;
