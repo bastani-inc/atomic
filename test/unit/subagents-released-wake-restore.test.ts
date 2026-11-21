@@ -865,6 +865,7 @@ test("a wake of a finished child whose transcript holds a notice it has not read
 
 	assert.equal(run.resumeLateToolResults, undefined, "the notice is not delivered twice");
 	assert.equal(run.resumeSession, true, "its reopened session reads the notice");
+	assert.equal(run.skipTaskPrompt, true, "and nothing else: no empty prompt after it");
 });
 
 const stoppedAfterRelease = [

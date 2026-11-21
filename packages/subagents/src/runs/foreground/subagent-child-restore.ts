@@ -931,7 +931,8 @@ async function relaunchChild(
 				}
 			: {}),
 		...(notices.length > 0 ? { resumeNotices: notices } : {}),
-		...(wakePlan?.skipPrompt && !fallback ? { skipTaskPrompt: true } : {}),
+		// An empty prompt is never sent: what it has to read, a notice its reopened session replays included, starts its turn.
+		...((wakePlan?.skipPrompt || !promptsAnything(prompts)) && !fallback ? { skipTaskPrompt: true } : {}),
 		...(taskFallback ? { resumeTaskFallback: true } : {}),
 		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
