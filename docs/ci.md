@@ -59,7 +59,7 @@ The release build downloads checksum-pinned PostgreSQL artifacts while preparing
 
 ### Static checks
 
-The `static-checks` job runs `npm run check`: Biome, the root TypeScript check, package typechecks, the published-shrinkwrap check and the interactive event-loop check. The typecheck path first builds `@bastani/atomic-schema` and `@bastani/atomic-telemetry`, then `@bastani/atomic-ai` to generate its model catalog, then runs its existing `tsconfig.json` check over both `src/` and `test/`, and builds `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`. It also checks the coding-agent build and `test/types/` configurations. No pre-existing coding-agent `dist/` is required.
+The `static-checks` job runs `npm run check`: Biome, the root TypeScript check, package typechecks, the published-shrinkwrap check and the interactive event-loop check. The root TypeScript check covers the root tests and scripts and every TypeScript file the bundled `subagents`, `mcp`, `web-access` and `intercom` packages ship, including the Intercom broker. The typecheck path first builds `@bastani/atomic-schema` and `@bastani/atomic-telemetry`, then `@bastani/atomic-ai` to generate its model catalog, then runs its existing `tsconfig.json` check over both `src/` and `test/`, and builds `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`. It also checks the coding-agent build and `test/types/` configurations. No pre-existing coding-agent `dist/` is required.
 
 ### Release artifact storage
 

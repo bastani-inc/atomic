@@ -1,9 +1,17 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import type { ExtensionAPI, ExtensionContext, HandlerFn, MessageRenderer, RegisteredCommand, ToolDefinition } from "@bastani/atomic";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ExtensionHandler,
+	MessageRenderer,
+	RegisteredCommand,
+	ToolDefinition,
+} from "@bastani/atomic";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Text } from "@bastani/atomic-tui";
+import { type KeyId, Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { renderWebAccessToolResult } from "./result-renderers.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";
@@ -11,6 +19,8 @@ import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecyc
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
+/** A handler the heavy module registers with `pi.on`, replayed for the events this file forwards. */
+type HandlerFn = ExtensionHandler<unknown, unknown>;
 type CapturedHeavy = {
 	tools: Map<string, ToolDefinition>;
 	commands: Map<string, CapturedCommand>;
@@ -114,7 +124,7 @@ async function executeHeavyTool(
 	return result as Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
 }
 
-async function runHeavyCommand(loadHeavy: () => Promise<HeavyHandle>, name: string, args: string | undefined, ctx: ExtensionContext): Promise<void> {
+async function runHeavyCommand(loadHeavy: () => Promise<HeavyHandle>, name: string, args: string, ctx: ExtensionCommandContext): Promise<void> {
 	const handle = await loadHeavy();
 	handle.assertCurrent();
 	const command = handle.heavy.commands.get(name);
@@ -305,7 +315,8 @@ export default function webAccess(pi: ExtensionAPI) {
 
 	const shortcuts = getInitialShortcutConfig();
 	for (const [shortcut, name] of [[shortcuts.curate, "curate"], [shortcuts.activity, "activity"]] as const) {
-		pi.registerShortcut(shortcut, {
+		// A key from the user's web-search config, as configured: the host matches it like any other key id.
+		pi.registerShortcut(shortcut as KeyId, {
 			description: name === "curate" ? "Open web search curator" : "Show web search activity",
 			handler: async (ctx) => {
 				const handle = await loadHeavy();
