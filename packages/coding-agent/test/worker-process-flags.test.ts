@@ -50,11 +50,21 @@ function runNode(
 	cwd = dir,
 	env: Record<string, string> = {},
 ): SpawnSyncReturns<string> {
+	// A child loads Atomic's sources through the resolution hook and ends within seconds, or within the guardian test's
+	// own 15 s fallback. The bound ends a child that would never end (a worker that never answers keeps it alive), so
+	// that its test fails instead of stalling the run, and leaves room for a loaded Windows machine.
+	const CHILD_TIMEOUT_MS = 60_000;
 	return spawnSync(process.execPath, [...flags, "--import", dataUrl(RESOLVE_TS_SOURCES), "--eval", script], {
 		cwd,
 		encoding: "utf-8",
 		env: { ...process.env, ATOMIC_TEST_PRELOAD_LOG: preloadLog, ...env },
+		timeout: CHILD_TIMEOUT_MS,
 	});
+}
+
+/** Asserts that the child ended by itself rather than being ended for running past its time limit. */
+function assertEnded(result: SpawnSyncReturns<string>, child: string): void {
+	assert.equal(result.error, undefined, `${child} did not end (${result.error?.message}):\n${result.stderr}`);
 }
 
 /** A host started with `--input-type=module` and a counting `--import` preload. */
@@ -75,8 +85,9 @@ function preloadRuns(): number {
 	return readFileSync(preloadLog, "utf-8").split("\n").filter(Boolean).length;
 }
 
-function output(result: SpawnSyncReturns<string>): unknown {
-	assert.equal(result.status, 0, `the child failed (${result.signal ?? result.status}):\n${result.stderr}`);
+function output(result: SpawnSyncReturns<string>, child = "the child"): unknown {
+	assertEnded(result, child);
+	assert.equal(result.status, 0, `${child} failed (${result.signal ?? result.status}):\n${result.stderr}`);
 	return JSON.parse(result.stdout);
 }
 
@@ -110,7 +121,7 @@ test.each(NODE_OPTIONS_SPELLINGS)(
 	"a SQLite selector works in a process whose NODE_OPTIONS holds %s (#6110)",
 	(nodeOptions) => {
 		const result = runNodeOptionsModuleHost(SELECTOR_SCRIPT, dir, nodeOptions);
-		assert.deepEqual(output(result), ['{"total":3}', '{"top":3}']);
+		assert.deepEqual(output(result, `the child with NODE_OPTIONS=${nodeOptions}`), ['{"total":3}', '{"top":3}']);
 		assert.equal(preloadRuns(), 1, "the preload ran again for a selector connection");
 	},
 );
@@ -276,6 +287,7 @@ function guardianScript(stopFile: string): string {
 }
 
 function assertGuardianEnded(result: SpawnSyncReturns<string>): void {
+	assertEnded(result, "the guardian's process");
 	assert.equal(result.stdout, "");
 	assert.doesNotMatch(result.stderr, /Error/);
 	if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");

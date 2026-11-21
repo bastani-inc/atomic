@@ -112,9 +112,16 @@ const COOKIES_MODULE = JSON.stringify(
 function readCookiesInChild(flags: readonly string[], script: string, env: Record<string, string> = {}): unknown {
 	const { home, binDir } = makeCookieHome();
 	try {
+		// The child reads one small database and ends within seconds. The bound ends one that would never end (a worker
+		// that never answers keeps it alive), so that the test fails instead of stalling the run, and leaves room for a
+		// loaded machine. A child ended for running past it throws ETIMEDOUT here.
+		const CHILD_TIMEOUT_MS = 60_000;
 		const result = spawnSyncCollect(
 			[process.execPath, ...flags, "--import", dataUrl(RESOLVE_TS_SOURCES), "--eval", script],
-			{ env: { HOME: home, PATH: binDir, ATOMIC_TEST_PRELOAD_LOG: join(home, "preload.log"), ...env } },
+			{
+				env: { HOME: home, PATH: binDir, ATOMIC_TEST_PRELOAD_LOG: join(home, "preload.log"), ...env },
+				timeout: CHILD_TIMEOUT_MS,
+			},
 		);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		return {

@@ -33,6 +33,10 @@ function probeWatchdog(flags: readonly string[], env: Record<string, string> = {
 			? `\\\\.\\pipe\\atomic-watchdog-flags-${process.pid}-${Date.now()}`
 			: join(dir, "b.sock");
 	try {
+		// The child ends itself 15 s after starting if no probe comes. The bound ends one that would never end (its
+		// script never reached), so that the test fails instead of stalling the run, and leaves room for a loaded machine.
+		// A child ended for running past it throws ETIMEDOUT here.
+		const CHILD_TIMEOUT_MS = 60_000;
 		// A broker stand-in: the watchdog's first health request (a 4-byte length, then JSON) shows its thread is running.
 		const result = spawnSyncCollect(
 			[
@@ -69,6 +73,7 @@ function probeWatchdog(flags: readonly string[], env: Record<string, string> = {
 					WATCHDOG_LOG: join(dir, "watchdog.log"),
 					...env,
 				},
+				timeout: CHILD_TIMEOUT_MS,
 			},
 		);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
