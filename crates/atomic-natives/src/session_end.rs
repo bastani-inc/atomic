@@ -1,14 +1,28 @@
-//! The end of the user's Windows session: sign-out, restart or shutdown. Windows asks each top-level window whether
-//! the session may end (`WM_QUERYENDSESSION`), tells it whether it does (`WM_ENDSESSION`), and then ends every process
-//! of the session. A console program that loaded user32, as Node and Bun do, gets no console event for it, so
-//! [`watch_session_end`] gives the process a hidden top-level window, on a thread of its own, that hears it.
+//! The end of the user's Windows session: sign-out, restart or shutdown, or an installer asking programs to close.
+//! Windows asks each top-level window whether the session may end (`WM_QUERYENDSESSION`), tells it whether it does
+//! (`WM_ENDSESSION`), and then ends every process of the session. A console program that loaded user32, as Node and
+//! Bun do, gets no console event for it, so [`watch_session_end`] gives the process a hidden top-level window, on a
+//! thread of its own, that hears it.
 use napi::Status;
+use napi::bindgen_prelude::ToNapiValue;
+use napi::sys;
 use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
+use std::time::Instant;
 
-/// Told when the session ends, in milliseconds since the Unix epoch, and answers whether the process shuts down for
-/// it. Weak: it never keeps the event loop alive.
-type SessionEndCallback = ThreadsafeFunction<f64, bool, f64, Status, false, true>;
+/// When Windows said the session ends. The callback gets the milliseconds since, read from the monotonic clock as it
+/// is called, so however late it runs and however the wall clock moves, it knows how much of Windows's wait is left.
+pub struct SessionEnded(Instant);
+
+impl ToNapiValue for SessionEnded {
+	unsafe fn to_napi_value(env: sys::napi_env, value: Self) -> napi::Result<sys::napi_value> {
+		unsafe { f64::to_napi_value(env, value.0.elapsed().as_secs_f64() * 1_000.0) }
+	}
+}
+
+/// Told how long ago the session ended, and answers whether the process shuts down for it. Weak: it never keeps the
+/// event loop alive.
+type SessionEndCallback = ThreadsafeFunction<SessionEnded, bool, SessionEnded, Status, false, true>;
 
 /// The longest the window holds Windows's notice that the session ends, while the process shuts down: Windows lists a
 /// program that takes 5 seconds as one keeping the user from signing out.
@@ -18,71 +32,67 @@ const HOLD_MS: u64 = 4_500;
 /// On Windows, calls back when the user's session ends, and keeps Windows waiting while the process shuts down: until
 /// the callback answers false, the process exits, or 4.5 seconds have passed. A sign-out that another program cancels
 /// calls nothing. Windows also ends the process before the programs it started, so they still run while it shuts down.
-/// True once the window exists; only the first call in a process creates one, and later calls return whether it did.
-/// Elsewhere it returns false.
+/// The window is made on a thread of its own, without waiting for it; only the first call in a process starts one.
+/// Elsewhere it does nothing.
 #[napi(js_name = "watchSessionEnd")]
 pub fn watch_session_end(
-	#[napi(ts_arg_type = "(endedAt: number) => boolean")] on_end: SessionEndCallback,
-) -> bool {
+	#[napi(ts_arg_type = "(endedMsAgo: number) => boolean")] on_end: SessionEndCallback,
+) {
 	#[cfg(windows)]
-	return windows::watch(on_end);
+	windows::watch(on_end);
 	#[cfg(not(windows))]
-	{
-		let _ = on_end;
-		false
-	}
+	let _ = on_end;
 }
 
 #[cfg(windows)]
 mod windows {
-	use super::{HOLD_MS, SessionEndCallback};
+	use super::{HOLD_MS, SessionEndCallback, SessionEnded};
 	use napi::Status;
 	use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 	use std::sync::{OnceLock, mpsc};
-	use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+	use std::time::{Duration, Instant};
 	use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 	use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-	use windows_sys::Win32::System::Threading::SetProcessShutdownParameters;
+	use windows_sys::Win32::System::Threading::{
+		GetProcessShutdownParameters, SetProcessShutdownParameters,
+	};
 	use windows_sys::Win32::UI::WindowsAndMessaging::{
 		CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, RegisterClassExW,
 		WM_CLOSE, WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSEXW, WS_OVERLAPPED,
 	};
 
 	/// Above the default 0x280 of every other program, so Windows ends this process before the ones it started.
-	/// 0x300 is the first value of the range Windows reserves for programs that end first.
+	/// 0x300 is the first value of the range Windows keeps for programs that end first.
 	const SHUTDOWN_LEVEL: u32 = 0x300;
 	const CLASS_NAME: &str = "AtomicSessionEnd";
 	const WINDOW_TITLE: &str = "Atomic";
 
 	static CALLBACK: OnceLock<SessionEndCallback> = OnceLock::new();
-	static WATCHING: OnceLock<bool> = OnceLock::new();
 
-	pub(super) fn watch(on_end: SessionEndCallback) -> bool {
-		*WATCHING.get_or_init(|| {
-			let _ = CALLBACK.set(on_end);
-			start()
-		})
+	pub(super) fn watch(on_end: SessionEndCallback) {
+		if CALLBACK.set(on_end).is_err() {
+			return;
+		}
+		let _ = std::thread::Builder::new().name("session-end".into()).spawn(|| {
+			if !create_window().is_null() {
+				end_before_children();
+				pump();
+			}
+		});
 	}
 
 	fn wide(text: &str) -> Vec<u16> {
 		text.encode_utf16().chain(Some(0)).collect()
 	}
 
-	/// Starts the window's thread, and waits for it to say whether the window exists.
-	fn start() -> bool {
-		let (created, creation) = mpsc::channel();
-		let started = std::thread::Builder::new().name("session-end".into()).spawn(move || {
-			let window = create_window();
-			let _ = created.send(!window.is_null());
-			if !window.is_null() {
-				pump();
-			}
-		});
-		let watching = started.is_ok() && creation.recv().unwrap_or(false);
-		if watching {
-			unsafe { SetProcessShutdownParameters(SHUTDOWN_LEVEL, 0) };
+	/// Raises the process's shutdown level to [`SHUTDOWN_LEVEL`] unless it is already higher, keeping its flags.
+	fn end_before_children() {
+		let (mut level, mut flags) = (0u32, 0u32);
+		if unsafe { GetProcessShutdownParameters(&mut level, &mut flags) } != 0
+			&& level < SHUTDOWN_LEVEL
+		{
+			unsafe { SetProcessShutdownParameters(SHUTDOWN_LEVEL, flags) };
 		}
-		watching
 	}
 
 	/// A top-level window, as only those hear the end of the session (a message-only window does not), that is never
@@ -135,7 +145,7 @@ mod windows {
 		lparam: LPARAM,
 	) -> LRESULT {
 		match message {
-			// The session may end; nothing happens until Windows says it does, as another program can still cancel.
+			// The session may end. Nothing happens until Windows says it does: another program can still cancel it.
 			WM_QUERYENDSESSION => 1,
 			WM_ENDSESSION => {
 				if wparam != 0 {
@@ -153,13 +163,11 @@ mod windows {
 	/// once the window returns. The process's exit ends this thread too.
 	fn session_ends() {
 		let Some(callback) = CALLBACK.get() else { return };
-		let deadline = Instant::now() + Duration::from_millis(HOLD_MS);
-		let ended_at = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.map_or(0.0, |since| since.as_secs_f64() * 1_000.0);
+		let ended = Instant::now();
+		let deadline = ended + Duration::from_millis(HOLD_MS);
 		let (answered, answer) = mpsc::channel();
 		let status = callback.call_with_return_value(
-			ended_at,
+			SessionEnded(ended),
 			ThreadsafeFunctionCallMode::NonBlocking,
 			move |shutting_down, _| {
 				let _ = answered.send(matches!(shutting_down, Ok(true)));

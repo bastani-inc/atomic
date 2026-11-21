@@ -84,21 +84,17 @@ function terminalLostExitCode(ending: HostEnding): number {
 }
 
 /**
- * The Windows console was closed at `closedAt` (milliseconds since the Unix epoch), or the Windows session ended then.
- * Windows reports a closed console as SIGHUP, and nothing else, then ends the process {@link CONSOLE_CLOSE_TIMEOUT_MS}
- * later; at the end of the session it waits about as long for Atomic's window. The session shuts down as when its
- * terminal is gone, within a bound that ends before Windows's, counted from when Windows said so, and Atomic exits with
- * the status Windows gives a console program it ends then.
+ * The Windows console was closed, or the Windows session ended, `closedMsAgo` milliseconds ago. Windows reports a
+ * closed console as SIGHUP, and nothing else, then ends the process {@link CONSOLE_CLOSE_TIMEOUT_MS} later; at the end
+ * of the session it waits about as long for Atomic's window. The session shuts down as when its terminal is gone,
+ * within a bound that ends before Windows's, counted from when Windows said so, and Atomic exits with the status
+ * Windows gives a console program it ends then.
  */
-function consoleClosed(mode: InteractiveModeBase, closedAt = Date.now()): void {
+function consoleClosed(mode: InteractiveModeBase, closedMsAgo = 0): void {
 	const ending = hostEnding(mode);
 	if (ending.consoleClosed) return;
 	ending.consoleClosed = true;
-	const remaining = Math.min(
-		Math.max(closedAt + CONSOLE_CLOSED_SHUTDOWN_MS - Date.now(), 0),
-		CONSOLE_CLOSED_SHUTDOWN_MS,
-	);
-	setTimeout(() => mode.emergencyTerminalExit(), remaining);
+	setTimeout(() => mode.emergencyTerminalExit(), Math.max(CONSOLE_CLOSED_SHUTDOWN_MS - closedMsAgo, 0));
 	mode.handleTerminalLost();
 }
 
@@ -110,7 +106,7 @@ function listenForConsoleClose(mode: InteractiveModeBase): void {
 	if (process.platform !== "win32") return;
 	const handler = () => consoleClosed(mode);
 	process.prependListener("SIGHUP", handler);
-	const stopHearingSessionEnd = onWindowsSessionEnd((endedAt) => consoleClosed(mode, endedAt));
+	const stopHearingSessionEnd = onWindowsSessionEnd((endedMsAgo) => consoleClosed(mode, endedMsAgo));
 	mode.signalCleanupHandlers.push(() => {
 		process.off("SIGHUP", handler);
 		stopHearingSessionEnd();

@@ -5,11 +5,11 @@
  */
 import { createModuleRequire } from "../../utils/module-require.js";
 
-/** Told that the session ends, with when Windows said so, in milliseconds since the Unix epoch. */
-export type WindowsSessionEndListener = (endedAt: number) => void;
+/** Told that the session ends, with how many milliseconds ago Windows said so. */
+export type WindowsSessionEndListener = (endedMsAgo: number) => void;
 
 interface SessionEndBinding {
-	watchSessionEnd?: (onEnd: (endedAt: number) => boolean) => boolean;
+	watchSessionEnd?: (onEnd: (endedMsAgo: number) => boolean) => void;
 }
 
 const listeners = new Set<WindowsSessionEndListener>();
@@ -19,9 +19,9 @@ let watching = false;
  * Tells the listeners that the session ends. Windows waits for Atomic only while the answer is true: with no listener,
  * nothing shuts down, and the session ends at once.
  */
-function sessionEnds(endedAt: number): boolean {
+function sessionEnds(endedMsAgo: number): boolean {
 	const current = [...listeners];
-	for (const listener of current) listener(endedAt);
+	for (const listener of current) listener(endedMsAgo);
 	return current.length > 0;
 }
 
