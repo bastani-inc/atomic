@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `skill-creator`'s description optimization runs Atomic: `run_eval.py`, `run_loop.py` and `improve_description.py` start `atomic -p` with your Atomic models and credentials, and never start `claude`. Each trigger query loads the candidate description as a temporary skill, with only the read tool and no extensions or MCP servers, so the model has no tool that runs commands or edits files, and nothing is written into your project. A query counts as triggered when the model's first tool call reads that skill's `SKILL.md`. `--model` takes an Atomic model pattern such as `provider/id` ([#5625](https://github.com/bastani-inc/atomic/issues/5625)).
+
+### Fixed
+
+- Stopping `skill-creator`'s description scripts with Ctrl+C, `kill` or by closing the terminal (on Windows Ctrl+C, Ctrl+Break or closing the console) stops the Atomic processes they started, removes their temporary files and exits with that signal's status. Ctrl+Z, `fg` and `bg` pause and continue those processes together with the script. Importing the scripts leaves your signal handlers alone, and `scripts.atomic_cli.cancel()` stops an evaluation in progress. Queries now run on Windows, and the review viewer picks a free port instead of stopping the program that listens on port 3117 ([#5625](https://github.com/bastani-inc/atomic/issues/5625)).
+
 ## [0.10.2] - 2026-11-20
 
 ### Breaking Changes
