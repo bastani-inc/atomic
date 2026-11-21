@@ -313,7 +313,7 @@ atomic intercom upgrade    # Replace an older broker when safe
 
 ## Configuration
 
-Create `~/.atomic/agent/intercom/config.json`. When that file is absent and `ATOMIC_CODING_AGENT_DIR` is unset, Atomic also checks legacy `~/.pi/agent/intercom/config.json`.
+Create `~/.atomic/agent/intercom/config.json`. When that file is absent and neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, Atomic also checks legacy `~/.pi/agent/intercom/config.json`.
 
 ```json
 {

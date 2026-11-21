@@ -211,11 +211,11 @@ Discovery precedence, from lowest to highest:
 
 Installed Atomic packages can also contribute read-only agents declared under `agents` in `package.json`, registered as `<namespace>.<name>`. Package agents never replace builtin, user, or project agents with the same full name.
 
-Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, and user discovery checks legacy `~/.pi/agent/agents/**/*.md` when `ATOMIC_CODING_AGENT_DIR` is unset. When multiple directories in the same scope define the same runtime agent name, the `.atomic` directory wins. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
+Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, with `.atomic/agents/` winning project-scope name conflicts. User discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
 
 ### Builtin overrides
 
-Override selected builtin fields in `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project) without copying the bundled agent file. Legacy `~/.pi/agent/settings.json` (when `ATOMIC_CODING_AGENT_DIR` is unset) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
+Override selected builtin fields in `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project) without copying the bundled agent file. Legacy `~/.pi/agent/settings.json` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
 
 ```json
 {
@@ -318,7 +318,7 @@ extensions: /abs/path/to/ext-a.ts, /abs/path/to/ext-b.ts
 
 ## Skills
 
-Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when `ATOMIC_CODING_AGENT_DIR` is unset) directories are also read for compatibility, with `.atomic` taking precedence. See [skills](../coding-agent/docs/skills.md) for discovery and project-trust rules.
+Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) directories are also read for compatibility, with `.atomic` taking precedence. See [skills](../coding-agent/docs/skills.md) for discovery and project-trust rules.
 
 Override or disable skills per launch:
 
@@ -491,7 +491,7 @@ A named worktree belongs to the caller. Atomic never deletes the worktree or its
 
 ## Configuration
 
-Optional JSON configuration lives at `~/.atomic/agent/extensions/subagent/config.json`. When that file is absent and `ATOMIC_CODING_AGENT_DIR` is unset, Atomic also checks legacy `~/.pi/agent/extensions/subagent/config.json`.
+Optional JSON configuration lives at `~/.atomic/agent/extensions/subagent/config.json`. When that file is absent and neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, Atomic also checks legacy `~/.pi/agent/extensions/subagent/config.json`.
 
 ### `parallel`
 

@@ -108,7 +108,7 @@ Settings locations:
 
 - User scope is `~/.atomic/agent/settings.json`.
 - Project scope is `.atomic/settings.json`.
-- Legacy `~/.pi/agent/settings.json` (when `ATOMIC_CODING_AGENT_DIR` is unset) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
+- Legacy `~/.pi/agent/settings.json` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
 
 Direct settings example:
 
@@ -132,10 +132,9 @@ Useful override fields: `model`, `fallbackModels`, `thinking`, `systemPromptMode
 
 Agent files can live in:
 
-- `~/.atomic/agent/agents/**/*.md` for user scope.
+- `~/.atomic/agent/agents/**/*.md` for user scope (user discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set).
 - `.atomic/agents/**/*.md` for project scope.
-- `.agents/**/*.md` for project compatibility; `.atomic/agents/` wins on conflicts.
-- Legacy `~/.pi/agent/agents/**/*.md` (when `ATOMIC_CODING_AGENT_DIR` is unset) and `.pi/agents/**/*.md` directories are also read for compatibility, with `.atomic` winning on conflicts.
+- `.agents/**/*.md` and legacy `.pi/agents/**/*.md` for project compatibility, with `.atomic/agents/` winning project-scope conflicts.
 
 Discovery is recursive. Agents can set optional frontmatter/package metadata; `name: codebase-analyzer` plus `package: code-analysis` registers as runtime name `code-analysis.codebase-analyzer` while serialization keeps `name` and `package` separate.
 
