@@ -15,7 +15,7 @@ import type {
 } from "./multinode-state-store.js";
 import { ensureBrokerSchema } from "./sql-schema.js";
 
-type BindingRow = SqliteRow & { return_address: string; owner_token?: string | null };
+type BindingRow = SqliteRow & { return_address: string; owner_token?: string | null; owner_broker?: string | null };
 
 /** How many ids one owner renewal names: two parameters each, within SQLite's oldest bound of 999. */
 const OWNER_RENEWAL_BATCH = 400;
@@ -211,13 +211,17 @@ export async function openSqlKnownSessionStore({
 			...(owning === undefined ? [] : [owning.token, owning.staleAfterMs]),
 		);
 		const bound = await tx.get<BindingRow>(
-			`SELECT return_address${owning === undefined ? "" : ", owner_token"} FROM ${bindings} WHERE intercom_session_id = ?`,
+			`SELECT return_address${owning === undefined ? "" : ", owner_token, owner_broker"} FROM ${bindings}
+			 WHERE intercom_session_id = ?`,
 			intercomSessionId,
 		);
 		if (bound !== undefined && bound.return_address !== returnAddress)
 			return { status: "refused", returnAddress: bound.return_address };
 		// #5607: an owner is granted the id only on the binding naming it.
-		if (owning !== undefined) return bound?.owner_token === owning.token ? { status: "bound" } : { status: "held" };
+		if (owning !== undefined) {
+			if (bound?.owner_token === owning.token) return { status: "bound" };
+			return typeof bound?.owner_broker === "string" ? { status: "held", ownerBroker: bound.owner_broker } : { status: "held" };
+		}
 		return { status: "bound" };
 	};
 

@@ -2811,7 +2811,10 @@ export function registerIdOwnerConformance(
 				{ status: "bound" },
 				"its own again",
 			);
-			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), { status: "held" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), {
+				status: "held",
+				ownerBroker: "broker-first",
+			});
 			assert.deepEqual(await b.bind(ID, "another-address", LIVE_MS, undefined, owner("third")), {
 				status: "refused",
 				returnAddress: ADDRESS,
@@ -2819,10 +2822,16 @@ export function registerIdOwnerConformance(
 			// A release with another token, and a bind without an owner, leave the owner as it is.
 			await owners(b).release({ intercomSessionId: ID, token: "second" });
 			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS), { status: "bound" });
-			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), { status: "held" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), {
+				status: "held",
+				ownerBroker: "broker-first",
+			});
 			await owners(a).release({ intercomSessionId: ID, token: "first" });
 			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), { status: "bound" });
-			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first")), { status: "held" });
+			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first")), {
+				status: "held",
+				ownerBroker: "broker-second",
+			});
 		},
 	);
 
@@ -2844,7 +2853,7 @@ export function registerIdOwnerConformance(
 			]);
 			assert.deepEqual(
 				await a.bind(ID, ADDRESS, LIVE_MS, undefined, owner("first", "broker-a", RENEWAL_GAP_MS / 2)),
-				{ status: "held" },
+				{ status: "held", ownerBroker: "broker-b" },
 			);
 			// A renewal of a token that no longer owns the id brings nothing back, and says so.
 			assert.deepEqual(await owners(a).renew([{ intercomSessionId: ID, token: "first" }]), []);
@@ -2896,12 +2905,16 @@ export function registerIdOwnerConformance(
 				status: "bound",
 			});
 			assert.deepEqual(await reclaim(request("claim-1", "fresh-1", "first")), { status: "kept" });
-			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), { status: "held" });
+			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, undefined, owner("second")), {
+				status: "held",
+				ownerBroker: "broker-a",
+			});
 			// Another live registration owns it: not kept, and the fresh id is bound to this registration's owner.
 			await owners(a).release({ intercomSessionId: ID, token: "first" });
 			assert.deepEqual(await b.bind(ID, ADDRESS, LIVE_MS, "claim-2", owner("second")), { status: "bound" });
 			assert.deepEqual(await a.bind(ID, ADDRESS, LIVE_MS, "claim-3", owner("third", "broker-a")), {
 				status: "held",
+				ownerBroker: "broker-second",
 			});
 			assert.deepEqual(await reclaim(request("claim-2", "fresh-2", "third")), {
 				status: "fresh",

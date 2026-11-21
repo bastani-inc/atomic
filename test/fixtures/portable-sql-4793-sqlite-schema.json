@@ -255,7 +255,7 @@
 		"type": "table",
 		"name": "intercom_session_bindings",
 		"tbl_name": "intercom_session_bindings",
-		"sql": "CREATE TABLE intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT)"
+		"sql": "CREATE TABLE intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT, owner_token TEXT, owner_broker TEXT, owner_renewed_at INTEGER)"
 	},
 	{
 		"type": "table",
@@ -333,7 +333,7 @@
 		"type": "table",
 		"name": "team_intercom_session_bindings",
 		"tbl_name": "team_intercom_session_bindings",
-		"sql": "CREATE TABLE team_intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT)"
+		"sql": "CREATE TABLE team_intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, latest_claim TEXT, owner_token TEXT, owner_broker TEXT, owner_renewed_at INTEGER)"
 	},
 	{
 		"type": "table",

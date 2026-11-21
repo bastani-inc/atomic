@@ -8,6 +8,7 @@ import {
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
 	MultiNodeRouter,
+	type MultiNodeRouterOptions,
 	PRESENCE_REGISTRATION_BOUND_MS,
 	type ReservationOptions,
 	SESSION_ID_CLAIM_BOUND_MS,
@@ -202,6 +203,8 @@ async function startNode(
 		readonly consumeFailures?: number;
 		/** #5607: sessions registered on this broker before its routing across nodes turned on. */
 		readonly registeredBefore?: readonly BrokerConnectedSession[];
+		/** #5607: the broker's host and process, as its membership records them. */
+		readonly process?: Pick<MultiNodeRouterOptions, "hostIdentity" | "instanceKey" | "pid" | "isProcessAlive">;
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
@@ -288,6 +291,7 @@ async function startNode(
 	const dispatched: string[] = [];
 	const fenced: BrokerConnectedSession[] = [];
 	const router: MultiNodeRouter = await MultiNodeRouter.start({
+		...options.process,
 		state,
 		bus,
 		host: {
@@ -2650,6 +2654,85 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
 		assert.deepEqual(opening.fenced, [early]);
 		assert.deepEqual(elsewhere.fenced, []);
+	});
+
+	test("a session whose first binding write as routing turned on never answers takes its id with a later one, and its registration completes (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const early = session("early");
+		const opening = await startNode(
+			{
+				...shared,
+				async connectState() {
+					const state = await shared.connectState();
+					const bind = state.knownSessions.bind.bind(state.knownSessions);
+					let lost = 1;
+					state.knownSessions.bind = async (...args) =>
+						lost-- > 0 ? new Promise<never>(() => {}) : bind(...args);
+					return state;
+				},
+			},
+			{ registeredBefore: [early] },
+		);
+		await vi.advanceTimersByTimeAsync(2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		assert.deepEqual(opening.fenced, []);
+		const presence = await opening.state.leases.read({
+			kind: "presence",
+			targetIdentity: deliveryTargetIdentity(early),
+		});
+		assert.equal(presence.status, "found", "its registration went on to present it across nodes");
+		const elsewhere = await startNode(shared);
+		const twin = twinOf(early);
+		const claimed = elsewhere.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.notEqual((await claimed).status, "granted", "the id is the adopted session's");
+	});
+
+	test("a session whose broker on this host stopped running keeps its id there: a pid that names a process never counts as exited (#5607)", async () => {
+		const shared = await cluster();
+		// The broker's pid names a process: the broker itself, paused, or a later process the host gave the pid to.
+		const named = await startNode(shared, {
+			process: {
+				hostIdentity: "this-host",
+				instanceKey: "first-socket",
+				pid: 2_000_000_002,
+				isProcessAlive: () => true,
+			},
+		});
+		const live = session("live");
+		await registeredOn(named, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive: () => true },
+		});
+		const twin = twinOf(live);
+
+		const claim = await here.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+
+		assert.notEqual(claim.status, "granted");
+	});
+
+	test("a session whose broker on this host exited gets its id back on another broker of this host at once (#5607)", async () => {
+		const shared = await cluster();
+		const EXITED = 2_000_000_001;
+		const isProcessAlive = (pid: number) => pid !== EXITED;
+		const exited = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "first-socket", pid: EXITED, isProcessAlive },
+		});
+		const live = session("live");
+		await registeredOn(exited, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
+		});
+		const elsewhere = await startNode(shared, {
+			process: { hostIdentity: "another-host", instanceKey: "first-socket", isProcessAlive },
+		});
+		const twin = twinOf(live);
+
+		const fromElsewhere = await elsewhere.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		assert.notEqual(fromElsewhere.status, "granted", "a broker on another host cannot tell its process has exited");
+		const fromHere = await here.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+		assert.equal(fromHere.status, "granted");
 	});
 
 	test("a broker paused past the stale age disconnects its session once the store answers it again, and the registration that took the id keeps it (#5607)", async () => {

@@ -1137,7 +1137,7 @@ function knownSessionStore(
 				current.token !== owner.token &&
 				isLive(current.renewedAt, owner.staleAfterMs)
 			)
-				return { status: "held" };
+				return { status: "held", ownerBroker: current.brokerId };
 			bindings.set(intercomSessionId, {
 				returnAddress,
 				recordedAt: Date.now(),

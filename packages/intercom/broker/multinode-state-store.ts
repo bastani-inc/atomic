@@ -844,8 +844,11 @@ export type KnownSessionRecordResult = { readonly status: "recorded" } | Invalid
 export type KnownSessionBindResult =
 	| { readonly status: "bound" }
 	| { readonly status: "refused"; readonly returnAddress: string }
-	/** #5607: bound to this return address, but another live registration of it owns the id (`KnownSessionOwner`). */
-	| { readonly status: "held" }
+	/**
+	 * #5607: bound to this return address, but another live registration of it owns the id (`KnownSessionOwner`), on the
+	 * broker `ownerBroker`.
+	 */
+	| { readonly status: "held"; readonly ownerBroker?: string }
 	| InvalidStateInput;
 
 /**

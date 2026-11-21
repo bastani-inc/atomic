@@ -423,12 +423,29 @@ interface PresenceEntry {
 	 * #5607: a session registered while routing was still opening, until it has taken its id: the owner token it takes
 	 * the id with, and the write doing so, while in flight. Nothing confirms its id is its own before then.
 	 */
-	adoption?: { readonly token: string; checking?: OwnerCheck; attempts?: number; inFlight?: number[] };
+	adoption?: Adoption;
 	/**
 	 * #5607: another live registration owns its id: it was disconnected here to reconnect for a fresh id, and its
 	 * departure leaves what is shared under the id to that registration.
 	 */
 	fenced?: true;
+}
+
+/**
+ * #5607: a session registered while routing was opening (or whose first binding write failed), until it has taken its
+ * id: the owner token it takes the id with, the write doing so while in flight, and the decision any of its writes
+ * reaches, whichever write that is.
+ */
+interface Adoption {
+	readonly token: string;
+	readonly decided: PromiseWithResolvers<OwnerVerdict>;
+	checking?: OwnerCheck;
+	attempts?: number;
+	inFlight?: number[];
+}
+
+function adoption(token: string): Adoption {
+	return { token, decided: Promise.withResolvers<OwnerVerdict>() };
 }
 
 /** #5607: what a check of a registration's id found: still its own, another registration's, or no answer. */
@@ -739,6 +756,8 @@ export class MultiNodeRouter {
 	private readonly ownerRenewals: number[] = [];
 	/** #5607: when the shared store last answered one of this broker's statements. */
 	private storeAnsweredAt = Number.NEGATIVE_INFINITY;
+	/** #5607: what the instance key of every broker on this host starts with, when this host can be told apart. */
+	private readonly hostKey: string | undefined;
 	private readonly timers: ReturnType<typeof setInterval>[] = [];
 	private checkingOutcomes: { again: boolean } | undefined;
 	private closed = false;
@@ -757,6 +776,7 @@ export class MultiNodeRouter {
 			hostIdentity == null || options.instanceKey === undefined
 				? `${this.nodeId}:${this.brokerId}`
 				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
+		this.hostKey = hostIdentity == null ? undefined : `${this.nodeId}:${hostIdentity}:`;
 		this.pid = options.pid ?? process.pid;
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 		this.processStartedAt = options.processStartedAt ?? ((pid) => processStartedAt(pid));
@@ -823,6 +843,7 @@ export class MultiNodeRouter {
 		const deadline = performance.now() + SESSION_ID_CLAIM_BOUND_MS;
 		let expired = false;
 		const attempts = (async (): Promise<SessionIdClaim> => {
+			let retired = false;
 			for (let attempt = 0; ; attempt++) {
 				const confirmed = clockMark();
 				const result = await this.state.knownSessions.bind(
@@ -834,6 +855,12 @@ export class MultiNodeRouter {
 				);
 				if (result.status === "bound") return { status: "granted", grant: { token: owner.token, confirmed } };
 				if (result.status !== "held") return { status: "refused" };
+				// An owner whose broker on this host is known to have exited is no live registration: at once, not after the
+				// stale age.
+				if (!retired && !expired && (await this.retireIfExitedHere(result.ownerBroker))) {
+					retired = true;
+					continue;
+				}
 				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
 				if (expired || performance.now() + wait >= deadline) return { status: "refused" };
 				await new Promise<void>((resolve) => setTimeout(resolve, wait).unref());
@@ -865,6 +892,24 @@ export class MultiNodeRouter {
 		} finally {
 			clearTimeout(bound);
 		}
+	}
+
+	/**
+	 * #5607: whether the broker `brokerId`, which owns an id, ran on this host (same node, boot and process namespace) and
+	 * no process has its pid any more: its ids are then given up at once, as its own restart would. A broker elsewhere,
+	 * or one whose pid names a process (itself, or a later one the host gave the pid to), keeps them until they go stale.
+	 */
+	private async retireIfExitedHere(brokerId: string | undefined): Promise<boolean> {
+		const owners = this.state.knownSessions.owners;
+		if (brokerId === undefined || brokerId === this.brokerId || this.hostKey === undefined || owners === undefined)
+			return false;
+		const membership = await this.state.leases.read({ kind: "broker", brokerId });
+		if (membership.status !== "found") return false;
+		const { instanceKey, pid } = membership.lease.subject as Partial<BrokerMembershipSubject>;
+		if (instanceKey === undefined || !instanceKey.startsWith(this.hostKey) || pid === undefined) return false;
+		if (this.isProcessAlive(pid)) return false;
+		await owners.retireBroker(brokerId);
+		return true;
 	}
 
 	/** #5607: a registration's owner token, unique to it, on this broker. */
@@ -1040,6 +1085,7 @@ export class MultiNodeRouter {
 		entry: PresenceEntry,
 		adoption: NonNullable<PresenceEntry["adoption"]>,
 		attempt: number,
+		retryIfRetired = true,
 	): Promise<OwnerVerdict> {
 		const confirmed = clockMark();
 		let binding: KnownSessionBindResult;
@@ -1063,10 +1109,14 @@ export class MultiNodeRouter {
 		if (binding.status === "bound") {
 			delete entry.adoption;
 			entry.owner = { intercomSessionId: session.info.id, token: adoption.token, confirmed };
+			adoption.decided.resolve("own");
 			return "own";
 		}
+		if (binding.status === "held" && retryIfRetired && (await this.retireIfExitedHere(binding.ownerBroker)))
+			return this.adopt(session, entry, adoption, attempt, false);
 		if (binding.status === "held" || binding.status === "refused") {
 			this.lostSessionId(session, entry);
+			adoption.decided.resolve("lost");
 			return "lost";
 		}
 		return "unknown";
@@ -1130,6 +1180,7 @@ export class MultiNodeRouter {
 	private lostSessionId(session: BrokerConnectedSession, entry: PresenceEntry): void {
 		if (this.presence.get(session) !== entry || entry.fenced === true) return;
 		entry.fenced = true;
+		entry.adoption?.decided.resolve("lost");
 		this.host.fence(session);
 	}
 
@@ -1180,7 +1231,7 @@ export class MultiNodeRouter {
 		// #5607: a session registered while routing was still opening got its id with nothing shared to check it against:
 		// it has yet to take the id, and nothing is routed for it as the id's owner until it has.
 		if (this.adopting.delete(session) && this.state.knownSessions.owners !== undefined)
-			entry.adoption = { token: owner.token };
+			entry.adoption = adoption(owner.token);
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
 		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
@@ -1194,7 +1245,11 @@ export class MultiNodeRouter {
 					// #5607: a session registered while routing was opening takes its id now, or reconnects for a fresh one. A
 					// write that fails leaves it to take the id at the next check (`renewOwners`).
 					if (entry.adoption !== undefined) {
-						if ((await this.adoptionCheck(session, entry).answered()) !== "own") return;
+						// Decided by whichever write answers first with the id taken or lost; the first write failing leaves it to
+						// the next renewal.
+						const pending = entry.adoption;
+						const first = this.adoptionCheck(session, entry).answered();
+						if ((await Promise.race([pending.decided.promise, first])) !== "own") return;
 					} else {
 						// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
 						const confirmed = clockMark();
@@ -1214,7 +1269,7 @@ export class MultiNodeRouter {
 							// #5607: the id this session was given (and answered under) is not confirmed its own: it takes it at the
 							// next check, as a session registered while routing was opening does.
 							if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry)
-								entry.adoption = { token: owner.token };
+								entry.adoption = adoption(owner.token);
 							throw error;
 						}
 						if (binding.status === "refused") {
@@ -1651,6 +1706,8 @@ export class MultiNodeRouter {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.presence.delete(session);
+		// #5607: a registration still taking its id that leaves decides nothing more.
+		entry.adoption?.decided.resolve("unknown");
 		// Its id names another session across nodes: that session's asks and records are not this one's to end.
 		const unbound = entry.unbound === true;
 		const identity = deliveryTargetIdentity(session);
