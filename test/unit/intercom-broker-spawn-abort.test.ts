@@ -254,9 +254,10 @@ directSpawnTest("a disposed start stops waiting for a broker that never listens,
 	controller.abort(new Error("session disposed"));
 
 	await assert.rejects(start);
+	// A quit waits for this: the broker is killed at once, and the start settles once it is gone.
 	assert.ok(
-		performance.now() - aborted < ABORTED_WAIT_BOUND_MS + BROKER_GONE_WAIT_MS,
-		"the disposed start kept waiting for its broker to listen",
+		performance.now() - aborted < ABORTED_WAIT_BOUND_MS,
+		"the disposed start kept waiting for its broker to listen, or to be gone",
 	);
 	assert.equal(await gone(broker), true, "the broker is still running after the start settled");
 });
