@@ -5,6 +5,7 @@ import "./bounded-stderr-install.js";
 import "./announce-on-import.js";
 import net from "net";
 import { chmodSync, existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
+import { access } from "fs/promises";
 import { hostname } from "os";
 import { dirname } from "path";
 import { createHash, randomUUID } from "crypto";
@@ -580,8 +581,12 @@ class IntercomBroker {
    * could use it up, so the earlier broker's messages were kept in memory only and lost. Nothing is opened here.
    */
   private warmEndedQueueStore(): void {
-    if (this.sharedStorageSetting !== undefined || !existsSync(getBrokerEndedChildQueuePath())) return;
-    loadEndedChildQueueStore().catch(() => {});
+    if (this.sharedStorageSetting !== undefined) return;
+    // Looked for off the event loop: a slow home directory must not hold the broker's first answers.
+    void access(getBrokerEndedChildQueuePath()).then(
+      () => loadEndedChildQueueStore().catch(() => {}),
+      () => {},
+    );
   }
 
   /**
