@@ -8,9 +8,28 @@ import { planStartupShell } from "../src/modes/interactive/startup-shell-eligibi
 
 let root: string;
 let project: string;
-const savedAgentDir = process.env[ENV_AGENT_DIR];
+const savedEnv = { agentDir: process.env[ENV_AGENT_DIR], ci: process.env.CI, term: process.env.TERM };
+const ttyDescriptors = {
+	stdin: Object.getOwnPropertyDescriptor(process.stdin, "isTTY"),
+	stdout: Object.getOwnPropertyDescriptor(process.stdout, "isTTY"),
+};
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) delete process.env[name];
+	else process.env[name] = value;
+}
+
+function restoreTty(stream: NodeJS.ReadStream | NodeJS.WriteStream, descriptor: PropertyDescriptor | undefined): void {
+	if (descriptor) Object.defineProperty(stream, "isTTY", descriptor);
+	else delete (stream as { isTTY?: boolean }).isTTY;
+}
 
 beforeEach(() => {
+	// A session started at a terminal, outside CI.
+	Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+	Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+	delete process.env.CI;
+	process.env.TERM = "xterm-256color";
 	root = mkdtempSync(join(tmpdir(), "atomic-early-editor-plan-"));
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir);
@@ -23,8 +42,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	if (savedAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
-	else process.env[ENV_AGENT_DIR] = savedAgentDir;
+	restoreEnv(ENV_AGENT_DIR, savedEnv.agentDir);
+	restoreEnv("CI", savedEnv.ci);
+	restoreEnv("TERM", savedEnv.term);
+	restoreTty(process.stdin, ttyDescriptors.stdin);
+	restoreTty(process.stdout, ttyDescriptors.stdout);
 	rmSync(root, { recursive: true, force: true });
 });
 
@@ -38,4 +60,12 @@ test("the early editor waits for a trust question it cannot rule out, and starts
 test("the early editor does not start with an argument that may show something before the editor", () => {
 	assert.equal(planStartupShell(["-a", "--name", "work"], project), undefined);
 	assert.equal(planStartupShell(["-a", "--continue"], project), undefined);
+});
+
+test("the early editor does not start where the session would not use the alternate screen", () => {
+	process.env.CI = "buildkite";
+	assert.equal(planStartupShell(["-a"], project), undefined, "in CI, even at a terminal");
+	delete process.env.CI;
+	process.env.TERM = "dumb";
+	assert.equal(planStartupShell(["-a"], project), undefined, "with TERM=dumb");
 });

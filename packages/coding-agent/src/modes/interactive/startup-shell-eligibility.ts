@@ -10,6 +10,7 @@ import {
 	getSettingsPath,
 } from "../../config.js";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../../core/trust-manager.ts";
+import { shouldUseFullscreenTui } from "./fullscreen-environment.ts";
 
 /**
  * Arguments a session started with that change nothing the editor shows before the session is ready, and open no
@@ -63,12 +64,15 @@ function readSettingsFile(path: string): Record<string, unknown> | undefined | "
 /**
  * Whether an interactive session started with `args` in `cwd` can show its editor before the session is ready, and
  * with what. Only where nothing the session shows before its editor would come first, and nothing in the settings
- * would draw the editor differently: no argument outside a fixed few, no first-run setup, no project trust question,
+ * would draw the editor differently: no argument outside a fixed few, a session on the alternate screen (a terminal
+ * on both ends, outside CI, not `TERM=dumb`), no first-run setup, no project trust question,
  * no display setting in a project's settings or in an older agent directory's, and the global theme setting, if any,
  * naming one of Atomic's own themes. Anything else keeps today's startup.
  */
 export function planStartupShell(args: readonly string[], cwd: string): StartupShellPlan | undefined {
 	if (args.some((arg) => !ARGUMENTS_WITHOUT_EARLY_EFFECT.has(arg) && !TRUST_ARGUMENTS.has(arg))) return undefined;
+	// The early editor draws on the alternate screen, which the session itself does not use everywhere.
+	if (!shouldUseFullscreenTui(false)) return undefined;
 	if (getEnvValue(ENV_STARTUP_BENCHMARK)) return undefined;
 	// First run: the setup questions come before the editor.
 	if (!getEnvValue(ENV_AGENT_DIR) && !existsSync(getSettingsPath())) return undefined;
