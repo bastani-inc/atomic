@@ -50,6 +50,8 @@ function startCli(args: readonly string[], env: Record<string, string> = {}): Pt
 			ATOMIC_SKIP_VERSION_CHECK: "1",
 			ATOMIC_TELEMETRY: "0",
 			TERM: "xterm-256color",
+			// A user's terminal, also on a CI runner: in CI the session draws on the main screen, with no early editor.
+			CI: "0",
 			...env,
 		},
 		timeoutMs: CLI_TIMEOUT_MS,
