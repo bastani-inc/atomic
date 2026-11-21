@@ -1,6 +1,5 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import { visibleWidth } from "@bastani/atomic-tui";
-import type { AgentProgress } from "../shared/types.js";
 
 export type Theme = ExtensionContext["ui"]["theme"];
 
@@ -66,68 +65,4 @@ export function truncLine(text: string, maxWidth: number): string {
 	}
 
 	return `${result + activeStyles.join("")}…`;
-}
-
-export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/**
- * Spinner cadence (ms per frame). The running glyph is derived from wall-clock
- * time so every active spinner advances smoothly and in lockstep, independent
- * of how often (or how irregularly) progress data updates arrive. The animation
- * timers below only schedule re-renders; the displayed frame always comes from
- * the clock. This fixes the frozen/stuttering spinner from issue #1084.
- *
- * IMPORTANT: a wall-clock spinner only stays flicker-free for widgets pinned to
- * the bottom of the buffer (e.g. a below-editor widget), where every
- * tick stays inside the viewport. Content rendered into chat scrollback (live
- * foreground subagent results) can scroll above the viewport fold; there, even
- * a single-cell spinner diff forces pi-tui into a destructive full-screen +
- * scrollback clear on every tick. Such surfaces must NOT animate on a timer:
- * their running mark is the agent panel's still open circle.
- */
-export const RUNNING_ANIMATION_MS = 80;
-
-type ProgressSeedSource = Partial<
-	Pick<
-		AgentProgress,
-		"index" | "toolCount" | "tokens" | "durationMs" | "lastActivityAt" | "currentToolStartedAt" | "turnCount"
-	>
->;
-
-/**
- * Wall-clock-derived animation frame counter. Advances exactly one step every
- * `RUNNING_ANIMATION_MS`. Exposed for tests so they can pin a deterministic now.
- */
-export function currentRunningFrame(now: number = Date.now()): number {
-	return Math.floor(now / RUNNING_ANIMATION_MS);
-}
-
-export function runningSeed(...values: Array<number | undefined>): number | undefined {
-	let seed: number | undefined;
-	for (const value of values) {
-		if (value === undefined || !Number.isFinite(value)) continue;
-		seed = (seed ?? 0) + Math.trunc(value);
-	}
-	return seed;
-}
-
-export function runningGlyph(seed?: number, now?: number): string {
-	// Fold the wall-clock frame into the (optional) progress seed so the glyph
-	// advances over time. Callers that render into chat scrollback can pass a
-	// captured `now` so host re-renders do not mutate already-emitted lines.
-	const animatedSeed = runningSeed(seed, currentRunningFrame(now)) ?? 0;
-	return RUNNING_FRAMES[Math.abs(animatedSeed) % RUNNING_FRAMES.length]!;
-}
-
-export function progressRunningSeed(progress: ProgressSeedSource | undefined): number | undefined {
-	if (!progress) return undefined;
-	return runningSeed(
-		progress.index,
-		progress.toolCount,
-		progress.tokens,
-		progress.durationMs,
-		progress.lastActivityAt,
-		progress.currentToolStartedAt,
-		progress.turnCount,
-	);
 }

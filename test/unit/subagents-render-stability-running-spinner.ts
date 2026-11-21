@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import {
-	RUNNING_ANIMATION_MS,
 	renderLiveSubagentResult,
 	renderSubagentResult,
 	stopResultAnimations,
 } from "../../packages/subagents/src/tui/render.js";
-import { runningGlyph } from "../../packages/subagents/src/tui/render-layout.js";
 import {
 	type AgentToolResult,
 	type Details,
-	firstSpinnerChar,
 	runningSingleResult,
 	theme,
 	withMockedNow,
@@ -74,7 +71,7 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 		const first = withMockedNow(10_000, () =>
 			renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context).render(120).join("\n"),
 		);
-		const second = withMockedNow(10_000 + 8 * RUNNING_ANIMATION_MS, () =>
+		const second = withMockedNow(10_640, () =>
 			renderLiveSubagentResult(result, { expanded: false, isPartial: true }, theme, context).render(120).join("\n"),
 		);
 		assert.equal(second, first, "with no progress update the row must not change across host re-renders / time");
@@ -128,17 +125,10 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 		const a = withMockedNow(10_000, () =>
 			renderSubagentResult(result, { expanded: false, now: 10_000 }, theme).render(120).join("\n"),
 		);
-		const b = withMockedNow(10_000 + 9 * RUNNING_ANIMATION_MS, () =>
+		const b = withMockedNow(10_720, () =>
 			renderSubagentResult(result, { expanded: false, now: 10_000 }, theme).render(120).join("\n"),
 		);
 		assert.equal(a, b, "the same captured now must render byte-identically regardless of wall-clock");
-	});
-
-	test("foreground placeholder rows keep their existing running glyph", () => {
-		const glyph = withMockedNow(10_000, () => runningGlyph());
-
-		assert.ok(firstSpinnerChar(glyph), "foreground placeholder helper keeps the preexisting running spinner glyph");
-		assert.notEqual(glyph, "◯", "foreground placeholder helper must not reuse the result row's running mark");
 	});
 
 	test("multi-agent compact rows stay stable until a progress update", () => {
@@ -166,7 +156,7 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 				.render(120)
 				.join("\n"),
 		);
-		const second = withMockedNow(10_000 + 5 * RUNNING_ANIMATION_MS, () =>
+		const second = withMockedNow(10_400, () =>
 			renderLiveSubagentResult(parallel, { expanded: false, isPartial: true }, theme, context)
 				.render(120)
 				.join("\n"),

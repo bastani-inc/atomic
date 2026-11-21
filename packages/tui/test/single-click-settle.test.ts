@@ -399,4 +399,27 @@ describe("a single click's action waits until it cannot become a double-click", 
 		await sleep(MULTI_CLICK_INTERVAL_MS + 100);
 		assert.deepStrictEqual(acted, []);
 	});
+
+	it("tells a viewport listener once the late single click leaves the pointer idle, and only then (#5693)", async (t) => {
+		const { terminal, tui, acted, click } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		const heard: boolean[] = [];
+		const stop = tui.onViewportChange(() => heard.push(tui.isPointerIdle()));
+		t.after(stop);
+		mockClickClock(t);
+		click(1, 0);
+		await Promise.resolve();
+		assert.deepStrictEqual(heard, [false], "the click was input, and its action still waits");
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		await Promise.resolve();
+		assert.deepStrictEqual(acted, ["first"]);
+		assert.deepStrictEqual(heard, [false, true]);
+		stop();
+		click(1, 1);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		await Promise.resolve();
+		assert.deepStrictEqual(heard, [false, true], "a listener that stopped hears nothing more");
+	});
 });
