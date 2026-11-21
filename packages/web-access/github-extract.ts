@@ -1,5 +1,6 @@
 import { readFile, rm, stat, readdir, open, realpath, lstat, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
@@ -120,7 +121,10 @@ async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 	}
 }
 
-function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+async function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+	const env = createChildProcessEnvironment();
+	// gh and git only from PATH's absolute directories, never from the working directory.
+	const launch = await helperLaunchAsync(args[0]!, { env });
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -152,13 +156,18 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			if (exited || child.pid === undefined) finish(true);
 		};
 		const onAbort = () => stop();
-		const child = spawn(args[0]!, args.slice(1), {
-			timeout: timeoutMs,
-			detached: process.platform !== "win32",
-			windowsHide: true,
-			stdio: ["ignore", "pipe", "pipe"],
-			env: createChildProcessEnvironment(),
-		});
+		const child = spawn(
+			launch.file,
+			args.slice(1),
+			{
+				timeout: timeoutMs,
+				detached: process.platform !== "win32",
+				windowsHide: true,
+				stdio: ["ignore", "pipe", "pipe"],
+				env,
+				...missingHelperOptions(launch),
+			},
+		);
 		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
 		const detachedPid =
 			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;

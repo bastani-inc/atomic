@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
-import { shouldUseWindowsShell, spawnProcessSync } from "./utils/child-process.ts";
+import { processLaunch, shouldUseWindowsShell, spawnLaunchedProcessSync } from "./utils/child-process.ts";
 
 export interface SelfUpdateRuntime {
 	isBunBinary: boolean;
@@ -169,11 +169,15 @@ function readCommandOutput(
 	args: string[],
 	options: { requireSuccess?: boolean } = {},
 ): string | undefined {
-	const result = spawnProcessSync(command, args, {
+	const launch = processLaunch(command, { env: process.env });
+	const shell = shouldUseWindowsShell(command);
+	// The shell reads the command line as it is: a path with spaces needs its quotes.
+	const file = shell && launch.missing === undefined ? `"${launch.file}"` : launch.file;
+	const result = spawnLaunchedProcessSync({ ...launch, file }, args, {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: process.env,
-		shell: shouldUseWindowsShell(command),
+		shell,
 	});
 	if (result.status === 0) return result.stdout.trim() || undefined;
 	if (options.requireSuccess) {

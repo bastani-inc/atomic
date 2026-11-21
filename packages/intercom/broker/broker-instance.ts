@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 import { getIntercomDirPath } from "./paths.js";
 
@@ -72,16 +73,26 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 	platform: process.platform,
 	readFile: (path) => readFileSync(path, "utf8"),
 	readLink: (path) => readlinkSync(path),
-	run: (command, args) =>
-		new Promise<string>((resolve, reject) => {
+	run: async (command, args) => {
+		const env = hostCommandEnvironment();
+		// Only from PATH's absolute directories, never from the working directory.
+		const launch = await helperLaunchAsync(command, { env });
+		return new Promise<string>((resolve, reject) => {
 			const child = execFile(
-				command,
+				launch.file,
 				[...args],
-				{ encoding: "utf8", env: hostCommandEnvironment(), timeout: HOST_COMMAND_TIMEOUT_MS, windowsHide: true },
+				{
+					encoding: "utf8" as const,
+					env,
+					timeout: HOST_COMMAND_TIMEOUT_MS,
+					windowsHide: true,
+					...missingHelperOptions(launch),
+				},
 				(error, stdout) => (error ? reject(error) : resolve(stdout)),
 			);
 			child.stdin?.end();
-		}),
+		});
+	},
 	writeNewPrivateFile: (path, content) => {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		writeFileSync(path, content, { mode: 0o600, flag: "wx" });

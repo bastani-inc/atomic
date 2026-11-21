@@ -268,7 +268,7 @@ export function getBrokerLaunchSpec(
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
     return {
       kind: "windows-launcher",
-      command: "wscript.exe",
+      command: join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "wscript.exe"),
       args: [launcherPath],
       launcherPath,
       launcherCommandLine: getWindowsStderrRedirectCommandLine(

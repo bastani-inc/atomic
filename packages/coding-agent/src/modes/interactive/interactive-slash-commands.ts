@@ -20,6 +20,7 @@ import { parseSlashCommand } from "../../core/slash-commands.js";
 import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
 import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { helperLaunchAsync, missingHelperOptions } from "../../utils/helper-command.ts";
 import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -284,12 +285,15 @@ async function exportedSessionId(file: string): Promise<string | undefined> {
 }
 
 /** Run `gh auth status`; `started` receives the child, so a cancel can stop it. */
-function ghAuthStatus(started: (child: ReturnType<typeof spawn>) => void): Promise<number | null> {
+async function ghAuthStatus(started: (child: ReturnType<typeof spawn>) => void): Promise<number | null> {
+	const env = createChildProcessEnvironment();
+	const launch = await helperLaunchAsync("gh", { env });
 	return new Promise((resolve) => {
-		const child = spawn("gh", ["auth", "status"], {
-			env: createChildProcessEnvironment(),
+		const child = spawn(launch.file, ["auth", "status"], {
+			env,
 			stdio: "ignore",
 			timeout: GH_AUTH_STATUS_TIMEOUT_MS,
+			...missingHelperOptions(launch),
 		});
 		started(child);
 		child.once("error", () => resolve(null));
@@ -393,13 +397,17 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 
 		// Create a secret gist
 		try {
+			const ghEnv = createChildProcessEnvironment();
+			const gh = await helperLaunchAsync("gh", { env: ghEnv });
+			if (cancelled()) return;
 			const result = await new Promise<{
 				stdout: string;
 				stderr: string;
 				code: number | null;
 			}>((resolve) => {
-				const child = spawn("gh", ["gist", "create", "--public=false", tmpFile], {
-					env: createChildProcessEnvironment(),
+				const child = spawn(gh.file, ["gist", "create", "--public=false", tmpFile], {
+					env: ghEnv,
+					...missingHelperOptions(gh),
 				});
 				proc = child;
 				let stdout = "";

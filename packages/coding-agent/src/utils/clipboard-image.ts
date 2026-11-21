@@ -6,6 +6,7 @@ import { join } from "path";
 
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { clipboard } from "./clipboard-native.ts";
+import { findHelperExecutableAsync } from "./helper-command.ts";
 import { loadPhoton } from "./photon.ts";
 import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
 import { isWSL } from "./wsl.ts";
@@ -89,7 +90,7 @@ async function convertToPng(bytes: Uint8Array): Promise<Uint8Array | null> {
 	}
 }
 
-function runCommand(
+async function runCommand(
 	command: string,
 	args: string[],
 	options?: { timeoutMs?: number; maxBufferBytes?: number; env?: NodeJS.ProcessEnv },
@@ -97,10 +98,12 @@ function runCommand(
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
 	const maxBufferBytes = options?.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 	const env = options?.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment();
+	const file = await findHelperExecutableAsync(command, { env, cwd: "/" });
+	if (file === undefined) return { ok: false, stdout: Buffer.alloc(0) };
 
 	return new Promise((resolve) => {
 		execFile(
-			command,
+			file,
 			args,
 			{
 				encoding: "buffer",

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createChildProcessEnvironment } from "./child-process.ts";
+import { findHelperExecutableAsync } from "./helper-command.ts";
 
 /**
  * Open a URL or file in the platform browser/default handler.
@@ -21,7 +22,11 @@ export function openBrowser(target: string): void {
 	// to the user, so keep the launcher failure from becoming a process crash.
 	// On WSL, xdg-open launches explorer.exe, which fails when the cwd's \\wsl.localhost\... path exceeds
 	// MAX_PATH (pi#11592). The target is a URL, so no launcher needs the cwd.
-	spawn(cmd, args, { stdio: "ignore", detached: true, cwd: "/", env: createChildProcessEnvironment() })
-		.on("error", () => {})
-		.unref();
+	const env = createChildProcessEnvironment();
+	void findHelperExecutableAsync(cmd, { env, cwd: "/" }).then((file) => {
+		if (file === undefined) return;
+		spawn(file, args, { stdio: "ignore", detached: true, cwd: "/", env })
+			.on("error", () => {})
+			.unref();
+	});
 }

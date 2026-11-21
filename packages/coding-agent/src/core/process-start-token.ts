@@ -2,6 +2,7 @@ import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { win32 } from "node:path";
 import { createModuleRequire } from "../utils/module-require.js";
 import { windowsPowerShellEnvironment } from "../utils/windows-powershell.ts";
 
@@ -166,7 +167,16 @@ type CreationTimeQuery = {
 };
 
 const POWERSHELL_QUERY: CreationTimeQuery = {
-	file: "powershell.exe",
+	/** Windows PowerShell where Windows installs it, never a `powershell.exe` the working directory may hold. */
+	get file() {
+		return win32.join(
+			process.env.SystemRoot || process.env.windir || "C:\\Windows",
+			"System32",
+			"WindowsPowerShell",
+			"v1.0",
+			"powershell.exe",
+		);
+	},
 	args: (pid) => [
 		"-NoProfile",
 		"-NonInteractive",

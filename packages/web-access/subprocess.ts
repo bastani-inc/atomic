@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { createChildProcessEnvironment } from "@bastani/atomic";
+import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 
 export interface BunSubprocessOptions {
 	timeoutMs: number;
@@ -55,13 +56,19 @@ export async function runBunSubprocess(
 	if (options.signal?.aborted) {
 		throw new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true });
 	}
+	const env = createChildProcessEnvironment(options.env);
+	// Only PATH's absolute directories, never the working directory.
+	const launch = await helperLaunchAsync(command, { env, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
+	if (options.signal?.aborted) {
+		throw new AsyncSubprocessError(`${command} aborted`, { code: "ABORT_ERR", killed: true });
+	}
 	let primaryError: AsyncSubprocessError | undefined;
 	let escalation: ReturnType<typeof setTimeout> | undefined;
-	const proc = spawn(command, args, {
-		cwd: options.cwd,
-		env: createChildProcessEnvironment(options.env),
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const proc = spawn(
+		launch.file,
+		args,
+		{ cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], ...missingHelperOptions(launch) },
+	);
 	const exited = new Promise<number>((resolve, reject) => {
 		proc.once("error", (error: NodeJS.ErrnoException) => {
 			reject(new AsyncSubprocessError(error.message, { code: error.code }));
