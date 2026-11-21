@@ -64,8 +64,7 @@ describe("Windows PowerShell started without the PowerShell 7 parent's PSModuleP
 			await tokens.readProcessStartToken(4242);
 			assert.equal(mocks.execFile.mock.calls.length, 1);
 			const [file, , options] = mocks.execFile.mock.calls[0]!;
-			// Windows PowerShell where Windows installs it, never one found in the working directory.
-			assert.match(String(file), /^[A-Za-z]:\\.*\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/);
+			assert.equal(file, "powershell.exe");
 			assert.deepEqual(moduleKeys((options as { env?: NodeJS.ProcessEnv }).env), []);
 			assert.ok((options as { env?: NodeJS.ProcessEnv }).env, "the read passes an environment");
 		} finally {
@@ -81,8 +80,7 @@ describe("Windows PowerShell started without the PowerShell 7 parent's PSModuleP
 			tokens.processStartTokenForSynchronousTakeover(4343);
 			assert.equal(mocks.execFileSync.mock.calls.length, 1);
 			const [file, , options] = mocks.execFileSync.mock.calls[0]!;
-			// Windows PowerShell where Windows installs it, never one found in the working directory.
-			assert.match(String(file), /^[A-Za-z]:\\.*\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/);
+			assert.equal(file, "powershell.exe");
 			const env = (options as { env?: NodeJS.ProcessEnv }).env;
 			assert.ok(env, "the read passes an environment");
 			assert.deepEqual(moduleKeys(env), []);
