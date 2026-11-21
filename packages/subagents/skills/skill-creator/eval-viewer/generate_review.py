@@ -415,10 +415,16 @@ def feedback_lock(feedback_path: Path):
     A save waits at most LOCK_WAIT_SECONDS for another viewer's, then fails with OSError, so a viewer that stopped
     in the middle of a save never stops this one from answering.
     """
+    lock_path = feedback_path.with_name(f".{feedback_path.name}.lock")
     try:
-        lock = open(feedback_path.with_name(f".{feedback_path.name}.lock"), "a+b")
+        lock = open(lock_path, "a+b")
     except PermissionError:
-        lock = None
+        if lock_path.exists():
+            # A lock file this viewer may not write, such as another account's: locked through a read-only
+            # handle; when it cannot even be read, the save fails rather than go without it.
+            lock = open(lock_path, "rb")
+        else:
+            lock = None
     if lock is None:
         # A folder that cannot take the lock file: saved as before, without it.
         yield
