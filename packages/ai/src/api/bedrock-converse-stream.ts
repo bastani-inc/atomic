@@ -1,5 +1,6 @@
 import type { Agent as HttpsAgent } from "node:https";
-import type { Socket } from "node:net";
+import { connect as connectNet, isIP, isIPv6, Socket } from "node:net";
+import { connect as connectTls } from "node:tls";
 import {
 	BedrockRuntimeClient,
 	type BedrockRuntimeClientConfig,
@@ -183,6 +184,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		};
 
 		const openBlocks: OpenBlocks = new Map();
+		// What this request's last attempt failed with at its own HTTP handler, if it did: see `ConnectionFailure`.
+		const connection: ConnectionFailure = {};
 
 		// A profile explicitly configured through pi's auth flow (the `profile`
 		// option or scoped `AWS_PROFILE` on the stored credential's env) must win
@@ -283,7 +286,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
-			addTransportFailureMiddleware(client);
+			addTransportFailureMiddleware(client, connection);
 			let observedRawResponse = false;
 			if (options.onResponse) {
 				addResponseHeadersMiddleware(client, options.onResponse, model, () => {
@@ -427,7 +430,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		} catch (error) {
 			flushOpenBlocks(openBlocks, output);
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = formatBedrockError(error);
+			output.errorMessage = formatBedrockError(error, connection);
 			output.retryAfterMs =
 				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
@@ -472,7 +475,7 @@ const BEDROCK_DATA_RETENTION_DOCS_URL = "https://docs.aws.amazon.com/bedrock/lat
  * human-readable prefix so downstream consumers (retry logic, context-overflow
  * detection) can distinguish error categories via simple string matching.
  */
-function formatBedrockError(error: unknown): string {
+function formatBedrockError(error: unknown, connection: ConnectionFailure): string {
 	const norm = normalizeProviderError(error);
 	// Surface the raw HTTP body (with status) when the SDK did not fold it into
 	// the message; otherwise fall back to the message. This is what stops a
@@ -488,7 +491,40 @@ function formatBedrockError(error: unknown): string {
 		const prefix = BEDROCK_ERROR_PREFIXES[error.name] ?? error.name;
 		return `${prefix}: ${core}${dataRetentionHint}`;
 	}
-	return `${core}${dataRetentionHint}`;
+	return `${withConnectionCode(core, error, norm.status, connection)}${dataRetentionHint}`;
+}
+
+/**
+ * What one request's latest attempt failed with at Bedrock's HTTP handler, below every response: the request's own
+ * connection failure. Cleared as each attempt starts, so an error a hook, a credential source or a later response
+ * throws is never taken for it, even when it is the same object.
+ */
+interface ConnectionFailure {
+	failure?: object;
+}
+
+/** A connection error's code, such as `ECONNRESET`, as Node.js and Bun name them. */
+const CONNECTION_ERROR_CODE = /^(?:E[A-Z]+|ERR_SOCKET_[A-Z_]+)$/;
+
+/**
+ * `message` with the code of the connection error it reports, when it does not name it, for a failure of the request's
+ * own connection only (`connection`): the HTTP handler's errors carry their reason in the code, such as `ECONNRESET`
+ * for a connection reset during a TLS handshake or before a proxy answered, which is what the retry rules read. Bun
+ * reports a connection closed under the request as its socket being closed (`ERR_SOCKET_CLOSED`), which is named as the
+ * reset it is.
+ */
+function withConnectionCode(
+	message: string,
+	error: unknown,
+	status: number | undefined,
+	connection: ConnectionFailure,
+): string {
+	if (status !== undefined || typeof error !== "object" || error === null || connection.failure !== error)
+		return message;
+	const code = (error as { code?: unknown }).code;
+	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code)) return message;
+	const reported = code === "ERR_SOCKET_CLOSED" ? "ECONNRESET" : code;
+	return message.includes(reported) ? message : `${message} (${reported})`;
 }
 
 type SdkErrorMetadata = { $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };
@@ -562,19 +598,131 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
 	return mode === "short" ? [["atomic"]] : [["atomic", getClientVersion(identity)]];
 }
 
+/** What a proxy answered a tunnel request with, as https-proxy-agent reports it, and every byte read from it so far. */
+interface TunnelAnswer {
+	readonly connect: {
+		readonly statusCode: number;
+		readonly statusText: string;
+		readonly headers: Record<string, string | string[]>;
+	};
+	readonly buffered: Buffer;
+}
+
+/** A connection to the proxy that ended before it answered, as a reset connection is reported, so it is retried. */
+function proxyConnectionEnded(): Error {
+	return Object.assign(new Error("Proxy connection ended before receiving CONNECT response"), { code: "ECONNRESET" });
+}
+
 /**
- * The agent for an HTTPS endpoint through the proxy, recording what its connection to the proxy fails with before the
- * tunnel opens as the proxy's: a certificate the proxy shows is then named as the proxy's, not the endpoint's. The
- * endpoint's own TLS session runs over the tunnel after `connect` returns, so its failures are never recorded.
+ * Reads the proxy's answer to `CONNECT` on `socket`, as https-proxy-agent does, but keeps listening for errors on it after
+ * a failure: Node.js's TLS layer reports a connection to an https proxy that ended before its handshake with an error
+ * after the end, which would otherwise go unhandled and end the process.
+ */
+function readTunnelAnswer(socket: Socket): Promise<TunnelAnswer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let settled = false;
+		const stopReading = () => {
+			settled = true;
+			socket.removeListener("readable", read);
+			socket.removeListener("end", onEnd);
+		};
+		const fail = (error: Error) => {
+			if (settled) return;
+			stopReading();
+			socket.destroy();
+			reject(error);
+		};
+		const onEnd = () => fail(proxyConnectionEnded());
+		// Bun reports the same end as its socket being closed.
+		const onError = (error: Error & { code?: unknown }) =>
+			fail(error.code === "ERR_SOCKET_CLOSED" ? proxyConnectionEnded() : error);
+		function read(): void {
+			for (let chunk: Buffer | null = socket.read(); chunk !== null; chunk = socket.read()) {
+				chunks.push(chunk);
+				const buffered = Buffer.concat(chunks);
+				const end = buffered.indexOf("\r\n\r\n");
+				if (end === -1) continue;
+				const [statusLine = "", ...headerLines] = buffered.subarray(0, end).toString("ascii").split("\r\n");
+				if (statusLine === "") return fail(new Error("No header received from proxy CONNECT response"));
+				const headers: Record<string, string | string[]> = {};
+				for (const line of headerLines) {
+					if (line === "") continue;
+					const colon = line.indexOf(":");
+					if (colon === -1) return fail(new Error(`Invalid header from proxy CONNECT response: "${line}"`));
+					const name = line.slice(0, colon).toLowerCase();
+					const value = line.slice(colon + 1).trimStart();
+					const current = headers[name];
+					headers[name] = current === undefined ? value : [current, value].flat();
+				}
+				stopReading();
+				socket.removeListener("error", onError);
+				const [, status = "", ...text] = statusLine.split(" ");
+				return resolve({ connect: { statusCode: Number(status), statusText: text.join(" "), headers }, buffered });
+			}
+		}
+		socket.on("readable", read);
+		socket.on("end", onEnd);
+		socket.on("error", onError);
+	});
+}
+
+/** `options` with the server name TLS checks, for a host that is not an IP address, as https-proxy-agent sets it. */
+function withServerName<T extends { host?: string | null; servername?: string }>(options: T): T {
+	return options.servername === undefined && options.host && isIP(options.host) === 0
+		? { ...options, servername: options.host }
+		: options;
+}
+
+/**
+ * The agent for an HTTPS endpoint through the proxy. It opens the tunnel as https-proxy-agent does, except that a failed
+ * connection to the proxy rejects the request and never goes unhandled, and its end before the proxy answered is
+ * reported as a reset connection. What that connection fails with before the tunnel opens is recorded as the proxy's: a
+ * certificate the proxy shows is then named as the proxy's, not the endpoint's. The endpoint's own TLS session runs over
+ * the tunnel after `connect` returns, so its failures are never recorded.
  */
 class ProxyHopHttpsAgent extends HttpsProxyAgent<string> {
-	override async connect(...args: Parameters<HttpsProxyAgent<string>["connect"]>): Promise<Socket> {
+	override async connect(...[request, options]: Parameters<HttpsProxyAgent<string>["connect"]>): Promise<Socket> {
+		const proxy = this.proxy;
+		if (!options.host) throw new TypeError('No "host" provided');
+		const socket = proxy.protocol === "https:" ? connectTls(withServerName(this.connectOpts)) : connectNet(this.connectOpts);
+		const headers = typeof this.proxyHeaders === "function" ? this.proxyHeaders() : { ...this.proxyHeaders };
+		const host = isIPv6(options.host) ? `[${options.host}]` : options.host;
+		if (proxy.username || proxy.password) {
+			const credentials = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+			headers["Proxy-Authorization"] = `Basic ${Buffer.from(credentials).toString("base64")}`;
+		}
+		headers.Host = `${host}:${options.port}`;
+		if (!headers["Proxy-Connection"]) headers["Proxy-Connection"] = this.keepAlive ? "Keep-Alive" : "close";
+		const answer = readTunnelAnswer(socket);
+		const lines = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`);
+		socket.write(`CONNECT ${host}:${options.port} HTTP/1.1\r\n${lines.join("")}\r\n`);
+		let response: TunnelAnswer;
 		try {
-			return await super.connect(...args);
+			response = await answer;
 		} catch (error) {
-			recordProxyConnectionFailure(error, this.proxy);
+			recordProxyConnectionFailure(error, proxy);
 			throw error;
 		}
+		request.emit("proxyConnect", response.connect);
+		this.emit("proxyConnect", response.connect, request);
+		request.emit("proxy", { proxy: proxy.href, socket });
+		if (response.connect.statusCode === 200) {
+			// Resumed once every 'socket' listener, the HTTP client's included, is attached.
+			request.once("socket", (tunnel: Socket) => setImmediate(() => tunnel.resume()));
+			if (!options.secureEndpoint) return socket;
+			const { host: _host, path: _path, port: _port, ...endpoint } = withServerName(options);
+			return connectTls({ ...endpoint, socket });
+		}
+		// The proxy's own answer is handed to the HTTP client as the response, on a socket that sends the request nowhere.
+		socket.destroy();
+		const answered = new Socket({ writable: false });
+		answered.readable = true;
+		request.once("socket", (replay: Socket) => {
+			replay.push(response.buffered);
+			replay.push(null);
+		});
+		return answered;
 	}
 }
 
@@ -601,17 +749,21 @@ class ProxyHopHttpAgent extends HttpProxyAgent<string> {
  * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
  * host, so only a refused certificate on that connection is read as one (#6114).
  */
-function addTransportFailureMiddleware(client: BedrockRuntimeClient): void {
+function addTransportFailureMiddleware(client: BedrockRuntimeClient, connection: ConnectionFailure): void {
 	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
+		connection.failure = undefined;
 		try {
 			return await next(args);
 		} catch (error) {
 			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
-			if (!request?.hostname) throw error;
-			throw transportFailure(
-				error,
-				`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
-			);
+			const failure = request?.hostname
+				? transportFailure(
+						error,
+						`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
+					)
+				: error;
+			if (typeof failure === "object" && failure !== null) connection.failure = failure;
+			throw failure;
 		}
 	};
 	client.middlewareStack.add(middleware, { step: "deserialize", name: "atomic-transport-failure", priority: "low" });
