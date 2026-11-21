@@ -15,6 +15,7 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"intercom_held_sends",
 	"intercom_held_sends_reservation",
 	"intercom_known_sessions",
+	"intercom_known_sessions_alias_id",
 	"intercom_known_sessions_atomic_id",
 	"intercom_known_sessions_intercom_id",
 	"intercom_known_sessions_name",

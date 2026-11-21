@@ -233,6 +233,23 @@ export interface RemoteSendRequest {
   readonly notFound: () => void;
 }
 
+/**
+ * #5607: for a broker's session map, the session that holds an id as an alias (with multi-node routing, the id it had
+ * while it awaited its own, or the one it awaited): a plain send to that exact id reaches it, with the send itself,
+ * its target and its digest unchanged.
+ */
+const sessionAliases = new WeakMap<
+	ReadonlyMap<string, BrokerConnectedSession>,
+	(sessionId: string) => BrokerConnectedSession | undefined
+>();
+
+export function resolveSessionAliasesWith(
+	sessions: ReadonlyMap<string, BrokerConnectedSession>,
+	resolve: (sessionId: string) => BrokerConnectedSession | undefined,
+): void {
+	sessionAliases.set(sessions, resolve);
+}
+
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
 const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
@@ -249,6 +266,14 @@ const detachedSends = new WeakSet<SendClientMessage>();
 export function detachSend(clientMessage: SendClientMessage, sender?: BrokerConnectedSession): void {
   detachedSends.add(clientMessage);
   if (sender !== undefined) sendersAtReceipt.set(clientMessage, sender);
+}
+
+/**
+ * #5607: `clientMessage`, a reply to an ask that an id its sender holds as an alias received, answers as that id: its
+ * local delivery goes out from `sender`, the sender under that id, as its shared route does.
+ */
+export function answerAs(clientMessage: SendClientMessage, sender: BrokerConnectedSession): void {
+  sendersAtReceipt.set(clientMessage, sender);
 }
 
 /** Durable wake queue: the sender of `clientMessage` as the broker took it, once it has. */
@@ -423,7 +448,9 @@ export function handleBrokerSend(
   // Exact-id targeting always resolves against the full pool so a cross-group id
   // is caught by the defense-in-depth group check below. Only a broker-authorized
   // supervisor frame or an exact recorded reply may resolve across groups.
-	const exactIdTarget = sessions.get(trimmedTo);
+	const plainSend =
+		!supervisorSend && message.replyTo === undefined && !requirePendingReply && expectedRecipientId === undefined;
+	const exactIdTarget = sessions.get(trimmedTo) ?? (plainSend ? sessionAliases.get(sessions)?.(trimmedTo) : undefined);
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
 	(info) => reachesSession(fromSession, info) ||
       (supervisorSend && info.id === fromSession.supervisorId) ||

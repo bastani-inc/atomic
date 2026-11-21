@@ -7,6 +7,7 @@ import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ProjectGroupError } from "@bastani/atomic";
+import { helperLaunch, helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { readSharedStorageSetting, readSharedStorageSettingAsync } from "./broker/shared-storage-setting.js";
 import { pathExists } from "./path-exists.js";
 
@@ -73,12 +74,15 @@ function repositoryMarker(directory: string): string | undefined {
 }
 
 function git(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): SpawnSyncReturns<string> {
-  const result = spawnSync("git", ["-C", cwd, ...args], {
+  // git only from PATH's absolute directories, never from the working directory.
+  const launch = helperLaunch("git", { env });
+  const result = spawnSync(launch.file, ["-C", cwd, ...args], {
     env,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8" as const,
+    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
     windowsHide: true,
-  });
+    ...missingHelperOptions(launch),
+    });
   if (result.error !== undefined) {
     throw new ProjectGroupError("git-unavailable", {
       cwd,
@@ -116,12 +120,14 @@ async function gitAsync(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const launch = await helperLaunchAsync("git", { env });
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn("git", ["-C", cwd, ...args], {
+    const child = spawn(launch.file, ["-C", cwd, ...args], {
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+      ...missingHelperOptions(launch),
+      });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     child.stdout?.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
