@@ -173,6 +173,11 @@ test("a native module from before the breakaway job gives a pi.exec command no j
 	assert.equal(containmentFunction(null, { allowBreakaway: true }), undefined);
 });
 
+/** A number no other process's command line is likely to hold, which a test's command passes to what it starts. */
+function uniqueMarker(): string {
+	return String(1_000_000 + Math.floor(Math.random() * 8_999_999));
+}
+
 /** The Windows processes whose command line holds `marker`, other than this test's own queries. */
 function windowsProcessesWith(marker: string): number[] {
 	const output = execFileSync(
@@ -181,20 +186,37 @@ function windowsProcessesWith(marker: string): number[] {
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${marker}*' -and $_.Name -ne 'powershell.exe' }).ProcessId`,
+			`(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '\\b${marker}\\b' -and $_.Name -ne 'powershell.exe' }).ProcessId`,
 		],
 		{ encoding: "utf8", timeout: GONE_MS * 4 },
 	);
 	return output.split(/\s+/).filter(Boolean).map(Number);
 }
 
-async function windowsProcessesStarted(marker: string): Promise<number[]> {
+/**
+ * The processes a test's command started with `marker`, once they run, recorded with when they started so that a test
+ * and its cleanup only ever signal those processes.
+ */
+async function windowsProcessesStarted(marker: string): Promise<RecordedProcess[]> {
 	const deadline = Date.now() + GONE_MS * 4;
-	for (;;) {
-		const found = windowsProcessesWith(marker);
-		if (found.length > 0 || Date.now() > deadline) return found;
-		await new Promise((resolve) => setTimeout(resolve, POLL_MS * 10));
+	let found: number[] = [];
+	while (found.length === 0 && Date.now() <= deadline) {
+		found = windowsProcessesWith(marker);
+		if (found.length === 0) await new Promise((resolve) => setTimeout(resolve, POLL_MS * 10));
 	}
+	const recorded = await Promise.all(found.map((pid) => recordProcess(pid)));
+	processes.push(...recorded);
+	return recorded;
+}
+
+async function allGone(recorded: readonly RecordedProcess[], withinMs: number): Promise<boolean> {
+	const gone = await Promise.all(recorded.map((process) => waitUntilGone(process, withinMs)));
+	return gone.every(Boolean);
+}
+
+async function noneGone(recorded: readonly RecordedProcess[]): Promise<boolean> {
+	const gone = await Promise.all(recorded.map((process) => waitUntilGone(process, KILL_SEEN_MS)));
+	return !gone.some(Boolean);
 }
 
 /** A quit stop as a session gives a command an extension runs outside its `session_shutdown` handlers. */
@@ -207,37 +229,29 @@ describe.runIf(process.platform === "win32")(
 	() => {
 		const cases: readonly {
 			readonly name: string;
-			readonly marker: string;
 			readonly command: string;
-			readonly args: readonly string[];
+			readonly args: (marker: string) => string[];
 		}[] = [
 			{
 				name: "a ping cmd.exe started",
-				marker: "6301",
 				command: process.env.ComSpec ?? "cmd.exe",
-				args: ["/d", "/s", "/c", "ping -n 6301 127.0.0.1 > nul"],
+				args: (marker) => ["/d", "/s", "/c", `ping -n ${marker} 127.0.0.1 > nul`],
 			},
 			{
 				name: "a program PowerShell's Start-Process started",
-				marker: "6302",
 				command: "powershell.exe",
-				args: [
+				args: (marker) => [
 					"-NoProfile",
 					"-Command",
-					"Start-Process -WindowStyle Hidden ping -ArgumentList '-n','6302','127.0.0.1'; Start-Sleep 600",
+					`Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${marker}','127.0.0.1'; Start-Sleep 600`,
 				],
 			},
-			{
-				name: "a background job of Git Bash",
-				marker: "6303",
-				command: "bash",
-				args: ["-c", "sleep 6303 & wait"],
-			},
 		];
-		for (const { name, marker, command, args } of cases) {
+		for (const { name, command, args } of cases) {
 			test(name, async () => {
+				const marker = uniqueMarker();
 				const controller = new AbortController();
-				const running = execCommand(command, [...args], process.cwd(), { signal: controller.signal }, quitStop);
+				const running = execCommand(command, args(marker), process.cwd(), { signal: controller.signal }, quitStop);
 				const started = await windowsProcessesStarted(marker);
 				assert.ok(started.length > 0, "the command started nothing");
 
@@ -245,15 +259,12 @@ describe.runIf(process.platform === "win32")(
 				const result = await running;
 
 				assert.equal(result.code, 143);
-				const deadline = Date.now() + GONE_MS;
-				while (windowsProcessesWith(marker).length > 0 && Date.now() < deadline)
-					await new Promise((resolve) => setTimeout(resolve, POLL_MS * 10));
-				assert.deepEqual(windowsProcessesWith(marker), [], "what the command started outlived it");
+				assert.equal(await allGone(started, GONE_MS), true, "what the command started outlived it");
 			});
 		}
 
 		test("a child that asked to leave the job still starts, and keeps running", async () => {
-			const marker = "6304";
+			const marker = uniqueMarker();
 			const breakaway = `Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
 public static class Breakaway {
@@ -262,9 +273,8 @@ public static class Breakaway {
 	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
 	public static int Start(string cmd) { var si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si); PROCESS_INFORMATION pi; if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x01000000 | 0x08000000, IntPtr.Zero, null, ref si, out pi)) return -Marshal.GetLastWin32Error(); return pi.pid; }
 }
-'@; $pid2 = [Breakaway]::Start('ping -n ${marker} 127.0.0.1'); Write-Output $pid2; Start-Sleep 600`;
+'@; Write-Output ([Breakaway]::Start('ping -n ${marker} 127.0.0.1')); Start-Sleep 600`;
 			const controller = new AbortController();
-			let output = "";
 			const running = execCommand(
 				"powershell.exe",
 				["-NoProfile", "-Command", breakaway],
@@ -273,55 +283,63 @@ public static class Breakaway {
 				quitStop,
 			);
 			const started = await windowsProcessesStarted(marker);
-			try {
-				assert.ok(started.length > 0, "the child that asked to leave the job did not start");
-				controller.abort();
-				output = (await running).stdout;
-				assert.deepEqual(windowsProcessesWith(marker), started, "a child outside the job was ended");
-			} finally {
-				for (const pid of started) {
-					try {
-						process.kill(pid);
-					} catch {
-						// Already gone.
-					}
-				}
-			}
-			assert.ok(!output.trim().startsWith("-"), `the start failed: ${output}`);
+			assert.ok(started.length > 0, "the child that asked to leave the job did not start");
+
+			controller.abort();
+			const result = await running;
+
+			assert.ok(!result.stdout.trim().startsWith("-"), `the start failed: ${result.stdout}`);
+			assert.equal(await noneGone(started), true, "a child outside the job was ended");
+		});
+
+		// Git Bash, as Cygwin does, starts its processes outside a job that lets them leave, as the job of a pi.exec command
+		// does so that such a start still works.
+		test("a background job of Git Bash leaves the command's job and keeps running, as before", async () => {
+			const marker = uniqueMarker();
+			const controller = new AbortController();
+			const running = execCommand(
+				"bash",
+				["-c", `sleep ${marker} & wait`],
+				process.cwd(),
+				{ signal: controller.signal },
+				quitStop,
+			);
+			const started = await windowsProcessesStarted(marker);
+			assert.ok(started.length > 0, "the command started nothing");
+
+			controller.abort();
+			assert.equal((await running).code, 143);
+
+			assert.equal(await noneGone(started), true);
 		});
 
 		test("an abort after the command ended signals nothing, so a process given its number is left alone", async () => {
-			const marker = "6305";
-			const unrelated = execFileSync(
-				"powershell.exe",
-				[
-					"-NoProfile",
-					"-Command",
-					`(Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${marker}','127.0.0.1' -PassThru).Id`,
-				],
-				{ encoding: "utf8", timeout: GONE_MS * 4 },
-			).trim();
-			try {
-				const controller = new AbortController();
-				const result = await execCommand(
-					process.env.ComSpec ?? "cmd.exe",
-					["/d", "/s", "/c", "exit 0"],
-					process.cwd(),
-					{ signal: controller.signal },
-					quitStop,
-				);
-				controller.abort();
+			const marker = uniqueMarker();
+			const unrelatedPid = Number(
+				execFileSync(
+					"powershell.exe",
+					[
+						"-NoProfile",
+						"-Command",
+						`(Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${marker}','127.0.0.1' -PassThru).Id`,
+					],
+					{ encoding: "utf8", timeout: GONE_MS * 4 },
+				).trim(),
+			);
+			const unrelated = await recordProcess(unrelatedPid);
+			processes.push(unrelated);
+			const controller = new AbortController();
+			const result = await execCommand(
+				process.env.ComSpec ?? "cmd.exe",
+				["/d", "/s", "/c", "exit 0"],
+				process.cwd(),
+				{ signal: controller.signal },
+				quitStop,
+			);
+			controller.abort();
 
-				assert.equal(result.code, 0);
-				await new Promise((resolve) => setTimeout(resolve, KILL_SEEN_MS));
-				assert.deepEqual(windowsProcessesWith(marker), [Number(unrelated)], "an unrelated process was ended");
-			} finally {
-				try {
-					process.kill(Number(unrelated));
-				} catch {
-					// Already gone.
-				}
-			}
+			assert.equal(result.code, 0);
+			assert.equal(await noneGone([unrelated]), true, "an unrelated process was ended");
 		});
 	},
 );
