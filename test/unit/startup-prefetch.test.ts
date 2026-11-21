@@ -4,7 +4,11 @@ import { availableParallelism, constants, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
-import { readStartupFiles } from "../../packages/coding-agent/src/utils/startup-prefetch-reader.ts";
+import {
+	readStartupFiles,
+	readsFoundFilesInMemory,
+	startupFilePaths,
+} from "../../packages/coding-agent/src/utils/startup-prefetch-reader.ts";
 import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../helpers/recorded-process.js";
 import { spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -172,8 +176,18 @@ test("the built list names files that this build loads, and the reader finds eve
 	assert.ok(
 		list.files.some(([index, path]) => list.packages[index]?.[0] === "@bastani/atomic" && path === "dist/main.js"),
 	);
-	const read = await readStartupFiles(fileURLToPath(listPath), fileURLToPath(codingAgent));
-	assert.ok(read >= list.files.length, `read ${read} of ${list.files.length}`);
+	const { modules } = await startupFilePaths(fileURLToPath(listPath), fileURLToPath(codingAgent));
+	assert.equal(modules.length, list.files.length);
+	const missing = modules.filter((path) => !existsSync(path));
+	assert.deepEqual(missing, []);
+});
+
+test("reads that found their files in memory tell a warm start from a first one, by their median", () => {
+	assert.equal(readsFoundFilesInMemory([0.1, 0.3, 0.2, 0.4]), true);
+	assert.equal(readsFoundFilesInMemory([0.2, 1.5, 40, 0.3, 0.1]), true);
+	// After a restart, the disk and the antivirus scan make most of the first reads slow.
+	assert.equal(readsFoundFilesInMemory([0.2, 12, 40, 3, 0.1]), false);
+	assert.equal(readsFoundFilesInMemory([]), false);
 });
 
 interface ReaderStart {

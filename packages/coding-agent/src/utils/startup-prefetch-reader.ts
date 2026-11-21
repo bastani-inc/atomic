@@ -115,9 +115,16 @@ async function nativeAddonFiles(
 	return [join(platformPackage, main)];
 }
 
-export async function readStartupFiles(listPath: string, packageDir: string): Promise<number> {
+/**
+ * The files the list names, where this installation has them: the modules startup loads, in the order it loads them,
+ * then the one binary of each native addon that Node loads here.
+ */
+export async function startupFilePaths(
+	listPath: string,
+	packageDir: string,
+): Promise<{ modules: string[]; binaries: string[] }> {
 	const list = JSON.parse(await readFile(listPath, "utf8")) as StartupFileList;
-	if (list.version !== 2) return 0;
+	if (list.version !== 2) return { modules: [], binaries: [] };
 	const limit = installationRoot(packageDir);
 	// Each package from the package it is imported from, as Node resolves it there: an earlier one in the list.
 	const roots: (string | undefined)[] = [];
@@ -131,36 +138,77 @@ export async function readStartupFiles(listPath: string, packageDir: string): Pr
 					: await packageRoot(name, fromDir, limit),
 		);
 	}
-	const paths: string[] = [];
+	const modules: string[] = [];
 	for (const [index, path] of list.files) {
 		const root = roots[index];
 		// A path inside its package only: the list never names one above it.
 		if (root === undefined || isAbsolute(path) || path.split(/[\\/]/).includes("..")) continue;
-		paths.push(join(root, path));
+		modules.push(join(root, path));
 	}
+	const binaries: string[] = [];
 	for (const [index, [name]] of list.packages.entries()) {
 		const root = roots[index];
 		const binary = NATIVE_ADDON_PACKAGES.get(name);
 		if (root !== undefined && binary !== undefined)
-			paths.push(...(await nativeAddonFiles(name, binary, root, limit)));
+			binaries.push(...(await nativeAddonFiles(name, binary, root, limit)));
 	}
-	let next = 0;
+	return { modules, binaries };
+}
+
+/** Modules read first and timed, to tell whether the files are already in memory: the last ones startup loads. */
+const WARM_PROBE_FILES = 32;
+/**
+ * A median read faster than this found its files in memory: a warm start, where reading the rest ahead of the module
+ * loader gains nothing and only takes CPU and memory from Atomic's own start. A first read after a restart, an install
+ * or an upgrade waits for the disk and, on Windows, for the antivirus to scan the file.
+ */
+const WARM_READ_MS = 2;
+
+/** Whether reads that took these times (ms) found their files already in memory, by their median. */
+export function readsFoundFilesInMemory(timesMs: readonly number[]): boolean {
+	if (timesMs.length === 0) return false;
+	const sorted = [...timesMs].sort((a, b) => a - b);
+	return sorted[Math.floor((sorted.length - 1) / 2)]! < WARM_READ_MS;
+}
+
+/** Reads one file, a regular one of a bounded size only, never a FIFO or device a different install could name. */
+async function readOne(path: string): Promise<boolean> {
+	try {
+		const stats = await stat(path);
+		if (!stats.isFile() || stats.size > MAX_FILE_BYTES) return false;
+		await readFile(path);
+		return true;
+	} catch {
+		// Not installed here, or not readable: the module loader reports it if it ever needs it.
+		return false;
+	}
+}
+
+/**
+ * Reads the files many at once and returns how many it read. Meanwhile it times reads of the last modules on the list,
+ * which startup reaches last: when those were already in memory, so are the others, and it stops.
+ */
+export async function readStartupFiles(listPath: string, packageDir: string): Promise<number> {
+	const { modules, binaries } = await startupFilePaths(listPath, packageDir);
+	const paths = [...modules, ...binaries];
 	let read = 0;
-	const reader = async () => {
-		while (next < paths.length) {
-			const path = paths[next++]!;
-			try {
-				// A regular file of a bounded size only, never a FIFO or device a different install could name.
-				const stats = await stat(path);
-				if (!stats.isFile() || stats.size > MAX_FILE_BYTES) continue;
-				await readFile(path);
-				read++;
-			} catch {
-				// Not installed here, or not readable: the module loader reports it if it ever needs it.
-			}
-		}
+	let warm = false;
+	const probe = async () => {
+		if (modules.length <= 2 * WARM_PROBE_FILES) return;
+		const times = await Promise.all(
+			modules.slice(-WARM_PROBE_FILES).map(async (path) => {
+				const started = performance.now();
+				if (await readOne(path)) read++;
+				return performance.now() - started;
+			}),
+		);
+		warm = readsFoundFilesInMemory(times);
 	};
-	await Promise.all(Array.from({ length: READ_CONCURRENCY }, reader));
+	let next = 0;
+	const reader = async () => {
+		while (!warm && next < paths.length) if (await readOne(paths[next++]!)) read++;
+	};
+	await Promise.all([probe(), ...Array.from({ length: READ_CONCURRENCY }, reader)]);
 	return read;
 }
 
