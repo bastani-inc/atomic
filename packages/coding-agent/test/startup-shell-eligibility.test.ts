@@ -69,3 +69,11 @@ test("the early editor does not start where the session would not use the altern
 	process.env.TERM = "dumb";
 	assert.equal(planStartupShell(["-a"], project), undefined, "with TERM=dumb");
 });
+
+test("a project's own display settings keep the early editor away only where this run may trust the project", () => {
+	mkdirSync(join(project, ".atomic"));
+	writeFileSync(join(project, ".atomic", "settings.json"), JSON.stringify({ editorPaddingX: 4 }));
+	assert.equal(planStartupShell(["-a"], project), undefined, "a trusted project draws the editor its own way");
+	assert.ok(planStartupShell(["-na"], project), "an untrusted project's settings do not apply");
+	assert.ok(planStartupShell(["-a", "--no-approve"], project), "the last trust argument decides");
+});
