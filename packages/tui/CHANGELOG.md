@@ -10,6 +10,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - `Editor.setAutocompleteProvider(provider, { preserveSelection: true, refreshMenu: true })` shows the new provider's rows in an open menu in which nothing was chosen, whether it lists commands, arguments or files ([#6183](https://github.com/bastani-inc/atomic/pull/6183), [#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - `EditorComponent.setAutocompleteProvider` takes the same optional second argument, so an editor built on `Editor` keeps its menu when its host replaces the provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 
+### Changed
+
+- The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
+
 ### Fixed
 
 - A lookup that `setAutocompleteProvider(..., { preserveSelection: true })` retries for the new provider no longer raises an unhandled rejection when the provider fails, and later lookups still run ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
