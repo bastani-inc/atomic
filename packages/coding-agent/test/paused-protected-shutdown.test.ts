@@ -7,6 +7,8 @@ import { createHarness, type Harness } from "./suite/harness.ts";
 
 type ShutdownContext = {
 	isShuttingDown: boolean;
+	/** The quit keeps its signal handlers once the screen stopped; removed by the test. */
+	signalCleanupHandlers: Array<() => void>;
 	runtimeHost: AgentSessionRuntime;
 	themeController: { disableAutoSync(): void };
 	ui: { terminal: { drainInput(maxMs: number, idleMs: number): Promise<void> } };
@@ -94,6 +96,7 @@ describe("paused protected reconciliation shutdown", () => {
 		}) as typeof process.exit);
 		const context: ShutdownContext = {
 			isShuttingDown: false,
+			signalCleanupHandlers: [],
 			runtimeHost: runtimeFor(harness),
 			themeController: {
 				disableAutoSync() {
@@ -113,7 +116,11 @@ describe("paused protected reconciliation shutdown", () => {
 			sessionManager: harness.session.sessionManager,
 		};
 
-		await expect(shutdown.call(context)).rejects.toBe(exit);
+		try {
+			await expect(shutdown.call(context)).rejects.toBe(exit);
+		} finally {
+			for (const cleanup of context.signalCleanupHandlers.splice(0)) cleanup();
+		}
 
 		expect(context.isShuttingDown).toBe(true);
 		expect(events).toEqual(["theme", "drain", "stop"]);

@@ -3,12 +3,13 @@ import { normalizeProviderId } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
-import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { type AgentSessionRuntime, HOST_STARTED_SESSION } from "../../core/agent-session-runtime.ts";
 import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
+import { findQueuedMessages } from "../../core/queued-message-receipts.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
@@ -122,6 +123,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "get_history_page":
 		case "get_history_chunk":
 		case "get_messages":
+		case "find_queued_messages":
 		case "get_state":
 		case "pause_queued_messages":
 		case "resume_queued_messages":
@@ -242,6 +244,7 @@ export function createRpcCommandHandler({
 					await promptSession.prompt(command.message, {
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
+						...(typeof command.queuedMessageId === "string" ? { queuedMessageId: command.queuedMessageId } : {}),
 						source: "rpc",
 						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {
@@ -673,6 +676,10 @@ export function createRpcCommandHandler({
 					cwdOverride: command.cwdOverride,
 					sessionDirectory: command.sessionDirectory,
 					history: "tail",
+					// Only the host of an interactive engine created the session in a process this engine trusts.
+					...(command.startedSession === true && isInteractiveEngineChild()
+						? { startedSession: HOST_STARTED_SESSION }
+						: {}),
 				});
 				if (!result.cancelled) {
 					await rebindSession();
@@ -909,6 +916,14 @@ export function createRpcCommandHandler({
 
 			case "get_messages": {
 				return createRpcSuccessResponse(id, "get_messages", { messages: session.messages });
+			}
+
+			case "find_queued_messages": {
+				return createRpcSuccessResponse(
+					id,
+					"find_queued_messages",
+					await findQueuedMessages(session.sessionManager, command),
+				);
 			}
 
 			case "get_command_completions": {

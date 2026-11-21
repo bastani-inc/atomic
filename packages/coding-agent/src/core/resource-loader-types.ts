@@ -34,6 +34,14 @@ export interface ResourceLoaderReloadOptions {
 	deferResources?: boolean;
 	/** Publish trust-safe extensions now; complete trust after binding a live session and UI. */
 	deferProjectTrust?: (complete: () => Promise<void>) => void;
+	/**
+	 * Narrows the extensions that load before the project's trust decision, which are the ones that can decide it.
+	 * `"bundled"`: only Atomic's bundled extensions, for a startup that found no other extension configured and used the
+	 * project at once; an extension configured since then loads after the decision and does not vote on it. `"voters"`:
+	 * every source except Atomic's bundled extensions, which answer no `project_trust`, for a decision made before the
+	 * session it serves is opened.
+	 */
+	preTrustExtensions?: "bundled" | "voters";
 	resolveProjectTrust?: (options: { extensionsResult: LoadExtensionsResult }) => boolean | Promise<boolean>;
 	resolveBorrowedProjectTrust?: (options: {
 		source: string;

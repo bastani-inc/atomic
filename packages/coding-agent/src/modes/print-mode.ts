@@ -11,7 +11,7 @@ import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani
 import { sessionConflictMessage } from "../cli/settings-startup.ts";
 import type { AgentSession, AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
-import { CommandDeliveries, collectCommandDeliveries } from "../core/command-deliveries.ts";
+import { type CommandAnswer, CommandDeliveries, collectCommandDeliveries } from "../core/command-deliveries.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
 import { enablePrintModelSelection, hasPrintModelSelection } from "../core/first-prompt-model.ts";
@@ -28,6 +28,7 @@ import {
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
 import { reportDiagnostics } from "../main-stdio.ts";
+import { startedWithHangupIgnored } from "../utils/inherited-hangup.js";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -70,6 +71,11 @@ function messagesBeforeTrailingBoundary(session: AgentSession): readonly AgentMe
 	return session.sessionManager
 		.getBranch()
 		.flatMap((entry) => (entry.type === "message" && entry.message.role !== "system" ? [entry.message] : []));
+}
+
+/** Whether `message` is a model reply that failed or was aborted. */
+function failedReply(message: AgentMessage | undefined): boolean {
+	return message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted");
 }
 
 function displayableCustomText(message: CustomMessage): string | undefined {
@@ -162,6 +168,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let activePromptHadCommandError = false;
 	/** Whether the last prompt's extension commands answered with messages they queued (#6113). */
 	let commandAnswered = false;
+	/**
+	 * The last prompt's extension commands' own answer in each session: what the run prints for the session it ends in,
+	 * whatever another sender saved after it.
+	 */
+	let commandAnswers: WeakMap<object, CommandAnswer> | undefined;
 	/** Whether a model reply ended during this run: the session's last reply is then possibly this run's own. */
 	let repliedThisRun = false;
 	let session = runtimeHost.session;
@@ -186,7 +197,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		// stopped with its process tree instead of being left in its own process group.
 		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 		if (process.platform !== "win32") {
-			signals.push("SIGHUP");
+			// A run started with SIGHUP ignored, as under `nohup`, goes on when its terminal closes.
+			if (!startedWithHangupIgnored()) signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {
@@ -238,6 +250,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			const queued = await deliveries.settle();
 			for (const error of queued.unreported) console.error(error instanceof Error ? error.message : String(error));
 			commandAnswered = queued.answered;
+			commandAnswers = queued.answered ? queued.answers : undefined;
 			if (queued.lost) {
 				// The command's answer was lost: an earlier reply must not stand in for it, so text output prints nothing
 				// and fails. Its sender reported why. The JSON event stream never printed a reply in its place and keeps
@@ -356,10 +369,15 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		const state = session.state;
 		const finalMessages = messagesBeforeTrailingBoundary(session);
-		const lastMessage = finalMessages[finalMessages.length - 1];
-		const lastAssistantMessage = [...finalMessages].reverse().find((message) => message.role === "assistant") as
-			| AssistantMessage
-			| undefined;
+		const sessionLast = finalMessages[finalMessages.length - 1];
+		// A command's own answer in the session the run ends in is what its messages and their turns saved there, not a
+		// message another sender saved after it.
+		const commandAnswer = commandAnswers?.get(session);
+		const ownAnswer = commandAnswer !== undefined;
+		const lastMessage = commandAnswer?.answer ?? sessionLast;
+		const lastAssistantMessage = (
+			ownAnswer ? commandAnswer.reply : [...finalMessages].reverse().find((message) => message.role === "assistant")
+		) as AssistantMessage | undefined;
 		const runAnswer =
 			fellBack && session === runSession
 				? ([...state.messages.slice(runStart)].reverse().find((message) => message.role === "assistant") as
@@ -379,7 +397,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		if (ranOn && mode === "text" && !suppressFinalOutput) console.error(ranOn);
 		// A command that answered with a message, in a run where no model replied, is not cut by an earlier run's reply
 		// that reached the output limit.
-		const answeredByCommand = commandAnswered && !repliedThisRun && lastMessage?.role !== "assistant";
+		const answeredByCommand = !ownAnswer && commandAnswered && !repliedThisRun && lastMessage?.role !== "assistant";
 		if (
 			!answeredByCommand &&
 			lastAssistantMessage?.stopReason === "length" &&
@@ -390,6 +408,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			exitCode = 1;
 		}
 
+		// The JSON event stream showed the session's final message as it is: a failed reply there still fails the run.
+		if (mode === "json" && ownAnswer && failedReply(sessionLast)) exitCode = 1;
 		if (lastMessage?.role === "assistant") {
 			const assistantMsg = lastMessage as AssistantMessage;
 			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {

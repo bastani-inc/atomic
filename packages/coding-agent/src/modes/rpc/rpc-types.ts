@@ -128,7 +128,15 @@ export interface RpcHistoryChunk {
 
 export type RpcCommand =
 	// Prompting
-	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
+	| {
+			id?: string;
+			type: "prompt";
+			message: string;
+			images?: ImageContent[];
+			streamingBehavior?: "steer" | "followUp";
+			/** When the message is queued, the id it is queued with, which the client names it by (see `PromptOptions`). */
+			queuedMessageId?: string;
+	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
@@ -214,7 +222,18 @@ export type RpcCommand =
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "get_tools" }
 	| { id?: string; type: "export_html"; outputPath?: string }
-	| { id?: string; type: "switch_session"; sessionId: string; cwdOverride?: string; sessionDirectory?: string }
+	| {
+			id?: string;
+			type: "switch_session";
+			sessionId: string;
+			cwdOverride?: string;
+			sessionDirectory?: string;
+			/**
+			 * Internal to the interactive engine: its host created the session just before this switch. Any other RPC
+			 * peer's value is ignored.
+			 */
+			startedSession?: boolean;
+	  }
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }
@@ -248,6 +267,12 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	/**
+	 * Which of the queued messages saved with `ids` the session's store holds after its entry `after` (of generation
+	 * `epoch`): `saved` holds the ones found, `absent` the ones the store provably does not hold. One in neither is
+	 * unknown. A host asks this after it lost an engine that was delivering them.
+	 */
+	| { id?: string; type: "find_queued_messages"; ids: string[]; after: number; epoch?: string }
 
 	// Commands and their live argument completions
 	| { id?: string; type: "get_commands" }
@@ -592,6 +617,13 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "find_queued_messages";
+			success: true;
+			data: { saved: string[]; absent: string[] };
+	  }
 
 	// Commands
 	| {

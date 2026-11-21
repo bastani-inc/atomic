@@ -277,8 +277,20 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): Promise<void>;
 
-	_queueSteer(text: string, images?: ImageContent[], typed?: string, rawText?: string): Promise<void>;
-	_queueFollowUp(text: string, images?: ImageContent[], typed?: string, rawText?: string): Promise<void>;
+	_queueSteer(
+		text: string,
+		images?: ImageContent[],
+		typed?: string,
+		rawText?: string,
+		receiptId?: string,
+	): Promise<void>;
+	_queueFollowUp(
+		text: string,
+		images?: ImageContent[],
+		typed?: string,
+		rawText?: string,
+		receiptId?: string,
+	): Promise<void>;
 	_throwIfExtensionCommand(text: string): void;
 	sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,

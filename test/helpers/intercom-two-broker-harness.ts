@@ -44,7 +44,6 @@ export const BROKER_START_ALLOWANCE_MS = 90_000;
 const CLIENT_REGISTRATION_TIMEOUT_MS = 30_000;
 /** Generously more database calls than a broker's shared storage opening makes (its tables, columns and indexes). */
 const SHARED_STORAGE_OPENING_CALLS = 60;
-const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 15_000;
 /**
  * How long start() waits for a broker to write its lease before reporting single-node brokers. Every node has already
@@ -661,22 +660,15 @@ export class TwoBrokerHarness {
 		};
 	}
 
-	/** Disconnect every client on both nodes first, then stop the brokers, then remove the files. */
+	/**
+	 * Disconnect every client on both nodes first, then stop the brokers, then remove the files. A client's disconnect
+	 * ends its connection itself when the broker does not close it in time, so it needs no clock of the harness's own.
+	 */
 	async cleanup(): Promise<void> {
 		const clients = this.nodeNames.flatMap((node) => this.node(node).clients);
-		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			await Promise.race([
-				Promise.all(clients.map((client) => client.client.disconnect().catch(() => undefined))),
-				new Promise<never>((_, reject) => {
-					timer = setTimeout(
-						() => reject(new Error("Two-broker clients did not close before cleanup deadline")),
-						CLIENT_DISCONNECT_TIMEOUT_MS,
-					);
-				}),
-			]);
+			await Promise.all(clients.map((client) => client.client.disconnect().catch(() => undefined)));
 		} finally {
-			clearTimeout(timer);
 			for (const node of this.nodeNames) await this.node(node).fixture.cleanup();
 			await Promise.all(this.databases.splice(0).map((database) => database.close().catch(() => undefined)));
 			await removePath(this.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });

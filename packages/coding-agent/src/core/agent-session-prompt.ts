@@ -28,7 +28,13 @@ import type {
 } from "./agent-session-types.js";
 import { formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
-import { joinCommandSend, joinCommandTurn, runCommandHandler } from "./command-deliveries.ts";
+import {
+	deferCommandTurn,
+	dropDeferredCommandTurn,
+	joinCommandSend,
+	joinCommandTurn,
+	runCommandHandler,
+} from "./command-deliveries.ts";
 import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
@@ -171,7 +177,8 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
  */
 function deferSettledAction(session: AgentSession, action: () => Promise<void>): void {
 	const admission = currentResourceAdmission();
-	session._deferredSettledActions.push(() => withOwnResourceAdmission(admission, action));
+	// #6113: print mode waits for a turn an extension command's message defers here, from now on.
+	session._deferredSettledActions.push(deferCommandTurn(session, () => withOwnResourceAdmission(admission, action)));
 }
 
 function queuesDuringAgentSettled(session: AgentSession, options: PromptOptions | undefined): boolean {
@@ -330,8 +337,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const keepAcceptedInput = async (error: unknown): Promise<void> => {
 		if (!acceptedWhileHeld || held.cancelled || isSessionClosed(error)) return;
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this)) return;
-		if (held.lane === "followUp") await this._queueFollowUp(keptText, keptImages, text, keptRawText);
-		else await this._queueSteer(keptText, keptImages, text, keptRawText);
+		if (held.lane === "followUp")
+			await this._queueFollowUp(keptText, keptImages, text, keptRawText, options?.queuedMessageId);
+		else await this._queueSteer(keptText, keptImages, text, keptRawText, options?.queuedMessageId);
 	};
 
 	// Reserves the context through async input hooks and auth checks, so tree navigation cannot start
@@ -398,8 +406,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				return;
 			}
 			if (held) stopWaiting(this, held);
-			if (delivery === "followUp") await this._queueFollowUp(pausedText, pausedImages, text);
-			else await this._queueSteer(pausedText, pausedImages, text);
+			if (delivery === "followUp")
+				await this._queueFollowUp(pausedText, pausedImages, text, undefined, options?.queuedMessageId);
+			else await this._queueSteer(pausedText, pausedImages, text, undefined, options?.queuedMessageId);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -470,8 +479,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				return;
 			}
 			if (this._queuedMessagesPaused) {
-				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages, text, currentText);
-				else await this._queueSteer(expandedText, currentImages, text, currentText);
+				if (held.lane === "followUp")
+					await this._queueFollowUp(expandedText, currentImages, text, currentText, options?.queuedMessageId);
+				else await this._queueSteer(expandedText, currentImages, text, currentText, options?.queuedMessageId);
 				preflightResult?.(true, "queued");
 				return;
 			}
@@ -498,8 +508,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			const queued =
 				delivery.streamingBehavior === "followUp"
-					? this._queueFollowUp(expandedText, currentImages, text, currentText)
-					: this._queueSteer(expandedText, currentImages, text, currentText);
+					? this._queueFollowUp(expandedText, currentImages, text, currentText, options?.queuedMessageId)
+					: this._queueSteer(expandedText, currentImages, text, currentText, options?.queuedMessageId);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
 			preflightResult?.(true, "queued");
@@ -875,12 +885,21 @@ async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = 
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
 		const releaseMessageAdmission = deferred.length > 0 ? holdSubagentMessageAdmission(session) : () => {};
+		let started = 0;
+		let failure: { readonly error: unknown } | undefined;
 		try {
 			for (const [index, action] of deferred.entries()) {
 				if (index === deferred.length - 1) releaseMessageAdmission();
-				await action();
+				started = index + 1;
+				await action().catch((error: unknown) => {
+					failure = { error };
+					throw error;
+				});
 			}
 		} finally {
+			// The deferred turns after a failed one never run: nothing waits for them any more.
+			if (failure !== undefined)
+				for (const skipped of deferred.slice(started)) dropDeferredCommandTurn(skipped, failure.error);
 			releaseMessageAdmission();
 			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
 		}

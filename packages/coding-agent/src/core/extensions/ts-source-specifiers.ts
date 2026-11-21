@@ -7,7 +7,8 @@ type CreateJiti = typeof createJiti;
 type JitiTransform = NonNullable<NonNullable<Parameters<CreateJiti>[1]>["transform"]>;
 type JitiTransformOptions = Parameters<JitiTransform>[0];
 
-const TRANSFORM_CACHE_FORMAT = 1;
+// 2: a stored transform starts with a line listing the module's static imports.
+const TRANSFORM_CACHE_FORMAT = 2;
 const RELATIVE_SCRIPT_SPECIFIER = /["'](\.\.?\/[^"'\r\n]*?\.[cm]?jsx?)["']/g;
 const SCRIPT_EXTENSION = /\.[cm]?jsx?$/;
 const TYPESCRIPT_EXTENSION_FOR: Readonly<Record<string, string>> = {
@@ -64,6 +65,18 @@ interface NodePath<Node> {
 	scope: { hasBinding(name: string): boolean };
 }
 
+/** A module jiti's transform produced: its code and the path specifiers its evaluation imports before its code runs. */
+export interface TransformedModule {
+	readonly code: string;
+	readonly imports: readonly string[];
+}
+
+interface PluginOptions {
+	rewrites: ReadonlyMap<string, string>;
+	/** Filled with the path specifiers of the import statements the module keeps. */
+	imports: string[];
+}
+
 function rewriteSource(literal: StringLiteralNode | null | undefined, rewrites: ReadonlyMap<string, string>): void {
 	if (literal?.type !== "StringLiteral" || typeof literal.value !== "string") return;
 	const rewritten = rewrites.get(literal.value);
@@ -78,12 +91,23 @@ function isModuleLoadCall(nodePath: NodePath<CallNode>): boolean {
 	return callee?.type === "Identifier" && callee.name === "require" && !nodePath.scope.hasBinding("require");
 }
 
-function typeScriptSourceSpecifierPlugin(_babel: object, options: { rewrites: ReadonlyMap<string, string> }) {
+function isPathSpecifier(specifier: string): boolean {
+	return specifier.startsWith("./") || specifier.startsWith("../");
+}
+
+function typeScriptSourceSpecifierPlugin(_babel: object, options: PluginOptions) {
 	return {
 		name: "atomic-typescript-source-specifiers",
 		visitor: {
+			// The import statements and `export … from` declarations the module keeps: the TypeScript plugin, listed
+			// before this one, has already removed those that import only types. jiti's module transform turns each
+			// into an import the module awaits before its own code runs; a dynamic `import()` runs later.
 			"ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration"(nodePath: NodePath<ModuleSourceNode>) {
-				rewriteSource(nodePath.node.source, options.rewrites);
+				const source = nodePath.node.source;
+				rewriteSource(source, options.rewrites);
+				const specifier = source?.type === "StringLiteral" ? source.value : undefined;
+				if (specifier !== undefined && isPathSpecifier(specifier) && !options.imports.includes(specifier))
+					options.imports.push(specifier);
 			},
 			ImportExpression(nodePath: NodePath<ModuleSourceNode>) {
 				rewriteSource(nodePath.node.source, options.rewrites);
@@ -118,9 +142,24 @@ function cacheFile(cacheDir: string, options: JitiTransformOptions, rewrites: Re
 	return path.join(cacheDir, `${name}.${key}.${options.async ? "mjs" : "cjs"}`);
 }
 
-function readCached(file: string): string | undefined {
+/** A stored transform: one line with the JSON list of its static imports, then the code jiti evaluates. */
+function storedForm({ code, imports }: TransformedModule): string {
+	return `${JSON.stringify(imports)}\n${code}`;
+}
+
+function readCached(file: string): TransformedModule | undefined {
+	let stored: string;
 	try {
-		return fs.readFileSync(file, "utf8");
+		stored = fs.readFileSync(file, "utf8");
+	} catch {
+		return undefined;
+	}
+	const lineEnd = stored.indexOf("\n");
+	if (lineEnd < 0) return undefined;
+	try {
+		const imports: unknown = JSON.parse(stored.slice(0, lineEnd));
+		if (!Array.isArray(imports) || !imports.every((specifier) => typeof specifier === "string")) return undefined;
+		return { code: stored.slice(lineEnd + 1), imports };
 	} catch {
 		return undefined;
 	}
@@ -164,39 +203,48 @@ export function createTypeScriptSourceSpecifierTransform(
 	createJitiImpl: CreateJiti,
 	id: string,
 	cacheDir: () => string | undefined,
-): JitiTransform & { flush: () => Promise<void>; cached: (options: JitiTransformOptions) => string | undefined } {
+): JitiTransform & {
+	flush: () => Promise<void>;
+	cached: (options: JitiTransformOptions) => TransformedModule | undefined;
+	module: (options: JitiTransformOptions) => TransformedModule;
+} {
 	const babelHost = babelHostFor(createJitiImpl, id);
 	const writes = new Set<Promise<void>>();
-	const transform: JitiTransform = (options: JitiTransformOptions) => {
-		if (!options.filename) return { code: babelHost.transform(options) };
+	const transformModule = (options: JitiTransformOptions): TransformedModule => {
+		if (!options.filename) return { code: babelHost.transform(options), imports: [] };
 		const rewrites = planRewrites(options.source, options.filename);
 		const directory = cacheDir();
 		const cached = directory ? cacheFile(directory, options, rewrites) : undefined;
 		const hit = cached ? readCached(cached) : undefined;
-		if (hit !== undefined) return { code: hit };
+		if (hit !== undefined) return hit;
 		const plugins: ReadonlyArray<string | object> = Array.isArray(options.babel?.plugins)
 			? options.babel.plugins
 			: [];
+		const imports: string[] = [];
 		const code = babelHost.transform({
 			...options,
-			babel: { ...options.babel, plugins: [...plugins, [typeScriptSourceSpecifierPlugin, { rewrites }]] },
+			babel: { ...options.babel, plugins: [...plugins, [typeScriptSourceSpecifierPlugin, { rewrites, imports }]] },
 		});
+		const transformed: TransformedModule = { code, imports };
 		if (cached && !code.includes("__JITI_ERROR__")) {
-			const write = writeCached(cached, code);
+			const write = writeCached(cached, storedForm(transformed));
 			writes.add(write);
 			void write.then(() => writes.delete(write));
 		}
-		return { code };
+		return transformed;
 	};
+	const transform: JitiTransform = (options: JitiTransformOptions) => ({ code: transformModule(options).code });
 	return Object.assign(transform, {
 		async flush(): Promise<void> {
 			while (writes.size > 0) await Promise.all(writes);
 		},
 		/** The stored transform for `options`, without transforming on a miss. */
-		cached(options: JitiTransformOptions): string | undefined {
+		cached(options: JitiTransformOptions): TransformedModule | undefined {
 			const directory = cacheDir();
 			if (!options.filename || !directory) return undefined;
 			return readCached(cacheFile(directory, options, planRewrites(options.source, options.filename)));
 		},
+		/** The transform for `options` with the static imports Babel found, stored like any other. */
+		module: transformModule,
 	});
 }

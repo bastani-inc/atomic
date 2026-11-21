@@ -167,7 +167,16 @@ export type InteractiveEngineMessage =
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
-	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
+	| {
+			type: "engine_custom_done";
+			componentId: string;
+			result?: JsonValue;
+			/**
+			 * This view hid the agent panel, which opens again as it closes: the panel's first frame is on its way. Earlier
+			 * engines leave it out.
+			 */
+			panel?: true;
+	  }
 	| { type: "engine_custom_terminal"; componentId: string; control: EngineTerminalControl }
 	| { type: "engine_custom_copy"; componentId: string; requestId: number; text: string }
 	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" }
@@ -709,7 +718,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_custom_done":
 			return typeof value.componentId === "string"
-				? { type: value.type, componentId: value.componentId, result: value.result }
+				? {
+						type: value.type,
+						componentId: value.componentId,
+						result: value.result,
+						...(value.panel === true ? { panel: true as const } : {}),
+					}
 				: undefined;
 		case "engine_custom_copy":
 			return typeof value.componentId === "string" &&

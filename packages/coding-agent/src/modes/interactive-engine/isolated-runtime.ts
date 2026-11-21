@@ -18,10 +18,12 @@ import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import {
+	noteQueuedMessagesDropped,
 	type QueuedDeliveryEnd,
 	type QueuedDeliveryEntry,
 	QueuedDeliveryView,
 	type QueuedMessageLanes,
+	type QueuedMessageReceipt,
 } from "../../core/queued-message-delivery.ts";
 import { type SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
@@ -167,6 +169,19 @@ function isQueuedText(message: { readonly content?: unknown; readonly rawText?: 
 	return content === text || content.startsWith(`${text}\n\n`);
 }
 
+/**
+ * Whether `event`, a user message's start or save as the engine sent it, is of the queued message `entry`: by the receipt
+ * id the engine names the message with when it keeps receipts, else (an engine of an earlier version) by its text.
+ */
+function showsQueuedMessage(
+	event: Extract<JsonAgentSessionEvent, { type: "message_start" | "message_end" }>,
+	id: string | undefined,
+	entry: QueuedDeliveryEntry,
+): boolean {
+	if (entry.receipt !== undefined) return id === entry.receipt.id;
+	return isQueuedText(event.message as Parameters<typeof isQueuedText>[0], entry.text);
+}
+
 function userMessageText(content: string | readonly { readonly type: string; readonly text?: string }[]): string {
 	if (typeof content === "string") return content;
 	return content
@@ -229,13 +244,19 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * draws them as queued until their own row arrives.
 	 */
 	private readonly queuedDeliveries = new QueuedDeliveryView();
-	/** What the engine was delivering when it was lost unexpectedly, until the main chat takes it. */
-	private deliveringAtLoss: QueuedMessageLanes | undefined;
+	/**
+	 * What the engine was delivering when it was lost unexpectedly, steering first, each lane in the order its turns took
+	 * them, until the main chat takes it.
+	 */
+	private deliveringAtLoss: readonly QueuedDeliveryEntry[] | undefined;
 	/** Queued messages whose row the chat shows and whose save (`message_end`) has not reached it, oldest first. */
 	private startedUnsaved: QueuedDeliveryEntry[] = [];
 	/** Ends waiting for their event to reach the host's listeners, which a compaction can hold back. */
 	private readonly queuedDeliveryEnds = new WeakMap<object, QueuedDeliveryEnd>();
 	private readonly queuedDeliveryResetListeners = new Set<() => void>();
+	private readonly queuedMessagesTakenListeners = new Set<(taken: readonly QueuedDeliveryEntry[]) => void>();
+	/** The receipt id of the queued user message an event line starts or saves, by its event, as the engine named it. */
+	private readonly queuedMessageIds = new WeakMap<object, string>();
 	private readonly recoveryListeners = new Set<(replaced: boolean) => void>();
 	/** Bumped by every authoritative queue_update. */
 	private queueUpdateGeneration = 0;
@@ -349,6 +370,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onEvent((event) => this.observeEvent(event));
 		// Read with the queue it changes: a queue_update that no longer lists a message names it as being delivered.
 		this.client.onQueuedDeliveryChange?.((change, event) => {
+			// What a run's end dropped goes with that event to the chat, which gives it back to the user.
+			if (change.dropped !== undefined) noteQueuedMessagesDropped(event, change.dropped);
+			if (change.taken !== undefined)
+				for (const listener of [...this.queuedMessagesTakenListeners]) listener(change.taken);
+			if (change.message !== undefined) this.queuedMessageIds.set(event, change.message);
 			const end = this.queuedDeliveries.receive(change);
 			// The messages it ended leave when the event reaches the chat, with the row it draws.
 			if (end === undefined) return;
@@ -382,13 +408,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				// What a lost engine took from its queue and the chat never saw saved may have gone with it unsaved: kept for
 				// the chat to account for.
 				if (!event.expected) {
-					const delivering = this.queuedDeliveries.texts;
-					const started = (lane: QueuedDeliveryEntry["lane"]) =>
-						this.startedUnsaved.flatMap((entry) => (entry.lane === lane ? [entry.text] : []));
-					this.deliveringAtLoss = {
-						steering: [...started("steer"), ...delivering.steering],
-						followUp: [...started("followUp"), ...delivering.followUp],
-					};
+					const inLane = (entries: readonly QueuedDeliveryEntry[], lane: QueuedDeliveryEntry["lane"]) =>
+						entries.filter((entry) => entry.lane === lane);
+					const delivering = this.queuedDeliveries.underWay;
+					this.deliveringAtLoss = [
+						...inLane(this.startedUnsaved, "steer"),
+						...inLane(delivering, "steer"),
+						...inLane(this.startedUnsaved, "followUp"),
+						...inLane(delivering, "followUp"),
+					];
 				}
 				this.startedUnsaved = [];
 				// Its replacement starts telling afresh.
@@ -899,6 +927,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return this.queuedDeliveries.texts;
 	}
 
+	/** Called with the messages the engine's turns take from its main session's queue, as the host reads them. */
+	onQueuedMessagesTaken(listener: (taken: readonly QueuedDeliveryEntry[]) => void): () => void {
+		this.queuedMessagesTakenListeners.add(listener);
+		return () => this.queuedMessagesTakenListeners.delete(listener);
+	}
+
 	/** Called when the messages being delivered are forgotten at once: the engine was lost or retired its session. */
 	onQueuedDeliveriesForgotten(listener: () => void): () => void {
 		this.queuedDeliveryResetListeners.add(listener);
@@ -911,10 +945,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		for (const listener of [...this.queuedDeliveryResetListeners]) listener();
 	}
 
-	/** A user message's save reached the chat: the oldest queued message shown with its text is saved. */
-	private noteQueuedMessageSaved(message: { readonly content?: unknown; readonly rawText?: unknown }): void {
+	/**
+	 * A user message's save reached the chat: the queued message it saves is saved. An engine that keeps receipts names
+	 * it by its receipt id, and a save that names none saves none of its messages; one that keeps none saves the oldest
+	 * queued message shown with its text.
+	 */
+	private noteQueuedMessageSaved(event: Extract<JsonAgentSessionEvent, { type: "message_end" }>): void {
 		if (this.startedUnsaved.length === 0) return;
-		const index = this.startedUnsaved.findIndex((entry) => isQueuedText(message, entry.text));
+		const id = this.queuedMessageIds.get(event);
+		const index = this.startedUnsaved.findIndex((entry) => showsQueuedMessage(event, id, entry));
 		if (index >= 0) this.startedUnsaved.splice(index, 1);
 	}
 
@@ -923,10 +962,45 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * delivered, or shown without their save. The engine may or may not have saved them. Taken once; nothing after a
 	 * deliberate stop.
 	 */
-	takeDeliveringAtLoss(): QueuedMessageLanes | undefined {
+	takeDeliveringAtLoss(): readonly QueuedDeliveryEntry[] | undefined {
 		const delivering = this.deliveringAtLoss;
 		this.deliveringAtLoss = undefined;
 		return delivering;
+	}
+
+	/**
+	 * Ask the engine, a replacement of the lost one, which of `messages` (what the lost engine was delivering) its
+	 * session's store holds, by their receipts: answers the receipt ids found saved and those provably never saved. A
+	 * message without a receipt (from an engine that keeps none) is in neither.
+	 */
+	async findQueuedMessages(
+		messages: readonly QueuedDeliveryEntry[],
+	): Promise<{ readonly saved: ReadonlySet<string>; readonly absent: ReadonlySet<string> }> {
+		const saved = new Set<string>();
+		const absent = new Set<string>();
+		const byEpoch = new Map<string | undefined, { readonly receipts: QueuedMessageReceipt[]; after: number }>();
+		for (const { receipt } of messages) {
+			if (receipt === undefined) continue;
+			const group = byEpoch.get(receipt.epoch);
+			if (group === undefined) byEpoch.set(receipt.epoch, { receipts: [receipt], after: receipt.after });
+			else {
+				group.receipts.push(receipt);
+				group.after = Math.min(group.after, receipt.after);
+			}
+		}
+		for (const [epoch, { receipts, after }] of byEpoch) {
+			// Read once from the earliest: every later one was taken, and saved if at all, after it.
+			const found = await this.client.findQueuedMessages({
+				ids: receipts.map((receipt) => receipt.id),
+				after,
+				...(epoch === undefined ? {} : { epoch }),
+			});
+			for (const id of found.saved) saved.add(id);
+			// Only an engine whose writes ended with it can have saved nothing more after it was lost.
+			const local = new Set(receipts.flatMap((receipt) => (receipt.local === true ? [receipt.id] : [])));
+			for (const id of found.absent) if (local.has(id)) absent.add(id);
+		}
+		return { saved, absent };
 	}
 
 	/**
@@ -1063,7 +1137,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		sessionId: string,
 		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
+		// A session this host created just before the switch is the engine's new session, which it cannot tell by its ID.
+		const started =
+			options?.startedSession instanceof SessionManager &&
+			options.startedSession.getSessionId() === sessionId &&
+			options.startedSession.takeStartedSession();
+		const result = started
+			? await this.client.requestInternal<{ cancelled: boolean; notices?: readonly RpcResumeNotice[] }>({
+					type: "switch_session",
+					sessionId,
+					cwdOverride: options?.cwdOverride,
+					sessionDirectory: options?.sessionDirectory,
+					startedSession: true,
+				})
+			: await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
 			this.discardHeldHostEvents();
 			this.queueResumeNotices(result.notices ?? []);
@@ -1227,7 +1314,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					if (cancellationEpoch !== this.promptCancellationEpoch) return;
 					let disposition: PromptDisposition;
 					try {
-						disposition = await this.client.prompt(text, options?.images, options?.streamingBehavior);
+						// The id goes with the prompt only when there is one, so other prompts are sent as they always were.
+						disposition =
+							options?.queuedMessageId === undefined
+								? await this.client.prompt(text, options?.images, options?.streamingBehavior)
+								: await this.client.prompt(
+										text,
+										options.images,
+										options.streamingBehavior,
+										options.queuedMessageId,
+									);
 					} catch (error) {
 						if (!isRpcRequestAcceptedFailure(error)) options?.preflightResult?.(false);
 						throw error;
@@ -1611,11 +1707,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				started !== undefined &&
 				event.type === "message_start" &&
 				event.message.role === "user" &&
-				isQueuedText(event.message, started.text)
+				showsQueuedMessage(event, this.queuedMessageIds.get(event), started)
 			)
 				this.startedUnsaved.push(started);
 		}
-		if (event.type === "message_end" && event.message.role === "user") this.noteQueuedMessageSaved(event.message);
+		if (event.type === "message_end" && event.message.role === "user") this.noteQueuedMessageSaved(event);
 		for (const [id, listener] of [...this.hostListeners])
 			if (id <= audience) this.hostListenerFailures.call(listener, event, "event");
 	}
