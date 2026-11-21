@@ -43,7 +43,8 @@ export function startStartupPrefetch(packageDir: string): void {
 			if (reader.exitCode === null && reader.signalCode === null) reader.kill();
 		};
 		process.once("exit", stop);
-		reader.once("exit", () => process.off("exit", stop));
+		// "close" follows the reader's exit, and also a start that failed, which has no "exit".
+		reader.once("close", () => process.off("exit", stop));
 	} catch {
 		// Startup reads its files as it always does.
 	}
