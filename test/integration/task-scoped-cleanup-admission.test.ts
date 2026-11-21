@@ -6,6 +6,7 @@ import type { ResourceAdmission, ResourcePermit } from "../../packages/coding-ag
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { QUARANTINED_ADMISSION_WAIT_MS } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
@@ -85,16 +86,6 @@ function pidFile(dir: string, name: string): number | undefined {
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
-		return false;
-	}
-}
-
 async function waitFor<T>(poll: () => T | undefined, limitMs: number, failure: string): Promise<T> {
 	const deadline = Date.now() + limitMs;
 	for (;;) {
@@ -151,10 +142,14 @@ test.runIf(process.platform === "linux")(
 				),
 			);
 		const pending: Array<Promise<unknown>> = [];
+		// #6125: recorded while it waits to be released, so the cleanup never signals a later process given its pid.
+		let escaped: RecordedProcess | undefined;
 		try {
 			const holder = await launchUnder(quarantinedPool, escapedHolderCommand(dir), LIVE_LAUNCH_LIMIT_MS);
 			assert.ok(holder.ok);
-			await waitFor(() => pidFile(dir, "holder"), PID_FILE_LIMIT_MS, "the command started no holder");
+			escaped = await recordProcess(
+				await waitFor(() => pidFile(dir, "holder"), PID_FILE_LIMIT_MS, "the command started no holder"),
+			);
 			await quarantined;
 			assert.equal(quarantinedPool.held, 1);
 
@@ -182,8 +177,7 @@ test.runIf(process.platform === "linux")(
 		} finally {
 			writeTextSync(`${dir}/release`, "");
 			writeTextSync(`${dir}/finish`, "");
-			const holderPid = pidFile(dir, "holder");
-			if (holderPid !== undefined && processExists(holderPid)) process.kill(holderPid, "SIGKILL");
+			if (escaped !== undefined) await signalRecordedProcess(escaped);
 			try {
 				await within(Promise.all(pending), SCOPED_LAUNCH_LIMIT_MS, "a launch outlived its outer guard");
 				const closed = await within(
