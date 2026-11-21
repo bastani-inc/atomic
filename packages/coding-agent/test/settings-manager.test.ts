@@ -1,27 +1,25 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InMemorySettingsStorage, SettingsManager, type SettingsScope } from "../src/core/settings-manager.js";
 
 describe("SettingsManager", () => {
-	const testDir = join(process.cwd(), "test-settings-tmp");
-	const agentDir = join(testDir, "agent");
-	const projectDir = join(testDir, "project");
+	let testDir: string;
+	let agentDir: string;
+	let projectDir: string;
 
 	beforeEach(() => {
-		// Clean up and create fresh directories
-		if (existsSync(testDir)) {
-			rmSync(testDir, { recursive: true });
-		}
+		testDir = mkdtempSync(join(tmpdir(), "settings-manager-"));
+		agentDir = join(testDir, "agent");
+		projectDir = join(testDir, "project");
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(join(projectDir, ".pi"), { recursive: true });
 	});
 
 	afterEach(() => {
-		if (existsSync(testDir)) {
-			rmSync(testDir, { recursive: true });
-		}
+		rmSync(testDir, { recursive: true, force: true });
 	});
 
 	it("keeps removed workflow settings like any unknown setting, in memory and on save", async () => {

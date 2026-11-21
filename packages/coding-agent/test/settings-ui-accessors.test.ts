@@ -1,25 +1,24 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("outputPad and externalEditor settings", () => {
-	const testDir = join(process.cwd(), "test-settings-ui-tmp");
-	const agentDir = join(testDir, "agent");
-	const projectDir = join(testDir, "project");
+	let testDir: string;
+	let agentDir: string;
+	let projectDir: string;
 
 	beforeEach(() => {
-		if (existsSync(testDir)) {
-			rmSync(testDir, { recursive: true });
-		}
+		testDir = mkdtempSync(join(tmpdir(), "settings-ui-accessors-"));
+		agentDir = join(testDir, "agent");
+		projectDir = join(testDir, "project");
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(join(projectDir, ".pi"), { recursive: true });
 	});
 
 	afterEach(() => {
-		if (existsSync(testDir)) {
-			rmSync(testDir, { recursive: true });
-		}
+		rmSync(testDir, { recursive: true, force: true });
 	});
 
 	it("defaults outputPad to 1 and clamps to 0 | 1", async () => {
