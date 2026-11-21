@@ -1849,8 +1849,11 @@ export class SessionManager {
 		unrestored?: WorktreeUnrestored,
 		captureMs?: number,
 		degradedFrom?: string,
+		capturedAt?: string,
+		precondition?: () => void,
 	): Promise<string> {
 		return this.runMutation(async () => {
+			precondition?.();
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
 				throw new WorkspaceConfigError("sdk", "snapshot", "a snapshot whose id is snapshotId");
 			}
@@ -1887,6 +1890,7 @@ export class SessionManager {
 				unrestored,
 				captureMs,
 				degradedFrom,
+				capturedAt,
 			);
 			await this._appendEntry(entry);
 			return entry.id;
