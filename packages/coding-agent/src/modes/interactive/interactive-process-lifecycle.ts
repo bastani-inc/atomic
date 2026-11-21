@@ -18,6 +18,7 @@ import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./intera
 import { handOffCompactionQueue, mainSteering, showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { chatHistoryBuilt } from "./interactive-startup-chat-container.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
+import { onWindowsSessionEnd } from "./windows-session-end.js";
 
 /** A second Ctrl+C on an empty, idle editor within this window exits. */
 const CTRL_C_EXIT_WINDOW_MS = 800;
@@ -30,13 +31,19 @@ const TERMINAL_LOST_EXIT_CODE = 129;
  * engine's grace period, then its guardian's and its tree kill's windows.
  */
 const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
-/** Exit status once the Windows console is closed: STATUS_CONTROL_C_EXIT, which Windows gives a process it ends then. */
+/**
+ * Exit status once the Windows console is closed or the Windows session ends: STATUS_CONTROL_C_EXIT, which Windows
+ * gives a console program it ends then.
+ */
 const CONSOLE_CLOSED_EXIT_CODE = 0xc000013a;
-/** How long Windows lets a process run after its console was closed before it ends the process itself. */
+/**
+ * How long Windows lets a process run after its console was closed before it ends the process itself, and how long it
+ * waits for a program at the end of the session before it lists it as one keeping the user from signing out.
+ */
 const CONSOLE_CLOSE_TIMEOUT_MS = 5_000;
 /**
- * Once the Windows console is closed, the longest the session's shutdown may take: Atomic ends its children and exits
- * then, leaving the rest of Windows's timeout for its own exit.
+ * Once the Windows console is closed or the session ends, the longest the session's shutdown may take: Atomic ends its
+ * children and exits then, leaving the rest of Windows's timeout for its own exit.
  */
 const CONSOLE_CLOSED_SHUTDOWN_MS = CONSOLE_CLOSE_TIMEOUT_MS - 1_000;
 
@@ -77,24 +84,37 @@ function terminalLostExitCode(ending: HostEnding): number {
 }
 
 /**
- * The Windows console was closed. Windows reports that as SIGHUP, and nothing else, then ends the process
- * {@link CONSOLE_CLOSE_TIMEOUT_MS} later. The session shuts down as when its terminal is gone, within a bound that
- * ends before Windows's, and Atomic exits with the status Windows gives a process its console's close ended.
+ * The Windows console was closed at `closedAt` (milliseconds since the Unix epoch), or the Windows session ended then.
+ * Windows reports a closed console as SIGHUP, and nothing else, then ends the process {@link CONSOLE_CLOSE_TIMEOUT_MS}
+ * later; at the end of the session it waits about as long for Atomic's window. The session shuts down as when its
+ * terminal is gone, within a bound that ends before Windows's, counted from when Windows said so, and Atomic exits with
+ * the status Windows gives a console program it ends then.
  */
-function consoleClosed(mode: InteractiveModeBase): void {
+function consoleClosed(mode: InteractiveModeBase, closedAt = Date.now()): void {
 	const ending = hostEnding(mode);
 	if (ending.consoleClosed) return;
 	ending.consoleClosed = true;
-	setTimeout(() => mode.emergencyTerminalExit(), CONSOLE_CLOSED_SHUTDOWN_MS);
+	const remaining = Math.min(
+		Math.max(closedAt + CONSOLE_CLOSED_SHUTDOWN_MS - Date.now(), 0),
+		CONSOLE_CLOSED_SHUTDOWN_MS,
+	);
+	setTimeout(() => mode.emergencyTerminalExit(), remaining);
 	mode.handleTerminalLost();
 }
 
-/** On Windows, shut the session down when its console is closed, until the handlers are unregistered. */
+/**
+ * On Windows, shut the session down when its console is closed or the user's session ends (signing out, restarting or
+ * shutting down), until the handlers are unregistered.
+ */
 function listenForConsoleClose(mode: InteractiveModeBase): void {
 	if (process.platform !== "win32") return;
 	const handler = () => consoleClosed(mode);
 	process.prependListener("SIGHUP", handler);
-	mode.signalCleanupHandlers.push(() => process.off("SIGHUP", handler));
+	const stopHearingSessionEnd = onWindowsSessionEnd((endedAt) => consoleClosed(mode, endedAt));
+	mode.signalCleanupHandlers.push(() => {
+		process.off("SIGHUP", handler);
+		stopHearingSessionEnd();
+	});
 }
 
 /**
