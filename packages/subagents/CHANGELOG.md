@@ -17,6 +17,7 @@
 - `skill-creator`'s review viewer shows the feedback already saved for the iteration when its page is reopened or reloaded, or the viewer is started again, also from the second iteration on, where it showed empty boxes and the next keystroke's save dropped the saved feedback from `feedback.json`. Feedback from the previous iteration still shows only as previous feedback. A run's output or feedback that contains `</script>` no longer breaks the page.
 - When Atomic itself continues a background subagent (after a restart, when you resume it without a message, or when something it waited for arrived), the subagent gets a short note in its chat saying why (`Continuing after Atomic restarted`, `Continuing where it left off`, `Woken: what it waited for arrived`) instead of a message from you. Resuming a paused subagent with a message no longer queues a `Follow-up: Continue where you left off…` row behind your message: the subagent reads your message and the note in one request.
 - A background subagent resumed with a message while it waited for its run's turn, after a restart while it waited on a background call, keeps your message until that call finishes and reads it then, instead of losing it.
+- Resuming a background subagent again after its earlier resume was paused while it waited for its run's turn, or after its resumed run failed, no longer waits forever (or, without a task host, until the subagent's run had a free slot): the subagent starts again with the message you resume it with.
 
 ## [0.10.3] - 2026-11-21
 

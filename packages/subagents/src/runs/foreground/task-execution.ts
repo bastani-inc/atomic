@@ -432,6 +432,8 @@ const queuedChildren = new Map<
 		readonly start: QueuedSubagentChildStart;
 		finishWorktree?: ReturnType<typeof beginWorktreeExecution>;
 		stopped: boolean;
+		/** Its launch's end: it never runs. */
+		readonly ended: () => void;
 	}
 >();
 
@@ -452,6 +454,7 @@ export function stopQueuedSubagentChild(taskId: string, status: string): boolean
 	const finish = queued.finishWorktree;
 	queued.finishWorktree = undefined;
 	if (finish) void finish(status);
+	queued.ended();
 	return true;
 }
 
@@ -629,7 +632,11 @@ export async function runAgentTask(input: {
 	intentTask?: string;
 	options: RunSyncOptions;
 	runtime: SubagentExecutorRuntimeDeps;
-	onTerminal?: (result: SingleResult) => void;
+	/**
+	 * Called once when the launch ends: with the child's result when it ran, and with none when it never ran (stopped
+	 * or cancelled while it waited for its run's slot) or its execution failed.
+	 */
+	onTerminal?: (result?: SingleResult) => void;
 	schedule?: ExecutionScheduler;
 	recordChild?: SubagentChildRecordSink;
 	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
@@ -642,6 +649,12 @@ export async function runAgentTask(input: {
 	wakeDispatcher?: AgentWakeDispatcher;
 }): Promise<ModelSingleResponse> {
 	const registered = Promise.withResolvers<WeakRef<TaskLease>>();
+	let ended = false;
+	const terminal = (result?: SingleResult): void => {
+		if (ended) return;
+		ended = true;
+		input.onTerminal?.(result);
+	};
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<
@@ -753,10 +766,12 @@ export async function runAgentTask(input: {
 			queuedChildren.delete(taskId);
 			forgetRunMembership(runId, index);
 			recordChildTask(taskId, "terminal", "killed");
+			queued.ended();
 			return;
 		}
 		// Its owner closed or paused: it stays restorable, and restoring it in this process starts it.
 		queued.stopped = true;
+		queued.ended();
 	};
 	let scheduled = false;
 	let finishWorktree: ReturnType<typeof beginWorktreeExecution>;
@@ -1108,7 +1123,7 @@ export async function runAgentTask(input: {
 						}
 						// A stop keeps what its session did not save, a late result's notice included, for its resume (#5012).
 						if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
-						input.onTerminal?.(child);
+						terminal(child);
 						if (ownerSessionId !== undefined && settled && !stoppedByControl && child.status !== "killed")
 							wakeForResultsHeldDuringRun(
 								input.wakeDispatcher ?? agentWakeDispatcher(),
@@ -1132,6 +1147,7 @@ export async function runAgentTask(input: {
 						const swept = finishDirectory("error", { rejected: error });
 						if (!ownerClosed()) recordChild("terminal", "error");
 						if (swept) await swept;
+						terminal();
 						throw error;
 					} finally {
 						ticket?.onEntered();
@@ -1155,9 +1171,11 @@ export async function runAgentTask(input: {
 						const swept = finishWorktree?.(status, drained);
 						if (control) recordChildTask(taskId, "terminal", control);
 						if (cause === "user") {
+							const queued = queuedChildren.get(taskId);
 							queuedChildren.delete(taskId);
 							forgetRunMembership(runId, index);
 							recordChildTask(taskId, "terminal", "killed");
+							queued?.ended();
 						}
 						await swept;
 					}
@@ -1193,7 +1211,12 @@ export async function runAgentTask(input: {
 			intercomTarget: input.options.intercomSessionName,
 		});
 	if (queuedAtAdmission)
-		queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false, finishWorktree });
+		queuedChildren.set(started.value.taskId, {
+			start: queuedStart(),
+			stopped: false,
+			finishWorktree,
+			ended: () => terminal(),
+		});
 	const lease = new WeakRef(started.value.lease);
 	const register = () => registered.resolve(lease);
 	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, register);

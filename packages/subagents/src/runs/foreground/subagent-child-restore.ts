@@ -1015,11 +1015,12 @@ async function relaunchChild(
 		forked: record.forked === true,
 		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
+		// However it ends, also stopped before it started: the restoration is over.
 		onTerminal: (child) => {
 			release();
 			// Normally the child consumed the hold when it registered; one that never did must not keep it, and tells the
 			// senders still held why when its start failed.
-			void hold?.release(startFailureRefusal(record.intercomTarget, child));
+			void hold?.release(child && startFailureRefusal(record.intercomTarget, child));
 		},
 	});
 	const outcome = await relaunched(
@@ -1101,28 +1102,29 @@ async function ownerlessRelaunched(
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
 	intercomGroup: string | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
-	void launched.result
-		.then(
-			(child) => {
-				// Pause and quit report through their own results.
-				if (!child.interrupted)
-					notifyDetachedForegroundChildExit({
-						pi: deps.pi,
-						runId: record.runId,
-						mode: "single",
-						index: record.index,
-						result: child,
-						notificationId: `subagent-resume-${launched.launchId}`,
-						noticeLabel: "Resumed subagent task",
-					});
-			},
-			() => {},
-		)
-		.finally(() => {
-			release();
-			// Normally the child consumed the hold when it registered; one that never did must not keep it.
-			void hold?.release();
-		});
+	const reported = launched.result.then(
+		(child) => {
+			// Pause and quit report through their own results.
+			if (!child.interrupted)
+				notifyDetachedForegroundChildExit({
+					pi: deps.pi,
+					runId: record.runId,
+					mode: "single",
+					index: record.index,
+					result: child,
+					notificationId: `subagent-resume-${launched.launchId}`,
+					noticeLabel: "Resumed subagent task",
+				});
+		},
+		() => {},
+	);
+	// However it ends, also stopped before it started, which its result reports only once its run's slot frees: the
+	// restoration is over.
+	void Promise.race([reported, launched.ended]).then(() => {
+		release();
+		// Normally the child consumed the hold when it registered; one that never did must not keep it.
+		void hold?.release();
+	});
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
 	const intercomLive =
