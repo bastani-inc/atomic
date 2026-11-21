@@ -126,6 +126,42 @@ test("a host's request for the queued messages its engine delivers survives the 
 	}
 });
 
+test("what the host found when it checked its extensions reaches the engine, and an older host's record carries nothing", async () => {
+	for (const writer of WRITERS) {
+		const found = await writer.write({
+			hostPid: 8,
+			guardFile: "/tmp/guard-8",
+			startupExtensionCheck: { cwd: "/work/project", extensionsCanDecide: false },
+		});
+		const older = await writer.write({ hostPid: 9, guardFile: "/tmp/guard-9" });
+		const directory = mkdtempSync(join(tmpdir(), "atomic-engine-bootstrap-check-"));
+		const malformed = join(directory, "bootstrap.json");
+		writeFileSync(
+			malformed,
+			JSON.stringify({
+				version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
+				hostPid: 10,
+				guardFile: "/tmp/guard-10",
+				startupExtensionCheck: { cwd: "/work/project", extensionsCanDecide: "no" },
+			}),
+		);
+		try {
+			assert.deepEqual(readInteractiveEngineBootstrap(found.path)?.startupExtensionCheck, {
+				cwd: "/work/project",
+				extensionsCanDecide: false,
+			});
+			const record = readInteractiveEngineBootstrap(older.path);
+			assert.ok(record && !("startupExtensionCheck" in record));
+			const unreadable = readInteractiveEngineBootstrap(malformed);
+			assert.ok(unreadable && !("startupExtensionCheck" in unreadable));
+		} finally {
+			await writer.remove(found);
+			await writer.remove(older);
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}
+});
+
 test("a malformed or foreign-version record is rejected and still consumed", () => {
 	for (const content of [
 		"{ not json",

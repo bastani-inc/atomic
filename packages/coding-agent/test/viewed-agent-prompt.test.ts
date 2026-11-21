@@ -504,7 +504,7 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"Ctrl+C on an empty prompt pauses the working subagent shown, never main, and shows main in the same press",
+		"Ctrl+C on an empty prompt pauses the working subagent shown, never main, and keeps it shown, as Esc does",
 		async () => {
 			screen = await mainScreen();
 			const port = worker({ busy: true });
@@ -513,7 +513,7 @@ describe("the main prompt while a subagent is shown", () => {
 			await until(() => port.calls.length === 1);
 			assert.deepEqual(port.calls, [{ kind: "pause" }]);
 			assert.equal(screen.mode.session.queuedMessagesPaused, false);
-			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
 		},
 		HOST_TIMEOUT_MS,
 	);
@@ -538,16 +538,19 @@ describe("the main prompt while a subagent is shown", () => {
 	);
 
 	test(
-		"Ctrl+C on an empty prompt with the shown subagent idle shows main and never offers to exit Atomic",
+		"Ctrl+C on an empty prompt with the shown subagent idle keeps it shown and never offers to exit Atomic",
 		async () => {
 			screen = await mainScreen();
 			const port = worker();
 			await view(WORKER);
 			const exitOffer = () => stripAnsi(screen?.mode.chatContainer.render(WIDTH).join("\n") ?? "");
 			await screen.press(CTRL_C);
-			assert.equal(screen.mode.agentView?.viewed.kind, "main");
+			await screen.press(CTRL_C);
+			assert.equal(screen.mode.agentView?.viewed.kind, "agent");
 			assert.doesNotMatch(exitOffer(), /Press Ctrl\+C again to exit/);
-			// The press that showed main does not count toward exiting: main's own first press says how to exit.
+			// Neither press counts toward exiting: main's own first press says how to exit.
+			await screen.press(LEFT);
+			assert.equal(screen.mode.agentView?.viewed.kind, "main");
 			await screen.press(CTRL_C);
 			assert.match(exitOffer(), /Press Ctrl\+C again to exit/);
 			assert.deepEqual(port.calls, []);
@@ -1054,6 +1057,170 @@ describe("the main prompt while a subagent is shown", () => {
 			assert.deepEqual(screen.warnings, [
 				"Engine restarted; these 2 messages to worker may not have been delivered:\nshown, not saved\nbeing delivered",
 			]);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	for (const replaced of [true, false] as const)
+		test(
+			`a lost engine whose replacement ${replaced ? "is up" : "never came up"} reports what the shown subagent took by what its store holds`,
+			async () => {
+				screen = await mainScreen();
+				worker({
+					busy: true,
+					queued: { steering: ["listed steer"], followUp: [] },
+					delivering: { steering: ["never saved"], followUp: [] },
+					unsaved: ["saved"],
+					receipts: {
+						sessionId: "worker-session",
+						taken: [
+							{ id: "saved-id", after: 3, local: true },
+							{ id: "never-id", after: 3, local: true, typed: "never saved, as typed" },
+						],
+					},
+				});
+				const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+				const recovered = new Set<(replaced: boolean) => void>();
+				const asked: (string | undefined)[] = [];
+				attachLostAgentQueueNotices(screen.mode, {
+					onGenerationEnded: (listener) => {
+						ended.add(listener);
+						return () => ended.delete(listener);
+					},
+					onEngineRecovered: (listener) => {
+						recovered.add(listener);
+						return () => recovered.delete(listener);
+					},
+					findQueuedMessages: async (_messages, session) => {
+						asked.push(session?.sessionId);
+						return { saved: new Set(["saved-id"]), absent: new Set(["never-id"]) };
+					},
+				});
+				await view(WORKER);
+				for (const listener of ended)
+					listener({
+						generation: 1,
+						error: new Error("engine stopped"),
+						kind: "exit",
+						expected: false,
+					} as InteractiveEngineGenerationEnded);
+				// Nothing is reported until the replacement says what the subagent's store holds.
+				assert.deepEqual(screen.warnings, []);
+				for (const listener of [...recovered]) listener(replaced);
+				await until(() => (screen?.warnings.length ?? 0) > 0);
+				await settle();
+				if (replaced) {
+					assert.deepEqual(asked, ["worker-session"]);
+					// The saved one is not reported; the one its store never saved was not sent, as typed.
+					assert.deepEqual(screen.warnings, [
+						"Engine restarted; 2 queued messages to worker weren't sent:\nnever saved, as typed\nlisted steer",
+					]);
+				} else
+					assert.deepEqual(screen.warnings, [
+						"Engine restarted; these 2 messages to worker may not have been delivered:\nsaved\nnever saved",
+						"Engine restarted; 1 queued message to worker wasn't sent:\nlisted steer",
+					]);
+				assert.equal(screen.mode.editor.getText(), "", "nothing goes into the main prompt");
+			},
+			HOST_TIMEOUT_MS,
+		);
+
+	test(
+		"a chat stopped while a lost engine's replacement looks a subagent's messages up shows nothing for them",
+		async () => {
+			screen = await mainScreen();
+			worker({
+				busy: true,
+				delivering: { steering: ["never saved"], followUp: [] },
+				receipts: { sessionId: "worker-session", taken: [{ id: "never-id", after: 3, local: true }] },
+			});
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			const recovered = new Set<(replaced: boolean) => void>();
+			const answer = Promise.withResolvers<{ saved: Set<string>; absent: Set<string> }>();
+			const looked = Promise.withResolvers<void>();
+			const detach = attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+				onEngineRecovered: (listener) => {
+					recovered.add(listener);
+					return () => recovered.delete(listener);
+				},
+				findQueuedMessages: () => {
+					looked.resolve();
+					return answer.promise;
+				},
+			});
+			await view(WORKER);
+			for (const listener of ended)
+				listener({
+					generation: 1,
+					error: new Error("engine stopped"),
+					kind: "exit",
+					expected: false,
+				} as InteractiveEngineGenerationEnded);
+			for (const listener of [...recovered]) listener(true);
+			await looked.promise;
+			detach();
+			answer.resolve({ saved: new Set(), absent: new Set(["never-id"]) });
+			await settle();
+			assert.deepEqual(screen.warnings, []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a lost engine accounts once for a message two chats of one subagent report with the same receipt",
+		async () => {
+			screen = await mainScreen();
+			const status = {
+				busy: true,
+				delivering: { steering: ["never saved"], followUp: [] },
+				receipts: { sessionId: "worker-session", taken: [{ id: "never-id", after: 3, local: true as const }] },
+			};
+			const first = worker(status);
+			// A send still on its way keeps the first chat's steering after the screen shows main again.
+			first.promptAnswer = () => new Promise<void>(() => {});
+			const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+			const recovered = new Set<(replaced: boolean) => void>();
+			let lookups = 0;
+			attachLostAgentQueueNotices(screen.mode, {
+				onGenerationEnded: (listener) => {
+					ended.add(listener);
+					return () => ended.delete(listener);
+				},
+				onEngineRecovered: (listener) => {
+					recovered.add(listener);
+					return () => recovered.delete(listener);
+				},
+				findQueuedMessages: async () => {
+					lookups++;
+					return { saved: new Set<string>(), absent: new Set(["never-id"]) };
+				},
+			});
+			await view(WORKER);
+			await screen.type("on its way");
+			await screen.press(ENTER);
+			await view(undefined);
+			worker(status);
+			await view(WORKER);
+			for (const listener of ended)
+				listener({
+					generation: 1,
+					error: new Error("engine stopped"),
+					kind: "exit",
+					expected: false,
+				} as InteractiveEngineGenerationEnded);
+			for (const listener of [...recovered]) listener(true);
+			await until(() => (screen?.warnings.length ?? 0) > 0);
+			await settle();
+			assert.equal(lookups, 1);
+			assert.equal(
+				screen.warnings.filter((warning) => warning.includes("never saved")).length,
+				1,
+				screen.warnings.join("\n---\n"),
+			);
 		},
 		HOST_TIMEOUT_MS,
 	);

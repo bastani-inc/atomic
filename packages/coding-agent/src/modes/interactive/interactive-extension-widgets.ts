@@ -12,17 +12,13 @@ import { isExpandable } from "./interactive-mode-helpers.ts";
 
 InteractiveModeBase.prototype.renderWidgets = function (this: InteractiveModeBase): void {
 	if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
-	const navigationMounted = this.navigationInlineCustomUiDepth > 0;
 	// Without widgets the container is empty: the usage row is the one row between the status and the composer, as in
-	// every attached chat. Widgets keep a blank line above them that separates them from the status.
-	this.renderWidgetContainer(
-		this.widgetContainerAbove,
-		navigationMounted ? new Map() : this.extensionWidgetsAbove,
-		true,
-	);
+	// every attached chat. Widgets keep a blank line above them that separates them from the status. A navigation view
+	// hides them from the frame the prompt's slot draws it (the containers' scene).
+	this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true);
 	this.renderWidgetContainer(
 		this.widgetContainerBelow,
-		navigationMounted ? new Map() : this.extensionWidgetsBelow,
+		this.extensionWidgetsBelow,
 		// leadingSpacer: blank line between the footer (model + cwd identity) and
 		// below-editor widgets, so the
 		// transient run status is visually separated from the session identity

@@ -172,7 +172,16 @@ export type InteractiveEngineMessage =
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
-	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
+	| {
+			type: "engine_custom_done";
+			componentId: string;
+			result?: JsonValue;
+			/**
+			 * This view hid the agent panel, which opens again as it closes: the panel's first frame is on its way. Earlier
+			 * engines leave it out.
+			 */
+			panel?: true;
+	  }
 	| { type: "engine_custom_terminal"; componentId: string; control: EngineTerminalControl }
 	| { type: "engine_custom_copy"; componentId: string; requestId: number; text: string }
 	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" }
@@ -715,7 +724,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_custom_done":
 			return typeof value.componentId === "string"
-				? { type: value.type, componentId: value.componentId, result: value.result }
+				? {
+						type: value.type,
+						componentId: value.componentId,
+						result: value.result,
+						...(value.panel === true ? { panel: true as const } : {}),
+					}
 				: undefined;
 		case "engine_custom_copy":
 			return typeof value.componentId === "string" &&
@@ -1045,5 +1059,28 @@ function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | u
 		isStringList(queued.steering) &&
 		isStringList(queued.followUp) &&
 		(value.unsaved === undefined || isStringList(value.unsaved));
-	return valid ? (value as unknown as AgentViewStatus) : undefined;
+	if (!valid) return undefined;
+	// Receipts that are not as an engine writes them are left out: its messages are then reported as unconfirmed.
+	if (value.receipts !== undefined && !isAgentViewReceipts(value.receipts)) {
+		const { receipts: _receipts, ...status } = value;
+		return status as unknown as AgentViewStatus;
+	}
+	return value as unknown as AgentViewStatus;
+}
+
+function isAgentViewReceipts(value: JsonValue): boolean {
+	if (!isJsonObject(value) || typeof value.sessionId !== "string" || !Array.isArray(value.taken)) return false;
+	if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") return false;
+	return value.taken.every(
+		(receipt) =>
+			receipt === null ||
+			(isJsonObject(receipt) &&
+				typeof receipt.id === "string" &&
+				typeof receipt.after === "number" &&
+				Number.isSafeInteger(receipt.after) &&
+				receipt.after >= 0 &&
+				(receipt.epoch === undefined || typeof receipt.epoch === "string") &&
+				(receipt.typed === undefined || typeof receipt.typed === "string") &&
+				(receipt.local === undefined || receipt.local === true)),
+	);
 }

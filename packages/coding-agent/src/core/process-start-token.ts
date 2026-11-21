@@ -48,6 +48,17 @@ export async function readProcessCreationTime(pid: number): Promise<string | und
 	return (await queryCreationTime(pid)).created;
 }
 
+/**
+ * When Windows process `pid` was created, as {@link readProcessCreationTime} reads it, but only from the native module:
+ * null where that module cannot read the process (it is gone, has exited, or may not be queried), and undefined where
+ * there is no native reader to ask (other platforms, or a native module without it). Never starts a process.
+ */
+export function nativeProcessCreationTime(pid: number): string | null | undefined {
+	if (process.platform !== "win32") return undefined;
+	const native = nativeCreationTime();
+	return native === null ? undefined : (nativeCreation(native, pid) ?? null);
+}
+
 export function processStartTokenForSynchronousTakeover(pid: number): string | undefined {
 	if (process.platform !== "win32") return procStartToken(pid);
 	const native = nativeCreationTime();

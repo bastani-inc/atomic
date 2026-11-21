@@ -40,6 +40,18 @@ import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 const BROKER_PROBE_TIMEOUT_MS = 250;
+/**
+ * How long the broker may take to listen. It runs from TypeScript source, which it compiles first: on a loaded machine
+ * that alone takes many seconds. A broker that exits meanwhile fails the wait at once.
+ */
+const BROKER_START_TIMEOUT_MS = 50_000;
+/** Structural cost of the suite's setup: a real broker process started from source, within its start budget. */
+const BROKER_SETUP_TIMEOUT_MS = BROKER_START_TIMEOUT_MS + 10_000;
+/**
+ * How long a client waits for a frame the broker answers with: most of a test's budget, so only a frame the broker
+ * never sends reaches it, whatever turns a loaded machine gives the broker process.
+ */
+const FRAME_TIMEOUT_MS = 20_000;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -52,6 +64,8 @@ class WireClient {
 	readonly received: BrokerMessage[] = [];
 	readonly socket: net.Socket;
 	private consumed = new Set<number>();
+	/** Wakes the frame waits whenever a frame arrives. */
+	private arrived = Promise.withResolvers<void>();
 
 	/**
 	 * `halfOpen` keeps the client's read side alive after the broker sends FIN,
@@ -67,7 +81,10 @@ class WireClient {
 		this.socket.on(
 			"data",
 			createMessageReader(
-				(message) => this.received.push(message as BrokerMessage),
+				(message) => {
+					this.received.push(message as BrokerMessage);
+					this.wake();
+				},
 				(error) => this.socket.destroy(error),
 			),
 		);
@@ -79,6 +96,12 @@ class WireClient {
 		await new Promise<void>((resolveConnected, reject) => {
 			this.socket.once("connect", resolveConnected).once("error", reject);
 		});
+	}
+
+	/** Wakes every frame wait, which then waits for the next frame. */
+	private wake(): void {
+		this.arrived.resolve();
+		this.arrived = Promise.withResolvers<void>();
 	}
 
 	send(message: ClientMessage): void {
@@ -94,24 +117,32 @@ class WireClient {
 		type: T,
 		matches: (message: Extract<BrokerMessage, { type: T }>) => boolean = () => true,
 	): Promise<Extract<BrokerMessage, { type: T }>> {
-		const deadline = Date.now() + 5_000;
-		while (Date.now() < deadline) {
-			const index = this.received.findIndex((message, candidate) => {
-				if (this.consumed.has(candidate) || message.type !== type) return false;
-				return matches(message as Extract<BrokerMessage, { type: T }>);
-			});
-			if (index >= 0) {
-				this.consumed.add(index);
-				return this.received[index] as Extract<BrokerMessage, { type: T }>;
+		let timedOut = false;
+		const bound = setTimeout(() => {
+			timedOut = true;
+			this.wake();
+		}, FRAME_TIMEOUT_MS);
+		try {
+			while (!timedOut) {
+				const index = this.received.findIndex((message, candidate) => {
+					if (this.consumed.has(candidate) || message.type !== type) return false;
+					return matches(message as Extract<BrokerMessage, { type: T }>);
+				});
+				if (index >= 0) {
+					this.consumed.add(index);
+					return this.received[index] as Extract<BrokerMessage, { type: T }>;
+				}
+				await this.arrived.promise;
 			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+		} finally {
+			clearTimeout(bound);
 		}
 		throw new Error(`Timed out waiting for broker frame ${type}`);
 	}
 }
 
 async function waitForBroker(): Promise<void> {
-	const deadline = Date.now() + 10_000;
+	const deadline = Date.now() + BROKER_START_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		fixture.assertRunning();
 		const connected = await new Promise<boolean>((resolveConnected) => {
@@ -184,7 +215,7 @@ beforeAll(async () => {
 		closeSync(logFd);
 	}
 	await waitForBroker();
-});
+}, BROKER_SETUP_TIMEOUT_MS);
 
 afterAll(async () => {
 	await fixture.cleanup();

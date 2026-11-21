@@ -1,5 +1,3 @@
-/// <reference lib="dom" />
-
 interface HighlightJsResult {
 	value: string;
 }

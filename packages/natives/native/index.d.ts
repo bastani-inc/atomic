@@ -874,6 +874,12 @@ export interface SettlementReceipt {
 }
 
 /**
+ * Whether this process ignores `signal`. `null` where signals have no dispositions (Windows) and for a number that
+ * names no signal.
+ */
+export declare function signalIgnored(signal: number): boolean | null
+
+/**
  * Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A
  * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. Off Linux it always
  * refuses with `ENOSYS`.

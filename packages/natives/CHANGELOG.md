@@ -4,7 +4,8 @@
 
 ### Added
 
-- `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing.
+- `signalIgnored(signal)`: whether this process ignores a signal, as a process started under `nohup` ignores `SIGHUP`; `null` on Windows ([#6178](https://github.com/bastani-inc/atomic/pull/6178)).
+- `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing ([#6187](https://github.com/bastani-inc/atomic/pull/6187)).
 
 ## [0.10.1] - 2026-11-20
 

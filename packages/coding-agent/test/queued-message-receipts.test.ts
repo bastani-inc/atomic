@@ -1,0 +1,155 @@
+/**
+ * A replacement engine finds which queued messages the lost one saved by their receipts: a message found is saved,
+ * wherever it is in the session; one not found is provably unsaved only on a store whose writes end with its writer, of
+ * the generation the receipt names, read whole after the receipt's anchor.
+ */
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, describe, test } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
+import {
+	findQueuedMessages,
+	findQueuedMessagesInFile,
+	findQueuedMessagesInStore,
+} from "../src/core/queued-message-receipts.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
+
+const directories: string[] = [];
+const closers: Array<() => Promise<void>> = [];
+afterEach(async () => {
+	while (closers.length > 0) await closers.pop()?.();
+	while (directories.length > 0) removeTestDirectory(directories.pop()!, { retries: 10, retryDelayMs: 100 });
+});
+
+async function storeOf(kind: "jsonl" | "node-sqlite"): Promise<SessionStore> {
+	const directory = mkdtempSync(join(tmpdir(), "queued-message-receipts-"));
+	directories.push(directory);
+	if (kind === "jsonl") return JsonlSessionStore.open(directory, { exactDirectory: true });
+	const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	closers.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	return store;
+}
+
+function user(text: string) {
+	return { role: "user" as const, content: text, timestamp: Date.now() };
+}
+
+/**
+ * A lost engine's session: an earlier exchange, then queued message `saved` taken after it and saved, then the session
+ * moved back to the earlier message and went on there, so the saved message is on a branch the session no longer shows.
+ */
+async function lostEngineSession(writer: SessionManager) {
+	const earlier = await writer.appendMessage(user("earlier"));
+	const anchor = { after: writer.getLastSeq(), epoch: writer.getHistoryEpoch() };
+	await writer.appendMessage(user("queued and saved"), { queuedMessageId: "saved" });
+	await writer.branch(earlier);
+	await writer.appendMessage(user("went on elsewhere"));
+	return anchor;
+}
+
+describe.each(["jsonl", "node-sqlite"] as const)("on a %s store", (kind) => {
+	test("a saved message is found off the current branch, and one never saved is provably absent", async () => {
+		const store = await storeOf(kind);
+		const writer = await SessionManager.create(store, tmpdir());
+		const anchor = await lostEngineSession(writer);
+		const replacement = await SessionManager.open(store, writer.getSessionId());
+		assert.equal(
+			replacement.getBranch().some((entry) => entry.type === "message" && entry.queuedMessageId === "saved"),
+			false,
+			"the saved message is not on the branch the replacement shows",
+		);
+
+		const found = await findQueuedMessages(replacement, { ids: ["saved", "never saved"], ...anchor });
+
+		assert.deepEqual(found, { saved: ["saved"], absent: ["never saved"] });
+	});
+
+	test("a session nothing here has open, such as a subagent's, is read from the store the same way", async () => {
+		const store = await storeOf(kind);
+		const writer = await SessionManager.create(store, tmpdir());
+		const anchor = await lostEngineSession(writer);
+
+		const ids = ["saved", "never saved"];
+		assert.deepEqual(await findQueuedMessagesInStore(store, writer.getSessionId(), { ids, ...anchor }), {
+			saved: ["saved"],
+			absent: ["never saved"],
+		});
+		assert.deepEqual(
+			(await findQueuedMessagesInStore(store, writer.getSessionId(), { ids, after: anchor.after, epoch: "other" }))
+				.absent,
+			[],
+			"another generation proves nothing",
+		);
+		assert.deepEqual(await findQueuedMessagesInStore(store, "no such session", { ids, ...anchor }), {
+			saved: [],
+			absent: [],
+		});
+		// A store that holds fewer entries than the receipt's anchor has not stored what came after it.
+		assert.deepEqual(
+			(await findQueuedMessagesInStore(store, writer.getSessionId(), { ids, after: 99, epoch: anchor.epoch }))
+				.absent,
+			[],
+		);
+	});
+
+	test("nothing is provably absent in another generation of the session than the one the receipt names", async () => {
+		const store = await storeOf(kind);
+		const writer = await SessionManager.create(store, tmpdir());
+		const anchor = await lostEngineSession(writer);
+		const replacement = await SessionManager.open(store, writer.getSessionId());
+
+		const found = await findQueuedMessages(replacement, {
+			ids: ["saved", "never saved"],
+			after: anchor.after,
+			epoch: "another generation",
+		});
+
+		assert.deepEqual(found.absent, []);
+	});
+});
+
+test("a store a lost writer may still write to proves nothing absent, though it finds what is saved", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage(user("earlier"));
+	const anchor = { after: session.getLastSeq(), epoch: session.getHistoryEpoch() };
+	await session.appendMessage(user("queued and saved"), { queuedMessageId: "saved" });
+
+	const found = await findQueuedMessages(session, { ids: ["saved", "never saved"], ...anchor });
+
+	assert.deepEqual(found, { saved: ["saved"], absent: [] });
+});
+
+test("a session kept in its own file, as a subagent's is, is read from that file", async () => {
+	const store = await storeOf("jsonl");
+	const writer = await SessionManager.create(store, tmpdir());
+	const anchor = await lostEngineSession(writer);
+	const file = writer.getSessionFile();
+	assert.ok(file);
+	const ids = ["saved", "never saved"];
+
+	assert.deepEqual(await findQueuedMessagesInFile(file, writer.getSessionId(), { ids, ...anchor }), {
+		saved: ["saved"],
+		absent: ["never saved"],
+	});
+	assert.deepEqual(await findQueuedMessagesInFile(file, "another session", { ids, ...anchor }), {
+		saved: [],
+		absent: [],
+	});
+	// A file whose folder is gone proves nothing, and reading it does not make the folder again.
+	const gone = join(tmpdir(), `queued-message-receipts-gone-${process.pid}-${Date.now()}`, "session.jsonl");
+	assert.deepEqual(await findQueuedMessagesInFile(gone, writer.getSessionId(), { ids, ...anchor }), {
+		saved: [],
+		absent: [],
+	});
+	assert.equal(existsSync(dirname(gone)), false);
+});

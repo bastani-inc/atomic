@@ -55,8 +55,8 @@ export function taskCompletionEnvelope(
 /**
  * The one notice line a finished task shows in the transcript: what it is, its name, how it ended and how long it ran.
  * Status reads as the line's marker, the agent panel's mark for the state: success ●, failure ✗, stopped ◯ in the error
- * colour, warning !, waiting ◌ (a subagent released while it waits, which wakes by itself). `paused` is a subagent
- * paused or quit until it is resumed: it is stopped, and shows the stopped ◯.
+ * colour, waiting ◌ (a subagent released while it waits, which wakes by itself). `warning` is a task its execution
+ * timeout stopped and `paused` a subagent paused or quit until it is resumed: both are stopped, and show the stopped ◯.
  */
 export type TaskNoticeLine = {
 	status: "success" | "failure" | "stopped" | "warning" | "paused" | "waiting";

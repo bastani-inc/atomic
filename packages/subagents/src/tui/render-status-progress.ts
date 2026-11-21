@@ -154,12 +154,11 @@ export function markText(theme: Theme, mark: TaskMark): string {
 
 /**
  * A result's mark, the one the agent panel and `/tasks` show its state with: running, or continued on its own, an open
- * grey circle; killed, interrupted or skipped, the stopped mark; failed, a cross; done, a filled circle (`!` when it
- * left no text output).
+ * grey circle; killed, interrupted or skipped, the stopped mark; failed, a cross; done, a filled circle, also when it
+ * left no text output (its words say so).
  */
 export function resultGlyph(
 	result: Details["results"][number],
-	output: string,
 	theme: Theme,
 	running = result.progress?.status === "running",
 ): string {
@@ -173,7 +172,6 @@ export function resultGlyph(
 	)
 		return markText(theme, TASK_MARKS.stopped);
 	if (result.status === "error") return markText(theme, TASK_MARKS.failed);
-	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "!");
 	return markText(theme, TASK_MARKS.done);
 }
 

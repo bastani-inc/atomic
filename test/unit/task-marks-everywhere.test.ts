@@ -284,7 +284,7 @@ test("subagent result rows and status lists read with the agent panel's marks (#
 		fg: (color: string, text: string) => `<${color}>${text}</>`,
 		bg: (_color: string, text: string) => text,
 		bold: (text: string) => text,
-	} as unknown as Parameters<typeof resultGlyph>[2];
+	} as unknown as Parameters<typeof resultGlyph>[1];
 	const tag = (mark: Mark) => `<${mark.color}>${mark.glyph}</>`;
 	const base = {
 		agent: "worker",
@@ -296,16 +296,12 @@ test("subagent result rows and status lists read with the agent panel's marks (#
 	} as unknown as Details["results"][number];
 	const result = (change: Partial<Details["results"][number]>) =>
 		({ ...base, ...change }) as Details["results"][number];
-	assert.equal(resultGlyph(result({ status: "ok" }), "done", tagged, true), tag(RUNNING), "running");
-	assert.equal(
-		resultGlyph(result({ status: "continued", detached: true }), "", tagged, false),
-		tag(RUNNING),
-		"continued",
-	);
-	assert.equal(resultGlyph(result({ status: "interrupted", interrupted: true }), "", tagged, false), tag(STOPPED));
-	assert.equal(resultGlyph(result({ status: "killed" }), "", tagged, false), tag(STOPPED), "killed");
-	assert.equal(resultGlyph(result({ status: "error" }), "", tagged, false), tag(FAILED), "failed");
-	assert.equal(resultGlyph(result({ status: "ok" }), "done", tagged, false), tag(DONE), "done");
+	assert.equal(resultGlyph(result({ status: "ok" }), tagged, true), tag(RUNNING), "running");
+	assert.equal(resultGlyph(result({ status: "continued", detached: true }), tagged, false), tag(RUNNING), "continued");
+	assert.equal(resultGlyph(result({ status: "interrupted", interrupted: true }), tagged, false), tag(STOPPED));
+	assert.equal(resultGlyph(result({ status: "killed" }), tagged, false), tag(STOPPED), "killed");
+	assert.equal(resultGlyph(result({ status: "error" }), tagged, false), tag(FAILED), "failed");
+	assert.equal(resultGlyph(result({ status: "ok" }), tagged, false), tag(DONE), "done");
 
 	const summary = (...children: Details["results"][number][]) =>
 		renderMultiCompact({ mode: "parallel", results: children } as Details, tagged).render(120)[0]!;
@@ -438,4 +434,56 @@ test("a call header drawn with an earlier version's stopped or paused mark still
 			component.dispose();
 		}
 	}
+});
+
+test("a subagent waiting for its turn or being stopped reads queued or stopping on its launch card, as the agent panel shows it", () => {
+	const queued = agent("queued", { execution: { kind: "queued" } });
+	markOf("queued: launch card", launchCardRows(queued), /Agent\(/, QUEUED);
+	assert.match(stripVTControlCharacters(launchCardRows(queued).join("\n")), /⎿ {2}Queued/);
+	const stopping = agent("stopping", { execution: { kind: "cancelling", cause: "user" } });
+	markOf("stopping: launch card", launchCardRows(stopping), /Agent\(/, STOPPING);
+	assert.match(stripVTControlCharacters(launchCardRows(stopping).join("\n")), /⎿ {2}Stopping/);
+	// Being stopped outranks a question it asked, as in the agent panel.
+	const stoppingWithQuestion = agent("stopping-input", {
+		execution: { kind: "cancelling", cause: "user" },
+		attention: { kind: "input-needed", prompt: "Approve the plan?" } as TaskRecord["attention"],
+	});
+	markOf("stopping with a question: launch card", launchCardRows(stoppingWithQuestion), /Agent\(/, STOPPING);
+});
+
+test("a subagent done without text output reads with the done mark in result rows", () => {
+	const tagged = {
+		fg: (color: string, text: string) => `<${color}>${text}</>`,
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	} as unknown as Parameters<typeof renderMultiCompact>[1];
+	const done = {
+		agent: "worker",
+		task: "fix shipping batches",
+		exitCode: 0,
+		messages: [],
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+		status: "ok",
+		finalOutput: "",
+	} as unknown as Details["results"][number];
+	const rows = renderMultiCompact({ mode: "parallel", results: [done, done] } as Details, tagged).render(120);
+	const marks = rows.map((row) => /^\s*<([a-z]+)>(\S)<\/>/u.exec(row)).filter((match) => match !== null);
+	assert.ok(marks.length >= 2, rows.join("\n"));
+	for (const match of marks) assert.deepEqual([match[1], match[2]], [DONE.color, DONE.glyph], rows.join("\n"));
+});
+
+test("a task its execution timeout stopped reads with the stopped mark in its notice, and other warnings keep theirs", () => {
+	const timedOut: TaskResult = { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 12_345 };
+	const subagent = agent("timeout-agent", settled(timedOut));
+	markOf("timed out: agent notice", noticeRows(subagent, timedOut), /worker/, STOPPED);
+	assert.match(stripVTControlCharacters(noticeRows(subagent, timedOut).join("\n")), /timed out after 12\.345 seconds/);
+	const shell: TaskRecord = {
+		...taskRecord("timeout-shell", "command"),
+		title: "sleep 60",
+		execution: { kind: "settled", result: timedOut },
+	};
+	markOf("timed out: shell notice", noticeRows(shell, timedOut), /sleep 60/, STOPPED);
+	// Other warnings keep their mark.
+	const warning = new ToolBlock({ status: "warning", title: "Read", meta: ["waiting for approval"] }).render(120);
+	assert.match(stripVTControlCharacters(warning.join("\n")), /^\s*! Read/m);
 });

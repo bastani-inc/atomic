@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
@@ -53,8 +54,13 @@ import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import {
 	beginQueuedMessageDelivery,
 	endQueuedMessageDelivery,
+	keepsDroppedQueuedMessages,
+	noteQueuedMessagesDropped,
+	type QueuedDeliveryEntry,
 	type QueuedMessageDelivery,
+	type QueuedMessageReceipt,
 } from "./queued-message-delivery.ts";
+import { writesEndWithWriter } from "./queued-message-receipts.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import {
 	assertSessionOpen,
@@ -99,6 +105,8 @@ function queuedTextImages(texts: readonly string[], removed: readonly AgentMessa
 interface QueuedOccurrence {
 	readonly lane: QueueLane;
 	readonly text: string;
+	/** The id it is saved with: a host that loses the engine delivering it finds its save by it. */
+	readonly receiptId: string;
 	/** The text that was submitted for it, kept for `clearQueue()` while it is queued. */
 	typed: TypedQueuedText;
 	/** A run took it once and ended before starting it, and it was queued again: it is not queued again a second time. */
@@ -112,6 +120,34 @@ interface QueuedOccurrence {
 }
 
 const queuedOccurrences = new WeakMap<AgentMessage, QueuedOccurrence>();
+/** The receipt id of each queued message, by the message object, until it is saved (its id is saved with it). */
+const receiptIds = new WeakMap<AgentMessage, string>();
+
+/** The receipt id `message`, a queued message, is saved with; undefined for any other message. */
+export function queuedMessageReceiptId(message: AgentMessage): string | undefined {
+	return receiptIds.get(message);
+}
+
+/** The receipt of each queued message a run took, by the message object. */
+const takenReceipts = new WeakMap<AgentMessage, QueuedMessageReceipt>();
+
+/** The receipt of `message`, a queued message a run took and has not saved; undefined for any other message. */
+export function queuedMessageReceipt(message: AgentMessage): QueuedMessageReceipt | undefined {
+	return takenReceipts.get(message);
+}
+
+/** Queued messages a run took that were saved, by the message object: none is ever reported unsaved again. */
+const savedQueuedMessages = new WeakSet<AgentMessage>();
+
+/** `message` was saved: nothing needs to find its save any more, so its receipt (and the text it keeps) goes. */
+export function forgetQueuedMessageReceipt(message: AgentMessage): void {
+	if (takenReceipts.delete(message)) savedQueuedMessages.add(message);
+}
+
+/** Whether `message` is a queued message a run took and saved. */
+export function queuedMessageSaved(message: AgentMessage): boolean {
+	return savedQueuedMessages.has(message);
+}
 /** Per session, oldest first: the queued messages runs took whose `message_start` has not reached the session. */
 const takenNotStarted = new WeakMap<AgentSession, AgentMessage[]>();
 /** Runs each session started, counted: a prompt that only starts a turn tells whether one started meanwhile. */
@@ -135,6 +171,7 @@ function queueUserText(
 	images: ImageContent[] | undefined,
 	typed: string | undefined,
 	rawText: string | undefined,
+	receiptId: string = randomUUID(),
 ): void {
 	assertSessionOpen(session);
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -150,7 +187,13 @@ function queueUserText(
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
 	(lane === "steer" ? session._steeringMessages : session._followUpMessages).push(text);
-	queuedOccurrences.set(message, { lane, text, typed: rememberTypedQueuedText(session, lane, text, typed) });
+	receiptIds.set(message, receiptId);
+	queuedOccurrences.set(message, {
+		lane,
+		text,
+		receiptId,
+		typed: rememberTypedQueuedText(session, lane, text, typed),
+	});
 	session._queueAgentMessage(message, lane);
 	// A listener sees the message where it is: a `clearQueue()` it runs at once takes it back for good.
 	try {
@@ -219,8 +262,9 @@ export async function _queueSteer(
 	images?: ImageContent[],
 	typed?: string,
 	rawText?: string,
+	receiptId?: string,
 ): Promise<void> {
-	queueUserText(this, "steer", text, images, typed, rawText);
+	queueUserText(this, "steer", text, images, typed, rawText, receiptId);
 }
 
 /**
@@ -232,8 +276,9 @@ export async function _queueFollowUp(
 	images?: ImageContent[],
 	typed?: string,
 	rawText?: string,
+	receiptId?: string,
 ): Promise<void> {
-	queueUserText(this, "followUp", text, images, typed, rawText);
+	queueUserText(this, "followUp", text, images, typed, rawText, receiptId);
 }
 
 /** A run takes the queued `message` now: it leaves the list and is under way until its `message_start`. */
@@ -243,11 +288,33 @@ function takeOccurrence(session: AgentSession, message: AgentMessage): QueuedOcc
 	const list = occurrence.lane === "steer" ? session._steeringMessages : session._followUpMessages;
 	const index = nthIndexOf(list, occurrence.text, forgetTypedQueuedRecord(session, occurrence.typed));
 	if (index >= 0) list.splice(index, 1);
+	const receipt = index >= 0 ? takenReceipt(session, occurrence) : undefined;
+	if (receipt !== undefined) takenReceipts.set(message, receipt);
 	occurrence.taken = {
-		delivery: index >= 0 ? beginQueuedMessageDelivery(session, occurrence.lane, occurrence.text) : undefined,
+		delivery:
+			receipt !== undefined
+				? beginQueuedMessageDelivery(session, occurrence.lane, occurrence.text, receipt)
+				: undefined,
 		announced: false,
 	};
 	return occurrence;
+}
+
+/**
+ * The receipt of `occurrence`, taken now: it can only be saved after every entry the session's store holds now, so a
+ * search for its save after a lost engine starts after them.
+ */
+function takenReceipt(session: AgentSession, occurrence: QueuedOccurrence): QueuedMessageReceipt {
+	const manager = session.sessionManager;
+	const epoch = manager.getHistoryEpoch();
+	const typed = occurrence.typed.typed;
+	return {
+		id: occurrence.receiptId,
+		after: manager.getLastSeq(),
+		...(epoch === undefined ? {} : { epoch }),
+		...(typed === occurrence.text ? {} : { typed }),
+		...(writesEndWithWriter(manager.getSessionStore()) ? { local: true as const } : {}),
+	};
 }
 
 /**
@@ -299,18 +366,19 @@ export function startQueuedMessage(
 }
 
 /**
- * The run ended: queued messages it took and never started (its turn preparation failed, or it stopped first) are
- * queued again, at the front of their lanes in the order they were queued, with the text that was submitted for them,
- * so they are delivered or taken back like any other queued message: the queue goes on as it does after any failed
- * run. One that a run already took and lost once is not queued again but dropped, as it always was, so a run that
- * keeps failing before it starts it never repeats it.
+ * The run ended (`runEnd` is its `agent_end`): queued messages it took and never started (its turn preparation failed,
+ * or it stopped first) are queued again, at the front of their lanes in the order they were queued, with the text that
+ * was submitted for them, so they are delivered or taken back like any other queued message: the queue goes on as it
+ * does after any failed run. One that a run already took and lost once is not queued again but dropped, so a run that
+ * keeps failing before it starts it never repeats it; `runEnd` tells which, as submitted, for a chat to give back.
  */
-export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
+export function requeueQueuedMessagesNotStarted(session: AgentSession, runEnd?: object): void {
 	const pending = takenNotStarted.get(session);
 	if (pending === undefined) return;
 	takenNotStarted.delete(session);
 	const back: Record<QueueLane, AgentMessage[]> = { steer: [], followUp: [] };
 	const typed: TypedQueuedText[] = [];
+	const dropped: QueuedDeliveryEntry[] = [];
 	for (const message of pending) {
 		const occurrence = queuedOccurrences.get(message);
 		if (occurrence?.taken === undefined) continue;
@@ -320,12 +388,16 @@ export function requeueQueuedMessagesNotStarted(session: AgentSession): void {
 		// Taken and lost once already, or no longer listed when it was taken: not queued again.
 		if (occurrence.requeued || !listed) {
 			queuedOccurrences.delete(message);
+			// Never started, so never saved: a chat can give it back to be sent again by hand.
+			if (listed) dropped.push({ lane: occurrence.lane, text: occurrence.typed.typed });
 			continue;
 		}
 		occurrence.requeued = true;
 		back[occurrence.lane].push(message);
 		typed.push(occurrence.typed);
 	}
+	if (runEnd !== undefined && dropped.length > 0 && keepsDroppedQueuedMessages(session))
+		noteQueuedMessagesDropped(runEnd, dropped);
 	if (back.steer.length === 0 && back.followUp.length === 0) return;
 	const textsOf = (messages: readonly AgentMessage[]) =>
 		messages.map((message) => queuedOccurrences.get(message)?.text ?? "");
@@ -555,7 +627,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
-	noteCommandAnswer(this);
+	noteCommandAnswer(this, message);
 }
 
 const pendingCustomMessageDrains = new WeakMap<AgentSession, Promise<void>>();

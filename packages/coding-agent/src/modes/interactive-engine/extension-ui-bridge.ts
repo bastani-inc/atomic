@@ -56,7 +56,17 @@ export function attachInteractiveEngineHost(
 	const disposePromptGeneration = runtime.onGenerationEnded(() => onUIPrompt?.(undefined));
 	// Generation-owned: RPC dialogs mount real host components and must not
 	// outlive, or answer through, a replacement engine child.
-	const dialogs = new EngineDialogHostController(runtime, ui);
+	// The engine clears a closed component widget's slot a second time over the dialog channel: an agent panel the
+	// screen still shows until a navigation view draws (`RemoteComponentController`) is not cleared by that echo.
+	const dialogUi: ExtensionUIContext = Object.assign(Object.create(ui) as ExtensionUIContext, {
+		setWidget: ((key, content, options) => {
+			if (content === undefined && remoteComponents.takeRetiredWidgetClear(key)) return;
+			// Anything else written there replaces the retired panel, which then leaves without clearing it.
+			remoteComponents.supersedeRetiredWidget(key);
+			ui.setWidget(key, content as never, options);
+		}) satisfies ExtensionUIContext["setWidget"],
+	});
+	const dialogs = new EngineDialogHostController(runtime, dialogUi);
 	let shortcuts: EngineExtensionShortcut[] = [];
 	const find = (data: string) =>
 		shortcuts.find(
@@ -173,6 +183,11 @@ export function terminateInteractiveEngine(runtime: AgentSessionRuntime): boolea
 export function gracefullyStoppedEnginePids(runtime: AgentSessionRuntime): ReadonlySet<number> {
 	const pid = runtime instanceof IsolatedInteractiveRuntime ? runtime.getReadyEngineChildPid() : undefined;
 	return new Set(pid === undefined ? [] : [pid]);
+}
+
+/** Whether the session runs in an interactive engine process rather than in this one. */
+export function runsInteractiveEngine(runtime: AgentSessionRuntime): boolean {
+	return runtime instanceof IsolatedInteractiveRuntime;
 }
 
 /**

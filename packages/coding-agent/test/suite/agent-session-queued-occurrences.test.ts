@@ -3,7 +3,8 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
-import { queuedMessagesUnderWay } from "../../src/core/queued-message-delivery.ts";
+import { queuedMessageReceipt } from "../../src/core/agent-session-message-queue.ts";
+import { queuedMessagesUnderWay, takeQueuedMessagesDroppedAt } from "../../src/core/queued-message-delivery.ts";
 import { createHarness, getMessageText, getUserTexts, type Harness, type HarnessOptions } from "./harness.ts";
 
 /**
@@ -206,6 +207,10 @@ describe("queued messages", () => {
 				throw new Error("refused at start");
 			}
 		});
+		const runEnds: object[] = [];
+		h.session.subscribe((event) => {
+			if (event.type === "agent_end") runEnds.push(event);
+		});
 		const run = h.session.prompt("first");
 		await waiting.started;
 		await h.session.followUp("again");
@@ -221,6 +226,41 @@ describe("queued messages", () => {
 		assert.equal(refusals, 2, "taken twice, then dropped: no run repeats it");
 		assert.deepEqual(h.session.getFollowUpMessages(), [], "not left listed");
 		assert.deepEqual(getUserTexts(h), ["first"]);
+		// Without a chat to give it back to, a run's end that a listener keeps keeps nothing of it.
+		assert.ok(runEnds.length > 0);
+		assert.deepEqual(
+			runEnds.map((event) => takeQueuedMessagesDroppedAt(event)),
+			runEnds.map(() => undefined),
+		);
+	});
+
+	it("a queued message keeps its receipt only until it is saved", async () => {
+		const waiting = waitingTool();
+		const h = await harness([waiting.tool]);
+		h.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("answered the steer"),
+		]);
+		const receipts: { readonly started: boolean; readonly saved: boolean }[] = [];
+		h.session.subscribe((event) => {
+			if (event.type !== "message_start" && event.type !== "message_end") return;
+			if (event.message.role !== "user" || getMessageText(event.message) !== "steered") return;
+			const kept = queuedMessageReceipt(event.message) !== undefined;
+			receipts.push(
+				event.type === "message_start" ? { started: kept, saved: false } : { started: false, saved: kept },
+			);
+		});
+		const run = h.session.prompt("first");
+		await waiting.started;
+		await h.session.steer("steered");
+		waiting.release();
+		await run;
+
+		// Taken and shown: its receipt is kept for a host that may lose the engine; saved: nothing needs it any more.
+		assert.deepEqual(receipts, [
+			{ started: true, saved: false },
+			{ started: false, saved: false },
+		]);
 	});
 
 	it("a prompt with the text of a queued message leaves that message queued: both are sent, each once", async () => {

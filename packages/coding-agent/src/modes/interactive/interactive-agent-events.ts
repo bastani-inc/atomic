@@ -4,6 +4,7 @@ import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } fr
 import { chatReceipt } from "../../core/chat-receipts.js";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
+import { keepDroppedQueuedMessages } from "../../core/queued-message-delivery.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { carryRowSource, noteRowSource, noteSavedSeq } from "../../core/tasks/transcript-origin.js";
@@ -38,7 +39,12 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { formatResumeCommand } from "./interactive-mode-helpers.ts";
-import { noteSteeringSaved, reconcileQueuedSubmissions, redrawMainQueuedDeliveries } from "./interactive-queueing.ts";
+import {
+	noteSteeringSaved,
+	reconcileQueuedSubmissions,
+	redrawMainQueuedDeliveries,
+	returnDroppedQueuedMessages,
+} from "./interactive-queueing.ts";
 import {
 	breakMainToolGroup,
 	endMainAssistantMessage,
@@ -220,6 +226,8 @@ function deliverAgentEvent(frame: EventForwarding, event: StartupEvent): Promise
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
 	const session = this.session;
+	// The main chat gives back to its editor what the session's runs drop from its queue.
+	const releaseDroppedQueuedMessages = keepDroppedQueuedMessages(session);
 	const frame: EventForwarding = { mode: this, session };
 	const unsubscribe = session.subscribe(async (event) => {
 		await deliverAgentEvent(frame, event);
@@ -247,6 +255,7 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 				});
 	this.unsubscribe = () => {
 		unsubscribe();
+		releaseDroppedQueuedMessages();
 		unbindAgentView();
 		if (this.retryLoader && this.retryEscapeHandler) {
 			this.statusContainer.removeChild(this.retryLoader);
@@ -639,6 +648,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			toolRowsAwaitingResult.delete(this);
 			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
+			returnDroppedQueuedMessages(this, event);
 			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {
 				void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
 			}

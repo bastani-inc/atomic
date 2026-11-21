@@ -9,6 +9,7 @@ pub mod host_process;
 pub mod process_start;
 pub mod pty;
 pub mod session_end;
+pub mod signal_disposition;
 #[cfg(target_os = "linux")]
 pub(crate) mod spawn;
 pub mod stdin_input;

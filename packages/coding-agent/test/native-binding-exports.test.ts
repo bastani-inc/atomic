@@ -51,6 +51,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"renameNoReplace",
 	"renameNoReplaceAsync",
 	"search",
+	"signalIgnored",
 	"startHostProcess",
 	"tryAdvisoryLock",
 	"tryAdvisoryLockAsync",

@@ -68,6 +68,7 @@ function engineStandIn(base: AgentSessionRuntime, cwd: string, agentDir: string)
 		onGenerationEnded: subscribe(endedListeners),
 		onEngineRecovered: none,
 		onQueuedDeliveriesForgotten: none,
+		onQueuedMessagesTaken: none,
 		queuedMessagesUnderWay: () => NO_QUEUED_MESSAGES,
 		onDiagnostic: none,
 		onSessionStatsChanged: none,

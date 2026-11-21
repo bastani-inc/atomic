@@ -1,7 +1,9 @@
 import { opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir, getAgentDirs } from "../config.js";
+import { canonicalizePathAsync } from "../utils/canonical-path.ts";
 import { isOverridePattern } from "./package-manager-resource-patterns.ts";
+import type { StartupExtensionCheck } from "./project-trust-state.ts";
 
 /** The extension sources startup loads before it decides a project's trust, as configured for this run. */
 export interface ProjectTrustElectorateInput {
@@ -56,4 +58,19 @@ export async function extensionsCanDecideProjectTrust(input: ProjectTrustElector
 	const homes = input.agentDir === getAgentDir() ? getAgentDirs() : [input.agentDir];
 	for (const home of homes) if (await hasExtensionCandidates(join(home, "extensions"))) return true;
 	return false;
+}
+
+/**
+ * Whether an extension could decide the trust of the folder `cwd`, for an engine started in it: what its host found when
+ * it checked at startup for that folder, so that both decide with the same extensions, or else `check()` here. A host
+ * that does not send what it found (an older one) leaves the engine to check, as it always did.
+ */
+export async function engineExtensionsCanDecide(
+	hostCheck: StartupExtensionCheck | undefined,
+	cwd: string,
+	check: () => Promise<boolean>,
+): Promise<boolean> {
+	return hostCheck !== undefined && (await canonicalizePathAsync(hostCheck.cwd)) === (await canonicalizePathAsync(cwd))
+		? hostCheck.extensionsCanDecide
+		: check();
 }

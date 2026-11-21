@@ -1146,6 +1146,14 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 
 	test("across many stores and releases, boot identity and the process's start time are read once and its directory created once", async () => {
 		vi.resetModules();
+		// On Windows the start time comes from the native module: count those reads with the commands' lookups.
+		let nativeStartReads = 0;
+		const startTokens = await import("../src/core/process-start-token.js");
+		startTokens.setNativeProcessCreationTimeForTesting((pid) => {
+			if (pid !== process.pid) return null;
+			nativeStartReads += 1;
+			return "134000000000000000";
+		});
 		const fresh = await import("../src/core/storage/session/released-history-files.js");
 		const freshChildProcess = vi.mocked(await import("node:child_process"));
 		const freshPromises = vi.mocked(await import("node:fs/promises"));
@@ -1186,7 +1194,8 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 						Array.isArray(args) &&
 						(args.includes(`(Get-Process -Id ${process.pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`) ||
 							(command === "ps" && args.join(" ") === `-o lstart= -p ${process.pid}`)),
-				).length;
+				).length +
+				nativeStartReads;
 			assert.equal(bootIdentityLookups, 1);
 			assert.equal(startTimeLookups, 1);
 			assert.equal(freshPromises.mkdir.mock.calls.length, 1 + stores.length, "the process's, then one per store");
@@ -1197,6 +1206,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 			);
 		} finally {
 			setWindowsDirectorySecurityReaderForTesting(undefined);
+			startTokens.setNativeProcessCreationTimeForTesting(undefined);
 		}
 	});
 });

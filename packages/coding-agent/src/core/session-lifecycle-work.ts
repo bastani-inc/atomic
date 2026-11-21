@@ -1,4 +1,5 @@
 import { asyncScope } from "./async-scope.ts";
+import { withTranspileCacheWriteOwner } from "./extensions/transpile-cache-writes.js";
 import type { SessionStore } from "./storage/session/types.js";
 import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
 
@@ -124,10 +125,13 @@ export function trackSessionWork<T>(session: object, operation: () => Promise<T>
 	pending.add(settled);
 	const ancestors = new Set(currentWork.getStore());
 	ancestors.add(settled);
+	const inherit = !sessionWorkOwners.has(session);
 	const result = currentWork.run(ancestors, () =>
-		withWindowsDirectorySecurityOwner(sessionLifetime(session), async () => operation(), {
-			inherit: !sessionWorkOwners.has(session),
-		}),
+		withWindowsDirectorySecurityOwner(
+			sessionLifetime(session),
+			() => withTranspileCacheWriteOwner(session, async () => operation(), { inherit }),
+			{ inherit },
+		),
 	);
 	void result
 		.finally(() => {
@@ -147,13 +151,52 @@ export function sessionQuitSignal(session: object): AbortSignal {
 	return controller.signal;
 }
 
+const quitStopsArmed = new WeakSet<object>();
+const quitBegun = new WeakSet<object>();
+const quitStops = new WeakMap<object, Set<() => void>>();
+
 export function abortSessionWork(session: object, quitting = false): void {
 	sessionLifetime(session);
 	lifetimes.get(session)!.abort();
 	if (quitting) {
 		sessionQuitSignal(session);
 		quitSignals.get(session)!.abort();
+		if (!quitStopsArmed.has(session)) return;
+		quitBegun.add(session);
+		const stops = quitStops.get(session);
+		quitStops.delete(session);
+		for (const stop of stops ?? []) stop();
 	}
+}
+
+/**
+ * Makes `session`'s quit run the stops registered with {@link onSessionQuit}, as the interactive app's quit does: it
+ * gives the session's shutdown handlers only a few seconds. Without it a quit waits for that work, as an SDK host's
+ * `dispose()` does.
+ */
+export function armSessionQuitStops(session: object): void {
+	quitStopsArmed.add(session);
+}
+
+/**
+ * Runs `stop` once `session` starts a quit that {@link armSessionQuitStops} armed, or at once when it already has.
+ * Unlike {@link sessionQuitSignal}, a registration outlives a reload of the session, which renews its signals.
+ * Returns the unregistration.
+ */
+export function onSessionQuit(session: object, stop: () => void): () => void {
+	if (quitBegun.has(session)) {
+		stop();
+		return () => {};
+	}
+	let stops = quitStops.get(session);
+	if (!stops) {
+		stops = new Set();
+		quitStops.set(session, stops);
+	}
+	stops.add(stop);
+	return () => {
+		quitStops.get(session)?.delete(stop);
+	};
 }
 
 export function hasCallingSessionWork(session: object): boolean {
@@ -252,6 +295,42 @@ export async function drainSessionWorkWithin(session: object, limitMs = SESSION_
 		if (unsettled) throw unsettled;
 	} finally {
 		deadline.clear();
+	}
+}
+
+const shutdownHandlerDeadlines = new WeakMap<object, number>();
+
+/**
+ * Stops waiting for the `session_shutdown` handlers of `session`'s quit at `deadline`, on the `performance.now()` clock.
+ * Handlers still running then go on unwaited for, and the rest of the close runs and is waited for as usual.
+ */
+export function limitQuitShutdownHandlers(session: object, deadline: number): void {
+	shutdownHandlerDeadlines.set(session, deadline);
+}
+
+/**
+ * Runs `handlers`, the `session_shutdown` handlers of `session`'s close, until the deadline
+ * {@link limitQuitShutdownHandlers} set for a quit, if any. A handler that fails in time fails the step as before.
+ */
+export async function untilShutdownHandlerDeadline(
+	session: object,
+	quitting: boolean,
+	handlers: Promise<unknown>,
+): Promise<void> {
+	const deadline = quitting ? shutdownHandlerDeadlines.get(session) : undefined;
+	if (deadline === undefined) {
+		await handlers;
+		return;
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<"expired">((resolve) => {
+		timer = setTimeout(() => resolve("expired"), Math.max(0, deadline - performance.now()));
+	});
+	try {
+		if ((await Promise.race([handlers.then(() => "done" as const), expired])) === "expired")
+			void handlers.catch(() => {});
+	} finally {
+		clearTimeout(timer);
 	}
 }
 

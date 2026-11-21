@@ -877,6 +877,7 @@ module.exports.removeWindowsFileOlderThan = nativeBinding.removeWindowsFileOlder
 module.exports.renameNoReplace = nativeBinding.renameNoReplace
 module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
 module.exports.search = nativeBinding.search
+module.exports.signalIgnored = nativeBinding.signalIgnored
 module.exports.startHostProcess = nativeBinding.startHostProcess
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.tryAdvisoryLock = nativeBinding.tryAdvisoryLock

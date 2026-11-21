@@ -9,6 +9,11 @@ import { runCallback } from "../../core/callback-activity.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
+import {
+	findQueuedMessages,
+	findQueuedMessagesInFile,
+	findQueuedMessagesInStore,
+} from "../../core/queued-message-receipts.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
@@ -122,6 +127,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "get_history_page":
 		case "get_history_chunk":
 		case "get_messages":
+		case "find_queued_messages":
 		case "get_state":
 		case "pause_queued_messages":
 		case "resume_queued_messages":
@@ -242,6 +248,7 @@ export function createRpcCommandHandler({
 					await promptSession.prompt(command.message, {
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
+						...(typeof command.queuedMessageId === "string" ? { queuedMessageId: command.queuedMessageId } : {}),
 						source: "rpc",
 						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {
@@ -913,6 +920,17 @@ export function createRpcCommandHandler({
 
 			case "get_messages": {
 				return createRpcSuccessResponse(id, "get_messages", { messages: session.messages });
+			}
+
+			case "find_queued_messages": {
+				const manager = session.sessionManager;
+				const other = typeof command.sessionId === "string" && command.sessionId !== manager.getSessionId();
+				const found = !other
+					? await findQueuedMessages(manager, command)
+					: typeof command.sessionFile === "string"
+						? await findQueuedMessagesInFile(command.sessionFile, command.sessionId as string, command)
+						: await findQueuedMessagesInStore(manager.getSessionStore(), command.sessionId as string, command);
+				return createRpcSuccessResponse(id, "find_queued_messages", found);
 			}
 
 			case "get_command_completions": {
