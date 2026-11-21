@@ -10,7 +10,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { prepareSessionResume, sessionResumeOptions } from "../src/core/resume/session-resume.js";
+import {
+	continueSessionWhereItWorked,
+	prepareSessionResume,
+	sessionResumeOptions,
+} from "../src/core/resume/session-resume.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -130,6 +134,25 @@ test("a checkout the session never captured comes back as its subagent last capt
 	assert.equal(content(resumed.getCwd(), "work.txt"), "child\n");
 });
 
+test("a session continued where it worked, as a released session is woken, comes back as its subagent left its checkout", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	renameSync(clone, `${clone}-moved`);
+
+	const reopened = await SessionManager.open(store, parent.getSessionId());
+	const options = sessionResumeOptions(
+		"rehydrate",
+		sandbox.root,
+		sandbox.path("agent"),
+		SettingsManager.inMemory(),
+		() => true,
+	);
+	const continued = await continueSessionWhereItWorked(reopened, { ...options, blueprints: "skip" });
+	assert.equal(content(continued.getCwd(), "work.txt"), "child\n");
+});
+
 test("the session's own capture after its subagent's keeps the checkout as the session left it, even when it wrote the same content back", async () => {
 	const { clone, store, parent } = await project();
 	sandbox.write(join(clone, "work.txt"), "parent\n");
@@ -208,6 +231,57 @@ test("a subagent recorded on a branch the session left is not taken", async () =
 
 	const resumed = await resume(store, parent, clone, false);
 	assert.equal(resumed.getLatestWorktreeSnapshots().size, 0);
+});
+
+test("a subagent's later capture of the content the session already holds keeps it when an older capture's subagent remains", async () => {
+	const { clone, store, parent } = await project();
+	sandbox.write(join(clone, "work.txt"), "parent\n");
+	await capture(parent, store, clone);
+	const first = await subagent(parent, store, clone);
+	const second = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "first\n");
+	await first.finished(await capture(first.child, store, clone));
+	sandbox.write(join(clone, "work.txt"), "parent\n");
+	await second.finished(await capture(second.child, store, clone));
+
+	await resume(store, parent, clone, false);
+	await store.delete(second.child.getSessionId());
+	const resumed = await resume(store, parent, clone, true);
+	assert.equal(content(resumed.getCwd(), "work.txt"), "parent\n");
+});
+
+test("a snapshot the session records while its subagents' captures are compared stays its latest", async () => {
+	const { clone, store, parent } = await project();
+	const { child, finished } = await subagent(parent, store, clone);
+	sandbox.write(join(clone, "work.txt"), "child\n");
+	await finished(await capture(child, store, clone));
+	const reopened = await SessionManager.open(store, parent.getSessionId());
+	const open = SessionManager.prototype.openSessionById;
+	let recorded: string | undefined;
+	const reading = vi.spyOn(SessionManager.prototype, "openSessionById").mockImplementation(async function (
+		this: SessionManager,
+		...args: Parameters<typeof open>
+	) {
+		// The session records a capture of its own while the subagent's session is being read.
+		sandbox.write(join(clone, "work.txt"), "parent later\n");
+		await capture(reopened, store, clone);
+		recorded = reopened.getLatestWorktreeSnapshots().get(clone)?.id;
+		return open.apply(this, args);
+	});
+	try {
+		const options = sessionResumeOptions(
+			"cli",
+			sandbox.root,
+			sandbox.path("agent"),
+			SettingsManager.inMemory(),
+			() => true,
+		);
+		await prepareSessionResume(reopened, { ...options, blueprints: "skip" });
+	} finally {
+		reading.mockRestore();
+	}
+	assert.ok(recorded, "the session recorded a capture during the resume");
+	assert.equal(reopened.getLatestWorktreeSnapshots().get(clone)?.id, recorded);
 });
 
 test("a subagent's named worktree stays its own: the session's resume does not take it", async () => {

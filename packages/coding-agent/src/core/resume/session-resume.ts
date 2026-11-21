@@ -1338,6 +1338,8 @@ export async function continueSessionWhereItWorked(
 	await holdSessionWorktrees(opened, opened, storeDir, options.signal);
 	try {
 		options.signal?.throwIfAborted();
+		// What its finished subagents captured later than the session counts as the session's own, as in any resume.
+		if (options.settings.enabled) await adoptSubagentCaptures(opened, options.signal);
 		const cwd = await mapRestoredPathAsync(opened.getCwd(), opened.getWorktreeRootMappings());
 		const checkouts = await currentWorktreeSnapshots(opened);
 		const cancelled = await setAsideCancelledBuilds(opened, storeDir, options);

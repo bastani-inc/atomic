@@ -94,7 +94,7 @@ import { physicalForkHeader } from "./session-manager-core.ts";
 import { prepareSessionOpenMarkers } from "./session-open-markers.js";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
-import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
+import { hasSubagentCaptures, releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
@@ -324,7 +324,9 @@ async function sessionResumedOnThisNode(
 	snapshots: CreateAgentSessionOptions["snapshots"],
 ): Promise<SessionManager | undefined> {
 	if (sessionManager === undefined || !sessionManager.isPersisted()) return sessionManager;
-	if (sessionManager.getLatestWorktreeSnapshots().size === 0) return sessionManager;
+	// One whose finished subagents captured a checkout is prepared too: it comes back as they left it.
+	if (sessionManager.getLatestWorktreeSnapshots().size === 0 && !hasSubagentCaptures(sessionManager))
+		return sessionManager;
 	const settings = settingsManager ?? (await SettingsManager.createAsync(process.cwd(), agentDir));
 	const prepared = await prepareSessionResume(sessionManager, {
 		...sessionResumeOptions(
