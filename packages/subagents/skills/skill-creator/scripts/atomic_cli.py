@@ -301,13 +301,18 @@ class AtomicProcess:
                 self.process.wait()
             else:
                 _stop(self.process)
+                # A process it left behind can hold its output open, even after it exited by itself.
+                _end_orphans()
         finally:
-            for thread in (self._writer, self._reader):
+            for thread, stream in ((self._writer, self.process.stdin), (self._reader, self.process.stdout)):
                 for _ in range(STOP_POLLS):
                     if not thread.is_alive():
                         break
                     thread.join(POLL_SECONDS)
-            for stream in (self.process.stdin, self.process.stdout):
+                if thread.is_alive():
+                    # Still blocked on a pipe that something else keeps open: closing the stream
+                    # would wait for that thread. The thread ends once the pipe does.
+                    continue
                 try:
                     stream.close()
                 except OSError:
@@ -385,11 +390,10 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
                 except subprocess.TimeoutExpired:
                     continue
         # Atomic ends the processes it started when it handles SIGTERM. One that did not handle
-        # either request is killed; on Linux, as a command, what it leaves behind is ended too.
+        # either request is killed; on Linux, as a command, close() ends what it left behind.
         process.send_signal(signal.SIGCONT)
         process.kill()
         process.wait()
-        _end_orphans()
     finally:
         with _children_lock:
             _owned_pids.discard(process.pid)

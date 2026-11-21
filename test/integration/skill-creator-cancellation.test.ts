@@ -163,6 +163,24 @@ describe.skipIf(python === undefined || process.platform === "win32")(
 			await waitUntilGone(startedPids(records), 5_000);
 		});
 
+		test.skipIf(process.platform !== "linux")(
+			"ends a process a query's Atomic left holding its output, instead of waiting for it (#5625)",
+			() => {
+				const box = sandbox();
+				const evalSet = box.writeEvalSet([{ query: "held", should_trigger: true }]);
+				const args = ["--eval-set", evalSet, "--skill-path", box.skill, "--timeout", "1", "--runs-per-query", "1"];
+				const result = spawnSyncCollect([python ?? "python3", "-m", "scripts.run_eval", ...args], {
+					cwd: box.project,
+					env: box.env({ FAKE_ATOMIC_SCENARIO: "exit-holding-output" }),
+					timeout: START_MS,
+				});
+				assert.equal(result.exitCode, 0, result.stderr.toString());
+				assert.match(result.stderr.toString(), /query failed: Timed out after 1s/u);
+				return waitUntilGone(startedPids(box.records()), 5_000);
+			},
+			STALLED_TEST_MS,
+		);
+
 		test("keeps an ignored SIGHUP ignored, so a nohup run finishes (#5625)", async () => {
 			const box = sandbox();
 			// nohup: the script starts with SIGHUP ignored.

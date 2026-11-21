@@ -21,6 +21,8 @@ FAKE_ATOMIC_PLAN (a JSON object of prompt -> scenario) or FAKE_ATOMIC_SCENARIO n
   stalled-child     the same, but it does not act on SIGTERM; with FAKE_ATOMIC_CLEAN_GRANDCHILD
                     set, the helper starts its child with an environment of its own, and with
                     FAKE_ATOMIC_HELPER_EXITS set the helper exits at once, leaving its child
+  exit-holding-output
+                    exit at once, leaving a child that holds the output open
   exit:<status>     exit at once with a status and a stderr line
   improve           text mode: an answer with <new_description> tags
 """
@@ -161,6 +163,12 @@ elif scenario in ("hold-child", "stalled-child"):
             # A stalled Atomic does not act on SIGTERM in time.
             signal.signal(getattr(signal, name), signal.SIG_IGN if stalled else end_with_helper)
     hold()
+elif scenario == "exit-holding-output":
+    # Exit without a decision, leaving a process that keeps the output open.
+    holder = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+    record["child"] = holder.pid
+    save()
+    os._exit(0)
 elif scenario.startswith("exit:"):
     sys.stderr.write("fake atomic failed on purpose\n")
     sys.exit(int(scenario.split(":", 1)[1]))
