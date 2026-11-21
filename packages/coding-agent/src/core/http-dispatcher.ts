@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { resolveHttpsFallbackProxyUrl } from "@bastani/atomic-ai/utils/node-http-proxy";
 import { recordProxyConnectionFailure } from "@bastani/atomic-ai/utils/tls-certificate";
 import * as undici from "undici";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
@@ -10,11 +11,9 @@ const originalGlobalFetch = globalThis.fetch;
 let installedGlobalFetch: typeof globalThis.fetch | undefined;
 
 /**
- * Install the npm Undici web globals in both Node and Bun.
- *
- * Bun's ESM interop exposes Undici's individual exports but omits the CommonJS
- * `install` helper. Optional-calling that helper therefore left Bun's native
- * fetch active even though the configured dispatcher belonged to npm Undici.
+ * Install the Undici web globals: npm Undici's on Node. Bun resolves `undici` to its own stand-in, which has no
+ * `install` helper and whose fetch and WebSocket are Bun's; `configureHttpDispatcher` gives that fetch the dispatcher's
+ * settings itself.
  */
 function installUndiciGlobals(): void {
 	if (typeof undici.install === "function") {
@@ -33,6 +32,51 @@ function installUndiciGlobals(): void {
 		MessageEvent: undici.MessageEvent,
 		EventSource: undici.EventSource,
 	});
+}
+
+/** The idle timeout the standalone binary's fetch gives Bun for each request; see `createBunFetch`. */
+let bunIdleTimeoutMs: number = DEFAULT_HTTP_IDLE_TIMEOUT_MS;
+
+/** The URL a fetch call asks for. */
+function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL {
+	return typeof input === "string" || input instanceof URL ? input : input.url;
+}
+
+/**
+ * The fetch of the standalone binary. There `undici` is Bun's own stand-in, which ignores the dispatcher and its options,
+ * and fetch is Bun's. For each request that does not set them itself, this fetch gives Bun what the dispatcher does on
+ * Node.js: `httpIdleTimeoutMs` as Bun's socket idle timeout (none when it is disabled), and, for an `https:` request with
+ * no https proxy set, the http proxy, which Node.js uses and Bun on its own does not. Bun still exempts the hosts
+ * `NO_PROXY` names. The timeout is read at each request, so a fetch kept from before the setting changed follows it.
+ */
+function createBunFetch(fetch: typeof globalThis.fetch): typeof globalThis.fetch {
+	return Object.assign((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+		const own: RequestInit = init ?? {};
+		let fallback: { readonly proxy: string | undefined } | undefined;
+		const fallbackProxy = () => {
+			fallback ??= { proxy: resolveHttpsFallbackProxyUrl(requestUrl(input))?.href };
+			return fallback.proxy;
+		};
+		// Every option is read from the request's own `init` when Bun asks for it, once per time it asks, as Bun reads
+		// it: inherited or not enumerable, with `init` as a getter's receiver, never one Bun does not ask for. Only when
+		// the request leaves `timeout` or `proxy` unset does Bun get Atomic's. The proxy wraps an object of its own, so a
+		// frozen `init` is never asked to report another value.
+		const options = new Proxy<RequestInit>(
+			{},
+			{
+				get: (_holder, key) => {
+					const value = Reflect.get(own, key, own);
+					if (value !== undefined) return value;
+					if (key === "timeout") return bunIdleTimeoutMs === 0 ? false : bunIdleTimeoutMs;
+					if (key === "proxy") return fallbackProxy();
+					return value;
+				},
+				has: (_holder, key) =>
+					key === "timeout" || Reflect.has(own, key) || (key === "proxy" && fallbackProxy() !== undefined),
+			},
+		);
+		return fetch(input, options);
+	}, fetch);
 }
 
 const DURATION_STRING_PATTERN = /^(\d+)(ms|s|m|h)$/i;
@@ -166,6 +210,7 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 		new undici.EnvHttpProxyAgent(createHttpDispatcherOptions(normalizedTimeoutMs)),
 	);
 	undici.setGlobalDispatcher(dispatcher);
+	bunIdleTimeoutMs = normalizedTimeoutMs;
 
 	// Keep fetch and the dispatcher on the same undici implementation. Some Node
 	// releases use a bundled fetch that can ignore the npm undici dispatcher or
@@ -178,6 +223,8 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 			: globalThis.fetch === installedGlobalFetch;
 	if (shouldInstallGlobals) {
 		installUndiciGlobals();
+		// Bun's `undici` stand-in ignores the dispatcher just configured: its fetch is given the same settings itself.
+		if (typeof process.versions.bun === "string") globalThis.fetch = createBunFetch(globalThis.fetch);
 		installedGlobalFetch = globalThis.fetch;
 		// Undici replaces the WebSocket constructor pi-ai caches on first use.
 		// The wrapper only rewrites a shared Codex request carrying Atomic's

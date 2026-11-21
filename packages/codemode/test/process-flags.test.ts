@@ -8,6 +8,12 @@ import { expect, it } from "vitest";
 const SANDBOX_MODULE = JSON.stringify(pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href);
 /** Each child ends within seconds; the bound ends one that would not, so its test fails instead of stalling the run. */
 const CHILD_TIMEOUT_MS = 60_000;
+/**
+ * Each test below starts one Node child, which loads the sandbox from its source and starts a worker: that is the
+ * structural cost of these tests, about a second on an idle machine and several on a loaded Windows machine. A test
+ * fails on its child's own bound, not on the runner's 5 s default.
+ */
+const CHILD_TEST_TIMEOUT_MS = CHILD_TIMEOUT_MS + 5_000;
 // A preload that records the thread it runs on, as a host's loader or instrumentation would.
 const RECORDING_PRELOAD = `import { appendFileSync } from "node:fs";
 import { isMainThread } from "node:worker_threads";
@@ -60,11 +66,13 @@ function runsWithPreloads(flags: string[], env: Record<string, string>): void {
 it.each(STARTS)(
 	"runs a script in a process started with --input-type=module %s, with the process's preloads (#6079)",
 	(_where, flags, env) => runsWithPreloads(flags, env),
+	CHILD_TEST_TIMEOUT_MS,
 );
 
 it.each(SPELLINGS)(
 	"runs a script in a process started with --input-type=module %s, with the process's preloads",
 	(_where, flags, env) => runsWithPreloads(flags, env),
+	CHILD_TEST_TIMEOUT_MS,
 );
 
 // Records how a worker thread imports the sandbox's worker module: as its entry, or from another module.
@@ -110,40 +118,49 @@ it.each([
 			rmSync(dir, { recursive: true, force: true });
 		}
 	},
+	CHILD_TEST_TIMEOUT_MS,
 );
 
-it("runs a script in a process started with --input-type=module in NODE_OPTIONS that it later removes", () => {
-	// A worker keeps the options the process started with, whatever NODE_OPTIONS holds by the time it starts.
-	const result = spawnSync(
-		process.execPath,
-		[
-			"--eval",
-			`import { CodemodeSandbox } from ${SANDBOX_MODULE};
+it(
+	"runs a script in a process started with --input-type=module in NODE_OPTIONS that it later removes",
+	() => {
+		// A worker keeps the options the process started with, whatever NODE_OPTIONS holds by the time it starts.
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--eval",
+				`import { CodemodeSandbox } from ${SANDBOX_MODULE};
 			delete process.env.NODE_OPTIONS;
 			process.stdout.write(JSON.stringify(await new CodemodeSandbox().execute("return 6 * 7")));`,
-		],
-		{ encoding: "utf-8", env: { ...process.env, NODE_OPTIONS: "--input-type=module" }, timeout: CHILD_TIMEOUT_MS },
-	);
-	expect(result.error).toBeUndefined();
-	expect(result.status, result.stderr).toBe(0);
-	expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
-});
+			],
+			{ encoding: "utf-8", env: { ...process.env, NODE_OPTIONS: "--input-type=module" }, timeout: CHILD_TIMEOUT_MS },
+		);
+		expect(result.error).toBeUndefined();
+		expect(result.status, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
+	},
+	CHILD_TEST_TIMEOUT_MS,
+);
 
-it("starts a custom CommonJS workerUrl as its own main module in a process started with --input-type=module (#6079)", () => {
-	const entry = JSON.stringify(
-		pathToFileURL(fileURLToPath(new URL("./fixtures/main-only-worker.cjs", import.meta.url))).href,
-	);
-	const result = spawnSync(
-		process.execPath,
-		[
-			"--input-type=module",
-			"--eval",
-			`import { CodemodeSandbox } from ${SANDBOX_MODULE};
+it(
+	"starts a custom CommonJS workerUrl as its own main module in a process started with --input-type=module (#6079)",
+	() => {
+		const entry = JSON.stringify(
+			pathToFileURL(fileURLToPath(new URL("./fixtures/main-only-worker.cjs", import.meta.url))).href,
+		);
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"--eval",
+				`import { CodemodeSandbox } from ${SANDBOX_MODULE};
 			const sandbox = new CodemodeSandbox({ workerUrl: new URL(${entry}), timeoutMs: 10_000 });
 			process.stdout.write(JSON.stringify(await sandbox.execute("return 6 * 7")));`,
-		],
-		{ encoding: "utf-8" },
-	);
-	expect(result.status, result.stderr).toBe(0);
-	expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
-});
+			],
+			{ encoding: "utf-8", timeout: CHILD_TIMEOUT_MS },
+		);
+		expect(result.status, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, value: 42 });
+	},
+	CHILD_TEST_TIMEOUT_MS,
+);

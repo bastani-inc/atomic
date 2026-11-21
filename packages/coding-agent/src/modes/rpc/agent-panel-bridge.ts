@@ -542,11 +542,14 @@ function sameUnfocusedRows(
 	return true;
 }
 
-/** Whether the rows change with time alone: a running clock, or a finished row that has not faded yet. */
+/**
+ * Whether the rows change with time alone: a running clock, or a finished row that is fading. The shown subagent's
+ * finished row is kept without fading, so it asks for no frames.
+ */
 function panelRowsNeedClock(rows: readonly AgentPanelRow[], state: PanelState): boolean {
 	for (const row of rows) {
 		if (taskClockRunning(row.state)) return true;
-		if (isFinishedPanelRow(row) && !state.model.faded(row)) return true;
+		if (isFinishedPanelRow(row) && state.model.fading(row)) return true;
 	}
 	return false;
 }
