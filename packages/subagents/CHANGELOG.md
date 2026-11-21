@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- On Windows, Ctrl+C, Ctrl+Break and closing the console stop `skill-creator`'s description scripts at once and exit with the console-interrupt status (`0xC000013A`). Ctrl+C no longer waits for a running query to reach its timeout, and closing the console no longer reports the running queries as failed and exits with another status. Each query's Atomic now runs in a hidden console of its own, so only the scripts receive these keys and the close, and they stop the queries.
 - `skill-creator`'s `run_loop.py --holdout 0` finishes and writes its report, instead of failing after its first iteration when a report is written (the default).
 - `skill-creator`'s review viewer prints its URL as soon as it serves when its output goes to a pipe or a file, and on Windows no longer fails before serving when that output is not the console. `SKILL.md` now starts the viewer as a background shell that keeps serving after the call that started it, and reads the URL from its output.
 - `skill-creator`'s scripts write `feedback.json`, `benchmark.json`, `benchmark.md` and the improvement transcripts as UTF-8, and read grading, timing and eval metadata files and `SKILL.md` as UTF-8, falling back to the system's encoding for files saved in it. On Windows, `aggregate_benchmark.py` no longer fails or garbles non-ASCII text.

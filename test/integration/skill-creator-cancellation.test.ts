@@ -365,7 +365,7 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 				const outcome = runOnConsole(box, action, 2, "grandchild", evalArgs(box, ["one", "two"]), {
 					FAKE_ATOMIC_SCENARIO: "hold-child",
 				});
-				assert.equal(outcome.ready, 2, "both queries' Atomic and their processes ran");
+				assert.equal(outcome.ready, 2, `both queries' Atomic and their processes ran: ${outcome.screen}`);
 				assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
 				assert.doesNotMatch(outcome.screen, /query failed|"results"/u, "no query is reported");
 				await waitUntilGone(startedPids(box.records()), 5_000);
@@ -389,7 +389,7 @@ describe.skipIf(python === undefined || process.platform !== "win32")("skill-cre
 				"run_main(main)",
 			].join("\n");
 			const outcome = runOnConsole(box, "close", 1, "-", ["-c", program, box.log]);
-			assert.equal(outcome.ready, 1, "the script ran");
+			assert.equal(outcome.ready, 1, `the script ran: ${outcome.screen}`);
 			assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
 		},
 		EVENT_TEST_MS,
