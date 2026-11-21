@@ -40,6 +40,8 @@ interface HostEnding {
 	/** Settles when the terminal is gone, so a shutdown stops waiting on output that can no longer be written. */
 	readonly terminalLoss: Promise<void>;
 	readonly settleTerminalLoss: () => void;
+	/** The interactive engines a signal or the lost terminal left to the shutdown instead of ending at once. */
+	readonly sparedEngines: Set<number>;
 }
 
 const hostEndings = new WeakMap<InteractiveModeBase, HostEnding>();
@@ -48,10 +50,41 @@ function hostEnding(mode: InteractiveModeBase): HostEnding {
 	let ending = hostEndings.get(mode);
 	if (!ending) {
 		const { promise, resolve } = Promise.withResolvers<void>();
-		ending = { sigterms: 0, terminalLost: false, terminalLoss: promise, settleTerminalLoss: () => resolve() };
+		ending = {
+			sigterms: 0,
+			terminalLost: false,
+			terminalLoss: promise,
+			settleTerminalLoss: () => resolve(),
+			sparedEngines: new Set(),
+		};
 		hostEndings.set(mode, ending);
 	}
 	return ending;
+}
+
+/** Leave the interactive engine to the shutdown, and end every other child this host tracks at once. */
+function spareEngineFromKill(mode: InteractiveModeBase, ending: HostEnding): void {
+	const engines = gracefullyStoppedEnginePids(mode.runtimeHost);
+	for (const pid of engines) ending.sparedEngines.add(pid);
+	killTrackedDetachedChildren(engines);
+}
+
+/**
+ * End what is left of the process group of each engine left to the shutdown, as a host signal ending the engine's
+ * group at once always did: an engine ends its own process, but not a process an extension started in its group and
+ * neither detached nor stopped. The engine was this host's own child, the leader of a group the host created for it,
+ * and that group outlives it only while it has members. Windows has no process groups to end.
+ */
+function endSparedEngineGroups(ending: HostEnding): void {
+	if (process.platform === "win32") return;
+	for (const pid of ending.sparedEngines) {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			// Nothing is left in the group.
+		}
+	}
+	ending.sparedEngines.clear();
 }
 
 /**
@@ -162,6 +195,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			stopTerminal(this);
 		}
+		endSparedEngineGroups(ending);
 		process.exit(ending.terminalLost ? TERMINAL_LOST_EXIT_CODE : 0);
 	}
 
@@ -178,6 +212,8 @@ InteractiveModeBase.prototype.shutdown = async function (
 	stopTerminal(this);
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await this.runtimeHost.dispose();
+	// A signal or the lost terminal while quitting ends the engine's group as it would without the quit.
+	endSparedEngineGroups(ending);
 	if (ending.terminalLost) process.exit(TERMINAL_LOST_EXIT_CODE);
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	if (resumeCommand) {
@@ -207,7 +243,7 @@ InteractiveModeBase.prototype.handleTerminalLost = function (this: InteractiveMo
 	if (ending.terminalLost) return;
 	ending.terminalLost = true;
 	ending.settleTerminalLoss();
-	killTrackedDetachedChildren(gracefullyStoppedEnginePids(this.runtimeHost));
+	spareEngineFromKill(this, ending);
 	killSupervisedProcessTrees();
 	setTimeout(() => this.emergencyTerminalExit(), TERMINAL_LOST_SHUTDOWN_MS);
 	// A quit or a signal that is already shutting the session down goes on as it started.
@@ -218,6 +254,7 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 	this.isShuttingDown = true;
 	this.unregisterSignalHandlers();
 	killTrackedDetachedChildren();
+	endSparedEngineGroups(hostEnding(this));
 	killSupervisedProcessTrees();
 	// The terminal is gone. Do not run normal shutdown because TUI and
 	// extension cleanup can write restore sequences and re-trigger EIO.
@@ -285,7 +322,10 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 			// The interactive engine is left to the shutdown, which gives it the bounded window a quit gives it to run
 			// its extensions' shutdown. A closing terminal sends SIGHUP more than once, as the shell in it passes one on
 			// and the kernel sends another when that shell exits, so only a repeated SIGTERM ends every child at once.
-			killTrackedDetachedChildren(ending.sigterms > 1 ? undefined : gracefullyStoppedEnginePids(this.runtimeHost));
+			if (ending.sigterms > 1) {
+				killTrackedDetachedChildren();
+				endSparedEngineGroups(ending);
+			} else spareEngineFromKill(this, ending);
 			void this.shutdown({ fromSignal: true });
 		};
 		process.prependListener(signal, handler);

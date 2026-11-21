@@ -20,6 +20,8 @@ const RECORD_POLL_MS = 50;
 const HANDLER_WORK_MS = 200;
 /** A handler that works longer than any test here waits. */
 const ENDLESS_HANDLER_WORK_MS = 10 * CLI_TIMEOUT_MS;
+/** Longer than a killed process takes to be gone, however loaded the machine. */
+const GROUP_CHILD_GONE_MS = 5_000;
 /** The interactive engine's shutdown grace period, which a repeated signal does not wait for. */
 const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
 
@@ -45,6 +47,8 @@ interface EndedSession {
 	readonly enginePid: number;
 	/** When the session's process exited, on the `performance.now()` clock. */
 	readonly exitedAt: number;
+	/** The process the extension started in the engine's process group, when asked to. */
+	readonly groupChildPid: number | undefined;
 }
 
 /**
@@ -55,6 +59,7 @@ interface EndedSession {
 async function endSession(
 	end: (session: SessionEnd) => void | Promise<void>,
 	handlerWorkMs = HANDLER_WORK_MS,
+	options: { readonly groupChild?: boolean } = {},
 ): Promise<EndedSession> {
 	const root = makeTempDirectory("atomic-engine-quit-shutdown-");
 	const agentDir = join(root, "agent");
@@ -64,16 +69,27 @@ async function endSession(
 	const started = join(root, "started");
 	const shutdown = join(root, "shutdown.jsonl");
 	const eventLoopLog = join(root, "event-loop.jsonl");
+	const groupChild = join(root, "group-child");
 	let program: PtyProgram | undefined;
+	let groupChildPid: number | undefined;
 	try {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, installed);
 		mkdirSync(project, { recursive: true });
 		writeFileSync(
 			extension,
-			`import { appendFileSync, writeFileSync } from "node:fs";
+			`import { spawn } from "node:child_process";
+import { appendFileSync, writeFileSync } from "node:fs";
 export default (pi) => {
-	pi.on("session_start", () => writeFileSync(${JSON.stringify(started)}, String(process.pid)));
+	pi.on("session_start", () => {
+		if (${options.groupChild === true}) {
+			// A process the extension starts in the engine's process group, neither detached nor stopped at shutdown.
+			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			child.unref();
+			writeFileSync(${JSON.stringify(groupChild)}, String(child.pid));
+		}
+		writeFileSync(${JSON.stringify(started)}, String(process.pid));
+	});
 	pi.on("session_shutdown", async (event) => {
 		const call = { pid: process.pid, reason: event.reason, fromSignal: event.fromSignal };
 		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: false }) + "\\n");
@@ -112,6 +128,10 @@ export default (pi) => {
 		const engine = startRecords.find((record) => record.type === "start" && record.role === "engine");
 		assert.ok(host?.type === "start" && engine?.type === "start", "the session ran in an engine process");
 
+		if (options.groupChild) {
+			groupChildPid = Number(readTextSync(groupChild, "utf8"));
+			assert.ok(processIsRunning(groupChildPid), "the extension started its process");
+		}
 		await end({ program, hostPid: host.pid, handlerStarted: () => fileExistsSync(shutdown) });
 		const exit = await program.exited;
 		const exitedAt = performance.now();
@@ -129,6 +149,7 @@ export default (pi) => {
 			records: readRecords(eventLoopLog),
 			enginePid: engine.pid,
 			exitedAt,
+			groupChildPid,
 		};
 	} finally {
 		program?.kill();
@@ -157,6 +178,15 @@ test(
 	CLI_TIMEOUT_MS + 10_000,
 );
 
+function processIsRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // Windows delivers neither signal to a process: closing its console ends it at once.
 describe.skipIf(process.platform === "win32")("a host signal", () => {
 	for (const signal of ["SIGTERM", "SIGHUP"] as const) {
@@ -181,6 +211,32 @@ describe.skipIf(process.platform === "win32")("a host signal", () => {
 			CLI_TIMEOUT_MS + 10_000,
 		);
 	}
+
+	test(
+		"a process an extension started in the engine's process group ends with the engine after a signal (#6104)",
+		async () => {
+			const ended = await endSession(
+				({ hostPid }) => {
+					process.kill(hostPid, "SIGTERM");
+				},
+				HANDLER_WORK_MS,
+				{ groupChild: true },
+			);
+
+			const pid = ended.groupChildPid;
+			assert.ok(pid !== undefined);
+			try {
+				assert.equal(ended.exit.timedOut, false, ended.screen);
+				assert.equal(ended.calls.length, 2, "the engine ran its extension's shutdown");
+				const deadline = Date.now() + GROUP_CHILD_GONE_MS;
+				while (processIsRunning(pid) && Date.now() < deadline) await sleep(RECORD_POLL_MS);
+				assert.equal(processIsRunning(pid), false, "the extension's process outlived the engine");
+			} finally {
+				if (processIsRunning(pid)) process.kill(pid, "SIGKILL");
+			}
+		},
+		CLI_TIMEOUT_MS + 10_000,
+	);
 
 	test(
 		"a second signal ends the engine at once (#6104)",
