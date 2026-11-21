@@ -45,17 +45,18 @@ export async function requestBrokerShutdown(
  * Wait until the broker process `pid` has exited. The process, not the socket, decides: Windows can briefly accept a
  * named-pipe connection after its broker has terminated, and a successor can bind the pipe only once it has exited.
  * With `found`, the broker as it was found ({@link identifyBrokerProcess}), a pid that now names a later process also
- * counts as exited, so a pid Windows gave to another process is not waited for until the bound. `onPoll` runs on every
- * poll while it is alive.
+ * counts as exited, so a pid Windows gave to another process is not waited for until the bound. `readCurrentStart` reads
+ * the pid's start on a poll (by default however this platform reads it). `onPoll` runs on every poll while it is alive.
  */
 export async function waitForBrokerExit(
 	pid: number,
 	timeoutMs: number = BROKER_STOP_TIMEOUT_MS,
 	onPoll?: () => void | Promise<void>,
 	found?: BrokerProcess | Promise<BrokerProcess>,
+	readCurrentStart?: (pid: number) => Promise<string | undefined>,
 ): Promise<void> {
 	const startedAt = Date.now();
-	const isLater = found === undefined ? () => false : laterProcessProbe(found);
+	const isLater = found === undefined ? () => false : laterProcessProbe(found, readCurrentStart);
 	while (isProcessAlive(pid) && !isLater()) {
 		const elapsedMs = Date.now() - startedAt;
 		if (elapsedMs >= timeoutMs) throw new IntercomBrokerStopTimeoutError({ pid, timeoutMs, elapsedMs });

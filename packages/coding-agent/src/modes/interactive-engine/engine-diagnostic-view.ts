@@ -6,6 +6,8 @@ export interface EngineDiagnosticView {
 	stopWorkingLoader(): void;
 	showStatus(message: string, persist?: boolean): void;
 	showError(message: string): void;
+	/** Show one of a series of identical failures, as one row with a count while nothing else is drawn after it. */
+	showRepeatedError?(message: string, series: object): void;
 }
 
 /** Sanitize only the display copy, like task-detail's multiline presentation. */
@@ -34,5 +36,8 @@ export function renderEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic, v
 		reportDebug("engine", "interactive-engine-recovery", { message: diagnostic.message });
 		return;
 	}
-	if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) view.showError(diagnostic.message);
+	if (!shouldRenderEngineDiagnosticAsChatError(diagnostic)) return;
+	if (diagnostic.series !== undefined && view.showRepeatedError)
+		view.showRepeatedError(diagnostic.message, diagnostic.series);
+	else view.showError(diagnostic.message);
 }
