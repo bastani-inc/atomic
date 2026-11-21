@@ -13,7 +13,8 @@ import type { HerdrEnvironment } from "../../src/extensions/herdr/environment.js
 // alone can exceed the product's 5 s kill timeout, so fixtures that run beside real SDK reloads
 // pass FAKE_HERDR_CHILD_TIMEOUT_MS as `timeoutMs`, and waits outlast that kill budget.
 export const FAKE_HERDR_CHILD_TIMEOUT_MS = 15_000;
-const FAKE_HERDR_WAIT_MS = FAKE_HERDR_CHILD_TIMEOUT_MS + 5_000;
+/** How long a test waits for a fake Herdr call: past the kill budget of the slowest one. */
+export const FAKE_HERDR_WAIT_MS = FAKE_HERDR_CHILD_TIMEOUT_MS + 5_000;
 
 export interface HerdrCall {
 	phase: "start" | "end";
