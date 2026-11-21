@@ -7,11 +7,11 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
-import { ModelsError } from "@bastani/atomic-ai";
+import { createModels, createProvider, InMemoryCredentialStore, ModelsError, type Provider } from "@bastani/atomic-ai";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { type Args, parseArgs } from "../src/cli/args.ts";
 import {
@@ -166,13 +166,39 @@ function runtimeStub(options: {
 	} as unknown as ModelRuntime;
 }
 
-/** The `@bastani/atomic-ai` build this checkout actually resolves. */
-function installedPiAiResolveJs(): string {
-	for (let dir = import.meta.dirname; ; dir = dirname(dir)) {
-		const candidate = join(dir, "node_modules", "@bastani", "atomic-ai", "dist", "auth", "resolve.js");
-		if (existsSync(candidate)) return candidate;
-		if (dirname(dir) === dir) throw new Error("installed @bastani/atomic-ai not found");
+type OAuthRefresh = NonNullable<Provider["auth"]["oauth"]>["refresh"];
+
+/**
+ * The error `@bastani/atomic-ai` throws when a stored OAuth login needs a refresh and `refresh` is how the provider
+ * answers it.
+ */
+async function storedOAuthRefreshError(refresh: OAuthRefresh, minOAuthValidityMs?: number): Promise<ModelsError> {
+	const credentials = new InMemoryCredentialStore();
+	await credentials.modify("probe", async () => ({
+		type: "oauth",
+		access: "stored-access",
+		refresh: "stored-refresh",
+		expires: Date.now() - 1_000,
+	}));
+	const unused = () => {
+		throw new Error("unused");
+	};
+	const models = createModels({ credentials });
+	models.setProvider(
+		createProvider({
+			id: "probe",
+			auth: { oauth: { name: "Probe", login: unused, refresh, toAuth: async () => ({ apiKey: "derived" }) } },
+			models: [],
+			api: { stream: unused, streamSimple: unused },
+		}),
+	);
+	try {
+		await models.getAuth("probe", { minOAuthValidityMs });
+	} catch (error) {
+		if (error instanceof ModelsError) return error;
+		throw error;
 	}
+	throw new Error("the stored login resolved without an error");
 }
 
 interface SecretRuntimeProbe {
@@ -923,7 +949,7 @@ describe("OAuth failure classification", () => {
 		}
 	});
 
-	it("exit 5 claims a rollback only for a real refresh failure", () => {
+	it("exit 5 claims a rollback only for a real refresh failure", async () => {
 		const derivationFailed = classifyOAuthFailure(
 			new ModelsError("oauth", "OAuth auth derivation failed for anthropic"),
 		);
@@ -938,12 +964,21 @@ describe("OAuth failure classification", () => {
 		expect(refreshFailed.exitCode).toBe(5);
 		expect(refreshFailed.message).toContain("completes this refresh later");
 
-		// The 5/6 split rests on upstream prose. Pin both phrases against the
-		// installed build so a rewording fails here instead of collapsing exit 6
-		// into exit 5 with a rollback claim nobody verified.
-		const resolveSource = readFileSync(installedPiAiResolveJs(), "utf8");
-		expect(resolveSource).toContain(OAUTH_REFRESH_FAILED_PHRASE);
-		expect(resolveSource).toContain(OAUTH_EXPIRES_TOO_SOON_PHRASE);
+		// The 5/6 split rests on upstream prose. Pin both phrases against what
+		// @bastani/atomic-ai actually throws, so a rewording fails here instead of
+		// collapsing exit 6 into exit 5 with a rollback claim nobody verified.
+		const realRefreshFailure = await storedOAuthRefreshError(async () => {
+			throw new Error("the provider is unreachable");
+		});
+		expect(realRefreshFailure.message).toContain(OAUTH_REFRESH_FAILED_PHRASE);
+		expect(classifyOAuthFailure(realRefreshFailure).exitCode).toBe(5);
+
+		const refreshedTooShort = await storedOAuthRefreshError(
+			async () => ({ type: "oauth", access: "new-access", refresh: "new-refresh", expires: Date.now() + 60_000 }),
+			60 * 60 * 1000,
+		);
+		expect(refreshedTooShort.message).toContain(OAUTH_EXPIRES_TOO_SOON_PHRASE);
+		expect(classifyOAuthFailure(refreshedTooShort).exitCode).toBe(6);
 	});
 });
 

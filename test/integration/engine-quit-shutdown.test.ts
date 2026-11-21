@@ -55,7 +55,7 @@ export default (pi) => {
 			writeFileSync(fixture.files.groupChild, String(child.pid));
 		}
 		if (fixture.execGrandchild) {
-			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
+			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
 			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild]);
 		}
 		if (fixture.execLeftover) {
@@ -84,6 +84,9 @@ interface ShutdownRecord {
 interface SessionEnd {
 	readonly program: PtyProgram;
 	readonly hostPid: number;
+	/** With `execGrandchild`, the running `pi.exec` command and the process it started. */
+	readonly execRoot?: RecordedProcess;
+	readonly execChild?: RecordedProcess;
 	/** Whether the shutdown handler has started. */
 	handlerStarted(): boolean;
 	/** Lets a handler started with `waitForRelease` finish. */
@@ -103,6 +106,8 @@ interface EndedSession {
 	readonly groupChild: RecordedProcess | undefined;
 	/** The process the extension's `pi.exec` command started, when asked to, recorded while it ran. */
 	readonly execChild: RecordedProcess | undefined;
+	/** The extension's running `pi.exec` command itself, with `execGrandchild`, recorded while it ran. */
+	readonly execRoot: RecordedProcess | undefined;
 }
 
 interface SessionOptions {
@@ -141,6 +146,7 @@ async function endSession(
 	let program: PtyProgram | undefined;
 	let groupChildProcess: RecordedProcess | undefined;
 	let execChildProcess: RecordedProcess | undefined;
+	let execRootProcess: RecordedProcess | undefined;
 	try {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, installed);
@@ -210,9 +216,15 @@ async function endSession(
 			// The command, and so the process it started, is running: the pid names that process.
 			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
 			assert.ok(await stillRuns(execChildProcess), "the command started its process");
+			if (options.execGrandchild) {
+				execRootProcess = await recordProcess(Number(readTextSync(`${execChild}.root`, "utf8")));
+				assert.ok(await stillRuns(execRootProcess), "the command runs");
+			}
 		}
 		await end({
 			program,
+			...(execRootProcess ? { execRoot: execRootProcess } : {}),
+			...(execChildProcess ? { execChild: execChildProcess } : {}),
 			hostPid: host.pid,
 			handlerStarted: () => fileExistsSync(shutdown),
 			release: () => writeFileSync(released, ""),
@@ -235,6 +247,7 @@ async function endSession(
 			exitedAt,
 			groupChild: groupChildProcess,
 			execChild: execChildProcess,
+			execRoot: execRootProcess,
 		};
 	} finally {
 		program?.kill();
@@ -487,6 +500,37 @@ test(
 	},
 	CLI_TIMEOUT_MS + 10_000,
 );
+
+for (const inProcess of [false, true]) {
+	test(
+		`an extension's running pi.exec command ends with the process it started when the host is killed${inProcess ? ", in the host process" : ""}`,
+		async () => {
+			const ended = await endSession(
+				async ({ hostPid }) => {
+					await signalRecordedProcess(await recordProcess(hostPid), "SIGKILL");
+				},
+				HANDLER_WORK_MS,
+				{ execGrandchild: true, inProcess },
+			);
+
+			const { execChild, execRoot } = ended;
+			assert.ok(execChild !== undefined && execRoot !== undefined);
+			try {
+				assert.equal(ended.exit.timedOut, false, ended.screen);
+				assert.equal(await waitUntilGone(execRoot, GROUP_CHILD_GONE_MS), true, "the command outlived its host");
+				assert.equal(
+					await waitUntilGone(execChild, GROUP_CHILD_GONE_MS),
+					true,
+					"the process the command started outlived its host",
+				);
+			} finally {
+				await signalRecordedProcess(execChild);
+				await signalRecordedProcess(execRoot);
+			}
+		},
+		CLI_TIMEOUT_MS + 10_000,
+	);
+}
 
 describe.skipIf(process.platform === "win32")(
 	"a process a pi.exec command left running when it ended on its own",

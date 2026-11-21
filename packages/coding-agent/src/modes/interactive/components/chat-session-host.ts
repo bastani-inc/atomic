@@ -87,6 +87,7 @@ import { type ParkedTaskRows, parkedRun } from "./parked-rows.ts";
 import { type RetryWaitEvent, retryWaitFromEvent } from "./retry-status-line.ts";
 import { isSingleLeftClick } from "./single-click.ts";
 import { TaskChatDecoration, taskLineRow } from "./task-chat-decoration.js";
+import { dismissedTasks } from "./task-dismissal.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import { pagedNotices } from "./task-transcript-notices.ts";
@@ -214,6 +215,16 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (opts.autocompleteProvider) this.state.editor?.setAutocompleteProvider?.(opts.autocompleteProvider);
 		this.syncAnimationTick();
 		this.refreshTaskStore();
+	}
+
+	/** Whether the task list this chat's `/tasks` opens holds `taskId`, and it was not dismissed there. */
+	listsTask(taskId: TaskId): boolean {
+		const source = this.taskSource;
+		if (source === undefined || dismissedTasks(source).has(taskId)) return false;
+		const task = source.taskRecord
+			? source.taskRecord(taskId)
+			: source.tasks.find((candidate) => candidate.ref.taskId === taskId);
+		return task !== undefined;
 	}
 
 	openTasks(id?: string): boolean {
