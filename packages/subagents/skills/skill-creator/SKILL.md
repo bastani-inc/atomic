@@ -384,10 +384,10 @@ This step matters — bad eval queries lead to bad descriptions.
 
 Tell the user: "This will take some time — I'll run the optimization loop in the background and check on it periodically."
 
-Save the eval set to the workspace, then run this in the background from the user's project directory (the queries run there, as a session started in that project would):
+Save the eval set to the workspace, then run this in the background from the user's project directory (the queries run there, as a session started in that project would). Run the script by its path, not with `python -m`, so a `scripts` package of the user's project cannot stand in for the skill-creator's:
 
 ```bash
-PYTHONPATH=<skill-creator-path> python -m scripts.run_loop \
+PYTHONPATH=<skill-creator-path> python <skill-creator-path>/scripts/run_loop.py \
   --eval-set <path-to-trigger-eval.json> \
   --skill-path <path-to-skill> \
   --model "$ATOMIC_PROVIDER/$ATOMIC_MODEL" \

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
@@ -96,6 +96,28 @@ describe.skipIf(python === undefined)("skill-creator scripts run Atomic", () => 
 		assert.deepEqual(readdirSync(box.project), [], "nothing is written into the project");
 		assert.deepEqual(readdirSync(box.temp), [], "the private folder is removed");
 		assert.equal(existsSync(claudeMarker), false);
+	});
+
+	test("run the optimization loop as SKILL.md documents it from a project with its own `scripts` package (#5625)", () => {
+		const box = sandbox();
+		mkdirSync(join(box.project, "scripts"));
+		writeFileSync(join(box.project, "scripts", "__init__.py"), "");
+		const evalSet = box.writeEvalSet([{ query: "make the report", should_trigger: true }]);
+		const documented = readFileSync(join(skillCreatorDir, "SKILL.md"), "utf8");
+		assert.match(documented, /PYTHONPATH=<skill-creator-path> python <skill-creator-path>\/scripts\/run_loop\.py/u);
+		const args = ["--eval-set", evalSet, "--skill-path", box.skill, "--model", "local/model"];
+		const loop = ["--max-iterations", "1", "--holdout", "0", "--report", "none"];
+		const result = spawnSyncCollect(
+			[python ?? "python3", join(skillCreatorDir, "scripts", "run_loop.py"), ...args, ...loop],
+			{
+				cwd: box.project,
+				env: box.env(),
+			},
+		);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal((JSON.parse(result.stdout.toString()) as { best_score: string }).best_score, "1/1");
+		const [record] = box.records();
+		assert.equal(realpathSync(record?.cwd ?? ""), realpathSync(box.project), "the queries run in the project");
 	});
 
 	test("count a trigger only when the model's first tool call reads the candidate's SKILL.md (#5625)", () => {
