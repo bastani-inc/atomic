@@ -308,53 +308,68 @@ mod tests {
 	#[cfg(windows)]
 	#[test]
 	fn ends_nothing_below_a_process_that_exited_by_itself_while_held() {
-		use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-		use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
-		use windows_sys::Win32::System::Threading::{
-			OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
-		};
-		let dir = std::env::temp_dir().join(format!("atomic-process-tree-{}", std::process::id()));
-		std::fs::create_dir_all(&dir).expect("a directory for the test");
-		let gate = dir.join("gate");
-		let pid_file = dir.join("ping.pid");
-		// PowerShell starts a ping (30 seconds at most), records its id, and exits by itself once the gate exists, or
-		// after a minute.
-		let script = format!(
-			"$p = Start-Process ping -ArgumentList '-n','30','127.0.0.1' -WindowStyle Hidden -PassThru; \
-			 Set-Content -NoNewline -Path '{}' -Value $p.Id; $end = (Get-Date).AddSeconds(60); \
-			 while (-not (Test-Path '{}') -and (Get-Date) -lt $end) {{ Start-Sleep -Milliseconds 50 }}; exit 0",
-			pid_file.display(),
-			gate.display()
-		);
+		let nanos = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|elapsed| elapsed.as_nanos())
+			.unwrap_or_default();
+		let dir =
+			std::env::temp_dir().join(format!("atomic-process-tree-{}-{nanos}", std::process::id()));
+		std::fs::create_dir(&dir).expect("a directory of the test's own");
+		let (gate, finish, ack) = (dir.join("gate"), dir.join("finish"), dir.join("ack"));
+		// What the root leaves running: it waits for the finish gate, says so, and ends by itself, or after a minute.
+		let leftover = dir.join("leftover.ps1");
+		std::fs::write(
+			&leftover,
+			"$end = (Get-Date).AddSeconds(60)\r\n\
+			 while (-not (Test-Path $env:FINISH_GATE) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 50 }\r\n\
+			 if (Test-Path $env:FINISH_GATE) { Set-Content -Path $env:LEFTOVER_ACK -Value 'alive' }\r\n",
+		)
+		.expect("the leftover's script");
+		// The root starts it, then exits by itself once the gate exists, or after a minute.
+		let root_script = dir.join("root.ps1");
+		std::fs::write(
+			&root_script,
+			"Start-Process powershell.exe -WindowStyle Hidden -ArgumentList \
+			 '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('\"' + $env:LEFTOVER_SCRIPT + '\"')\r\n\
+			 $end = (Get-Date).AddSeconds(60)\r\n\
+			 while (-not (Test-Path $env:ROOT_GATE) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 50 }\r\n\
+			 exit 0\r\n",
+		)
+		.expect("the root's script");
 		let mut root = std::process::Command::new("powershell.exe")
-			.args(["-NoProfile", "-NonInteractive", "-Command", &script])
+			.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+			.arg(&root_script)
+			.env("LEFTOVER_SCRIPT", &leftover)
+			.env("ROOT_GATE", &gate)
+			.env("FINISH_GATE", &finish)
+			.env("LEFTOVER_ACK", &ack)
 			.spawn()
 			.expect("PowerShell starts");
 		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 		let mut held = None;
 		while held.is_none() && std::time::Instant::now() < deadline {
 			std::thread::sleep(std::time::Duration::from_millis(100));
-			if pid_file.exists() {
-				held = super::hold_process_descendants(root.id()).filter(|held| held.count() > 0);
-			}
+			held = super::hold_process_descendants(root.id()).filter(|held| held.count() > 0);
 		}
-		let ping_pid: u32 =
-			std::fs::read_to_string(&pid_file).expect("the ping's id").trim().parse().expect("an id");
-		// The ping's own handle, while it still runs: it tells whether it runs, and ends it at the end.
-		let ping = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, ping_pid) };
-		assert!(!ping.is_null(), "the ping could not be opened");
-		let ping = unsafe { OwnedHandle::from_raw_handle(ping) };
-		let mut held = held.expect("nothing PowerShell started was held");
+		let Some(mut held) = held else {
+			std::fs::write(&gate, "").ok();
+			std::fs::write(&finish, "").ok();
+			panic!("nothing PowerShell started was held");
+		};
 
-		std::fs::write(&gate, "").expect("the gate opens");
+		std::fs::write(&gate, "").expect("the root's gate opens");
 		root.wait().expect("PowerShell exits by itself");
 		let ended = held.end_all();
-		let ping_runs = unsafe { WaitForSingleObject(ping.as_raw_handle(), 0) } == WAIT_TIMEOUT;
-		unsafe { TerminateProcess(ping.as_raw_handle(), 1) };
+		std::fs::write(&finish, "").expect("the leftover's gate opens");
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+		while !ack.exists() && std::time::Instant::now() < deadline {
+			std::thread::sleep(std::time::Duration::from_millis(50));
+		}
+		let left_running = ack.exists();
 		let _ = std::fs::remove_dir_all(&dir);
 
 		assert!(!ended, "a PowerShell that exited by itself was taken as ended");
-		assert!(ping_runs, "what a process that exited by itself left running was ended");
+		assert!(left_running, "what a process that exited by itself left running was ended");
 	}
 
 	#[cfg(windows)]
