@@ -314,6 +314,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	private readonly escapeTimeoutMs: number;
 	private pasteMode: boolean = false;
 	private pasteBuffer: string = "";
+
+	/** Whether a bracketed paste has begun and its end has not arrived yet. */
+	get pasting(): boolean {
+		return this.pasteMode;
+	}
 	private pendingKittyPrintableCodepoint: number | undefined;
 
 	constructor(options: StdinBufferOptions = {}) {

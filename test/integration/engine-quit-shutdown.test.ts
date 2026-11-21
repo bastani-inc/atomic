@@ -56,7 +56,7 @@ export default (pi) => {
 		}
 		if (fixture.execGrandchild) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
-			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild]);
+			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
 		}
 		if (fixture.execLeftover) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
@@ -114,6 +114,8 @@ interface SessionOptions {
 	readonly groupChild?: boolean;
 	/** The extension runs a `pi.exec` command that starts a process of its own and then runs until it is ended. */
 	readonly execGrandchild?: boolean;
+	/** The `timeout` the extension gives that `pi.exec` command. */
+	readonly execTimeoutMs?: number;
 	/** The extension runs a `pi.exec` command that starts a process of its own, which it leaves running, and exits. */
 	readonly execLeftover?: boolean;
 	/** Run the session in the host process, as for a project left untrusted. */
@@ -156,6 +158,7 @@ async function endSession(
 			JSON.stringify({
 				groupChild: options.groupChild === true,
 				execGrandchild: options.execGrandchild === true,
+				execTimeoutMs: options.execTimeoutMs,
 				execLeftover: options.execLeftover === true,
 				waitForRelease: options.waitForRelease === true,
 				pollMs: RECORD_POLL_MS,
@@ -529,6 +532,42 @@ for (const inProcess of [false, true]) {
 			}
 		},
 		CLI_TIMEOUT_MS + 10_000,
+	);
+}
+
+/** The timeout the extension gives its command: longer than starting it and its process takes on a loaded machine. */
+const EXEC_TIMEOUT_MS = 8_000;
+
+for (const inProcess of [false, true]) {
+	test(
+		`an extension's pi.exec command that times out ends with the process it started${inProcess ? ", in the host process" : ""}`,
+		async () => {
+			let endedBeforeQuit: { root: boolean; child: boolean } | undefined;
+			const ended = await endSession(
+				async ({ program, execRoot, execChild }) => {
+					assert.ok(execRoot !== undefined && execChild !== undefined);
+					endedBeforeQuit = {
+						root: await waitUntilGone(execRoot, EXEC_TIMEOUT_MS + GROUP_CHILD_GONE_MS),
+						child: await waitUntilGone(execChild, GROUP_CHILD_GONE_MS),
+					};
+					program.write("/quit\r");
+				},
+				HANDLER_WORK_MS,
+				{ execGrandchild: true, execTimeoutMs: EXEC_TIMEOUT_MS, inProcess },
+			);
+			try {
+				assert.equal(ended.exit.timedOut, false, ended.screen);
+				assert.deepEqual(
+					endedBeforeQuit,
+					{ root: true, child: true },
+					"the timeout left the command's process running",
+				);
+			} finally {
+				if (ended.execChild) await signalRecordedProcess(ended.execChild);
+				if (ended.execRoot) await signalRecordedProcess(ended.execRoot);
+			}
+		},
+		CLI_TIMEOUT_MS + EXEC_TIMEOUT_MS + 2 * GROUP_CHILD_GONE_MS + 10_000,
 	);
 }
 
