@@ -77,6 +77,10 @@ describe.skipIf(process.platform !== "win32")("pi.exec on Windows", () => {
 
 		const fromPath = execUnderBun("atomic-test-shim", folder, path);
 		assert.deepEqual([fromPath.code, fromPath.stdout.trim()], [0, "shim one"]);
+		// A folder of that name, as a project's `npm` folder, is nothing a start would run.
+		mkdirSync(join(folder, "atomic-test-shim"));
+		const besideFolder = execUnderBun("atomic-test-shim", folder, path);
+		assert.deepEqual([besideFolder.code, besideFolder.stdout.trim()], [0, "shim one"]);
 
 		writeFileSync(join(folder, "atomic-test-shim.cmd"), "@echo planted\r\n");
 		const planted = execUnderBun("atomic-test-shim", folder, path);
