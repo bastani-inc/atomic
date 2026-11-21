@@ -1,6 +1,7 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import { execFile } from "node:child_process";
+import { type ExecFileException, execFile } from "node:child_process";
 import { createChildProcessEnvironment } from "@bastani/atomic";
+import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import type { GitHubUrlInfo } from "./github-extract.js";
@@ -10,13 +11,27 @@ const MAX_TREE_ENTRIES = 200;
 const MAX_INLINE_FILE_CHARS = 100_000;
 
 let ghAvailable: boolean | null = null;
+
+/** Runs `gh` from PATH's absolute directories, never from the working directory. */
+function execGh(
+	args: string[],
+	options: { timeout: number; maxBuffer?: number; env: NodeJS.ProcessEnv },
+	callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
+): void {
+	helperLaunchAsync("gh", { env: options.env }).then(
+		(launch) => {
+			execFile(launch.file, args, { ...options, encoding: "utf8" as const, ...missingHelperOptions(launch) }, callback);
+		},
+		(error: Error) => callback(error, "", ""),
+	);
+}
 let ghHintShown = false;
 
 export async function checkGhAvailable(): Promise<boolean> {
 	if (ghAvailable !== null) return ghAvailable;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["--version"], { timeout: 5000, env: createChildProcessEnvironment() }, (err) => {
+		execGh(["--version"], { timeout: 5000, env: createChildProcessEnvironment() }, (err) => {
 			ghAvailable = !err;
 			resolve(ghAvailable);
 		});
@@ -40,7 +55,7 @@ export async function checkRepoSize(owner: string, repo: string): Promise<number
 	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["api", `repos/${owner}/${repo}`, "--jq", ".size"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
+		execGh(["api", `repos/${owner}/${repo}`, "--jq", ".size"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
 			if (err) {
 				resolve(null);
 				return;
@@ -55,7 +70,7 @@ async function getDefaultBranch(owner: string, repo: string): Promise<string | n
 	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["api", `repos/${owner}/${repo}`, "--jq", ".default_branch"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
+		execGh(["api", `repos/${owner}/${repo}`, "--jq", ".default_branch"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
 			if (err) {
 				resolve(null);
 				return;
@@ -70,8 +85,7 @@ async function fetchTreeViaApi(owner: string, repo: string, ref: string): Promis
 	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile(
-			"gh",
+		execGh(
 			["api", `repos/${owner}/${repo}/git/trees/${ref}?recursive=1`, "--jq", ".tree[].path"],
 			{ timeout: 15000, maxBuffer: 5 * 1024 * 1024, env: createChildProcessEnvironment() },
 			(err, stdout) => {
@@ -96,8 +110,7 @@ async function fetchReadmeViaApi(owner: string, repo: string, ref: string): Prom
 	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile(
-			"gh",
+		execGh(
 			["api", `repos/${owner}/${repo}/readme?ref=${ref}`, "--jq", ".content"],
 			{ timeout: 10000, env: createChildProcessEnvironment() },
 			(err, stdout) => {
@@ -120,8 +133,7 @@ async function fetchFileViaApi(owner: string, repo: string, path: string, ref: s
 	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile(
-			"gh",
+		execGh(
 			["api", `repos/${owner}/${repo}/contents/${path}?ref=${ref}`, "--jq", ".content"],
 			{ timeout: 10000, maxBuffer: 2 * 1024 * 1024, env: createChildProcessEnvironment() },
 			(err, stdout) => {

@@ -55,6 +55,7 @@ import {
 	EndedQueueMemory,
 	type LostEndedQueuedMessage,
 	IntercomClient,
+	type IntercomIdHandoff,
 	IntercomReachUnsupportedError,
 	type ExpectedRouting,
 	type ReleasedChildReply,
@@ -216,6 +217,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
   let reconnectAttempt = 0;
+  /** #5607: the hand-over of an id the broker holds for this session, for its next registration only. */
+  let pendingIdHandoff:
+    | { readonly handoff: IntercomIdHandoff; readonly sessionId: string | null; readonly generation: number }
+    | undefined;
   /**
    * Whether anything other than the startup join has asked for a connection. Only then does a failed attempt keep
    * reconnecting in the background: a session that only joined at startup and never used Intercom stays lazy.
@@ -1245,6 +1250,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         await outboundAsks.settle(record.ask.askId, "failed");
       }).catch(() => {});
     });
+    // #5607: the broker holds the id this session awaited; the next registration takes it with this hand-over.
+    nextClient.on("id_handoff", (handoff: IntercomIdHandoff) => {
+      // For this session in this runtime only: a session switched since never presents it.
+      if (client === nextClient) pendingIdHandoff = { handoff, sessionId: currentSessionId, generation: runtimeGeneration };
+    });
     nextClient.on("peer_rebound", (notice: { replyTo: string; previousSessionId: string; sessionId: string }) => {
       if (client !== nextClient) return;
       replyWaiters.rebind(notice.replyTo, notice.previousSessionId, notice.sessionId);
@@ -1341,9 +1351,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       let retiringDeadline: number | undefined;
       try {
         for (;;) {
+		// Kept until a registration presents it: an attempt that fails before then leaves it for the next one.
+		const pending = pendingIdHandoff;
+		const idHandoff =
+			pending !== undefined && pending.sessionId === sessionIdAtStart && pending.generation === generationAtStart
+				? pending.handoff
+				: undefined;
+		if (pending !== undefined && idHandoff === undefined) pendingIdHandoff = undefined;
 		const nextClient = new IntercomClient(sessionIdAtStart, {
 			preferredSessionId,
 			acknowledgesReceipt: true,
+			takesIdHandoff: true,
+			...(idHandoff === undefined ? {} : { idHandoff }),
 			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
 			reach: currentReachPolicy,
 			// #5999: what a lost broker kept for subagents that ended is known to the next connection.
@@ -1376,6 +1395,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               throw new IntercomRuntimeInactiveError();
             }
             client = nextClient;
+            if (pending !== undefined && pendingIdHandoff === pending) pendingIdHandoff = undefined;
             if (nextClient.sessionId) {
               process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
             }
@@ -1385,7 +1405,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               supervisorRefusedSince = undefined;
               supervisorRefusalAttempts = 0;
             }
-            if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
+            // #5607: an id given only while another registration of this session still holds the one it asked for is not
+            // kept: the session asks for that one again, which the broker gives back once it is free.
+            if (
+              nextClient.sessionId &&
+              nextClient.sessionId !== preferredSessionId &&
+              (preferredSessionId === undefined || nextClient.awaitedSessionId !== preferredSessionId)
+            ) {
               await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
             // The broker forgot every reservation this connection made when the last one ended.
