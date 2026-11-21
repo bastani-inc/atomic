@@ -1172,7 +1172,9 @@ function knownSessionStore(
 			},
 			async ownerOf(intercomSessionId) {
 				const owner = bindings.get(intercomSessionId)?.owner;
-				return owner === undefined ? undefined : { brokerId: owner.brokerId, ageMs: ageOf(owner.renewedAt) };
+				return owner === undefined
+					? undefined
+					: { token: owner.token, brokerId: owner.brokerId, ageMs: ageOf(owner.renewedAt) };
 			},
 		},
 		...(presence === undefined

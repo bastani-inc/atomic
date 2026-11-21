@@ -616,6 +616,25 @@ interface HeldAlias {
 	readonly confirmed: boolean;
 }
 
+/**
+ * #5607: what a presence lease publishes of the owner token an alias is held with: its digest, which tells the
+ * registration holding the id apart from any other, on any broker, without copying the token itself.
+ */
+function ownerWitness(token: string): string {
+	return createHash("sha256").update(token).digest("hex");
+}
+
+/** #5607: whether `lease`, a session's presence, publishes `alias` as held by `owner`, the store's owner of that id now. */
+function publishesOwnedAlias(
+	lease: LeaseState,
+	alias: string,
+	owner: { readonly token: string; readonly brokerId: string },
+): boolean {
+	if (lease.subject.kind !== "presence" || lease.holderId !== owner.brokerId) return false;
+	const witness = ownerWitness(owner.token);
+	return lease.subject.aliases?.some((held) => held.id === alias && held.owner === witness) === true;
+}
+
 /** #5607: the later of two marks. Both are this process's, so the monotonic clock orders them. */
 function laterMark(earlier: ClockMark | undefined, later: ClockMark): ClockMark {
 	return earlier !== undefined && earlier.monotonic > later.monotonic ? earlier : later;
@@ -1619,7 +1638,7 @@ export class MultiNodeRouter {
 
 	/**
 	 * #5607: whether the session of the record `known` still answers to its other id `alias`: no registration owns that
-	 * id with a live renewal, or the one that does is on the broker presenting this session.
+	 * id with a live renewal, or the one that does is the registration whose live presence publishes it.
 	 */
 	private async aliasStillAnswers(known: KnownSessionState, alias: string): Promise<boolean> {
 		const owner = await this.state.knownSessions.owners?.ownerOf(alias);
@@ -1627,23 +1646,23 @@ export class MultiNodeRouter {
 		const presence = await this.state.leases.read({ kind: "presence", targetIdentity: known.targetIdentity });
 		return (
 			presence.status === "found" &&
-			presence.lease.holderId === owner.brokerId &&
-			presence.lease.ageMs <= BROKER_LEASE_STALE_AFTER_MS
+			presence.lease.ageMs <= BROKER_LEASE_STALE_AFTER_MS &&
+			publishesOwnedAlias(presence.lease, alias, owner)
 		);
 	}
 
 	/**
-	 * #5607: the live presence of another broker's session that holds `target` as an alias, while that broker owns the id
-	 * by the shared store's word (its registration renewed it within the stale age): an alias it lost meanwhile is not
-	 * routed to, however long its presence still names it.
+	 * #5607: the live presence of another broker's session that holds `target` as an alias, while its registration owns
+	 * the id by the shared store's word (the same owner token, renewed within the stale age): an alias it lost meanwhile,
+	 * to a registration on any broker, its own included, is not routed to, however long its presence still names it.
 	 */
 	private async aliasHolder(live: readonly LeaseState[], target: string): Promise<LeaseState | undefined> {
 		const holder = live.find(
-			(lease) => (lease.subject as RecipientPresenceSubject).aliases?.includes(target) === true,
+			(lease) => (lease.subject as RecipientPresenceSubject).aliases?.some((alias) => alias.id === target) === true,
 		);
 		if (holder === undefined) return undefined;
 		const owner = await this.state.knownSessions.owners?.ownerOf(target);
-		return owner !== undefined && owner.brokerId === holder.holderId && owner.ageMs <= BROKER_LEASE_STALE_AFTER_MS
+		return owner !== undefined && owner.ageMs <= BROKER_LEASE_STALE_AFTER_MS && publishesOwnedAlias(holder, target, owner)
 			? holder
 			: undefined;
 	}
@@ -4576,13 +4595,15 @@ export class MultiNodeRouter {
 	}
 
 	private presenceSubject(session: BrokerConnectedSession): RecipientPresenceSubject {
-		// #5607: an id it holds as an alias is resolved to it by other brokers too.
-		const alias = this.presence.get(session)?.alias?.intercomSessionId;
+		// #5607: an id it holds as an alias is resolved to it by other brokers too, while it is still its registration's.
+		const alias = this.presence.get(session)?.alias;
 		return {
 			kind: "presence",
 			targetIdentity: deliveryTargetIdentity(session),
 			session: session.info,
-			...(alias === undefined ? {} : { aliases: [alias] }),
+			...(alias === undefined
+				? {}
+				: { aliases: [{ id: alias.intercomSessionId, owner: ownerWitness(alias.token) }] }),
 		};
 	}
 

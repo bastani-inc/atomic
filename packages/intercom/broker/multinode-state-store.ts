@@ -105,10 +105,16 @@ export interface RecipientPresenceSubject {
 	readonly targetIdentity: string;
 	readonly session: SessionInfo;
 	/**
-	 * #5607: ids the session also owns, as aliases: a plain send to one reaches it. Absent from older brokers, which
-	 * ignore it.
+	 * #5607: ids the session also owns, as aliases: a plain send to one reaches it while the shared store's owner of the
+	 * id is still the registration that published it. Absent from older brokers, which ignore it.
 	 */
-	readonly aliases?: readonly string[];
+	readonly aliases?: readonly PresenceAlias[];
+}
+
+/** #5607: an id a session owns as an alias, and a digest of the owner token its registration holds it with. */
+export interface PresenceAlias {
+	readonly id: string;
+	readonly owner: string;
 }
 
 export type LeaseSubject = BrokerMembershipSubject | RecipientPresenceSubject;
@@ -960,8 +966,13 @@ export interface KnownSessionStore {
 		renew(ownerships: readonly KnownSessionOwnership[]): Promise<KnownSessionOwnership[]>;
 		/** Every id the broker `brokerId` owns is given up: that broker instance is gone. */
 		retireBroker(brokerId: string): Promise<void>;
-		/** The broker of the registration that owns the id, and store-clock milliseconds since it renewed it; none when no owner. */
-		ownerOf(intercomSessionId: string): Promise<{ readonly brokerId: string; readonly ageMs: number } | undefined>;
+		/**
+		 * The registration that owns the id (its token and broker), and store-clock milliseconds since it renewed it; none
+		 * when no owner.
+		 */
+		ownerOf(
+			intercomSessionId: string,
+		): Promise<{ readonly token: string; readonly brokerId: string; readonly ageMs: number } | undefined>;
 	};
 	/** The return address the id is bound to, if a binding recorded within `retentionMs` holds it. */
 	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
