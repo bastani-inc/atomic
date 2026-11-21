@@ -1320,16 +1320,15 @@ function applyAnthropicCacheControl(
 	tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
 	cacheControl: OpenAICompatCacheControl,
 ): void {
-	const system = messages.some((message) => message.role === "system" || message.role === "developer");
-	addCacheControlToSystemPrompt(messages, cacheControl);
-	addCacheControlToLastTool(tools, cacheControl);
+	const system = addCacheControlToSystemPrompt(messages, cacheControl);
+	const tool = addCacheControlToLastTool(tools, cacheControl);
 	// Where the request the last reply answered put its newest breakpoint, by the same rule.
-	const replyAt = replyPositions.get(messages);
-	const previous = replyAt === undefined ? undefined : lastCacheablePart(messages, replyAt);
+	const reply = replyPositions.get(messages);
+	const previous = reply === undefined ? undefined : lastCacheablePart(messages, reply.at);
 	const newest = lastCacheablePart(messages, messages.length);
 	if (newest) addCacheControlToMessage(messages[newest.index]!, cacheControl);
 	// Claude allows four breakpoints; these are what the system prompt, the tools and the newest input leave.
-	let spare = 4 - (system ? 1 : 0) - (tools?.length ? 1 : 0) - (newest ? 1 : 0);
+	let spare = 4 - (system ? 1 : 0) - (tool ? 1 : 0) - (newest ? 1 : 0);
 	const mark = (part: CacheablePart): void => {
 		if (spare > 0 && part.index !== newest?.index && addCacheControlToMessage(messages[part.index]!, cacheControl))
 			spare--;
@@ -1341,10 +1340,12 @@ function applyAnthropicCacheControl(
 			? undefined
 			: lastCacheablePart(messages, messages.indexOf(checkpointMessage) + 1);
 	if (checkpoint) {
-		// That request got no reply, so its prefix may never have been cached. When it is too far past the last answered
-		// request's breakpoint to find that request's prefix, that breakpoint is kept too, and first when only one fits.
+		// That request got no reply, so its prefix may never have been cached; the last answered request's is, when this
+		// model answered it. When the hinted one is too far past that request's breakpoint to find its prefix, that
+		// breakpoint is kept too, and first when only one fits.
 		if (
 			previous &&
+			reply?.fromModel === true &&
 			previous.index < checkpoint.index &&
 			positionsBetween(messages, previous, checkpoint) >= CACHE_LOOKBACK_POSITIONS
 		)
@@ -1418,28 +1419,31 @@ function hasReasoning(message: ChatCompletionAssistantMessageParamWithReasoning)
 	);
 }
 
+/** Puts `cacheControl` on the first instruction message; returns whether it took one. */
 function addCacheControlToSystemPrompt(
 	messages: ChatCompletionMessageParam[],
 	cacheControl: OpenAICompatCacheControl,
-): void {
+): boolean {
 	for (const message of messages) {
 		if (message.role === "system" || message.role === "developer") {
-			addCacheControlToInstructionMessage(message, cacheControl);
-			return;
+			return addCacheControlToInstructionMessage(message, cacheControl);
 		}
 	}
+	return false;
 }
 
+/** Puts `cacheControl` on the last tool; returns whether there was one. */
 function addCacheControlToLastTool(
 	tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
 	cacheControl: OpenAICompatCacheControl,
-): void {
+): boolean {
 	if (!tools || tools.length === 0) {
-		return;
+		return false;
 	}
 
 	const lastTool = tools[tools.length - 1] as ChatCompletionToolWithCacheControl;
 	lastTool.cache_control = cacheControl;
+	return true;
 }
 
 function addCacheControlToInstructionMessage(
@@ -1546,7 +1550,7 @@ export function convertMessages(
 	let systemIndex = 0;
 	// The input sent up to a message with a `cacheBreakpoint` hint ends with the last user or tool message so far.
 	let checkpoint: ChatCompletionMessageParam | undefined;
-	let replyAt: number | undefined;
+	let reply: ReplyPosition | undefined;
 	const markCheckpoint = (): void => {
 		const last = params.at(-1);
 		if (last?.role === "user" || last?.role === "tool") checkpoint = last;
@@ -1727,7 +1731,10 @@ export function convertMessages(
 				content !== undefined &&
 				(typeof content === "string" ? content.length > 0 : content.length > 0);
 			// A reply that sends nothing still answered the request before it.
-			replyAt = params.length;
+			reply = {
+				at: params.length,
+				fromModel: msg.api === model.api && msg.provider === model.provider && msg.model === model.id,
+			};
 			if (!hasContent && !assistantMsg.tool_calls) {
 				continue;
 			}
@@ -1808,17 +1815,23 @@ export function convertMessages(
 	}
 
 	if (checkpoint) cacheCheckpoints.set(params, checkpoint);
-	if (replyAt !== undefined) replyPositions.set(params, replyAt);
+	if (reply !== undefined) replyPositions.set(params, reply);
 	return params;
 }
 
 /** The message a `cacheBreakpoint` hint asked a breakpoint for, by the message list `convertMessages` returned. */
 const cacheCheckpoints = new WeakMap<ChatCompletionMessageParam[], ChatCompletionMessageParam>();
 /**
- * The index of the last reply in the message list `convertMessages` returned: the request it answered sent the
- * messages before it.
+ * The last reply in a message list `convertMessages` returned: its index (the request it answered sent the messages
+ * before it), and whether the request's model answered it.
  */
-const replyPositions = new WeakMap<ChatCompletionMessageParam[], number>();
+interface ReplyPosition {
+	at: number;
+	fromModel: boolean;
+}
+
+/** The last reply of each message list `convertMessages` returned. */
+const replyPositions = new WeakMap<ChatCompletionMessageParam[], ReplyPosition>();
 
 function convertTools(
 	tools: Tool[],

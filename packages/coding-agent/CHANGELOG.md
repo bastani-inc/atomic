@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the first run after a resume near the context window lowering the thinking budget when an extension starts it, or a queued message or session recovery continues it: like a typed prompt, it now compacts once first when only what the resume added would lower the budget. What an extension adds after the session opened counts as the conversation's, as in a session that kept running, so it no longer causes that compaction.
+- A subagent whose own prompt replaces the default now names the project's session folder in a section at the end of its prompt, so its Session memory section reads the same in every project. A session recorded with the folder in Session memory keeps it there.
+- A resumed session no longer shows an MCP server's recorded summary that the conversation did not show last, such as after the record of a later change could not be written; the server's line shows its summary again once it reconnects.
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

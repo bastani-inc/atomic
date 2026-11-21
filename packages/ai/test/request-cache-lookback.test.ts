@@ -380,6 +380,20 @@ describe("Anthropic: a resumed request whose restored history ends with a reques
 		assert.deepEqual(anthropicMarks(payload), [[2, 17], lastBlock(payload)]);
 	});
 
+	it.each([
+		{ answeredBy: "another model", reply: { model: "claude-opus-4-5" } },
+		{ answeredBy: "the same model with another thinking budget", reply: { thinkingBudgetTokens: 8192 } },
+	])("keeps the hinted end's breakpoint when $answeredBy answered the last request", async ({ reply: answered }) => {
+		const messages = resumed(25).map((message) =>
+			message.role === "assistant" ? { ...message, ...answered } : message,
+		);
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, {
+			apiKey: "sk-ant-test",
+		});
+		// Nothing this request can read is known to be cached there, so the hint keeps its breakpoint, as before.
+		assert.deepEqual(anthropicMarks(payload), [[2, 23], lastBlock(payload)]);
+	});
+
 	it("measures from the newest input when the hinted end cannot take a breakpoint", async () => {
 		const messages: Message[] = [
 			{ role: "system", content: "You are a coding assistant.", toolsAdded: [readTool], timestamp: 1 },

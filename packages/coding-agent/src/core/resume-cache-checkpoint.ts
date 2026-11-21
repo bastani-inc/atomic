@@ -7,6 +7,7 @@ import {
 	type TranscriptContext,
 } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { SESSION_RECOVERY_NOTICE_TYPE } from "./agent-session-recovery.ts";
 import { convertToLlm, withImagesBlocked } from "./messages.ts";
 import { BLUEPRINT_CONTEXT_TYPE } from "./resume/blueprint/context.ts";
 
@@ -24,6 +25,18 @@ export function restoredCacheCheckpoint(messages: readonly AgentMessage[]): Agen
 		return message;
 	}
 	return undefined;
+}
+
+/**
+ * Whether the resume itself added `message` after the restored history: the blueprint context and the notice of what
+ * the session's recovery did. Everything else added since is the conversation going on, as in a session that kept
+ * running.
+ */
+export function isAddedByResume(message: AgentMessage): boolean {
+	return (
+		message.role === "custom" &&
+		(message.customType === BLUEPRINT_CONTEXT_TYPE || message.customType === SESSION_RECOVERY_NOTICE_TYPE)
+	);
 }
 
 function isAnsweredReply(message: AgentMessage): boolean {
@@ -74,9 +87,9 @@ export interface ResumedRequest {
 	blockImages: boolean;
 	/** The restored history, through the restored checkpoint. */
 	history: readonly AgentMessage[];
-	/** What only the resume added after it: blueprint context, notices, prompt updates. */
+	/** What only the resume added after it: blueprint context, recovery notices, prompt updates. */
 	resumeOnly: readonly AgentMessage[];
-	/** The input of the request itself. */
+	/** The rest of the request: what was added after the session opened, and the request's own input. */
 	prompt: readonly AgentMessage[];
 	/** The context right after an automatic clear, with what the resume added carried over. */
 	cleared: readonly AgentMessage[];

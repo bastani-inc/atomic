@@ -255,11 +255,17 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const previousBase = this._baseSystemPromptOptions;
 	const previousForcedPrompt = previousBase?.forceSystemPrompt;
 	const hiddenTools = validToolNames.filter((name) => isToolDeclarationHidden(this, name));
+	// A session keeps naming its session folder where its recorded prompt does.
+	const sessionFolderInGuidelines = namesSessionFolderInGuidelines(
+		getCurrentSystemMessage(this.agent.state.messages),
+		Boolean(loaderSystemPrompt),
+	);
 	const subagentSessionMemory =
 		this._subagentPolicy !== undefined && loaderSystemPrompt
 			? buildSessionMemoryGuideline(
 					validToolNames.filter((name) => !hiddenTools.includes(name)),
 					this._cwd,
+					sessionFolderInGuidelines ? "guideline" : "section",
 				)
 			: undefined;
 
@@ -283,10 +289,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 				? {}
 				: { worktree_restore: worktreeRestoreSection(this._worktreeRestoreNotices) }),
 		},
-		// A session keeps naming its session folder where its recorded prompt does.
-		...(namesSessionFolderInGuidelines(getCurrentSystemMessage(this.agent.state.messages))
-			? { sessionFolderInGuidelines: true }
-			: {}),
+		...(sessionFolderInGuidelines ? { sessionFolderInGuidelines: true } : {}),
 	});
 	if (this._systemPromptTransform) {
 		const sections = buildSystemPromptSections(this._baseSystemPromptOptions);
@@ -363,7 +366,7 @@ export function _preparePromptAndToolLoadout(
 	messages: AgentMessage[] = this.agent.state.messages,
 ): SystemMessage | undefined {
 	const current = getCurrentSystemMessage(messages);
-	options.sessionFolderInGuidelines = namesSessionFolderInGuidelines(current);
+	options.sessionFolderInGuidelines = namesSessionFolderInGuidelines(current, Boolean(options.customPrompt));
 	const selected = [...new Set(options.selectedTools)].filter((name) => this._toolRegistry.has(name));
 	const recorded = (current?.toolsAdded ?? []).map((tool) => tool.name).filter((name) => selected.includes(name));
 	options.selectedTools = [...recorded, ...selected.filter((name) => !recorded.includes(name))];
