@@ -8,11 +8,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { availableParallelism } from "node:os";
 import { basename } from "node:path";
-import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getEnvValue } from "../../config.js";
+import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
-import { applyStartupEnvironment } from "../../utils/startup-environment.js";
+import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../../utils/startup-environment.js";
 import { engineHeapRuntimeArgsForHost } from "./engine-heap.ts";
 
 /** Everything that decides how an engine child process starts, apart from its engine arguments. */
@@ -164,14 +164,16 @@ function setReferenced(child: ChildProcess, referenced: boolean): void {
 }
 
 /**
- * Start the engine child this interactive host will most likely run, before the host has loaded its own code. The
- * environment `main()` derives from `args` is set first, so the child starts with the environment a fresh engine would
- * get and the host can adopt it.
+ * Start the engine child this interactive host will most likely run, before the host has loaded its own code. It
+ * starts with the environment a fresh engine would get: what `main()` derives from `args` is set first, and what the
+ * global settings will add is given to this child alone, so the host can adopt it.
  */
 export async function prewarmInteractiveEngineForArgs(args: readonly string[]): Promise<void> {
 	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args)) return;
-	await applyStartupEnvironment(args);
-	prewarmInteractiveEngine(args);
+	await applyArgumentEnvironment(args);
+	const settingsEnv = await settingsEnvironmentForEarlyChild(getAgentDir());
+	const launch = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
+	prewarmInteractiveEngine(args, { launch: { ...launch, env: { ...launch.env, ...settingsEnv } } });
 }
 
 /** Start the engine child this interactive host will most likely run, before the host has loaded its own code. */

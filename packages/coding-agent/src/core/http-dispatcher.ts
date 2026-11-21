@@ -1,6 +1,5 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
-import { applyHttpProxyEnvironment } from "../utils/startup-environment.js";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 
@@ -78,7 +77,10 @@ export function formatHttpIdleTimeoutMs(timeoutMs: number): string {
 }
 
 export function applyHttpProxySettings(httpProxy: string | undefined): void {
-	applyHttpProxyEnvironment(httpProxy);
+	const proxy = httpProxy?.trim();
+	if (!proxy) return;
+	process.env.HTTP_PROXY ??= proxy;
+	process.env.HTTPS_PROXY ??= proxy;
 }
 
 export function createHttpDispatcherOptions(
