@@ -36,12 +36,12 @@ function updateWidget(ctx: ExtensionContext): void {
 			(resetMs > 0 ? theme.fg("dim", ` (resets in ${resetSec}s)`) : ""),
 	);
 
-	ctx.ui.setWidget("web-activity", new Text(lines.join("\n"), 0, 0));
+	ctx.ui.setWidget("web-activity", () => new Text(lines.join("\n"), 0, 0));
 }
 
 function formatEntryLine(
 	entry: ActivityEntry,
-	theme: { fg: (color: string, text: string) => string },
+	theme: ExtensionContext["ui"]["theme"],
 ): string {
 	const typeStr = entry.type === "api" ? "API" : "GET";
 	const target =
@@ -80,7 +80,7 @@ export function toggleActivityWidget(state: ActivityWidgetState, ctx: ExtensionC
 	} else {
 		state.unsubscribe?.();
 		state.unsubscribe = null;
-		ctx.ui.setWidget("web-activity", null);
+		ctx.ui.setWidget("web-activity", undefined);
 	}
 }
 

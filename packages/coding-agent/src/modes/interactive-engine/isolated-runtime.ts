@@ -66,6 +66,7 @@ import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
 import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
 import { EngineSessionStats } from "./engine-session-stats.js";
+import { HostListenerFailures } from "./host-listener-failures.ts";
 import {
 	type AtomicOAuthLoginCallbacks,
 	loginIsolatedApiKeyProvider,
@@ -166,6 +167,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	/** The host session's listeners, which get the engine's events through one ordered subscription. */
 	private readonly hostListeners = new Map<number, (event: JsonAgentSessionEvent) => void>();
+	/** A host listener's failure, even one that surfaces while held events are released, is reported, not fatal. */
+	private readonly hostListenerFailures = new HostListenerFailures((diagnostic) => this.emitDiagnostic(diagnostic));
 	private lastHostListener = 0;
 	private releasingHostEvents?: HeldHostEvent[];
 	private hostEventsSubscribed = false;
@@ -984,7 +987,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	emitDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void {
-		if (diagnostic.source !== "stderr") this.engineCallbackActive = true;
+		// A failure of the host's own listeners says nothing about what the engine is doing.
+		if (diagnostic.source !== "stderr" && diagnostic.source !== "host") this.engineCallbackActive = true;
 		this.health.publish(diagnostic);
 	}
 
@@ -1548,7 +1552,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.queuedDeliveryEnds.delete(event);
 			this.queuedDeliveries.end(end);
 		}
-		for (const [id, listener] of [...this.hostListeners]) if (id <= audience) listener(event);
+		for (const [id, listener] of [...this.hostListeners])
+			if (id <= audience) this.hostListenerFailures.call(listener, event, "event");
 	}
 
 	private discardHeldHostEvents(): void {
