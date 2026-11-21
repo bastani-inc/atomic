@@ -17,7 +17,7 @@
 - Fixed the interactive engine and headless runs on Node not getting their larger heap when `NODE_OPTIONS` names `--max-old-space-size` where Node does not apply it: after a tab, which Node does not treat as a separator, or after a word that ends Node's reading of `NODE_OPTIONS`. A heap size that Node applies still takes precedence ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 - Fixed Atomic ending on an unrelated unhandled promise rejection after an agent panel source failed, although `NODE_OPTIONS` sets `--unhandled-rejections` to `warn` or `none` in quotes or as `--unhandled_rejections` ([#6170](https://github.com/bastani-inc/atomic/pull/6170))
 - On Windows, a command stopped or failing while the machine is heavily loaded is no longer reported as exiting with status 0.
-- `session.dispose()` now resolves only after the extension transpile cache has finished storing what the session's extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards
+- `session.dispose()` now resolves only after the extension transpile cache has finished storing what the session's extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
 
 ## [0.10.3] - 2026-11-21
 
