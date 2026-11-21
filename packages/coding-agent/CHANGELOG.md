@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A folder's saved "Trust" no longer applies in an interactive session before the `project_trust` handlers of user or global extensions have answered, since a handler can still decline the folder. Until then the session uses only global settings and resources: the first screen, migrating the folder's settings, the session store that `--continue`, `--resume` and `--session` read, and the build of restored worktrees wait for the decision. Without such extensions, or with `--approve`, a saved "Trust" applies at once as before. When the folder's own settings choose another session store than the global ones, Atomic decides the folder's trust before it opens a session, and that session's interface runs in the same process as its extensions ([#5693](https://github.com/bastani-inc/atomic/issues/5693))
+- A resume in such a folder restores its worktrees and opens at once, as with `resume.waitForBlueprint: "tools"`: their blueprints build once the folder is decided, and tools wait for the build. A worktree no decision covers stays unbuilt and is reported as not trusted ([#5693](https://github.com/bastani-inc/atomic/issues/5693))
+- When a folder is approved while its session is already on screen, the resource list at the top of the chat lists the approved resources, keeping each section expanded or folded. It waits while text is selected, a click or drag is in progress, you search, or the chat is scrolled away from its start and end. Open completion menus, pickers and Settings pages keep their choices; the approved resources show the next time you open them ([#5693](https://github.com/bastani-inc/atomic/issues/5693))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.

@@ -45,7 +45,12 @@ import {
 } from "./config.js";
 import type { AgentSession } from "./core/agent-session.js";
 import { isSessionQuitting } from "./core/agent-session-events.ts";
-import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
+import type {
+	AgentSessionRuntime,
+	CreateAgentSessionRuntimeFactory,
+	CreateAgentSessionRuntimeOptions,
+	CreateAgentSessionRuntimeResult,
+} from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
 	type CreateAgentSessionServicesOptions,
@@ -69,16 +74,26 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
-import { pendingProjectResourcesTrusted, startupProjectTrust } from "./core/project-trust-state.ts";
+import { extensionsCanDecideProjectTrust } from "./core/project-trust-electorate.ts";
+import {
+	pendingProjectResourcesTrusted,
+	projectTrustedBeforeExtensions,
+	startupProjectTrust,
+} from "./core/project-trust-state.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
 import { recordResumeTimings } from "./core/resume/timings.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
+import { sessionLifecycleCreation } from "./core/session-lifecycle-scope.ts";
 import { ownedSessionManagerStores, ownedSessionStores, sessionLifetime } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "./core/session-manager-errors.js";
-import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
+import {
+	canIsolateSessionStore,
+	projectSettingsChooseSessionStorage,
+	takeEngineSessionStorageArg,
+} from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { recordStartupThinkingLevel, savedConversationThinkingLevel } from "./core/startup-thinking-level.ts";
@@ -115,7 +130,6 @@ import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-inp
 import { runFirstTimeSetup } from "./main-first-time-setup.ts";
 import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
-	cliResumeTrust,
 	createResumeProgress,
 	openCliSession,
 	openSessionInCurrentCwdOrExit,
@@ -156,9 +170,11 @@ import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
+import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.ts";
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { canonicalizePath, canonicalizePathAsync } from "./utils/canonical-path.ts";
 import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
 	readInteractiveEngineBootstrap,
@@ -170,6 +186,9 @@ import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.
 export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
+
+/** The rest of creating a startup runtime once its services are prepared. */
+type RuntimeContinuation = () => Promise<CreateAgentSessionRuntimeResult>;
 
 function sessionFallbackModelDiagnostics(
 	parsed: Args,
@@ -568,10 +587,52 @@ export async function main(argv: string[], options?: MainOptions) {
 	const startupStoredProjectTrust = startupHasTrustInputs ? projectTrustStore.get(cwd) : null;
 	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
-	const startupProjectTrusted =
-		parsed.projectTrustOverride ??
-		startupStoredProjectTrust ??
-		(!startupHasTrustInputs || startupDefaultProjectTrust === "always");
+	// Read once from the configuration: whether an extension that loads before a folder's trust is decided could answer
+	// `project_trust` ahead of its saved decision. Until the decision, such a folder is not trusted yet (#5693).
+	let extensionsCanDecideTrust: Promise<boolean> | undefined;
+	const extensionsCanDecide = (): Promise<boolean> =>
+		(extensionsCanDecideTrust ??= extensionsCanDecideProjectTrust({
+			cliExtensionPaths: parsed.extensions,
+			sdkExtensionFactoryCount: options?.extensionFactories?.length ?? 0,
+			customBuiltinPackagePaths: options?.builtinPackagePaths,
+			noExtensions: parsed.noExtensions === true,
+			globalExtensions: startupGlobalSettingsManager.getGlobalSettings().extensions,
+			globalPackages: startupGlobalSettingsManager.getGlobalSettings().packages,
+			agentDir,
+		}));
+	const trustedBeforeExtensions = async (folder: { hasTrustInputs: boolean; saved: boolean | null }) => {
+		const savedPositive = folder.saved ?? startupDefaultProjectTrust === "always";
+		return projectTrustedBeforeExtensions({
+			override: parsed.projectTrustOverride,
+			hasTrustInputs: folder.hasTrustInputs,
+			saved: folder.saved,
+			defaultProjectTrust: startupDefaultProjectTrust,
+			// Only a folder a saved decision trusts needs the census.
+			extensionsCanDecide:
+				parsed.projectTrustOverride === undefined && folder.hasTrustInputs && savedPositive
+					? await extensionsCanDecide()
+					: false,
+		});
+	};
+	// An interactive session (its host and its engine) decides the folder's trust after the extensions load. Print, JSON
+	// and RPC runs and metadata commands keep reading the saved decision.
+	const interactiveStartup =
+		engineEnv.child === "1" ||
+		(appMode === "interactive" &&
+			!isPlainRuntimeMetadataCommand(parsed) &&
+			!parsed.help &&
+			parsed.listModels === undefined);
+	// An engine started to replace one that stopped carries this session's decisions; one for this folder is final.
+	const carriedStartupTrust = Object.entries(engineEnv.trustDecisions?.projects ?? {}).find(
+		([path]) => canonicalizePath(path) === canonicalizePath(cwd),
+	)?.[1];
+	const startupProjectTrusted = interactiveStartup
+		? (parsed.projectTrustOverride ??
+			carriedStartupTrust ??
+			(await trustedBeforeExtensions({ hasTrustInputs: startupHasTrustInputs, saved: startupStoredProjectTrust })))
+		: (parsed.projectTrustOverride ??
+			startupStoredProjectTrust ??
+			(!startupHasTrustInputs || startupDefaultProjectTrust === "always"));
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions),
 		resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	// Storage opens before the extensions load, and may select an adapter by the name of a package passed here.
@@ -691,96 +752,6 @@ export async function main(argv: string[], options?: MainOptions) {
 					.catch(() => undefined)
 			: undefined;
 
-	// Decide the final runtime cwd before creating cwd-bound runtime services.
-	// --session and --resume may select a session from another project, so project-local
-	// settings, resources, provider registrations, and models must be resolved only after
-	// the target session cwd is known. The startup-cwd settings manager is used only for
-	// storage selection before loading the selected session's resources.
-	let sessionManager: SessionManager;
-	let worktreeRestoreDiagnostics: readonly ResumeNotice[] = [];
-	const startupProgress = createResumeProgress(appMode, engineEnv.child === "1", process.stderr);
-	// Without a UI, a resume that waits for another build of its worktree says so while it waits (#4748).
-	const stopAnnouncingWaits =
-		appMode !== "interactive" && engineEnv.child !== "1"
-			? announceBlueprintBuildWaits(appMode !== "print")
-			: undefined;
-	try {
-		const opened = await openCliSession(parsed, cwd, startupSettingsManager, {
-			agentDir,
-			sessionStorage,
-			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
-			blueprints: engineEnv.child === "1" ? "skip" : "build",
-			// Without a UI (-p, json, rpc), the first turn starts while the blueprint build runs (#4748).
-			interactive: appMode === "interactive" || engineEnv.child === "1",
-			claim: engineEnv.child !== "1",
-			progress: startupProgress,
-			chooseDirtyCheckout:
-				appMode === "interactive" ? (prompt) => promptForDirtyCheckout(prompt, startupSettingsManager) : undefined,
-		});
-		stopAnnouncingWaits?.();
-		if (opened === "cancelled") process.exit(0);
-		sessionManager = opened.sessionManager;
-		worktreeRestoreDiagnostics = opened.notices;
-		// The host that started this engine may still be building the resumed session's blueprints.
-		if (engineEnv.child === "1" && engineEnv.hostPid !== undefined) {
-			const resumed = sessionManager;
-			holdToolsUntilOwnerBuilt(
-				resumeStoreDir(agentDir),
-				Number(engineEnv.hostPid),
-				resumed.getSessionId(),
-				(timings) => recordResumeTimings(resumed, timings),
-			);
-		}
-	} catch (error) {
-		// Another live process resumed this session (#5135): nothing was changed.
-		const held = error instanceof SessionAlreadyOpenError;
-		const message = held ? error.message : resumeFailureMessage(error);
-		if (message === undefined) throw error;
-		startupEarlyInputCapture?.consume();
-		console.error(chalk.red(`Error: ${message}`));
-		process.exit(held ? SESSION_ALREADY_OPEN_EXIT_CODE : 1);
-	}
-	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
-	if (missingSessionCwdIssue) {
-		if (appMode === "interactive") {
-			const choice = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
-			sessionManager = await openSessionInCurrentCwdOrExit(sessionManager, missingSessionCwdIssue, choice);
-		} else {
-			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
-			process.exit(1);
-		}
-	}
-	if (parsed.name !== undefined) {
-		const name = parsed.name.trim();
-		if (!name) {
-			console.error(chalk.red("Error: --name requires a non-empty value"));
-			startupEarlyInputCapture?.consume();
-			process.exit(1);
-		}
-	}
-	time("createSessionManager");
-	markLifecycleTiming("session-opened");
-	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
-
-	const sessionCwd = sessionManager.getCwd();
-	// A store selected only by settings can change after trust approval. Explicit
-	// CLI/environment selections are already final and retain engine isolation.
-	const storagePinned =
-		sessionStorage !== undefined ||
-		parsed.noSession ||
-		parsed.sessionDir !== undefined ||
-		parsed.sessionStorePath !== undefined ||
-		!!getEnvValue(ENV_SESSION_DIR) ||
-		hasProcessStorageSelection("sessions");
-	const selectedProjectTrusted =
-		parsed.projectTrustOverride ??
-		(hasProjectTrustInputs(sessionCwd) ? projectTrustStore.get(sessionCwd) : true) ??
-		startupDefaultProjectTrust === "always";
-	isolateInteractiveHost &&= storagePinned || selectedProjectTrusted;
-	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
-	const autoTrustOnReloadCwd =
-		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
-
 	const builtinPackagePaths = options?.builtinPackagePaths;
 	const trustPromptMode: AppMode = appMode;
 	// Decisions made in this host session. An engine the host started to replace one that stopped is handed the
@@ -794,14 +765,41 @@ export async function main(argv: string[], options?: MainOptions) {
 	let deferredSavedThinkingLevel: ThinkingLevel | undefined;
 	const eagerRetrySavedThinkingLevels = new WeakMap<SessionManager, ThinkingLevel | undefined>();
 	let forceEagerInteractiveEngineResources = false;
-	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => (await prepareRuntime(options))();
-	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async ({
-		cwd,
-		agentDir,
-		sessionManager,
-		sessionStartEvent,
-		projectTrustContext,
-	}) => {
+	// Settles once the startup session's own trust decision is made, or will not be: a restored worktree's blueprint
+	// build that waits for it starts then (#5693).
+	const { promise: startupTrustDecided, resolve: settleStartupTrust } = Promise.withResolvers<void>();
+	let startupRuntime: AgentSessionRuntime | undefined;
+	// A startup that decides its folder's trust before it opens the session prepares that folder's services first, and
+	// binds them to the session it then opens there, so the extensions load once (#5693).
+	let preparedBeforeOpen:
+		| { readonly cwd: string; readonly bind: (sessionManager: SessionManager) => RuntimeContinuation }
+		| undefined;
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => {
+		const prepared = preparedBeforeOpen;
+		preparedBeforeOpen = undefined;
+		if (
+			prepared &&
+			options.sessionStartEvent === undefined &&
+			(await canonicalizePathAsync(options.cwd)) === (await canonicalizePathAsync(prepared.cwd))
+		)
+			return prepared.bind(options.sessionManager)();
+		return (await prepareRuntime(options))();
+	};
+	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async (options) =>
+		(await prepareRuntimeServices(options, options.sessionManager))(options.sessionManager);
+	const prepareRuntimeServices = async (
+		{
+			cwd,
+			agentDir,
+			sessionStartEvent,
+			projectTrustContext,
+		}: Omit<CreateAgentSessionRuntimeOptions, "sessionManager">,
+		// The session these services are for, when it is already open. A startup that decides first binds it later.
+		openedSessionManager: SessionManager | undefined,
+		decideBeforeOpen = false,
+	): Promise<(sessionManager: SessionManager) => RuntimeContinuation> => {
+		// Bound when the session opens: at once, or after a startup that decides before it opens one.
+		let sessionManager = openedSessionManager as SessionManager;
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustInputs = await hasProjectTrustInputsAsync(cwd);
 		const storedProjectTrust = await projectTrustStore.getAsync(cwd);
@@ -811,13 +809,17 @@ export async function main(argv: string[], options?: MainOptions) {
 			saved: storedProjectTrust,
 			hasTrustInputs,
 		});
-		const initialProjectTrusted = startupTrust.trusted;
+		// A saved "Trust" that an extension's project_trust handler could still overturn is not trusted yet (#5693).
+		const initialProjectTrusted =
+			startupTrust.trusted && !(startupTrust.decide && interactiveStartup && (await extensionsCanDecide()));
 		const shouldResolveProjectTrust = !isolateInteractiveHost && startupTrust.decide;
 		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
 			projectTrusted: initialProjectTrusted,
 		});
-		const existingSession = sessionManager.buildSessionContext();
+		let existingSession!: ReturnType<SessionManager["buildSessionContext"]>;
+		if (openedSessionManager) existingSession = openedSessionManager.buildSessionContext();
 		const deferStartupTrust =
+			!decideBeforeOpen &&
 			sessionStartEvent === undefined &&
 			!isolateInteractiveHost &&
 			(trustPromptMode === "interactive" || engineEnv.child === "1") &&
@@ -857,6 +859,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			unknownFlagCount: parsed.unknownFlags.size,
 		});
 		const deferExtensions =
+			!decideBeforeOpen &&
 			!deferStartupTrust &&
 			!isolateInteractiveHost &&
 			(deferInteractiveEngineResources ||
@@ -891,7 +894,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		let startupSession: AgentSession | undefined;
 		let storageFinalized = false;
 		const finalizeStartupStorage = async () => {
-			if (sessionStartEvent !== undefined || storageFinalized) return;
+			// A decision made before the session opened chose its store; the binding below finishes it.
+			if (sessionStartEvent !== undefined || storageFinalized || !sessionManager) return;
 			const store = await refreshSessionStorage(sessionManager, parsed, runtimeSettingsManager, sessionStorage);
 			if (store && startupSession) {
 				ownedSessionManagerStores.delete(sessionManager);
@@ -899,6 +903,10 @@ export async function main(argv: string[], options?: MainOptions) {
 			}
 			if (parsed.name !== undefined) await sessionManager.appendSessionInfo(parsed.name.trim());
 			storageFinalized = true;
+		};
+		// Only the startup session's own decision opens the build gate, not one made for a folder it did not open.
+		const settleBoundStartupTrust = () => {
+			if (sessionStartEvent === undefined && sessionManager) settleStartupTrust();
 		};
 		const serviceOptions: CreateAgentSessionServicesOptions = {
 			cwd,
@@ -919,6 +927,7 @@ export async function main(argv: string[], options?: MainOptions) {
 								runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
 								await finalizeStartupStorage();
 								engineLiveness?.projectTrustResolved();
+								settleBoundStartupTrust();
 							},
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
@@ -1001,7 +1010,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			serviceOptions,
 			deferStartupTrust ? () => startupSession !== undefined && isSessionQuitting(startupSession) : undefined,
 		);
-		return async () => {
+		const continuation: RuntimeContinuation = async () => {
 			if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 			const services = await completeServices();
 			if (!deferStartupTrust) await finalizeStartupStorage();
@@ -1131,6 +1140,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					closeTrustInventory();
 					startupTrustPending = false;
 					runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
+					settleBoundStartupTrust();
 				},
 				decisions: projectTrustByCwd,
 				extensionSourceDecisions: borrowedExtensionSourceTrustByPath,
@@ -1265,6 +1275,7 @@ export async function main(argv: string[], options?: MainOptions) {
 						// No decision is coming any more: the session stays as untrusted as its settings read.
 						closeTrustInventory();
 						startupTrustPending = false;
+						settleBoundStartupTrust();
 						throw error;
 					}));
 			}
@@ -1302,9 +1313,152 @@ export async function main(argv: string[], options?: MainOptions) {
 				diagnostics,
 			};
 		};
+		return (opened) => {
+			if (!openedSessionManager) existingSession = opened.buildSessionContext();
+			sessionManager = opened;
+			return continuation;
+		};
 	};
 	createRuntime.prepareResume = prepareRuntime;
 	time("createRuntimeFactory");
+	// Decide the final runtime cwd before creating cwd-bound runtime services.
+	// --session and --resume may select a session from another project, so project-local
+	// settings, resources, provider registrations, and models must be resolved only after
+	// the target session cwd is known. The startup-cwd settings manager is used only for
+	// storage selection before loading the selected session's resources.
+	// A store selected only by settings can change after trust approval. Explicit
+	// CLI/environment selections are already final and retain engine isolation.
+	const storagePinned =
+		sessionStorage !== undefined ||
+		parsed.noSession ||
+		parsed.sessionDir !== undefined ||
+		parsed.sessionStorePath !== undefined ||
+		!!getEnvValue(ENV_SESSION_DIR) ||
+		hasProcessStorageSelection("sessions");
+	// A saved "Trust" that an extension could still overturn is no decision (#5693). When the folder's own settings
+	// choose where its sessions are stored, this process decides the folder's trust itself before it opens one: it keeps
+	// the services it decided with for a session it opens in this folder, and a new session waits in the store the
+	// global settings choose and moves once the folder is trusted.
+	if (
+		interactiveStartup &&
+		engineEnv.child !== "1" &&
+		!storagePinned &&
+		parsed.projectTrustOverride === undefined &&
+		startupHasTrustInputs &&
+		!startupProjectTrusted &&
+		(startupStoredProjectTrust ?? startupDefaultProjectTrust === "always") &&
+		projectSettingsChooseSessionStorage(cwd, startupGlobalSettingsManager.getGlobalSettings())
+	) {
+		isolateInteractiveHost = false;
+		if (parsed.continue || parsed.resume || parsed.session !== undefined || parsed.fork !== undefined) {
+			const bind = await sessionLifecycleCreation.run({ scope: {} }, () =>
+				prepareRuntimeServices({ cwd, agentDir }, undefined, true),
+			);
+			preparedBeforeOpen = { cwd, bind };
+			await startupSettingsManager.setProjectTrustedAsync(projectTrustByCwd.get(cwd) === true);
+		}
+	}
+	// A restored worktree that the saved decision trusts but an extension could still decline builds only once the
+	// session has decided its trust; it builds behind the first turn, and a worktree the session does not decide stays
+	// unbuilt (#5693).
+	const savedBlueprintTrust = async (root: string): Promise<boolean> =>
+		parsed.projectTrustOverride ??
+		(await projectTrustStore.getAsync(root)) ??
+		startupDefaultProjectTrust === "always";
+	const blueprintTrustDecidedLater = async (root: string): Promise<boolean> =>
+		interactiveStartup &&
+		engineEnv.child !== "1" &&
+		parsed.projectTrustOverride === undefined &&
+		(await savedBlueprintTrust(root)) &&
+		(await extensionsCanDecide());
+	const blueprintTrusted = async (root: string): Promise<boolean> => {
+		if (!(await blueprintTrustDecidedLater(root))) return savedBlueprintTrust(root);
+		const decisions: Readonly<Record<string, boolean>> = isolateInteractiveHost
+			? (startupRuntime?.trustDecisions().projects ?? {})
+			: Object.fromEntries(projectTrustByCwd);
+		const target = await canonicalizePathAsync(root);
+		for (const [path, trusted] of Object.entries(decisions)) {
+			if ((await canonicalizePathAsync(path)) === target) return trusted;
+		}
+		return false;
+	};
+	let sessionManager: SessionManager;
+	let worktreeRestoreDiagnostics: readonly ResumeNotice[] = [];
+	const startupProgress = createResumeProgress(appMode, engineEnv.child === "1", process.stderr);
+	// Without a UI, a resume that waits for another build of its worktree says so while it waits (#4748).
+	const stopAnnouncingWaits =
+		appMode !== "interactive" && engineEnv.child !== "1"
+			? announceBlueprintBuildWaits(appMode !== "print")
+			: undefined;
+	try {
+		const opened = await openCliSession(parsed, cwd, startupSettingsManager, {
+			agentDir,
+			sessionStorage,
+			trusted: blueprintTrusted,
+			trustDecidedLater: { applies: blueprintTrustDecidedLater, decided: startupTrustDecided },
+			blueprints: engineEnv.child === "1" ? "skip" : "build",
+			// Without a UI (-p, json, rpc), the first turn starts while the blueprint build runs (#4748).
+			interactive: appMode === "interactive" || engineEnv.child === "1",
+			claim: engineEnv.child !== "1",
+			progress: startupProgress,
+			chooseDirtyCheckout:
+				appMode === "interactive" ? (prompt) => promptForDirtyCheckout(prompt, startupSettingsManager) : undefined,
+		});
+		stopAnnouncingWaits?.();
+		if (opened === "cancelled") process.exit(0);
+		sessionManager = opened.sessionManager;
+		worktreeRestoreDiagnostics = opened.notices;
+		// The host that started this engine may still be building the resumed session's blueprints.
+		if (engineEnv.child === "1" && engineEnv.hostPid !== undefined) {
+			const resumed = sessionManager;
+			holdToolsUntilOwnerBuilt(
+				resumeStoreDir(agentDir),
+				Number(engineEnv.hostPid),
+				resumed.getSessionId(),
+				(timings) => recordResumeTimings(resumed, timings),
+			);
+		}
+	} catch (error) {
+		// Another live process resumed this session (#5135): nothing was changed.
+		const held = error instanceof SessionAlreadyOpenError;
+		const message = held ? error.message : resumeFailureMessage(error);
+		if (message === undefined) throw error;
+		startupEarlyInputCapture?.consume();
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(held ? SESSION_ALREADY_OPEN_EXIT_CODE : 1);
+	}
+	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
+	if (missingSessionCwdIssue) {
+		if (appMode === "interactive") {
+			const choice = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
+			sessionManager = await openSessionInCurrentCwdOrExit(sessionManager, missingSessionCwdIssue, choice);
+		} else {
+			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
+			process.exit(1);
+		}
+	}
+	if (parsed.name !== undefined) {
+		const name = parsed.name.trim();
+		if (!name) {
+			console.error(chalk.red("Error: --name requires a non-empty value"));
+			startupEarlyInputCapture?.consume();
+			process.exit(1);
+		}
+	}
+	time("createSessionManager");
+	markLifecycleTiming("session-opened");
+	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
+
+	const sessionCwd = sessionManager.getCwd();
+	const selectedProjectTrusted =
+		parsed.projectTrustOverride ??
+		(hasProjectTrustInputs(sessionCwd) ? projectTrustStore.get(sessionCwd) : true) ??
+		startupDefaultProjectTrust === "always";
+	isolateInteractiveHost &&= storagePinned || selectedProjectTrusted;
+	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
+	const autoTrustOnReloadCwd =
+		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
+
 	// The engine runs the session's tools, so it waits for a blueprint build this host still runs behind the first turn.
 	if (isolateInteractiveHost) await shareBlueprintBuild(resumeStoreDir(agentDir), sessionManager.getSessionId());
 	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
@@ -1326,6 +1480,12 @@ export async function main(argv: string[], options?: MainOptions) {
 	);
 	endTimingSpan(runtimeCreationSpan);
 	markLifecycleTiming("runtime-created");
+	startupRuntime = runtime;
+	const settleWhenDecided = () => {
+		if (!runtime.isProjectTrustPending()) settleStartupTrust();
+	};
+	settleWhenDecided();
+	if (runtime instanceof IsolatedInteractiveRuntime) runtime.onProjectTrustChanged(settleWhenDecided);
 	const { services, session, modelFallbackMessage } = runtime;
 	if (engineEnv.child === "1" && services.completeStartup) runtime.replaceModelFallback();
 	const { settingsManager, modelRuntime } = services;

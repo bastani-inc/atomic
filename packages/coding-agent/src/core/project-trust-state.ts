@@ -64,6 +64,27 @@ export function startupProjectTrust(input: {
 }
 
 /**
+ * Whether startup may use a project's own settings and resources before any extension code has run: to choose the
+ * session store, migrate the project's settings, build a restored worktree or draw the first frame. `--approve` or
+ * `--no-approve` decides, and a folder with nothing that needs trust is trusted. Otherwise a saved "Trust" (or
+ * `defaultProjectTrust: "always"` without a saved decision) counts only when no extension that loads before the
+ * decision could answer `project_trust` ahead of it: a handler can still decline the folder (#5693).
+ */
+export function projectTrustedBeforeExtensions(input: {
+	readonly override: boolean | undefined;
+	readonly hasTrustInputs: boolean;
+	readonly saved: boolean | null;
+	readonly defaultProjectTrust: "always" | "ask" | "never";
+	/** Whether an extension that loads before the decision could register a `project_trust` handler. */
+	readonly extensionsCanDecide: boolean;
+}): boolean {
+	if (input.override !== undefined) return input.override;
+	if (!input.hasTrustInputs) return true;
+	const savedPositive = input.saved ?? input.defaultProjectTrust === "always";
+	return savedPositive && !input.extensionsCanDecide;
+}
+
+/**
  * While a deferred startup decision is still to be made, whether the project's own resources may load already. Each
  * source of resources follows its own decision, so other open questions, such as an `-e` source's, do not hold the
  * project back. A project with no decision to make keeps the trust it started with: `--approve` or `--no-approve`, a
