@@ -191,7 +191,8 @@ export async function terminateRpcClientProcess(
 	graceful = false,
 	shutdownComplete?: Promise<void>,
 ): Promise<void> {
-	await settlesWithin(removeOwnedInteractiveEngineBootstrapAsync(bootstrapHandles.get(child)), ENGINE_KILL_STEP_MS);
+	const bootstrap = bootstrapHandles.get(child);
+	if (bootstrap) await settlesWithin(removeOwnedInteractiveEngineBootstrapAsync(bootstrap), ENGINE_KILL_STEP_MS);
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	let resolveExit!: () => void;
 	const exited = new Promise<void>((resolve) => {

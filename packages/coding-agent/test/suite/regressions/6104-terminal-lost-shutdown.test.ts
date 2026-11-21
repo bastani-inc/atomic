@@ -127,22 +127,27 @@ describe("a terminal that is gone (#6104)", () => {
 		assert.equal(vi.mocked(context.ui.terminal.drainInput).mock.calls.length, 0);
 	});
 
-	test("after SIGHUP, a failed write does not cut the shutdown short", async () => {
-		const disposed = Promise.withResolvers<void>();
-		const context = createContext(() => disposed.promise);
-		const sighup = process.listeners("SIGHUP")[0] as (() => void) | undefined;
-		if (!sighup) return; // Windows: no SIGHUP handler.
+	// Windows delivers no SIGHUP to Atomic: closing the console ends it at once.
+	test.skipIf(process.platform === "win32")(
+		"after SIGHUP, a failed write does not cut the shutdown short",
+		async () => {
+			const disposed = Promise.withResolvers<void>();
+			const others = process.listeners("SIGHUP");
+			const context = createContext(() => disposed.promise);
+			const sighup = process.listeners("SIGHUP").find((listener) => !others.includes(listener));
+			assert.ok(sighup, "Atomic handles SIGHUP");
 
-		sighup();
-		process.stdout.emit("error", deadTerminal());
-		await settle();
+			sighup("SIGHUP");
+			process.stdout.emit("error", deadTerminal());
+			await settle();
 
-		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[{ fromSignal: true }]]);
-		assert.deepEqual(exits, []);
-		disposed.resolve();
-		await settle();
-		assert.deepEqual(exits, [129]);
-	});
+			assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[{ fromSignal: true }]]);
+			assert.deepEqual(exits, []);
+			disposed.resolve();
+			await settle();
+			assert.deepEqual(exits, [129]);
+		},
+	);
 
 	test("a shutdown that does not end within the bound is cut short, with every child ended", async () => {
 		const context = createContext(() => new Promise<void>(() => {}));
