@@ -291,7 +291,8 @@ describe("captures of one checkout requested together", () => {
 		let started = 0;
 		const previous = setWorktreeSnapshotGit(async () => {
 			started++;
-			// The first capture's sixth Git process runs once its scan listed the changed files.
+			// The first capture's sixth Git process, `write-tree`, runs once its scan listed the changed files (the files
+			// staged despite an ignore rule were listed by the capture of `plain`, from the same index and HEAD).
 			if (started === 6) {
 				scanning.resolve();
 				await resume.promise;
@@ -320,8 +321,9 @@ describe("captures of one checkout requested together", () => {
 	/**
 	 * Captures `earlier[0]`'s session's checkout and, once that capture's scan of the working files started, requests a
 	 * capture from `earlier[1]` whose writes ended at the tick `wroteBy` gives, before or after that start. Every Git
-	 * process the snapshot runner starts is traced; the first capture's sixth one, the lookup of the modes Git trusts,
-	 * runs once its scan listed the changed files, and waits until the second capture was requested.
+	 * process the snapshot runner starts is traced; the first capture's sixth one, its scan's `write-tree`, runs once
+	 * the scan listed the changed files, and waits until the second capture was requested. The files staged despite an
+	 * ignore rule were listed by the earlier captures, from the same index and HEAD.
 	 */
 	async function captureDuringScan(wroteBy: (scanStarted: boolean) => number) {
 		const { clone, blobs, earlier } = await checkoutWithEarlierSnapshots(2, true);
