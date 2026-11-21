@@ -57,7 +57,8 @@ export async function resolveDeferredChildren(store: SessionStore, resume: Sessi
 	if (!refs) return resume;
 	const { id } = resume.header,
 		{ epoch, lastSeq } = resume;
-	const metadata: SessionStoredEntry[] = [];
+	const metadata: (SessionStoredEntry & { readonly onBranch: boolean })[] = [];
+	let at = 0;
 	for await (const h of headings(
 		store,
 		id,
@@ -65,7 +66,7 @@ export async function resolveDeferredChildren(store: SessionStore, resume: Sessi
 		lastSeq,
 		refs.positions.map((p) => p.seq),
 	))
-		metadata.push(h);
+		metadata.push({ ...h, onBranch: refs.positions[at++]!.onBranch });
 	const catalog = new ChildCatalog(),
 		retired = catalog.retire(metadata, resume.branch);
 	catalog.applyAliases(refs.aliases);
