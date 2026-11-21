@@ -50,8 +50,22 @@ afterEach(() => {
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-test.runIf(process.platform !== "win32").each<FatalExit>(["uncaughtCrash", "emergencyTerminalExit"])(
-	"%s ends a running background shell's whole process tree before exiting (#5057)",
+type TerminalLossThis = FatalThis & {
+	runtimeHost: object;
+	signalCleanupHandlers: Array<() => void>;
+	shutdown: (options?: { fromSignal?: boolean }) => Promise<void>;
+	handleTerminalLost: () => void;
+};
+const terminalLossPrototype = InteractiveMode.prototype as unknown as {
+	registerSignalHandlers(this: TerminalLossThis): void;
+	unregisterSignalHandlers(this: TerminalLossThis): void;
+	handleTerminalLost(this: TerminalLossThis): void;
+};
+
+type Ending = FatalExit | "lostTerminal";
+
+test.runIf(process.platform !== "win32").each<Ending>(["uncaughtCrash", "emergencyTerminalExit", "lostTerminal"])(
+	"%s ends a running background shell's whole process tree at once (#5057, #6104)",
 	async (path) => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-fatal-exit-5057-"));
 		directories.push(directory);
@@ -88,15 +102,40 @@ test.runIf(process.platform !== "win32").each<FatalExit>(["uncaughtCrash", "emer
 				throw new ProcessExitError();
 			}) as typeof process.exit);
 			vi.spyOn(console, "error").mockImplementation(() => {});
-			const context: FatalThis = {
-				isShuttingDown: false,
-				unregisterSignalHandlers: vi.fn(),
-				ui: { stop: vi.fn() },
-				getCrashExtensionHint: () => undefined,
-				emergencyTerminalExit: () => prototype.emergencyTerminalExit.call(context),
-			};
-			assert.throws(() => prototype[path].call(context, new Error("crash")), ProcessExitError);
-			assert.equal(exit.mock.calls.length, 1);
+			if (path === "lostTerminal") {
+				// The terminal's window closed: a write to it fails. The session shuts down first, but the shell ends now.
+				const context: TerminalLossThis = {
+					isShuttingDown: false,
+					runtimeHost: {},
+					signalCleanupHandlers: [],
+					shutdown: vi.fn(() => new Promise<void>(() => {})),
+					unregisterSignalHandlers: () => terminalLossPrototype.unregisterSignalHandlers.call(context),
+					handleTerminalLost: () => terminalLossPrototype.handleTerminalLost.call(context),
+					ui: { stop: vi.fn() },
+					getCrashExtensionHint: () => undefined,
+					emergencyTerminalExit: () => prototype.emergencyTerminalExit.call(context),
+				};
+				vi.useFakeTimers({ toFake: ["setTimeout"] });
+				terminalLossPrototype.registerSignalHandlers.call(context);
+				try {
+					process.stdout.emit("error", Object.assign(new Error("write EIO"), { code: "EIO", syscall: "write" }));
+				} finally {
+					context.unregisterSignalHandlers();
+					vi.useRealTimers();
+				}
+				assert.deepEqual(vi.mocked(context.shutdown).mock.calls, [[{ fromSignal: true }]]);
+				assert.equal(exit.mock.calls.length, 0);
+			} else {
+				const context: FatalThis = {
+					isShuttingDown: false,
+					unregisterSignalHandlers: vi.fn(),
+					ui: { stop: vi.fn() },
+					getCrashExtensionHint: () => undefined,
+					emergencyTerminalExit: () => prototype.emergencyTerminalExit.call(context),
+				};
+				assert.throws(() => prototype[path].call(context, new Error("crash")), ProcessExitError);
+				assert.equal(exit.mock.calls.length, 1);
+			}
 			// SIGKILL went out before exit: well inside the default TERM grace an owner close would wait for.
 			assert.ok(await waitUntilGone(descendant, 1000), "the descendant outlived the fatal exit");
 		} finally {
