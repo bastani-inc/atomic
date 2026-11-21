@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "vitest";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	stillRuns,
+	waitUntilGone,
+} from "../../../../test/helpers/recorded-process.js";
 import { McpClient, StdioTransport } from "../../src/extensions/mcp/client/index.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/stdio-server.mjs", import.meta.url));
@@ -10,15 +17,6 @@ const escapedChild = fileURLToPath(new URL("./fixtures/escaped-child-server.mjs"
 /** These tests start and kill real process trees, which can take seconds on a loaded runner. */
 const PROCESS_TREE_TEST_TIMEOUT_MS = 10_000;
 const PROCESS_TREE_EXIT_WAIT_MS = 5_000;
-
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
@@ -76,29 +74,21 @@ describe("StdioTransport", () => {
 		const client = new McpClient({ name: "stdio-test", version: "1.0.0" });
 		try {
 			await client.connect(transport);
-			let grandchild: number | undefined;
+			let grandchildPid: number | undefined;
 			const discoveryDeadline = Date.now() + PROCESS_TREE_EXIT_WAIT_MS;
-			while (grandchild === undefined && Date.now() < discoveryDeadline) {
+			while (grandchildPid === undefined && Date.now() < discoveryDeadline) {
 				const match = /grandchild (\d+)/.exec(transport.stderr);
-				if (match) grandchild = Number(match[1]);
+				if (match) grandchildPid = Number(match[1]);
 				else await new Promise((resolve) => setTimeout(resolve, 10));
 			}
-			assert.ok(grandchild !== undefined);
+			assert.ok(grandchildPid !== undefined);
+			// #6125: recorded while it runs, so a later process given its pid is never taken for it.
+			const grandchild = await recordProcess(grandchildPid);
 
 			const startedAt = Date.now();
 			await client.close();
 			assert.ok(Date.now() - startedAt < PROCESS_TREE_EXIT_WAIT_MS);
-			let alive = true;
-			const exitDeadline = Date.now() + PROCESS_TREE_EXIT_WAIT_MS;
-			while (alive && Date.now() < exitDeadline) {
-				try {
-					process.kill(grandchild, 0);
-					await new Promise((resolve) => setTimeout(resolve, 20));
-				} catch {
-					alive = false;
-				}
-			}
-			assert.equal(alive, false);
+			assert.equal(await waitUntilGone(grandchild, PROCESS_TREE_EXIT_WAIT_MS), true);
 		} finally {
 			await client.close();
 		}
@@ -115,25 +105,26 @@ describe("StdioTransport", () => {
 			let closeEvents = 0;
 			transport.onClose(() => closeEvents++);
 			await transport.start();
-			const serverPid = transport.pid as number;
-			let helper: number | undefined;
+			// #6125: the server and its helper, recorded while they run, so a later process given one of their pids is
+			// never taken for them.
+			const server = await recordProcess(transport.pid as number);
+			let helperPid: number | undefined;
 			await waitFor(() => {
 				const match = /helper (\d+)/.exec(transport.stderr);
-				if (match) helper = Number(match[1]);
-				return helper !== undefined;
+				if (match) helperPid = Number(match[1]);
+				return helperPid !== undefined;
 			});
-			assert.equal(typeof helper, "number");
-			assert.equal(await waitFor(() => !isAlive(serverPid)), true);
+			assert.ok(helperPid !== undefined);
+			const helper = await recordProcess(helperPid);
+			assert.equal(await waitUntilGone(server, 2_000), true);
 			try {
-				assert.equal(isAlive(helper as number), true);
+				assert.equal(await stillRuns(helper), true);
 
 				await transport.close();
-				assert.equal(await waitFor(() => !isAlive(helper as number)), true);
+				assert.equal(await waitUntilGone(helper, 2_000), true);
 				assert.equal(closeEvents, 1);
 			} finally {
-				try {
-					process.kill(helper as number, "SIGKILL");
-				} catch {}
+				await signalRecordedProcess(helper);
 			}
 		},
 		PROCESS_TREE_TEST_TIMEOUT_MS,
@@ -149,15 +140,18 @@ describe("StdioTransport", () => {
 			});
 			let closeEvents = 0;
 			transport.onClose(() => closeEvents++);
-			let helper: number | undefined;
+			let helper: RecordedProcess | undefined;
 			try {
 				await transport.start();
+				let helperPid: number | undefined;
 				await waitFor(() => {
 					const match = /helper (\d+)/.exec(transport.stderr);
-					if (match) helper = Number(match[1]);
-					return helper !== undefined;
+					if (match) helperPid = Number(match[1]);
+					return helperPid !== undefined;
 				});
-				assert.equal(typeof helper, "number");
+				assert.ok(helperPid !== undefined);
+				// #6125: recorded while it runs, so the cleanup never signals a later process given its pid.
+				helper = await recordProcess(helperPid);
 				const closed = await Promise.race([
 					transport.close().then(() => true),
 					new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
@@ -165,11 +159,7 @@ describe("StdioTransport", () => {
 				assert.equal(closed, true);
 				assert.equal(closeEvents, 1);
 			} finally {
-				if (helper !== undefined) {
-					try {
-						process.kill(helper, "SIGKILL");
-					} catch {}
-				}
+				if (helper !== undefined) await signalRecordedProcess(helper);
 			}
 		},
 		PROCESS_TREE_TEST_TIMEOUT_MS,
