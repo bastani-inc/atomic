@@ -67,7 +67,6 @@
 - When Atomic's own handling of the engine's output fails the same way on every streamed update, the chat shows one error row with a count, such as `(42 times)`, instead of one row per update. A different failure, or one after other output, gets its own row.
 - An error while Atomic reports a malformed engine line, the engine's stderr output or a failed write to the engine no longer ends Atomic; a malformed line still restarts the engine.
 - A tool call in the main chat that finishes while a subagent's chat is on screen no longer keeps redrawing that chat several times a second: the call is drawn as finished at once, also while its chat is hidden ([#6243](https://github.com/bastani-inc/atomic/pull/6243))
-- On a SQLite, libSQL or PostgreSQL session store, going back with `/tree` to an entry before the latest compaction, or reopening a session whose saved resume index the store cannot use, no longer fails with a JSON error when an extension saved text such as `[draft` under the name `owner`, `tasks` or `groups` in one of its entries.
 
 ## [0.10.3] - 2026-11-21
 
