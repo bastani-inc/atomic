@@ -117,7 +117,7 @@ describe("startup stages", () => {
 	);
 
 	test(
-		"a stage whose modules would await at their top level ends the stages before running any of it",
+		"a stage that has not run in full by the turn after it, as one awaiting another stage would, ends the stages",
 		() => {
 			// The stage loader with two stages of its own: the first awaits what the second releases.
 			const dir = makeTempDirectory("atomic-startup-stages-await-");
@@ -166,10 +166,9 @@ process.exit(0);
 				timeout: WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
 			});
 			assert.equal(result.exitCode, 0, result.stderr.toString());
-			// Nothing waits on a later stage: the session's own imports run both, in their own order.
 			assert.deepEqual(JSON.parse(result.stdout.toString()), {
-				afterStages: [],
-				ran: ["releases", "awaits", "released"],
+				afterStages: ["awaits"],
+				ran: ["awaits", "releases", "released"],
 			});
 		},
 		WHOLE_APPLICATION_LOAD_TIMEOUT_MS,
