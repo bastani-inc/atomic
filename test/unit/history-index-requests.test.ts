@@ -57,8 +57,13 @@ function longSession(): SessionEntry[] {
 	});
 }
 
+/**
+ * A store holding the session "long" with `entries`: by default the long session the search indexes. Tests that write
+ * the index themselves need only the entries they index, so they skip writing the rest, most of a store's setup.
+ */
 async function openStore(
 	wrap: (database: SqliteDatabase) => SqliteDatabase = (database) => database,
+	entries: readonly SessionEntry[] = longSession(),
 ): Promise<{ readonly raw: SqliteDatabase; readonly store: SqlSessionStore }> {
 	const directory = makeTempDirectory("atomic-index-requests-");
 	cleanups.push(() => removeTempDirectory(directory));
@@ -69,7 +74,7 @@ async function openStore(
 	cleanups.push(() => store.close());
 	await store.create(
 		{ id: "long", version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: PROJECT },
-		longSession(),
+		entries,
 	);
 	return { raw, store };
 }
@@ -267,7 +272,7 @@ test.each([
 	],
 ])("a caller that %s sees each statement of an index write (#6082)", async (_how, decorate) => {
 	const inserts: string[] = [];
-	const { raw } = await openStore();
+	const { raw } = await openStore(undefined, longSession().slice(0, 3));
 	const store = await SqlSessionStore.open(
 		new Proxy(raw, {
 			get(target, key) {
@@ -293,7 +298,7 @@ test.each([
 });
 
 test("an index write whose signal aborts after its page's statements ran publishes nothing (#6082)", async () => {
-	const { store } = await openStore();
+	const { store } = await openStore(undefined, longSession().slice(0, 3));
 	const index = store.searchIndex!;
 	const controller = new AbortController();
 	const reason = new Error("stop indexing");
