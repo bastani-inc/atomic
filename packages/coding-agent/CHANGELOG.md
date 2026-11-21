@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Closing the console window on Windows now lets extensions' `session_shutdown` handlers run, with `fromSignal: true`, as closing a terminal does on Linux and macOS. Windows ends the process about five seconds after the window closes, so the shutdown is cut short after four, and Atomic exits with `STATUS_CONTROL_C_EXIT` (`0xC000013A`). Signing out of Windows, or restarting or shutting it down, still ends Atomic without running them
+- Closing the console window on Windows now lets extensions' `session_shutdown` handlers run, with `fromSignal: true`, as closing a terminal does on Linux and macOS. Windows ends the process about five seconds after the window closes, so the shutdown is cut short after four, and Atomic exits with `STATUS_CONTROL_C_EXIT` (`0xC000013A`). Signing out of Windows, or restarting or shutting it down, still ends Atomic without running them ([#6185](https://github.com/bastani-inc/atomic/pull/6185))
 
 ## [0.10.3] - 2026-11-21
 
