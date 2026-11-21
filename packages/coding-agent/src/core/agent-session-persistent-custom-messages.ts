@@ -222,13 +222,15 @@ function protectedDelivery(marker: unknown): ProtectedDelivery | undefined {
 /** Durable card intents with neither a persisted hidden completion nor a scheduled one. */
 export function pendingProtectedStreamingCustomMessages(session: AgentSession): PendingRecoveryDelivery[] {
 	const branch = session.sessionManager.getBranch();
-	const completed = new Set(
-		branch.flatMap((entry) =>
+	// A resumed window can keep a reconciled card for another reason without its reconciliation (#6168).
+	const completed = new Set([
+		...(session.sessionManager.getSessionRecoveryState?.().reconciledCardIds ?? []),
+		...branch.flatMap((entry) =>
 			entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
 				? [completedReconciliationIntent(entry.details)].filter((intent): intent is string => intent !== undefined)
 				: [],
 		),
-	);
+	]);
 	const scheduled = new Set(
 		protectedMessages(session).flatMap((entry) => {
 			const intent = completedReconciliationIntent(entry.message.details);

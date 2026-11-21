@@ -136,6 +136,8 @@ export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
 export interface PendingAgentMessageQueue {
 	hasItems(): boolean;
+	/** The messages `drain()` would take, left queued. */
+	peek(): AgentMessage[];
 	drain(): AgentMessage[];
 }
 

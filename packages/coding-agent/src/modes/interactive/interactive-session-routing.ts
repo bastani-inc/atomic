@@ -546,11 +546,14 @@ InteractiveModeBase.prototype.switchToForkedSession = async function (
 	cwd: string,
 	options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 ): Promise<{ cancelled: boolean }> {
-	const forkId = (await forkIntoActiveStore(this, source, cwd)).getSessionId();
+	const fork = await forkIntoActiveStore(this, source, cwd);
+	const forkId = fork.getSessionId();
 	const result = await this.runtimeHost.switchSession(forkId, {
 		withSession: options?.withSession,
 		projectTrustContextFactory: (forkCwd) => this.createProjectTrustContext(forkCwd),
 		history: "tail",
+		// The fork is a new session, which the session that opens it by ID cannot tell by itself.
+		startedSession: fork,
 	});
 	if (result.cancelled) {
 		await this.sessionManager.deleteSession(forkId);

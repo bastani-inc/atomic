@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A background subagent that finished while its question to you (`contact_supervisor` or an Intercom `ask`) was still open is no longer relaunched after a restart only to be told that the question was interrupted. The next time the subagent runs, it is told once ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+
 ## [0.10.3] - 2026-11-21
 
 ### Changed
