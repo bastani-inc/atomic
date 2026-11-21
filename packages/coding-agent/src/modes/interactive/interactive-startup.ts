@@ -5,12 +5,14 @@ import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { compileCacheDeferral } from "../../utils/compile-cache.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import { shortenHomePath } from "../../utils/paths.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-view.js";
+import { engineHeapRuntimeArgsForHost } from "../interactive-engine/engine-heap.ts";
 import {
 	onInteractiveEngineProjectTrustChanged,
 	onInteractiveEngineRemoteCommandsChanged,
@@ -546,6 +548,12 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 		// disclosure, so wait only while that startup work remains in flight.
 		if (!this.deferredStartupPending && !this.deferredStartupPromise) {
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, startupNoticesContainer);
+		}
+		// A session that left its cold compile cache alone has a helper write it now that the session is on screen.
+		if (compileCacheDeferral() && !this.isShuttingDown) {
+			void import("../../utils/compile-cache-warmup-host.ts")
+				.then(({ warmCompileCache }) => warmCompileCache(engineHeapRuntimeArgsForHost(true)))
+				.catch(() => {});
 		}
 	}, 500);
 
