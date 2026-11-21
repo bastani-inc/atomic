@@ -16,6 +16,10 @@ import {
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import {
+	lateToolResultNotice,
+	lateToolResultNoticeKey,
+} from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
 import { SUBAGENT_CHILD_RECORD_TYPE } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
@@ -220,6 +224,101 @@ test(
 			await until(() => parent.latest(childId)?.pausedByUser === false);
 		} finally {
 			store.dispose();
+			await after.close("session-close");
+		}
+	},
+	LIVE_RESTORE_TIMEOUT_MS,
+);
+
+test(
+	"a subagent paused before it read a late result's notice comes back paused after a restart: the notice starts no request, and the reader's send reads it once",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-restart" })], { stopReason: "toolUse" }),
+		]);
+		const parent = parentSession(env.root);
+		const runId = "esc-pause-late";
+		const childId = `${runId}:0`;
+		const liveOptions = env.options(runId);
+		const launchOptions = (options: RunSyncOptions): RunSyncOptions => ({
+			...options,
+			testSession: false,
+			getChildSessionOptions: liveOptions.getChildSessionOptions,
+		});
+
+		// Before the restart: the reader pauses the child, and a late result's notice reaches it unread.
+		const before = taskHost("before-restart");
+		const launched = await runAgentTask({
+			host: before,
+			cwd: env.root,
+			agents: [agent],
+			agent: "worker",
+			task: "run until paused",
+			options: { ...liveOptions, index: 0, sessionDir: join(env.root, "children", runId) },
+			recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(before)),
+			runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+		});
+		assert.equal(launched.kind, "admitted");
+		const firstTask = launched.kind === "admitted" ? launched.observation.taskId : "";
+		await until(() => env.blockStarted() && transcriptOf(before, firstTask) !== undefined, LIVE_CHILD_START_WAIT_MS);
+		const beforeSource = transcriptOf(before, firstTask)!;
+		await beforeSource.pauseTurn!();
+		await until(() => parent.latest(childId)?.pausedByUser === true);
+		const late = {
+			toolCallId: "ci-late",
+			toolName: "wait_for_ci",
+			result: { content: [{ type: "text" as const, text: "CI green while paused" }], details: undefined },
+			isError: false,
+		};
+		await (beforeSource.chatSession as unknown as AgentSession).sendCustomMessage(lateToolResultNotice([late]), {
+			triggerTurn: true,
+			persistWhenStreaming: true,
+			stageAdmissionKey: lateToolResultNoticeKey([late]),
+		});
+		const requestsBeforeRestart = env.faux.state.callCount;
+		await before.close("session-close");
+		await until(() => parent.latest(childId)?.state === "running" && parent.latest(childId)?.pausedByUser === true);
+
+		const inputs: string[] = [];
+		env.faux.setResponses([
+			(context) => {
+				inputs.push(newInput(context));
+				return fauxAssistantMessage("answered after the restart");
+			},
+		]);
+		const after = taskHost("after-restart");
+		try {
+			const deps: SubagentChildRestoreDeps = {
+				pi: parent.pi,
+				config: {},
+				discoverAgents: () => ({ agents: [agent] }),
+				runtime: { runSync: (...args) => runSync(args[0], args[1], args[2], args[3], launchOptions(args[4])) },
+			};
+			const [outcome] = await restoreSubagentChildren(deps, parent.ctx(after));
+			assert.equal(outcome?.kind, "restored");
+			const restoredTask = outcome?.kind === "restored" ? outcome.taskId : "";
+			await until(() => transcriptOf(after, restoredTask)?.turnPaused?.() === true);
+			const source = transcriptOf(after, restoredTask)!;
+			const session = source.chatSession as unknown as AgentSession;
+
+			await pause(RESTART_WINDOW_MS);
+			assert.equal(
+				env.faux.state.callCount,
+				requestsBeforeRestart,
+				"the unread notice does not run the paused child",
+			);
+			assert.equal(source.isRunning?.(), false);
+
+			await source.resumeTurn!();
+			await session.prompt("carry on after the restart", { streamingBehavior: "steer" });
+			await after.waitForTask(restoredTask as TaskId);
+			await until(() => inputs.length > 0);
+			assert.equal(inputs.length, 1, "one request reads both");
+			const delivered = inputs.join("\n");
+			assert.ok(delivered.includes("carry on after the restart"), "the reader's text is what continues it");
+			assert.equal(delivered.split("CI green while paused").length - 1, 1, "the result is read once");
+		} finally {
 			await after.close("session-close");
 		}
 	},
