@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { IntercomBrokerUpgradeError, isIntercomBrokerStopTimeoutError } from "@bastani/atomic";
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerStatusReport } from "../types.js";
-import { type BrokerProcess, endUnansweredBroker, identifyBrokerProcess } from "./broker-process.js";
+import {
+	type BrokerProcess,
+	endUnansweredBroker,
+	identifyBrokerProcess,
+	readProcessStartWithoutProcess,
+} from "./broker-process.js";
 import { describeMultiNodeStatus, isBrokerStatusReport } from "./broker-status.js";
 import {
 	BROKER_STOP_TIMEOUT_MS,
@@ -111,6 +116,8 @@ async function queryBroker(
 	// Windows can briefly accept a named-pipe connection after its broker has terminated, and gives its pid to another
 	// process within seconds: a pid that names a process created well after broker.pid was written is no broker.
 	if (!isProcessAlive(pid)) return { query: { state: "stopped" } };
+	// Only Windows tells a later process by broker.pid's write time here; elsewhere a restart reads the start itself.
+	if (process.platform !== "win32") return { query: { state: "legacy", pid } };
 	const found = await identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
 	if (found.wroteBrokerPid === "no") return { query: { state: "stopped" } };
 	return { query: { state: "legacy", pid }, found };
@@ -213,6 +220,9 @@ export interface UpgradeOptions {
  * #4538: after an install or update, replace an older broker when that is safe. An older broker with no session
  * connected is stopped, so the next session starts this version's broker; with sessions connected it is left to the
  * next session of this version, which hands it over without disconnecting them. Anything else is left alone.
+ *
+ * The wait for the stopped broker to exit ends once its pid names a later process ({@link waitForBrokerExit} with the
+ * broker as it was found), so a pid the OS gave to another process is not waited for until the bound.
  */
 export async function upgradeIntercomBroker(agentDir: string, options: UpgradeOptions = {}): Promise<UpgradeOutcome> {
 	const query = await queryIntercomBroker(agentDir);
@@ -226,10 +236,19 @@ export async function upgradeIntercomBroker(agentDir: string, options: UpgradeOp
 	options.onProgress?.(`Stopping the older Intercom broker (pid ${pid}); no session is connected.`);
 	const failed = (cause?: Error): IntercomBrokerUpgradeError =>
 		new IntercomBrokerUpgradeError({ phase: "stop", previousPid: pid, previousProtocolMax: protocol.max }, { cause });
+	// Started before the shutdown request, which does not wait for it: the broker removes broker.pid when it exits.
+	const found = identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
 	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir));
 	if (answer === "unanswered") throw failed();
 	try {
-		await waitForBrokerExit(pid, options.stopTimeoutMs ?? BROKER_UPGRADE_STOP_TIMEOUT_MS);
+		// Polls read the pid's start only where that starts no process; elsewhere broker.pid's verdict and liveness decide.
+		await waitForBrokerExit(
+			pid,
+			options.stopTimeoutMs ?? BROKER_UPGRADE_STOP_TIMEOUT_MS,
+			undefined,
+			found,
+			readProcessStartWithoutProcess,
+		);
 	} catch (error) {
 		if (isIntercomBrokerStopTimeoutError(error)) throw failed(error);
 		throw error;

@@ -17,6 +17,7 @@
 	},
 	"files": [
 		"dist/**/*",
+		"!dist/**/*.d.ts.map",
 		"native/napi.h",
 		"native/clipboard.h",
 		"native/win32/prebuilds/**/*.node",
