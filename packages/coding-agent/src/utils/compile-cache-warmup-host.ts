@@ -81,14 +81,18 @@ export function startCompileCacheHelper(launch: CompileCacheHelperLaunch): boole
 	}
 }
 
+let warmupStarted = false;
+
 /**
  * Warm the cache this session left cold: first for the engine's runtime flags (`engineExecArgv`), then for this
- * process's own. A helper that finds another one warming this build, or fails, ends the chain; the next session that
- * finds the cache cold starts it again.
+ * process's own. Called once the session is on screen, and when it exits before that, so even a session that ends at
+ * once leaves the cache warm; only the first call starts the helpers. A helper that finds another one warming this
+ * build, or fails, ends the chain; the next session that finds the cache cold starts it again.
  */
 export function warmCompileCache(engineExecArgv: readonly string[]): void {
 	const deferral = compileCacheDeferral();
-	if (!deferral) return;
+	if (!deferral || warmupStarted) return;
+	warmupStarted = true;
 	const own = deferral.runtime;
 	const engine = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };
 	const same =

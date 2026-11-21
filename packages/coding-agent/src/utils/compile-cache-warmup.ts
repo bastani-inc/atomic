@@ -7,17 +7,25 @@
  * Only one helper warms a build at a time: it holds the build's lock file open in exclusive sharing mode while it
  * runs, and the system closes that handle when the helper ends, however it ends. It does not stop with its session;
  * it ends when it is done, starting the next helper of its plan first, and after five minutes at most, without writing
- * anything more.
+ * anything more. It stands down at once, leaving no marker, when its installation starts to change (an install, an
+ * upgrade or an uninstall; see `compile-cache-installation.ts`), so it never keeps an installer waiting.
  *
  * Arguments: the build id and the plan (`compile-cache-warmup-host.ts`).
  */
 import { closeSync, existsSync, constants as fsConstants, mkdirSync, openSync } from "node:fs";
 import nodeModule from "node:module";
 import { constants, setPriority } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { BUILTIN_PACKAGE_DIR_NAMES, INSTALLED_EXTENSION_ENTRIES } from "../core/builtin-install-layout.ts";
 import { compileCacheBaseDir, currentCompileCacheWarmMarker } from "./compile-cache.ts";
+import {
+	type InstallationSnapshot,
+	installationChanged,
+	installerAtWork,
+	readInstallationSnapshot,
+} from "./compile-cache-installation.ts";
 import {
 	type CompileCacheWarmupPlan,
 	compileCacheHelperLaunch,
@@ -32,6 +40,23 @@ import {
 
 /** A helper that has not finished by then stops; the next session tries again. */
 export const COMPILE_CACHE_WARMUP_TIME_LIMIT_MS = 5 * 60 * 1000;
+/** How often the helper looks whether its installation started to change. */
+const INSTALLATION_CHECK_INTERVAL_MS = 50;
+
+/** The package this helper loads modules from: `<package>/dist/utils/<this file>`. */
+const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const installation: InstallationSnapshot = readInstallationSnapshot(packageDir);
+
+function installationUnchanged(): boolean {
+	return !installationChanged(installation, readInstallationSnapshot(packageDir));
+}
+
+/** End this helper at once when its installation starts to change, even while its thread loads a module graph. */
+function watchInstallation(): void {
+	new Worker(new URL("./compile-cache-installation-watch.js", import.meta.url), {
+		workerData: { packageDir, start: installation, intervalMs: INSTALLATION_CHECK_INTERVAL_MS },
+	}).unref();
+}
 
 /**
  * Modules an interactive session and its engine load at startup, relative to this file; each brings its imports. The
@@ -89,10 +114,13 @@ let lock: number | undefined;
 
 async function warm(buildId: string, plan: CompileCacheWarmupPlan, marker: string): Promise<number> {
 	if (existsSync(marker)) return COMPILE_CACHE_WARMUP_DONE;
+	// An installer at work on the installation: leave it alone; the next session that finds the cache cold tries again.
+	if (installerAtWork(packageDir)) return 1;
 	lock = holdBuildLock(buildId);
 	if (lock === undefined) return COMPILE_CACHE_WARMUP_BUSY;
 	// Another helper may have finished between the first look and the lock.
 	if (existsSync(marker)) return COMPILE_CACHE_WARMUP_DONE;
+	watchInstallation();
 	try {
 		setPriority(constants.priority.PRIORITY_BELOW_NORMAL);
 	} catch {
@@ -104,8 +132,9 @@ async function warm(buildId: string, plan: CompileCacheWarmupPlan, marker: strin
 		if (!(await load(specifier))) return 1;
 	}
 	for (const specifier of LATER_MODULES) await load(specifier);
-	// An earlier helper's cache that is gone again (a cleanup of the temporary directory) leaves this one unmarked.
-	if (!plan.required.every((earlier) => existsSync(earlier))) return 1;
+	// An earlier helper's cache that is gone again (a cleanup of the temporary directory) leaves this one unmarked, and
+	// so does an installation that changed meanwhile.
+	if (!plan.required.every((earlier) => existsSync(earlier)) || !installationUnchanged()) return 1;
 	mkdirSync(dirname(marker), { recursive: true });
 	closeSync(openSync(marker, "w"));
 	return COMPILE_CACHE_WARMUP_DONE;
@@ -114,7 +143,7 @@ async function warm(buildId: string, plan: CompileCacheWarmupPlan, marker: strin
 /** Hand over to the next helper of the plan: release the lock, then start it. */
 function startNext(buildId: string, plan: CompileCacheWarmupPlan, marker: string): void {
 	const [next, ...rest] = plan.next;
-	if (!next) return;
+	if (!next || !installationUnchanged()) return;
 	if (lock !== undefined) closeSync(lock);
 	const script = fileURLToPath(import.meta.url);
 	startCompileCacheHelper(

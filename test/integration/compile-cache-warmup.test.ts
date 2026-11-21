@@ -412,6 +412,63 @@ test.skipIf(!onNode)(
 	HELPER_RUN_TIMEOUT_MS,
 );
 
+/** How soon a helper ends once its installation starts to change, on a loaded runner. */
+const STAND_DOWN_BOUND_MS = 5_000;
+
+test.skipIf(!onNode).each(["moves the old package aside", "puts a new package beside it"])(
+	"a helper stands down as soon as an installer %s, leaving no marker (#6132)",
+	async (change) => {
+		const root = makeTempDirectory("atomic-compile-cache-stand-down-");
+		const installation = join(root, "node_modules", "atomic");
+		const temp = join(root, "temp");
+		mkdirSync(temp, { recursive: true });
+		let helper: ChildProcess | undefined;
+		try {
+			const script = copyInstallation(installation);
+			const launch = compileCacheHelperLaunch({ execArgv: [], nodeOptions: "" }, "stand-down-test", script, {
+				...process.env,
+				TEMP: temp,
+				TMP: temp,
+				TMPDIR: temp,
+				NODE_COMPILE_CACHE: "",
+			});
+			helper = spawn(launch.command, [...launch.args], {
+				cwd: launch.cwd,
+				env: launch.env,
+				detached: launch.detached,
+				stdio: ["pipe", "ignore", "ignore"],
+			});
+			const exited = new Promise<number | null>((resolve) => helper!.once("exit", () => resolve(Date.now())));
+			const cacheBase = join(temp, "node-compile-cache");
+			const deadline = Date.now() + HELPER_WAIT_MS;
+			while (cacheEntryCount(cacheBase) === 0 && helper.exitCode === null) {
+				if (Date.now() >= deadline) throw new Error("The helper did not start warming");
+				await sleep(POLL_MS);
+			}
+			assert.equal(helper.exitCode, null, "the helper still warms");
+			const changedAt = Date.now();
+			if (change === "moves the old package aside") {
+				// What npm does first when it replaces or removes a package.
+				renameSync(installation, join(root, "node_modules", ".atomic-retired"));
+			} else {
+				// An installer that unpacks the new package next to the old one before it swaps them.
+				mkdirSync(join(root, "node_modules", ".atomic-staged"));
+			}
+			const endedAt = await exited;
+			assert.ok(
+				endedAt !== null && endedAt - changedAt < STAND_DOWN_BOUND_MS,
+				`ended ${endedAt! - changedAt} ms later`,
+			);
+			const markers = [...cacheFiles(cacheBase).keys()].filter((path) => /atomic-warm-/.test(path));
+			assert.deepEqual(markers, []);
+		} finally {
+			if (helper && helper.exitCode === null) helper.kill();
+			rmSync(root, { recursive: true, force: true, maxRetries: 10 });
+		}
+	},
+	HELPER_RUN_TIMEOUT_MS,
+);
+
 /** An upgrade replaces a few hundred files; the helper loads the module graph from them meanwhile. */
 const UPGRADE_DURING_WARMUP_TIMEOUT_MS = 180_000;
 
