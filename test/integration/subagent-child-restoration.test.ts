@@ -1145,7 +1145,8 @@ test("a forked child launched with a model thinking suffix is restored on that t
 async function restoreOnHaiku(parent: Parent, resumedHost: AgentTaskHost, runId: string) {
 	const sonnet = { provider: "anthropic", id: "claude-sonnet-5-5", reasoning: true };
 	const haiku = { provider: "anthropic", id: "claude-haiku-5", reasoning: true };
-	const models = [sonnet, haiku];
+	const opus = { provider: "anthropic", id: "claude-opus-5", reasoning: true };
+	const models = [sonnet, haiku, opus];
 	const resumedCtx = {
 		...parent.ctx(resumedHost),
 		model: haiku,
@@ -1224,6 +1225,162 @@ test("a restored child that fell back keeps the model its launch asked for besid
 		assert.equal(restoredRecord.requestedModel, "anthropic/claude-sonnet-5-5:high");
 	} finally {
 		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+/** The boundary a context clear saves, and the one a compaction that rewrites the context saves. */
+const CONTEXT_CLEAR = {
+	strategy: "verbatim-lines",
+	form: "cleared",
+	promptVersion: 7,
+	parameters: { query: "clear" },
+	stats: {
+		linesBefore: 4,
+		linesDeleted: 4,
+		linesKept: 0,
+		rangeCount: 0,
+		tokensBefore: 300,
+		tokensAfter: 20,
+		percentReduction: 93,
+	},
+} as const;
+const CONTEXT_COMPACTION = { ...CONTEXT_CLEAR, form: "compacted", parameters: { query: "compact" } } as const;
+
+/** Turns of a child that a later boundary removes from its session's memory. */
+async function appendChildTurns(session: SessionManager, label: string): Promise<void> {
+	for (let turn = 1; turn <= 3; turn += 1)
+		await session.appendMessage({ role: "user", content: `${label} turn ${turn}`, timestamp: Date.now() });
+}
+
+/**
+ * The child's session as a restore opens it: asserts that each of `switchIds` (entries the child saved after its
+ * launch) lies before the window the session holds, where only what the session keeps of its earlier history is.
+ */
+async function assertBeforeWindow(opened: SessionManager, switchIds: readonly string[]): Promise<void> {
+	const heldFrom = opened.getHeldTail().fromSeq;
+	for (const id of switchIds) {
+		const seq = await opened.findEntrySeq(id);
+		assert.ok(seq !== undefined && seq < heldFrom, `entry ${id} at ${seq} lies before the window from ${heldFrom}`);
+	}
+}
+
+test("a restored child continues on the fallback model and thinking level it moved to before a context clear (#6116)", async () => {
+	const cwd = makeTempDirectory("subagent-child-fallback-cleared-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		const original = await launchInterruptedChild(cwd, parent, "cleared1", "lane-group", undefined, {
+			modelOverride: "anthropic/claude-sonnet-5-5:high",
+		});
+		const childSession = await SessionManager.open(original.childSessionFile!, undefined, cwd);
+		await appendChildTurns(childSession, "before the fallback");
+		// The launch model failed and the child moved on to its fallback, at the fallback's thinking level.
+		const fallback = await childSession.appendModelChange("anthropic", "claude-opus-5", {
+			requested: "anthropic/claude-sonnet-5-5",
+			from: "anthropic/claude-sonnet-5-5",
+			reason: "503 provider unavailable",
+		});
+		const level = await childSession.appendThinkingLevelChange("medium");
+		await appendChildTurns(childSession, "on the fallback");
+		await childSession.appendCompaction("The context was cleared.", null, 300, CONTEXT_CLEAR);
+		await childSession.appendMessage({ role: "user", content: "after the clear", timestamp: Date.now() });
+		const opened = await SessionManager.open(original.childSessionFile!, undefined, cwd);
+		await assertBeforeWindow(opened, [fallback, level]);
+
+		const results = await restoreOnHaiku(parent, resumedHost, "cleared1");
+		assert.equal(results.length, 1);
+		assert.match(results[0]!.model ?? "", /^anthropic\/claude-opus-5\b/);
+		assert.equal(results[0]!.thinking, "medium");
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+/** A forked SQLite child launched on `sonnet:high` from a parent whose conversation is on `parentModel` at `medium`. */
+async function launchForkedSonnetChild(cwd: string, runId: string, parentModel: { provider: string; id: string }) {
+	const models = [
+		{ provider: "anthropic", id: "claude-sonnet-5-5", reasoning: true },
+		{ provider: "anthropic", id: "claude-opus-5", reasoning: true },
+	];
+	const modelRegistry = {
+		getAvailable: () => models,
+		getAll: () => models,
+		find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+		hasConfiguredAuth: () => true,
+	};
+	return launchForkedSqliteChild(cwd, runId, {
+		parentModel,
+		parentThinking: "medium",
+		launchOptions: {
+			modelOverride: "anthropic/claude-sonnet-5-5:high",
+			resolveCandidateModel: createCandidateModelResolver(modelRegistry as never, "anthropic"),
+		},
+	});
+}
+
+test("a restored SQLite child continues on the model and thinking level it chose across a clear and a later compaction (#6116)", async () => {
+	const cwd = makeTempDirectory("subagent-child-sqlite-compacted-");
+	const resumedHost = taskHost("parent-after-restart");
+	let resumedStore: SessionStore | undefined;
+	try {
+		const { parentId, running } = await launchForkedSonnetChild(cwd, "compacted1", {
+			provider: "anthropic",
+			id: "claude-sonnet-5-5",
+		});
+		const resumed = await resumeSqliteParent(cwd, parentId);
+		resumedStore = resumed.store;
+		const childSession = await SessionManager.open(resumedStore, running.childSessionId!, cwd);
+		const model = await childSession.appendModelChange("anthropic", "claude-opus-5");
+		await appendChildTurns(childSession, "on opus");
+		await childSession.appendCompaction("The context was cleared.", null, 300, CONTEXT_CLEAR);
+		const level = await childSession.appendThinkingLevelChange("minimal");
+		await appendChildTurns(childSession, "at minimal");
+		await childSession.appendCompaction("The child moved to opus at minimal.", null, 300, CONTEXT_COMPACTION);
+		await childSession.appendMessage({ role: "user", content: "after the compaction", timestamp: Date.now() });
+		const opened = await SessionManager.open(resumedStore, running.childSessionId!, cwd);
+		await assertBeforeWindow(opened, [model, level]);
+
+		const results = await restoreOnHaiku(resumed.parent, resumedHost, "compacted1");
+		assert.equal(results.length, 1);
+		assert.match(results[0]!.model ?? "", /^anthropic\/claude-opus-5\b/);
+		assert.equal(results[0]!.thinking, "minimal");
+	} finally {
+		await resumedHost.close("session-close");
+		await resumedStore?.close();
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a restored forked child that changed only its thinking level before a clear keeps its launch model, not the parent's copied model (#6116)", async () => {
+	const cwd = makeTempDirectory("subagent-child-sqlite-level-cleared-");
+	const resumedHost = taskHost("parent-after-restart");
+	let resumedStore: SessionStore | undefined;
+	try {
+		// The child's session starts with the parent's opus; its launch runs sonnet without saving a model change.
+		const { parentId, running } = await launchForkedSonnetChild(cwd, "level1", {
+			provider: "anthropic",
+			id: "claude-opus-5",
+		});
+		const resumed = await resumeSqliteParent(cwd, parentId);
+		resumedStore = resumed.store;
+		const childSession = await SessionManager.open(resumedStore, running.childSessionId!, cwd);
+		const level = await childSession.appendThinkingLevelChange("minimal");
+		await appendChildTurns(childSession, "at minimal");
+		await childSession.appendCompaction("The context was cleared.", null, 300, CONTEXT_CLEAR);
+		await childSession.appendMessage({ role: "user", content: "after the clear", timestamp: Date.now() });
+		const opened = await SessionManager.open(resumedStore, running.childSessionId!, cwd);
+		await assertBeforeWindow(opened, [level]);
+		assert.equal(opened.buildSessionContext().model?.modelId, "claude-opus-5", "the session still holds the copy");
+
+		const results = await restoreOnHaiku(resumed.parent, resumedHost, "level1");
+		assert.equal(results.length, 1);
+		assert.match(results[0]!.model ?? "", /^anthropic\/claude-sonnet-5-5\b/);
+		assert.equal(results[0]!.thinking, "minimal");
+	} finally {
+		await resumedHost.close("session-close");
+		await resumedStore?.close();
 		removeTempDirectory(cwd);
 	}
 });
