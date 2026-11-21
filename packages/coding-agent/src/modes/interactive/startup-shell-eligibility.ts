@@ -66,8 +66,8 @@ function readSettingsFile(path: string): Record<string, unknown> | undefined | "
  * with what. Only where nothing the session shows before its editor would come first, and nothing in the settings
  * would draw the editor differently: no argument outside a fixed few, a session on the alternate screen (a terminal
  * on both ends, outside CI, not `TERM=dumb`), no first-run setup, no project trust question,
- * no display setting in a project's settings or in an older agent directory's, and the global theme setting, if any,
- * naming one of Atomic's own themes. Anything else keeps today's startup.
+ * no display setting in the settings of a project this run may trust or of an older agent directory, and the global theme
+ * setting, if any, naming one of Atomic's own themes. Anything else keeps today's startup.
  */
 export function planStartupShell(args: readonly string[], cwd: string): StartupShellPlan | undefined {
 	if (args.some((arg) => !ARGUMENTS_WITHOUT_EARLY_EFFECT.has(arg) && !TRUST_ARGUMENTS.has(arg))) return undefined;
@@ -80,22 +80,29 @@ export function planStartupShell(args: readonly string[], cwd: string): StartupS
 	const [primary, ...legacy] = getAgentDirs();
 	const global = readSettingsFile(join(primary ?? agentDir, "settings.json"));
 	if (global === "unreadable") return undefined;
-	for (const dir of [
-		...legacy.map((path) => join(path, "settings.json")),
-		...getProjectConfigDirs(cwd).map((path) => join(path, "settings.json")),
-	]) {
-		const other = readSettingsFile(dir);
-		if (other === "unreadable") return undefined;
-		if (other && DISPLAY_SETTINGS.some((key) => key in other)) return undefined;
-	}
 	if (global && DISPLAY_SETTINGS.some((key) => key !== "theme" && key in global)) return undefined;
 	const theme = global?.theme;
 	if (theme !== undefined && !(typeof theme === "string" && BUILTIN_THEMES.has(theme))) return undefined;
+	// The last trust argument decides, as on the command line.
+	const trustArgument = args.findLast((arg) => TRUST_ARGUMENTS.has(arg));
+	const trustOverride =
+		trustArgument === undefined ? undefined : trustArgument === "--approve" || trustArgument === "-a";
 	// A folder whose trust is still to be asked asks before the editor.
-	const override = args.some((arg) => TRUST_ARGUMENTS.has(arg));
 	const defaultProjectTrust = global?.defaultProjectTrust;
 	const asks = defaultProjectTrust !== "always" && defaultProjectTrust !== "never";
-	if (!override && asks && hasProjectTrustInputs(cwd) && new ProjectTrustStore(agentDir).get(cwd) === null)
+	if (
+		trustOverride === undefined &&
+		asks &&
+		hasProjectTrustInputs(cwd) &&
+		new ProjectTrustStore(agentDir).get(cwd) === null
+	)
 		return undefined;
+	// A folder this run does not trust keeps its settings unread, as the session does.
+	const projectSettings = trustOverride === false ? [] : getProjectConfigDirs(cwd);
+	for (const path of [...legacy, ...projectSettings].map((dir) => join(dir, "settings.json"))) {
+		const other = readSettingsFile(path);
+		if (other === "unreadable") return undefined;
+		if (other && DISPLAY_SETTINGS.some((key) => key in other)) return undefined;
+	}
 	return { agentDir, theme: theme as string | undefined };
 }
