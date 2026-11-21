@@ -209,7 +209,6 @@ def _run_query(
             root = Path(project_root)
             decision = TriggerDecision(skill_file, root)
             stderr_path = skill_file.parent.parent / f"atomic-{uuid.uuid4().hex}.log"
-            check_deadline()
             try:
                 with AtomicProcess(
                     query_arguments(skill_file, model), query, root, stderr_path, cancellation, command, deadline_ns

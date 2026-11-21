@@ -140,6 +140,9 @@ describe.skipIf(python === undefined)("skill-creator scripts run Atomic", () => 
 	test("do not start Atomic for a query whose time is already up (#5625)", () => {
 		const box = sandbox();
 		const program = [
+			"import sys",
+			// Every process start, even one that is stopped before it could do anything.
+			"sys.addaudithook(lambda event, args: event == 'subprocess.Popen' and print('started', args[1], file=sys.stderr))",
 			"from scripts.run_eval import run_single_query",
 			"try:",
 			"    run_single_query('query', 'sample', 'sample skill', 0, '.')",
@@ -149,7 +152,7 @@ describe.skipIf(python === undefined)("skill-creator scripts run Atomic", () => 
 		const result = spawnSyncCollect([python ?? "python3", "-c", program], { cwd: box.project, env: box.env() });
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		assert.match(result.stdout.toString(), /Timed out after 0s/u);
-		assert.deepEqual(box.records(), []);
+		assert.doesNotMatch(result.stderr.toString(), /started/u);
 	});
 
 	test("stop with an error, evaluating nothing, when no `atomic` command exists (#5625)", () => {
