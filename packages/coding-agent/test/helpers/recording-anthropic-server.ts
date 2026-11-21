@@ -25,6 +25,8 @@ export interface AnthropicRequestBody {
  */
 export class RecordingAnthropicServer {
 	readonly requests: RecordedRequest[] = [];
+	/** The input tokens each reply reports, so a test can put a conversation near the model's context window. */
+	inputTokens = 10;
 	private readonly replies: ScriptedReply[] = [];
 	private readonly held = new Set<ServerResponse>();
 
@@ -83,7 +85,12 @@ export class RecordingAnthropicServer {
 				model: json.model,
 				content: [],
 				stop_reason: null,
-				usage: { input_tokens: 10, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+				usage: {
+					input_tokens: this.inputTokens,
+					output_tokens: 0,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+				},
 			},
 		});
 		if (reply === "hold") {

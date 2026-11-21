@@ -582,6 +582,29 @@ describe("Anthropic message threads", () => {
 		assert.deepEqual(threadOf(h.requests[1]), { type: "continue", previous_message_id: "msg_oauth" });
 	});
 
+	it("OAuth: keeps continuing the thread across a turn wide enough to need an extra breakpoint (#6103)", async () => {
+		const h = harness();
+		const options: AnthropicOptions = { apiKey: "sk-ant-oat-test" };
+		const messages: Message[] = [user("first")];
+		await say(h, messages, { options });
+		// 25 blocks after the reply: this request also marks where the first one ended, so the identity block's
+		// breakpoint gives way.
+		messages.push({
+			role: "user",
+			content: Array.from({ length: 25 }, (_, index) => ({ type: "text" as const, text: `line ${index}` })),
+			timestamp: 1,
+		});
+		await say(h, messages, { options });
+		messages.push(user("thanks"));
+		await say(h, messages, { options });
+
+		const [create, wide, short] = h.requests;
+		assert.deepEqual(create.body.thread, { type: "create" });
+		assert.deepEqual(wide.body.thread, { type: "continue", previous_message_id: "msg_1" });
+		assert.deepEqual(short.body.thread, { type: "continue", previous_message_id: "msg_2" });
+		assert.equal(h.requests.length, 3);
+	});
+
 	it("sends cache warming replays without a thread and keeps the conversation's thread", async () => {
 		const h = harness();
 		const messages = [user("first")];
