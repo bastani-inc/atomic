@@ -1814,6 +1814,7 @@ export class SessionManager {
 		unrestored?: WorktreeUnrestored,
 		captureMs?: number,
 		degradedFrom?: string,
+		capturedAt?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
@@ -1852,6 +1853,7 @@ export class SessionManager {
 				unrestored,
 				captureMs,
 				degradedFrom,
+				capturedAt,
 			);
 			await this._appendEntry(entry);
 			return entry.id;

@@ -618,7 +618,7 @@ export async function runAgentTask(input: {
 }): Promise<ModelSingleResponse> {
 	const registered = Promise.withResolvers<WeakRef<TaskLease>>();
 	const childCwd = input.options.cwd ?? input.cwd;
-	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
+	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile" | "worktreeCapturedAt"> = {};
 	let childLaunch: Pick<
 		SubagentChildRecordInput,
 		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
@@ -956,6 +956,10 @@ export async function runAgentTask(input: {
 									childSession = {
 										childSessionId: session.sessionId,
 										...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
+										...(childSession.childSessionId === session.sessionId &&
+										childSession.worktreeCapturedAt !== undefined
+											? { worktreeCapturedAt: childSession.worktreeCapturedAt }
+											: {}),
 									};
 									recordChild("running");
 								},
@@ -997,6 +1001,9 @@ export async function runAgentTask(input: {
 						ticket?.onEntered();
 						const child = await running;
 						elapsedSpan.endedAt ??= Date.now();
+						// The records this run writes from now on say when its session last recorded a snapshot of a checkout.
+						if (child.worktreeCapturedAt !== undefined)
+							childSession = { ...childSession, worktreeCapturedAt: child.worktreeCapturedAt };
 						if (child.model !== undefined || child.thinking !== undefined)
 							context.reportActivity({
 								reportId: "terminal-model",

@@ -513,6 +513,8 @@ export type AttemptOutcome = (
 		readonly cleanupCause?: unknown;
 		/** The working directory the child's session records, whose project its history URL is read in. */
 		readonly sessionCwd?: string;
+		/** When the child's session last recorded a worktree snapshot of a checkout it changed, if it ever did. */
+		readonly worktreeCapturedAt?: string;
 	};
 
 interface SessionDisposal {
@@ -1104,6 +1106,32 @@ function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | n
 			entry.message.content.some((block) => block.type === "text" && block.text.trim()),
 	);
 	return [...(prompt ? [prompt] : []), ...(answer ? [answer] : [])];
+}
+
+/**
+ * When this attempt last recorded a worktree snapshot a turn captured, rather than one a restore or a resume wrote, in
+ * the entries it added after `since`, its session's leaf when it opened: the time its parent's resume compares with its
+ * own captures before it reads the child's session. Snapshots an earlier run recorded, or a fork copied from its parent,
+ * are not this attempt's. When the attempt's first entries already left the session's window, the time it ended stands
+ * for its captures, a time no capture of it is later than.
+ */
+function latestWorktreeCapture(manager: SessionManager, since: string | null): string | undefined {
+	if (typeof manager.getBranch !== "function") return undefined;
+	const branch = manager.getBranch();
+	let latest: string | undefined;
+	let reachedLaunch = since === null;
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.id === since) {
+			reachedLaunch = true;
+			break;
+		}
+		if (entry.type !== "worktree_snapshot" || entry.captureMs === undefined) continue;
+		if (entry.restore !== undefined || entry.unrestored !== undefined) continue;
+		if (latest === undefined || Date.parse(entry.timestamp) > Date.parse(latest)) latest = entry.timestamp;
+	}
+	if (latest !== undefined || reachedLaunch) return latest;
+	return manager.getLatestWorktreeSnapshots().size > 0 ? new Date().toISOString() : undefined;
 }
 
 /** Why a finished child's saved history could not be read, as a task view shows it. */
@@ -2197,7 +2225,8 @@ export class SubagentControlRuntime {
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
 		let disposal: Promise<SessionDisposal> | undefined;
-		let sessionCwd: string | undefined;
+		let opened: SessionManager | undefined;
+		let openedAt: string | null | undefined;
 		const attempted = await this.attemptChild(
 			admitted,
 			candidate,
@@ -2208,11 +2237,19 @@ export class SubagentControlRuntime {
 				disposal = disposing;
 				onCleanup?.(disposing.then(({ cleanup }) => cleanup));
 			},
-			(cwd) => {
-				sessionCwd = cwd;
+			(manager) => {
+				opened = manager;
+				openedAt = typeof manager.getLeafId === "function" ? manager.getLeafId() : undefined;
 			},
 		);
-		const outcome: AttemptOutcome = sessionCwd === undefined ? attempted : { ...attempted, sessionCwd };
+		const sessionCwd = opened?.getHeader?.()?.cwd;
+		const worktreeCapturedAt =
+			opened === undefined || openedAt === undefined ? undefined : latestWorktreeCapture(opened, openedAt);
+		const outcome: AttemptOutcome = {
+			...attempted,
+			...(sessionCwd === undefined ? {} : { sessionCwd }),
+			...(worktreeCapturedAt === undefined ? {} : { worktreeCapturedAt }),
+		};
 		if (onCleanup || disposal === undefined) return outcome;
 		if (outcome.status === "error" && outcome.startError && isSessionStartTimeoutError(outcome.startError)) {
 			const timeout: SessionStartError & { cleanupCause?: unknown } = outcome.startError;
@@ -2244,7 +2281,7 @@ export class SubagentControlRuntime {
 			  >
 			| undefined,
 		onDisposal: (disposal: Promise<SessionDisposal>) => void,
-		onSessionCwd?: (cwd: string) => void,
+		onSessionOpened?: (manager: SessionManager) => void,
 	): Promise<AttemptOutcome> {
 		const elapsedSpan = admitted.spec.elapsedSpan ?? { dispatchedAt: Date.now() };
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
@@ -2549,8 +2586,7 @@ export class SubagentControlRuntime {
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
-			const recordedCwd = sessionManager.getHeader()?.cwd;
-			if (recordedCwd !== undefined) onSessionCwd?.(recordedCwd);
+			onSessionOpened?.(sessionManager);
 			openedThroughId = sessionManager.getEntries().at(-1)?.id ?? null;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
