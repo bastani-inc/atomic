@@ -30,6 +30,7 @@ import {
 	SessionManager,
 	type SessionStartError,
 	type SessionStats,
+	type SessionStore,
 	SettingsManager,
 	type Skill,
 	type SubagentIntercomIdentity,
@@ -67,6 +68,7 @@ import {
 } from "../../agents/skills.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
+import { childSessionLocator } from "../../shared/child-session-store.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
 import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import {
@@ -88,12 +90,15 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import { issuingCallEntries } from "../foreground/branch-read-back.js";
 import {
 	issuedCallArguments,
 	lateToolResultNotice,
 	lateToolResultNoticeKey,
+	unreadResumeNoteKinds,
 } from "../foreground/late-tool-result-notice.js";
 import { releasedChildWaitingCalls } from "../foreground/released-child-replies.js";
+import { resumeNoteMessage, type SubagentResumeNote, type SubagentResumeNoteKind } from "../foreground/resume-note.js";
 import type { SubagentChildHeldNotice, SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
 import { readPreviousIntercomId } from "../foreground/subagent-child-session.js";
 import {
@@ -193,6 +198,14 @@ export interface ChildSpec {
 	/** Typed identity/capability resolved by the parent before admission. */
 	readonly intercom?: SubagentIntercomIdentity;
 	readonly sessionManager?: SessionManager;
+	/**
+	 * Without `sessionManager`, the child's own session is created in this store, its parent's, once it is admitted,
+	 * rather than as a file in its session directory. Marked internal, it is left out of session lists, as a file of its
+	 * run is.
+	 */
+	readonly sessionStore?: SessionStore;
+	/** The working directory of the session that launched the child, which its history URL is read from. */
+	readonly parentCwd?: string;
 	/** The child reopens its own interrupted session, so its unreconciled deliveries are recovered before the task. */
 	readonly resumeSession?: boolean;
 	/**
@@ -271,6 +284,12 @@ export interface ChildSpec {
 	 * delivered with its next turn as the notice a running child gets, never as a message from the user.
 	 */
 	readonly resumeNotices?: readonly SubagentChildHeldNotice[];
+	/**
+	 * Why the child runs again, when Atomic says so rather than a message: read in the first request of its turn with
+	 * whatever else starts it, or starting the turn itself when nothing else does. A wake's note is left out once another
+	 * turn started first, and a note of a kind the child has not answered yet is not repeated.
+	 */
+	readonly resumeNote?: SubagentResumeNote;
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
 	/**
@@ -433,6 +452,60 @@ function thinkingLevelForSession(session: AgentSession | undefined): string | un
 	return typeof thinking === "string" ? thinking : undefined;
 }
 
+/**
+ * Settles once the attempt is aborted or interrupted, until `dispose` removes what listens for that: call it once the
+ * wait it races is over, so a signal that outlives the attempt keeps nothing of it.
+ */
+function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<void>; dispose(): void } {
+	let dispose = (): void => {};
+	const stopped = new Promise<void>((resolve) => {
+		if (signals.abort.aborted || signals.interrupt.aborted) return resolve();
+		const stop = () => resolve();
+		signals.abort.addEventListener("abort", stop, { once: true });
+		signals.interrupt.addEventListener("abort", stop, { once: true });
+		dispose = () => {
+			signals.abort.removeEventListener("abort", stop);
+			signals.interrupt.removeEventListener("abort", stop);
+		};
+	});
+	return { stopped, dispose: () => dispose() };
+}
+
+/** The model and thinking level a child's session records last on its branch. */
+function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
+	if (typeof sessionManager.getLatestBranchSettings === "function") {
+		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
+		return {
+			...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+			...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+		};
+	}
+	const context = sessionManager.buildSessionContext();
+	return {
+		...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}),
+		thinking: context.thinkingLevel,
+	};
+}
+
+/**
+ * What writes the model and thinking level `session` starts on into its own session, as `/model` does, where the
+ * session records others; undefined when there is nothing to write. A new session recorded them as it started, and
+ * one that already runs on them needs nothing.
+ */
+function launchSettingsWrite(sessionManager: SessionManager, session: AgentSession): (() => Promise<void>) | undefined {
+	const model = session.model;
+	const thinking = thinkingLevelForSession(session);
+	if (model === undefined && thinking === undefined) return undefined;
+	const recorded = recordedSettings(sessionManager);
+	const writeModel = model !== undefined && recorded.model !== `${model.provider}/${model.id}`;
+	const writeThinking = thinking !== undefined && recorded.thinking !== thinking;
+	if (!writeModel && !writeThinking) return undefined;
+	return async () => {
+		if (writeModel) await sessionManager.appendModelChange(model.provider, model.id);
+		if (writeThinking) await sessionManager.appendThinkingLevelChange(thinking);
+	};
+}
+
 function initialThinkingForAttempt(
 	model: string | undefined,
 	configuredThinking: string | undefined,
@@ -515,7 +588,11 @@ export type AttemptOutcome = (
 			readonly thinking?: string;
 	  }
 ) &
-	AttemptSkillReport & { readonly cleanupCause?: unknown };
+	AttemptSkillReport & {
+		readonly cleanupCause?: unknown;
+		/** The working directory the child's session records, whose project its history URL is read in. */
+		readonly sessionCwd?: string;
+	};
 
 interface SessionDisposal {
 	readonly cleanup: Cleanup;
@@ -537,6 +614,8 @@ export interface ResultEnvelope {
 		readonly cause?: string;
 	}[];
 	readonly sessionFile?: string;
+	/** The child's `history://sessions/<id>` URL, when its session has no file of its own. */
+	readonly sessionUrl?: string;
 	readonly artifactsDir?: string;
 	readonly durationMs?: number;
 	readonly timestamp: number;
@@ -920,8 +999,10 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		// An empty prompt stands in for a turn its notices start: it reads what the session saved, and saves no message.
 		prompt: (text: string) =>
 			runTurn(async () => {
+				if (text === "") return;
 				if (testOptions.promptLogPath)
 					await appendFile(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 				await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
@@ -1124,6 +1205,8 @@ function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | n
 async function historyUnavailable(sessionFile: string | undefined, cause?: unknown): Promise<string> {
 	if (sessionFile !== undefined && !(await pathExists(sessionFile)))
 		return `History unavailable: the session file was moved or deleted (${sessionFile}).`;
+	if (sessionFile === undefined && cause instanceof Error && cause.name === "SessionNotFoundError")
+		return "History unavailable: the session was deleted from its session store.";
 	return `History unavailable: ${cause instanceof Error ? cause.message : String(cause ?? "its session could not be read")}`;
 }
 
@@ -1751,12 +1834,24 @@ async function cancelledEnvelope(
 	stats: AttemptStats,
 	ownTurns: readonly AssistantMessage[],
 ): Promise<string> {
+	const sessionFile = session?.sessionFile ?? spec.sessionManager?.getSessionFile();
+	// Only a session the child opened is named: a child that never opened one has none to read.
+	const sessionUrl =
+		sessionFile === undefined
+			? childSessionLocator({
+					sessionId: session?.sessionId ?? spec.sessionManager?.getSessionId(),
+					// The project a history URL reads the session in is the one its header records.
+					cwd: session?.sessionManager?.getHeader?.()?.cwd ?? spec.sessionManager?.getHeader?.()?.cwd ?? spec.cwd,
+					parentCwd: spec.parentCwd,
+				})
+			: undefined;
 	return (
 		await recoverCancelledChildOutput({
 			progressPath: spec.progressPath,
 			assistantText: outputFor(ownTurns),
 			toolCount: stats.toolCalls,
-			sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
+			sessionPath: sessionFile ?? sessionUrl,
+			...(sessionUrl === undefined ? {} : { sessionUrl }),
 			...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
 			...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
 		})
@@ -1773,7 +1868,8 @@ interface UnsentInput {
 
 /** The task a stop before it is sent hands back: none when it is not prompted or is only a wake's fallback. */
 function unsentTask(spec: Pick<ChildSpec, "task" | "skipTaskPrompt" | "resumeTaskFallback">): string | undefined {
-	return spec.skipTaskPrompt || spec.resumeTaskFallback ? undefined : spec.task;
+	// An empty task is no message: a run its notes or results start has nothing of it to hand back.
+	return spec.skipTaskPrompt || spec.resumeTaskFallback || spec.task === "" ? undefined : spec.task;
 }
 
 /**
@@ -1782,6 +1878,27 @@ function unsentTask(spec: Pick<ChildSpec, "task" | "skipTaskPrompt" | "resumeTas
  * a delivery its recovery replays waits in its queue for that turn, instead of starting a turn on top of the calls the
  * transcript is still waiting on (#4488).
  */
+/** Whether input waits in the session's queue for its next turn, as what its recovery replayed does. */
+function hasQueuedInput(session: AgentSession): boolean {
+	return (session as { readonly agent?: { hasQueuedMessages?(): boolean } }).agent?.hasQueuedMessages?.() === true;
+}
+
+/** The resume note this attempt delivers, if any: see {@link ChildSpec.resumeNote}. */
+function resumeNoteToDeliver(
+	spec: Pick<ChildSpec, "resumeNote">,
+	unreadKinds: ReadonlySet<SubagentResumeNoteKind>,
+	stopped: boolean,
+	otherInput: boolean,
+): SubagentResumeNote | undefined {
+	const note = spec.resumeNote;
+	if (note === undefined || stopped) return undefined;
+	// A wake's note only starts a turn: a turn something else started, or input waiting to start one, such as what its
+	// recovery replayed, takes its place (#6161).
+	if (note.kind === "wake" && otherInput) return undefined;
+	// One its session saved and no turn read yet is read with this turn: another would only repeat it.
+	return unreadKinds.has(note.kind) ? undefined : note;
+}
+
 async function recoverChildSession(
 	session: AgentSession,
 	spec: Pick<ChildSpec, "resumeToolResults" | "redispatchDetachedCalls">,
@@ -2198,10 +2315,22 @@ export class SubagentControlRuntime {
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
 		let disposal: Promise<SessionDisposal> | undefined;
-		const outcome = await this.attemptChild(admitted, candidate, signals, onModelChange, taskHooks, (disposing) => {
-			disposal = disposing;
-			onCleanup?.(disposing.then(({ cleanup }) => cleanup));
-		});
+		let sessionCwd: string | undefined;
+		const attempted = await this.attemptChild(
+			admitted,
+			candidate,
+			signals,
+			onModelChange,
+			taskHooks,
+			(disposing) => {
+				disposal = disposing;
+				onCleanup?.(disposing.then(({ cleanup }) => cleanup));
+			},
+			(cwd) => {
+				sessionCwd = cwd;
+			},
+		);
+		const outcome: AttemptOutcome = sessionCwd === undefined ? attempted : { ...attempted, sessionCwd };
 		if (onCleanup || disposal === undefined) return outcome;
 		if (outcome.status === "error" && outcome.startError && isSessionStartTimeoutError(outcome.startError)) {
 			const timeout: SessionStartError & { cleanupCause?: unknown } = outcome.startError;
@@ -2234,6 +2363,7 @@ export class SubagentControlRuntime {
 			  >
 			| undefined,
 		onDisposal: (disposal: Promise<SessionDisposal>) => void,
+		onSessionCwd?: (cwd: string) => void,
 	): Promise<AttemptOutcome> {
 		const elapsedSpan = admitted.spec.elapsedSpan ?? { dispatchedAt: Date.now() };
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
@@ -2434,18 +2564,21 @@ export class SubagentControlRuntime {
 				typeof admitted.sessionManager.getEntrySeq === typeof SessionManager.prototype.getEntrySeq;
 			const openOptions =
 				typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
-			const opening = mkdir(admitted.sessionDir, { recursive: true }).then(() =>
-				admitted.sessionManager
-					? canReopenFromStore
-						? SessionManager.open(
-								admitted.sessionManager.getSessionStore(),
-								admitted.sessionManager.getSessionId(),
-								admitted.policy.cwd,
-								openOptions,
-							)
-						: Promise.resolve(admitted.sessionManager)
-					: SessionManager.create(admitted.policy.cwd, admitted.sessionDir),
-			);
+			// A session it opens, or creates in its parent's store, needs no directory; only a session file of its own does.
+			const opening = admitted.sessionManager
+				? canReopenFromStore
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+							openOptions,
+						)
+					: Promise.resolve(admitted.sessionManager)
+				: admitted.spec.sessionStore
+					? SessionManager.create(admitted.spec.sessionStore, admitted.policy.cwd, { internal: true })
+					: mkdir(admitted.sessionDir, { recursive: true }).then(() =>
+							SessionManager.create(admitted.policy.cwd, admitted.sessionDir),
+						);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
 			const prepareChildSession = async () => {
@@ -2535,6 +2668,8 @@ export class SubagentControlRuntime {
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
+			const recordedCwd = sessionManager.getHeader()?.cwd;
+			if (recordedCwd !== undefined) onSessionCwd?.(recordedCwd);
 			openedThroughId = sessionManager.getEntries().at(-1)?.id ?? null;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
@@ -2793,6 +2928,19 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			// A restart restores the child on the model and thinking level its own session records. Those a launch applies
+			// without an entry (a fork's or a relaunch's own model, a resumed session's other effort) are recorded now,
+			// before its first request, so a restart finds them whatever its record in its owner's session says yet.
+			const writeLaunchSettings = launchSettingsWrite(sessionManager, session);
+			if (writeLaunchSettings !== undefined) {
+				// A stop does not wait for that write: the attempt stops before it runs, as below.
+				const stop = attemptStopped(signals);
+				try {
+					await beforeStartDeadline(Promise.race([writeLaunchSettings(), stop.stopped]));
+				} finally {
+					stop.dispose();
+				}
+			}
 			const currentLeafId = sessionManager.getLeafId();
 			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
@@ -2961,6 +3109,11 @@ export class SubagentControlRuntime {
 				reportTurnPaused(true);
 				await endTurn(() => transcriptSession.pauseTurn());
 			}
+			// A note an earlier run saved and no turn read yet is replayed by recovery, which reads it: read before that.
+			const unreadNoteKinds =
+				admitted.spec.resumeNote === undefined
+					? new Set<SubagentResumeNoteKind>()
+					: unreadResumeNoteKinds(sessionManager);
 			if (!termination && admitted.spec.resumeSession) {
 				await recoverChildSession(session, admitted.spec);
 				// A paused child's turn settles once the user continues it, after its dispatch below.
@@ -2968,19 +3121,39 @@ export class SubagentControlRuntime {
 			}
 			restoringPaused = false;
 			const lateResults = admitted.spec.resumeLateToolResults ?? [];
+			const note = resumeNoteToDeliver(
+				admitted.spec,
+				unreadNoteKinds,
+				termination !== undefined || resumedPaused,
+				turnStartedBeforeTask || session.isStreaming || session._activePromptCount > 0 || hasQueuedInput(session),
+			);
 			if (!termination && !resumedPaused && lateResults.length > 0) {
-				// Saved as one card before its turn reads it, and read once: a restart before that turn replays it.
+				// Saved as one card before its turn reads it, and read once: a restart before that turn replays it. A resume
+				// note of the same turn is read first, in the same notice.
 				await session.sendCustomMessage(
-					lateToolResultNotice(lateResults, issuedCallArguments(sessionManager.buildSessionProjection().messages)),
+					lateToolResultNotice(
+						lateResults,
+						issuedCallArguments(sessionManager.buildSessionProjection().messages),
+						note,
+					),
 					{
 						triggerTurn: true,
 						persistWhenStreaming: true,
-						stageAdmissionKey: lateToolResultNoticeKey(lateResults),
+						stageAdmissionKey: lateToolResultNoticeKey(
+							lateResults,
+							await issuingCallEntries(
+								sessionManager,
+								lateResults.map((result) => result.toolCallId),
+							),
+						),
 					},
 				);
 				// Its card holds them now: the owner lets them go (#5012).
 				taskHooks?.toolResultsSaved?.(lateResults.map((result) => result.toolCallId));
-			}
+			} else if (note !== undefined)
+				// Read with whatever else starts its turn, in its first request, or starting that turn when nothing else does;
+				// a restart before then replays it.
+				await session.sendCustomMessage(resumeNoteMessage(note), { triggerTurn: true, persistWhenStreaming: true });
 			for (const notice of admitted.spec.resumeNotices ?? []) {
 				if (termination || resumedPaused) break;
 				await session.sendCustomMessage(
@@ -3046,6 +3219,16 @@ export class SubagentControlRuntime {
 					) {
 						taskPending = false;
 						startBudget.end();
+						// A real session's notices and note start its turn, which its run drains (below); a scripted session runs
+						// that turn as an empty prompt, which saves no message.
+						if (
+							prepared === undefined &&
+							admitted.spec.skipTaskPrompt &&
+							(lateResults.length > 0 ||
+								(admitted.spec.resumeNotices?.length ?? 0) > 0 ||
+								admitted.spec.resumeNote !== undefined)
+						)
+							await session.prompt("");
 					} else {
 						const prompting = session.prompt(admitted.spec.task, {
 							streamingBehavior: "steer",
@@ -3292,10 +3475,15 @@ export class SubagentControlRuntime {
 			const disposal = (async (): Promise<SessionDisposal> => {
 				try {
 					await session?.dispose();
+					// A released child's history leaves process memory when its store can keep it elsewhere, and so does a finished
+					// child's own session in its parent's memory store, created internal for it, also after a resume: a task view
+					// reads it back from there.
 					if (
-						releasedAttempt &&
 						transcriptManager !== undefined &&
-						typeof transcriptManager.getSessionStore === "function"
+						typeof transcriptManager.getSessionStore === "function" &&
+						(releasedAttempt ||
+							((admitted.spec.sessionStore !== undefined || transcriptManager.getHeader()?.internal === true) &&
+								transcriptManager.getSessionStore().descriptor.adapter === "memory"))
 					)
 						await transcriptManager.getSessionStore().releaseSession?.(transcriptManager.getSessionId());
 					return { cleanup: { kind: "reaped" } };

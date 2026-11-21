@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
 import { type DetachedToolResult, initTheme, NoticeLine, type NoticeLineSpec } from "@bastani/atomic";
 import type { Component } from "@bastani/atomic-tui";
+import {
+	renderResumeNote,
+	resumeNoteKindOf,
+	SUBAGENT_RESUME_NOTE_TYPE,
+	type SubagentResumeNote,
+	type SubagentResumeNoteKind,
+} from "./resume-note.js";
 import type { SubagentChildHeldMessages, SubagentChildHeldNotice } from "./subagent-child-records.js";
 
 /**
@@ -21,6 +29,8 @@ export interface LateToolResultNoticeItem {
 
 export interface LateToolResultNoticeDetails {
 	readonly results: readonly LateToolResultNoticeItem[];
+	/** Why the child runs again, when the turn these results continue with says so too: read first. */
+	readonly note?: { readonly kind: SubagentResumeNoteKind };
 }
 
 export interface LateToolResultNotice {
@@ -114,11 +124,13 @@ function modelText(item: LateToolResultNoticeItem, text: string): string {
 /**
  * The one notice that hands a woken child the results of its calls that kept running in the background, in arrival
  * order. The model reads each result's whole text once; the card shows each call's tool, how it ended and its output.
- * `callArguments` are the arguments each call was issued with, by call id, when the transcript still holds them.
+ * `callArguments` are the arguments each call was issued with, by call id, when the transcript still holds them. A
+ * resume note the same turn delivers is read first, in the same notice.
  */
 export function lateToolResultNotice(
 	results: readonly DetachedToolResult[],
 	callArguments: ReadonlyMap<string, unknown> = new Map(),
+	note?: SubagentResumeNote,
 ): LateToolResultNotice {
 	const items = results.map((result) => {
 		const command = commandOf(callArguments.get(result.toolCallId));
@@ -134,9 +146,15 @@ export function lateToolResultNotice(
 	});
 	return {
 		customType: SUBAGENT_LATE_TOOL_RESULT_TYPE,
-		content: items.map(({ item, text }) => modelText(item, text)).join("\n\n"),
+		content: [
+			...(note === undefined ? [] : [note.text]),
+			...items.map(({ item, text }) => modelText(item, text)),
+		].join("\n\n"),
 		display: true,
-		details: { results: items.map(({ item }) => item) },
+		details: {
+			results: items.map(({ item }) => item),
+			...(note === undefined ? {} : { note: { kind: note.kind } }),
+		},
 	};
 }
 
@@ -172,9 +190,74 @@ export function savedNoticeIds(
 	});
 }
 
-/** The stable admission key of the notice for these results: admitting it again adds nothing. */
-export function lateToolResultNoticeKey(results: readonly DetachedToolResult[]): string {
-	return `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:${JSON.stringify(results.map((result) => result.toolCallId))}`;
+/** The entry a session saves once a turn read a notice saved before it. */
+const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
+
+interface NoticeEntries {
+	getBranch(): ReadonlyArray<{
+		readonly type: string;
+		readonly id: string;
+		readonly customType?: string;
+		readonly details?: unknown;
+		readonly protectedReconciliation?: unknown;
+	}>;
+	getSessionRecoveryState?(): { readonly reconciledCardIds?: readonly string[] } | undefined;
+}
+
+/**
+ * The notices the child's session saved for a turn that never read them, as when its process stopped between saving a
+ * notice and the turn that reads it: the reopened session reads them with its next turn.
+ */
+export function unreadNotices(
+	sessionManager: NoticeEntries,
+): Array<{ readonly customType?: string; readonly details?: unknown }> {
+	const branch = sessionManager.getBranch();
+	const read = new Set(sessionManager.getSessionRecoveryState?.()?.reconciledCardIds ?? []);
+	for (const entry of branch) {
+		if (entry.type !== "custom_message" || entry.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) continue;
+		const card = (entry.details as { readonly protectedReconciliationOf?: unknown } | undefined)
+			?.protectedReconciliationOf;
+		if (typeof card === "string") read.add(card);
+	}
+	return branch.filter(
+		(entry) => entry.type === "custom_message" && entry.protectedReconciliation !== undefined && !read.has(entry.id),
+	);
+}
+
+/** The kinds of resume notes among the child's unread notices, alone or with late results. */
+export function unreadResumeNoteKinds(sessionManager: NoticeEntries): Set<SubagentResumeNoteKind> {
+	const kinds = new Set<SubagentResumeNoteKind>();
+	for (const notice of unreadNotices(sessionManager)) {
+		const kind =
+			resumeNoteKindOf(notice) ??
+			(notice.customType === SUBAGENT_LATE_TOOL_RESULT_TYPE
+				? (notice.details as LateToolResultNoticeDetails | undefined)?.note?.kind
+				: undefined);
+		if (kind !== undefined) kinds.add(kind);
+	}
+	return kinds;
+}
+
+/**
+ * The stable admission key of the notice for these results: admitting it again adds nothing. Each result is named by its
+ * call's id, the entry that issued its call when known (by id, from `calls`) and a digest of what it holds, so the notice
+ * of another result for a call id seen before, such as a later call's that a provider gave an earlier call's id (#3274),
+ * is a notice of its own.
+ */
+export function lateToolResultNoticeKey(
+	results: readonly DetachedToolResult[],
+	calls?: ReadonlyMap<string, string>,
+): string {
+	return `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:${JSON.stringify(
+		results.map((result) => [
+			result.toolCallId,
+			calls?.get(result.toolCallId) ?? null,
+			createHash("sha256")
+				.update(JSON.stringify([result.isError, result.result.content]))
+				.digest("hex")
+				.slice(0, 16),
+		]),
+	)}`;
 }
 
 function noticeItems(details: unknown): LateToolResultNoticeItem[] {
@@ -220,7 +303,7 @@ export function lateToolResultNoticeLine(item: LateToolResultNoticeItem, outputP
 }
 
 class LateToolResultNoticeComponent implements Component {
-	constructor(private readonly lines: readonly NoticeLine[]) {}
+	constructor(private readonly lines: readonly Component[]) {}
 
 	invalidate(): void {
 		for (const line of this.lines) line.invalidate();
@@ -239,7 +322,13 @@ export function renderLateToolResultNotice(
 	const items = noticeItems(message.details);
 	if (items.length === 0) return undefined;
 	if (!(globalThis as Record<symbol, unknown>)[Symbol.for("@bastani/atomic:theme")]) initTheme("dark", false);
-	return new LateToolResultNoticeComponent(
-		items.map((item) => new NoticeLine(lateToolResultNoticeLine(item, options.outputPad), options.expanded)),
-	);
+	const kind = (message.details as LateToolResultNoticeDetails).note?.kind;
+	const note =
+		kind === undefined
+			? undefined
+			: renderResumeNote({ customType: SUBAGENT_RESUME_NOTE_TYPE, details: { kind } }, options);
+	return new LateToolResultNoticeComponent([
+		...(note === undefined ? [] : [note]),
+		...items.map((item) => new NoticeLine(lateToolResultNoticeLine(item, options.outputPad), options.expanded)),
+	]);
 }

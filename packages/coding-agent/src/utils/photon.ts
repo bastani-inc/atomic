@@ -20,8 +20,8 @@ import { createRequire } from "module";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
-const require = createRequire(import.meta.url);
-const fs = require("fs") as { readFileSync: (...args: unknown[]) => unknown };
+const requireFromHere = createRequire(import.meta.url);
+const fs = requireFromHere("fs") as { readFileSync: (...args: unknown[]) => unknown };
 const unpatchedReadFile: (...args: unknown[]) => unknown = fs.readFileSync.bind(fs);
 
 // Re-export types from the main package
@@ -55,7 +55,7 @@ function getFallbackWasmPaths(): string[] {
 function getCandidateWasmPaths(): string[] {
 	const candidates: string[] = [];
 	try {
-		const entryPath = require.resolve("@silvia-odwyer/photon-node");
+		const entryPath = requireFromHere.resolve("@silvia-odwyer/photon-node");
 		candidates.push(path.join(path.dirname(entryPath), WASM_FILENAME));
 	} catch {}
 	candidates.push(...getFallbackWasmPaths());

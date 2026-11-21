@@ -542,11 +542,14 @@ function sameUnfocusedRows(
 	return true;
 }
 
-/** Whether the rows change with time alone: a running clock, or a finished row that has not faded yet. */
+/**
+ * Whether the rows change with time alone: a running clock, or a finished row that is fading. The shown subagent's
+ * finished row is kept without fading, so it asks for no frames.
+ */
 function panelRowsNeedClock(rows: readonly AgentPanelRow[], state: PanelState): boolean {
 	for (const row of rows) {
 		if (taskClockRunning(row.state)) return true;
-		if (isFinishedPanelRow(row) && !state.model.faded(row)) return true;
+		if (isFinishedPanelRow(row) && state.model.fading(row)) return true;
 	}
 	return false;
 }
@@ -1263,11 +1266,21 @@ export async function showAgentPanel(
 
 /**
  * Whether the idle panel of `session` opens again once the one view hiding it now closes: a panel is bound to the
- * session, that view is its only hider, and the panel has rows to show.
+ * session, that view is its only hider, and the panel has rows to show, now or once the screen shows `shown`: the
+ * subagent the screen shows is always listed, unless it was dismissed.
  */
-export function agentPanelReturnsOnShow(session: AgentPanelSession & object): boolean {
+export function agentPanelReturnsOnShow(session: AgentPanelSession & object, shown?: TaskId): boolean {
 	const state = panelState(session);
-	return state.hideCount === 1 && state.setVisible !== undefined && agentPanelHasRows(session);
+	if (state.hideCount !== 1 || state.setVisible === undefined) return false;
+	return agentPanelHasRows(session) || (shown !== undefined && agentPanelListsWhenShown(session, shown));
+}
+
+/** Whether the panel lists `taskId` once the screen shows it: a subagent of this session not dismissed. */
+function agentPanelListsWhenShown(session: AgentPanelSession & object, taskId: TaskId): boolean {
+	const store = getOwnerTaskStore(session);
+	if (store === undefined) return false;
+	const rowId = viewedRowId(taskId, ownerTaskViewSource(store).backgroundTasks);
+	return rowId !== undefined && !dismissedAgentPanelItems(session).has(rowId);
 }
 
 /**

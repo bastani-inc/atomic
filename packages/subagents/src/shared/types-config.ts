@@ -2,7 +2,7 @@
  * Configuration, execution option, display, and event bus types.
  */
 
-import type { AgentSessionEvent, SessionManager } from "@bastani/atomic";
+import type { AgentSessionEvent, SessionManager, SessionStore } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { CwdVerdict } from "./launch-cwd.js";
 import type { CandidateModelResolver } from "./model-resolution.js";
@@ -140,6 +140,8 @@ export interface RunSyncOptions {
 	runId: string;
 	index?: number;
 	sessionDir?: string;
+	/** Create the child's own session in this store, its parent's, rather than as a file in `sessionDir`. */
+	sessionStore?: SessionStore;
 	sessionManager?: SessionManager;
 	/** Reopen `sessionManager` as this child's own interrupted session rather than a fork. */
 	resumeSession?: boolean;
@@ -157,6 +159,8 @@ export interface RunSyncOptions {
 	resumeLateToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** Notices of finished background tasks held for the child: each delivered as a notice with its next turn. */
 	resumeNotices?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildHeldNotice[];
+	/** Why the child runs again, when Atomic says so rather than a message: read with its turn, never as a message. */
+	resumeNote?: import("../runs/foreground/resume-note.js").SubagentResumeNote;
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
 	/**

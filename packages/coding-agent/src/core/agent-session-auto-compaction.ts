@@ -8,6 +8,7 @@ import type {
 	AutoCompactionRunOutcome,
 	AutoCompactionUrgency as CompactionUrgency,
 } from "./agent-session-methods.ts";
+import { pendingResumeUpdate } from "./agent-session-state.ts";
 import type { AgentQueueAccess } from "./agent-session-types.js";
 import {
 	calculateContextTokens,
@@ -694,7 +695,7 @@ export async function _compactBeforeContinuation(
 	if (shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, model.contextWindow, settings))
 		return (await this._runAutoCompaction("threshold", false)) === "compacted";
 	if (this._resumeBudgetCheckpoint)
-		await this._compactBeforeResumedPrompt(undefined, input ?? continuationInput(this));
+		await this._compactBeforeResumedPrompt(undefined, input ?? continuationInput(this), false);
 	return false;
 }
 
@@ -710,19 +711,33 @@ function continuationInput(session: AgentSession): AgentMessage[] {
 /**
  * Clear the context before the first request after a resume when what only the resume added (blueprint context,
  * recovery notices, the prompt `update` the resume brings) would otherwise lower the thinking budget the restored
- * history was sent with ({@link clearsForResumedBudget}). Runs once per resume, once the request's `input` and `update`
- * are final, through the automatic compaction, whose boundary covers the restored history only. What was added after
- * the session opened counts with the input: a session that kept running would have sent it too. Resolves whether it
- * cleared.
+ * history was sent with ({@link clearsForResumedBudget}). Runs once the request's `input` and `update` are final,
+ * through the automatic compaction, whose boundary covers the restored history only. What was added after the session
+ * opened counts with the input: a session that kept running would have sent it too. Resolves whether it cleared.
+ *
+ * The check runs again for a later run when no request followed this one (the run stopped before its request, or the
+ * request's provider setup failed): the first request the provider gets is checked with its own input. A run that does
+ * not send the session's prompt as it is now (`sendsPrompt` false: an interrupt, or a continuation of queued input)
+ * sends no `update`, so the run that sends it is checked again. Only a request whose transcript holds the `update` a
+ * run that sends the prompt was checked with (any request once that run found no update), or this clear, retires the
+ * checkpoint.
  */
 export async function _compactBeforeResumedPrompt(
 	this: AgentSession,
 	update: AgentMessage | undefined,
 	input: readonly AgentMessage[],
+	sendsPrompt = true,
 ): Promise<boolean> {
 	const checkpoint = this._resumeBudgetCheckpoint;
-	this._resumeBudgetCheckpoint = undefined;
 	const model = this.model;
+	if (checkpoint && sendsPrompt) this._resumePromptUpdate = update ?? null;
+	else if (checkpoint && this._resumePromptUpdate === undefined && this._resumeHeldUpdate === undefined) {
+		// With no prompt update pending, this run's request ends the check, as a prompt's would; otherwise its turns
+		// hold back what the update adds until a request sends it through the check (see withoutResumeUpdate).
+		const pending = pendingResumeUpdate(this);
+		if (pending) this._resumeHeldUpdate = pending;
+		else this._resumePromptUpdate = null;
+	}
 	if (!checkpoint || !model || !this.settingsManager.getCompactionSettings(model).enabled) return false;
 	if (
 		this._compactionAbortController !== undefined ||
@@ -740,9 +755,9 @@ export async function _compactBeforeResumedPrompt(
 	const entryId = at === -1 ? undefined : this._findPersistedMessageEntryId(checkpoint);
 	if (entryId === undefined) return false;
 	const history = messages.slice(0, at + 1);
+	// The boundary records the prompt as the restored history ends; a prompt change after it replays after it and
+	// counts with the conversation's own input.
 	const unsent = messages.slice(at + 1);
-	// The boundary records the prompt and tools as they are; a later prompt change would then count twice.
-	if (unsent.some((message) => message.role === "system")) return false;
 	const resumeOnly = unsent.filter(isAddedByResume);
 	const added = update ? [...resumeOnly, update] : resumeOnly;
 	const head = getCurrentSystemMessage(history);
@@ -758,7 +773,14 @@ export async function _compactBeforeResumedPrompt(
 		cleared: [...(head ? [head] : []), boundary, ...added],
 	});
 	// The boundary covers the restored history only, so what the resume added stays in the context as it was.
-	return clears && (await this._runAutoCompaction("threshold", false, "recoverable", entryId)) === "compacted";
+	if (!clears || (await this._runAutoCompaction("threshold", false, "recoverable", entryId)) !== "compacted")
+		return false;
+	if (this._resumeBudgetCheckpoint === checkpoint) {
+		this._resumeBudgetCheckpoint = undefined;
+		this._resumePromptUpdate = undefined;
+		this._resumeHeldUpdate = undefined;
+	}
+	return true;
 }
 
 /**
