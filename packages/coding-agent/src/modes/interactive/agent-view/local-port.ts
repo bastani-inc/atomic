@@ -148,6 +148,8 @@ export class LocalAgentViewPort implements AgentViewPort {
 			env,
 			requestRender,
 			options.reportLate ?? ((reason) => env.notify?.(reason)),
+			// Here `/tasks` opens the main chat's list; a released subagent's newest shell opens with its own key.
+			{ keptTasks: "openWaited" },
 		);
 		this.transcript = new AgentTranscriptView(this.page, env, options.rows ?? (() => 24));
 		this.current = this.readStatus();
