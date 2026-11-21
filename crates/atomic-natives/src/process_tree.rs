@@ -1,12 +1,15 @@
 //! Ends the processes a running child process started, on Windows, through handles: never by a process id that another
 //! process may have been given meanwhile. A tree is read from the system's process table, but each process in it is
-//! taken only once it is open, and only when the opened process's own parent id is its parent's and it was created no
-//! earlier than that parent. An open process keeps its id, so the walk stands on processes it holds.
+//! taken only once it is open, and only when the opened process's own parent id is its parent's and it was created
+//! after that parent. An open process keeps its id, so the walk stands on processes it holds. Creation times are the
+//! system clock's: a process created in the same clock tick as its parent is left, and a clock set back while the
+//! command runs can make an older process look younger than it is.
 use napi_derive::napi;
 
 /// Ends the processes that running process `pid` started, and those they started, each through a handle; returns how
-/// many it ended. Not `pid` itself. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid`
-/// names that process. A process whose parent ended before the call is not found. Nothing off Windows.
+/// many it ended. Not `pid` itself, and nothing once `pid` has exited, checked again right before the first of them is
+/// ended. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid` names that process. A
+/// process whose parent ended before the call is not found. Nothing off Windows.
 #[napi(js_name = "terminateProcessDescendants")]
 pub fn terminate_process_descendants(pid: u32) -> u32 {
 	#[cfg(windows)]
@@ -32,7 +35,7 @@ pub(crate) struct Opened<H> {
 
 /// The processes below `root` (created at `root_created`), from `table` (`(pid, parent pid)` as the system listed
 /// them), each opened with `open` and kept only when it is the process the table named as a child: its own parent id
-/// is its parent's and it was created no earlier than that parent. The handles of the rejected ones are dropped.
+/// is its parent's and it was created after that parent. The handles of the rejected ones are dropped.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn walk<H>(
 	root: u32,
@@ -40,16 +43,22 @@ pub(crate) fn walk<H>(
 	table: &[(u32, u32)],
 	mut open: impl FnMut(u32) -> Option<Opened<H>>,
 ) -> Vec<H> {
+	let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+	for &(pid, listed_parent) in table {
+		if pid != listed_parent {
+			children.entry(listed_parent).or_default().push(pid);
+		}
+	}
 	let mut kept = Vec::new();
 	let mut seen = std::collections::HashSet::from([root]);
 	let mut parents = vec![(root, root_created)];
 	while let Some((parent, parent_created)) = parents.pop() {
-		for &(pid, listed_parent) in table {
-			if listed_parent != parent || pid == parent || seen.contains(&pid) {
+		for &pid in children.get(&parent).map(Vec::as_slice).unwrap_or_default() {
+			if seen.contains(&pid) {
 				continue;
 			}
 			let Some(opened) = open(pid) else { continue };
-			if opened.parent != parent || opened.created < parent_created {
+			if opened.parent != parent || opened.created <= parent_created {
 				continue;
 			}
 			seen.insert(pid);
@@ -65,24 +74,34 @@ mod windows {
 	use super::{Opened, walk};
 	use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 	use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
-	use windows_sys::Win32::Foundation::{FILETIME, INVALID_HANDLE_VALUE};
+	use windows_sys::Win32::Foundation::{FILETIME, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
 	use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 		CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
 		TH32CS_SNAPPROCESS,
 	};
 	use windows_sys::Win32::System::Threading::{
 		GetProcessTimes, OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-		PROCESS_TERMINATE, TerminateProcess,
+		PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 	};
 
 	pub(super) fn terminate_descendants(root: u32) -> u32 {
-		let Some(root_process) = open(root, PROCESS_QUERY_LIMITED_INFORMATION) else { return 0 };
+		let Some(root_process) = open(root, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)
+		else {
+			return 0;
+		};
 		let Some(root_created) = created(&root_process) else { return 0 };
+		if !running(&root_process) {
+			return 0;
+		}
 		let table = process_table();
 		let kept = walk(root, root_created, &table, |pid| {
 			let process = open(pid, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION)?;
 			Some(Opened { parent: parent_of(&process)?, created: created(&process)?, handle: process })
 		});
+		// A command that ended meanwhile leaves what it started running, as one that ended before.
+		if !running(&root_process) {
+			return 0;
+		}
 		let mut ended = 0;
 		for process in &kept {
 			if unsafe { TerminateProcess(process.as_raw_handle(), 1) } != 0 {
@@ -90,6 +109,10 @@ mod windows {
 			}
 		}
 		ended
+	}
+
+	fn running(process: &OwnedHandle) -> bool {
+		unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_TIMEOUT }
 	}
 
 	fn open(pid: u32, access: u32) -> Option<OwnedHandle> {
@@ -183,6 +206,13 @@ mod tests {
 		// The table listed 20 under the root; 20 then ended and its id went to an unrelated, newer process.
 		let live = system(&[(20, 77, 500)]);
 		assert_eq!(kept(10, 100, &[(20, 10)], &live), Vec::<u32>::new());
+	}
+
+	#[test]
+	fn leaves_a_process_created_in_its_parents_clock_tick() {
+		// Equal creation times cannot tell a child from an older process that a previous holder of the id started.
+		let live = system(&[(20, 10, 100), (30, 10, 101)]);
+		assert_eq!(kept(10, 100, &[(20, 10), (30, 10)], &live), vec![30]);
 	}
 
 	#[test]

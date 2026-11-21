@@ -955,8 +955,9 @@ export type TaskResult =
 
 /**
  * Ends the processes that running process `pid` started, and those they started, each through a handle; returns how
- * many it ended. Not `pid` itself. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid`
- * names that process. A process whose parent ended before the call is not found. Nothing off Windows.
+ * many it ended. Not `pid` itself, and nothing once `pid` has exited, checked again right before the first of them is
+ * ended. The caller must hold `pid`'s own handle (a child it has not reaped), so that `pid` names that process. A
+ * process whose parent ended before the call is not found. Nothing off Windows.
  */
 export declare function terminateProcessDescendants(pid: number): number
 
