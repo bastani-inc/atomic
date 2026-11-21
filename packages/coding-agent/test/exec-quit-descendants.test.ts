@@ -77,20 +77,24 @@ describe.skipIf(process.platform === "win32")("a command its session's quit ends
 	}
 });
 
-test("a command that ends on its own leaves the processes it started running", async () => {
-	const file = pidFile();
-	const result = await execCommand(
-		process.execPath,
-		commandStartingAProcess(file, { exitAfterStart: true }),
-		process.cwd(),
-		undefined,
-		() => () => {},
-	);
-	const started = await recordedFrom(file);
+// On Windows a process a command started without detaching it ends with the command.
+test.skipIf(process.platform === "win32")(
+	"a command that ends on its own leaves the processes it started running",
+	async () => {
+		const file = pidFile();
+		const result = await execCommand(
+			process.execPath,
+			commandStartingAProcess(file, { exitAfterStart: true }),
+			process.cwd(),
+			undefined,
+			() => () => {},
+		);
+		const started = await recordedFrom(file);
 
-	assert.equal(result.code, 0);
-	assert.equal(await stillRuns(started), true);
-});
+		assert.equal(result.code, 0);
+		assert.equal(await stillRuns(started), true);
+	},
+);
 
 /** A process that is not this one's child, so that it is gone, not left unreaped, once it ends. */
 async function startUnrelatedProcess(): Promise<RecordedProcess> {
