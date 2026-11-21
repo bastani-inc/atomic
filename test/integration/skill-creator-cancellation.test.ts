@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { startPtyProgram } from "../helpers/pty-program.js";
-import { removeTempDirectory, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { moduleDir, removeTempDirectory, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 import {
 	createScriptSandbox,
 	processRuns,
@@ -18,6 +18,49 @@ const STOP_ESCALATION_MS = 10_000;
 // A real Python interpreter per script and per fake Atomic; a few seconds under load.
 const START_MS = 15_000;
 const STALLED_TEST_MS = START_MS + STOP_ESCALATION_MS + 15_000;
+// STATUS_CONTROL_C_EXIT: how Windows reports a console program ended by Ctrl+C, Ctrl+Break or closing its console.
+const WINDOWS_CONSOLE_INTERRUPTED = 0xc000013a;
+// The console harness types Ctrl+C into the script's console, or closes it, once the queries have started, then gives
+// the script this long to exit; Windows itself ends a console program about five seconds after a close. A query's own
+// timeout is 30 s, so a script that waits for its queries to end on their own does not exit in time.
+const EVENT_EXIT_S = 10;
+const EVENT_TEST_MS = START_MS + EVENT_EXIT_S * 1_000 + 15_000;
+const consoleEvent = join(moduleDir(import.meta.url), "../fixtures/skill-creator/console-event.py");
+
+/** What the console harness reports: records ready at the event, the exit status, the console's text. */
+interface ConsoleOutcome {
+	readonly ready: number;
+	readonly status: number | null;
+	readonly screen: string;
+}
+
+/** Runs `command` on a console of its own and sends `action` once `count` records with `key` exist. */
+function runOnConsole(
+	box: ScriptSandbox,
+	action: "ctrl-c" | "close",
+	count: number,
+	key: string,
+	command: readonly string[],
+	env: Record<string, string> = {},
+): ConsoleOutcome {
+	const result = spawnSyncCollect(
+		[
+			python ?? "python",
+			consoleEvent,
+			action,
+			box.log,
+			`${count}`,
+			key,
+			`${START_MS / 1_000}`,
+			`${EVENT_EXIT_S}`,
+			python ?? "python",
+			...command,
+		],
+		{ cwd: box.project, env: box.env(env) },
+	);
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	return JSON.parse(result.stdout.toString()) as ConsoleOutcome;
+}
 
 const sandboxes: ScriptSandbox[] = [];
 afterEach(() => {
@@ -310,6 +353,48 @@ print(json.dumps({"result": outcome.get("result"), "handlers_kept": before == af
 		);
 	},
 );
+
+describe.skipIf(python === undefined || process.platform !== "win32")("skill-creator scripts stop on Windows", () => {
+	for (const action of ["ctrl-c", "close"] as const) {
+		const event = action === "ctrl-c" ? "Ctrl+C in the console" : "closing the console";
+		test(
+			`${event} stops every Atomic the script started at once and exits with the console-interrupt status, reporting no query`,
+			async () => {
+				const box = sandbox();
+				// A fake Atomic records itself, then again with its helper and that helper's child.
+				const outcome = runOnConsole(box, action, 2, "grandchild", evalArgs(box, ["one", "two"]), {
+					FAKE_ATOMIC_SCENARIO: "hold-child",
+				});
+				assert.equal(outcome.ready, 2, `both queries' Atomic and their processes ran: ${outcome.screen}`);
+				assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
+				assert.doesNotMatch(outcome.screen, /query failed|"results"/u, "no query is reported");
+				await waitUntilGone(startedPids(box.records()), 5_000);
+				assert.deepEqual(readdirSync(box.temp), []);
+			},
+			EVENT_TEST_MS,
+		);
+	}
+
+	test(
+		"closing the console while the script has nothing running exits with the console-interrupt status",
+		() => {
+			const box = sandbox();
+			const program = [
+				"import sys, time",
+				"from pathlib import Path",
+				"from scripts.atomic_cli import run_main",
+				"def main():",
+				"    Path(sys.argv[1], 'ready.json').write_text('{}')",
+				"    time.sleep(60)",
+				"run_main(main)",
+			].join("\n");
+			const outcome = runOnConsole(box, "close", 1, "-", ["-c", program, box.log]);
+			assert.equal(outcome.ready, 1, `the script ran: ${outcome.screen}`);
+			assert.equal(outcome.status, WINDOWS_CONSOLE_INTERRUPTED, outcome.screen);
+		},
+		EVENT_TEST_MS,
+	);
+});
 
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
 	const deadline = Date.now() + START_MS;
