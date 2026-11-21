@@ -126,7 +126,7 @@ function createMode(options: {
 		disposeActiveSelector: vi.fn(),
 		programStatus: { report: vi.fn(), setBlocked: vi.fn() },
 		runtimeHost: {},
-		session: { getToolStatusAsync: () => ({ missing: [] }) },
+		session: { _getToolStatusWithoutGit: () => ({ missing: [] }) },
 		keybindings,
 		isInitialized: false,
 		isShuttingDown: false,
