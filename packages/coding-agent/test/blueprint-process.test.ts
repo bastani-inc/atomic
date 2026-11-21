@@ -53,8 +53,19 @@ const REFUSED_STARTS = 5;
 const REFUSED_CHILD_TRIES = 200;
 /** The most tries a step makes of a program that stays refused: ten 50 ms apart, then at most six, further apart. */
 const MAX_REFUSED_TRIES = 16;
-/** Bound on the event-loop turns until a refused step is waiting to try again. */
-const UNTIL_WAITING_TURNS = 10_000;
+/**
+ * Real time a refused step may take to start waiting to try again: its first try comes once the step's log file is open,
+ * which a loaded machine can take seconds to answer while the event loop turns freely.
+ */
+const UNTIL_WAITING_MS = 30_000;
+
+/** Turns the event loop until the step is waiting on a timer, `done` holds, or {@link UNTIL_WAITING_MS} passed. */
+async function untilWaiting(done: () => boolean = () => false): Promise<void> {
+	// The tests' clocks are fake; the process's own high-resolution clock is not.
+	const deadline = process.hrtime.bigint() + BigInt(UNTIL_WAITING_MS) * 1_000_000n;
+	while (!done() && vi.getTimerCount() === 0 && process.hrtime.bigint() < deadline)
+		await new Promise((resolve) => setImmediate(resolve));
+}
 
 let sandbox: string;
 let logCount = 0;
@@ -65,7 +76,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.useRealTimers();
-	rmSync(sandbox, { recursive: true, force: true });
+	// Windows keeps a program's file in use for a moment after its process ended; rm tries again only when told to.
+	rmSync(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 const path = (...segments: string[]) => join(sandbox, ...segments);
@@ -417,8 +429,7 @@ describe("running a logged process (#4588)", () => {
 					settled = true;
 				});
 				while (!settled) {
-					for (let turn = 0; !settled && vi.getTimerCount() === 0 && turn < UNTIL_WAITING_TURNS; turn++)
-						await new Promise((resolve) => setImmediate(resolve));
+					await untilWaiting(() => settled);
 					if (settled) break;
 					assert.equal(vi.getTimerCount(), 1, `the step waits to try again after try ${triedAt.length}`);
 					await vi.advanceTimersToNextTimerAsync();
@@ -695,8 +706,7 @@ describe("running a logged process (#4588)", () => {
 					// The refusal is seen a second into the step, past the tries 50 ms apart, so it waits longer.
 					() => wall.mockReturnValue(wallStart + 1_000),
 				);
-				for (let turn = 0; vi.getTimerCount() === 0 && turn < UNTIL_WAITING_TURNS; turn++)
-					await new Promise((resolve) => setImmediate(resolve));
+				await untilWaiting();
 				assert.equal(vi.getTimerCount(), 1, "the step waits to try again");
 				controller.abort(reason);
 				const { result, tries } = await outcome;
