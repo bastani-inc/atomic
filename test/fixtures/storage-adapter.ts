@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
@@ -26,6 +26,30 @@ function withCallDelay(database: SqliteDatabase, ms: number): SqliteDatabase {
 			await pause(), database.all<T>(sql, ...params)
 		),
 		transaction: async (callback) => (await pause(), database.transaction(callback)),
+		close: () => database.close(),
+	};
+}
+
+/**
+ * While the file at `gate` exists, every statement fails as one to an unreachable database does: the shared store is
+ * down for this broker alone, which keeps running.
+ */
+function withOutageGate(database: SqliteDatabase, gate: string): SqliteDatabase {
+	const down = () => {
+		if (existsSync(gate))
+			throw new StorageUnavailableError({ adapter: "test-adapter", location: "outage" }, new Error("injected outage"));
+	};
+	return {
+		descriptor: database.descriptor,
+		exec: async (sql) => (down(), database.exec(sql)),
+		run: async (sql, ...params) => (down(), database.run(sql, ...params)),
+		get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => (
+			down(), database.get<T>(sql, ...params)
+		),
+		all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => (
+			down(), database.all<T>(sql, ...params)
+		),
+		transaction: async (callback) => (down(), database.transaction(callback)),
 		close: () => database.close(),
 	};
 }
@@ -312,10 +336,12 @@ export default {
 			typeof options.reservationGate === "string"
 				? withReservationGate(presenceGated, options.reservationGate)
 				: presenceGated;
-		const gated =
+		const stallable =
 			typeof options.idClaimStallGate === "string"
 				? withIdClaimStall(reservationGated, options.idClaimStallGate)
 				: reservationGated;
+		const gated =
+			typeof options.outageGate === "string" ? withOutageGate(stallable, options.outageGate) : stallable;
 		if (typeof options.callDelayMs === "number") return withCallDelay(gated, options.callDelayMs);
 		return gated;
 	},
