@@ -193,6 +193,7 @@ export async function createDefaultTransport(
 		command: expandHome(config.command),
 		args: config.args?.map(expandHome),
 		cwd: resolve(cwd, expandHome(config.cwd ?? ".")),
+		projectCwd: cwd,
 		env,
 		stderr: "pipe",
 	});

@@ -33,12 +33,13 @@ describe.skipIf(process.platform !== "win32")("PowerShell found on PATH on Windo
 		return path;
 	}
 
-	it("a relative PATH entry resolves against the directory Atomic runs in, so PowerShell starts from any working directory (#5324)", () => {
+	it("a relative PATH entry is never searched, and the PowerShell found starts from any working directory (#5324)", () => {
 		const bin = join(sandbox, "relative-bin");
-		const expected = fakePowerShell(bin);
+		fakePowerShell(bin);
 		const entry = relative(process.cwd(), bin);
 		assert.equal(win32.isAbsolute(entry), false, entry);
-		vi.stubEnv("PATH", entry);
+		const expected = fakePowerShell(join(sandbox, "absolute-bin"));
+		vi.stubEnv("PATH", `${entry};${join(sandbox, "absolute-bin")}`);
 
 		const found = shell.getPowerShellConfig().shell;
 		const started = spawnSync(found, ["/c", "exit", "0"], { cwd: mkdtempSync(join(sandbox, "elsewhere-")) });

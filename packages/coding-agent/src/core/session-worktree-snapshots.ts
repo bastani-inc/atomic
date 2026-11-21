@@ -7,8 +7,10 @@ import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts"
 import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning, WorktreeSnapshotEntry } from "./session-manager-types.ts";
+import { findSessionOpenHolder } from "./session-open-markers.js";
 import { isStorageError } from "./storage/errors.js";
 import { readSessionTail } from "./storage/session/session-resume.js";
+import { storeSnapshotIndex } from "./storage/session/snapshot-records.js";
 import type { SessionRecordHeader, SessionStore } from "./storage/session/types.js";
 import {
 	type BestWorktreeRestore,
@@ -23,7 +25,9 @@ import {
 	captureLocatedCheckout,
 	captureWorktreeSnapshot,
 	locateCheckout,
+	nextCaptureTick,
 	recordWorktreeCapture,
+	type WorktreeSnapshotCapture,
 	type WorktreeSnapshotUnavailableReason,
 	withScratchDirectory,
 	writeWorkingTree,
@@ -82,7 +86,11 @@ import {
 	verifyWorktree,
 } from "./worktree-snapshot/restore.ts";
 import { adoptPrebuiltSeed } from "./worktree-snapshot/seeds.ts";
-import { keepSessionSnapshotCommit, releaseSessionSnapshotRefs } from "./worktree-snapshot/session-refs.ts";
+import {
+	keepSessionSnapshotCommit,
+	releaseSessionSnapshotRefs,
+	retireSessionSnapshotRefs,
+} from "./worktree-snapshot/session-refs.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -172,6 +180,8 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 
 	async recordTurn(message: AssistantMessage): Promise<void> {
+		// The turn's writes are done by now: a capture of a checkout that starts later holds them.
+		const wroteBy = nextCaptureTick();
 		const directories = this.touchedDirectories(message);
 		if (!directories) return;
 		let settings: WorktreeSnapshotSettings;
@@ -223,20 +233,29 @@ export class SessionWorktreeSnapshotRecorder {
 					blobs,
 					async () => {
 						const started = performance.now();
+						// A capture a collection makes run again is this session's own, from its own snapshot (#5077).
 						const result =
 							located === undefined
 								? await captureWorktreeSnapshot(root, { settings, previous, blobs })
-								: await captureLocatedCheckout(located, { settings, previous, blobs });
+								: await sharedCheckoutCapture(blobs, root, settings, wroteBy, previous, (startedAt) =>
+										// Every turn this capture serves wrote before it started; a scan that started later holds those writes.
+										captureLocatedCheckout(checkout, { settings, previous, blobs }, startedAt),
+									);
 						located = undefined;
 						captureMs = Math.floor(performance.now() - started);
 						return result;
 					},
 					async (result) => {
 						if (result.status === "captured" || result.status === "unchanged") {
+							// A capture another session took, or one unchanged since another session's snapshot, is recorded with
+							// its snapshot when this session holds no record of it; its content is already stored.
+							const held =
+								result.status === "unchanged" &&
+								this.deps.sessionManager.getWorktreeSnapshotRecords().has(result.snapshot.id);
 							await this.deps.sessionManager.appendWorktreeSnapshot(
 								root,
 								result.snapshot.id,
-								result.status === "captured" ? result.snapshot : undefined,
+								held ? undefined : result.snapshot,
 								undefined,
 								[],
 								undefined,
@@ -303,6 +322,62 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 }
 
+/** A capture of a checkout that runs now, and when it started. */
+interface CheckoutCapture {
+	readonly startedAt: number;
+	readonly result: Promise<WorktreeSnapshotCapture>;
+}
+
+/**
+ * The captures running now in this process into each blob table, by checkout, settings and the snapshot each starts
+ * from; one ends, it is forgotten.
+ */
+const runningCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCapture>>();
+
+/**
+ * Captures the checkout at `root` from the session's own earlier snapshot of it, `previous`, for a turn whose writes
+ * ended at `wroteBy`, sharing the work with every session of this process that captures it into the same blob table
+ * under the same settings from the same snapshot, as a parent and its fresh subagents do. A session's first capture of a
+ * checkout records it from its commit, never from another session's snapshot, whose history is not this session's. A
+ * capture that started after the turn's writes serves the turn as it is. When the one running started before, the next
+ * starts at once and serves every turn that ends before it starts, so a turn waits for at most the capture running when
+ * it ended and one more.
+ */
+async function sharedCheckoutCapture(
+	blobs: SnapshotBlobStore,
+	root: string,
+	settings: WorktreeSnapshotSettings,
+	wroteBy: number,
+	previous: WorktreeSnapshot | undefined,
+	capture: (startedAt: number) => Promise<WorktreeSnapshotCapture>,
+): Promise<WorktreeSnapshotCapture> {
+	let running = runningCaptures.get(blobs);
+	if (running === undefined) {
+		running = new Map();
+		runningCaptures.set(blobs, running);
+	}
+	const key = JSON.stringify([resolve(root), settings, previous?.id ?? null]);
+	let failed: CheckoutCapture | undefined;
+	for (;;) {
+		const flight = running.get(key);
+		// A capture that started after the turn's writes serves it; one that started before does not, and the next starts
+		// at once: its scan of the working files follows the running one's.
+		if (flight === undefined || flight === failed || flight.startedAt < wroteBy) {
+			const startedAt = nextCaptureTick();
+			const current: CheckoutCapture = { startedAt, result: capture(startedAt) };
+			running.set(key, current);
+			try {
+				return await current.result;
+			} finally {
+				if (running.get(key) === current) running.delete(key);
+			}
+		}
+		const result = await flight.result.catch(() => undefined);
+		if (result?.status === "captured" || result?.status === "unchanged") return result;
+		failed = flight;
+	}
+}
+
 /** Whether `error`, or a cause of it, is a failure of the storage: a storage error, or a session store's. */
 function isStorageFailure(error: unknown): boolean {
 	let current = error;
@@ -348,16 +423,74 @@ function restoredLineage(root: string, mappings: readonly WorktreeRootMapping[])
  * Deletes session `sessionId` from `store`, then the refs that kept its snapshot commits in the repositories of the
  * checkouts it recorded on this node (#4923). Rejects as `store.delete` does; releasing the refs never fails it.
  */
-export async function deleteSessionWithSnapshotRefs(
-	store: Pick<SessionStore, "load" | "delete">,
-	sessionId: string,
-): Promise<void> {
-	const roots = await store.load(sessionId).then(
-		({ entries }) => entries.flatMap((entry) => (entry.type === "worktree_snapshot" ? [entry.root] : [])),
+export async function deleteSessionWithSnapshotRefs(store: SessionStore, sessionId: string): Promise<void> {
+	const entries = await store.load(sessionId).then(
+		({ entries }) => entries,
 		() => [],
 	);
 	await store.delete(sessionId);
-	await releaseSessionSnapshotRefs(sessionId, new Set(roots));
+	await releaseSessionSnapshotRefs(sessionId, snapshotRoots(entries));
+	// The subagents it launched into its store as their own internal sessions kept refs of their own while they could be
+	// continued where they worked; they go with it, except a subagent's that runs now. Records of another session's
+	// subagents, as a fork copies them, are not its own; refs an earlier release left for its subagents, whose sessions
+	// were not internal, stay as they are.
+	const children = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== "subagent-child") continue;
+		const data = entry.data as
+			| {
+					readonly owner?: { readonly kind?: unknown; readonly sessionId?: unknown };
+					readonly childSessionId?: unknown;
+					readonly childSessionFile?: unknown;
+			  }
+			| undefined;
+		if (data?.owner?.kind !== "session" || data.owner.sessionId !== sessionId) continue;
+		if (typeof data.childSessionId === "string" && data.childSessionFile === undefined)
+			children.add(data.childSessionId);
+	}
+	for (const child of children) {
+		if ((await store.readHeader(child).catch(() => undefined))?.internal !== true) continue;
+		const open = await findSessionOpenHolder(child, { store }).then(
+			(holder) => holder !== undefined,
+			() => true,
+		);
+		if (open) continue;
+		await retireSessionSnapshotRefs(child, await recordedSnapshotRoots(store, child));
+	}
+}
+
+function snapshotRoots(entries: readonly SessionEntry[]): Set<string> {
+	return new Set(entries.flatMap((entry) => (entry.type === "worktree_snapshot" ? [entry.root] : [])));
+}
+
+/**
+ * The checkouts session `sessionId` of `store` recorded snapshots of: from its snapshot entries alone where the store
+ * keeps an index of them, otherwise from its whole history. None when it cannot be read.
+ */
+async function recordedSnapshotRoots(store: SessionStore, sessionId: string): Promise<Set<string>> {
+	const cut = await store.readSnapshotCut?.(sessionId).catch(() => undefined);
+	const index =
+		cut === undefined
+			? undefined
+			: await storeSnapshotIndex(store, sessionId, cut.epoch, cut.lastSeq)?.().catch(() => undefined);
+	if (index !== undefined) {
+		const roots = new Set<string>();
+		let whole = true;
+		try {
+			for await (const items of index.read(index.seqs))
+				for (const item of items) {
+					if (!("entry" in item)) whole = false;
+					else if (item.entry.type === "worktree_snapshot") roots.add(item.entry.root);
+				}
+		} catch {
+			whole = false;
+		}
+		if (whole) return roots;
+	}
+	return store.load(sessionId).then(
+		({ entries }) => snapshotRoots(entries),
+		() => new Set(),
+	);
 }
 
 async function nearestExisting(directory: string): Promise<string> {

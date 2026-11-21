@@ -168,8 +168,9 @@ export function renderSubagentResult(
 			c.addChild(new Text(fit(theme.fg("dim", `Fallbacks: ${r.attemptedModels.join(" → ")}`)), 0, 0));
 		}
 		c.addChild(new Text(fit(theme.fg("dim", formatUsage(r.usage))), 0, 0));
-		if (r.sessionFile) {
-			c.addChild(new Text(fit(theme.fg("dim", `Session: ${shortenPath(r.sessionFile)}`)), 0, 0));
+		if (r.sessionFile || r.sessionUrl) {
+			const session = r.sessionFile ? shortenPath(r.sessionFile) : r.sessionUrl;
+			c.addChild(new Text(fit(theme.fg("dim", `Session: ${session}`)), 0, 0));
 		}
 
 		if (!isRunning && r.artifactPaths) {

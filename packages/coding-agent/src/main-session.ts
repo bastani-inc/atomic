@@ -89,10 +89,10 @@ async function findSessionByExactId(
 async function sessionsWithIdPrefix(
 	idPrefix: string,
 	store: SessionStore,
-): Promise<{ readonly id: string; readonly cwd: string }[]> {
-	const sessions: { readonly id: string; readonly cwd: string }[] = [];
+): Promise<{ readonly id: string; readonly cwd: string; readonly internal: boolean }[]> {
+	const sessions: { readonly id: string; readonly cwd: string; readonly internal: boolean }[] = [];
 	for await (const summary of store.list({ idPrefix, includeInternal: true })) {
-		sessions.push({ id: summary.id, cwd: summary.cwd });
+		sessions.push({ id: summary.id, cwd: summary.cwd, internal: summary.internal });
 	}
 	return sessions;
 }
@@ -102,11 +102,21 @@ async function resolveSessionId(sessionArg: string, cwd: string, store: SessionS
 	if (exact) return exact;
 	const candidates = isSessionIdPrefix(sessionArg) ? await sessionsWithIdPrefix(sessionArg, store) : [];
 	const inProject = createSessionCwdMatcherAsync(resolvePath(cwd));
-	const localSessions: { readonly id: string; readonly cwd: string }[] = [];
+	const localSessions: { readonly id: string; readonly cwd: string; readonly internal: boolean }[] = [];
 	for (const session of candidates) {
 		if (await inProject(resolvePath(session.cwd))) localSessions.push(session);
 	}
-	const resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, async () => candidates);
+	let resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, async () => candidates);
+	// Session ids are time-ordered, so the internal sessions of subagents a session launched around the same time share
+	// its prefix: a prefix those make ambiguous resolves among the listed sessions alone.
+	if (resolution.kind === "ambiguous" && candidates.some((session) => !session.internal)) {
+		const listedOnly = await resolveSessionIdTargetAcrossScopes(
+			sessionArg,
+			localSessions.filter((session) => !session.internal),
+			async () => candidates.filter((session) => !session.internal),
+		);
+		if (listedOnly.kind === "exact" || listedOnly.kind === "unique_prefix") resolution = listedOnly;
+	}
 	if (resolution.kind === "exact" || resolution.kind === "unique_prefix") {
 		return {
 			type: resolution.scope,

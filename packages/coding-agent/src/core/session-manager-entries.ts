@@ -84,6 +84,7 @@ export function createSessionHeader(
 	cwd: string,
 	timestamp: string = new Date().toISOString(),
 	parentSession?: string,
+	internal?: boolean,
 ): SessionHeader {
 	return {
 		type: "session",
@@ -92,6 +93,7 @@ export function createSessionHeader(
 		createdAt: timestamp,
 		cwd,
 		...(parentSession === undefined ? {} : { parentSessionId: parentSession }),
+		...(internal === true ? { internal: true } : {}),
 	};
 }
 
