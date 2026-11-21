@@ -120,11 +120,8 @@ export async function execCommand(
 		// A command a quit would stop must not outlive this process when it is killed instead.
 		endWithParent: onQuit !== undefined,
 	});
-	if (onQuit !== undefined && proc.pid !== undefined) {
-		quitStoppableCommands.add(proc);
-		// Before its process can be reaped and its pid given to another process.
-		proc.once("exit", () => quitStoppableCommands.delete(proc));
-	}
+	// Until it settles; one that exited by then is left alone (see killQuitStoppableCommandsNow).
+	if (onQuit !== undefined && proc.pid !== undefined) quitStoppableCommands.add(proc);
 
 	let stdout = "";
 	let stderr = "";

@@ -7,7 +7,6 @@ import {
 	type RecordedProcess,
 	recordProcess,
 	signalRecordedProcess,
-	stillRuns,
 	waitUntilGone,
 } from "../../../test/helpers/recorded-process.js";
 import { execCommand, hasQuitStoppableCommands, killQuitStoppableCommandsNow } from "../src/core/exec.ts";
@@ -16,6 +15,8 @@ import { hostIsGone } from "../src/modes/interactive-engine/engine-host-loss.ts"
 /** Longer than a killed process takes to be gone, however loaded the machine. */
 const GONE_MS = 5_000;
 const POLL_MS = 20;
+/** Longer than a SIGKILLed process takes to be gone; a process still there after it was not signalled. */
+const KILL_SEEN_MS = 1_000;
 
 const directories: string[] = [];
 const processes: RecordedProcess[] = [];
@@ -91,7 +92,7 @@ describe.skipIf(process.platform === "win32")("ending the commands at once when 
 
 		killQuitStoppableCommandsNow();
 
-		assert.equal(await stillRuns(started), true, "a command no quit stops was ended");
+		assert.equal(await waitUntilGone(started, KILL_SEEN_MS), false, "a command no quit stops was ended");
 		controller.abort();
 		assert.equal((await running).killed, true, "the command ran until the test stopped it");
 	});
@@ -111,7 +112,11 @@ describe.skipIf(process.platform === "win32")("ending the commands at once when 
 
 		killQuitStoppableCommandsNow();
 
-		assert.equal(await stillRuns(started), true, "the process a finished command left running was ended");
+		assert.equal(
+			await waitUntilGone(started, KILL_SEEN_MS),
+			false,
+			"the process a finished command left running was ended",
+		);
 	});
 
 	test("leaves a program a running command started detached running", async () => {
@@ -128,7 +133,11 @@ describe.skipIf(process.platform === "win32")("ending the commands at once when 
 		killQuitStoppableCommandsNow();
 		await running;
 
-		assert.equal(await stillRuns(detached), true, "a program the command started detached was ended");
+		assert.equal(
+			await waitUntilGone(detached, KILL_SEEN_MS),
+			false,
+			"a program the command started detached was ended",
+		);
 	});
 });
 
