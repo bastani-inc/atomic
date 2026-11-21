@@ -68,7 +68,11 @@ declare module "./interactive-mode-base.ts" {
 		getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[];
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
-		setupAutocompleteProvider(options?: { preserveSelection?: boolean }): void;
+		/**
+		 * `refreshCommandMenu`, with `preserveSelection`: an open menu of command names whose first match is still
+		 * selected shows the new provider's answer for its text (see Editor.setAutocompleteProvider).
+		 */
+		setupAutocompleteProvider(options?: { preserveSelection?: boolean; refreshCommandMenu?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
@@ -296,10 +300,12 @@ declare module "./interactive-mode-base.ts" {
 		attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
 		getUserInput(): Promise<InteractiveSubmission>;
 		runUserPromptTurn(submission: InteractiveSubmission | string): Promise<void>;
-		renderDeferredUserInput(text: string): void;
+		/** Draws the echo of a sent message, into `echo` when it is drawn again; answers the echo. */
+		renderDeferredUserInput(text: string, echo?: DeferredUserInputEcho): DeferredUserInputEcho;
 		consumeDeferredRenderedUserInput(text: string): boolean;
-		discardDeferredRenderedUserInput(text: string): void;
-		expectStartedUserInput(text: string, shownBefore: number): void;
+		/** Removes the echo `echo` of `text`, or the oldest echo of `text` when none is named. */
+		discardDeferredRenderedUserInput(text: string, echo?: DeferredUserInputEcho): void;
+		expectStartedUserInput(text: string, shownBefore: number, echo?: DeferredUserInputEcho): void;
 		showSessionUserMessage(message: Message): void;
 		ensureDeferredStartupComplete(): Promise<void>;
 		rebuildChatFromMessages(options?: {

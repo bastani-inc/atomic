@@ -1,5 +1,6 @@
 import { totalmem } from "node:os";
 import { getHeapStatistics } from "node:v8";
+import { nodeOptionsFromEnvironment } from "@bastani/atomic-codemode/node-options";
 import { ENV_HEAP_MB, getEnvValue } from "../../config.js";
 
 const MIB = 1024 * 1024;
@@ -27,32 +28,6 @@ function lastHostHeapFlag(execArgv: readonly string[]): string[] | undefined {
 	return undefined;
 }
 
-/** Splits `NODE_OPTIONS` the way Node does: whitespace separates options, double quotes group, `\` escapes. */
-export function splitNodeOptions(nodeOptions: string): string[] {
-	const options: string[] = [];
-	let current = "";
-	let quoted = false;
-	let started = false;
-	for (let index = 0; index < nodeOptions.length; index++) {
-		const character = nodeOptions[index]!;
-		if (character === "\\" && quoted && index + 1 < nodeOptions.length) {
-			current += nodeOptions[++index];
-		} else if (character === '"') {
-			quoted = !quoted;
-			started = true;
-		} else if (/\s/.test(character) && !quoted) {
-			if (started) options.push(current);
-			current = "";
-			started = false;
-		} else {
-			current += character;
-			started = true;
-		}
-	}
-	if (started) options.push(current);
-	return options;
-}
-
 /**
  * Node flags that size the interactive engine's V8 heap. The engine hosts every in-process subagent, so V8's default limit (about 4 GiB) caps the whole fleet regardless of machine size. Under Node the engine
  * gets half of system memory, or of its container's memory limit when that is smaller, when this exceeds the
@@ -65,7 +40,9 @@ export function engineHeapRuntimeArgs(inputs: EngineHeapInputs): string[] {
 	if (!inputs.runsOnNode) return [];
 	const forwarded = lastHostHeapFlag(inputs.execArgv);
 	if (forwarded) return forwarded;
-	if (splitNodeOptions(inputs.nodeOptions ?? "").some((option) => MAX_OLD_SPACE_FLAG.test(option))) return [];
+	if (nodeOptionsFromEnvironment(inputs.nodeOptions).some((option) => option.name === "--max-old-space-size")) {
+		return [];
+	}
 	const configured = inputs.configuredHeapMb?.trim();
 	if (configured) {
 		const heapMb = Number(configured);

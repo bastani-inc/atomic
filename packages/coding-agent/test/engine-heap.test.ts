@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import {
-	type EngineHeapInputs,
-	engineHeapRuntimeArgs,
-	splitNodeOptions,
-} from "../src/modes/interactive-engine/engine-heap.js";
+import { type EngineHeapInputs, engineHeapRuntimeArgs } from "../src/modes/interactive-engine/engine-heap.js";
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -53,12 +49,28 @@ describe("interactive engine heap sizing", () => {
 	});
 
 	it("recognizes a quoted heap size in NODE_OPTIONS", () => {
-		assert.deepEqual(splitNodeOptions('--trace-warnings "--max-old-space-size=2048" "--title=a \\"b\\""'), [
-			"--trace-warnings",
-			"--max-old-space-size=2048",
-			'--title=a "b"',
-		]);
-		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, nodeOptions: '"--max-old-space-size=2048"' }), []);
+		for (const nodeOptions of [
+			'"--max-old-space-size=2048"',
+			'--trace-warnings "--max-old-space-size=2048" "--title=a \\"b\\""',
+		]) {
+			assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, nodeOptions }), []);
+		}
+	});
+
+	it("sizes the engine when NODE_OPTIONS names a heap size that Node does not apply", () => {
+		for (const nodeOptions of [
+			// Only a space separates options: a tab is part of the title.
+			"--title=a\t--max-old-space-size=2048",
+			// Node reads NODE_OPTIONS no further than a word that is neither an option nor an option's value.
+			"--trace-warnings word --max-old-space-size=2048",
+			'--title "a --max-old-space-size=2048"',
+		]) {
+			assert.deepEqual(
+				engineHeapRuntimeArgs({ ...largeMachine, nodeOptions }),
+				["--max-old-space-size=32768"],
+				nodeOptions,
+			);
+		}
 	});
 
 	it("forwards the host's last command-line heap size, which Node applies over NODE_OPTIONS", () => {

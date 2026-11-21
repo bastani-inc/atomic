@@ -13,7 +13,9 @@ import type { AgentPanelSource } from "../tasks/agent-panel-source.ts";
 import {
 	assertExtensionAction,
 	extensionWorkOpen,
+	inExtensionCleanup,
 	isRetiredExtensionCleanup,
+	onExtensionSessionQuit,
 	trackExtensionWork,
 } from "./extension-work.ts";
 import { hostInputError } from "./host-input.js";
@@ -452,7 +454,15 @@ export function createExtensionAPI(
 
 		exec(command: string, args: string[], options?: ExecOptions) {
 			assertActive();
-			return trackAPIWork(() => execCommand(command, args, options?.cwd ?? cwd, options));
+			// A command started before its session quits ends with the quit, so it cannot keep the session's shutdown
+			// handlers from running. One a shutdown handler starts runs to its end.
+			const ownerRuntime = resolveInvocationRuntime(originalRuntime);
+			const lifetime = (extension as ExtensionWithLifetime)[apiLifetime];
+			const onQuit =
+				inExtensionCleanup(ownerRuntime) || lifetime?.cleanup?.getStore()?.active
+					? undefined
+					: (stop: () => void) => onExtensionSessionQuit(ownerRuntime, stop);
+			return trackAPIWork(() => execCommand(command, args, options?.cwd ?? cwd, options, onQuit));
 		},
 
 		getSettings() {

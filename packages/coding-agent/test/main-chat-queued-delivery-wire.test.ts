@@ -81,9 +81,24 @@ describe("the lines an engine writes about the queued messages its main session 
 	test("tell a host that asked about a taken message with the queue_update that drops it, and its end with its message_start (#6080)", async () => {
 		const engine = await engineLines(new QueuedDeliveryRelay());
 		await engine.deliver("later one");
+		const taken = changes(engine.lines)[0]?.change as { taken?: { receipt?: { id?: string } }[] } | undefined;
+		const id = taken?.taken?.[0]?.receipt?.id;
+		assert.equal(typeof id, "string", "the taken message carries its receipt");
+		// Its receipt: the id it is saved with, and how many entries the session had stored when the turn took it.
+		const stored = engine.session.sessionManager
+			.getEntries()
+			.findIndex((entry) => entry.type === "message" && entry.queuedMessageId === id);
+		assert.ok(stored > 0, "the message is saved with its receipt id");
+		const historyEpoch = engine.session.sessionManager.getHistoryEpoch();
+		const epoch = historyEpoch === undefined ? {} : { epoch: historyEpoch };
 		assert.deepEqual(changes(engine.lines), [
-			{ type: "queue_update", change: { taken: [{ lane: "steer", text: "later one" }] } },
-			{ type: "message_start", change: { ended: 1 } },
+			{
+				type: "queue_update",
+				change: { taken: [{ lane: "steer", text: "later one", receipt: { id, after: stored, ...epoch } }] },
+			},
+			// Its start and its save name it by that id.
+			{ type: "message_start", change: { message: id, ended: 1 } },
+			{ type: "message_end", change: { message: id } },
 		]);
 		const dropping = engine.lines.find((line) => "atomicQueuedDeliveries" in line);
 		const { atomicQueuedDeliveries: _change, ...publicPart } = dropping ?? {};

@@ -135,6 +135,7 @@ export function waitForChildProcess(
 		let stderrEnded = child.stderr === null;
 		let windowsExitPoll: NodeJS.Timeout | undefined;
 		let windowsExitCodeGraceTimer: NodeJS.Timeout | undefined;
+		let windowsExitCodeFallback: NodeJS.Immediate | undefined;
 		const platform = options.platform ?? process.platform;
 		const processAlive = options.isWindowsProcessAlive ?? isWindowsProcessAlive;
 		const windowsExitPollIntervalMs = options.windowsExitPollIntervalMs ?? WINDOWS_EXIT_POLL_INTERVAL_MS;
@@ -156,6 +157,10 @@ export function waitForChildProcess(
 			if (windowsExitCodeGraceTimer) {
 				clearTimeout(windowsExitCodeGraceTimer);
 				windowsExitCodeGraceTimer = undefined;
+			}
+			if (windowsExitCodeFallback) {
+				clearImmediate(windowsExitCodeFallback);
+				windowsExitCodeFallback = undefined;
 			}
 			child.removeListener("error", onError);
 			child.removeListener("exit", onExit);
@@ -219,6 +224,10 @@ export function waitForChildProcess(
 				clearTimeout(windowsExitCodeGraceTimer);
 				windowsExitCodeGraceTimer = undefined;
 			}
+			if (windowsExitCodeFallback) {
+				clearImmediate(windowsExitCodeFallback);
+				windowsExitCodeFallback = undefined;
+			}
 			exited = true;
 			exitCode = mapSignalExitCode(code, signal, platform);
 			maybeFinalizeAfterExit();
@@ -236,7 +245,12 @@ export function waitForChildProcess(
 			}
 			windowsExitCodeGraceTimer = setTimeout(() => {
 				windowsExitCodeGraceTimer = undefined;
-				onExit(child.exitCode ?? 0, null);
+				// A loop held past the grace runs this timer before the events that arrived meanwhile, the child's exit among
+				// them: let those go first, so a reported exit code always wins over the fallback.
+				windowsExitCodeFallback = setImmediate(() => {
+					windowsExitCodeFallback = undefined;
+					onExit(child.exitCode ?? 0, null);
+				});
 			}, windowsExitCodeGraceMs);
 		};
 

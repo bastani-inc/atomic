@@ -704,7 +704,7 @@ export type {
 export { DefaultPackageManager } from "./core/package-manager.ts";
 // Internal: lets the bundled Intercom extension tell the broker it started from a later process given the same pid;
 // not a stable extension API.
-export { readProcessCreationTime } from "./core/process-start-token.js";
+export { processStartToken, readProcessCreationTime, readProcessStartToken } from "./core/process-start-token.js";
 // Shell utilities
 export {
 	containProcessTree,

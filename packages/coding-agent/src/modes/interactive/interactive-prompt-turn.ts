@@ -12,7 +12,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	this: InteractiveModeBase,
 	input: InteractiveSubmission | string,
 ): Promise<void> {
-	const { text: userInput, draft } = toInteractiveSubmission(input);
+	const { text: userInput, draft, echo: submittedEcho } = toInteractiveSubmission(input);
 	// An extension command's hold of the prompt's slot ends with the turn at the latest.
 	const extensionCommandHold = typeof input === "string" ? undefined : takeSubmittedExtensionCommandHold(input);
 	const turn = this.promptTurn ?? { dispatched: false };
@@ -61,7 +61,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 				await this.session.resumeQueuedMessages();
 			}
 			const shownBefore = this.userMessagesShownBySession;
-			const startedEcho = followStartedRunEcho(this, userInput, { sendShowsWorkingRow: true });
+			const startedEcho = followStartedRunEcho(this, userInput, { sendShowsWorkingRow: true, echo: submittedEcho });
 			echo = startedEcho;
 			let started = false;
 			await this.session.prompt(userInput, {
@@ -70,10 +70,10 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 					refused = !success;
 					// A queued message is listed as queued, and one an `input` hook handled is not sent at all (#4285).
 					if (success && (disposition === "queued" || disposition === "handled"))
-						this.discardDeferredRenderedUserInput(userInput);
+						this.discardDeferredRenderedUserInput(userInput, submittedEcho);
 					if (success && disposition === "started") {
 						started = true;
-						this.expectStartedUserInput(userInput, shownBefore);
+						this.expectStartedUserInput(userInput, shownBefore, submittedEcho);
 					}
 					// The run's own events decide its echo (#5135), however they and this answer are ordered.
 					if (success) startedEcho.answer(disposition === "started");
@@ -84,7 +84,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} catch (error) {
 		echo?.close();
-		this.discardDeferredRenderedUserInput(userInput);
+		this.discardDeferredRenderedUserInput(userInput, submittedEcho);
 		if (refused && !turnStarted) {
 			restoreRefusedSubmission(this, error, draft);
 			return;

@@ -136,6 +136,21 @@ export async function loadFinalExtensionSet(
 	}
 
 	const inlineExtensions = preTrustExtensions.extensions.filter((extension) => extension.path.startsWith("<inline:"));
+	// Inline extensions the pre-trust load left out load now, each in its place among the others.
+	const omitted = omittedInlineFactories.get(preTrustExtensions);
+	const lateInline = omitted
+		? await loadExtensionFactories(
+				loader,
+				preTrustExtensions.runtime,
+				packageMcpServerSource,
+				inheritanceSnapshotProvider,
+				{ only: omitted },
+			)
+		: { extensions: [], errors: [] };
+	if (lateInline.extensions.length > 0) {
+		inlineExtensions.push(...lateInline.extensions);
+		inlineExtensions.sort((a, b) => (inlineFactoryIndex.get(a) ?? 0) - (inlineFactoryIndex.get(b) ?? 0));
+	}
 	const orderedExtensions = extensionPaths
 		.map((path) => loadedByPath.get(extensionPathKey(path)))
 		.filter((extension): extension is Extension => extension !== undefined);
@@ -143,11 +158,30 @@ export async function loadFinalExtensionSet(
 
 	const extensionsResult: LoadExtensionsResult = {
 		extensions: orderedExtensions,
-		errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
+		errors: [...preTrustExtensions.errors, ...remainingExtensions.errors, ...lateInline.errors],
 		warnings: [...(preTrustExtensions.warnings ?? []), ...(remainingExtensions.warnings ?? [])],
 		runtime: preTrustExtensions.runtime,
 	};
 	return extensionsResult;
+}
+
+/** Where each inline extension's factory is in its loader's list. */
+const inlineFactoryIndex = new WeakMap<Extension, number>();
+/** The inline factories, by position in the loader's list, that a pre-trust load left out for the final set to load. */
+const omittedInlineFactories = new WeakMap<LoadExtensionsResult, ReadonlySet<number>>();
+
+/** Records that the pre-trust load `result` left out the inline factories at `indices`. */
+export function omitInlineFactories(result: LoadExtensionsResult, indices: ReadonlySet<number>): void {
+	if (indices.size > 0) omittedInlineFactories.set(result, indices);
+}
+
+/** The positions of the loader's inline factories that are Atomic's bundled ones (which answer no `project_trust`). */
+export function bundledInlineFactories(loader: DefaultResourceLoader): Set<number> {
+	const indices = new Set<number>();
+	for (const [index, input] of resourceInternals(loader).extensionFactories.entries()) {
+		if (typeof input !== "function" && input.bundled === true && input.builtin !== true) indices.add(index);
+	}
+	return indices;
 }
 
 export async function loadExtensionFactories(
@@ -155,6 +189,8 @@ export async function loadExtensionFactories(
 	runtime: ExtensionRuntime,
 	packageMcpServerSource: PackageMcpServerSource,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
+	/** Load only the factories at these positions, or all but these. */
+	select?: { readonly only: ReadonlySet<number> } | { readonly except: ReadonlySet<number> },
 ): Promise<{
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
@@ -162,9 +198,11 @@ export async function loadExtensionFactories(
 	const state = resourceInternals(loader);
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
+	let visited = 0;
 
 	for (const [index, inlineExtension] of state.extensionFactories.entries()) {
-		if (index > 0) {
+		if (select && ("only" in select ? !select.only.has(index) : select.except.has(index))) continue;
+		if (visited++ > 0) {
 			await yieldToEventLoop();
 		}
 		const descriptor = typeof inlineExtension === "function" ? undefined : inlineExtension;
@@ -184,6 +222,7 @@ export async function loadExtensionFactories(
 			extension.hidden = descriptor?.hidden;
 			extension.replaceable = descriptor?.replaceable === true;
 			if (descriptor?.bundled) extension.sourceInfo.configurationOrigin = "bundled";
+			inlineFactoryIndex.set(extension, index);
 			extensions.push(extension);
 		} catch (error) {
 			if (error instanceof Error && "code" in error && error.code === "ShutdownFailed") throw error;

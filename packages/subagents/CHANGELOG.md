@@ -5,6 +5,8 @@
 ### Fixed
 
 - A background subagent that finished while its question to you (`contact_supervisor` or an Intercom `ask`) was still open is no longer relaunched after a restart only to be told that the question was interrupted. The next time the subagent runs, it is told once ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+- A subagent's launch card shows `Queued` with the queued mark (`○`) while it waits for its turn to run, and `Stopping` with the stopping mark (`◼`) while it is being stopped, as the agent panel shows it, instead of `Running`.
+- A subagent that finished without text output shows the done mark (`●`) in result rows and summaries instead of `!`. Its label still says `Done (no text output)`.
 - A subagent restored after Atomic stopped unexpectedly continues on the model and thinking level it was running on, also when that attempt started on another model than the one before it (a `context: "fork"` launch, or a restored subagent whose own model is gone). A subagent now starts only once its launch is saved in the session that launched it. When that save fails, it does not start and sends nothing to its model: its result names the storage error and `subagent status` shows `record-append-failed`.
 
 ## [0.10.3] - 2026-11-21
