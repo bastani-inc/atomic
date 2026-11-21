@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, it } from "vitest";
+import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
+
+/** A Bun process that loads an extension twice; its cost is starting Bun and Atomic's loader. */
+const BUN_LOAD_TIMEOUT_MS = 60_000;
 
 interface JsonValues {
 	readonly eager: { readonly value: string };
@@ -177,5 +183,43 @@ export default function () {
 		} finally {
 			delete createRequire(data).cache[data];
 		}
+	});
+
+	it("keep a package.json or tsconfig.json with comments loading as Bun reads it", {
+		timeout: BUN_LOAD_TIMEOUT_MS + 10_000,
+	}, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const writePackage = (version: string) =>
+			fs.writeFileSync(
+				path.join(root, "package.json"),
+				`{\n\t// Bun reads a package.json with comments\n\t"name": "probe",\n\t"version": "${version}",\n}\n`,
+			);
+		writePackage("1.0.0");
+		fs.writeFileSync(path.join(root, "tsconfig.json"), `{ /* comment */ "compilerOptions": {}, }`);
+		fs.writeFileSync(
+			path.join(root, "extension.ts"),
+			`import meta from "./package.json";\nimport tsconfig from "./tsconfig.json";\nexport default function () {\n\treturn [meta.version, typeof tsconfig];\n}\n`,
+		);
+		const loader = pathToFileURL(
+			path.join(import.meta.dirname, "../src/core/extensions/loader-virtual-modules.ts"),
+		).href;
+		const script = path.join(root, "load.ts");
+		fs.writeFileSync(
+			script,
+			`import { writeFileSync } from "node:fs";
+const { extensionLoaderTestHooks } = await import(${JSON.stringify(loader)});
+const load = async () => ((await extensionLoaderTestHooks.loadTransformedExtensionModule(${JSON.stringify(path.join(root, "extension.ts"))}, undefined, ${JSON.stringify(path.join(root, "agent"))})) as () => unknown)();
+const first = await load();
+writeFileSync(${JSON.stringify(path.join(root, "package.json"))}, '{ "name": "probe", "version": "2.0.0", // edited\\n}');
+console.log(JSON.stringify([first, await load()]));
+`,
+		);
+		const result = spawnSync(bunExecutable(), [script], { encoding: "utf8", timeout: BUN_LOAD_TIMEOUT_MS });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(result.stdout.trim().split("\n").at(-1) ?? ""), [
+			["1.0.0", "object"],
+			["2.0.0", "object"],
+		]);
 	});
 });
