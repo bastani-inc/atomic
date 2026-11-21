@@ -275,6 +275,57 @@ describe("a Bedrock failure that is not its connection's", () => {
 	});
 });
 
+describe("Bedrock's tunnel request and connection errors", () => {
+	it("sends the CONNECT request https-proxy-agent sends, with the proxy URL's credentials decoded", async () => {
+		// A proxy that records what it is sent up to the blank line ending the headers, then refuses the tunnel.
+		const received: Buffer[] = [];
+		const proxy = createNetServer((socket: Socket) => {
+			socket.on("error", () => {});
+			socket.on("data", (chunk: Buffer) => {
+				received.push(chunk);
+				if (Buffer.concat(received).includes("\r\n\r\n"))
+					socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+			});
+		});
+		const port = await listen(proxy);
+		await bedrockTurn("https://localhost:9", `http://us%40er:p%3Ass%20w@127.0.0.1:${port}`);
+
+		const credentials = Buffer.from("us@er:p:ss w").toString("base64");
+		assert.equal(
+			Buffer.concat(received).toString("latin1"),
+			`CONNECT localhost:9 HTTP/1.1\r\nProxy-Authorization: Basic ${credentials}\r\nHost: localhost:9\r\nProxy-Connection: close\r\n\r\n`,
+		);
+	});
+
+	it("names each connection error by its own code, and Bun's closed socket as the reset it is", async () => {
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const failures: [Error, string][] = [
+			[Object.assign(new Error("Transport stopped"), { code: "ECONNREFUSED" }), "Transport stopped (ECONNREFUSED)"],
+			[Object.assign(new Error("Transport stopped"), { code: "ETIMEDOUT" }), "Transport stopped (ETIMEDOUT)"],
+			[Object.assign(new Error("Transport stopped"), { code: "EPIPE" }), "Transport stopped (EPIPE)"],
+			[Object.assign(new Error("Transport stopped"), { code: "ECONNRESET" }), "Transport stopped (ECONNRESET)"],
+			[Object.assign(new Error("Transport stopped"), { code: "ERR_SOCKET_CLOSED" }), "Transport stopped (ECONNRESET)"],
+			// Node.js on Windows can report a refused connection to localhost with no message of its own.
+			[Object.assign(new AggregateError([], ""), { code: "ECONNREFUSED" }), "ECONNREFUSED"],
+		];
+		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle");
+		try {
+			for (const [failure, expected] of failures) {
+				handle.mockRejectedValueOnce(failure);
+				const message = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+					cacheRetention: "none",
+					maxRetries: 0,
+					env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				}).result();
+				assert.equal(message.errorMessage, expected);
+				assert.equal(isRetryableAssistantError(message), true, expected);
+			}
+		} finally {
+			handle.mockRestore();
+		}
+	});
+});
+
 describe("a provider's answer that names a connection error", () => {
 	it("is not retried for its text: an HTTP 400 whose body names a closed socket or a dropped proxy connection", async () => {
 		// What a connection error reads like on Node.js and Bun, quoted by a provider in an answer to a bad request.

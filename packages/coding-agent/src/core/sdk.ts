@@ -884,10 +884,20 @@ async function constructAgentSession(
 			};
 			const { authResult, requestModel, fastRouteStreamOptions, requestOptions } = await prepare();
 			if (streamOptions?.sessionId === requestSessionId()) {
-				// The conversation's first request after a resume is on its way: a later run is no longer the first. A
-				// summary request (it has its own session id) or a provider setup that failed leaves the resume's budget
-				// check to the request that follows.
-				(session as unknown as AgentSessionInternalSurface)._resumeBudgetCheckpoint = undefined;
+				// The conversation's first request after a resume that sends the session's prompt as it is now is on its
+				// way: a later run is no longer the first. A summary request (it has its own session id), a provider setup
+				// that failed, or a request without the prompt update the resume needs, such as an interrupt's, leaves the
+				// resume's budget check to the request that follows.
+				const internal = session as unknown as AgentSessionInternalSurface;
+				const update = internal._resumePromptUpdate;
+				if (
+					internal._resumeBudgetCheckpoint &&
+					(update === null || (update !== undefined && agent.state.messages.lastIndexOf(update) !== -1))
+				) {
+					internal._resumeBudgetCheckpoint = undefined;
+					internal._resumePromptUpdate = undefined;
+					internal._resumeHeldUpdate = undefined;
+				}
 				const prefix = [...agent.state.messages];
 				const warmOptions: ModelRuntimeSimpleStreamOptions = {
 					...fastRouteStreamOptions,
