@@ -50,8 +50,9 @@ export const SHARED_DIRECTORY = "_shared";
  * Dependencies bundled into the shared files instead of loaded from `node_modules`: packages only this package's own
  * code imports by name (the extension loader hands none of them to extensions, and Atomic's other packages do not import
  * them), with no state another copy would need to share, that read no file beside their own. The build checks that each
- * one's own dependencies are bundled too. Kept out: `undici` (its fetch tells its own frames in error stacks by its file
- * name) and `chalk` (it reads the terminal's color support when it loads).
+ * one's own dependencies are bundled too. Kept out: `highlight.js` (code that registers a language or plugin in the
+ * installed package changes what the SDK's `highlightCode` does), `undici` (its fetch tells its own frames in error
+ * stacks by its file name) and `chalk` (it reads the terminal's color support when it loads).
  */
 export const INLINED_PACKAGES = [
 	"@isaacs/nonrecursive-glob-match",
@@ -61,7 +62,6 @@ export const INLINED_PACKAGES = [
 	"cross-spawn",
 	"diff",
 	"fast-sha256",
-	"highlight.js",
 	"hosted-git-info",
 	"ignore",
 	"isexe",
