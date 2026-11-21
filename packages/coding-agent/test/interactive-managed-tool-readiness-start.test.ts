@@ -138,3 +138,14 @@ describe.each(["in-process", "isolated"] as const)("the managed-tool readiness c
 		assert.equal(starts.length, 1);
 	});
 });
+
+test("a mode that init() starts again after stop() checks the tools again, as each start did before", async () => {
+	const { mode, starts, settled } = await interactiveMode("in-process");
+	await mode.init();
+	await settled();
+	mode.stop();
+	// What was found before may have changed while the mode was stopped, such as fd being removed.
+	await mode.init();
+	await settled();
+	assert.equal(starts.length, 2);
+});
