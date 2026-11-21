@@ -509,7 +509,11 @@ export type AttemptOutcome = (
 			readonly thinking?: string;
 	  }
 ) &
-	AttemptSkillReport & { readonly cleanupCause?: unknown };
+	AttemptSkillReport & {
+		readonly cleanupCause?: unknown;
+		/** The working directory the child's session records, whose project its history URL is read in. */
+		readonly sessionCwd?: string;
+	};
 
 interface SessionDisposal {
 	readonly cleanup: Cleanup;
@@ -1741,7 +1745,8 @@ async function cancelledEnvelope(
 		sessionFile === undefined
 			? childSessionLocator({
 					sessionId: session?.sessionId ?? spec.sessionManager?.getSessionId(),
-					cwd: spec.cwd,
+					// The project a history URL reads the session in is the one its header records.
+					cwd: session?.sessionManager?.getHeader?.()?.cwd ?? spec.sessionManager?.getHeader?.()?.cwd ?? spec.cwd,
 					parentCwd: spec.parentCwd,
 				})
 			: undefined;
@@ -2192,10 +2197,22 @@ export class SubagentControlRuntime {
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
 		let disposal: Promise<SessionDisposal> | undefined;
-		const outcome = await this.attemptChild(admitted, candidate, signals, onModelChange, taskHooks, (disposing) => {
-			disposal = disposing;
-			onCleanup?.(disposing.then(({ cleanup }) => cleanup));
-		});
+		let sessionCwd: string | undefined;
+		const attempted = await this.attemptChild(
+			admitted,
+			candidate,
+			signals,
+			onModelChange,
+			taskHooks,
+			(disposing) => {
+				disposal = disposing;
+				onCleanup?.(disposing.then(({ cleanup }) => cleanup));
+			},
+			(cwd) => {
+				sessionCwd = cwd;
+			},
+		);
+		const outcome: AttemptOutcome = sessionCwd === undefined ? attempted : { ...attempted, sessionCwd };
 		if (onCleanup || disposal === undefined) return outcome;
 		if (outcome.status === "error" && outcome.startError && isSessionStartTimeoutError(outcome.startError)) {
 			const timeout: SessionStartError & { cleanupCause?: unknown } = outcome.startError;
@@ -2227,6 +2244,7 @@ export class SubagentControlRuntime {
 			  >
 			| undefined,
 		onDisposal: (disposal: Promise<SessionDisposal>) => void,
+		onSessionCwd?: (cwd: string) => void,
 	): Promise<AttemptOutcome> {
 		const elapsedSpan = admitted.spec.elapsedSpan ?? { dispatchedAt: Date.now() };
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
@@ -2531,6 +2549,8 @@ export class SubagentControlRuntime {
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
+			const recordedCwd = sessionManager.getHeader()?.cwd;
+			if (recordedCwd !== undefined) onSessionCwd?.(recordedCwd);
 			openedThroughId = sessionManager.getEntries().at(-1)?.id ?? null;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {

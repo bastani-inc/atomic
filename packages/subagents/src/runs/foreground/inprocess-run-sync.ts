@@ -171,7 +171,7 @@ function resultFromOutcome(
 			: {
 					sessionUrl: childSessionLocator({
 						sessionId: outcome.stats.sessionId,
-						cwd: place.cwd,
+						cwd: outcome.sessionCwd ?? place.cwd,
 						parentCwd: place.parentCwd,
 					}),
 				}),
