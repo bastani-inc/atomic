@@ -8,6 +8,7 @@ import * as sdkSystem from "@bastani/atomic/typebox/system";
 import * as sdkValue from "@bastani/atomic/typebox/value";
 import { validateToolArguments } from "@bastani/atomic-ai";
 import { expect, it } from "vitest";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.js";
 import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { clearExtensionCache, extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
@@ -113,6 +114,20 @@ export default function (pi) {
 			fs.rmSync(root, { recursive: true, force: true });
 			clearExtensionCache();
 		}
+	},
+	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+);
+
+// Bun imports an extension natively on its first load; one that has a `typebox` package of its own still reaches
+// Atomic's copy, so its formats apply to tool validation.
+it(
+	"under Bun, an extension with its own typebox package registers its formats in Atomic's copy",
+	() => {
+		const result = spawnSyncCollect(
+			[bunExecutable(), path.join(moduleDir(import.meta.url), "fixtures/extensions-native-typebox.ts")],
+			{ timeout: REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS },
+		);
+		expect(result.exitCode, result.stdout.toString() + result.stderr.toString()).toBe(0);
 	},
 	REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 );

@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Atomic now ships its own copy of TypeBox, so an SDK app installed with Bun or with pnpm hoisting no longer shares its own `typebox` package with Atomic (with npm it already did not). Schemas built with that `typebox` still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. Extensions are not affected: their `typebox` imports already resolve to Atomic's copy.
+- Atomic now ships its own copy of TypeBox, so an SDK app installed with Bun or with pnpm hoisting no longer shares its own `typebox` package with Atomic (with npm it already did not). Schemas built with that `typebox` still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. Extensions are not affected: every `typebox` import in an extension's own code resolves to Atomic's copy, also under Bun when the extension has a `typebox` package of its own.
 
 ### Added
 
