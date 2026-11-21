@@ -5,6 +5,7 @@
 ### Fixed
 
 - A model request refused because the endpoint's TLS certificate is not trusted, as behind a corporate TLS-inspecting proxy or with a self-signed endpoint, now fails at once instead of counting through every retry. The error names the host, the certificate problem (such as `SELF_SIGNED_CERT_IN_CHAIN`) and how to trust a private CA with `NODE_EXTRA_CA_CERTS`, which the docs now describe. Like a rejected credential, it still moves on to `fallbackModels`, trying each once. Failure classification reports it as the new `certificate_refused` kind ([#6114](https://github.com/bastani-inc/atomic/issues/6114))
+- Fixed an error in Atomic's own handling of something the interactive engine sent being reported as malformed output from the engine, which restarted the engine, or ending Atomic when it happened while a tool's output updated, after a compaction or in an asynchronous step. Atomic now shows the error with its cause and carries on ([#6107](https://github.com/bastani-inc/atomic/issues/6107)).
 
 ## [0.10.2] - 2026-11-20
 
