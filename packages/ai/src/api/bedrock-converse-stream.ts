@@ -489,7 +489,22 @@ function formatBedrockError(error: unknown): string {
 		const prefix = BEDROCK_ERROR_PREFIXES[error.name] ?? error.name;
 		return `${prefix}: ${core}${dataRetentionHint}`;
 	}
-	return `${core}${dataRetentionHint}`;
+	return `${withConnectionCode(core, error, norm.status)}${dataRetentionHint}`;
+}
+
+/** A connection error's code, such as `ECONNRESET`, as Node.js and Bun name them. */
+const CONNECTION_ERROR_CODE = /^(?:E[A-Z]+|ERR_SOCKET_[A-Z_]+)$/;
+
+/**
+ * `message` with the code of the connection error it reports, when it does not name it: the HTTP handler's own errors
+ * carry their reason in the code, such as `ECONNRESET` for a connection reset during a TLS handshake or before a proxy
+ * answered, which is what the retry rules read.
+ */
+function withConnectionCode(message: string, error: unknown, status: number | undefined): string {
+	if (status !== undefined || typeof error !== "object" || error === null) return message;
+	const code = (error as { code?: unknown }).code;
+	if (typeof code !== "string" || !CONNECTION_ERROR_CODE.test(code) || message.includes(code)) return message;
+	return `${message} (${code})`;
 }
 
 type SdkErrorMetadata = { $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };
@@ -563,9 +578,13 @@ function bedrockUserAgent(identity: ClientIdentity | undefined): string | [strin
 	return mode === "short" ? [["atomic"]] : [["atomic", getClientVersion(identity)]];
 }
 
-/** What a proxy answered a tunnel request with: its status, and every byte read from it so far. */
+/** What a proxy answered a tunnel request with, as https-proxy-agent reports it, and every byte read from it so far. */
 interface TunnelAnswer {
-	readonly statusCode: number;
+	readonly connect: {
+		readonly statusCode: number;
+		readonly statusText: string;
+		readonly headers: Record<string, string | string[]>;
+	};
 	readonly buffered: Buffer;
 }
 
@@ -606,11 +625,20 @@ function readTunnelAnswer(socket: Socket): Promise<TunnelAnswer> {
 				if (end === -1) continue;
 				const [statusLine = "", ...headerLines] = buffered.subarray(0, end).toString("ascii").split("\r\n");
 				if (statusLine === "") return fail(new Error("No header received from proxy CONNECT response"));
-				const invalid = headerLines.find((line) => line !== "" && !line.includes(":"));
-				if (invalid !== undefined) return fail(new Error(`Invalid header from proxy CONNECT response: "${invalid}"`));
+				const headers: Record<string, string | string[]> = {};
+				for (const line of headerLines) {
+					if (line === "") continue;
+					const colon = line.indexOf(":");
+					if (colon === -1) return fail(new Error(`Invalid header from proxy CONNECT response: "${line}"`));
+					const name = line.slice(0, colon).toLowerCase();
+					const value = line.slice(colon + 1).trimStart();
+					const current = headers[name];
+					headers[name] = current === undefined ? value : [current, value].flat();
+				}
 				stopReading();
 				socket.removeListener("error", onError);
-				return resolve({ statusCode: Number(statusLine.split(" ")[1]), buffered });
+				const [, status = "", ...text] = statusLine.split(" ");
+				return resolve({ connect: { statusCode: Number(status), statusText: text.join(" "), headers }, buffered });
 			}
 		}
 		socket.on("readable", read);
@@ -656,7 +684,10 @@ class ProxyHopHttpsAgent extends HttpsProxyAgent<string> {
 			recordProxyConnectionFailure(error, proxy);
 			throw error;
 		}
-		if (response.statusCode === 200) {
+		request.emit("proxyConnect", response.connect);
+		this.emit("proxyConnect", response.connect, request);
+		request.emit("proxy", { proxy: proxy.href, socket });
+		if (response.connect.statusCode === 200) {
 			// Resumed once every 'socket' listener, the HTTP client's included, is attached.
 			request.once("socket", (tunnel: Socket) => setImmediate(() => tunnel.resume()));
 			if (!options.secureEndpoint) return socket;

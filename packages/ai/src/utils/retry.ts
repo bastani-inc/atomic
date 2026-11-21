@@ -70,7 +70,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?refused",
 	"connection.?lost",
 	"connection.?closed",
-	"(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])",
+	"(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE|ERR_SOCKET_CLOSED)(?![a-z0-9_])",
 	"connection reset by peer",
 	"connection.?reset",
 	"other side closed",
@@ -83,11 +83,6 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"reset before headers",
 	"socket hang up",
 	"socket connection was closed",
-	// A connection reset during a TLS handshake (Node.js), a socket closed under the request (Bun), and a proxy that
-	// closed the connection before it answered the tunnel request.
-	"socket disconnected before secure tls connection",
-	"socket is closed",
-	"proxy connection ended before receiving connect response",
 	"timed? out",
 	"timeout",
 	"terminated",

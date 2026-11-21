@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { type Server as HttpServer, createServer as createHttpServer } from "node:http";
+import diagnosticsChannel from "node:diagnostics_channel";
+import { type ClientRequest, type Server as HttpServer, createServer as createHttpServer } from "node:http";
 import { type Server as NetServer, createServer as createNetServer, type Socket } from "node:net";
 import { afterEach, describe, it } from "vitest";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
@@ -85,19 +86,37 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 		assert.equal(proxy.connections(), 1 + SDK_RETRIES);
 	});
 
-	it("still reports a tunnel the proxy refused as the proxy's answer, sent once", async () => {
+	it("still reports a tunnel the proxy refused as the proxy's answer, sent once, with the request's proxy events", async () => {
 		let requests = 0;
 		const proxy = createHttpServer();
 		proxy.on("connect", (_request, client: Socket) => {
 			requests++;
-			client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+			client.end("HTTP/1.1 403 Forbidden\r\nX-Reason: listed\r\nContent-Length: 0\r\n\r\n");
 		});
 		const port = await listen(proxy);
-		const message = await bedrockTurn("https://localhost:9", `http://127.0.0.1:${port}`);
+		// The events https-proxy-agent emits on the request for its tunnel, which instrumentation may listen to.
+		const events: string[] = [];
+		const onRequest = (message: unknown) => {
+			const { request } = message as { request: ClientRequest };
+			request.on("proxyConnect", (connect: { statusCode: number; statusText: string; headers: object }) =>
+				events.push(`proxyConnect ${connect.statusCode} ${connect.statusText} ${JSON.stringify(connect.headers)}`),
+			);
+			request.on("proxy", (proxied: { proxy: string }) => events.push(`proxy ${proxied.proxy}`));
+		};
+		diagnosticsChannel.subscribe("http.client.request.created", onRequest);
+		try {
+			const message = await bedrockTurn("https://localhost:9", `http://127.0.0.1:${port}`);
 
-		assert.equal(message.stopReason, "error");
-		assert.equal(isRetryableAssistantError(message), false, message.errorMessage);
-		assert.equal(requests, 1);
+			assert.equal(message.stopReason, "error");
+			assert.equal(isRetryableAssistantError(message), false, message.errorMessage);
+			assert.equal(requests, 1);
+			assert.deepEqual(events, [
+				'proxyConnect 403 Forbidden {"x-reason":"listed","content-length":"0"}',
+				`proxy http://127.0.0.1:${port}/`,
+			]);
+		} finally {
+			diagnosticsChannel.unsubscribe("http.client.request.created", onRequest);
+		}
 	});
 
 	it(
