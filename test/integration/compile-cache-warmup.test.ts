@@ -307,6 +307,7 @@ test(
 			helper = spawn(launch.command, [...launch.args], {
 				cwd: launch.cwd,
 				env: launch.env,
+				detached: launch.detached,
 				stdio: ["pipe", "ignore", "ignore"],
 			});
 			const code = await new Promise<number | null>((resolve) => helper!.once("exit", resolve));
@@ -344,6 +345,7 @@ test.skipIf(!windows)(
 			helper = spawn(launch.command, [...launch.args], {
 				cwd: launch.cwd,
 				env: launch.env,
+				detached: launch.detached,
 				stdio: ["pipe", "ignore", "ignore"],
 			});
 			const exited = new Promise<number | null>((resolve) => helper!.once("exit", resolve));

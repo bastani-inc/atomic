@@ -20,6 +20,8 @@ export interface CompileCacheHelperLaunch {
 	readonly args: readonly string[];
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
+	/** Without a console: it reads and writes none, and never joins the session's console when that closes. */
+	readonly detached: true;
 }
 
 /**
@@ -40,6 +42,7 @@ export function compileCacheHelperLaunch(
 		args: [...runtime.execArgv, "--no-addons", script, buildId],
 		cwd: parse(script).root,
 		env: helperEnv,
+		detached: true,
 	};
 }
 
@@ -51,6 +54,7 @@ function runHelper(runtime: CompileCacheHelperRuntime, buildId: string): Promise
 		child = spawn(launch.command, [...launch.args], {
 			cwd: launch.cwd,
 			env: launch.env,
+			detached: launch.detached,
 			// The helper stops when this pipe ends, which it does when this process is gone.
 			stdio: ["pipe", "ignore", "ignore"],
 			windowsHide: true,
