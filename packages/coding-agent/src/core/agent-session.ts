@@ -32,7 +32,7 @@ import { agentSessionReleaseMethods } from "./agent-session-release.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionSummaryMethods, type SessionSummaryRun } from "./agent-session-summary.ts";
-import { agentSessionTaskMethods } from "./agent-session-tasks.js";
+import { agentSessionTaskMethods, isSubagentChildSession } from "./agent-session-tasks.js";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
@@ -370,6 +370,8 @@ class AgentSessionBase {
 			cwd: () => this._cwd,
 			settings: () => snapshotSettings ?? this.settingsManager.getWorktreeSnapshotSettings(),
 			declaresWrites: (name) => this._toolDefinitions.get(name)?.definition.writesFiles === true,
+			isSubagent: () =>
+				isSubagentChildSession(this as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface),
 			onUnavailable: (reason) =>
 				(this as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
 					type: "worktree_snapshot_unavailable",
