@@ -49,9 +49,10 @@ function fixture() {
 			`import { shared, Shared } from "./shared.js";`,
 			`import { standaloneUrl } from "./standalone.js";`,
 			`import { nestedAssetUrl } from "./nested/asset-user.js";`,
+			`import { exists } from "./fs-user.js";`,
 			`export * from "./types.js";`,
 			`log("index");`,
-			`export { shared, Shared, standaloneUrl, nestedAssetUrl };`,
+			`export { shared, Shared, standaloneUrl, nestedAssetUrl, exists };`,
 			`export const assetUrl = new URL("./asset.txt", import.meta.url).href;`,
 			`export const loadHeavy = () => import("./heavy-user.js");`,
 			`export default "index-default";`,
@@ -59,6 +60,7 @@ function fixture() {
 		].join("\n"),
 		"pkg/dist/extra.js": `import { log } from "./log.js";\nimport { shared, Shared } from "./shared.js";\nlog("extra");\nexport { shared, Shared };\n`,
 		"pkg/dist/heavy-user.js": `import "heavy-pkg";\nimport { log } from "./log.js";\nimport { shared } from "./shared.js";\nlog("heavy-user");\nexport const sharedFromHeavy = shared;\n`,
+		"pkg/dist/fs-user.js": `import { existsSync } from "node:fs";\nexport const exists = existsSync;\n`,
 		"pkg/dist/nested/asset-user.js": `export const nestedAssetUrl = new URL("./data.txt", import.meta.url).href;\n`,
 		"pkg/dist/deep/thing.js": `import { log } from "../log.js";\nlog("deep-thing");\nexport const thingUrl = import.meta.url;\n`,
 	});
@@ -86,7 +88,7 @@ test("modules run in the same order and with the same exports as before bundling
 	}
 	assert.deepEqual(inChild(join(pkg, "dist/index.js"), report), {
 		order: ["shared", "index"],
-		keys: ["Shared", "assetUrl", "default", "loadHeavy", "nestedAssetUrl", "shared", "standaloneUrl"],
+		keys: ["Shared", "assetUrl", "default", "exists", "loadHeavy", "nestedAssetUrl", "shared", "standaloneUrl"],
 	});
 });
 
@@ -152,6 +154,22 @@ test("import.meta.url stays each module's own file, and a standalone module keep
 	assert.equal(readFileSync(join(pkg, "dist/standalone.js"), "utf8"), standalone);
 });
 
+test("a module that reaches no Node built-in module still bundles for a browser", async () => {
+	const { pkg } = fixture();
+	await bundle(pkg);
+	const esbuild = await import("esbuild");
+	const result = await esbuild.build({
+		entryPoints: [join(pkg, "dist/nested/asset-user.js")],
+		bundle: true,
+		platform: "browser",
+		format: "esm",
+		write: false,
+		logLevel: "silent",
+	});
+	assert.deepEqual(result.errors, []);
+	assert.match(result.outputFiles[0]?.text ?? "", /data\.txt/);
+});
+
 test("shared files are named by their group and first module, the same in every build", async () => {
 	const first = fixture();
 	const second = fixture();
@@ -186,22 +204,25 @@ test("bundling again after an incremental compile keeps the unchanged modules an
 	assert.deepEqual(result, { added: 2, same: true, order: ["shared", "extra", "index"] });
 });
 
-test("modules share a group only with modules of the same tier that load the same other packages", () => {
+test("modules share a group only with modules of the same tier that need the same other modules", () => {
+	const none = { dynamicInternal: [], dynamicExternal: [] };
 	const graph = {
-		"/d/index.js": { internal: ["/d/a.js", "/d/leaf.js"], external: ["light", "node:fs"] },
-		"/d/a.js": { internal: [], external: ["fs"] },
-		"/d/leaf.js": { internal: [], external: [] },
-		"/d/lazy-helper.js": { internal: ["/d/a.js"], external: [] },
-		"/d/provider.js": { internal: ["/d/lazy-helper.js"], external: ["heavy-sdk"] },
-		"/d/uses-provider.js": { internal: ["/d/provider.js"], external: [] },
+		"/d/index.js": { internal: ["/d/a.js", "/d/leaf.js"], external: ["light"], ...none },
+		"/d/a.js": { internal: [], external: ["node:fs"], ...none },
+		"/d/leaf.js": { internal: [], external: [], ...none },
+		"/d/loader.js": { internal: [], external: [], dynamicInternal: ["/d/provider.js"], dynamicExternal: [] },
+		"/d/lazy-helper.js": { internal: ["/d/a.js"], external: [], ...none },
+		"/d/provider.js": { internal: ["/d/lazy-helper.js"], external: ["heavy-sdk"], ...none },
+		"/d/uses-provider.js": { internal: ["/d/provider.js"], external: [], ...none },
 	};
 	const groups = assignGroups(Object.keys(graph), ["/d/index.js"], (id) => graph[id]);
 	assert.deepEqual(Object.fromEntries(groups), {
-		"/d/index.js": "main:light",
-		"/d/a.js": "main:",
-		"/d/leaf.js": "main:",
-		"/d/lazy-helper.js": "lazy:",
-		"/d/provider.js": "lazy:heavy-sdk",
-		"/d/uses-provider.js": "lazy:heavy-sdk",
+		"/d/index.js": "main:light,node:fs;light,node:fs",
+		"/d/a.js": "main:node:fs;node:fs",
+		"/d/leaf.js": "main:;",
+		"/d/loader.js": "lazy:;heavy-sdk,node:fs",
+		"/d/lazy-helper.js": "lazy:node:fs;node:fs",
+		"/d/provider.js": "lazy:heavy-sdk,node:fs;heavy-sdk,node:fs",
+		"/d/uses-provider.js": "lazy:heavy-sdk,node:fs;heavy-sdk,node:fs",
 	});
 });

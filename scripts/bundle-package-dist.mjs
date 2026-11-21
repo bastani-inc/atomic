@@ -35,7 +35,6 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -88,48 +87,91 @@ function namedEntries(packageDir, manifest) {
 }
 
 /**
- * Assigns each compiled module to a shared file. Modules share a file when they are in the same tier (`main`: what
- * the package's entry points import, `lazy`: what only dynamic imports or deep paths reach) and need the same other
- * packages: the other packages a module's own code and everything it imports load (its footprint). A shared file
- * loads every package its modules import, and a module only shares a file with modules of its own footprint, so
- * importing a module loads no package it did not load before, whichever path it is imported by.
- * @param {string[]} modules Compiled modules, absolute paths.
- * @param {string[]} entries The package's entry points, absolute paths.
- * @param {(id: string) => { internal: string[], external: string[] }} importsOf A module's static imports.
- * @returns {Map<string, string>} Module path to its group, `<tier>:<footprint, comma-separated>`.
+ * @typedef {object} ModuleImports A module's imports: of the package's own modules and of other modules, Node's
+ *   built-in modules included, each statically and by dynamic `import()`.
+ * @property {string[]} internal
+ * @property {string[]} external
+ * @property {string[]} dynamicInternal
+ * @property {string[]} dynamicExternal
  */
-export function assignGroups(modules, entries, importsOf) {
-	const closure = (/** @type {string[]} */ roots) => {
+
+/**
+ * The other modules a module needs: `loaded`, those importing it loads (its static imports' and theirs), and
+ * `reachable`, those its dynamic imports can load too, which a bundler following them has to resolve.
+ * @param {(id: string) => ModuleImports} importsOf
+ */
+export function footprints(importsOf) {
+	/** @type {Map<string, { loaded: string[], reachable: string[] }>} */
+	const memo = new Map();
+	const walk = (/** @type {string} */ root, /** @type {boolean} */ dynamic) => {
 		const seen = new Set();
-		const stack = [...roots];
+		const externals = new Set();
+		const stack = [root];
 		while (stack.length > 0) {
 			const id = /** @type {string} */ (stack.pop());
 			if (seen.has(id)) continue;
 			seen.add(id);
-			stack.push(...importsOf(id).internal);
+			const imports = importsOf(id);
+			for (const external of imports.external) externals.add(external);
+			stack.push(...imports.internal);
+			if (dynamic) {
+				for (const external of imports.dynamicExternal) externals.add(external);
+				stack.push(...imports.dynamicInternal);
+			}
 		}
-		return seen;
+		return [...externals].sort();
 	};
+	return (/** @type {string} */ id) => {
+		let result = memo.get(id);
+		if (!result) {
+			result = { loaded: walk(id, false), reachable: walk(id, true) };
+			memo.set(id, result);
+		}
+		return result;
+	};
+}
+
+/**
+ * Assigns each compiled module to a shared file. Modules share a file when they are in the same tier (`main`: what
+ * the package's entry points import, `lazy`: what only dynamic imports or deep paths reach) and need the same other
+ * modules, Node's built-in modules included (see {@link footprints}). A shared file imports what its modules import,
+ * so a module shares a file only with modules that need what it needs: importing it, by any path, loads no other
+ * module it did not load before, and a bundler following its imports, dynamic ones too, meets only the modules it
+ * met before, so code that bundled for a browser still does.
+ * @param {string[]} modules Compiled modules, absolute paths.
+ * @param {string[]} entries The package's entry points, absolute paths.
+ * @param {(id: string) => ModuleImports} importsOf
+ * @returns {Map<string, string>} Module path to its group: `<tier>:<loaded>;<reachable>`.
+ */
+export function assignGroups(modules, entries, importsOf) {
 	const known = new Set(modules);
-	const eager = closure(entries.filter((entry) => known.has(entry)));
+	const eager = new Set();
+	const stack = entries.filter((entry) => known.has(entry));
+	while (stack.length > 0) {
+		const id = /** @type {string} */ (stack.pop());
+		if (eager.has(id)) continue;
+		eager.add(id);
+		stack.push(...importsOf(id).internal);
+	}
+	const footprintOf = footprints(importsOf);
 	const groups = new Map();
 	for (const id of modules) {
-		const footprint = new Set();
-		for (const reached of closure([id])) {
-			for (const external of importsOf(reached).external) if (!isBuiltin(external)) footprint.add(external);
-		}
-		groups.set(id, `${eager.has(id) ? "main" : "lazy"}:${[...footprint].sort().join(",")}`);
+		const { loaded, reachable } = footprintOf(id);
+		groups.set(id, `${eager.has(id) ? "main" : "lazy"}:${loaded.join(",")};${reachable.join(",")}`);
 	}
 	return groups;
 }
 
 /**
- * The export names of each compiled module, from a build that keeps every module as its own entry.
+ * Each compiled module's export names and imports, from a build that keeps every module as its own entry. Imports are
+ * its `import` declarations and `import()` expressions; a `require()` call stays one in the bundled code, so it is not
+ * counted as an import.
  * @param {typeof import("esbuild")} esbuild
  * @param {string} packageDir
  * @param {Map<string, string>} sources
+ * @returns {Promise<{ exports: Map<string, string[]>, imports: Map<string, { static: string[], dynamic: string[], staticExternal: string[], dynamicExternal: string[] }> }>}
  */
-async function exportNames(esbuild, packageDir, sources) {
+async function analyzeModules(esbuild, packageDir, sources) {
 	const dist = join(packageDir, "dist");
 	const result = await esbuild.build({
 		absWorkingDir: packageDir,
@@ -157,11 +199,22 @@ async function exportNames(esbuild, packageDir, sources) {
 		],
 	});
 	/** @type {Map<string, string[]>} */
-	const names = new Map();
+	const exports = new Map();
 	for (const output of Object.values(result.metafile.outputs)) {
-		if (output.entryPoint) names.set(join(packageDir, output.entryPoint), [...output.exports].sort());
+		if (output.entryPoint) exports.set(join(packageDir, output.entryPoint), [...output.exports].sort());
 	}
-	return names;
+	const imports = new Map();
+	for (const [path, input] of Object.entries(result.metafile.inputs)) {
+		const edges = { static: [], dynamic: [], staticExternal: [], dynamicExternal: [] };
+		for (const edge of input.imports) {
+			if (edge.kind !== "import-statement" && edge.kind !== "dynamic-import") continue;
+			const dynamic = edge.kind === "dynamic-import";
+			if (edge.external) (dynamic ? edges.dynamicExternal : edges.staticExternal).push(edge.path);
+			else (dynamic ? edges.dynamic : edges.static).push(join(packageDir, edge.path));
+		}
+		imports.set(join(packageDir, path), edges);
+	}
+	return { exports, imports };
 }
 
 /**
@@ -212,7 +265,24 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		if (map !== "") maps.set(file, map);
 	}
 
-	const expectedExports = await exportNames(esbuild, packageDir, sources);
+	const analysis = await analyzeModules(esbuild, packageDir, sources);
+	const expectedExports = analysis.exports;
+	/** A standalone module, external to the bundle, as the bundled files name it: its path below dist. */
+	const asImported = (/** @type {string} */ path) => `./${toPosix(relative(dist, path))}`;
+	/** @type {(id: string) => ModuleImports} */
+	const importsOf = (id) => {
+		const edges = analysis.imports.get(id);
+		if (!edges) return { internal: [], external: [], dynamicInternal: [], dynamicExternal: [] };
+		return {
+			internal: edges.static.filter((dep) => !standalone.has(dep)),
+			external: [...edges.staticExternal, ...edges.static.filter((dep) => standalone.has(dep)).map(asImported)],
+			dynamicInternal: edges.dynamic.filter((dep) => !standalone.has(dep)),
+			dynamicExternal: [
+				...edges.dynamicExternal,
+				...edges.dynamic.filter((dep) => standalone.has(dep)).map(asImported),
+			],
+		};
+	};
 	const entries = namedEntries(packageDir, manifest);
 	/** @type {Map<string, string>} */
 	let groups = new Map();
@@ -222,7 +292,8 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		input: Object.fromEntries(
 			[...sources.keys()].map((file) => [toPosix(relative(dist, file)).replace(/\.js$/, ""), file]),
 		),
-		platform: "node",
+		// Not "node": the shared helpers would import `node:module` for a `require` no module makes.
+		platform: "neutral",
 		external: (id) =>
 			!id.startsWith(".") && !id.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(id) && !id.startsWith("\0"),
 		makeAbsoluteExternalsRelative: true,
@@ -277,17 +348,10 @@ export async function bundlePackageDist(packageDir, options = {}) {
 				},
 				buildEnd() {
 					// Every module of the package, its JSON files included; anything else it imports is another package.
-					/** @type {Map<string, string>} */
-					const internal = new Map();
-					for (const id of this.getModuleIds())
-						if (normalizeId(id).startsWith(dist + sep)) internal.set(normalizeId(id), id);
-					groups = assignGroups([...internal.keys()], entries, (id) => {
-						const imported = (this.getModuleInfo(internal.get(id) ?? id)?.importedIds ?? []).map(normalizeId);
-						return {
-							internal: imported.filter((dep) => internal.has(dep)),
-							external: imported.filter((dep) => !internal.has(dep)),
-						};
-					});
+					const internal = [...this.getModuleIds()]
+						.map(normalizeId)
+						.filter((id) => id.startsWith(dist + sep) && !standalone.has(id));
+					groups = assignGroups(internal, entries, importsOf);
 				},
 			},
 		],
@@ -336,6 +400,43 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			throw new Error(
 				`bundle-package-dist: ${chunk.fileName} exports ${actual.join(", ")}, its module ${expected.join(", ")}`,
 			);
+		}
+	}
+
+	// Importing a module's file, statically or following dynamic imports too, reaches the same other modules as the
+	// module did.
+	const footprintOf = footprints(importsOf);
+	const byName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
+	const fileReach = (/** @type {string} */ start, /** @type {boolean} */ dynamic) => {
+		const seen = new Set();
+		const externals = new Set();
+		const stack = [start];
+		while (stack.length > 0) {
+			const name = /** @type {string} */ (stack.pop());
+			if (seen.has(name)) continue;
+			seen.add(name);
+			const chunk = byName.get(name);
+			if (!chunk) continue;
+			for (const imported of dynamic ? [...chunk.imports, ...chunk.dynamicImports] : chunk.imports) {
+				if (byName.has(imported)) stack.push(imported);
+				// A standalone module is named by its path below dist.
+				else externals.add(standalone.has(join(dist, imported)) ? `./${imported}` : imported);
+			}
+		}
+		return [...externals].sort();
+	};
+	for (const chunk of chunks) {
+		if (!chunk.isEntry || !chunk.facadeModuleId) continue;
+		const expected = footprintOf(normalizeId(chunk.facadeModuleId));
+		for (const [kind, actual, wanted] of /** @type {const} */ ([
+			["loads", fileReach(chunk.fileName, false), expected.loaded],
+			["reaches", fileReach(chunk.fileName, true), expected.reachable],
+		])) {
+			if (actual.join(",") !== wanted.join(",")) {
+				throw new Error(
+					`bundle-package-dist: ${chunk.fileName} ${kind} ${actual.join(", ")}; its module ${wanted.join(", ")}`,
+				);
+			}
 		}
 	}
 
