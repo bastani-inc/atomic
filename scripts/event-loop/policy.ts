@@ -222,6 +222,12 @@ export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 	},
 	{
 		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
+		name: "jsonPackageOf",
+		reason:
+			"finds, once per load, the extension's package from the package.json nearest its entry when a module jiti evaluates synchronously first loads a JSON file",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
 		name: "packageTypeOf",
 		reason: "decides CommonJS or ESM for a module jiti is requiring synchronously from its nearest package.json",
 	},

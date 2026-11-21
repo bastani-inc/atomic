@@ -159,29 +159,78 @@ export default function () {
 		assert.equal((await second.imported()).default, second.required);
 	});
 
-	it("are one value per load whether named by path or through a workspace package linked in", async () => {
+	it("in a workspace package linked in are one value, however they are named, as the runtime gives it", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
 		roots.push(root);
 		const shared = path.join(root, "packages", "shared");
 		const extension = path.join(root, "packages", "extension");
 		fs.mkdirSync(shared, { recursive: true });
 		fs.mkdirSync(path.join(extension, "node_modules", "@ws"), { recursive: true });
-		fs.writeFileSync(path.join(shared, "package.json"), JSON.stringify({ name: "@ws/shared", main: "index.ts" }));
-		fs.writeFileSync(path.join(shared, "data.json"), JSON.stringify({ value: "shared", seen: 0 }));
+		fs.writeFileSync(path.join(extension, "package.json"), JSON.stringify({ name: "extension" }));
+		fs.writeFileSync(
+			path.join(shared, "package.json"),
+			JSON.stringify({
+				name: "@ws/shared",
+				exports: { ".": "./index.ts", "./config.json": "./config.json", "./settings": "./config.json" },
+			}),
+		);
+		fs.writeFileSync(path.join(shared, "config.json"), JSON.stringify({ value: "shared", seen: 0 }));
 		fs.writeFileSync(
 			path.join(shared, "index.ts"),
-			`import data from "./data.json";\ndata.seen += 1;\nexport default data;\n`,
+			`import config from "./config.json";\nconfig.seen += 1;\nexport default config;\n`,
 		);
 		fs.symlinkSync(shared, path.join(extension, "node_modules", "@ws", "shared"), "junction");
 		const entry = path.join(extension, "extension.ts");
 		fs.writeFileSync(
 			entry,
-			`import shared from "@ws/shared";\nimport bare from "@ws/shared/data.json";\nexport default function () {\n\treturn { same: bare === shared, seen: bare.seen };\n}\n`,
+			`import shared from "@ws/shared";\nimport byName from "@ws/shared/config.json";\nimport byExport from "@ws/shared/settings";\nexport default function () {\n\treturn { byName: byName === shared, byExport: byExport === shared, seen: shared.seen };\n}\n`,
 		);
 
-		const loaded = (await load(entry, path.join(root, "agent"))) as unknown as { same: boolean; seen: number };
+		const loaded = (await load(entry, path.join(root, "agent"))) as unknown as Record<string, unknown>;
 
-		assert.deepEqual(loaded, { same: true, seen: 1 });
+		assert.deepEqual(loaded, { byName: true, byExport: true, seen: 1 });
+	});
+
+	it("named by the extension's own package name are the value its path gives, also after an edit", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const extension = path.join(root, "extension");
+		fs.mkdirSync(path.join(extension, "node_modules"), { recursive: true });
+		fs.writeFileSync(
+			path.join(extension, "package.json"),
+			JSON.stringify({ name: "self-named", exports: { ".": "./extension.ts", "./settings": "./config.json" } }),
+		);
+		fs.symlinkSync(extension, path.join(extension, "node_modules", "self-named"), "junction");
+		const write = (value: string) => fs.writeFileSync(path.join(extension, "config.json"), JSON.stringify({ value }));
+		write("one");
+		const entry = path.join(extension, "extension.ts");
+		fs.writeFileSync(
+			entry,
+			`import byPath from "./config.json";\nimport byName from "self-named/settings";\nexport default function () {\n\treturn { same: byName === byPath, value: byName.value };\n}\n`,
+		);
+		const agentDir = path.join(root, "agent");
+
+		assert.deepEqual(await load(entry, agentDir), { same: true, value: "one" });
+		write("two");
+		assert.deepEqual(await load(entry, agentDir), { same: true, value: "two" });
+	});
+
+	it("named by another package's name come from that package as the runtime resolves it", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-extension-json-"));
+		roots.push(root);
+		const copy = path.join(root, "node_modules", "@bastani", "atomic-agent-core");
+		fs.mkdirSync(copy, { recursive: true });
+		fs.writeFileSync(
+			path.join(copy, "package.json"),
+			JSON.stringify({ name: "@bastani/atomic-agent-core", version: "0.0.0-local-copy" }),
+		);
+		const entry = path.join(root, "index.js");
+		fs.writeFileSync(
+			entry,
+			`module.exports = function () {\n\treturn require("@bastani/atomic-agent-core/package.json").version;\n};\n`,
+		);
+
+		assert.equal(await load(entry, path.join(root, "agent")), "0.0.0-local-copy");
 	});
 
 	it("leave JSON in a package the extension depends on to the runtime, as before", async () => {
