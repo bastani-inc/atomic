@@ -162,15 +162,17 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 					token = "second-entra-token-fixture";
 					await admin.exec(`ALTER ROLE ${role} PASSWORD '${token}'`);
 					await admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = ?", role);
-					await database.get("SELECT 1 AS one").catch((error: Error) => {
-						assert.equal((error as Error & { code?: string }).code, "connection-lost", inspect(error));
-					});
 					const refusedToken = connections + 1;
 					refuseFrom = refusedToken + 1;
-					const error = await database.get("SELECT current_user AS who").then(
-						() => assert.fail("the reconnect succeeded"),
-						(caught: Error) => caught,
-					);
+					// Which query opens that connection depends on whether the pool has already seen the server end the old
+					// one: if not, the pool hands the ended connection to the first query, which fails as lost.
+					const query = () =>
+						database.get("SELECT current_user AS who").then(
+							() => assert.fail("the reconnect succeeded"),
+							(caught: Error) => caught,
+						);
+					let error = await query();
+					if ((error as Error & { code?: string }).code === "connection-lost") error = await query();
 					const shown = inspect(error, { depth: null });
 					assert.ok(shown.includes("The server's TLS certificate was not accepted (CERT_HAS_EXPIRED: "), shown);
 					assert.equal(connections, refuseFrom, "the refused certificate was asked for again");
