@@ -1026,9 +1026,7 @@ export class SessionManager {
 		const sameRecord =
 			this.sessionFile !== undefined
 				? replacement.sessionFile === this.sessionFile
-				: replacement.sessionFile === undefined &&
-					replacement.store.descriptor.adapter === this.store.descriptor.adapter &&
-					replacement.store.descriptor.location === this.store.descriptor.location;
+				: replacement.sessionFile === undefined && replacement.store === this.store;
 		if (replacement !== this && replacement.sessionId === this.sessionId && sameRecord && this.takeStartedSession())
 			replacement.markSessionStarted();
 	}
