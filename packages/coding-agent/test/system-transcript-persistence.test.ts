@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCurrentSystemMessage, getCurrentTools, type SystemMessage, type Tool } from "@bastani/atomic-ai";
+import {
+	type AssistantMessage,
+	getCurrentSystemMessage,
+	getCurrentTools,
+	type SystemMessage,
+	type Tool,
+} from "@bastani/atomic-ai";
+import { recordsStrictToolLimits } from "@bastani/atomic-ai/api/strict-tool-limits";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { estimateTokens } from "../src/core/compaction/compaction.js";
@@ -85,6 +92,86 @@ test("compaction, disk resume, and branches preserve raw system state and tool l
 			getCurrentTools(resumed.buildSessionContext().messages).map((value) => value.name),
 			["first", "second"],
 		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+const compactionDetails: VerbatimCompactionDetails = {
+	strategy: "verbatim-lines",
+	promptVersion: 2,
+	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "task" },
+	stats: {
+		linesBefore: 20,
+		linesDeleted: 10,
+		linesKept: 10,
+		rangeCount: 1,
+		tokensBefore: 100,
+		tokensAfter: 50,
+		percentReduction: 50,
+	},
+	rung: "planned",
+};
+
+test.each([
+	{
+		record: "the rejected reply's Anthropic diagnostic",
+		reply: { diagnostics: [{ type: "anthropic_strict_tools_fallback", timestamp: 1 }] },
+	},
+	{
+		record: "the rejected reply's Bedrock diagnostic",
+		reply: { diagnostics: [{ type: "bedrock_strict_tools_fallback", timestamp: 1 }] },
+	},
+	{ record: "a reply sent without strict schemas", reply: { strictToolsDisabled: true } },
+] satisfies { record: string; reply: Partial<AssistantMessage> }[])(
+	"compactions that remove every reply keep $record, also after a reopen (#6119)",
+	async ({ reply }) => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-strict-record-"));
+		try {
+			const manager = await SessionManager.create(dir, dir);
+			await manager.appendMessage({ role: "system", content: "base", toolsAdded: [tool("lookup")], timestamp: 1 });
+			const question = await manager.appendMessage(userMsg("question"));
+			await manager.appendMessage({ ...assistantMsg("answer"), ...reply });
+			await manager.appendCompaction("[User]: question", null, 100, compactionDetails);
+			await manager.appendMessage(userMsg("before the exit"));
+			// A second compaction of a context without any reply.
+			await manager.appendCompaction("[User]: before the exit", null, 100, compactionDetails);
+			const reopened = await SessionManager.open(manager.getSessionFile()!);
+			const messages = convertToLlm(reopened.buildSessionContext().messages);
+			assert.deepEqual(
+				messages.map((message) => message.role),
+				["system", "user"],
+			);
+			assert.equal(recordsStrictToolLimits(messages), true);
+
+			// A branch that left before the reply has no record to keep.
+			await reopened.branch(question);
+			await reopened.appendCompaction("[User]: question", null, 100, compactionDetails);
+			const branched = convertToLlm(reopened.buildSessionContext().messages);
+			assert.equal(recordsStrictToolLimits(branched), false);
+			assert.equal(Object.hasOwn(branched[0]!, "strictToolsDisabled"), false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+test("a compaction records no strict-tool fallback for replies that only failed (#6119)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-strict-record-"));
+	try {
+		const manager = await SessionManager.create(dir, dir);
+		await manager.appendMessage({ role: "system", content: "base", toolsAdded: [tool("lookup")], timestamp: 1 });
+		await manager.appendMessage(userMsg("question"));
+		await manager.appendMessage({
+			...assistantMsg(""),
+			stopReason: "error",
+			errorMessage: "messages: field required",
+			diagnostics: [{ type: "provider_error", timestamp: 1 }],
+		});
+		await manager.appendCompaction("[User]: question", null, 100, compactionDetails);
+		const messages = convertToLlm(manager.buildSessionContext().messages);
+		assert.equal(recordsStrictToolLimits(messages), false);
+		assert.equal(Object.hasOwn(messages[0]!, "strictToolsDisabled"), false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

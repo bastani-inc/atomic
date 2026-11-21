@@ -552,8 +552,64 @@ describe("tool declarations", () => {
 		} as never;
 		expect(declarationsEqual(first, reordered)).toBe(true);
 		expect(getToolStateChanges([first], [reordered])).toEqual({ toolsAdded: [], toolsRemoved: [] });
-		const required = { ...(reordered as object), parameters: { type: "object", properties: {}, required: ["b", "a"] } };
-		const requiredOther = { ...(reordered as object), parameters: { type: "object", properties: {}, required: ["a", "b"] } };
-		expect(declarationsEqual(required as never, requiredOther as never)).toBe(false);
+	});
+
+	/** A tool whose `query` parameter is `schema`, at every place a schema can sit. */
+	const withSchema = (schema: object, required = ["query", "list"]) =>
+		({
+			name: "query",
+			description: "Query docs",
+			parameters: {
+				type: "object",
+				properties: { query: schema, list: { type: "array", items: schema }, either: { anyOf: [schema, { type: "null" }] } },
+				additionalProperties: schema,
+				$defs: { query: schema },
+				required,
+			},
+		}) as never;
+
+	test("a schema that lists its required parameters in another order is the same declaration (#6130)", () => {
+		const object = (required: string[]) => ({
+			type: "object",
+			properties: { a: { type: "string" }, b: { type: "number" } },
+			required,
+		});
+		const declared = withSchema(object(["b", "a"]));
+		const relisted = withSchema(object(["a", "b"]), ["list", "query"]);
+		expect(declarationsEqual(declared, relisted)).toBe(true);
+		expect(getToolStateChanges([declared], [relisted])).toEqual({ toolsAdded: [], toolsRemoved: [] });
+	});
+
+	test("required names that differ, and values whose order counts, still change a declaration (#6130)", () => {
+		const declared = withSchema({ type: "object", properties: {}, required: ["a", "b"] });
+		const changed = [
+			{ type: "object", properties: {}, required: ["a"] },
+			{ type: "object", properties: {}, required: ["a", "b", "b"] },
+			{ type: "object", properties: {}, required: ["a", "c"] },
+		];
+		for (const schema of changed) {
+			expect(declarationsEqual(declared, withSchema(schema))).toBe(false);
+			expect(getToolStateChanges([declared], [withSchema(schema)])).toEqual({
+				toolsAdded: [withSchema(schema)],
+				toolsRemoved: [{ name: "query" }],
+			});
+		}
+		// Values, examples, tuples and alternatives keep their order, as does a parameter that is itself named `required`.
+		const ordered = (first: string, second: string) => [
+			{ enum: [first, second] },
+			{ const: { required: [first, second] } },
+			{ type: "object", default: { required: [first, second] } },
+			{ type: "object", examples: [{ required: [first, second] }] },
+			{ type: "array", prefixItems: [{ const: first }, { const: second }] },
+			{ type: "array", items: [{ const: first }, { const: second }] },
+			{ oneOf: [{ const: first }, { const: second }] },
+			{ type: "object", properties: { required: { enum: [first, second] } } },
+			{ type: "object", required: [first === "a" ? 1 : 2, first === "a" ? 2 : 1] },
+		];
+		const before = ordered("a", "b");
+		const after = ordered("b", "a");
+		for (const [index, schema] of before.entries()) {
+			expect(declarationsEqual(withSchema(schema), withSchema(after[index]!)), JSON.stringify(schema)).toBe(false);
+		}
 	});
 });

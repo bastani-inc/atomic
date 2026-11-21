@@ -57,7 +57,7 @@ Live-session lookup accepts:
 
 Exact names and IDs take precedence, and an Atomic session ID is tried only after the other forms find nothing. Ambiguous prefixes report only authorized candidates and require the full UUID; other truncations are rejected. An isolated child can select its authorized supervisor by a unique UUID prefix without gaining access to unrelated groups.
 
-A reopened session or a restored background subagent registers under the Intercom session ID it had before the restart, so peers can keep using the ID they saw in `intercom list`. The session records that ID in its history as an `intercom_session_identity` entry. The broker never gives an ID to a new registration while a live session holds it; the restarted session then gets a fresh ID. While the broker remembers who last held an ID, only that same Atomic session can take it back.
+A reopened session or a restored background subagent registers under the Intercom session ID it had before the restart, so peers can keep using the ID they saw in `intercom list`. The session records that ID in its history as an `intercom_session_identity` entry. The broker never gives an ID to a new registration while a live session holds it; the restarted session then gets a fresh ID. While the broker remembers who last held an ID, only that same Atomic session can take it back. With [multi-node routing](/intercom/operations#running-intercom-across-machines), the shared database confirms the ID first; if its broker stalls while it waits for that answer, the session still keeps the ID when the database wrote it for this session and no broker on another node presents it, and otherwise gets a fresh ID.
 
 #### Sending to several sessions at once
 

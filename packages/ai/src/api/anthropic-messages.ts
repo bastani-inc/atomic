@@ -1150,7 +1150,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					},
 					retryTransport,
 				);
-			let disablePreferredStrictTools = strictToolLimitsExceeded(options?.sessionId, normalizedContext.messages);
+			let disablePreferredStrictTools = strictToolLimitsExceeded(options?.sessionId, context.messages);
 			let response: Response;
 			let params: MessageCreateParamsStreaming;
 			// The thread request that produced the response; undefined when no `thread` was sent.

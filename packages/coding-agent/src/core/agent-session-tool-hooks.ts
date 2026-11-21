@@ -1,6 +1,7 @@
 import type {
 	AfterToolCallResult,
 	AgentLoopTurnUpdate,
+	AgentMessage,
 	AgentToolResult,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
@@ -49,6 +50,22 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		else this._terminatingToolCallIds.delete(toolCall.id);
 		return replacement;
 	};
+}
+
+function recordsStrictToolsDisabled(message: AgentMessage): boolean {
+	return message.role === "system" && message.strictToolsDisabled === true;
+}
+
+/**
+ * `projected` with the strict-tool fallback record that a system message of `source` carries, such as the one a
+ * compaction replays, kept on its first system message: a prompt projection rebuilds the system messages.
+ */
+function keepStrictToolRecord(source: readonly AgentMessage[], projected: AgentMessage[]): AgentMessage[] {
+	if (!source.some(recordsStrictToolsDisabled) || projected.some(recordsStrictToolsDisabled)) return projected;
+	const index = projected.findIndex((message) => message.role === "system");
+	return projected.map((message, position) =>
+		position === index && message.role === "system" ? { ...message, strictToolsDisabled: true } : message,
+	);
 }
 
 /** The report of the blueprint build a tool call waited for, once the wait is over. */
@@ -321,7 +338,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 						(name) => isToolDeclarationHidden(this, name),
 					)
 				: undefined;
-		if (recorded) return recorded;
+		if (recorded) return keepStrictToolRecord(guarded, recorded);
 		const current = getCurrentSystemMessage(guarded);
 		const head: SystemMessage = {
 			role: "system",
@@ -329,7 +346,10 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 			...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
 			timestamp: current?.timestamp ?? Date.now(),
 		};
-		return projectToolLoadout(this, [head, ...guarded.filter((message) => message.role !== "system")]);
+		return projectToolLoadout(
+			this,
+			keepStrictToolRecord(guarded, [head, ...guarded.filter((message) => message.role !== "system")]),
+		);
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {

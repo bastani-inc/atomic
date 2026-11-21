@@ -243,6 +243,51 @@ describe("a resumed session keeps its strict-tool fallback", () => {
 		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
 		assert.equal(result.strictToolsDisabled, undefined);
 	});
+
+	it("sends strict schemas after a reply that failed for another reason (#6119)", async () => {
+		const { result, bodies } = await firstAttempt({
+			stopReason: "error",
+			errorMessage: "529 Overloaded",
+			diagnostics: [{ type: "provider_error", timestamp: 3 }],
+		});
+		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
+		assert.equal(result.strictToolsDisabled, undefined);
+	});
+
+	/** A session resumed after a compaction removed every reply: what is left is the system message it replays. */
+	async function afterCompaction(system: Partial<SystemMessage>) {
+		const bodies: Array<{ tools?: Array<{ strict?: boolean }> }> = [];
+		const fetch: NonNullable<AnthropicOptions["fetch"]> = async (_input, init) => {
+			bodies.push(JSON.parse(init?.body as string));
+			return success();
+		};
+		const messages: Message[] = [
+			{ role: "system", content: "Be brief.", toolsAdded: [preferred], timestamp: 1, ...system },
+			{ role: "user", content: "[compacted conversation]", timestamp: 2 },
+			{ role: "system", content: "", sections: { date: "Current date: tomorrow" }, timestamp: 3 },
+			{ role: "user", content: "after the resume", timestamp: 4 },
+		];
+		const result = await streamAnthropic(model, { messages } as TranscriptContext, {
+			apiKey: "test-key",
+			fetch,
+			maxRetries: 0,
+			sessionId: "compacted-session",
+		}).result();
+		return { result, bodies };
+	}
+
+	it("sends no strict schemas when the system message a compaction replays records the rejection (#6119)", async () => {
+		const { result, bodies } = await afterCompaction({ strictToolsDisabled: true });
+		assert.equal(bodies.length, 1);
+		assert.equal(bodies[0]?.tools?.[0]?.strict, undefined);
+		assert.equal(result.strictToolsDisabled, true);
+	});
+
+	it("sends strict schemas after a compaction that recorded no rejection (#6119)", async () => {
+		const { result, bodies } = await afterCompaction({});
+		assert.equal(bodies[0]?.tools?.[0]?.strict, true);
+		assert.equal(result.strictToolsDisabled, undefined);
+	});
 });
 
 describe("a session whose earlier version folded prompt updates into its leading prompt", () => {

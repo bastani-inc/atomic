@@ -150,25 +150,43 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 	let nextBindingDelayMs: number | undefined;
 	let slowBindings: { address: string; ms: number } | undefined;
 	let slowRecord: { address: string; ms: number } | undefined;
-	const stallIfNamed = async <T>(returnAddress: SqliteValue | undefined, answer: T): Promise<T> => {
-		let named: {
-			readonly returnAddress?: unknown;
-			readonly stallMs?: unknown;
-			readonly overdueCallbackMs?: unknown;
-			readonly writeDelayMs?: unknown;
-			readonly slowWrite?: unknown;
-		} = {};
+	type Named = {
+		readonly returnAddress?: unknown;
+		readonly stallMs?: unknown;
+		readonly overdueCallbackMs?: unknown;
+		readonly writeDelayMs?: unknown;
+		readonly slowWrite?: unknown;
+	};
+	const readNamed = (): Named | undefined => {
 		try {
-			named = JSON.parse(readFileSync(gate, "utf8")) as typeof named;
+			return JSON.parse(readFileSync(gate, "utf8")) as Named;
 		} catch {
-			return answer;
+			return undefined;
 		}
+	};
+	const stall = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+	/**
+	 * #5607 `uncommitted`: the broker stalls while its claim's binding is still being written, and the database holds that
+	 * write open for `writeDelayMs`, then refuses it, so the id is never bound by this claim.
+	 */
+	const holdUncommitted = async (returnAddress: SqliteValue): Promise<void> => {
+		const named = readNamed();
+		if (named?.slowWrite !== "uncommitted" || named.returnAddress !== returnAddress) return;
+		if (typeof named.stallMs !== "number") return;
+		rmSync(gate, { force: true });
+		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
+		stall(named.stallMs);
+		await delay(typeof named.writeDelayMs === "number" ? named.writeDelayMs : 0);
+		throw new Error("injected: the binding was not written");
+	};
+	const stallIfNamed = async <T>(returnAddress: SqliteValue | undefined, answer: T): Promise<T> => {
+		const named = readNamed();
+		if (named === undefined) return answer;
 		if (returnAddress === undefined || named.returnAddress !== returnAddress || typeof named.stallMs !== "number") {
 			return answer;
 		}
 		rmSync(gate, { force: true });
 		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
-		const stall = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 		const { stallMs, overdueCallbackMs } = named;
 		if (typeof named.writeDelayMs === "number" && typeof returnAddress === "string") {
 			if (named.slowWrite === "serial bindings") slowBindings = { address: returnAddress, ms: named.writeDelayMs };
@@ -219,6 +237,7 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 						run: async (sql, ...params) => {
 							if (/^\s*INSERT INTO \w*intercom_session_bindings\(.*\)\s*VALUES \(\?, \?,/su.test(sql)) {
 								returnAddress = params[1];
+								await holdUncommitted(returnAddress);
 								if (slowBindings && returnAddress === slowBindings.address) await delay(slowBindings.ms);
 							}
 							return tx.run(sql, ...params);

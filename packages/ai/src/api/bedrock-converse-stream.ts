@@ -293,7 +293,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const initialSystemMessage = getInitialSystemMessage(normalizedContext.messages);
 			const initialSystemPrompt = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : undefined;
-			let disablePreferredStrictTools = strictToolLimitsExceeded(options.sessionId, normalizedContext.messages);
+			let disablePreferredStrictTools = strictToolLimitsExceeded(options.sessionId, context.messages);
 			const reasoningOptions = resolveThinkingOffOptions(model, options, output);
 			let response: ConverseStreamCommandOutput;
 			for (;;) {
