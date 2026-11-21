@@ -55,6 +55,8 @@ beforeEach(() => {
 	mkdirSync(bin);
 	held.add(bin);
 	vi.stubEnv("PATH", bin);
+	// Something the working directory holds under the name, so the program is looked up in PATH before it starts.
+	writeFileSync(join(root, "atomic-test-program.exe"), "");
 });
 
 afterEach(() => {
