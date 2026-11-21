@@ -94,7 +94,8 @@ async function trace(outFile) {
 	// What `cli.js` itself imports, then the early editor's graph.
 	const cli = pathToFileURL(join(dist, "cli.js")).href;
 	for (const specifier of readModule(readFileSync(join(dist, "cli.js"), "utf8")).specifiers)
-		await import(new URL(specifier, cli).href);
+		// A bare name resolves from this script as from cli.js: both are inside this package.
+		await import(specifier.startsWith(".") ? new URL(specifier, cli).href : specifier);
 	for (const path of PREFIX) await import(new URL(path, distUrl).href);
 	ran.length = 0;
 	beforeEntries = false;
