@@ -24,6 +24,7 @@ FAKE_ATOMIC_PLAN (a JSON object of prompt -> scenario) or FAKE_ATOMIC_SCENARIO n
   exit-holding-output
                     exit at once, leaving a child that holds the output open
   exit:<status>     exit at once with a status and a stderr line
+  no-credentials    exit at once as Atomic does without credentials for the model
   improve           text mode: an answer with <new_description> tags
 """
 
@@ -172,6 +173,12 @@ elif scenario == "exit-holding-output":
 elif scenario.startswith("exit:"):
     sys.stderr.write("fake atomic failed on purpose\n")
     sys.exit(int(scenario.split(":", 1)[1]))
+elif scenario == "no-credentials":
+    sys.stderr.write(
+        "No API key found for local: local/model cannot run without it, and no other model runs in its place.\n\n"
+        "Use /login to log into a provider via OAuth or API key.\n"
+    )
+    sys.exit(1)
 elif scenario == "improve":
     sys.stdout.write("<new_description>Use this skill for fake work. \u2713</new_description>\n")
 else:
