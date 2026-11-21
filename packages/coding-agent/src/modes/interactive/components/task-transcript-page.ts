@@ -12,11 +12,17 @@ import {
 } from "@bastani/atomic-tui";
 import type { AgentSessionEvent } from "../../../core/agent-session.js";
 import { startsQueuedMessage } from "../../../core/agent-session-events.ts";
+import {
+	queuedMessageReceipt,
+	queuedMessageReceiptId,
+	queuedMessageSaved,
+} from "../../../core/agent-session-message-queue.ts";
 import { chatReceiptWrite } from "../../../core/chat-receipts.js";
 import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
+import type { QueuedMessageReceipt } from "../../../core/queued-message-delivery.ts";
 import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import {
@@ -57,7 +63,7 @@ import { noteSavedSeq } from "../../../core/tasks/transcript-origin.js";
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import type { TranscriptFrameLayout } from "../../interactive-engine/transcript-frame-layout.ts";
 import { pauseAgent, resumeAgent, sendAgentMessage, takeAgentQueue } from "../agent-view/agent-steering.ts";
-import type { AgentViewState, AgentViewStatus } from "../agent-view/contracts.ts";
+import type { AgentViewReceipts, AgentViewState, AgentViewStatus } from "../agent-view/contracts.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import {
 	classifyChatCommand,
@@ -151,9 +157,11 @@ const savesHeard = new WeakSet<object>();
 function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEvent | undefined): void {
 	let shown = shownUnsaved.get(session);
 	if (event === undefined) {
-		if (shown !== undefined && session.entryReceipt !== undefined) {
-			const receipt = session.entryReceipt.bind(session);
-			shown = shown.filter((message) => receipt(message) === undefined);
+		if (shown !== undefined) {
+			// A message saved while no page followed the session: its session's receipt says so while the message is in
+			// its window, and the queue remembers it after that.
+			const receipt = session.entryReceipt?.bind(session);
+			shown = shown.filter((message) => receipt?.(message) === undefined && !queuedMessageSaved(message));
 			shownUnsaved.set(session, shown);
 		}
 		return;
@@ -175,8 +183,10 @@ function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEven
 		const raw = (saved as { readonly rawText?: unknown }).rawText;
 		const text = userMessageText(saved);
 		let index = shown.indexOf(saved);
+		// A queued message with a receipt is saved only as itself; another message with its text is not its save.
 		if (index < 0)
 			index = shown.findIndex((message) => {
+				if (queuedMessageReceiptId(message) !== undefined) return false;
 				const queued = userMessageText(message);
 				return queued === raw || queued === text || text.startsWith(`${queued}\n\n`);
 			});
@@ -188,6 +198,12 @@ function noteShownUnsaved(session: TaskTranscriptSource, event: AgentSessionEven
 function unsavedOf(session: TaskTranscriptSource | undefined): { unsaved?: readonly string[] } {
 	const shown = session === undefined ? undefined : shownUnsaved.get(session);
 	return shown === undefined || shown.length === 0 ? {} : { unsaved: shown.map(userMessageText) };
+}
+
+/** The receipts of `session`'s shown but unsaved queued messages, in the order `unsavedOf` lists them. */
+function unsavedReceiptsOf(session: TaskTranscriptSource | undefined): (QueuedMessageReceipt | undefined)[] {
+	const shown = session === undefined ? undefined : shownUnsaved.get(session);
+	return (shown ?? []).map((message) => queuedMessageReceipt(message));
 }
 
 function userMessageText(message: object): string {
@@ -992,11 +1008,28 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				? {}
 				: { delivering: { steering: [...delivering.steering], followUp: [...delivering.followUp] } }),
 			...unsavedOf(this.followed),
+			...this.receiptsOf(),
 			...(readOnlyReason === undefined ? {} : { readOnlyReason }),
 			heldPrompt: this.heldPrompt() !== undefined,
 			...(working === undefined ? {} : { working }),
 			gone: this.gone,
 		};
+	}
+
+	/**
+	 * How the saves of the queued messages the subagent took and was not seen to save can be found after its engine is
+	 * lost (see `AgentViewStatus.receipts`); nothing when none has a receipt.
+	 */
+	private receiptsOf(): { receipts?: AgentViewReceipts } {
+		const sessionId = this.followedSessionId;
+		if (sessionId === undefined) return {};
+		const delivering = this.chat.deliveringReceipts();
+		const taken = [...unsavedReceiptsOf(this.followed), ...delivering.steering, ...delivering.followUp].map(
+			(receipt) => receipt ?? null,
+		);
+		if (!taken.some((receipt) => receipt !== null)) return {};
+		const sessionFile = this.followed?.getSessionFile?.();
+		return { receipts: { sessionId, ...(sessionFile === undefined ? {} : { sessionFile }), taken } };
 	}
 
 	/** The chat box of a subagent's chat: the transcript, then pending, working, usage, the named editor and the footer. */

@@ -5,6 +5,7 @@
 ### Changed
 
 - Ctrl+C on an empty prompt while viewing a subagent pauses its work, as Esc does, and keeps the subagent shown instead of switching to `main`. ← (`app.nav.back`) on the empty prompt returns to `main`. Ctrl+C there still never counts toward exiting Atomic.
+- Starting Atomic on Windows no longer runs PowerShell to look for session history that a killed Atomic process left behind when there is none, which is always the case unless a session uses the memory session store (`--no-session`, `ATOMIC_STORAGE=memory` or `{ "memory": true }`). Each start ran it once, or twice with the default isolated engine, for 0.25–0.5 s and up to 0.45 s of CPU each, and the first frame now appears about 50 ms sooner on an 8-core machine. When there is history to check, process start times are read without PowerShell. macOS skips the matching `sysctl` lookup too.
 
 ### Fixed
 
@@ -36,8 +37,10 @@
 - The same message sent twice in quick succession, which an `input` extension rewrites, no longer leaves a copy of the typed text in the chat
 - A queued message that two runs in a row took and failed before sending comes back to the editor, as typed and in the order it was queued, with a notice, instead of disappearing
 - When the engine stops unexpectedly while delivering a queued message, the message comes back to the editor if the session files show it was never saved, and is no longer reported as possibly undelivered if they show it was; the notice now lists only messages whose delivery cannot be confirmed
+- The same applies to a subagent's chat: when the engine stops unexpectedly, a queued message the subagent saved is no longer reported as possibly undelivered, and one its session files show it never saved is listed with the subagent's messages that weren't sent
 - `atomic -p` with an extension command prints the command's own answer, or fails on its failed reply, even when another message is saved after it, and waits for a reply the command asks for while an earlier run is still finishing
 - On Windows, the first quit after installing or upgrading Atomic no longer takes several seconds. A session that finds Node's compile cache empty or out of date for this version runs without it, and a short-lived background process writes the cache while the session runs, so later sessions start from it ([#6132](https://github.com/bastani-inc/atomic/issues/6132))
+- `session.dispose()` now waits, for up to about five seconds, until the extension transpile cache has finished storing what the session's own extensions started, such as the transform of a module an extension imported after it started. An SDK host that removes the agent directory once `dispose()` resolves could fail with `ENOTEMPTY`, or find a file written into it afterwards ([#6190](https://github.com/bastani-inc/atomic/pull/6190))
 - Starting Atomic with `--offline`, `--debug`, a `PI_OFFLINE` or non-`1` `ATOMIC_OFFLINE` value, or the `debug` or `httpProxy` setting no longer throws away the engine it starts loading at launch and loads a second one. The prompt takes input about 1.8 s sooner on Windows and 0.7 s sooner on Linux, and on a cold Windows start without antivirus exclusions about 8 s sooner, without the 5 s pause that followed the first frame there.
 
 ## [0.10.3] - 2026-11-21
