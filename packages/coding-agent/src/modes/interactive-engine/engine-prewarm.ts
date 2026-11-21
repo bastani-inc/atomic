@@ -11,10 +11,7 @@ import { basename } from "node:path";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { COMPILE_CACHE_ENGINE_WARMUP_ENV, compileCacheDeferral } from "../../utils/compile-cache.ts";
-import {
-	INTERACTIVE_ENGINE_PREWARM_FLAG,
-	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
-} from "../../utils/interactive-engine-bootstrap.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { isPlainInteractiveSessionInvocation } from "../../utils/interactive-invocation.ts";
 import { applyArgumentEnvironment, settingsEnvironmentForEarlyChild } from "../../utils/startup-environment.js";
@@ -109,6 +106,15 @@ export function interactiveEngineClientOptions(cwd: string): {
 		env: interactiveEngineEnvOverrides(),
 	};
 }
+
+/**
+ * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG} for a prewarmed child whose host would otherwise have started a fresh
+ * engine from its own written compile cache: the child writes its compile cache once it has loaded, if its host has
+ * not taken it over by then, so that its exit has little left to write. Defined here, from the one flag every version
+ * exports, and read by `cli.ts` from this module's namespace, so that a process holding an earlier version of either
+ * module, loaded before an update replaced the installation, never fails to link; an earlier version ignores it.
+ */
+export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-write-cache`;
 
 /**
  * How a prewarmed engine's launch compares with the one a host prewarmed before it gave the prewarm the environment

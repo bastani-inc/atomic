@@ -9,15 +9,13 @@ import {
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
 	type PrewarmLaunchBasis,
 	prewarmInteractiveEngine,
 	sameEngineLaunch,
 	shouldPrewarmInteractiveEngine,
 } from "../src/modes/interactive-engine/engine-prewarm.ts";
-import {
-	INTERACTIVE_ENGINE_PREWARM_FLAG,
-	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
-} from "../src/utils/interactive-engine-bootstrap.ts";
+import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../src/utils/interactive-engine-bootstrap.ts";
 
 /** How long a stand-in engine may take to start, or to be gone once stopped, on a loaded runner. */
 const ENGINE_START_OR_EXIT_WAIT_MS = 30_000;
