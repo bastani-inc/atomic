@@ -1641,6 +1641,38 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("tells a viewport listener after input and after each painted frame, once per turn (#5693)", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async () => true,
+		});
+		tui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			const heard: boolean[] = [];
+			const stop = tui.onViewportChange(() => heard.push(tui.isPointerIdle()));
+			terminal.sendInput("\x1b[<0;1;1M");
+			terminal.sendInput("\x1b[<32;4;2M");
+			await Promise.resolve();
+			assert.deepStrictEqual(heard, [false], "two reports in one turn are heard once");
+			tui.resetTextSelection();
+			await Promise.resolve();
+			assert.deepStrictEqual(heard, [false, true]);
+			tui.requestRender(true);
+			await terminal.waitForRender();
+			await Promise.resolve();
+			assert.strictEqual(heard.length, 3, "a painted frame");
+			stop();
+			terminal.sendInput("\x1b[<0;1;1M");
+			await Promise.resolve();
+			assert.strictEqual(heard.length, 3);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("is pointer-idle only while no selection, press or drag depends on where rows are (#5693)", async () => {
 		const terminal = new RecordingTerminal(20, 4);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {

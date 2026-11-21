@@ -2,11 +2,15 @@ import { asyncScope } from "../async-scope.ts";
 import { drainExtensionAPIWork, retireExtensionAPI, runExtensionAPICleanup, sealExtensionAPI } from "./loader-api.ts";
 import { createExtensionContext } from "./runner-context.ts";
 import { noOpUIContext } from "./runner-ui.ts";
-import type { Extension, ExtensionRuntime } from "./types.ts";
+import type { Extension, ExtensionRuntime, SessionShutdownEvent } from "./types.ts";
 
 export const factoryAcquisitions = asyncScope<{
 	pending?: Map<Extension, { cwd: string; runtime: ExtensionRuntime }>;
 	replacement?: boolean;
+	/** The shutdown the rolled-back factories see, when they are let go for another session rather than a failure. */
+	shutdown?: Pick<SessionShutdownEvent, "reason" | "targetSessionId">;
+	/** Told of each extension as its cleanup begins. */
+	onCleanup?: (extension: Extension) => void;
 }>();
 
 export async function rollbackFactoryAcquisitions(
@@ -25,6 +29,38 @@ export async function rollbackFactoryAcquisitions(
 	return failures;
 }
 
+/**
+ * Runs `operation`, recording the extension factories it runs. `rollback` later shuts them down as a failed creation's
+ * are: each sees `shutdown` as its session_shutdown, its API retires and its runtime is invalidated. `release` hands them
+ * over to the session that keeps them, so the record holds none of them any more. When `operation` fails, the factories
+ * it ran are rolled back at once.
+ */
+export async function recordFactoryAcquisitions<T>(operation: () => Promise<T>): Promise<{
+	result: T;
+	release: () => void;
+	rollback: (
+		shutdown: Pick<SessionShutdownEvent, "reason" | "targetSessionId">,
+		onCleanup?: (extension: Extension) => void,
+	) => Promise<unknown[]>;
+}> {
+	const pending = new Map<Extension, { cwd: string; runtime: ExtensionRuntime }>();
+	let result: T;
+	try {
+		result = await factoryAcquisitions.run({ pending }, operation);
+	} catch (error) {
+		throw factoryRollbackError(
+			error,
+			await factoryAcquisitions.run({ pending }, () => rollbackFactoryAcquisitions()),
+		);
+	}
+	return {
+		result,
+		release: () => pending.clear(),
+		rollback: (shutdown, onCleanup) =>
+			factoryAcquisitions.run({ pending, shutdown, onCleanup }, () => rollbackFactoryAcquisitions()),
+	};
+}
+
 /** Factories can acquire resources before a session (and its runner) exists. */
 export function rollbackExtensionFactories(extensions: Extension[], cwd: string): Promise<unknown[]> {
 	return rollbackFactories(extensions.map((extension) => ({ extension, cwd })));
@@ -39,11 +75,13 @@ async function rollbackFactories(entries: { extension: Extension; cwd: string }[
 	await Promise.all(closing.map(({ extension }) => drainExtensionAPIWork(extension)));
 	const failures: unknown[] = [];
 	for (const { extension, cwd } of closing) {
+		factoryAcquisitions.getStore()?.onCleanup?.(extension);
 		await runExtensionAPICleanup(extension, async () => {
 			for (const handler of extension.handlers.get("session_shutdown") ?? []) {
 				try {
+					const scope = factoryAcquisitions.getStore();
 					await handler(
-						{ type: "session_shutdown", reason: factoryAcquisitions.getStore()?.replacement ? "new" : "quit" },
+						{ type: "session_shutdown", ...(scope?.shutdown ?? { reason: scope?.replacement ? "new" : "quit" }) },
 						rollbackContext(cwd),
 					);
 				} catch (error) {

@@ -29,6 +29,10 @@
 - While viewing a subagent, a narrow footer keeps `← main chat` and `↓ N agents` longer than `? keys` and the working status. Before, `↓ 1 agent` was dropped below 47 columns.
 - ↓ on the empty prompt of an extension's editor built on Atomic's editor (`ctx.ui.setEditorComponent`) now focuses the agent panel, as it does on the default prompt, unless the editor uses the key itself.
 - A task stopped by its execution timeout shows the stopped mark (a red `◯`) in its completion notice, as the agent panel and `/tasks` show it, instead of `!`. Saved sessions keep their notices unchanged.
+- An extension installed while Atomic starts no longer decides the trust of a folder whose saved **Trust** startup already applied: the folder is decided with the extensions Atomic found when it started, and the new extension loads after the decision ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- Resuming another folder's session from a folder whose own settings choose its session store loads the bundled extensions once, and shuts down the extensions that decided the first folder before the session's own load; a shutdown that does not finish within about five seconds no longer holds the session back and is named in a warning ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- When a folder is approved after the chat is on screen, an open menu of command names in which you have not chosen a row shows the approved commands, with an exact match selected; a completion provider that fails or never answers leaves the menu as it was ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
+- The resource list at the top of the chat shows an approval as soon as a selection, click, drag or search that held it ends, instead of checking again every 250 ms ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
 
 ## [0.10.3] - 2026-11-21
 
