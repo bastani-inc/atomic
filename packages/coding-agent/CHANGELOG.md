@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- While you view a subagent, `←` on its empty prompt returns to the main chat and leaves the subagent running, with its queued messages and unsent draft kept. The hint by the prompt reads `← main chat`. `Esc` no longer switches back to the main chat; it only pauses a working subagent, so how you leave a subagent no longer depends on whether it is working ([#6135](https://github.com/bastani-inc/atomic/issues/6135))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.
