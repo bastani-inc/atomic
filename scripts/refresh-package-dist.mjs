@@ -8,6 +8,9 @@
 // the source maps point at the same sources. Only files whose bytes differ are then moved into dist, each replacing the
 // old file in one rename, so an up-to-date dist is left exactly as it was. Like the package build, files that are no
 // longer emitted stay in dist, except under @bastani/atomic-ai's providers/data, which mirrors src/providers/data.
+//
+// Windows refuses to replace a file that another program has open. The rename is tried again while a reader finishes
+// with the file; only a file still held after about two seconds is written in place, as the package build does.
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
@@ -21,6 +24,7 @@ import {
 	rmSync,
 	statSync,
 	unlinkSync,
+	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
@@ -37,7 +41,10 @@ const COPIED_OUTPUTS = {
 	"packages/ai": { from: "src/providers/data", to: "providers/data", modelData: true },
 };
 
-/** A busy Windows machine (an antivirus scan, a reader without delete sharing) can refuse a rename for a moment. */
+/**
+ * How long a refused rename is tried again: Windows refuses to replace a file while another program, such as a test
+ * importing it or an antivirus scan, has it open, which is usually for moments. About two seconds.
+ */
 const RENAME_TRIES = 50;
 const RENAME_RETRY_MS = 40;
 const RETRIED_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
@@ -58,15 +65,24 @@ function listFiles(directory) {
 	return files.sort();
 }
 
-/** @param {string} from @param {string} to */
-function renameReplacing(from, to) {
+/**
+ * Replaces `to` with `from` in one rename, so a reader sees the whole old file or the whole new one. A file another
+ * program keeps open past the retries is written in place instead, as the package build always did.
+ * @param {string} from
+ * @param {string} to
+ */
+function replaceFile(from, to) {
 	for (let attempt = 1; ; attempt++) {
 		try {
 			renameSync(from, to);
 			return;
 		} catch (error) {
 			const code = /** @type {NodeJS.ErrnoException} */ (error).code ?? "";
-			if (!RETRIED_RENAME_CODES.has(code) || attempt >= RENAME_TRIES) throw error;
+			if (!RETRIED_RENAME_CODES.has(code)) throw error;
+			if (attempt >= RENAME_TRIES) {
+				writeFileSync(to, readFileSync(from));
+				return;
+			}
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_MS);
 		}
 	}
@@ -93,7 +109,7 @@ export function moveChangedFiles(staged, dist, prune = []) {
 		} else {
 			mkdirSync(dirname(to), { recursive: true });
 		}
-		renameReplacing(from, to);
+		replaceFile(from, to);
 		replaced.push(file);
 	}
 	const emitted = new Set(files);

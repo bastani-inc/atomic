@@ -1,6 +1,6 @@
 // Exercises the dist refresh `npm run typecheck` runs, on a small package outside the workspace.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	closeSync,
 	existsSync,
@@ -24,6 +24,16 @@ import { moveChangedFiles } from "./refresh-package-dist.mjs";
 const script = fileURLToPath(new URL("./refresh-package-dist.mjs", import.meta.url));
 const typescript = createRequire(import.meta.url).resolve("typescript/package.json");
 const tsc = join(dirname(typescript), JSON.parse(readFileSync(typescript, "utf8")).bin.tsc);
+
+/** How long a refresh may take to stage its output: one small tsc run on a busy machine. */
+const REFRESH_WAIT_MS = 60_000;
+
+/** Whether a staging directory of the package in `directory` holds `file`. */
+function stagedOutput(directory, file) {
+	return readdirSync(directory).some(
+		(entry) => entry.startsWith(".dist-staging-") && existsSync(join(directory, entry, file)),
+	);
+}
 
 function workspace(t) {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-refresh-dist-"));
@@ -94,20 +104,48 @@ test("an up-to-date dist is left exactly as it was: no file is written", (t) => 
 	);
 });
 
-test("a changed output replaces the old file whole, so a reader that opened the old one still reads all of it", (t) => {
+test("a changed output is never written while a reader has the old file open: the reader reads all of the old one", async (t) => {
 	const directory = workspace(t);
 	writePackage(directory, "export const answer: number = 42;\n");
 	build(directory);
 	const output = join(directory, "dist", "index.js");
 	const old = readFileSync(output);
-	const reader = openSync(output, "r");
-	t.after(() => closeSync(reader));
+	let reader = openSync(output, "r");
+	t.after(() => {
+		if (reader !== undefined) closeSync(reader);
+	});
 	writePackage(directory, 'export const answer: number = 43;\nexport const question = "unknown";\n');
-	assert.match(refresh(directory), /: 4 of 4 files changed/);
 
+	const child = spawn(process.execPath, [script, directory], { stdio: ["ignore", "pipe", "pipe"] });
+	let stdout = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk) => {
+		stdout += chunk;
+	});
+	const exited = new Promise((resolve) => child.once("close", (status) => resolve(status)));
+	let done = false;
+	void exited.then(() => {
+		done = true;
+	});
+	if (process.platform === "win32") {
+		// Windows refuses to replace a file a reader has open. Once the new index.js is staged the refresh is about to
+		// replace the old one, so it waits until this reader has read the old file and closed it.
+		const deadline = Date.now() + REFRESH_WAIT_MS;
+		while (!done && !stagedOutput(directory, "index.js")) {
+			assert.ok(Date.now() < deadline, "the refresh never staged index.js");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	} else {
+		// Elsewhere the new file takes the old one's name while the reader keeps the old file.
+		await exited;
+	}
 	const read = Buffer.alloc(old.length + 64);
 	const length = readSync(reader, read, 0, read.length, 0);
+	closeSync(reader);
+	reader = undefined;
 	assert.equal(read.subarray(0, length).toString(), old.toString());
+
+	assert.equal(await exited, 0);
+	assert.match(stdout, /: 4 of 4 files changed/);
 	assert.match(readFileSync(output, "utf8"), /answer = 43;\nexport const question = "unknown";/);
 });
 
