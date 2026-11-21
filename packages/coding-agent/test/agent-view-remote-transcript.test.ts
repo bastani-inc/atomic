@@ -654,7 +654,9 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			closed.engine.openPanel(["◯ main"]);
 			await vi.waitFor(() => assert.ok(closed.engine.panelId() !== undefined), FRAME_WAIT);
 			closed.engine.closePanel();
-			await vi.waitFor(() => assert.equal(closed.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
+			await vi.waitFor(() => assert.ok(closed.engine.transcriptFramed()), FRAME_WAIT);
+			await flush();
+			assert.equal(closed.engine.switcher.viewed.kind, "agent", "no panel is left to wait for");
 			assert.equal(closed.engine.panelRows(), undefined);
 		} finally {
 			await closed.dispose();
@@ -665,8 +667,10 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 			plain.engine.switcher.requestView(plain.sub.taskId, { keepScreen: true });
 			plain.closeTasks();
 			plain.engine.openPanel(["◯ main"]);
-			await vi.waitFor(() => assert.equal(plain.engine.switcher.viewed.kind, "agent"), FRAME_WAIT);
-			assert.ok(plain.engine.transcriptFramed());
+			await vi.waitFor(() => assert.ok(plain.engine.transcriptFramed()), FRAME_WAIT);
+			await flush();
+			assert.equal(plain.engine.switcher.viewed.kind, "agent", "shown with its transcript, as before");
+			assert.deepEqual(plain.engine.panelRows(), [], "the panel had not drawn");
 		} finally {
 			await plain.dispose();
 		}

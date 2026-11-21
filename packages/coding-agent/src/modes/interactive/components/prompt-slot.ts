@@ -36,8 +36,9 @@ const SETTLED: PromptSlotHold = { settle: () => {}, endEarly: () => false };
 
 export interface PromptSlotHoldOptions {
 	/**
-	 * The command can mount its view only after the hold ends (an extension command, which nothing waits for): a view
-	 * it mounts with nothing to draw yet before the next frame keeps the rows still on screen, once, until it draws.
+	 * The command's view can mount at any time, also after the hold ends (an extension command, which nothing waits
+	 * for). A view it mounts with nothing to draw yet, while held or before the first frame after the hold ended,
+	 * keeps the rows on screen until it draws, for one more bound from when it is first drawn.
 	 */
 	readonly lateView?: boolean;
 }
@@ -80,8 +81,9 @@ interface Drawn {
 type HeldSlot = {
 	readonly kind: "held";
 	/**
-	 * What the rows wait for: the view a command opens (`lateView`: one it can also mount after the hold ends), or the
-	 * first frame of a view mounted with nothing to draw yet.
+	 * What the rows wait for: the view a command opens (`lateView`: an extension command's, which waits for its first
+	 * frame once mounted, and can also mount after the hold ends), or the first frame of a view mounted with nothing to
+	 * draw yet.
 	 */
 	readonly awaits: "view" | "lateView" | "firstContent";
 	/** Which hold this is. */
@@ -93,10 +95,7 @@ type HeldSlot = {
 	readonly generation: number;
 	/** Shows the slot live again. */
 	readonly end: () => void;
-	/**
-	 * Ends the hold at its bound, or at another extension's change. A `lateView` hold with nothing mounted since it began
-	 * leaves its rows to the next frame (`handoff`).
-	 */
+	/** Ends the hold at its bound, or at another extension's change: a `lateView` hold leaves its rows to the next frame. */
 	readonly endEarly: () => boolean;
 };
 
@@ -105,10 +104,9 @@ type PromptSlotState =
 	| HeldSlot
 	| {
 			/**
-			 * A `lateView` hold ended at its bound, or at another extension's change, before the command mounted anything,
-			 * and no frame was drawn since: the screen still shows its rows. The slot's next render gives them, once, to a
-			 * view the command mounted meanwhile with nothing to draw yet, and otherwise draws live. The screen is not held
-			 * meanwhile: another part of it can be.
+			 * A `lateView` hold ended at its bound, or at another extension's change, and no frame was drawn since: the
+			 * screen still shows its rows. The slot's next render gives them, once, to a view the command mounted with
+			 * nothing to draw yet, and otherwise draws live. The screen is not held meanwhile: another part of it can be.
 			 */
 			readonly kind: "handoff";
 			readonly token: object;
@@ -239,8 +237,21 @@ export class PromptSlot extends Container {
 		const state = this.state;
 		const previous = this.drawn;
 		if (state.kind === "held") {
-			if (this.showsHeldRows(state, width)) rows = state.rows;
-			else state.end();
+			if (!this.showsHeldRows(state, width)) state.end();
+			else if (
+				state.awaits === "lateView" &&
+				state.generation !== this.generation &&
+				this.children.some(awaitsFirstContent)
+			) {
+				// The command's view mounted with nothing to draw yet: its first frame, not the command's bound, ends the wait
+				// now, for one bound from here.
+				state.end();
+				this.screen.begin("prompt", (ended) => {
+					const held = this.beginHold("firstContent", state.rows, width, state.generation, ended);
+					rows = held.rows;
+					return held.end;
+				});
+			} else rows = state.rows;
 		} else if (state.kind === "handoff") {
 			this.state = LIVE;
 			if (
@@ -305,8 +316,8 @@ export class PromptSlot extends Container {
 
 	/**
 	 * Hold `rows`: those `seed` drew, the slot's last render, or those a command's hold left for its view. A `lateView`
-	 * hold that reaches its bound, or ends at another change, with nothing mounted since it began, leaves them to the
-	 * next frame (`handoff`); any other end shows the slot live.
+	 * hold that reaches its bound, or ends at another change, leaves them to the next frame (`handoff`); any other end
+	 * shows the slot live.
 	 */
 	private beginHold(
 		awaits: HeldSlot["awaits"],
@@ -331,7 +342,7 @@ export class PromptSlot extends Container {
 		const endEarly = () => {
 			if (over) return false;
 			finish(
-				awaits === "lateView" && this.generation === generation
+				awaits === "lateView"
 					? { kind: "handoff", token: held.token, rows, width, generation, keys: this.screen.keyPresses }
 					: LIVE,
 			);

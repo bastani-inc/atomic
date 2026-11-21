@@ -378,16 +378,23 @@ test("a key or another width between the bound and the next frame shows a view m
 	assert.deepEqual(resized.slot.render(40), [], "it does not come back at the old width");
 });
 
-test("a view mounted while the command held keeps the command's bound: the bound does not start again (#6105)", () => {
+test("an extension command's view mounted before the bound keeps the typed command until it draws, for one bound from then (#6105)", () => {
 	vi.useFakeTimers();
-	const { slot, screen } = slotWithPrompt();
+	const { slot, requestRender, screen } = slotWithPrompt();
 	holdPromptSlot(slot, LATE_VIEW);
 	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 10);
-	mountView(slot, pendingView("Agents").view);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
 	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
 	vi.advanceTimersByTime(10);
+	assert.equal(screen.region, "prompt", "the command's bound no longer ends it: the view's first frame does");
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 10);
 	assert.equal(screen.region, undefined);
-	assert.deepEqual(slot.render(40), []);
+	assert.equal(requestRender.mock.calls.length, 1);
+	assert.deepEqual(slot.render(40), [], "past its own bound the view is drawn as it is");
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
 });
 
 test("another extension's change that ends the hold keeps the typed command for the command's view mounted before the next frame (#6105)", () => {
@@ -456,6 +463,21 @@ test("an extension command's hold keeps the typed command for its view mounted a
 	const panel = pendingView("Agents");
 	mountView(slot, panel.view);
 	assert.deepEqual(slot.render(40), ["❯ /agents"]);
+	panel.ready();
+	assert.deepEqual(slot.render(40), ["Agents"]);
+});
+
+test("an extension command's view mounted before the bound with no frame drawn since keeps the typed command until it draws (#6105)", () => {
+	vi.useFakeTimers();
+	const { slot, screen } = slotWithPrompt();
+	holdPromptSlot(slot, LATE_VIEW);
+	vi.advanceTimersByTime(PROMPT_SLOT_HOLD_MS - 10);
+	const panel = pendingView("Agents");
+	mountView(slot, panel.view);
+	// The bound passes before any frame shows the mounted view.
+	vi.advanceTimersByTime(10);
+	assert.equal(screen.region, undefined);
+	assert.deepEqual(slot.render(40), ["❯ /model", "  model  Select model"]);
 	panel.ready();
 	assert.deepEqual(slot.render(40), ["Agents"]);
 });
