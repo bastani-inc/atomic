@@ -262,11 +262,12 @@ function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; age
 }
 
 /**
- * The mark a saved line's status shows: a subagent paused or quit until it is resumed is stopped, as the agent panel
- * and `/tasks` show it; its line keeps its `paused` status and its words.
+ * The mark a saved line's status shows: a subagent paused or quit until it is resumed, and a task its execution timeout
+ * stopped (saved as `warning`), are stopped, as the agent panel and `/tasks` show them; the line keeps its saved status
+ * and its words.
  */
 function noticeMarkStatus(status: NoticeLineSpec["status"]): NoticeLineSpec["status"] {
-	return status === "paused" ? "stopped" : status;
+	return status === "paused" || status === "warning" ? "stopped" : status;
 }
 
 export function taskNoticeLineSpec(notice: TaskCompletionNotice): NoticeLineSpec {

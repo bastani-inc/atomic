@@ -3,9 +3,9 @@ import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 
 /**
  * The keys the prompt answers itself while a subagent is shown, with what the screen holds when each arrives. Esc acts
- * on the subagent's turn and never leaves its view. The back key (`app.nav.back`, ← by default) on an empty prompt is
- * the way back to main, and leaves the subagent's run and queue as they are; with text typed, it is the editor's.
- * Ctrl+C on an empty prompt pauses the subagent's work and shows main in one press.
+ * on the subagent's turn and never leaves its view, and so does Ctrl+C on an empty prompt. The back key
+ * (`app.nav.back`, ← by default) on an empty prompt is the way back to main, and leaves the subagent's run and queue as
+ * they are; with text typed, it is the editor's.
  */
 export type ViewedAgentKey =
 	/** Esc. `pausable`: the subagent works, waits to retry, or has messages queued. */
@@ -22,15 +22,14 @@ export type ViewedAgentKey =
 	| { readonly key: "back"; readonly promptEmpty: boolean; readonly clicked: boolean; readonly replayed: boolean };
 
 /** What the key does: `editor` leaves it to the prompt, which moves its cursor. */
-export type ViewedAgentKeyAction = "pause" | "showMain" | "pauseAndShowMain" | "none" | "editor";
+export type ViewedAgentKeyAction = "pause" | "showMain" | "none" | "editor";
 
 export function viewedAgentKeyAction(input: ViewedAgentKey): ViewedAgentKeyAction {
 	switch (input.key) {
 		case "escape":
 		case "signal":
-			return input.pausable ? "pause" : "none";
 		case "leave":
-			return input.pausable ? "pauseAndShowMain" : "showMain";
+			return input.pausable ? "pause" : "none";
 		case "back":
 			return !input.replayed && (input.promptEmpty || input.clicked) ? "showMain" : "editor";
 	}

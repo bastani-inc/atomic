@@ -77,6 +77,7 @@ import {
 	type InteractiveTui,
 	type InternalUiActionResult,
 } from "./interactive-tui.ts";
+import { dockScene, navigationShown } from "./navigation-scene.js";
 import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
 import { screenHoldOf } from "./screen-hold.ts";
 
@@ -791,8 +792,9 @@ export class InteractiveModeBase {
 		this.chatContainer.addChild(this.startupNoticesContainer);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
-		this.widgetContainerAbove = new WidgetContainer();
-		this.widgetContainerBelow = new WidgetContainer();
+		// Widgets give way to a navigation view from the frame the prompt's slot draws it (`dockScene`).
+		this.widgetContainerAbove = new WidgetContainer((width) => dockScene(this, width));
+		this.widgetContainerBelow = new WidgetContainer((width) => dockScene(this, width));
 		this.keybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
 		this.reloadCoordinator = new KeybindingsReloadCoordinator(this.keybindings);
 		setKeybindings(this.keybindings);
@@ -812,7 +814,7 @@ export class InteractiveModeBase {
 			this.session,
 			this.footerDataProvider,
 			undefined,
-			() => this.navigationInlineCustomUiDepth > 0,
+			(width) => navigationShown(this, width),
 			undefined,
 			() => {
 				// While a subagent is shown, `← main chat` leads the hints whenever ← would go there.
@@ -824,7 +826,8 @@ export class InteractiveModeBase {
 				);
 			},
 		);
-		this.footerContainer = new Container();
+		// While a navigation view is on its way the footer still shows its hints, which take no clicks then.
+		this.footerContainer = new WidgetContainer((width) => (dockScene(this, width) === "inert" ? "inert" : "live"));
 		this.footerContainer.addChild(this.footer);
 		this.usageMeter = new UsageMeterComponent(this.session);
 		this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
@@ -854,6 +857,11 @@ export class InteractiveModeBase {
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 				}),
+				navigationPending: () => dockScene(this, this.ui.terminal.columns) === "inert",
+				keepPromptUntil: (ready) => {
+					if (this.editorContainer instanceof PromptSlot)
+						this.editorContainer.holdUntil(ready, this.editor as Component);
+				},
 			},
 			(handler) => {
 				this.interactiveEngineShortcutHandler = handler;

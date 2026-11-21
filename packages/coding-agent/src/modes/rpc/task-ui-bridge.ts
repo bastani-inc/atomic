@@ -24,7 +24,7 @@ import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interact
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
-import { setAgentPanelVisible } from "./agent-panel-bridge.ts";
+import { hideAgentPanelFor } from "./agent-panel-bridge.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
@@ -134,6 +134,9 @@ export async function showTaskInspector(
 	let fullscreen = false;
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
+	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
+	/** The agent panel this view takes the place of: hidden once the view is mounted, back in the step it closes. */
+	const panel = hideAgentPanelFor(panelTarget);
 	const inspector = new TaskInspector(
 		options.source ?? store,
 		() => {
@@ -142,7 +145,7 @@ export async function showTaskInspector(
 		},
 		() => {
 			closed = true;
-			finishView();
+			panel.show(() => finishView());
 		},
 		undefined,
 		() => environment,
@@ -166,12 +169,10 @@ export async function showTaskInspector(
 	if (options.chat && taskId !== undefined) {
 		pendingChat = taskId as TaskId;
 	} else inspector.open(taskId as TaskId | undefined);
-	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
-	setAgentPanelVisible(panelTarget, false);
 	try {
 		while (!closed) {
 			fullscreen = inspector.fullscreen || pendingChat !== undefined;
-			await ui.custom<void>(
+			const shown = ui.custom<void>(
 				(tui, _theme, keybindings, done) => {
 					requestRender = () => tui.requestRender();
 					finishView = () => done();
@@ -196,7 +197,7 @@ export async function showTaskInspector(
 
 						if (!inspector.fullscreen) {
 							closed = true;
-							queueMicrotask(() => done());
+							queueMicrotask(() => panel.show(() => done()));
 						}
 					}
 					// Elapsed times and the stop notice's window advance while the view is shown.
@@ -224,7 +225,7 @@ export async function showTaskInspector(
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							// Ctrl+C closes the view: what it shows here (lists, details, a shell's output) has no prompt.
 							closed = true;
-							done();
+							panel.show(() => done());
 							return true;
 						},
 					};
@@ -247,12 +248,14 @@ export async function showTaskInspector(
 						: {}),
 				},
 			);
+			panel.hide();
+			await shown;
 			// Host dismissal without a navigation transition must not reopen the view.
 			if (inspector.fullscreen === fullscreen) closed = true;
 		}
 	} finally {
 		inspector?.dispose();
-		setAgentPanelVisible(panelTarget, true);
+		panel.show();
 	}
 	return inspector?.closedByBack === true ? "back" : "closed";
 }

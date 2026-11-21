@@ -8,8 +8,9 @@ import { collapseToolBlockLines, ToolBlock } from "./tool-block.ts";
  * How the subject of a notice ended or stands. A started subject reads as `success`; `waiting` is a subagent released
  * while it waits on a call, which wakes by itself when that call finishes; `heartbeat` marks a periodic check on work
  * that is still running. `agent-running` and `shell-running` mark a subagent and a background shell that keep running,
- * `input` a subagent that waits for an answer, and `task-stopped` a subagent or background task that was stopped, with
- * the marks the agent panel and `/tasks` show them with. `running` is a tool call in progress, and `stopped` one that
+ * `input` a subagent that waits for an answer, `task-queued` one that waits for its turn to run, `task-stopping` one
+ * being stopped, and `task-stopped` a subagent or background task that was stopped, with the marks the agent panel and
+ * `/tasks` show them with. `running` is a tool call in progress, and `stopped` one that
  * was interrupted or not run.
  */
 export type NoticeStatus =
@@ -23,6 +24,8 @@ export type NoticeStatus =
 	| "agent-running"
 	| "shell-running"
 	| "input"
+	| "task-queued"
+	| "task-stopping"
 	| "task-stopped"
 	| "info"
 	| "heartbeat";
@@ -65,6 +68,8 @@ export const STATUS_MARKERS: Readonly<Record<NoticeStatus, { readonly glyph: str
 	"agent-running": TASK_MARKS.running,
 	"shell-running": TASK_MARKS.shell,
 	input: TASK_MARKS.input,
+	"task-queued": TASK_MARKS.queued,
+	"task-stopping": TASK_MARKS.stopping,
 	"task-stopped": TASK_MARKS.stopped,
 	info: { glyph: "›", color: "muted" },
 	heartbeat: { glyph: "♥", color: "muted" },

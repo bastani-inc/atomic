@@ -17,6 +17,7 @@ import type {
 	SessionStartEvent,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { interactiveQuitOf } from "./interactive-quit.js";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { SessionTrustDecisions } from "./project-trust-state.ts";
 import type { AuthStatus } from "./provider-composer.ts";
@@ -37,8 +38,10 @@ import { assertSessionCwdExists, findMissingSessionCwdIssueAsync, MissingSession
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	abortSessionWork,
+	armSessionQuitStops,
 	drainSessionWorkWithin,
 	hasCallingSessionWork,
+	limitQuitShutdownHandlers,
 	ownedSessionManagerStores,
 	ownedSessionStores,
 	registerSessionRetirement,
@@ -1003,6 +1006,17 @@ export class AgentSessionRuntime {
 	dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
+		const interactiveQuit = interactiveQuitOf(this);
+		if (interactiveQuit) {
+			const deadline =
+				interactiveQuit.handlerLimitMs === undefined
+					? undefined
+					: performance.now() + interactiveQuit.handlerLimitMs;
+			for (const session of [this.session, ...this.candidates, ...this.rehydrated.values()]) {
+				armSessionQuitStops(session);
+				if (deadline !== undefined) limitQuitShutdownHandlers(session, deadline);
+			}
+		}
 		abortSessionWork(this, true);
 		this.endedBySignal = options?.fromSignal === true;
 		// Every graceful exit path (quit, signals, RPC shutdown, print mode) disposes the runtime before exiting.
