@@ -147,6 +147,10 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"codemode-access.ts",
 			"reach-errors.ts",
 			"startup-join.ts",
+			"finished-asks.ts",
+			"reply-tracker.ts",
+			"session-identity.ts",
+			"session-target.ts",
 		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });
@@ -162,7 +166,12 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			join(tempDir, "broker", "recipient-gone-errors.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/recipient-gone-errors.ts"), "utf-8"),
 		);
-		for (const file of ["hosted-session-errors.ts", "hosted-sessions.ts", "released-child-receipts.ts"])
+		for (const file of [
+			"hosted-session-errors.ts",
+			"hosted-sessions.ts",
+			"released-child-receipts.ts",
+			"delivery-failure-reason.ts",
+		])
 			writeFileSync(
 				join(tempDir, "broker", file),
 				readFileSync(resolve(repoRoot, "packages/intercom/broker", file), "utf-8"),

@@ -2,7 +2,7 @@ import { type PendingRecoveryDelivery, type SessionEntry, type SessionRecoveryRe
 import type { IntercomClient } from "./broker/client.js";
 import { SUBAGENT_ENDED_OUTCOMES, type SubagentEndedOutcome } from "./broker/recipient-gone-errors.js";
 import type { InboundMessageEntry } from "./intercom-utils.js";
-import type { SessionInfo } from "./types.js";
+import type { Message, SessionInfo } from "./types.js";
 
 /** Subagents asks Intercom to confirm that a restored child re-registered with the broker (#3760). */
 export const SUBAGENT_AWAIT_INTERCOM_PEER_EVENT = "subagent:await-intercom-peer";
@@ -156,6 +156,65 @@ export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restorin
  * reconnect, so what they sent is neither replayed as if they were live nor discarded as if they were gone.
  */
 export const SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT = "subagent:restored-intercom-peers";
+/**
+ * #6168: Intercom asks Subagents which of the asks this session holds unanswered came from one of its children that
+ * has ended, so no reply can reach it. Payload: {@link FinishedAsksRequest}.
+ */
+export const SUBAGENT_FINISHED_ASKS_EVENT = "subagent:finished-asks";
+
+/** One ask this session holds unanswered, as it arrived. */
+export interface HeldAsk {
+	readonly messageId: string;
+	readonly from: { readonly id: string; readonly name?: string };
+	readonly source?: { readonly subagentRunId: string; readonly subagentIndex?: number };
+	/** When this session received it, by its own clock. */
+	readonly receivedAt: number;
+}
+
+export interface FinishedAsksRequest {
+	readonly ownerSessionId: string;
+	readonly asks: readonly HeldAsk[];
+	completion?: Promise<readonly string[]>;
+}
+
+/** The ids of `asks` whose sender Subagents knows has ended; none without a Subagents extension. */
+export async function finishedChildAsks(
+	events: { emit(eventName: string, payload: unknown): void },
+	ownerSessionId: string,
+	asks: readonly IntercomContextLike[],
+): Promise<ReadonlySet<string>> {
+	if (asks.length === 0) return new Set();
+	const request: FinishedAsksRequest = {
+		ownerSessionId,
+		asks: asks.map(({ from, message, receivedAt }) => ({
+			messageId: message.id,
+			from: { id: from.id, ...(from.name === undefined ? {} : { name: from.name }) },
+			...(message.source === undefined
+				? {}
+				: {
+						source: {
+							subagentRunId: message.source.subagentRunId,
+							...(message.source.subagentIndex === undefined ? {} : { subagentIndex: message.source.subagentIndex }),
+						},
+					}),
+			receivedAt,
+		})),
+	};
+	try {
+		events.emit(SUBAGENT_FINISHED_ASKS_EVENT, request);
+		return new Set(request.completion ? await request.completion : []);
+	} catch {
+		return new Set();
+	}
+}
+
+/** An unanswered ask as the reply tracker holds it. */
+interface IntercomContextLike {
+	readonly from: SessionInfo;
+	readonly message: Pick<Message, "id" | "source">;
+	readonly receivedAt: number;
+}
+
 /** Lazy-runtime request for the peers this session can reach after it reconnects on resume. */
 export const INTERCOM_RECOVERY_PEERS_EVENT = "intercom:recovery-peers";
 
