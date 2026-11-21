@@ -323,6 +323,7 @@ export abstract class RpcClientApi {
 		readonly ids: readonly string[];
 		readonly after: number;
 		readonly epoch?: string;
+		readonly sessionId?: string;
 	}): Promise<{ saved: string[]; absent: string[] }> {
 		return this.data<{ saved: string[]; absent: string[] }>(
 			await this.request({
@@ -330,6 +331,7 @@ export abstract class RpcClientApi {
 				ids: [...query.ids],
 				after: query.after,
 				...(query.epoch === undefined ? {} : { epoch: query.epoch }),
+				...(query.sessionId === undefined ? {} : { sessionId: query.sessionId }),
 			}),
 		);
 	}

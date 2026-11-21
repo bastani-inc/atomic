@@ -259,9 +259,10 @@ export type RpcCommand =
 	/**
 	 * Which of the queued messages saved with `ids` the session's store holds after its entry `after` (of generation
 	 * `epoch`): `saved` holds the ones found, `absent` the ones the store provably does not hold. One in neither is
-	 * unknown. A host asks this after it lost an engine that was delivering them.
+	 * unknown. A host asks this after it lost an engine that was delivering them. `sessionId` names another session of the
+	 * store than the engine's own, such as a subagent's.
 	 */
-	| { id?: string; type: "find_queued_messages"; ids: string[]; after: number; epoch?: string }
+	| { id?: string; type: "find_queued_messages"; ids: string[]; after: number; epoch?: string; sessionId?: string }
 
 	// Commands and their live argument completions
 	| { id?: string; type: "get_commands" }

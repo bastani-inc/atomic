@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
-import { findQueuedMessages } from "../src/core/queued-message-receipts.ts";
+import { findQueuedMessages, findQueuedMessagesInStore } from "../src/core/queued-message-receipts.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
@@ -68,6 +68,34 @@ describe.each(["jsonl", "node-sqlite"] as const)("on a %s store", (kind) => {
 		const found = await findQueuedMessages(replacement, { ids: ["saved", "never saved"], ...anchor });
 
 		assert.deepEqual(found, { saved: ["saved"], absent: ["never saved"] });
+	});
+
+	test("a session nothing here has open, such as a subagent's, is read from the store the same way", async () => {
+		const store = await storeOf(kind);
+		const writer = await SessionManager.create(store, tmpdir());
+		const anchor = await lostEngineSession(writer);
+
+		const ids = ["saved", "never saved"];
+		assert.deepEqual(await findQueuedMessagesInStore(store, writer.getSessionId(), { ids, ...anchor }), {
+			saved: ["saved"],
+			absent: ["never saved"],
+		});
+		assert.deepEqual(
+			(await findQueuedMessagesInStore(store, writer.getSessionId(), { ids, after: anchor.after, epoch: "other" }))
+				.absent,
+			[],
+			"another generation proves nothing",
+		);
+		assert.deepEqual(await findQueuedMessagesInStore(store, "no such session", { ids, ...anchor }), {
+			saved: [],
+			absent: [],
+		});
+		// A store that holds fewer entries than the receipt's anchor has not stored what came after it.
+		assert.deepEqual(
+			(await findQueuedMessagesInStore(store, writer.getSessionId(), { ids, after: 99, epoch: anchor.epoch }))
+				.absent,
+			[],
+		);
 	});
 
 	test("nothing is provably absent in another generation of the session than the one the receipt names", async () => {

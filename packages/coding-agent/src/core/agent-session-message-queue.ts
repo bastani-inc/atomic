@@ -127,6 +127,14 @@ const receiptIds = new WeakMap<AgentMessage, string>();
 export function queuedMessageReceiptId(message: AgentMessage): string | undefined {
 	return receiptIds.get(message);
 }
+
+/** The receipt of each queued message a run took, by the message object. */
+const takenReceipts = new WeakMap<AgentMessage, QueuedMessageReceipt>();
+
+/** The receipt of `message`, a queued message a run took; undefined for any other message. */
+export function queuedMessageReceipt(message: AgentMessage): QueuedMessageReceipt | undefined {
+	return takenReceipts.get(message);
+}
 /** Per session, oldest first: the queued messages runs took whose `message_start` has not reached the session. */
 const takenNotStarted = new WeakMap<AgentSession, AgentMessage[]>();
 /** Runs each session started, counted: a prompt that only starts a turn tells whether one started meanwhile. */
@@ -267,10 +275,12 @@ function takeOccurrence(session: AgentSession, message: AgentMessage): QueuedOcc
 	const list = occurrence.lane === "steer" ? session._steeringMessages : session._followUpMessages;
 	const index = nthIndexOf(list, occurrence.text, forgetTypedQueuedRecord(session, occurrence.typed));
 	if (index >= 0) list.splice(index, 1);
+	const receipt = index >= 0 ? takenReceipt(session, occurrence) : undefined;
+	if (receipt !== undefined) takenReceipts.set(message, receipt);
 	occurrence.taken = {
 		delivery:
-			index >= 0
-				? beginQueuedMessageDelivery(session, occurrence.lane, occurrence.text, takenReceipt(session, occurrence))
+			receipt !== undefined
+				? beginQueuedMessageDelivery(session, occurrence.lane, occurrence.text, receipt)
 				: undefined,
 		announced: false,
 	};

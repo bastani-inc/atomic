@@ -1058,6 +1058,70 @@ describe("the main prompt while a subagent is shown", () => {
 		HOST_TIMEOUT_MS,
 	);
 
+	for (const replaced of [true, false] as const)
+		test(
+			`a lost engine whose replacement ${replaced ? "is up" : "never came up"} reports what the shown subagent took by what its store holds`,
+			async () => {
+				screen = await mainScreen();
+				worker({
+					busy: true,
+					queued: { steering: ["listed steer"], followUp: [] },
+					delivering: { steering: ["never saved"], followUp: [] },
+					unsaved: ["saved"],
+					receipts: {
+						sessionId: "worker-session",
+						taken: [
+							{ id: "saved-id", after: 3, local: true },
+							{ id: "never-id", after: 3, local: true, typed: "never saved, as typed" },
+						],
+					},
+				});
+				const ended = new Set<(event: InteractiveEngineGenerationEnded) => void>();
+				const recovered = new Set<(replaced: boolean) => void>();
+				const asked: (string | undefined)[] = [];
+				attachLostAgentQueueNotices(screen.mode, {
+					onGenerationEnded: (listener) => {
+						ended.add(listener);
+						return () => ended.delete(listener);
+					},
+					onEngineRecovered: (listener) => {
+						recovered.add(listener);
+						return () => recovered.delete(listener);
+					},
+					findQueuedMessages: async (_messages, sessionId) => {
+						asked.push(sessionId);
+						return { saved: new Set(["saved-id"]), absent: new Set(["never-id"]) };
+					},
+				});
+				await view(WORKER);
+				for (const listener of ended)
+					listener({
+						generation: 1,
+						error: new Error("engine stopped"),
+						kind: "exit",
+						expected: false,
+					} as InteractiveEngineGenerationEnded);
+				// Nothing is reported until the replacement says what the subagent's store holds.
+				assert.deepEqual(screen.warnings, []);
+				for (const listener of [...recovered]) listener(replaced);
+				await until(() => (screen?.warnings.length ?? 0) > 0);
+				await settle();
+				if (replaced) {
+					assert.deepEqual(asked, ["worker-session"]);
+					// The saved one is not reported; the one its store never saved was not sent, as typed.
+					assert.deepEqual(screen.warnings, [
+						"Engine restarted; 2 queued messages to worker weren't sent:\nnever saved, as typed\nlisted steer",
+					]);
+				} else
+					assert.deepEqual(screen.warnings, [
+						"Engine restarted; these 2 messages to worker may not have been delivered:\nsaved\nnever saved",
+						"Engine restarted; 1 queued message to worker wasn't sent:\nlisted steer",
+					]);
+				assert.equal(screen.mode.editor.getText(), "", "nothing goes into the main prompt");
+			},
+			HOST_TIMEOUT_MS,
+		);
+
 	test(
 		"Esc while the shown subagent waits to retry pauses it, which ends the wait (#5507)",
 		async () => {

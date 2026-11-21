@@ -112,6 +112,45 @@ test("a queued message the subagent's transcript shows is reported unsaved until
 	}
 });
 
+test("a shown queued message not seen saved is reported with its receipt and its session, for a host that loses the engine", async () => {
+	const events = await sessionEvents();
+	const child = followedChild();
+	const page = await child.open();
+	try {
+		for (const index of [0, 1, 2]) child.emit(events[index]);
+		const status = page.viewStatus("worker");
+		assert.deepEqual(status.unsaved, ["queued while it worked"]);
+		const receipt = status.receipts?.taken[0];
+		assert.equal(status.receipts?.sessionId, "child");
+		assert.equal(status.receipts?.taken.length, 1, "one receipt per message, in the order of `unsaved`");
+		assert.equal(typeof receipt?.id, "string");
+		assert.equal(typeof receipt?.after, "number");
+		child.emit(events[3]);
+		assert.equal(page.viewStatus("worker").receipts, undefined, "saved: nothing left to find");
+	} finally {
+		page.dispose();
+	}
+});
+
+test("another message saved with a queued message's text is not that message's save", async () => {
+	const events = await sessionEvents();
+	const child = followedChild();
+	const page = await child.open();
+	try {
+		for (const index of [0, 1, 2]) child.emit(events[index]);
+		// A different message, such as one sent directly, saved with the same text.
+		child.emit({
+			type: "message_end",
+			message: { role: "user", content: "queued while it worked", timestamp: Date.now() },
+		} as AgentSessionEvent);
+		assert.deepEqual(page.viewStatus("worker").unsaved, ["queued while it worked"]);
+		child.emit(events[3]);
+		assert.equal(page.viewStatus("worker").unsaved, undefined, "its own save");
+	} finally {
+		page.dispose();
+	}
+});
+
 test("a chat opened again while a shown queued message's save is on its way still reports it", async () => {
 	const events = await sessionEvents();
 	const child = followedChild();

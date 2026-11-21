@@ -9,7 +9,7 @@ import { runCallback } from "../../core/callback-activity.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
-import { findQueuedMessages } from "../../core/queued-message-receipts.ts";
+import { findQueuedMessages, findQueuedMessagesInStore } from "../../core/queued-message-receipts.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
@@ -915,11 +915,12 @@ export function createRpcCommandHandler({
 			}
 
 			case "find_queued_messages": {
-				return createRpcSuccessResponse(
-					id,
-					"find_queued_messages",
-					await findQueuedMessages(session.sessionManager, command),
-				);
+				const manager = session.sessionManager;
+				const found =
+					typeof command.sessionId === "string" && command.sessionId !== manager.getSessionId()
+						? await findQueuedMessagesInStore(manager.getSessionStore(), command.sessionId, command)
+						: await findQueuedMessages(manager, command);
+				return createRpcSuccessResponse(id, "find_queued_messages", found);
 			}
 
 			case "get_command_completions": {

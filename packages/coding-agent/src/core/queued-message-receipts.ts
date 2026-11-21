@@ -1,4 +1,5 @@
 import type { SessionManager } from "./session-manager.ts";
+import { readSessionRange } from "./storage/session/session-resume.ts";
 import type { SessionStore } from "./storage/session/types.js";
 
 /** Which queued messages, saved with their receipt ids, a session's store holds (see `findQueuedMessages`). */
@@ -43,7 +44,49 @@ export async function findQueuedMessages(
 		// What a read that failed did not reach proves nothing; what it found is still found.
 	}
 	const certain =
-		complete && manager.getHistoryEpoch() === query.epoch && writesEndWithWriter(manager.getSessionStore());
+		complete &&
+		query.epoch !== undefined &&
+		manager.getHistoryEpoch() === query.epoch &&
+		writesEndWithWriter(manager.getSessionStore());
 	// The lost engine wrote through a store of its own: its receipt says whether that store's writes ended with it.
+	return { saved: [...saved], absent: certain ? query.ids.filter((id) => !saved.has(id)) : [] };
+}
+
+/** How many entries one read of a session nothing here has open takes. */
+const STORE_SCAN_PAGE_ENTRIES = 512;
+
+/**
+ * As {@link findQueuedMessages}, for a session of `store` that nothing in this process has open, such as a subagent's:
+ * the entries stored after the receipts' anchor are read from the store at once, in the order they were stored, and must
+ * be all of them, of the generation the receipts name.
+ */
+export async function findQueuedMessagesInStore(
+	store: SessionStore,
+	sessionId: string,
+	query: { readonly ids: readonly string[]; readonly after: number; readonly epoch?: string },
+): Promise<QueuedMessagesFound> {
+	const wanted = new Set(query.ids);
+	const saved = new Set<string>();
+	let complete = false;
+	try {
+		// Page by page, so a long session is read only as far as needed, and not at all once every message is found.
+		for (let start = query.after + 1; saved.size < wanted.size; start += STORE_SCAN_PAGE_ENTRIES) {
+			const end = start + STORE_SCAN_PAGE_ENTRIES - 1;
+			const range = await readSessionRange(store, sessionId, start, end, query.epoch);
+			if (query.epoch === undefined || range.epoch !== query.epoch || range.lastSeq < query.after) break;
+			for (const entry of range.entries)
+				if (entry.type === "message" && entry.queuedMessageId !== undefined && wanted.has(entry.queuedMessageId))
+					saved.add(entry.queuedMessageId);
+			const expected = Math.max(0, Math.min(end, range.lastSeq) - start + 1);
+			if (range.entries.length !== expected) break;
+			if (end >= range.lastSeq) {
+				complete = true;
+				break;
+			}
+		}
+	} catch {
+		// A session that cannot be read, or is of another generation, proves nothing missing.
+	}
+	const certain = complete && writesEndWithWriter(store);
 	return { saved: [...saved], absent: certain ? query.ids.filter((id) => !saved.has(id)) : [] };
 }
