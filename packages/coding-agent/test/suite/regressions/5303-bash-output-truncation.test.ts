@@ -57,9 +57,10 @@ describe.skipIf(process.platform === "win32")("issue #5303 bash output truncatio
 	it("captures output emitted after exit while a detached child holds stdout open", async () => {
 		const command =
 			'printf "HEAD\\n"; ( i=1; while [ "$i" -le 30 ]; do sleep 0.05; printf "TICK$i\\n"; i=$((i + 1)); done ) &';
-		child = spawnProcess("/bin/sh", ["-c", command], {
+		child = spawnProcess(command, [], {
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
+			shell: "/bin/sh",
 		}) as ChildProcessByStdio<null, Readable, Readable>;
 
 		let output = "";
@@ -76,9 +77,10 @@ describe.skipIf(process.platform === "win32")("issue #5303 bash output truncatio
 
 	it("resolves promptly when a detached child holds stdout open but stays quiet", async () => {
 		const command = 'printf "DONE\\n"; ( sleep 30 ) &';
-		child = spawnProcess("/bin/sh", ["-c", command], {
+		child = spawnProcess(command, [], {
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
+			shell: "/bin/sh",
 		}) as ChildProcessByStdio<null, Readable, Readable>;
 
 		let output = "";
