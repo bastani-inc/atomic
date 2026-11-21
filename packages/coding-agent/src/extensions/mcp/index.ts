@@ -72,6 +72,7 @@ import {
 	isRecordedToolName,
 	MCP_TOOL_RECORD_ENTRY_TYPE,
 	type McpResourceServerRecord,
+	type McpServerIdentity,
 	type McpServerSummaryRecord,
 	type McpToolRecord,
 	type McpToolRecordData,
@@ -213,6 +214,8 @@ export interface McpServerListing {
 	connection?: { instructions?: string };
 	/** The summary the session recorded for the server, shown instead of its instructions while it reconnects. */
 	recordedSummary?: string;
+	/** The recorded summary is the ellipsis of a longer one, so with room for one character it shows none. */
+	recordedSummaryCut?: boolean;
 }
 
 /** First line of the configured description, else the recorded summary, else the first line of the instructions. */
@@ -221,6 +224,13 @@ function serverSummary(server: McpServerListing): string {
 	if (!description && server.recordedSummary !== undefined) return server.recordedSummary;
 	const text = description || server.connection?.instructions || "";
 	return (text.split("\n", 1)[0] ?? "").trim();
+}
+
+/** A summary as a server's line shows it, whether it is only the ellipsis of a longer one, and the server shown. */
+interface ShownSummary {
+	summary: string;
+	cut: boolean;
+	identity: Required<McpServerIdentity>;
 }
 
 /** The section's text, and the summary it shows for each server whose line has room for one, as shown. */
@@ -261,7 +271,11 @@ function layOutServersSection(servers: readonly McpServerListing[]): ServersSect
 			: Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
 	const summarized =
 		perServer > 0
-			? listed.slice(0, kept).map((listing) => ({ listing, summary: truncate(serverSummary(listing), perServer) }))
+			? listed.slice(0, kept).map((listing) => ({
+					listing,
+					summary:
+						perServer === 1 && listing.recordedSummaryCut ? "" : truncate(serverSummary(listing), perServer),
+				}))
 			: [];
 	const lines = listed
 		.slice(0, kept)
@@ -472,11 +486,16 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 */
 		const pendingSummaries = new Set<string>();
 		/**
-		 * The section the prompt being started shows, the options it was set in, and the summaries it shows that the
-		 * records do not have yet.
+		 * The `mcp_servers` section of the prompt being started and the options it was set in, with the summary its
+		 * line shows from each server's instructions, and the servers whose line shows their recorded summary.
 		 */
-		let unrecordedSummaries:
-			| { options: BuildSystemPromptOptions; text: string; summaries: McpServerSummaryRecord[] }
+		let promptSection:
+			| {
+					options: BuildSystemPromptOptions;
+					text: string | undefined;
+					shown: Map<string, ShownSummary>;
+					kept: Set<string>;
+			  }
 			| undefined;
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
@@ -749,30 +768,46 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			}
 		};
 
-		/** The recorded summary of a server whose connection attempt has not settled since the session started. */
-		const pendingSummary = (server: McpServer): string | undefined => {
+		/** The summary record of a server whose connection attempt has not settled since the session started. */
+		const pendingSummary = (server: McpServer): McpServerSummaryRecord | undefined => {
 			const record = pendingSummaries.has(server.entry.name)
 				? toolRecords.summaries.get(server.entry.name)
 				: undefined;
-			return record && recordMatchesServer(server.entry, record) ? record.summary : undefined;
+			return record && recordMatchesServer(server.entry, record) ? record : undefined;
 		};
 
 		/**
-		 * The summaries a section shows from servers' instructions, as shown, that differ from the branch's records. A
-		 * missing record counts as no summary. Servers with a configured description or a recorded summary shown while
-		 * they reconnect add nothing new.
+		 * The records that make the branch's summary records say what the conversation shows of each server once the
+		 * prompt was sent: the summary its line shows from the server's instructions, or none (for a server with a
+		 * configured description, no room for a summary, no line, or no longer configured). A missing record counts as
+		 * no summary, and a line that shows a server's recorded summary keeps its record.
 		 */
-		const summariesToRecord = (summarized: ServersSection["summarized"]): McpServerSummaryRecord[] => {
-			const changed: McpServerSummaryRecord[] = [];
-			for (const { listing, summary } of summarized) {
-				const { entry } = listing;
-				const server = findServer(entry.name);
-				if (!server || server.entry.config.description?.trim() || pendingSummary(server) !== undefined) continue;
-				const record = toolRecords.summaries.get(entry.name);
-				const recorded = record && recordMatchesServer(server.entry, record) ? record.summary : "";
-				if (summary !== recorded) changed.push({ server: entry.name, ...serverIdentity(server.entry), summary });
+		const summaryUpdates = (
+			shown: ReadonlyMap<string, ShownSummary>,
+			kept: ReadonlySet<string>,
+		): McpServerSummaryRecord[] => {
+			const updates: McpServerSummaryRecord[] = [];
+			for (const name of new Set([...shown.keys(), ...toolRecords.summaries.keys()])) {
+				if (kept.has(name)) continue;
+				const line = shown.get(name);
+				const record = toolRecords.summaries.get(name);
+				if (line?.summary) {
+					// Recorded for the server the line was rendered for, which may have been replaced since.
+					const { summary, cut, identity } = line;
+					if (
+						!record ||
+						record.summary !== summary ||
+						(record.cut ?? false) !== cut ||
+						record.transport !== identity.transport ||
+						record.scope !== identity.scope
+					) {
+						updates.push({ server: name, ...identity, summary, ...(cut ? { cut: true as const } : {}) });
+					}
+				} else if (record?.summary) {
+					updates.push({ server: name, transport: record.transport, scope: record.scope ?? null, summary: "" });
+				}
 			}
-			return changed;
+			return updates;
 		};
 
 		/** Append summary records; a failed write is tried again with the next prompt, which finds them changed still. */
@@ -1555,16 +1590,29 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			await waitForDirectServers(ctx);
 			const { sections } = event.systemPromptOptions;
 			const section = layOutServersSection(
-				servers.map((server) => ({ ...server, recordedSummary: pendingSummary(server) })),
+				servers.map((server) => {
+					const record = pendingSummary(server);
+					return { ...server, recordedSummary: record?.summary, recordedSummaryCut: record?.cut };
+				}),
 			);
 			if (section) sections[MCP_SERVERS_SECTION] = section.text;
 			else delete sections[MCP_SERVERS_SECTION];
-			// Recorded once the prompt sends its first message, and only if no later handler replaced the section.
-			const summaries = section ? summariesToRecord(section.summarized) : [];
-			unrecordedSummaries =
-				section && summaries.length > 0
-					? { options: event.systemPromptOptions, text: section.text, summaries }
-					: undefined;
+			const shown = new Map<string, ShownSummary>();
+			const kept = new Set<string>();
+			for (const { listing, summary } of section?.summarized ?? []) {
+				if (listing.entry.config.description?.trim()) continue;
+				if (listing.recordedSummary !== undefined) kept.add(listing.entry.name);
+				// A summary cut down to its ellipsis is recorded as such: with less room it shows none, as the summary does.
+				else {
+					shown.set(listing.entry.name, {
+						summary,
+						cut: summary === "…" && serverSummary(listing) !== "…",
+						identity: serverIdentity(listing.entry),
+					});
+				}
+			}
+			// Recorded once the prompt sends its first message (message_end below).
+			promptSection = { options: event.systemPromptOptions, text: section?.text, shown, kept };
 		});
 
 		// A codemode script waits for the servers it names, or for every server when it searches or
@@ -1590,21 +1638,22 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		});
 
 		// Keep track of the MCP tools the transcript declares, and record the ones whose listing was not recorded yet.
-		// Record the summaries the prompt's section shows once its first message ends (the section update, or the
-		// prompt itself when the section did not change), so the records hold only what the conversation shows: not
-		// when a later handler replaced the section or the prompt, nor when a reply comes first, as the prompt then
-		// sent nothing.
+		// The summaries the prompt's section shows are recorded once its first message ends (the section update, or
+		// the prompt itself when the section did not change), so the records say what the conversation shows. When a
+		// later handler replaced the section or the prompt, the conversation shows no summary. A reply first means the
+		// prompt sent nothing, so nothing changed.
 		pi.on("message_end", async (event) => {
 			const { message } = event;
-			if (unrecordedSummaries) {
-				const { options, text, summaries } = unrecordedSummaries;
-				unrecordedSummaries = undefined;
-				if (
-					(message.role === "system" || message.role === "user" || message.role === "custom") &&
-					options.forceSystemPrompt === undefined &&
-					options.sections?.[MCP_SERVERS_SECTION] === text
-				) {
-					await recordSummaries(summaries);
+			if (promptSection) {
+				const { options, text, shown, kept } = promptSection;
+				promptSection = undefined;
+				if (message.role === "system" || message.role === "user" || message.role === "custom") {
+					const sent =
+						text !== undefined &&
+						options.forceSystemPrompt === undefined &&
+						options.sections?.[MCP_SERVERS_SECTION] === text;
+					const updates = sent ? summaryUpdates(shown, kept) : summaryUpdates(new Map(), new Set());
+					if (updates.length > 0) await recordSummaries(updates);
 				}
 			}
 			if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return;
@@ -1673,7 +1722,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			recordingResources = undefined;
 			pendingResourceServers.clear();
 			pendingSummaries.clear();
-			unrecordedSummaries = undefined;
+			promptSection = undefined;
 			declaredNames = new Set();
 			tokensAtSignIn.clear();
 			resourceToolsExposure = undefined;

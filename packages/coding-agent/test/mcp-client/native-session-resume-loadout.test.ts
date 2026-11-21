@@ -196,12 +196,14 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		scopes?: Record<string, "global" | "project">;
 		/** Project `mcp.json` overrides of global servers, by server name. */
 		overrides?: Record<string, string>;
+		/** The servers `mcp.json` defines; all of them by default. The others are for extensions to register. */
+		configured?: string[];
 	}
 
 	/** What `atomic --resume` does for a stored session: file-backed manager, the MCP servers from mcp.json, same model. */
 	async function startSession(fixture: Fixture, sessionManager: SessionManager, options: StartOptions) {
 		const settingsManager = SettingsManager.inMemory();
-		const entries: McpServerEntry[] = Object.keys(options.servers).map((name) => ({
+		const entries: McpServerEntry[] = (options.configured ?? Object.keys(options.servers)).map((name) => ({
 			name,
 			config: {
 				...(options.commands?.[name] ?? { url: options.urls?.[name] ?? `http://${name}.invalid/mcp` }),
@@ -955,6 +957,88 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 		expect(currentSection(resumed)).toBe(section);
 		await resumed.dispose();
 		expect(recordedSummaries(readFileSync(sessionFile, "utf8"))).toHaveLength(20);
+	});
+
+	it("records a summary cut down to its ellipsis, which shows the same with as much room and none with less (#6108)", async () => {
+		const fixture = await createFixture();
+		// With this many servers each summary gets two characters, and one once another server is added.
+		const others = (count: number, ready?: Promise<unknown>) =>
+			Object.fromEntries(
+				Array.from({ length: count }, (_, index): [string, ServerScript] => [
+					`s${String(index).padStart(3, "0")}`,
+					{ tools: [], instructions: "z", ...(ready ? { ready } : {}), calls: [] },
+				]),
+			);
+		const docs = (ready?: Promise<unknown>): ServerScript => ({
+			tools: [],
+			instructions: "🧾 Docs.",
+			...(ready ? { ready } : {}),
+			calls: [],
+		});
+		const { sessionFile, section } = await liveCodemodeSession(fixture, {
+			servers: { ...others(146), docs: docs() },
+		});
+		expect(serverLines(section)).toContain(docsLine("…"));
+
+		const resumeAndReconnect = async (options: Omit<StartOptions, "servers">, count: number) => {
+			const ready = held();
+			const resumed = await resume(fixture, sessionFile, {
+				servers: { ...others(count, ready.ready), docs: docs(ready.ready) },
+				exposure: "codemode",
+				...options,
+			});
+			const before = resumed.messages.length;
+			await promptReply(fixture, resumed, "after resume");
+			ready.release();
+			await settled(resumed);
+			await promptReply(fixture, resumed, "after reconnect");
+			const updates = sectionUpdates(resumed, before);
+			await resumed.dispose();
+			return updates;
+		};
+		expect(await resumeAndReconnect({}, 146)).toEqual([]);
+		// The added server has a configured description, so its line is complete at once.
+		const updates = await resumeAndReconnect({ descriptions: { s146: "z" } }, 147);
+		expect(updates).toHaveLength(1);
+		expect(serverLines(updates[0])).toContain(docsLine());
+		expect(serverLines(updates[0])).toContain("- mcp__s146 (codemode): z");
+	});
+
+	it("records a summary for the server that showed it, not for one registered under its name meanwhile (#6108)", async () => {
+		const fixture = await createFixture();
+		const registration = { command: "docs-a", replaceWith: undefined as string | undefined };
+		const registering: ExtensionFactory = (pi) => {
+			pi.registerMcpServer("docs", { command: registration.command, exposure: "codemode" });
+			pi.on("before_agent_start", () => {
+				if (registration.replaceWith)
+					pi.registerMcpServer("docs", { command: registration.replaceWith, exposure: "codemode" });
+			});
+		};
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const live = await startSession(fixture, manager, {
+			servers: { docs: { tools: [SEARCH], instructions: DOCS_INSTRUCTIONS, calls: [] } },
+			configured: [],
+			exposure: "codemode",
+			extensions: [registering],
+		});
+		await settled(live);
+		// The prompt's section shows docs-a's summary; a later handler then registers docs-b under the same name.
+		registration.replaceWith = "docs-b";
+		await promptReply(fixture, live, "first");
+		expect(serverLines(currentSection(live))).toEqual([docsLine("Search and fetch the product docs.")]);
+		await live.dispose();
+
+		registration.command = "docs-b";
+		registration.replaceWith = undefined;
+		const resumed = await resume(fixture, manager.getSessionFile()!, {
+			servers: { docs: { tools: [SEARCH], instructions: "Other docs.", ready: held().ready, calls: [] } },
+			configured: [],
+			exposure: "codemode",
+			extensions: [registering],
+		});
+		const before = resumed.messages.length;
+		await promptReply(fixture, resumed, "after resume");
+		expect(sectionUpdates(resumed, before).map((update) => serverLines(update))).toEqual([[docsLine()]]);
 	});
 
 	it("records no summary the conversation never showed (#6108)", async () => {

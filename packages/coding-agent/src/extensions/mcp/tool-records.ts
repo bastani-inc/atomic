@@ -56,6 +56,8 @@ export interface McpResourceServerRecord extends McpServerIdentity {
 export interface McpServerSummaryRecord extends McpServerIdentity {
 	server: string;
 	summary: string;
+	/** The section had room for only the ellipsis of a longer summary. With room for one character it shows none. */
+	cut?: true;
 }
 
 export interface McpToolRecordData {
@@ -186,7 +188,7 @@ function isToolRecord(value: unknown): value is McpToolRecord {
 }
 
 function isSummaryRecord(value: unknown): value is McpServerSummaryRecord {
-	return isServerRecord(value) && typeof value.summary === "string";
+	return isServerRecord(value) && typeof value.summary === "string" && (value.cut === undefined || value.cut === true);
 }
 
 /** The latest records on the branch. Malformed records are ignored. */
