@@ -245,3 +245,85 @@ test(
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,
 );
+
+// The prewarm reads the global settings before the host does. A setting edited in between makes the host's engine
+// differ from the prewarmed one; the host then starts another, which gets the edited environment.
+test(
+	"an httpProxy setting removed while Atomic starts leaves the engine without that proxy",
+	async () => {
+		const root = makeTempDirectory("prewarmed-engine-edited-");
+		const agentDir = join(root, "agent");
+		const packageDir = join(root, "package");
+		const project = join(root, "project");
+		const trace = join(root, "startup.jsonl");
+		const seen = join(root, "engine-proxy.txt");
+		const extension = join(root, "proxy-probe.mjs");
+		let program: PtyProgram | undefined;
+		try {
+			mkdirSync(project, { recursive: true });
+			prepareAgentDir(agentDir, "http://127.0.0.1:9");
+			const settingsFile = join(agentDir, "settings.json");
+			const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
+			writeFileSync(settingsFile, JSON.stringify({ ...settings, httpProxy: "http://127.0.0.1:9" }));
+			writeFileSync(
+				extension,
+				`import { writeFileSync } from "node:fs";
+export default (pi) => pi.on("session_start", () => writeFileSync(${JSON.stringify(seen)}, process.env.HTTP_PROXY ?? "unset"));
+`,
+			);
+			prepareInstalledPackage(PACKAGE, packageDir);
+			for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ATOMIC_DEBUG_SETTING"])
+				vi.stubEnv(name, undefined);
+			program = startPtyProgram({
+				executable: process.execPath,
+				args: [CLI, "-e", extension, "--no-session", "--approve"],
+				cwd: project,
+				env: {
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+					ATOMIC_PACKAGE_DIR: packageDir,
+					ATOMIC_OFFLINE: "1",
+					ATOMIC_SKIP_VERSION_CHECK: "1",
+					ATOMIC_TELEMETRY: "0",
+					ATOMIC_STARTUP_TRACE: trace,
+					TERM: "xterm-256color",
+					CI: "0",
+				},
+				timeoutMs: REAL_STARTUP_TIMEOUT_MS,
+				cols: 120,
+				rows: 40,
+			});
+			// Once the prewarmed engine has started, with the proxy, and before the host reads its settings.
+			const deadline = Date.now() + REAL_STARTUP_TIMEOUT_MS;
+			const started = () => {
+				const lines = existsSync(trace) ? readTrace(trace) : [];
+				const host = lines.find((line) => line.label === "process-entry")?.pid;
+				return lines.some((line) => line.label === "process-start" && line.ppid === host);
+			};
+			while (!started()) {
+				assert.ok(Date.now() < deadline, "the prewarmed engine never started");
+				await sleep(10);
+			}
+			assert.equal(
+				readTrace(trace).some((line) => line.label === "main-entry"),
+				false,
+				"the host had already read its settings",
+			);
+			writeFileSync(settingsFile, JSON.stringify(settings));
+			while (!existsSync(seen)) {
+				assert.ok(Date.now() < deadline, "the engine never started its session");
+				await sleep(50);
+			}
+			assert.equal(readFileSync(seen, "utf8"), "unset");
+			while (!readTrace(trace).some((line) => line.label === "engine-resources-ready")) {
+				assert.ok(Date.now() < deadline, "the engine never finished loading its resources");
+				await sleep(50);
+			}
+			assert.equal(engineChildren(readTrace(trace)).length, 2, "the host started another engine");
+		} finally {
+			program?.kill();
+			vi.unstubAllEnvs();
+			await removeTempRootReleasingBroker(root, agentDir);
+		}
+	},
+	REAL_STARTUP_TEST_TIMEOUT_MS,
+);
