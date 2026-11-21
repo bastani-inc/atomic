@@ -22,10 +22,10 @@ import { holdSqliteWriteLock } from "./sqlite-lock-holder.js";
 const LOCK_HELD_MS = 3_000;
 const LONGEST_TURN_MS = 2_000;
 /**
- * Each case holds the lock twice and starts a lock holder process for each hold. A loaded Windows runner takes several
- * seconds to start one.
+ * Each case opens a session store in a new database, then holds the lock twice and starts a lock holder process for
+ * each hold. On a loaded Windows runner a case took up to 57 s, 45 s of it opening the store.
  */
-export const CHAT_RECORD_LOCK_CASE_BUDGET_MS = 60_000;
+export const CHAT_RECORD_LOCK_CASE_BUDGET_MS = 120_000;
 
 export const CHAT_RECORD_LOCK_CASES = [
 	"the first diagnostic, which creates its table",
