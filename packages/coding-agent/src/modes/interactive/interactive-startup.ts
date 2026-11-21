@@ -78,7 +78,12 @@ import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { showSessionNotices } from "./session-notices.ts";
-import { abortStartupShell, handOverStartupShell, whenStartupShellCanHandOver } from "./startup-shell.ts";
+import {
+	abortStartupShell,
+	handOverStartupShell,
+	releaseStartupShellSignals,
+	whenStartupShellCanHandOver,
+} from "./startup-shell.ts";
 import { watchWindowsSessionEnd } from "./windows-session-end.js";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
@@ -286,6 +291,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	if (this.isInitialized) return;
 
 	if (this.options.holdTuiForStartupTrust) await holdTuiForStartupTrust(this);
+	releaseStartupShellSignals();
 	this.registerSignalHandlers();
 
 	// Keep the transcript in its own viewport and reserve the bottom chrome in a
