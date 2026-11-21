@@ -1,4 +1,3 @@
-import { stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { SessionManager } from "./session-manager.ts";
 import { bindSessionFile, JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
@@ -105,9 +104,12 @@ export async function findQueuedMessagesInFile(
 ): Promise<QueuedMessagesFound> {
 	let store: JsonlSessionStore | undefined;
 	try {
-		// Only a file that is there is read: opening its store must not make its folder again.
-		if (!(await stat(sessionFile)).isFile()) return { saved: [], absent: [] };
-		store = await JsonlSessionStore.open(dirname(sessionFile), { exactDirectory: true, scanExisting: false });
+		// Only a file that is there is read: its folder is never made again.
+		store = await JsonlSessionStore.open(dirname(sessionFile), {
+			exactDirectory: true,
+			scanExisting: false,
+			createDirectory: false,
+		});
 		if ((await store.readHeaderFile(sessionFile)).id !== sessionId) return { saved: [], absent: [] };
 		store[bindSessionFile](sessionId, sessionFile);
 		return await findQueuedMessagesInStore(store, sessionId, query);
