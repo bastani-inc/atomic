@@ -19,6 +19,7 @@ import {
 	queueHeldCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { retryIsCurrent } from "./agent-session-retry.ts";
+import { recordPromptSections } from "./agent-session-state.ts";
 import { settleTurnPause } from "./agent-session-turn-pause.ts";
 import type {
 	PromptDisposition,
@@ -808,6 +809,8 @@ async function runAgentPrompt(
 		}
 		this._pendingToolNames.clear();
 		reportDispatch?.("started");
+		// The prompt's sections go into the conversation now, with the prompt it prepared.
+		if (ownsPreparation && this._runSystemPromptOptions) recordPromptSections(this, this._runSystemPromptOptions);
 		const turn = this.agent.prompt(messages);
 		releasePreparation();
 		if (this.isStreaming) promptStarted?.();

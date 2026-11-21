@@ -706,6 +706,7 @@ export { DefaultPackageManager } from "./core/package-manager.ts";
 // not a stable extension API.
 export {
 	nativeProcessCreationTime,
+	nativeTerminateProcess,
 	processStartToken,
 	readProcessCreationTime,
 	readProcessStartToken,
