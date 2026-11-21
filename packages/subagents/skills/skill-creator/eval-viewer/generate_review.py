@@ -17,7 +17,6 @@ import base64
 import codecs
 import io
 import json
-import locale
 import mimetypes
 import os
 import re
@@ -258,19 +257,13 @@ def load_saved_feedback(feedback_path: Path) -> dict[str, str]:
         raw = feedback_path.read_bytes()
     except OSError:
         return {}
-    try:
-        # UTF-8, with or without a byte order mark (as Windows PowerShell 5 and older Notepad save it).
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            # As other files: one saved in the locale's encoding.
-            text = raw.decode(locale.getpreferredencoding(False))
-        except UnicodeDecodeError:
-            # As a browser reads it: what cannot be decoded shows as a replacement mark, and the rest is kept.
-            text = raw.decode("utf-8-sig", errors="replace")
+    # As the page's own request read it before: UTF-8, with or without a byte order mark (as Windows
+    # PowerShell 5 and older Notepad save it), and a replacement mark for what is not UTF-8.
+    text = raw.decode("utf-8-sig", errors="replace")
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # Not JSON, or nested too deeply to read.
         return {}
     reviews = data.get("reviews") if isinstance(data, dict) else None
     if not isinstance(reviews, list):
@@ -317,9 +310,9 @@ def generate_html(
     if benchmark:
         embedded["benchmark"] = benchmark
 
-    # Inside the page's script element, "</script>" in an output or in feedback would end the script:
-    # "<" is written as its JSON escape, which reads back as the same text.
-    data_json = json.dumps(embedded).replace("<", "\\u003c")
+    # Inside the page's script element, "</script>" or "<!--" in an output or in feedback would end the script
+    # or change how it is read: "</" and "<!" are written with JSON escapes, which read back as the same text.
+    data_json = json.dumps(embedded).replace("</", "<\\/").replace("<!", "\\u003c!")
 
     return template.replace("/*__EMBEDDED_DATA__*/", f"const EMBEDDED_DATA = {data_json};")
 
