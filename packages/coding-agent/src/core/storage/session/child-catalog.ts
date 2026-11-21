@@ -46,7 +46,7 @@ export class ChildCatalog {
 	 * Captures named by records retired from the window while on the active branch, each from the record that names it,
 	 * and the first entry of the window they preceded: they stay on the branch while that entry is on it.
 	 */
-	private captures = new Map<string, ArchivedSubagentCapture>();
+	private captures: Map<string, ArchivedSubagentCapture> | undefined;
 	private captureAnchor: string | undefined;
 	static inspect(entry: SessionEntry) {
 		if (entry.type !== "custom" || entry.customType !== "subagent-child") return;
@@ -272,21 +272,24 @@ export class ChildCatalog {
 			else this.groups.delete(key);
 		}
 		// Captures retired by an earlier cut stay only while the window they preceded is still on the active branch; every
-		// capture kept then precedes this cut's window too.
+		// capture kept then precedes this cut's window too. Nothing here runs for a session whose children captured nothing.
 		const anchor = branch[0]?.entry.id;
-		if (this.captures.size > 0 && this.captureAnchor !== anchor) {
+		if (this.captures !== undefined && this.captureAnchor !== anchor) {
 			const kept = this.captureAnchor !== undefined && onBranch?.(this.captureAnchor) === true;
-			if (!kept) this.captures.clear();
+			if (!kept) this.captures = undefined;
 		}
-		for (const item of state) {
-			if (!retired.has(item.entry.id)) continue;
-			const capture = ChildCatalog.capture(item.entry);
-			if (capture === undefined || (item.onBranch ?? onBranch?.(item.entry.id)) !== true) continue;
-			const known = this.captures.get(capture.childSessionId);
-			if (known === undefined || Date.parse(capture.worktreeCapturedAt) > Date.parse(known.worktreeCapturedAt))
+		if (retired.size > 0)
+			for (const item of state) {
+				if (!retired.has(item.entry.id)) continue;
+				const capture = ChildCatalog.capture(item.entry);
+				if (capture === undefined || (item.onBranch ?? onBranch?.(item.entry.id)) !== true) continue;
+				const known = this.captures?.get(capture.childSessionId);
+				if (known !== undefined && Date.parse(capture.worktreeCapturedAt) <= Date.parse(known.worktreeCapturedAt))
+					continue;
+				this.captures ??= new Map();
 				this.captures.set(capture.childSessionId, capture);
-		}
-		this.captureAnchor = this.captures.size > 0 ? anchor : undefined;
+			}
+		this.captureAnchor = this.captures !== undefined ? anchor : undefined;
 		this.publish();
 		return retired;
 	}
@@ -308,7 +311,7 @@ export class ChildCatalog {
 	archivedCaptures(): { readonly anchor?: string; readonly captures: readonly ArchivedSubagentCapture[] } {
 		return this.captureAnchor === undefined
 			? { captures: [] }
-			: { anchor: this.captureAnchor, captures: [...this.captures.values()] };
+			: { anchor: this.captureAnchor, captures: [...(this.captures?.values() ?? [])] };
 	}
 	/** Direct, read-only catalogue scans include live children as well. */
 	add(entry: SessionEntry, seq: number) {
