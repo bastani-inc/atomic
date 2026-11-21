@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Building the history search index on Node 22 no longer keeps a little memory for every page it writes until the build ends ([#6106](https://github.com/bastani-inc/atomic/issues/6106))
+
 ## [0.10.2] - 2026-11-20
 
 Resumed sessions keep the provider's prompt cache, commands and queued messages no longer flash on screen, and quitting on Windows lets extensions shut down.
