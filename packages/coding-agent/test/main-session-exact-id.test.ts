@@ -112,9 +112,9 @@ describe("resolving --session and --fork against a large legacy session director
 		}
 	}
 
-	async function createStored(id: string, text: string, sessionCwd = cwd): Promise<void> {
+	async function createStored(id: string, text: string, sessionCwd = cwd, internal = false): Promise<void> {
 		await withStore(async (store) => {
-			const session = await SessionManager.create(store, sessionCwd, { id });
+			const session = await SessionManager.create(store, sessionCwd, { id, ...(internal ? { internal } : {}) });
 			await session.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 		});
 	}
@@ -319,6 +319,31 @@ describe("resolving --session and --fork against a large legacy session director
 
 			assert.equal(await exitCodeOf(["--session", "5a5a5a5a"]), 0);
 			assert.equal(prompt.questions.length, 1);
+		});
+
+		it("resolves a session's prefix that its subagents' internal sessions, created around the same time, share", async () => {
+			const parent = "0191f0a1-0000-7000-8000-0000000000d0";
+			await createStored(parent, "the parent");
+			for (const child of ["0191f0a1-0000-7000-8000-0000000000d1", "0191f0a1-0000-7000-8000-0000000000d2"])
+				await createStored(child, "a subagent", cwd, true);
+
+			assert.equal(await resolveAndClose(["--session", "0191f0a1"], (manager) => manager.getSessionId()), parent);
+		});
+
+		it("resolves the prefix of an internal session that no listed session shares", async () => {
+			const child = "0191f0a1-0000-7000-8000-0000000000d1";
+			await createStored(child, "a subagent", cwd, true);
+
+			assert.equal(await resolveAndClose(["--session", "0191f0a1"], (manager) => manager.getSessionId()), child);
+		});
+
+		it("resolves a prefix to this project's internal session over a listed session of another project", async () => {
+			const local = "0191f0a1-0000-7000-8000-0000000000d1";
+			await createStored(local, "an internal session here", cwd, true);
+			await createStored("0191f0a1-0000-7000-8000-0000000000e0", "listed elsewhere", otherCwd);
+
+			assert.equal(await resolveAndClose(["--session", "0191f0a1"], (manager) => manager.getSessionId()), local);
+			assert.equal(prompt.questions.length, 0);
 		});
 
 		it("rejects a prefix shared by several sessions as ambiguous", async () => {

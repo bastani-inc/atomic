@@ -474,18 +474,36 @@ interface WorkingFiles {
 	readonly omitted: readonly WorktreeSnapshotOmission[];
 }
 
+/** Orders the ends of turns' writes and the starts of scans in this process: a later tick happened after. */
+let captureTick = 0;
+/** @internal The next tick of the clock that orders turns' writes and scans of checkouts in this process. */
+export function nextCaptureTick(): number {
+	captureTick += 1;
+	return captureTick;
+}
+
 /**
  * The computations of a checkout's working files that have not started reading them, by everything they compute
- * from: the checkout, its HEAD, its private index, the settings, and the tree whose modes unchanged files keep.
+ * from: the checkout, its HEAD, its private index and the settings, then, after a NUL, the tree whose modes unchanged
+ * files keep.
  */
 const pendingWorkingFiles = new Map<string, Promise<WorkingFiles>>();
+
+/** The computations of a checkout's working files reading them now, by the same key, and when each started. */
+const startedWorkingFiles = new Map<
+	string,
+	{ readonly computation: Promise<WorkingFiles>; readonly startedAt: number }
+>();
 
 /**
  * Reads the working files of `checkout` in its private index's turn. A capture without an abort signal joins the
  * computation another one requested for the same inputs when that has not started yet, instead of starting its own:
  * the computation reads the files after the joining capture was requested, so that capture records exactly what one
- * of its own starting at the same moment would. A started computation is never joined, as it may have read a file
- * before a later request, and several sessions capturing one checkout at once compute its tree at most twice.
+ * of its own starting at the same moment would. With `wroteBy`, when the writes it must hold ended, it also joins one
+ * that started reading after that. Where the repository keeps no modes from an earlier tree, a capture from another
+ * earlier snapshot computes the same tree, so the capture joins that one too; each capture still records its snapshot
+ * from its own earlier one. Any other started computation is not joined, as it may have read a file before the
+ * capture's writes: a capture waits for at most the computation running when it was requested and one more.
  */
 function readWorkingFiles(
 	checkout: Checkout,
@@ -493,6 +511,7 @@ function readWorkingFiles(
 	capture: CaptureIndex,
 	modeTree: string | undefined,
 	signal?: AbortSignal,
+	wroteBy?: number,
 ): Promise<WorkingFiles> {
 	const compute = () =>
 		withScratchDirectory(async (scratch): Promise<WorkingFiles> => {
@@ -501,23 +520,48 @@ function readWorkingFiles(
 			return { state, omitted: [...state.omitted, ...(await submoduleOmissions(checkout.root, signal))] };
 		});
 	if (signal !== undefined) return inTurn(capture.index, compute);
-	const key = JSON.stringify([
+	const inputs = JSON.stringify([
 		checkout.root,
 		checkout.head,
 		capture.gitDir,
 		capture.userIndexPath,
 		capture.index,
 		settings,
-		modeTree ?? null,
 	]);
-	const pending = pendingWorkingFiles.get(key);
-	if (pending !== undefined) return pending;
-	const computation: Promise<WorkingFiles> = inTurn(capture.index, () => {
-		if (pendingWorkingFiles.get(key) === computation) pendingWorkingFiles.delete(key);
-		return compute();
-	});
-	pendingWorkingFiles.set(key, computation);
-	return computation;
+	const key = `${inputs}\0${modeTree ?? ""}`;
+	const start = () => {
+		const pending = pendingWorkingFiles.get(key);
+		if (pending !== undefined) return pending;
+		const computation: Promise<WorkingFiles> = inTurn(capture.index, async () => {
+			if (pendingWorkingFiles.get(key) === computation) pendingWorkingFiles.delete(key);
+			const started = { computation, startedAt: nextCaptureTick() };
+			startedWorkingFiles.set(key, started);
+			try {
+				return await compute();
+			} finally {
+				if (startedWorkingFiles.get(key) === started) startedWorkingFiles.delete(key);
+			}
+		});
+		pendingWorkingFiles.set(key, computation);
+		return computation;
+	};
+	/** A computation of these inputs with `modes` (the key's suffix) that this capture may take. */
+	const joinable = (modes: (candidate: string) => boolean) => {
+		for (const [candidate, computation] of pendingWorkingFiles)
+			if (candidate.startsWith(`${inputs}\0`) && modes(candidate)) return computation;
+		if (wroteBy !== undefined)
+			for (const [candidate, started] of startedWorkingFiles)
+				if (candidate.startsWith(`${inputs}\0`) && modes(candidate) && started.startedAt > wroteBy)
+					return started.computation;
+		return undefined;
+	};
+	const own = joinable((candidate) => candidate === key);
+	if (own !== undefined) return own;
+	if (joinable((candidate) => candidate !== key) === undefined) return start();
+	return carriedModes(checkout.root).then(
+		(carried) => (carried.size === 0 ? joinable((candidate) => candidate !== key) : undefined) ?? start(),
+		start,
+	);
 }
 
 /**
@@ -695,17 +739,15 @@ async function writeTreeThrough(
 }
 
 /**
- * Where the repository does not trust the file system's executable bits (`core.filemode=false`) or has no symbolic
- * links (`core.symlinks=false`), as on Windows, gives each regular file of the private index that `recorded` holds as
- * executable or as a link the mode `recorded` gives it, with the file's current content: Git would otherwise record the
- * checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it cannot
- * read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep HEAD's
- * entry.
+ * The modes a capture of the checkout at `root` carries over from the tree of an earlier snapshot, as
+ * `carryRecordedModes` does: executable files where the repository does not trust the file system's executable bits
+ * (`core.filemode=false`), links where it has no symbolic links (`core.symlinks=false`). None where it trusts both, so
+ * a capture records the same tree from whichever earlier snapshot it starts.
  */
-async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted: ReadonlySet<string>): Promise<void> {
+async function carriedModes(root: string, signal?: AbortSignal): Promise<ReadonlySet<string>> {
 	const settings = await runGit(["config", "-z", "--type=bool", "--get-regexp", "^core\\.(filemode|symlinks)$"], {
-		cwd: git.cwd,
-		signal: git.signal,
+		cwd: root,
+		signal,
 		allowExitCodes: [1],
 	});
 	const trusted = new Map([
@@ -719,6 +761,19 @@ async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted:
 	const carried = new Set<string>();
 	if (!trusted.get("core.filemode")) carried.add("100755");
 	if (!trusted.get("core.symlinks")) carried.add("120000");
+	return carried;
+}
+
+/**
+ * Where the repository does not trust the file system's executable bits (`core.filemode=false`) or has no symbolic
+ * links (`core.symlinks=false`), as on Windows, gives each regular file of the private index that `recorded` holds as
+ * executable or as a link the mode `recorded` gives it, with the file's current content: Git would otherwise record the
+ * checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it cannot
+ * read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep HEAD's
+ * entry.
+ */
+async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted: ReadonlySet<string>): Promise<void> {
+	const carried = await carriedModes(git.cwd, git.signal);
 	if (carried.size === 0) return;
 	// A recorded tree this store no longer holds has no modes to give: Git fails, printing no entries.
 	const diff = await runGit(["diff-index", "--cached", "--raw", "-z", "--no-renames", recorded], {
@@ -1050,15 +1105,18 @@ export async function captureWorktreeSnapshot(
 
 /**
  * {@link captureWorktreeSnapshot} of the checkout that {@link locateCheckout} returned, which is not looked up again.
+ * With `wroteBy`, a {@link nextCaptureTick} taken once the writes the capture must hold ended, it also takes the tree
+ * of a scan of the checkout's working files that started after that.
  */
 export async function captureLocatedCheckout(
 	checkout: Checkout,
 	options: CaptureWorktreeSnapshotOptions = {},
+	wroteBy?: number,
 ): Promise<WorktreeSnapshotCapture> {
 	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
 	if (!settings.enabled) return { status: "disabled" };
 	try {
-		return await captureCheckout(async () => checkout, settings, options);
+		return await captureCheckout(async () => checkout, settings, options, wroteBy);
 	} catch (error) {
 		if (isWorkspaceSnapshotError(error)) return { status: "unavailable", reason: error };
 		throw error;
@@ -1103,6 +1161,7 @@ async function captureCheckout(
 	locate: () => Promise<Checkout | WorktreeSnapshotUnavailableReason>,
 	settings: WorktreeSnapshotSettings,
 	options: CaptureWorktreeSnapshotOptions,
+	wroteBy?: number,
 ): Promise<WorktreeSnapshotCapture> {
 	const { signal } = options;
 	const gitUnavailable = await installedGitUnavailable();
@@ -1119,7 +1178,14 @@ async function captureCheckout(
 			: candidate;
 	const capture = await captureIndexOf(checkout, resolve(defaultWorktreeSnapshotStoreDir()), signal);
 	const modeTree = previous?.tree ?? (await restoredTreeOf(capture.gitDir));
-	const { state, omitted: pathOmissions } = await readWorkingFiles(checkout, settings, capture, modeTree, signal);
+	const { state, omitted: pathOmissions } = await readWorkingFiles(
+		checkout,
+		settings,
+		capture,
+		modeTree,
+		signal,
+		wroteBy,
+	);
 	const omissions = pathOmissionKeys(pathOmissions);
 	if (
 		previous &&

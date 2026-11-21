@@ -129,6 +129,43 @@ function sha12(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
 
+/**
+ * Ends Windows process `pid` if it was created at `started`, and with `descendants` every process it started that still
+ * runs, through the native module: each through a handle checked before anything is ended, so a later process given
+ * one of their ids is never ended (#6133). How many were ended; null where `pid` does not name that process (it is
+ * gone, is another process, or may not be ended); undefined where there is no native module to ask (other platforms,
+ * or a native module without it). Never starts a process.
+ */
+export function nativeTerminateProcess(pid: number, started: string, descendants: boolean): number | null | undefined {
+	if (process.platform !== "win32") return undefined;
+	const terminate = nativeTerminator();
+	if (terminate === null) return undefined;
+	try {
+		return terminate(pid, started, descendants);
+	} catch {
+		return undefined;
+	}
+}
+
+type CreatedProcessTerminator = (pid: number, created: string, descendants: boolean) => number | null;
+
+let terminator: CreatedProcessTerminator | null | undefined;
+
+/** The native module's `terminateProcessCreatedAt`, or null where the module or that binding is missing. */
+function nativeTerminator(): CreatedProcessTerminator | null {
+	if (terminator === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				terminateProcessCreatedAt?: CreatedProcessTerminator;
+			};
+			terminator = binding.terminateProcessCreatedAt ?? null;
+		} catch {
+			terminator = null;
+		}
+	}
+	return terminator;
+}
+
 type CreationTimeReader = (pid: number) => string | null;
 
 let nativeReader: CreationTimeReader | null | undefined;

@@ -1862,6 +1862,88 @@ test("a result for a call the child was told is still running still reaches it, 
 	assert.equal(lateTimes(run, late), 1);
 });
 
+test("a late result the child read before a compaction took it out of its context is not given to it again (#5012)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "late-read-compacted");
+	await saveIntoTranscript(record, [stillRunning]);
+	const late = waitResult("/deploy now");
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	await session.appendMessage({ role: "user", content: legacyLateToolResultMessage(late), timestamp: Date.now() });
+	await session.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 1,
+			linesDeleted: 1,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		form: "cleared",
+	});
+	await session.appendMessage({ role: "user", content: "after compaction", timestamp: Date.now() });
+	// A later run of the child launched after it read the result.
+	const leaf = session.getLeafId();
+	assert.ok(leaf);
+	const relaunched = { ...record, launchLeafId: leaf, launchLeafSeq: session.getEntrySeq(leaf) };
+	await appendRecord(h, relaunched);
+	observeSubagentChildRecord(relaunched);
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.doesNotMatch(told(run), /deploy now/);
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], []);
+});
+
+for (const compacted of [false, true])
+	test(`a late result for a call that reused an earlier call's id reaches the child once${compacted ? ", after a compaction" : ""} (#3274)`, async () => {
+		const h = harness();
+		const record = await releasedChild(h, `reused-call-id-${compacted}`);
+		assert.ok(record.childSessionFile);
+		// An earlier call under the same id (a provider numbering each response's calls from 0), answered with its own
+		// result.
+		await endSessionOnPendingCall(record);
+		const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+		await session.appendMessage({
+			role: "toolResult",
+			toolCallId: WAIT_CALL.toolCallId,
+			toolName: WAIT_CALL.toolName,
+			content: [{ type: "text", text: "run 6 passed" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		await session.appendMessage({ role: "user", content: "now watch run 7", timestamp: Date.now() });
+		if (compacted)
+			await session.appendCompaction("summary", null, 100, {
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "" },
+				stats: {
+					linesBefore: 1,
+					linesDeleted: 1,
+					linesKept: 0,
+					rangeCount: 1,
+					tokensBefore: 100,
+					tokensAfter: 10,
+					percentReduction: 90,
+				},
+				form: "cleared",
+			});
+		await endSessionOnPendingCall(record);
+		await saveIntoTranscript(record, [stillRunning]);
+		const late = waitResult("run 7 deployed");
+		await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+		const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+		assert.equal(lateTimes(run, late), 1, "the result it never read reaches it once");
+	});
+
 test("a late result the child already read as a message is not given to it again (#5012)", async () => {
 	const h = harness();
 	const record = await endedOnPendingCall(h, "late-already-read");

@@ -53,6 +53,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"search",
 	"signalIgnored",
 	"startHostProcess",
+	"terminateProcessCreatedAt",
 	"terminateProcessDescendants",
 	"tryAdvisoryLock",
 	"tryAdvisoryLockAsync",
