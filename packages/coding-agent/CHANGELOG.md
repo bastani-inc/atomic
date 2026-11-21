@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- After a restart, a long session no longer replays an Intercom message, reply or ask that it had already taken in a turn, or an ask it had already answered, once a compaction had left the entry that recorded this out of the reopened session. Such a message came back as a new turn when its sender was still connected, and as history otherwise, after every restart ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
+- Fixed the first run after a resume near the context window lowering the thinking budget when an extension starts it, or a queued message or session recovery continues it: like a typed prompt, it now compacts once first when only what the resume added would lower the budget. What an extension adds after the session opened counts as the conversation's, as in a session that kept running, so it no longer causes that compaction.
+- A subagent whose own prompt replaces the default now names the project's session folder in a section at the end of its prompt, so its Session memory section reads the same in every project. A session recorded with the folder in Session memory keeps it there.
+- A resumed session no longer shows an MCP server's recorded summary that the conversation did not show last, such as after the record of a later change could not be written; the server's line shows its summary again once it reconnects.
+- With the npm-installed `atomic`, an OpenAI Codex request whose WebSocket is refused for its TLS certificate now fails at once with the certificate message and how to trust a private CA, as the standalone binary does, instead of first retrying over SSE ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
+- `/reload` runs the current code of a module that your own or an installed extension imported after it started, when only that module changed. On Windows, under Bun, and in the standalone binary, `/reload` could keep the module as it was first loaded ([#6172](https://github.com/bastani-inc/atomic/pull/6172))
+- An installed Atomic and a source checkout, or two Atomic versions, that share an agent directory no longer delete each other's extension transpile cache, so neither starts with an empty cache after the other has run. The cache moved to `cache/transpile/` in the agent directory, and a version's cache is removed once it has gone unused for a week ([#6172](https://github.com/bastani-inc/atomic/pull/6172))
+- In a source checkout, a first start with an empty transpile cache compiles the bundled packages in a background thread instead of blocking startup, and modules a package imports later are prepared for exactly the files they import ([#6172](https://github.com/bastani-inc/atomic/pull/6172))
+
 ## [0.10.3] - 2026-11-21
 
 Queued messages are delivered exactly as listed, ← returns from a subagent's chat, the prompt cache survives wide turns and resumes near the context window, and closing the terminal lets extensions shut down.

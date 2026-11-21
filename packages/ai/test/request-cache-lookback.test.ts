@@ -16,6 +16,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 	TranscriptContext,
+	UserMessage,
 } from "../src/types.ts";
 
 /**
@@ -262,6 +263,174 @@ describe("Anthropic: a turn that adds 20 or more positions", () => {
 	});
 });
 
+describe("Anthropic on the Claude API: a run of tool calls or tool results is one position", () => {
+	const model = getModel("anthropic", "claude-sonnet-4-5");
+	const capturePayload = (messages: Message[], apiKey = "sk-ant-test") =>
+		capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, { apiKey });
+
+	it("adds no breakpoint for a turn of many parallel tool calls and their results", async () => {
+		// 12 tool calls and 12 results are two positions.
+		const payload = await capturePayload(parallelReads(model, 12));
+		assert.deepEqual(anthropicMarks(payload), [lastBlock(payload)]);
+		const oauth = await capturePayload(parallelReads(model, 12), "sk-ant-oat01-test");
+		assert.ok(oauth.system?.[0]?.cache_control, "the identity block keeps its breakpoint");
+	});
+
+	it("counts each run once, so a text block between tool calls starts another", async () => {
+		// The previous request ended with "read these files". The reply has 16 text blocks, two tool calls, a text block
+		// and two more tool calls (four runs of positions after the texts), and this request sends four results.
+		const texts = Array.from({ length: 16 }, (_, index) => ({ type: "text" as const, text: `note ${index}` }));
+		const [first, second, third, fourth] = calls(4);
+		const split: Message[] = [
+			...parallelReads(model, 0).slice(0, 2),
+			reply(model, [...texts, first!, second!, { type: "text", text: "and" }, third!, fourth!]),
+			...results(4),
+		];
+		// 16 texts, a run of two calls, a text, a run of two calls and a run of four results: 20 positions.
+		const payload = await capturePayload(split);
+		assert.deepEqual(anthropicMarks(payload), [[0, 0], lastBlock(payload)]);
+		// Without the text between them the four calls are one run: 18 positions.
+		const joined: Message[] = [
+			...parallelReads(model, 0).slice(0, 2),
+			reply(model, [...texts, ...calls(4)]),
+			...results(4),
+		];
+		const near = await capturePayload(joined);
+		assert.deepEqual(anthropicMarks(near), [lastBlock(near)]);
+	});
+});
+
+/** A user message of `count` text blocks. */
+function lines(count: number, prefix: string): UserMessage {
+	return {
+		role: "user",
+		content: Array.from({ length: count }, (_, index) => ({ type: "text" as const, text: `${prefix} ${index}` })),
+		timestamp: 5,
+	};
+}
+
+/**
+ * The last answered request ended with "start". With `empty`, its reply sent nothing and the request after it (20 more
+ * blocks) is the last answered one. The next request got no reply before the exit, so the resume hints a breakpoint at
+ * its end (24 blocks); the first request after the resume adds `added` blocks.
+ */
+function unansweredBeforeResume(model: Model<Api>, added: number, tools = true): Message[] {
+	return [
+		{
+			role: "system",
+			content: "You are a coding assistant.",
+			...(tools ? { toolsAdded: [readTool] } : {}),
+			timestamp: 1,
+		},
+		{ role: "user", content: "start", timestamp: 2 },
+		reply(model, [{ type: "text", text: "Started." }]),
+		{ ...lines(24, "pasted"), cacheBreakpoint: true },
+		lines(added, "resumed"),
+	];
+}
+
+describe("Anthropic: a resumed request whose restored history ends with a request no reply answered", () => {
+	const model = { ...getModel("anthropic", "claude-sonnet-4-5"), ...offline };
+	const resumed = (added: number, tools = true) => unansweredBeforeResume(model, added, tools);
+
+	it("keeps a breakpoint where the last answered request ended when the hinted one is 20 or more positions past it", async () => {
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, resumed(25), {
+			apiKey: "sk-ant-test",
+		});
+		// The tools, the system prompt and the newest input take three breakpoints; the last one goes to "start".
+		assert.deepEqual(anthropicMarks(payload), [[0, 0], lastBlock(payload)]);
+		assert.equal(markerCount(payload), 4);
+	});
+
+	it("marks both ends when the request has a breakpoint to spare for each", async () => {
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, resumed(25, false), {
+			apiKey: "sk-ant-test",
+		});
+		assert.deepEqual(anthropicMarks(payload), [[0, 0], [2, 23], lastBlock(payload)]);
+		assert.equal(markerCount(payload), 4);
+		const oauth = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, resumed(25, false), {
+			apiKey: "sk-ant-oat01-test",
+		});
+		assert.equal(oauth.system?.[0]?.cache_control, undefined);
+		assert.deepEqual(anthropicMarks(oauth), [[0, 0], [2, 23], lastBlock(oauth)]);
+	});
+
+	it("OAuth: the identity block and then the hinted end give way to where the last answered request ended", async () => {
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, resumed(25), {
+			apiKey: "sk-ant-oat01-test",
+		});
+		assert.equal(payload.system?.[0]?.cache_control, undefined);
+		assert.ok(payload.system?.[1]?.cache_control);
+		assert.deepEqual(anthropicMarks(payload), [[0, 0], lastBlock(payload)]);
+		assert.equal(markerCount(payload), 4);
+	});
+
+	it("keeps only the hinted breakpoint when it reaches where the last answered request ended", async () => {
+		const messages: Message[] = [
+			{ role: "system", content: "You are a coding assistant.", toolsAdded: [readTool], timestamp: 1 },
+			{ role: "user", content: "start", timestamp: 2 },
+			reply(model, [{ type: "text", text: "Started." }]),
+			{ ...lines(18, "pasted"), cacheBreakpoint: true },
+			lines(25, "resumed"),
+		];
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, {
+			apiKey: "sk-ant-test",
+		});
+		// The reply and 18 blocks: 19 positions from "start" to the hinted end.
+		assert.deepEqual(anthropicMarks(payload), [[2, 17], lastBlock(payload)]);
+	});
+
+	it.each([
+		{ answeredBy: "another model", reply: { model: "claude-opus-4-5" } },
+		{ answeredBy: "the same model with another thinking budget", reply: { thinkingBudgetTokens: 8192 } },
+	])("keeps the hinted end's breakpoint when $answeredBy answered the last request", async ({ reply: answered }) => {
+		const messages = resumed(25).map((message) =>
+			message.role === "assistant" ? { ...message, ...answered } : message,
+		);
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, {
+			apiKey: "sk-ant-test",
+		});
+		// Nothing this request can read is known to be cached there, so the hint keeps its breakpoint, as before.
+		assert.deepEqual(anthropicMarks(payload), [[2, 23], lastBlock(payload)]);
+	});
+
+	it("measures from the newest input when the hinted end cannot take a breakpoint", async () => {
+		const messages: Message[] = [
+			{ role: "system", content: "You are a coding assistant.", toolsAdded: [readTool], timestamp: 1 },
+			{ role: "user", content: "start", timestamp: 2 },
+			reply(model, [{ type: "text", text: "Started." }]),
+			{
+				role: "user",
+				content: [{ type: "document", data: "JVBERi0=", mimeType: "application/pdf" }],
+				timestamp: 4,
+				cacheBreakpoint: true,
+			},
+			lines(24, "resumed"),
+		];
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, {
+			apiKey: "sk-ant-test",
+		});
+		// A document takes no breakpoint, so only the newest input's could find "start", 26 positions back.
+		assert.deepEqual(anthropicMarks(payload), [[0, 0], lastBlock(payload)]);
+	});
+
+	it("counts from a reply that sent nothing, which still answered its request", async () => {
+		const messages: Message[] = [
+			{ role: "system", content: "You are a coding assistant.", toolsAdded: [readTool], timestamp: 1 },
+			{ role: "user", content: "start", timestamp: 2 },
+			reply(model, [{ type: "text", text: "Started." }]),
+			lines(20, "pasted"),
+			reply(model, []),
+			lines(25, "next"),
+		];
+		const payload = await capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, {
+			apiKey: "sk-ant-test",
+		});
+		// The empty reply answered the request that ended with the pasted lines.
+		assert.deepEqual(anthropicMarks(payload), [[2, 19], lastBlock(payload)]);
+	});
+});
+
 describe("Bedrock: a turn that adds 20 or more blocks", () => {
 	const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
 	type BedrockPayload = { messages: Array<{ role: string; content: Array<Record<string, unknown>> }> };
@@ -289,6 +458,38 @@ describe("Bedrock: a turn that adds 20 or more blocks", () => {
 		);
 		const last = payload.messages.length - 1;
 		assert.deepEqual(cachePoints(payload), [[last, payload.messages[last]!.content.length - 1]]);
+	});
+
+	it("puts cache points at the hinted end and where the last answered request ended when they are 20 blocks apart", async () => {
+		const payload = await capture<BedrockPayload>(
+			streamBedrock as StreamFunction,
+			model,
+			unansweredBeforeResume(model, 25),
+		);
+		// Consecutive user messages are one message: "start", then the reply, then the pasted and resumed lines.
+		const last = payload.messages.length - 1;
+		assert.deepEqual(cachePoints(payload), [
+			[0, 1],
+			[2, 24],
+			[last, payload.messages[last]!.content.length - 1],
+		]);
+	});
+
+	it("counts from a reply that sent nothing, which still answered its request", async () => {
+		const messages: Message[] = [
+			{ role: "user", content: "start", timestamp: 2 },
+			reply(model, [{ type: "text", text: "Started." }]),
+			lines(20, "pasted"),
+			reply(model, []),
+			lines(25, "next"),
+		];
+		const payload = await capture<BedrockPayload>(streamBedrock as StreamFunction, model, messages);
+		// The empty reply is left out, so the next lines join the pasted ones; it answered the request that ended there.
+		const last = payload.messages.length - 1;
+		assert.deepEqual(cachePoints(payload), [
+			[2, 20],
+			[last, payload.messages[last]!.content.length - 1],
+		]);
 	});
 });
 
@@ -367,5 +568,54 @@ describe("OpenAI-compatible Claude routes: a turn that adds 20 or more positions
 		});
 		// The previous request ended with an image-only message, so its newest breakpoint was on "first answer".
 		assert.deepEqual(marked(payload), [0, 2, payload.messages.length - 1]);
+	});
+
+	it("keeps the breakpoint where the last answered request ended over a hinted end 20 positions past it", async () => {
+		const payload = await capture<CompletionsPayload>(
+			streamCompletions as StreamFunction,
+			model,
+			unansweredBeforeResume(model, 25),
+			{ apiKey: "test-key" },
+		);
+		// The system prompt, the tools, "start" and the newest input.
+		assert.deepEqual(marked(payload), [0, 1, 4]);
+		const noTools = await capture<CompletionsPayload>(
+			streamCompletions as StreamFunction,
+			model,
+			unansweredBeforeResume(model, 25, false),
+			{ apiKey: "test-key" },
+		);
+		assert.deepEqual(marked(noTools), [0, 1, 3, 4]);
+	});
+
+	it("puts a hinted breakpoint on an image-only message where that request put its newest one", async () => {
+		const messages: Message[] = [
+			{ role: "system", content: "You are a coding assistant.", timestamp: 1 },
+			{ role: "user", content: "first", timestamp: 2 },
+			reply(model, [{ type: "text", text: "first answer" }]),
+			{ role: "user", content: [{ type: "text", text: "look" }], timestamp: 4 },
+			{ role: "user", content: [image], timestamp: 5, cacheBreakpoint: true },
+			lines(25, "resumed"),
+		];
+		const payload = await capture<CompletionsPayload>(streamCompletions as StreamFunction, model, messages, {
+			apiKey: "test-key",
+		});
+		// The request that ended with the image put its newest breakpoint on "look".
+		assert.deepEqual(marked(payload), [0, 3, 5]);
+	});
+
+	it("counts from a reply that sent nothing, which still answered its request", async () => {
+		const messages: Message[] = [
+			{ role: "system", content: "You are a coding assistant.", timestamp: 1 },
+			{ role: "user", content: "start", timestamp: 2 },
+			reply(model, [{ type: "text", text: "Started." }]),
+			lines(20, "pasted"),
+			reply(model, []),
+			lines(25, "next"),
+		];
+		const payload = await capture<CompletionsPayload>(streamCompletions as StreamFunction, model, messages, {
+			apiKey: "test-key",
+		});
+		assert.deepEqual(marked(payload), [0, 3, 4]);
 	});
 });

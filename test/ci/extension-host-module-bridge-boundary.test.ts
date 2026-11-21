@@ -219,9 +219,9 @@ test(
 			assert.equal(startup.exitCode, 0, startup.stderr.toString());
 			assert.equal(startup.stdout.toString().trim(), "compiled native-builtin production loader probe: OK");
 			assert.equal(
-				existsSync(join(runtimeDir, "agent", "cache", "jiti")),
+				existsSync(join(runtimeDir, "agent", "cache", "transpile")),
 				false,
-				"native builtin created jiti cache",
+				"native builtin created a transpile cache",
 			);
 		} finally {
 			removeTempDirectory(fixture);
