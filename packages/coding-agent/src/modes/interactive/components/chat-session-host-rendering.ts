@@ -78,6 +78,11 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	if (state.transcript.length > 0) {
 		components.push(state.transcriptComponent);
 	}
+	const endBlock = state.transcriptEndBlock?.();
+	if (endBlock !== undefined) {
+		components.push(new Spacer(1));
+		components.push(endBlock);
+	}
 	// A notice or an error follows the transcript; work under way is the working line above the prompt instead.
 	if (state.statusMessage && !state.compacting && !isChatSessionBusyStatus(state.statusMessage)) {
 		components.push(new Spacer(1));

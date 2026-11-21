@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer, type Server } from "node:https";
-import { createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
+import { connect as connectNet, createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
 import tls, { type ConnectionOptions, connect as connectTls, type TLSSocket } from "node:tls";
 import { afterEach, describe, it, vi } from "vitest";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.ts";
@@ -21,7 +21,7 @@ import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import { getModel } from "../src/compat.ts";
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
-import { transportFailure } from "../src/utils/tls-certificate.ts";
+import { recordProxyConnectionFailure, transportFailure } from "../src/utils/tls-certificate.ts";
 import { observeWebSocketTransport } from "../src/utils/websocket-transport.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
@@ -427,6 +427,36 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		assert.deepEqual(tlsDiagnostics(hooked), [], hooked.errorMessage);
 	});
 
+	it("a certificate refused on the connection to a proxy names the proxy only for the requests whose own transport failed with it, and a hook that throws it is not a refusal", async () => {
+		// What a proxy agent's connection to an https proxy fails with, kept and thrown again for every request queued on it.
+		const refused = Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
+		recordProxyConnectionFailure(refused, "https://agent:s3cret@proxy.test:3128");
+		const shared = new TypeError("fetch failed", { cause: refused });
+		const failing: typeof fetch = Object.assign(async () => {
+			throw shared;
+		}, globalThis.fetch);
+		const turn = (baseUrl: string, hooks?: Hooks) =>
+			streamPiMessages(createModel("pi-messages", baseUrl), context, { apiKey: "test-key", fetch: failing, ...hooks }).result();
+
+		const [first, second] = await Promise.all([turn("https://first.test"), turn("https://second.test")]);
+		for (const message of [first, second]) {
+			assert.equal(
+				message.errorMessage,
+				"The TLS certificate of the proxy proxy.test:3128 was not accepted (CERT_HAS_EXPIRED: certificate has expired). If the proxy uses a certificate from a private or corporate CA, set NODE_EXTRA_CA_CERTS to a PEM file with that CA and restart. The request is not retried",
+			);
+			assert.deepEqual(tlsDiagnostics(message), [{ code: "CERT_HAS_EXPIRED", reason: "certificate has expired" }]);
+		}
+
+		const hooked = await turn("https://third.test", {
+			onPayload: async () => {
+				throw shared;
+			},
+		});
+		assert.equal(hooked.stopReason, "error");
+		assert.deepEqual(tlsDiagnostics(hooked), [], hooked.errorMessage);
+		assert.equal(isRetryableAssistantError(hooked), true);
+	});
+
 	it("a refused certificate on a default endpoint names the host the request was sent to (#6114)", async () => {
 		// The model has no base URL of its own: the SDK resolves the endpoint from the project, resource or region. Each
 		// request is sent on to a local endpoint whose certificate is self-signed.
@@ -507,6 +537,112 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		} finally {
 			vi.restoreAllMocks();
 		}
+	});
+
+	it("Amazon Bedrock names an https proxy whose own certificate was refused, not the endpoint the proxy never reached, and sends the request once", async () => {
+		// The proxy shows a self-signed certificate; the endpoints behind it are never connected to.
+		const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost", "127.0.0.1"] });
+		let proxyConnections = 0;
+		const proxy = createHttpsServer({ cert: certificate.cert, key: certificate.key });
+		proxy.on("connection", () => proxyConnections++);
+		proxy.on("tlsClientError", () => {});
+		let endpointConnections = 0;
+		const endpoint = createNetServer((socket: Socket) => {
+			endpointConnections++;
+			socket.destroy();
+		});
+		servers.push(proxy, endpoint);
+		for (const server of [proxy, endpoint]) await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const portOf = (server: NetServer | Server) => {
+			const address = server.address();
+			assert.ok(address !== null && typeof address === "object");
+			return address.port;
+		};
+		// The proxy URL's credentials are never repeated.
+		const proxyUrl = `https://agent:s3cret@localhost:${portOf(proxy)}`;
+		const bedrock = getModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
+
+		// An HTTPS endpoint, reached through a tunnel, and a plain HTTP one, whose requests the proxy forwards.
+		for (const baseUrl of [`https://localhost:${portOf(endpoint)}`, `http://127.0.0.1:${portOf(endpoint)}`]) {
+			const message = await streamBedrock({ ...bedrock, baseUrl }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: {
+					AWS_BEDROCK_SKIP_AUTH: "1",
+					AWS_REGION: "us-east-1",
+					HTTPS_PROXY: proxyUrl,
+					HTTP_PROXY: proxyUrl,
+					NO_PROXY: "none.invalid",
+				},
+			}).result();
+
+			assert.equal(message.stopReason, "error");
+			assert.ok(
+				message.errorMessage?.startsWith(
+					`The TLS certificate of the proxy localhost:${portOf(proxy)} was not accepted (DEPTH_ZERO_SELF_SIGNED_CERT: self-signed certificate`,
+				),
+				`${baseUrl}: ${message.errorMessage}`,
+			);
+			assert.ok(
+				message.errorMessage?.includes(
+					"If the proxy uses a certificate from a private or corporate CA, set NODE_EXTRA_CA_CERTS",
+				),
+				message.errorMessage,
+			);
+			assert.equal(message.errorMessage?.includes("s3cret"), false, message.errorMessage);
+			assert.equal(isRetryableAssistantError(message), false);
+			assert.equal(proxyConnections, 1, `${baseUrl} asked again: ${message.errorMessage}`);
+			proxyConnections = 0;
+		}
+		assert.equal(endpointConnections, 0);
+	});
+
+	it("Amazon Bedrock through a proxy still names the endpoint whose certificate was refused", async () => {
+		// A proxy that opens the tunnel; the endpoint behind it shows a self-signed certificate.
+		const endpoint = await selfSignedEndpoint();
+		const endpointPort = new URL(endpoint.baseUrl).port;
+		const tunnels: string[] = [];
+		const proxy = createHttpServer((_request, response) => response.writeHead(405).end());
+		proxy.on("connect", (request, client: Socket) => {
+			tunnels.push(request.url ?? "");
+			client.on("error", () => {});
+			const upstream = connectNet(Number(endpointPort), "127.0.0.1", () => {
+				client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+				client.pipe(upstream).pipe(client);
+			});
+			upstream.on("error", () => client.destroy());
+		});
+		servers.push(proxy);
+		await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+		const address = proxy.address();
+		assert.ok(address !== null && typeof address === "object");
+		const bedrock = getModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
+
+		const message = await streamBedrock({ ...bedrock, baseUrl: endpoint.baseUrl }, context, {
+			cacheRetention: "none",
+			maxRetries: SDK_RETRIES,
+			env: {
+				AWS_BEDROCK_SKIP_AUTH: "1",
+				AWS_REGION: "us-east-1",
+				HTTPS_PROXY: `http://127.0.0.1:${address.port}`,
+				NO_PROXY: "none.invalid",
+			},
+		}).result();
+
+		assert.deepEqual(tunnels, [`localhost:${endpointPort}`]);
+		assert.equal(endpoint.connections(), 1);
+		assert.ok(
+			message.errorMessage?.startsWith(
+				`The TLS certificate for localhost:${endpointPort} was not accepted (DEPTH_ZERO_SELF_SIGNED_CERT: self-signed certificate`,
+			),
+			message.errorMessage,
+		);
 	});
 
 	it("a failed assistant message read back from JSON is still not retried (#6114)", async () => {
