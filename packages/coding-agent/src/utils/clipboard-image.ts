@@ -5,7 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { createChildProcessEnvironment } from "./child-process.ts";
-import { clipboard } from "./clipboard-native.ts";
+import { getNativeClipboard } from "./clipboard-native.ts";
 import { findHelperExecutableAsync } from "./helper-command.ts";
 import { loadPhoton } from "./photon.ts";
 import { windowsPowerShellEnvironment } from "./windows-powershell.ts";
@@ -231,6 +231,7 @@ async function readClipboardImageViaXclip(): Promise<ClipboardImage | null> {
 }
 
 async function readClipboardImageViaNativeClipboard(): Promise<ClipboardImage | null> {
+	const clipboard = getNativeClipboard();
 	if (!clipboard?.hasImage()) {
 		return null;
 	}

@@ -1632,10 +1632,26 @@ export async function getGitShellEnvironmentAsync(
 	}
 }
 
+/**
+ * Tells every caller of the shared git download a status. `starts` marks a status that describes the step now under
+ * way, which a caller joining later is told first; `ends` marks the last one the download tells about its progress.
+ * Other statuses, such as warnings about leftovers, are told only to the callers waiting then.
+ */
+type GitProvisionEmit = (status: ToolStatus, step?: "starts" | "ends") => void;
+
+/** What a caller joining the shared git download is told first: the status of the step under way, if one is. */
+type GitProvisionProgress =
+	| { readonly kind: "starting" }
+	| { readonly kind: "in-progress"; readonly status: ToolStatus }
+	| { readonly kind: "ended" };
+
 interface SharedGitProvision {
 	readonly promise: Promise<ProvisionedGit>;
 	readonly controller: AbortController;
 	readonly listeners: Map<(status: ToolStatus) => void, number>;
+	progress: GitProvisionProgress;
+	/** The status being told to the listeners now, if one is. */
+	telling: ToolStatus | undefined;
 	waiters: number;
 }
 
@@ -1644,19 +1660,31 @@ let sharedGitProvision: SharedGitProvision | undefined;
 function startGitProvision(target: GitDistributionTarget, system: SystemGitProbe) {
 	const controller = new AbortController();
 	const listeners = new Map<(status: ToolStatus) => void, number>();
-	const emit = (status: ToolStatus): void => {
-		for (const listener of listeners.keys()) listener(status);
+	const emit: GitProvisionEmit = (status, step) => {
+		if (step === "starts") shared.progress = { kind: "in-progress", status };
+		else if (step === "ends") shared.progress = { kind: "ended" };
+		// A caller joining from a listener meanwhile is told this status by this loop, which visits listeners added during it.
+		shared.telling = status;
+		try {
+			for (const listener of listeners.keys()) listener(status);
+		} finally {
+			shared.telling = undefined;
+		}
 	};
 	const shared: SharedGitProvision = {
 		controller,
 		listeners,
+		progress: { kind: "starting" },
+		telling: undefined,
 		waiters: 0,
 		promise: installGitDistribution(target, system, controller.signal, emit).then(
 			(provisioned) => {
+				shared.progress = { kind: "ended" };
 				lastProvisionFailure = undefined;
 				return provisioned;
 			},
 			(error) => {
+				shared.progress = { kind: "ended" };
 				if (isGitProvisionError(error)) lastProvisionFailure = error;
 				throw error;
 			},
@@ -1673,10 +1701,22 @@ function clearSharedGitProvision(shared: SharedGitProvision): void {
 	if (sharedGitProvision === shared) sharedGitProvision = undefined;
 }
 
+/**
+ * Wait for the shared download. A caller joining it while a step is under way, such as the download itself, is told
+ * that step's status first and then each later one; a callback already told by an earlier call is not told again.
+ */
 function joinExistingGitProvision(shared: SharedGitProvision, options: ResolveGitOptions): Promise<ProvisionedGit> {
 	const { signal, onStatus } = options;
 	if (signal?.aborted) return Promise.reject(signal.reason);
-	if (onStatus !== undefined) shared.listeners.set(onStatus, (shared.listeners.get(onStatus) ?? 0) + 1);
+	const told = onStatus === undefined ? 0 : (shared.listeners.get(onStatus) ?? 0);
+	const current =
+		onStatus !== undefined &&
+		told === 0 &&
+		shared.progress.kind === "in-progress" &&
+		shared.progress.status !== shared.telling
+			? shared.progress.status
+			: undefined;
+	if (onStatus !== undefined) shared.listeners.set(onStatus, told + 1);
 	shared.waiters += 1;
 	return new Promise<ProvisionedGit>((resolvePromise, rejectPromise) => {
 		let joined = true;
@@ -1707,6 +1747,14 @@ function joinExistingGitProvision(shared: SharedGitProvision, options: ResolveGi
 				rejectPromise(error);
 			},
 		);
+		if (onStatus !== undefined && current !== undefined) {
+			try {
+				onStatus(current);
+			} catch (error) {
+				leave();
+				rejectPromise(error);
+			}
+		}
 	});
 }
 
@@ -1892,7 +1940,7 @@ async function acquireGitInstallLock(
 	target: GitDistributionTarget,
 	layout: GitDistributionLayout,
 	signal: AbortSignal,
-	emit: (status: ToolStatus) => void,
+	emit: GitProvisionEmit,
 ): Promise<GitInstallLock> {
 	const binDir = dirname(layout.root);
 	const lockPath = join(binDir, GIT_INSTALL_LOCK_NAME);
@@ -1947,7 +1995,10 @@ async function acquireGitInstallLock(
 			});
 		if (!announced) {
 			announced = true;
-			emit({ type: "info", message: "Another Atomic process is installing git. Waiting for it to finish..." });
+			emit(
+				{ type: "info", message: "Another Atomic process is installing git. Waiting for it to finish..." },
+				"starts",
+			);
 		}
 		await delay(gitProvisionSettings.lockPollMs, undefined, { signal });
 	}
@@ -2246,7 +2297,7 @@ async function installGitDistribution(
 	target: GitDistributionTarget,
 	system: SystemGitProbe,
 	signal: AbortSignal,
-	emit: (status: ToolStatus) => void,
+	emit: GitProvisionEmit,
 ): Promise<ProvisionedGit> {
 	const layout = currentGitLayout();
 	const binDir = dirname(layout.root);
@@ -2306,7 +2357,7 @@ async function installUnderLock(
 	layout: GitDistributionLayout,
 	system: SystemGitProbe,
 	signal: AbortSignal,
-	emit: (status: ToolStatus) => void,
+	emit: GitProvisionEmit,
 ): Promise<ProvisionedGit> {
 	const binDir = dirname(layout.root);
 	let staging: string;
@@ -2319,10 +2370,13 @@ async function installUnderLock(
 	}
 	let primary: unknown;
 	try {
-		emit({
-			type: "info",
-			message: `${describeSystemGitForStatus(system)} Downloading portable git ${gitProvisionSettings.release.version}...`,
-		});
+		emit(
+			{
+				type: "info",
+				message: `${describeSystemGitForStatus(system)} Downloading portable git ${gitProvisionSettings.release.version}...`,
+			},
+			"starts",
+		);
 		const archive = await downloadGitArchive(target, signal);
 		const actualSha256 = createHash("sha256").update(archive).digest("hex");
 		if (actualSha256 !== target.sha256)
@@ -2356,7 +2410,7 @@ async function installUnderLock(
 		if ("winner" in publication) return publication.winner;
 		const { published } = publication;
 		provisionedGitVersions.set(published.executable, version);
-		emit({ type: "info", message: `git ${version} installed to ${published.root}` });
+		emit({ type: "info", message: `git ${version} installed to ${published.root}` }, "ends");
 		return { layout: published, version };
 	} catch (error) {
 		primary = error;

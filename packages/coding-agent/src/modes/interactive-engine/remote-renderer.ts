@@ -3,7 +3,9 @@ import { isProxy } from "node:util/types";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
 import { savedReadLines } from "../../core/storage/session/saved-read-summary.js";
+import type { TaskId } from "../../core/tasks/contracts.js";
 import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
+import { type KeptTaskAction, keptTaskId } from "../interactive/components/kept-task.ts";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import {
@@ -310,6 +312,8 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private readonly toolName: string;
 	private readonly toolCallId: string;
 	private readonly rendererTaskId: string | undefined;
+	/** What the chat showing this row offers for a task its call left running; see `ToolExecutionOptions.keptTaskAction`. */
+	private readonly keptTaskAction: ((taskId: TaskId) => KeptTaskAction | undefined) | undefined;
 	private args: unknown;
 	private result: RenderableToolResult | undefined;
 	private executionStarted = false;
@@ -328,7 +332,13 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		toolName: string,
 		toolCallId: string,
 		args: unknown,
-		options: { showImages?: boolean; imageWidthCells?: number; outputPad?: number; rendererTaskId?: string },
+		options: {
+			showImages?: boolean;
+			imageWidthCells?: number;
+			outputPad?: number;
+			rendererTaskId?: string;
+			keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
+		},
 		runtime: IsolatedInteractiveRuntime,
 		requestRender: () => void,
 	) {
@@ -336,6 +346,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.toolName = toolName;
 		this.toolCallId = toolCallId;
 		this.rendererTaskId = options.rendererTaskId;
+		this.keptTaskAction = options.keptTaskAction;
 		this.args = args;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
@@ -408,8 +419,24 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.changed();
 	}
 
+	/**
+	 * What the chat offers for the task this call's result left running, asked when the row is drawn; undefined when the
+	 * chat does not decide that, or the result names no task.
+	 */
+	private resultTaskAction(): KeptTaskAction | "none" | undefined {
+		if (this.keptTaskAction === undefined) return undefined;
+		const taskId = keptTaskId({
+			toolName: this.toolName,
+			args: this.args,
+			result: this.result,
+			isPartial: this.isPartial,
+		});
+		return taskId === undefined ? undefined : (this.keptTaskAction(taskId as TaskId) ?? "none");
+	}
+
 	protected command(requestId: number, width: number): RemoteRenderCommand {
 		const lines = savedReadLines(this.result?.content);
+		const action = this.resultTaskAction();
 		return {
 			type: "engine_tool_render",
 			...(lines === undefined ? {} : { savedReadLines: lines }),
@@ -419,6 +446,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			toolName: this.toolName,
 			toolCallId: this.toolCallId,
 			...(this.rendererTaskId === undefined ? {} : { rendererTaskId: this.rendererTaskId }),
+			...(action === undefined ? {} : { keptTaskAction: action }),
 			args: jsonValue(this.args),
 			result: this.result ? (jsonValue(this.result) as JsonObject) : undefined,
 			executionStarted: this.executionStarted,
@@ -437,6 +465,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		return JSON.stringify([
 			"tool",
 			this.rendererTaskId,
+			this.resultTaskAction() ?? null,
 			this.toolName,
 			this.toolCallId,
 			this.expanded,
