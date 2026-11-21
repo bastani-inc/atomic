@@ -27,6 +27,21 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return { ...actual, stat, access, default: { ...actual, stat, access } };
 });
 
+/** How long starting a process holds the thread, as a host with much memory or a busy machine can. */
+const spawnSetup = vi.hoisted(() => ({ ms: 0 }));
+
+vi.mock("../src/utils/host-spawn.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/host-spawn.ts")>();
+	const spawnHostProcess: typeof actual.spawnHostProcess = (...start) => {
+		const until = performance.now() + spawnSetup.ms;
+		while (performance.now() < until) {
+			/* the start holds the thread */
+		}
+		return actual.spawnHostProcess(...start);
+	};
+	return { ...actual, spawnHostProcess };
+});
+
 const { execCommand } = await import("../src/core/exec.ts");
 
 /** What a command stopped as it starts returns: nothing it printed, and the code of SIGTERM. */
@@ -43,6 +58,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	spawnSetup.ms = 0;
 	held.clear();
 	slow.clear();
 	vi.unstubAllEnvs();
@@ -60,6 +76,10 @@ function execOnWindows(...call: Parameters<typeof execCommand>): Promise<ExecRes
 	}
 }
 
+/** How long starting the process holds the thread in the whole-timeout test: longer than its timeout. */
+const SLOW_START_MS = 2_000;
+/** The command's timeout there: ample for a command that answers after 100 ms once it runs. */
+const START_TIMEOUT_MS = 1_500;
 /** How long the PATH directory takes to answer while the caller changes its arguments. */
 const SLOW_ARGUMENTS_LOOKUP_MS = 200;
 /** How long the PATH directory takes to answer in the timeout budget test. */
@@ -86,6 +106,20 @@ describe.skipIf(process.platform === "win32")("a pi.exec command whose lookup to
 		assert.equal(result.code, 143);
 		// A second whole timeout after the lookup would end it after SLOW_LOOKUP_MS + BUDGET_MS.
 		assert.ok(elapsed < SLOW_LOOKUP_MS + BUDGET_MS - 500, `ended after ${Math.round(elapsed)} ms`);
+	});
+});
+
+describe("a pi.exec command looked up by nothing", () => {
+	test("gets its whole timeout from its start, however long the start took", async () => {
+		spawnSetup.ms = SLOW_START_MS;
+		const result = await execCommand(
+			process.execPath,
+			["-e", 'setTimeout(() => process.stdout.write("ready"), 100)'],
+			root,
+			{ timeout: START_TIMEOUT_MS },
+		);
+
+		assert.deepEqual([result.stdout, result.code, result.killed], ["ready", 0, false]);
 	});
 });
 

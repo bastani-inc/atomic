@@ -98,7 +98,8 @@ export async function execCommand(
 	// the interactive-engine control variables and their --api-key. Preserve
 	// Atomic's child attribution in the same explicit environment.
 	const env = createChildProcessEnvironment();
-	const startedAt = performance.now();
+	/** How long the program's lookup took, which counts against the timeout. */
+	let lookupMs = 0;
 	// The arguments as they are now: a caller may reuse its array while the program is looked up.
 	const argv = [...args];
 	let launch: HelperLaunch = { file: command };
@@ -107,6 +108,7 @@ export async function execCommand(
 		// absolute directories instead, so a project folder cannot supply it. A name found nowhere fails as before.
 		const lookup = new AbortController();
 		const releaseLookupStops = stopLookupOn(lookup, options, onQuit);
+		const lookupStarted = performance.now();
 		try {
 			launch = await helperLaunchAsync(command, { env, cwd, signal: lookup.signal });
 		} catch (error) {
@@ -114,6 +116,7 @@ export async function execCommand(
 		} finally {
 			// From here until the command's own stops are in place everything runs at once: no stop can arrive between.
 			releaseLookupStops();
+			lookupMs = performance.now() - lookupStarted;
 		}
 		// Stopped while it was looked up, or as the lookup finished: nothing starts, and the result is a command's that
 		// was stopped at once.
@@ -192,8 +195,7 @@ export async function execCommand(
 	}
 
 	if (options?.timeout && options.timeout > 0) {
-		// The time the program's lookup took counts against the timeout.
-		timeoutId = setTimeout(killProcess, Math.max(0, options.timeout - (performance.now() - startedAt)));
+		timeoutId = setTimeout(killProcess, Math.max(0, options.timeout - lookupMs));
 	}
 
 	// Keep only bytes within the combined cap (#11360). Close both pipes on overflow so writing
