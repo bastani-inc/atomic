@@ -5,6 +5,7 @@ import {
 	applyEarlyInputChunk,
 	consumeStartupInput,
 	type EarlyInputState,
+	linkStartupShell,
 	startEarlyInputCapture,
 	withEarlyInputHeldForStartupDialog,
 } from "../src/main-early-input.ts";
@@ -343,5 +344,55 @@ describe("early startup input held for a startup dialog (#5241)", () => {
 		});
 		expect(read).toBe("y");
 		expect(consumeStartupInput(capture)).toEqual({ text: "", submissions: [], heldForStartupDecision: true });
+	});
+});
+
+describe("the startup input capture behind the early editor", () => {
+	/** An early editor that shows `typed` until it is ended. */
+	function linkEditor(typed: EarlyInputState) {
+		let active = true;
+		const abort = vi.fn(() => {
+			active = false;
+			return typed;
+		});
+		linkStartupShell({
+			get active() {
+				return active;
+			},
+			abort,
+		});
+		return { abort, end: () => (active = false) };
+	}
+
+	it("leaves the keys to the editor while it shows the prompt, and hands the session nothing", () => {
+		linkEditor({ text: "draft", submissions: [] });
+		const stdin = new FakeStdin();
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		expect(stdin.listeners).toHaveLength(0);
+		expect(stdin.rawModeCalls).toEqual([]);
+		expect(capture?.consume()).toEqual({ text: "", submissions: [] });
+		linkStartupShell(undefined);
+	});
+
+	it("continues from what was typed in an editor that ended before the session was ready", () => {
+		const editor = linkEditor({ text: "", submissions: [] });
+		const stdin = new FakeStdin();
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		editor.end();
+		linkStartupShell(undefined, { text: "early", submissions: ["sent before"] });
+		stdin.emit(" late");
+		expect(capture?.consume()).toEqual({ text: "early late", submissions: ["sent before"] });
+	});
+
+	it("ends the editor before a startup question takes the terminal, its prompt then unfinished input", async () => {
+		const editor = linkEditor({ text: "half typed", submissions: [] });
+		const stdin = new FakeStdin();
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		const unfinished = await withEarlyInputHeldForStartupDialog(async ({ hasUnfinishedInput }) => hasUnfinishedInput);
+		expect(editor.abort).toHaveBeenCalledTimes(1);
+		expect(unfinished).toBe(true);
+		stdin.emit("!");
+		// As the capture holds input from before a startup question: in the prompt, to send deliberately.
+		expect(capture?.consume()).toEqual({ text: "half typed!", submissions: [], heldForStartupDecision: true });
 	});
 });

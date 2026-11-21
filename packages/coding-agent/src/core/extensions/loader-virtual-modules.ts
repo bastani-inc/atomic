@@ -14,6 +14,7 @@ import {
 	FORKED_PACKAGE_WORKSPACE_DIRS,
 	type ForkedPackageManifest,
 	forkedPackageExportAliases,
+	TYPEBOX_SUBPATHS,
 	withLegacyPackageNames,
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
@@ -40,7 +41,7 @@ import type { ExtensionFactory } from "./types.ts";
 
 export { getVirtualModules } from "./loader-host-modules.js";
 
-const require = createRequire(import.meta.url);
+const requireFromHere = createRequire(import.meta.url);
 let _aliases: Promise<Record<string, string>> | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
 // A transpile cache directory nothing has used for this long is removed by the next process that sets up another one.
@@ -54,8 +55,43 @@ const transpileCachePrunes = new Map<string, Promise<void>>();
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
 		isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")
-	).then((module) => module.createJiti);
+	).then((module) =>
+		// jiti imports a module natively first under Bun, and Bun then resolves the module's own imports itself, so an
+		// extension's `typebox` or Atomic package imports could reach other copies than the host's. Every load is
+		// transformed instead, as under Node: each import goes through the host's modules and aliases. Atomic's own
+		// packages in a source checkout are the exception (see `bunImportsNatively`).
+		process.versions.bun === undefined
+			? module.createJiti
+			: (((id, options) => module.createJiti(id, { tryNative: false, ...options })) as typeof createJiti),
+	);
 	return createJitiPromise;
+}
+
+/** Where Atomic's own packages import TypeBox's `Type` from. */
+const HOST_TYPEBOX = "@bastani/atomic-ai";
+const sharesHostTypeboxByDir = new Map<string, Promise<boolean>>();
+
+/**
+ * Under Bun, whether to import the entry of Atomic's own package at `extensionPath`, as a source checkout loads it,
+ * natively, as before Bun transformed every extension: Bun then resolves its imports itself, from the files the host
+ * loads, which reach the host's own instances as long as its TypeBox is the host's copy.
+ */
+function bunImportsNatively(extensionPath: string): Promise<boolean> {
+	const bun = (globalThis as typeof globalThis & { Bun?: { resolve(id: string, parent: string): Promise<string> } })
+		.Bun;
+	if (bun === undefined || isBunBinary || isBundledBuild || !isSourceBuiltinExtensionPath(extensionPath)) {
+		return Promise.resolve(false);
+	}
+	const dir = path.dirname(extensionPath);
+	let shares = sharesHostTypeboxByDir.get(dir);
+	if (shares === undefined) {
+		shares = Promise.all([bun.resolve(HOST_TYPEBOX, dir), bun.resolve(HOST_TYPEBOX, currentModuleDir())]).then(
+			([fromPackage, fromHost]) => fromPackage === fromHost,
+			() => false,
+		);
+		sharesHostTypeboxByDir.set(dir, shares);
+	}
+	return shares;
 }
 
 /** Creates `dir` one level at a time below `root`, never `root` itself, so a removed agent directory stays removed. */
@@ -164,7 +200,7 @@ function sha256Hex(content: string | NodeJS.ArrayBufferView): string {
 // sees the complete transitive graph. The observer records into every active
 // recorder; unrelated reads that interleave only over-record, which at worst
 // forces a redundant re-evaluation later — never a stale one.
-const fsExports = require("node:fs") as typeof fs;
+const fsExports = requireFromHere("node:fs") as typeof fs;
 
 /** Files read by one evaluation; reads of its own transpile cache are not part of the graph. */
 interface GraphRecorder {
@@ -554,7 +590,7 @@ function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCa
  * the same node_modules chain Node would, without exports-map encapsulation.
  */
 async function findPackageRoot(packageName: string, searchPaths?: string[]): Promise<string> {
-	for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
+	for (const base of searchPaths ?? requireFromHere.resolve.paths(packageName) ?? []) {
 		const candidate = path.join(base, packageName);
 		if (await pathExists(path.join(candidate, "package.json"))) {
 			return candidate;
@@ -584,10 +620,6 @@ function getAliases(): Promise<Record<string, string>> {
 async function computeAliases(): Promise<Record<string, string>> {
 	const __dirname = currentModuleDir();
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
-
-	const typeboxEntry = require.resolve("typebox");
-	const typeboxCompileEntry = require.resolve("typebox/compile");
-	const typeboxValueEntry = require.resolve("typebox/value");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = async (workspaceRelativePath: string, packageName: string): Promise<string> => {
@@ -707,13 +739,25 @@ async function computeAliases(): Promise<Record<string, string>> {
 		"@bastani/atomic-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
 		"@bastani/atomic-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@bastani/atomic-ai": piAiEntry,
-		typebox: typeboxEntry,
-		"typebox/compile": typeboxCompileEntry,
-		"typebox/value": typeboxValueEntry,
-		"@sinclair/typebox": typeboxEntry,
-		"@sinclair/typebox/compile": typeboxCompileEntry,
-		"@sinclair/typebox/value": typeboxValueEntry,
+		...typeboxAliases(forkedPackageAliases, path.resolve(__dirname, "../..", "typebox")),
 	});
+}
+
+/**
+ * Every `typebox` specifier, the SDK's re-exports of it (`@bastani/atomic/typebox`), and TypeBox 0.x's name for the
+ * subpaths TypeBox 1 shares with it, as the files of Atomic's one copy of TypeBox in `@bastani/atomic-ai/utils/typebox/`.
+ */
+function typeboxAliases(forkedPackageAliases: Record<string, string>, sdkTypeboxDir: string): Record<string, string> {
+	const aiUtils = forkedPackageAliases["@bastani/atomic-ai/utils"];
+	if (aiUtils === undefined) throw new Error("@bastani/atomic-ai does not export ./utils/*");
+	const aliases: Record<string, string> = {};
+	for (const subpath of TYPEBOX_SUBPATHS) {
+		aliases[`typebox${subpath}`] = path.join(aiUtils, "typebox", `${subpath.slice(1) || "index"}.js`);
+		aliases[`@bastani/atomic/typebox${subpath}`] = path.join(sdkTypeboxDir, `${subpath.slice(1) || "index"}.js`);
+	}
+	for (const subpath of ["", "/compile", "/value"])
+		aliases[`@sinclair/typebox${subpath}`] = aliases[`typebox${subpath}`]!;
+	return aliases;
 }
 
 /**
@@ -797,7 +841,11 @@ async function importExtensionModule(
 			const { code } = transformSource(options);
 			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
 		},
-		...(forceTransformedImports ? { tryNative: false } : {}),
+		...(forceTransformedImports
+			? { tryNative: false }
+			: (await bunImportsNatively(extensionPath))
+				? { tryNative: true }
+				: {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
@@ -865,8 +913,8 @@ async function importExtensionModule(
 	} else {
 		module = await importEntry();
 	}
-	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
-	// using the transformed path and its retained-evaluation reuse.
+	// jiti transforms every load except Atomic's own packages in a source checkout under Bun (see getCreateJiti); a
+	// native import's re-loads, and on Windows every re-load, use the transformed path and its retained-evaluation reuse.
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
@@ -931,7 +979,10 @@ export async function prepareExtensionEntries(
 	const createJitiImpl = await getCreateJiti();
 	// The options a load's jiti gets that decide whether it imports the entry natively and how it transforms modules.
 	const { options } = createJitiImpl(resolutionBaseUrl(import.meta.url), { moduleCache: false, fsCache: false });
-	const transformed = entries.filter((entry) => nativelyImportedPaths.has(entry) || !options.tryNative);
+	const native = await Promise.all(entries.map((entry) => bunImportsNatively(entry)));
+	const transformed = entries.filter(
+		(entry, index) => nativelyImportedPaths.has(entry) || !(options.tryNative || native[index]),
+	);
 	const importPaths = await Promise.all(transformed.map((entry) => realpathJs(entry).catch(() => entry)));
 	await prepareSourceEntries(
 		{ createJiti: createJitiImpl, cacheDir, template: transformTemplate(options) },
@@ -964,11 +1015,13 @@ export async function loadExtensionModule(
 	// module instances baked into the build, so virtualModules is used instead
 	// (which requires jiti's transformed-import path).
 	// Every editable path retains the existing jiti/virtualModules behavior.
-	// First-load fast path: native import() (jiti's default tryNative under Bun)
-	// skips per-launch transpilation of the extension module graph. Re-loads of
-	// the same path fall back to transformed imports for fresh evaluation.
+	// A first load is transformed like any other (see getCreateJiti), from
+	// the persistent transpile cache when it holds the module, except Atomic's
+	// own packages in a source checkout under Bun, which Bun imports itself.
+	// On Windows, re-loads of the same path take the retained-evaluation path
+	// below.
 	//
-	// That fallback is not free. Measured on Windows CI, a transformed re-import
+	// A transformed re-import is not free. Measured on Windows CI, a transformed re-import
 	// costs ~15 ms per module file in the extension's transitive graph, so a
 	// reload of all five builtin packages (621 files) takes ~10.7 s cold and
 	// ~2.5 s against a warm jiti fsCache, against ~40 ms on Linux and macOS. The
