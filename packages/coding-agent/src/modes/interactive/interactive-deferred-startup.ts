@@ -2,22 +2,25 @@ import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../../core/debug.ts";
 import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
+import { prewarmModelApi } from "../../core/model-api-prewarm.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
 import { recordStartupThinkingLevel } from "../../core/startup-thinking-level.ts";
-import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
+import { runsInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Container,
 	findInitialModel,
 	formatNoModelsAvailableMessage,
 	getChangelogPath,
+	needsChangelogPreload,
 	preloadChangelog,
 	recordTimeSinceReset,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
 	setRegisteredThemes,
 	uncachedCopilotModelHint,
+	VERSION,
 } from "./interactive-mode-deps.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
@@ -68,6 +71,14 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		}
 	};
 	try {
+		const changelogPreload = needsChangelogPreload(
+			(this.session.state?.messages?.length ?? 0) > 0,
+			this.settingsManager?.getLastChangelogVersion?.(),
+			VERSION,
+		)
+			? preloadChangelog(getChangelogPath())
+			: undefined;
+		changelogPreload?.catch(() => {});
 		const heldProject =
 			this.runtimeHost?.isProjectTrustPending?.() && !this.runtimeHost.pendingProjectResourcesTrusted?.();
 		await this.bindCurrentSessionExtensions();
@@ -89,7 +100,10 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		recordTimeSinceReset("deferred-extension-load");
 
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		await this.themeController.applyFromSettings(heldProject ? { keepPreview: true } : undefined);
+		await this.themeController.applyFromSettings({
+			...(heldProject ? { keepPreview: true } : {}),
+			reuseTerminalColors: true,
+		});
 		this.setupAutocompleteProvider();
 		this.setupExtensionShortcuts(this.session.extensionRunner);
 		try {
@@ -99,6 +113,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 				await applyDeferredModelScope(this);
 			}
 			await this.retryDeferredModelRestore(this.startupNoticesContainer);
+			if (!runsInteractiveEngine(this.runtimeHost) && !this.promptTurnWorkingLoaderActive) {
+				setImmediate(() => {
+					if (!this.isShuttingDown) void prewarmModelApi(this.session.model);
+				});
+			}
 		} finally {
 			checkFallbackModels();
 		}
@@ -110,7 +129,17 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		showLegacyWorkflowNotice(this);
 		// Keep the subscription warning after the RESOURCES disclosure.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-		await preloadChangelog(getChangelogPath());
+		if (changelogPreload) {
+			await changelogPreload;
+		} else if (
+			needsChangelogPreload(
+				(this.session.state?.messages?.length ?? 0) > 0,
+				this.settingsManager?.getLastChangelogVersion?.(),
+				VERSION,
+			)
+		) {
+			await preloadChangelog(getChangelogPath());
+		}
 		this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
 		const modelsJsonError = this.session.modelRuntime.getError();
 		if (modelsJsonError) {
@@ -122,7 +151,6 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		void this.updateAvailableProviderCount().catch(() => {});
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
-		void loadAllHighlightLanguages().then(() => this.ui.requestRender());
 	} catch (error) {
 		exitOnRefusedDecisionSetting(this, error);
 		// Same ownership rule as the success path: this catch swallows the error,

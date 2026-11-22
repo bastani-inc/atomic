@@ -12,6 +12,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Changed
 
 - The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.
+- Built-in lazy API providers expose a non-enumerable pre-warm hook so runtimes can load the selected model's API implementation before the first request without changing lazy error handling.
 
 
 ### Fixed
