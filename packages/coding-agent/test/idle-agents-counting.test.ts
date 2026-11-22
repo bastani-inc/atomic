@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { AsyncLocalStorage } from "node:async_hooks";
-import { mkdirSync, rmSync } from "node:fs";
+import type { AsyncLocalStorage } from "node:async_hooks";
+import { appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { queryObjects } from "node:v8";
+import { queryObjects, writeHeapSnapshot } from "node:v8";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -36,6 +37,41 @@ import { resetSessionTempCleanupScheduleForTesting } from "../src/core/tools/ses
  * timers, sockets and processes, shared event-bus subscriptions, dispatcher entries, live sessions, and store
  * operations per wake. A resident run is the positive control: it shows the counters see per-agent state.
  */
+// PROBE: record where every async context store made from here on was created.
+const probeRequire = createRequire(import.meta.url);
+const probeHooks = probeRequire("node:async_hooks") as { AsyncLocalStorage: typeof AsyncLocalStorage };
+const ProbeOriginalStore = probeHooks.AsyncLocalStorage;
+const probeStores: { ref: WeakRef<object>; stack: string; seq: number }[] = [];
+let probeSeq = 0;
+class ProbeStore<T> extends ProbeOriginalStore<T> {
+	constructor(...args: ConstructorParameters<typeof AsyncLocalStorage>) {
+		super(...args);
+		probeStores.push({ ref: new WeakRef(this), stack: new Error().stack ?? "", seq: ++probeSeq });
+	}
+}
+Object.defineProperty(probeHooks, "AsyncLocalStorage", {
+	value: ProbeStore,
+	configurable: true,
+	enumerable: true,
+	writable: true,
+});
+syncBuiltinESMExports();
+const probeLog = join(process.cwd(), ".probe-idle-stores.log");
+const probeAlive = () => probeStores.filter((entry) => entry.ref.deref() !== undefined);
+const probeFrames = (stack: string) =>
+	stack
+		.split("\n")
+		.slice(2)
+		.filter((line) => !line.includes("node_modules") && !line.includes("node:internal"))
+		.slice(0, 8)
+		.map((line) =>
+			line
+				.trim()
+				.replace(/^at /, "")
+				.replace(/\(?\/.*?\/packages\//, "("),
+		)
+		.join(" < ");
+
 const AGENTS_PER_WAVE = 12;
 const TURNS = 3;
 const WAIT_TOOL = "wait_for_ci";
@@ -290,7 +326,7 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
  * whole process down, after the agent is gone.
  */
 function asyncContextStores(): number {
-	return queryObjects(AsyncLocalStorage, { format: "count" }) as number;
+	return queryObjects(ProbeOriginalStore, { format: "count" }) as number;
 }
 
 describe("idle agents hold nothing per agent (#4326)", () => {
@@ -313,9 +349,23 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 			stores: asyncContextStores(),
 			pendingRefreshes: h.pendingRefreshes(),
 		};
+		const probeFirst = probeAlive();
 		// Only for the failure message: the stores once those refreshes have settled.
 		await h.settled();
 		const firstStoresSettled = asyncContextStores();
+		const probeSettled = new Set(probeAlive().map((entry) => entry.seq));
+		const probeGone = probeFirst.filter((entry) => !probeSettled.has(entry.seq));
+		appendFileSync(
+			probeLog,
+			`PROBE-IDLE pid=${process.pid} first=${afterFirst.stores} settled=${firstStoresSettled} made=${probeSeq} aliveFirst=${probeFirst.length} aliveSettled=${probeSettled.size} pending=${afterFirst.pendingRefreshes}\n` +
+				probeFirst
+					.map(
+						(entry) =>
+							`PROBE-ALIVE-FIRST ${entry.seq} ${probeSettled.has(entry.seq) ? "kept" : "GONE"} ${probeFrames(entry.stack)}\n`,
+					)
+					.join("") +
+				probeGone.map((entry) => `PROBE-TRANSIENT ${entry.seq} ${entry.stack.replace(/\n/g, " | ")}\n`).join(""),
+		);
 		await wave(AGENTS_PER_WAVE);
 		await wave(AGENTS_PER_WAVE * 2);
 
@@ -324,6 +374,13 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 		assert.equal(h.subscriptions(), afterFirst.listeners);
 		const stores = asyncContextStores();
 		const pendingRefreshes = h.pendingRefreshes();
+		appendFileSync(
+			probeLog,
+			`PROBE-FINAL stores=${stores} made=${probeSeq} alive=${probeAlive()
+				.map((entry) => entry.seq)
+				.join(",")}\n`,
+		);
+		if (process.env.PROBE_HEAP_SNAPSHOT) writeHeapSnapshot(process.env.PROBE_HEAP_SNAPSHOT);
 		if (stores !== afterFirst.stores) await h.settled();
 		const storesSettled = stores === afterFirst.stores ? stores : asyncContextStores();
 		assert.equal(
