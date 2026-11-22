@@ -90,6 +90,7 @@ function runChild(
 				ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
 				ATOMIC_EVENT_LOOP_BLOCK_MS: undefined,
 				ATOMIC_EVENT_LOOP_BLOCK_LOG: undefined,
+				ATOMIC_ELBM_PROBE_LOG: join(ROOT, ".probe-elbm.log"),
 				...env,
 			},
 			timeout: CHILD_TIMEOUT_MS,

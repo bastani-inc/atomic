@@ -1,4 +1,5 @@
 import { createHook } from "node:async_hooks";
+import { appendFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	markEventLoopShutdown,
@@ -91,7 +92,15 @@ function startSession(): void {
 
 await settle(Number(settleMs));
 holdTheEventLoopForLong(Number(longBlockMs));
-if (mode === "exit-inside-block") process.exit(0);
+if (mode === "exit-inside-block") {
+	const probe = process.env.ATOMIC_ELBM_PROBE_LOG;
+	const note = (step: string) => {
+		if (probe) appendFileSync(probe, `${process.pid} ${step} ${Math.round(performance.now())}\n`);
+	};
+	process.on("exit", () => note("exit-handlers-done"));
+	note("calling-exit");
+	process.exit(0);
+}
 if (mode === "phase-inside-block") startSession();
 if (mode === "anonymous") {
 	await settle(Number(settleMs));
