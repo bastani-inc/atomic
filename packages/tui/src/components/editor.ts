@@ -1136,6 +1136,8 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(visualLine.startCol + targetIndex);
 		this.lastAction = null;
 		this.exitHistoryBrowsing();
+		// A click that places the cursor leaves a lookup wanted before there was a provider behind, as a key does.
+		this.completionIntent = undefined;
 		if (this.autocompleteState) this.updateAutocomplete();
 		return { handled: true, focus: true };
 	}
@@ -1625,6 +1627,18 @@ export class Editor implements Component, Focusable {
 	}
 
 	/**
+	 * Put `text` in the prompt as {@link setText} does, as if it had been typed: the completion that typing its last
+	 * character would look up (a `/` command, an `@` file, a trigger character's token) is looked up, or, while the editor
+	 * has no completion provider, once it gets one, if the prompt still holds this text and cursor.
+	 */
+	setTextAsTyped(text: string): void {
+		this.setText(text);
+		const line = this.state.lines[this.state.cursorLine] ?? "";
+		const last = Array.from(line.slice(0, this.state.cursorCol)).at(-1);
+		if (last !== undefined && this.typedCharacterAsksForLookup(last)) this.tryTriggerAutocomplete();
+	}
+
+	/**
 	 * Insert text at the current cursor position.
 	 * Used for programmatic insertion (e.g., clipboard image markers).
 	 * This is atomic for undo - single undo restores entire pre-insert state.
@@ -1725,34 +1739,29 @@ export class Editor implements Component, Focusable {
 
 		// Check if we should trigger or update autocomplete
 		if (!this.menuForEdit()) {
-			// Auto-trigger for "/" at the start of a line (slash commands)
-			if (char === "/" && this.isAtStartOfMessage()) {
-				this.tryTriggerAutocomplete();
-			}
-			// Auto-trigger for symbol-based completion like @, #, or provider triggers at token boundaries
-			else if (this.autocompleteTriggerCharacters.includes(char)) {
-				const currentLine = this.state.lines[this.state.cursorLine] || "";
-				const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-				if (this.autocompleteTriggerPattern.test(textBeforeCursor)) {
-					this.tryTriggerAutocomplete();
-				}
-			}
-			// Also auto-trigger when typing letters in a slash command or symbol completion context
-			else if (/[a-zA-Z0-9.\-_]/.test(char) || cjkBreakRegex.test(char)) {
-				const currentLine = this.state.lines[this.state.cursorLine] || "";
-				const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-				// Check if we're in a slash command (with or without space for arguments)
-				if (this.isInSlashCommandContext(textBeforeCursor)) {
-					this.tryTriggerAutocomplete();
-				}
-				// Check if we're in a symbol-based completion context like @, #, or provider triggers
-				else if (this.autocompleteTriggerPattern.test(textBeforeCursor)) {
-					this.tryTriggerAutocomplete();
-				}
-			}
+			if (this.typedCharacterAsksForLookup(char)) this.tryTriggerAutocomplete();
 		} else {
 			this.updateAutocomplete();
 		}
+	}
+
+	/** Whether `char`, just typed before the cursor with no menu open, asks for a completion lookup. */
+	private typedCharacterAsksForLookup(char: string): boolean {
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
+		// "/" at the start of a line (slash commands)
+		if (char === "/" && this.isAtStartOfMessage()) return true;
+		// Symbol-based completion like @, #, or provider triggers at token boundaries
+		if (this.autocompleteTriggerCharacters.includes(char)) {
+			return this.autocompleteTriggerPattern.test(textBeforeCursor);
+		}
+		// Letters in a slash command (with or without space for arguments) or a symbol completion context
+		if (/[a-zA-Z0-9.\-_]/.test(char) || cjkBreakRegex.test(char)) {
+			return (
+				this.isInSlashCommandContext(textBeforeCursor) || this.autocompleteTriggerPattern.test(textBeforeCursor)
+			);
+		}
+		return false;
 	}
 
 	private handlePaste(pastedText: string): void {

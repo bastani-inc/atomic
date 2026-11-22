@@ -447,6 +447,7 @@ async function launchSingleInProcess(
 		...(options.onBeforeRelease ? { onBeforeRelease: options.onBeforeRelease } : {}),
 		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
 		...(options.resumeLateToolResults?.length ? { resumeLateToolResults: options.resumeLateToolResults } : {}),
+		...(options.resumeLateToolResultCalls ? { resumeLateToolResultCalls: options.resumeLateToolResultCalls } : {}),
 		...(options.resumeNotices?.length ? { resumeNotices: options.resumeNotices } : {}),
 		...(options.resumeNote ? { resumeNote: options.resumeNote } : {}),
 		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),

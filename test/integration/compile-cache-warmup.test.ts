@@ -474,8 +474,16 @@ test.skipIf(!onNode)(
 	HELPER_RUN_TIMEOUT_MS,
 );
 
-/** How soon a helper ends once its installation starts to change, on a loaded runner. */
-const STAND_DOWN_BOUND_MS = 5_000;
+/**
+ * How soon a helper ends once its installation starts to change, on a loaded runner. The helper runs below normal
+ * priority, so on a runner whose CPUs other processes keep busy the system runs its watcher thread only when it boosts
+ * a thread starved for seconds: with two busy loops next to each test run, helpers stood down after about 6 s, and
+ * after up to 21.5 s. A helper beside whose installation a new package appears goes on loading the module graph if it
+ * does not stand down, until it has loaded it all or for up to COMPILE_CACHE_WARMUP_TIME_LIMIT_MS.
+ */
+const STAND_DOWN_BOUND_MS = 60_000;
+/** Copying the installation, waiting for the helper to start warming, then for it to stand down. */
+const STAND_DOWN_TEST_TIMEOUT_MS = HELPER_WAIT_MS + STAND_DOWN_BOUND_MS + 60_000;
 
 test.skipIf(!onNode).each(["moves the old package aside", "puts a new package beside it"])(
 	"a helper stands down as soon as an installer %s, leaving no marker (#6132)",
@@ -528,7 +536,7 @@ test.skipIf(!onNode).each(["moves the old package aside", "puts a new package be
 			rmSync(root, { recursive: true, force: true, maxRetries: 10 });
 		}
 	},
-	HELPER_RUN_TIMEOUT_MS,
+	STAND_DOWN_TEST_TIMEOUT_MS,
 );
 
 /** An upgrade replaces a few hundred files; the helper loads the module graph from them meanwhile. */
