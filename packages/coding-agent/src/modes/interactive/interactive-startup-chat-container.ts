@@ -1,6 +1,8 @@
 import { type ScrollView, type TUI, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
+import type { MessageRenderer } from "../../core/extensions/types.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
+import { CustomMessageComponent } from "./components/custom-message.ts";
 import { type ContainerMouseResult, handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
 import type { Component, Container } from "./interactive-mode-deps.ts";
 
@@ -64,6 +66,7 @@ export class StartupChatContainer extends WindowedContainer {
 	}
 	private renderedWidth?: number;
 	private counted: { children: Component[]; length: number; count: number } | undefined;
+	private readonly customMessagesByType = new Map<string, Set<CustomMessageComponent>>();
 	private readonly isCounted: (child: Component) => boolean;
 	private readonly transcriptView: () => ScrollView | undefined;
 
@@ -113,15 +116,52 @@ export class StartupChatContainer extends WindowedContainer {
 		return count;
 	}
 
+	private indexCustomMessage(component: Component): void {
+		if (!(component instanceof CustomMessageComponent)) return;
+		let bucket = this.customMessagesByType.get(component.customType);
+		if (!bucket) {
+			bucket = new Set();
+			this.customMessagesByType.set(component.customType, bucket);
+		}
+		bucket.add(component);
+	}
+
+	private unindexCustomMessage(component: Component): void {
+		if (!(component instanceof CustomMessageComponent)) return;
+		const bucket = this.customMessagesByType.get(component.customType);
+		if (!bucket) return;
+		bucket.delete(component);
+		if (bucket.size === 0) this.customMessagesByType.delete(component.customType);
+	}
+
+	refreshCustomMessageRenderers(
+		types: ReadonlySet<string>,
+		getRenderer: (customType: string) => MessageRenderer | undefined,
+	): boolean {
+		if (types.size === 0 || this.customMessagesByType.size === 0) return false;
+		let changed = false;
+		for (const customType of types) {
+			const bucket = this.customMessagesByType.get(customType);
+			if (!bucket || bucket.size === 0) continue;
+			const renderer = getRenderer(customType);
+			for (const component of bucket) {
+				if (component.setCustomRenderer(renderer)) changed = true;
+			}
+		}
+		return changed;
+	}
+
 	override addChild(component: Component): void {
 		const counted = this.current();
 		super.addChild(component);
+		this.indexCustomMessage(component);
 		if (counted) this.recount(counted, this.isCounted(component) ? 1 : 0);
 	}
 
 	insertChildren(index: number, components: readonly Component[]): void {
 		const counted = this.current();
 		this.children.splice(index, 0, ...components);
+		for (const component of components) this.indexCustomMessage(component);
 		if (counted) {
 			let change = 0;
 			for (const component of components) if (this.isCounted(component)) change += 1;
@@ -134,6 +174,7 @@ export class StartupChatContainer extends WindowedContainer {
 		if (index === -1) return;
 		const counted = this.current();
 		this.children.splice(index, 1);
+		this.unindexCustomMessage(component);
 		if (counted) this.recount(counted, this.isCounted(component) ? -1 : 0);
 	}
 
@@ -169,6 +210,7 @@ export class StartupChatContainer extends WindowedContainer {
 	override clear(): void {
 		this.cancelChatRecordPaint();
 		disposeRemoteRenderers(this.children);
+		this.customMessagesByType.clear();
 		super.clear();
 		this.counted = { children: this.children, length: 0, count: 0 };
 	}
