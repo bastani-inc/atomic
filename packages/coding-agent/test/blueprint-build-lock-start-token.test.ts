@@ -43,6 +43,9 @@ interface RecordedStep {
 
 const PLATFORM = Object.getOwnPropertyDescriptor(process, "platform")!;
 const THIS_HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+/** Process ids no live process has: Windows assigns multiples of four, Linux ids stay below 2^22. */
+const MISSING_HOLDER_PID = 2 ** 22 + 7;
+const MISSING_STEP_PID = 2 ** 22 + 11;
 const windowsToken = (created: string) => createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
 
 function sleeper(): ChildProcess {
@@ -52,12 +55,6 @@ function sleeper(): ChildProcess {
 	});
 	children.push(child);
 	return child;
-}
-
-async function deadPid(): Promise<number> {
-	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-	await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-	return child.pid!;
 }
 
 function writeLock(lock: object): void {
@@ -268,8 +265,8 @@ describe("blueprint build lock step starts (#4748)", () => {
 	});
 
 	test("settling a dead build skips start queries for dead or startless pids and ends the stop wait as soon as the step exits (#5315)", async () => {
-		const goneHolder = await deadPid();
-		const goneStep = await deadPid();
+		const goneHolder = MISSING_HOLDER_PID;
+		const goneStep = MISSING_STEP_PID;
 		vi.mocked(startTokens.processStartTokenAsync).mockClear();
 		writeLock({ pid: goneHolder, start: "aaaaaaaaaaaa", steps: [{ pid: goneStep, start: "bbbbbbbbbbbb" }] });
 		const settledGone = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
@@ -318,7 +315,7 @@ describe("blueprint build lock step starts (#4748)", () => {
 	test("without the native module, settling a dead build verifies fresh before stopping so a cached pid reused by an unrelated process is never stopped (#5315)", async () => {
 		Object.defineProperty(process, "platform", { value: "win32" });
 		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
-		const goneHolder = await deadPid();
+		const goneHolder = MISSING_HOLDER_PID;
 		const unrelated = sleeper();
 		let currentCreated = "132000000000000050";
 		startTokens.setNativeProcessCreationTimeForTesting(null);
