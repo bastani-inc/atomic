@@ -58,7 +58,12 @@ test("a shared file an earlier release imports on demand stays, re-exporting wha
 		{
 			path: "_shared/compile-cache-warmup-host-OQZHHQ2Z.js",
 			contents:
-				'export { startCompileCacheHelper, warmCompileCache } from "./compile-cache-warmup-host-RU5L7I7A.js";\n',
+				'export { startCompileCacheHelper, warmCompileCache } from "./compile-cache-warmup-host-RU5L7I7A.js";\n//# sourceMappingURL=compile-cache-warmup-host-OQZHHQ2Z.js.map\n',
+		},
+		{
+			path: "_shared/compile-cache-warmup-host-OQZHHQ2Z.js.map",
+			contents:
+				'{"version":3,"file":"compile-cache-warmup-host-OQZHHQ2Z.js","sources":[],"names":[],"mappings":""}\n',
 		},
 	]);
 	// Still written by this split: nothing to add.

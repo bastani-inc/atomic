@@ -41,8 +41,8 @@ export function sharedFileName(stem, meta, output) {
  * is still there when this split does not write it: one that re-exports the names that release's file exported from the
  * shared file this split writes for the same module (the same stem, esbuild's name for the module or package the file
  * holds), which exports every one of them. A process of that release imports such a file by its name, and must find
- * this build's code of that module, not a second copy. Fails, naming the file, when no shared file of this split, or
- * more than one, can stand for it.
+ * this build's code of that module, not a second copy. Each such file comes with its source map, as every shared file
+ * does. Fails, naming the file, when no shared file of this split, or more than one, can stand for it.
  *
  * @param {readonly { version: string, path: string, names: readonly string[] }[]} released
  * @param {readonly { file: string, stem: string, exports: readonly string[] }[]} outputs
@@ -63,9 +63,15 @@ export function compatSharedFiles(released, outputs, directory) {
 			throw new Error(
 				`split-dist: ${version} imports dist/${path} on demand, and ${candidates.length === 0 ? "no" : "more than one"} shared file of this build holds its module with its exports (${names.join(", ")})`,
 			);
+		const name = path.slice(path.lastIndexOf("/") + 1);
+		// Like every shared file, it has a source map: one with no sources, as it holds no code of its own.
 		files.set(path, {
 			path,
-			contents: `export { ${[...names].sort().join(", ")} } from "./${candidates[0].file}";\n`,
+			contents: `export { ${[...names].sort().join(", ")} } from "./${candidates[0].file}";\n//# sourceMappingURL=${name}.map\n`,
+		});
+		files.set(`${path}.map`, {
+			path: `${path}.map`,
+			contents: `${JSON.stringify({ version: 3, file: name, sources: [], names: [], mappings: "" })}\n`,
 		});
 	}
 	return [...files.values()];
