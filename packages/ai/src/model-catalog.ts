@@ -51,12 +51,20 @@ export type ClassifierModelCatalog<TGroups extends ModelGroups, TProvider extend
 };
 
 function flattenModelCatalog(groups: ModelGroups, type: ModelType): Record<string, object> {
-	return Object.fromEntries(
-		Object.values(groups)
-			.flatMap((models) => Object.values(models))
-			.filter((model) => (model as { type?: unknown }).type === type)
-			.map((model) => [(model as { id: string }).id, model]),
-	);
+	const catalog: Record<string, object> = {};
+	for (const apiKey in groups) {
+		if (!Object.hasOwn(groups, apiKey)) continue;
+		const models = groups[apiKey];
+		if (!models) continue;
+		for (const modelKey in models) {
+			if (!Object.hasOwn(models, modelKey)) continue;
+			const model = models[modelKey] as { type?: unknown; id: string } | undefined;
+			if (model && model.type === type) {
+				catalog[model.id] = model;
+			}
+		}
+	}
+	return catalog;
 }
 
 export function flattenChatModelCatalog<const TProvider extends ProviderId, const TGroups extends ModelGroups>(

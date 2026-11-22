@@ -1,32 +1,51 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { access, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
-import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { createBatchedCanonicalizePathAsync } from "../utils/batched-canonical-path.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { pathExists as exists } from "../utils/path-exists.ts";
-import { isPathWithin, resolvePath } from "../utils/paths.ts";
+import { getPathComparisonKey, isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";
 import type { LoadSkillsOptions, LoadSkillsResult, Skill, SkillFrontmatter } from "./skills.ts";
-import { createSyntheticSourceInfo, getResourcePathKeyAsync, type SourceInfo } from "./source-info.ts";
+import { createSyntheticSourceInfo, isSyntheticPath, type SourceInfo } from "./source-info.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
-const YIELD_AFTER_MS = 8;
 type IgnoreMatcher = NestedGitignore;
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 function toPosixPath(path: string): string {
 	return path.split(sep).join("/");
 }
 
-async function withIgnoreRules(rules: IgnoreMatcher, dir: string, rootDir: string): Promise<IgnoreMatcher> {
-	const contents: string[] = [];
-	for (const filename of IGNORE_FILE_NAMES) {
-		try {
-			contents.push(await readFile(join(dir, filename), "utf-8"));
-		} catch {}
-	}
+async function withIgnoreRules(
+	rules: IgnoreMatcher,
+	dir: string,
+	rootDir: string,
+	entries: readonly Dirent[],
+): Promise<IgnoreMatcher> {
+	// Match case-insensitively against the directory listing, then open the canonical lowercase filename so
+	// case-insensitive filesystems (Windows, default macOS) honor e.g. `.GITIGNORE` while case-sensitive
+	// filesystems keep exact-name semantics identical to direct `readFile(join(dir, filename))`.
+	const present = IGNORE_FILE_NAMES.filter((filename) =>
+		entries.some((entry) => entry.name.toLowerCase() === filename),
+	);
+	if (present.length === 0) return rules;
+	const loaded = await Promise.all(
+		present.map((filename) => readFile(join(dir, filename), "utf-8").catch(() => null)),
+	);
+	const contents = loaded.filter((content): content is string => content !== null);
+	if (contents.length === 0) return rules;
 	return rules.within(toPosixPath(relative(rootDir, dir)), contents);
 }
 
@@ -102,12 +121,15 @@ async function loadSkillsFromDirInternal(
 ): Promise<LoadSkillsResult> {
 	const skills: Skill[] = [];
 	const diagnostics: ResourceDiagnostic[] = [];
-	if (!(await exists(dir))) return { skills, candidates: skills, diagnostics };
-	const startedAt = Date.now();
-	const root = rootDir ?? dir;
-	const ig = await withIgnoreRules(ignoreMatcher ?? NestedGitignore.empty(), dir, root);
+	let entries: Dirent[];
 	try {
-		const entries = await readdir(dir, { withFileTypes: true });
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		return { skills, candidates: skills, diagnostics };
+	}
+	const root = rootDir ?? dir;
+	const ig = await withIgnoreRules(ignoreMatcher ?? NestedGitignore.empty(), dir, root, entries);
+	try {
 		for (const entry of entries) {
 			if (entry.name !== "SKILL.md") continue;
 			const fullPath = join(dir, entry.name);
@@ -126,33 +148,43 @@ async function loadSkillsFromDirInternal(
 			diagnostics.push(...result.diagnostics);
 			return { skills, candidates: skills, diagnostics };
 		}
+		const childTasks: Array<Promise<LoadSkillsResult | undefined>> = [];
 		for (const entry of entries) {
-			await yieldToEventLoopIfSlow(startedAt, YIELD_AFTER_MS);
 			if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 			const fullPath = join(dir, entry.name);
-			let isDirectory = entry.isDirectory();
-			let isFile = entry.isFile();
-			if (entry.isSymbolicLink()) {
-				try {
-					const stats = await stat(fullPath);
-					isDirectory = stats.isDirectory();
-					isFile = stats.isFile();
-				} catch {
-					continue;
-				}
-			}
-			const relPath = toPosixPath(relative(root, fullPath));
-			if (ig.ignores(isDirectory ? `${relPath}/` : relPath)) continue;
-			if (isDirectory) {
-				const subResult = await loadSkillsFromDirInternal(fullPath, source, false, ig, root);
-				skills.push(...subResult.skills);
-				diagnostics.push(...subResult.diagnostics);
-				continue;
-			}
-			if (!isFile || !includeRootFiles || !entry.name.endsWith(".md")) continue;
-			const result = await loadSkillFromFile(fullPath, source);
-			if (result.skill) skills.push(result.skill);
-			diagnostics.push(...result.diagnostics);
+			childTasks.push(
+				(async (): Promise<LoadSkillsResult | undefined> => {
+					let isDirectory = entry.isDirectory();
+					let isFile = entry.isFile();
+					if (entry.isSymbolicLink()) {
+						try {
+							const stats = await stat(fullPath);
+							isDirectory = stats.isDirectory();
+							isFile = stats.isFile();
+						} catch {
+							return undefined;
+						}
+					}
+					const relPath = toPosixPath(relative(root, fullPath));
+					if (ig.ignores(isDirectory ? `${relPath}/` : relPath)) return undefined;
+					if (isDirectory) {
+						return loadSkillsFromDirInternal(fullPath, source, false, ig, root);
+					}
+					if (!isFile || !includeRootFiles || !entry.name.endsWith(".md")) return undefined;
+					const result = await loadSkillFromFile(fullPath, source);
+					return {
+						skills: result.skill ? [result.skill] : [],
+						candidates: result.skill ? [result.skill] : [],
+						diagnostics: result.diagnostics,
+					};
+				})(),
+			);
+		}
+		const childResults = await Promise.all(childTasks);
+		for (const subResult of childResults) {
+			if (!subResult) continue;
+			skills.push(...subResult.skills);
+			diagnostics.push(...subResult.diagnostics);
 		}
 	} catch {}
 	return { skills, candidates: skills, diagnostics };
@@ -169,9 +201,15 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
 	const userSkillsDir = join(resolvedAgentDir, "skills");
 	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
+	const canonicalize = createBatchedCanonicalizePathAsync();
+	const resolveSkillPathKey = async (filePath: string): Promise<string> => {
+		if (isSyntheticPath(filePath)) return filePath;
+		return getPathComparisonKey(await canonicalize(filePath));
+	};
 	const addSkills = async (result: LoadSkillsResult) => {
 		allDiagnostics.push(...result.diagnostics);
-		const realPaths = await Promise.all(result.skills.map((skill) => getResourcePathKeyAsync(skill.filePath)));
+		if (result.skills.length === 0) return;
+		const realPaths = await Promise.all(result.skills.map((skill) => resolveSkillPathKey(skill.filePath)));
 		for (const [index, skill] of result.skills.entries()) {
 			const realPath = realPaths[index]!;
 			if (realPathSet.has(realPath)) continue;
@@ -195,10 +233,6 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 			}
 		}
 	};
-	if (includeDefaults) {
-		await addSkills(await loadSkillsFromDirInternal(userSkillsDir, "user", true));
-		await addSkills(await loadSkillsFromDirInternal(projectSkillsDir, "project", true));
-	}
 	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
 		if (!includeDefaults) {
 			if (isPathWithin(userSkillsDir, resolvedPath)) return "user";
@@ -206,31 +240,55 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 		}
 		return "path";
 	};
-	const startedAt = Date.now();
-	for (const rawPath of skillPaths) {
-		await yieldToEventLoopIfSlow(startedAt, YIELD_AFTER_MS);
+	const loadExplicitPath = async (rawPath: string): Promise<LoadSkillsResult> => {
 		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
-		if (!(await exists(resolvedPath))) {
-			allDiagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
-			continue;
-		}
 		try {
 			const stats = await stat(resolvedPath);
 			const source = getSource(resolvedPath);
 			if (stats.isDirectory()) {
-				await addSkills(await loadSkillsFromDirInternal(resolvedPath, source, true));
-			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
-				const result = await loadSkillFromFile(resolvedPath, source);
-				if (result.skill)
-					await addSkills({ skills: [result.skill], candidates: [result.skill], diagnostics: result.diagnostics });
-				else allDiagnostics.push(...result.diagnostics);
-			} else {
-				allDiagnostics.push({ type: "warning", message: "skill path is not a markdown file", path: resolvedPath });
+				return loadSkillsFromDirInternal(resolvedPath, source, true);
 			}
+			if (stats.isFile() && resolvedPath.endsWith(".md")) {
+				const result = await loadSkillFromFile(resolvedPath, source);
+				return {
+					skills: result.skill ? [result.skill] : [],
+					candidates: result.skill ? [result.skill] : [],
+					diagnostics: result.diagnostics,
+				};
+			}
+			return {
+				skills: [],
+				candidates: [],
+				diagnostics: [{ type: "warning", message: "skill path is not a markdown file", path: resolvedPath }],
+			};
 		} catch (error) {
+			if (!(await exists(resolvedPath))) {
+				return {
+					skills: [],
+					candidates: [],
+					diagnostics: [{ type: "warning", message: "skill path does not exist", path: resolvedPath }],
+				};
+			}
 			const message = error instanceof Error ? error.message : "failed to read skill path";
-			allDiagnostics.push({ type: "warning", message, path: resolvedPath });
+			return {
+				skills: [],
+				candidates: [],
+				diagnostics: [{ type: "warning", message, path: resolvedPath }],
+			};
 		}
+	};
+
+	const tasks: Array<Promise<LoadSkillsResult>> = [];
+	if (includeDefaults) {
+		tasks.push(loadSkillsFromDirInternal(userSkillsDir, "user", true));
+		tasks.push(loadSkillsFromDirInternal(projectSkillsDir, "project", true));
+	}
+	for (const rawPath of skillPaths) {
+		tasks.push(loadExplicitPath(rawPath));
+	}
+	const results = await Promise.all(tasks);
+	for (const result of results) {
+		await addSkills(result);
 	}
 	return {
 		skills: Array.from(skillMap.values()),

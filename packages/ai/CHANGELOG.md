@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Changed
+
+- Deferred image-model index construction until first lookup, reduced temporary array allocations when flattening generated model catalogs, and bundled shared package chunks with content-hashed filenames and without `__esmMin` wrappers so Node's compile cache pre-compiles them while preserving side-effect isolation and compatibility shims for in-place updates.
+
 ### Fixed
 
 - On Bun and in the standalone binary, Amazon Bedrock HTTP/1.1 requests whose TLS connection closes before its handshake finishes (`ERR_SOCKET_CLOSED`) — including plain-HTTP endpoints through an `https://` proxy, HTTPS endpoints whose `http://` proxy tunnel closes after `200 Connection Established`, and direct `AWS_BEDROCK_FORCE_HTTP1=1` connections — now normalize that pre-response transport failure to a fresh `ECONNRESET` wrapper below the AWS SDK's retry middleware so SDK-level retries (`maxRetries`) run as on Node.js. Post-response, mid-stream, aborted, hook, and certificate errors remain unretried and unmutated ([#6448](https://github.com/bastani-inc/atomic/pull/6448)).

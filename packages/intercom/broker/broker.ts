@@ -3425,6 +3425,7 @@ class IntercomBroker {
     for (const pending of this.releasedReplyAcks.values()) clearTimeout(pending.timer);
     this.releasedReplyAcks.clear();
     this.receipts.clear();
+    this.returnPaths.clearPending();
 	this.deliveredMessageCache?.close();
     // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
     // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's

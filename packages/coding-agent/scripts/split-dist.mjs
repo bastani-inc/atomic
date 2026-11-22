@@ -905,7 +905,7 @@ for (const item of generated.output) {
 		if (contents.includes(DIST_PATH_MARK)) {
 			throw new Error(`split-dist: ${item.fileName} retained an unrewritten ${DIST_PATH_MARK} path`);
 		}
-		const stamped = stampPrewarmBuildChunk(contents, prewarmBuildStamp);
+		const stamped = stampPrewarmBuildChunk(contents, prewarmBuildStamp, { allowRestamp: true });
 		contents = stamped.contents;
 		if (stamped.stamped) prewarmBuildStamped = true;
 		// Synthetic runtime chunks (e.g. rolldown:runtime) and thin virtual facade entries emit no source map; write an

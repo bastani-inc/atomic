@@ -1,13 +1,14 @@
 import { eastAsianWidth } from "get-east-asian-width";
 
-// segmenters (shared instance)
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+// segmenters (shared instances, created lazily so headless/import-only callers avoid ICU setup)
+let graphemeSegmenter: Intl.Segmenter | undefined;
+let wordSegmenter: Intl.Segmenter | undefined;
 
 /**
  * Get the shared grapheme segmenter instance.
  */
 export function getGraphemeSegmenter(): Intl.Segmenter {
+	graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
 	return graphemeSegmenter;
 }
 
@@ -15,7 +16,28 @@ export function getGraphemeSegmenter(): Intl.Segmenter {
  * Get the shared word segmenter instance.
  */
 export function getWordSegmenter(): Intl.Segmenter {
+	wordSegmenter ??= new Intl.Segmenter(undefined, { granularity: "word" });
 	return wordSegmenter;
+}
+
+/**
+ * Single-codepoint RGI emoji in the Dingbats block (U+2700..U+27BF, fully allocated since Unicode 6.0).
+ * Keeps non-emoji UI glyphs like U+276F ('❯'), U+2713 ('✓'), and U+2717 ('✗') from triggering RGI_Emoji compilation.
+ */
+function isDingbatRgiEmoji(cp: number): boolean {
+	return (
+		cp === 0x2705 ||
+		cp === 0x270a ||
+		cp === 0x270b ||
+		cp === 0x2728 ||
+		cp === 0x274c ||
+		cp === 0x274e ||
+		(cp >= 0x2753 && cp <= 0x2755) ||
+		cp === 0x2757 ||
+		(cp >= 0x2795 && cp <= 0x2797) ||
+		cp === 0x27b0 ||
+		cp === 0x27bf
+	);
 }
 
 /**
@@ -25,29 +47,41 @@ export function getWordSegmenter(): Intl.Segmenter {
  * Unicode additions.
  */
 function couldBeEmoji(segment: string): boolean {
+	if (segment.length > 2 || segment.includes("\uFE0F")) return true;
 	const cp = segment.codePointAt(0)!;
 	return (
 		(cp >= 0x1f000 && cp <= 0x1fbff) || // Emoji and Pictograph
 		(cp >= 0x2300 && cp <= 0x23ff) || // Misc technical
-		(cp >= 0x2600 && cp <= 0x27bf) || // Misc symbols, dingbats
-		(cp >= 0x2b50 && cp <= 0x2b55) || // Specific stars/circles
-		segment.includes("\uFE0F") || // Contains VS16 (emoji presentation selector)
-		segment.length > 2 // Multi-codepoint sequences (ZWJ, skin tones, etc.)
+		(cp >= 0x2600 && cp <= 0x26ff) || // Misc symbols
+		(cp >= 0x2700 && cp <= 0x27bf && isDingbatRgiEmoji(cp)) || // Dingbats RGI emoji
+		(cp >= 0x2b50 && cp <= 0x2b55) // Specific stars/circles
 	);
 }
 
 // Regexes for character classification (same as string-width library). A repeated run of characters is matched with
 // one character class, not an alternation of classes: some characters belong to several of the classes, and a repeated
 // alternation then backtracks through every way to assign them before failing, which doubles the time per character.
-const zeroWidthRegex = /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Mark}\p{Surrogate}]+$/v;
-const leadingNonPrintingRegex = /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
-const nonPrintingCharRegex = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Format}|\p{Mark}|\p{Surrogate})$/v;
-const markCharRegex = /^\p{Mark}$/v;
+// Constructed lazily so imports that never measure non-ASCII text skip compiling Unicode /v patterns.
+let zeroWidthRegex: RegExp | undefined;
+let leadingNonPrintingRegex: RegExp | undefined;
+let nonPrintingCharRegex: RegExp | undefined;
+let markCharRegex: RegExp | undefined;
+let terminalSpacingMarkRegex: RegExp | undefined;
+let rgiEmojiRegex: RegExp | undefined;
+
+const getZeroWidthRegex = (): RegExp =>
+	(zeroWidthRegex ??= /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Mark}\p{Surrogate}]+$/v);
+const getLeadingNonPrintingRegex = (): RegExp =>
+	(leadingNonPrintingRegex ??= /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v);
+const getNonPrintingCharRegex = (): RegExp =>
+	(nonPrintingCharRegex ??= /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Format}|\p{Mark}|\p{Surrogate})$/v);
+const getMarkCharRegex = (): RegExp => (markCharRegex ??= /^\p{Mark}$/v);
 // Marks that terminals allocate cells for when attached to a base character.
 // This includes Unicode spacing marks and non-spacing exceptions in legacy wcwidth tables.
-const terminalSpacingMarkRegex =
-	/^[[\p{Spacing_Mark}--[\u1734\u302E\u302F]][\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E]]+$/v;
-const rgiEmojiRegex = /^\p{RGI_Emoji}$/v;
+const getTerminalSpacingMarkRegex = (): RegExp =>
+	(terminalSpacingMarkRegex ??=
+		/^[[\p{Spacing_Mark}--[\u1734\u302E\u302F]][\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E]]+$/v);
+const getRgiEmojiRegex = (): RegExp => (rgiEmojiRegex ??= /^\p{RGI_Emoji}$/v);
 
 // Cache for non-ASCII strings
 const WIDTH_CACHE_SIZE = 512;
@@ -105,7 +139,7 @@ function truncateFragmentToWidth(text: string, maxWidth: number): { text: string
 		}
 
 		const end = nextAnsiCode(text, i + 1);
-		for (const { segment } of graphemeSegmenter.segment(text.slice(i, end))) {
+		for (const { segment } of getGraphemeSegmenter().segment(text.slice(i, end))) {
 			const w = graphemeWidth(segment);
 			if (width + w > maxWidth) {
 				return { text: result, width };
@@ -158,22 +192,22 @@ function graphemeWidth(segment: string): number {
 	}
 
 	// Some marks occupy cells even without a base character.
-	if (terminalSpacingMarkRegex.test(segment)) {
+	if (getTerminalSpacingMarkRegex().test(segment)) {
 		return [...segment].length;
 	}
 
 	// Zero-width clusters
-	if (zeroWidthRegex.test(segment)) {
+	if (getZeroWidthRegex().test(segment)) {
 		return 0;
 	}
 
 	// Emoji check with pre-filter
-	if (couldBeEmoji(segment) && rgiEmojiRegex.test(segment)) {
+	if (couldBeEmoji(segment) && getRgiEmojiRegex().test(segment)) {
 		return 2;
 	}
 
 	// Get base visible codepoint
-	const base = segment.replace(leadingNonPrintingRegex, "");
+	const base = segment.replace(getLeadingNonPrintingRegex(), "");
 	const cp = base.codePointAt(0);
 	if (cp === undefined) {
 		return 0;
@@ -195,12 +229,12 @@ function graphemeWidth(segment: string): number {
 	let followsMark = false;
 	const chars = [...base];
 	for (const char of chars.slice(1)) {
-		if (terminalSpacingMarkRegex.test(char)) {
+		if (getTerminalSpacingMarkRegex().test(char)) {
 			width += 1;
 			followsMark = false;
-		} else if (markCharRegex.test(char)) {
+		} else if (getMarkCharRegex().test(char)) {
 			followsMark = true;
-		} else if (!nonPrintingCharRegex.test(char)) {
+		} else if (!getNonPrintingCharRegex().test(char)) {
 			const c = char.codePointAt(0)!;
 			if (followsMark || (c >= 0xff00 && c <= 0xffef)) {
 				// halfwidth + fullwidth forms
@@ -264,7 +298,7 @@ export function visibleWidth(str: string): number {
 
 	// Calculate width
 	let width = 0;
-	for (const { segment } of graphemeSegmenter.segment(clean)) {
+	for (const { segment } of getGraphemeSegmenter().segment(clean)) {
 		width += graphemeWidth(segment);
 	}
 
@@ -363,7 +397,7 @@ export function getGraphemeCellRange(line: string, column: number): GraphemeCell
 			continue;
 		}
 		const textEnd = nextAnsiCode(line, i + 1);
-		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const width = graphemeWidth(segment);
 			if (width > 0 && column >= currentCol && column < currentCol + width) {
 				return { start: currentCol, end: currentCol + width };
@@ -389,7 +423,7 @@ export function getOsc8LinkAtColumn(line: string, column: number): string | unde
 			continue;
 		}
 		const textEnd = nextAnsiCode(line, i + 1);
-		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const width = segment === "\t" ? 3 : graphemeWidth(segment);
 			if (column >= currentCol && column < currentCol + width) return activeUrl;
 			currentCol += width;
@@ -912,7 +946,7 @@ export function getActiveBackgroundAnsi(text: string): string {
 }
 
 function* graphemeSegments(text: string): Generator<string> {
-	for (const { segment } of graphemeSegmenter.segment(text)) yield segment;
+	for (const { segment } of getGraphemeSegmenter().segment(text)) yield segment;
 }
 
 /**
@@ -1242,7 +1276,7 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): s
 			const end = nextAnsiCode(word, i + 1);
 			// Segment this non-ANSI portion into graphemes
 			const textPortion = word.slice(i, end);
-			for (const seg of graphemeSegmenter.segment(textPortion)) {
+			for (const seg of getGraphemeSegmenter().segment(textPortion)) {
 				segments.push({ type: "grapheme", value: seg.segment });
 			}
 			i = end;
@@ -1383,7 +1417,7 @@ export function truncateToWidth(
 		}
 
 		const end = nextAnsiCode(text, i + 1);
-		for (const { segment } of graphemeSegmenter.segment(text.slice(i, end))) {
+		for (const { segment } of getGraphemeSegmenter().segment(text.slice(i, end))) {
 			const width = graphemeWidth(segment);
 			if (keepContiguousPrefix && keptWidth + width <= targetWidth) {
 				if (pendingAnsi) {
@@ -1451,7 +1485,7 @@ export function sliceWithWidth(
 
 		const textEnd = nextAnsiCode(line, i + 1);
 
-		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const w = graphemeWidth(segment);
 			const inRange = currentCol >= startCol && currentCol < endCol;
 			const fits = !strict || currentCol + w <= endCol;
@@ -1523,7 +1557,7 @@ export function extractSegments(
 
 		const textEnd = nextAnsiCode(line, i + 1);
 
-		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const w = graphemeWidth(segment);
 
 			if (currentCol < beforeEnd && currentCol + w <= beforeEnd) {

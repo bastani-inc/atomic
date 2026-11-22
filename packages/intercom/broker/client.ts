@@ -74,7 +74,7 @@ import {
 	VERIFIED_REGISTRATION_PROTOCOL,
 } from "./protocol-version.js";
 import { IntercomSupervisorAuthorizationRefusedError, SUPERVISOR_AUTHORIZATION_REFUSED_CODE } from "../supervisor-refusal.js";
-import { HELD_SEND_GRACE_MS, SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
+import { BROKER_DISCONNECT_TIMEOUT_MS, HELD_SEND_GRACE_MS, SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
 	ENDED_CHILD_OWNER_AWAY_MAX_MS,
 	ENDED_CHILD_WAKE_ANSWER_MS,
@@ -1510,7 +1510,7 @@ export class IntercomClient extends EventEmitter {
       };
       const timeout = setTimeout(() => {
         socket.destroy();
-      }, 2000);
+      }, BROKER_DISCONNECT_TIMEOUT_MS);
       socket.once("close", onClose);
       socket.once("error", onError);
       try {
