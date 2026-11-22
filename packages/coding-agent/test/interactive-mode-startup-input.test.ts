@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { describe, expect, it, vi } from "vitest";
+import { type AutocompleteProvider, setKeybindings, stripTerminalSequences, TuiMainScreen } from "@bastani/atomic-tui";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { applyEarlyInputChunk, type EarlyInputState } from "../src/main-early-input.ts";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import type { InteractiveSubmission } from "../src/modes/interactive/interactive-submission.ts";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
 type SubmitContext = {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
@@ -533,5 +538,57 @@ describe("InteractiveMode startup input", () => {
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.handleBashCommand).not.toHaveBeenCalledWith("pwd\nexplain result", false);
 		expect(onInputCallback).toHaveBeenCalledWith({ text: "explain result", draft: "explain result" });
+	});
+});
+
+describe("a prompt typed before the screen appeared", () => {
+	beforeAll(() => initTheme("dark"));
+	beforeEach(() => setKeybindings(new KeybindingsManager()));
+
+	function sessionEditor(): CustomEditor {
+		const keybindings = new KeybindingsManager();
+		return new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
+	}
+
+	/** Offers `/model` and `/mode` for command names, and records the text before the cursor of every lookup. */
+	function commands(asked: string[]): AutocompleteProvider {
+		return {
+			async getSuggestions(lines, cursorLine, cursorCol) {
+				const text = (lines[cursorLine] ?? "").slice(0, cursorCol);
+				asked.push(text);
+				const items = ["/model", "/mode"].filter((name) => name.startsWith(text));
+				return items.length === 0 ? null : { prefix: text, items: items.map((value) => ({ value, label: value })) };
+			},
+			applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+		};
+	}
+
+	async function settle(): Promise<void> {
+		await Promise.resolve();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+
+	it("opens the completion its typing asks for once the prompt gets a provider", async () => {
+		const asked: string[] = [];
+		const editor = sessionEditor();
+		const capture: EarlyInputState = { text: "", submissions: [] };
+		applyEarlyInputChunk(capture, "/mo");
+		seedStartupInput([], editor, capture);
+		editor.setAutocompleteProvider(commands(asked), { preserveSelection: true, refreshMenu: true });
+		await settle();
+		assert.equal(editor.getText(), "/mo");
+		assert.deepEqual(asked, ["/mo"]);
+		assert.ok(editor.render(80).some((line) => stripTerminalSequences(line).includes("/model")));
+	});
+
+	it("opens none over input held for a startup decision", async () => {
+		const asked: string[] = [];
+		const editor = sessionEditor();
+		seedStartupInput([], editor, { text: "/mo", submissions: [], heldForStartupDecision: true });
+		editor.setAutocompleteProvider(commands(asked), { preserveSelection: true, refreshMenu: true });
+		await settle();
+		assert.equal(editor.getText(), "/mo");
+		assert.deepEqual(asked, []);
+		assert.equal(editor.isShowingAutocomplete(), false);
 	});
 });

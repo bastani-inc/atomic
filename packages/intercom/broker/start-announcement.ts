@@ -51,21 +51,35 @@ function requested(env: NodeJS.ProcessEnv): BrokerStartAnnouncement | undefined 
 	return { path, token };
 }
 
+type NativeProcessStart = { readonly processCreationTime?: (pid: number) => string | null };
+let nativeProcessStart: NativeProcessStart | null | undefined;
+
 /**
- * When this process was created, as Windows records it, read by Atomic's native module; undefined elsewhere, or where
- * that module cannot be loaded. Read synchronously: the broker announces itself before it loads anything else.
+ * When Windows process `pid` was created, read by Atomic's native module without starting a process; undefined elsewhere,
+ * or where that module cannot be loaded or the process cannot be read (it is gone, or this process may not query it).
+ * The native module is the one package the broker loads: it ships beside the broker in every layout, and is loaded only
+ * here, inside a `try`. Read synchronously: the broker announces itself before it loads anything else.
  */
-function ownCreationTime(): string | undefined {
+export function windowsProcessCreationTime(pid: number): string | undefined {
 	if (process.platform !== "win32") return undefined;
+	if (nativeProcessStart === undefined) {
+		try {
+			nativeProcessStart = createRequire(import.meta.url)("@bastani/atomic-natives") as NativeProcessStart;
+		} catch {
+			nativeProcessStart = null;
+		}
+	}
 	try {
-		const native = createRequire(import.meta.url)("@bastani/atomic-natives") as {
-			processCreationTime?: (pid: number) => string | null;
-		};
-		const created = native.processCreationTime?.(process.pid);
+		const created = nativeProcessStart?.processCreationTime?.(pid);
 		return typeof created === "string" && CREATION_TIME_PATTERN.test(created) ? created : undefined;
 	} catch {
 		return undefined;
 	}
+}
+
+/** When this process was created, as Windows records it; undefined elsewhere, or where it cannot be read. */
+function ownCreationTime(): string | undefined {
+	return windowsProcessCreationTime(process.pid);
 }
 
 /**
