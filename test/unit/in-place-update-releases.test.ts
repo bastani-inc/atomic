@@ -7,7 +7,12 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { checkRelease, type ReleaseRecord, recordRelease } from "../../scripts/in-place-update-exports.mjs";
+import {
+	checkDeferredChunkDisjointness,
+	checkRelease,
+	type ReleaseRecord,
+	recordRelease,
+} from "../../scripts/in-place-update-exports.mjs";
 import { moduleDir } from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "../..");
@@ -42,6 +47,14 @@ for (const record of records) {
 		`a process of ${record.version} that an in-place update caught can load what it needs from this build`,
 		() => {
 			assert.deepEqual(checkRelease(record, PACKAGES, allowed[record.version] ?? {}), []);
+		},
+		CHECK_TIMEOUT_MS,
+	);
+
+	builtTest(
+		`no file in this build imports any deferred-init shared chunk path from ${record.version}`,
+		() => {
+			assert.deepEqual(checkDeferredChunkDisjointness(record, PACKAGES), []);
 		},
 		CHECK_TIMEOUT_MS,
 	);

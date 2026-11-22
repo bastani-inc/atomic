@@ -23,4 +23,5 @@ export interface ReleaseRecord {
 
 export function recordRelease(dirs: string[]): ReleaseRecord;
 export function checkRelease(earlier: ReleaseRecord, dirs: string[], allowed?: Record<string, string>): string[];
+export function checkDeferredChunkDisjointness(earlier: ReleaseRecord, dirs: string[]): string[];
 export function formatRecord(record: ReleaseRecord): string;

@@ -24,4 +24,7 @@ export async function loadHostModule(specifier: AppHostModuleSpecifier): Promise
 
 // No top-level await: the compiled binary is built with --bytecode (CJS),
 // which forbids TLA anywhere in the bundled graph.
-if (!isAppHostModulesOnly()) void import("./register-bedrock.js").then(() => import("../cli.js"));
+if (!isAppHostModulesOnly())
+	void Promise.all([import("./register-bedrock.js"), import("./register-theme-validator.js")]).then(
+		() => import("../cli.js"),
+	);
