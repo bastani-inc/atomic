@@ -49,24 +49,25 @@ export async function resolvePackageResourcePaths(
 }> {
 	const state = resourceInternals(loader);
 	if (!options?.useLoadedSettings) await state.settingsManager.reload();
-	const resolvedPaths = options?.withoutConfigured ? emptyResolvedPaths() : await state.packageManager.resolve();
 	const includeCliProjectLocalResources = options?.includeCliProjectLocalResources ?? true;
-	let cliExtensionPaths = await state.packageManager.resolveExtensionSources(state.additionalExtensionPaths, {
-		temporary: true,
-		includeProjectLocalResources: includeCliProjectLocalResources,
-	});
-	if (includeCliProjectLocalResources && options?.trustedBorrowedProjectLocalSources) {
-		cliExtensionPaths = filterBorrowedProjectLocalResources(
-			cliExtensionPaths,
-			options.trustedBorrowedProjectLocalSources,
-		);
-	}
-	const builtinPackagePaths =
+	const [resolvedPaths, rawCliExtensionPaths, builtinPackagePaths] = await Promise.all([
+		options?.withoutConfigured ? Promise.resolve(emptyResolvedPaths()) : state.packageManager.resolve(),
+		state.additionalExtensionPaths.length > 0
+			? state.packageManager.resolveExtensionSources(state.additionalExtensionPaths, {
+					temporary: true,
+					includeProjectLocalResources: includeCliProjectLocalResources,
+				})
+			: Promise.resolve(emptyResolvedPaths()),
 		state.builtinPackagePaths.length > 0
-			? markBundledResources(
-					await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true }),
-				)
-			: emptyResolvedPaths();
+			? state.packageManager
+					.resolveExtensionSources(state.builtinPackagePaths, { temporary: true })
+					.then(markBundledResources)
+			: Promise.resolve(emptyResolvedPaths()),
+	]);
+	const cliExtensionPaths =
+		includeCliProjectLocalResources && options?.trustedBorrowedProjectLocalSources
+			? filterBorrowedProjectLocalResources(rawCliExtensionPaths, options.trustedBorrowedProjectLocalSources)
+			: rawCliExtensionPaths;
 	return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
 }
 

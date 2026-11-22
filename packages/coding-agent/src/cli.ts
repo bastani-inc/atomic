@@ -25,9 +25,9 @@ import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
 	hasInteractiveEngineBootstrapArg,
 	INTERACTIVE_ENGINE_PREWARM_FLAG,
-	INTERACTIVE_ENGINE_PREWARM_NO_DATABASE,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
+import { shouldStartSpareDatabaseThread } from "./utils/startup-database-spare.ts";
 import { startStartupPrefetch } from "./utils/startup-prefetch.js";
 import { updatedInstallError } from "./utils/updated-install.ts";
 
@@ -79,11 +79,9 @@ if (heapArgs.length > 0) {
 	if (interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)) startStartupPrefetch(getPackageDir());
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
-	// An interactive session's database opens on a thread of its own: start that thread now, while the modules load.
+	// A session's database opens on a thread of its own: start that thread now, while the modules load.
 	// `--no-session` keeps the session in memory and opens no database; a prewarmed engine learns it from its host.
-	const opensDatabase = prewarmedEngine
-		? args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE
-		: isPlainInteractiveSessionInvocation(args, terminal) && !args.includes("--no-session");
+	const opensDatabase = shouldStartSpareDatabaseThread(args, prewarmedEngine, terminal);
 	if (opensDatabase)
 		void import("./core/storage/node-sqlite-thread.js").then(
 			({ ThreadConnection }) => ThreadConnection.startSpare(),
@@ -93,12 +91,12 @@ if (heapArgs.length > 0) {
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
 	// An interactive session shows its editor and takes typing before the rest of Atomic has loaded, where nothing it
-	// shows before its editor would come first (startup-shell.ts). Its modules load before the rest.
+	// shows before its editor would come first (startup-shell.ts). Its eligibility module loads concurrently with
+	// prewarmInteractiveEngineForArgs; planStartupShell still waits for prewarmed so argument env overrides apply first.
 	const started =
 		interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
-			? prewarmed
-					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
-					.then(async ({ planStartupShell }) => {
+			? Promise.all([prewarmed, import("./modes/interactive/startup-shell-eligibility.ts")])
+					.then(async ([, { planStartupShell }]) => {
 						const plan = planStartupShell(args, process.cwd());
 						if (!plan) return;
 						const shell = await import("./modes/interactive/startup-shell.ts");

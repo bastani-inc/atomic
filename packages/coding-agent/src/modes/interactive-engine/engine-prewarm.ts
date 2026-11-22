@@ -155,6 +155,89 @@ export interface PrewarmOptions {
 	readonly basis?: PrewarmLaunchBasis;
 }
 
+const PREWARM_VALUE_FLAGS = new Set([
+	"--mode",
+	"--provider",
+	"--model",
+	"--api-key",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--name",
+	"-n",
+	"--session",
+	"--import",
+	"--session-id",
+	"--fork",
+	"--session-dir",
+	"--session-store",
+	"--session-prefix",
+	"--storage",
+	"--storage-file",
+	"--models",
+	"--fallback-models",
+	"--tools",
+	"-t",
+	"--exclude-tools",
+	"-xt",
+	"--thinking",
+	"--export",
+	"--extension",
+	"-e",
+	"--skill",
+	"--prompt-template",
+	"--theme",
+	"--use-theme",
+	"--internal-engine-bootstrap",
+	"--internal-engine-session-storage",
+]);
+
+const STORAGE_PINNING_FLAGS = new Set([
+	"--no-session",
+	"--session-dir",
+	"--session-store",
+	"--storage",
+	"--storage-file",
+	"--internal-engine-session-storage",
+]);
+
+const STORAGE_PINNING_ENV_VARS = [
+	"ATOMIC_SESSION_DIR",
+	"PI_SESSION_DIR",
+	"ATOMIC_STORAGE",
+	"PI_STORAGE",
+	"ATOMIC_SESSIONS_STORAGE",
+	"PI_SESSIONS_STORAGE",
+] as const;
+
+/**
+ * True when `--no-approve`/`-na` is the final trust flag and storage is unpinned
+ * by CLI or environment, in which case `main()` always runs the session in-process
+ * and would immediately discard any prewarmed engine child.
+ */
+function guaranteesInProcessSession(args: readonly string[], env: NodeJS.ProcessEnv = process.env): boolean {
+	if (STORAGE_PINNING_ENV_VARS.some((name) => Boolean(env[name]))) return false;
+	let trustOverride: boolean | undefined;
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i]!;
+		if (arg === "--") break;
+		if (arg === "--approve" || arg === "-a") {
+			trustOverride = true;
+			continue;
+		}
+		if (arg === "--no-approve" || arg === "-na") {
+			trustOverride = false;
+			continue;
+		}
+		const eq = arg.indexOf("=");
+		const flagName = eq > 0 ? arg.slice(0, eq) : arg;
+		if (STORAGE_PINNING_FLAGS.has(flagName)) return false;
+		if (eq < 0 && PREWARM_VALUE_FLAGS.has(arg) && i + 1 < args.length) {
+			i += 1;
+		}
+	}
+	return trustOverride === false;
+}
+
 /**
  * Whether this process is an interactive host about to start an engine child: a terminal on both ends, at least two
  * CPUs to load both at once, and arguments that are only options (a subcommand or a prompt argument is never
@@ -168,7 +251,7 @@ export function shouldPrewarmInteractiveEngine(
 		cpus: availableParallelism(),
 	},
 ): boolean {
-	return host.cpus >= 2 && isPlainInteractiveSessionInvocation(args, host);
+	return host.cpus >= 2 && isPlainInteractiveSessionInvocation(args, host) && !guaranteesInProcessSession(args);
 }
 
 function setReferenced(child: ChildProcess, referenced: boolean): void {

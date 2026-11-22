@@ -196,15 +196,19 @@ async function prepareOwnedAgentSessionServices(
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const modelRuntimeSpan = startTimingSpan("createAgentSessionServices.modelRuntime");
-	const modelRuntime =
-		options.modelRuntime ??
-		(await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-		}));
-	endTimingSpan(modelRuntimeSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
-	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
+	const [modelRuntime, settingsManager] = await Promise.all([
+		options.modelRuntime !== undefined
+			? Promise.resolve(options.modelRuntime)
+			: ModelRuntime.create({
+					authPath: join(agentDir, "auth.json"),
+					modelsPath: join(agentDir, "models.json"),
+				}),
+		options.settingsManager !== undefined
+			? Promise.resolve(options.settingsManager)
+			: SettingsManager.createAsync(cwd, agentDir),
+	]);
+	endTimingSpan(modelRuntimeSpan);
 	endTimingSpan(settingsSpan);
 	const resourceLoaderOptions = options.resourceLoaderOptions ?? {};
 	const defaultResourceLoader = new DefaultResourceLoader({
