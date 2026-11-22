@@ -22,9 +22,11 @@ import {
 	redactAuthorizationUrlForDisplay,
 	redactOAuthErrorText,
 	redactSecretValues,
+	redactUrlForTransportDisplay,
 	redactWwwAuthenticateHeader,
 } from "../../src/extensions/mcp/client/oauth/redact.js";
 import { createMcpExtension } from "../../src/extensions/mcp/index.js";
+import { formatMcpLogMessage } from "../../src/extensions/mcp/log.js";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.js";
 import { createMcpResourceToolDefinitions } from "../../src/extensions/mcp/resources.js";
 import { McpServerConnection } from "../../src/extensions/mcp/runtime.js";
@@ -1508,7 +1510,8 @@ rl.on("line", (line) => {
 		assert.equal(normalList.exitCode, 1);
 		assert.equal(normalList.stdout.includes("connection error to localhost:8080"), true, normalList.stdout);
 
-		// 8. RFC 8707 wire `resource` keeps non-secret query params (`?tenant=acme`) while stripping userinfo; display strips query.
+		// 8. RFC 8707 wire `resource` keeps non-secret query params (`?tenant=acme`) while stripping userinfo;
+		//    authorization URL display keeps the full query intact and strips only userinfo and any client_secret param.
 		const { authorizationUrl } = await startAuthorization("https://auth.example.com", {
 			clientInformation: { client_id: "cid" },
 			redirectUrl: "http://127.0.0.1:9999/callback",
@@ -1517,7 +1520,16 @@ rl.on("line", (line) => {
 		assert.equal(authorizationUrl.searchParams.get("resource"), "https://mcp.example.com/mcp?tenant=acme");
 		const displayAuthUrl = redactAuthorizationUrlForDisplay(authorizationUrl);
 		assert.equal(displayAuthUrl.includes("resPass99"), false);
-		assert.equal(displayAuthUrl.includes("tenant=acme"), false);
+		assert.equal(displayAuthUrl.includes("tenant%3Dacme"), true, displayAuthUrl);
+		const rawFlagAuthUrl = `https://auth.example.invalid/authorize?${"x".repeat(300)}`;
+		assert.equal(redactAuthorizationUrlForDisplay(rawFlagAuthUrl), rawFlagAuthUrl);
+		const authWithClientSecret = redactAuthorizationUrlForDisplay(
+			"https://alice:uPass99@auth.example.com/authorize?response_type=code&client_id=cid&client_secret=leakedSec99&state=s1",
+		);
+		assert.equal(authWithClientSecret.includes("uPass99"), false);
+		assert.equal(authWithClientSecret.includes("leakedSec99"), false);
+		assert.equal(authWithClientSecret.includes("client_id=cid"), true);
+		assert.equal(authWithClientSecret.includes("state=s1"), true);
 
 		// 9. Long-line password= fallback (8KB line), uppercase hex `code=E...`, parenthesized Bearer prose, and unterminated OSC linearity.
 		const longPwd = redactOAuthErrorText(`password=myEnvSecret9988 ${"z ".repeat(4000)}`);
@@ -1532,5 +1544,42 @@ rl.on("line", (line) => {
 		);
 		const oscInput = "\x1b]".repeat(16_000);
 		assert.equal(redactOAuthErrorText(oscInput), oscInput);
+
+		// 10. R-2: Protecting `bearer <prose>` never severs enclosing JSON/Cookie/PEM/password contexts.
+		const pemHeader = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
+		const pemFooter = ["-----END", "PRIVATE KEY-----"].join(" ");
+		const r2Cases: [string, string][] = [
+			['{"password": "my bearer token tailSecret9988"}', "tailSecret9988"],
+			["Cookie: a=sec1; b=bearer token; c=opaqueCookieLeak9988", "opaqueCookieLeak9988"],
+			[`${pemHeader}\nMIIE_PART1\nbearer token\nKEYBODY99887766\n${pemFooter}`, "KEYBODY99887766"],
+			["password: mypass bearer token secretTail9988", "secretTail9988"],
+		];
+		for (const [sample, secret] of r2Cases) {
+			const out = redactOAuthErrorText(sample);
+			assert.equal(out.includes(secret), false, `R-2 leaked ${secret} in ${out}`);
+		}
+
+		// 11. describeTransport URL formatting keeps benign query params and hides only sensitive keys/credential values/userinfo.
+		assert.equal(
+			redactUrlForTransportDisplay("https://mcp.example.com/mcp?tenant=acme&format=json"),
+			"https://mcp.example.com/mcp?tenant=acme&format=json",
+		);
+		assert.equal(
+			redactUrlForTransportDisplay("https://alice:pass99@mcp.example.com/mcp?tenant=acme&api_key=opaqueKey9988"),
+			"https://mcp.example.com/mcp?tenant=acme",
+		);
+		assert.equal(
+			redactUrlForTransportDisplay("https://mcp.example.com/mcp?x=opaqueHighEntropy998877&mode=read"),
+			"https://mcp.example.com/mcp?mode=read",
+		);
+
+		// 12. R-13: mcp.log bounds oversized notifications (64 KiB cap) with original-coordinate secret masking.
+		const boundarySecret = "opaqueLogBoundarySecret99887766";
+		const bigAnsi = `${"\x1b[31ma\x1b[0m".repeat(5_000)}${"z".repeat(65_536 - 49_990)}${boundarySecret}${"w".repeat(100_000)}`;
+		const logged = formatMcpLogMessage("srv", { level: "info", data: bigAnsi }, new Date(0), [boundarySecret]);
+		assert.equal(logged.includes(boundarySecret), false);
+		assert.equal(logged.includes(boundarySecret.slice(0, 12)), false);
+		assert.ok(logged.length < 70_000, `expected bounded log line, got ${logged.length}`);
+		assert.ok(logged.includes("[truncated]"), "expected truncation marker");
 	});
 });

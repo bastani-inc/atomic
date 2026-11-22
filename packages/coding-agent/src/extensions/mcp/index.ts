@@ -53,7 +53,11 @@ import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
 import type { Tool as McpTool } from "./client/index.js";
-import { redactAuthorizationUrlForDisplay, redactOAuthErrorText, redactUrlForDisplay } from "./client/oauth/redact.js";
+import {
+	redactAuthorizationUrlForDisplay,
+	redactOAuthErrorText,
+	redactUrlForTransportDisplay,
+} from "./client/oauth/redact.js";
 import {
 	getMcpToolExposure,
 	type LoadedMcpConfig,
@@ -431,7 +435,7 @@ function attentionRank(server: McpServer): number {
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
-	if ("url" in config) return redactUrlForDisplay(config.url);
+	if ("url" in config) return redactUrlForTransportDisplay(config.url);
 	return redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 

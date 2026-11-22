@@ -14,7 +14,11 @@ import { ModelRuntime } from "../../core/model-runtime.js";
 import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.js";
-import { redactAuthorizationUrlForDisplay, redactOAuthErrorText, redactUrlForDisplay } from "./client/oauth/redact.js";
+import {
+	redactAuthorizationUrlForDisplay,
+	redactOAuthErrorText,
+	redactUrlForTransportDisplay,
+} from "./client/oauth/redact.js";
 import {
 	addMcpServerConfigAsync,
 	getMcpToolExposure,
@@ -118,7 +122,7 @@ function errorMessage(error: unknown): string {
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
 	return "url" in config
-		? redactUrlForDisplay(config.url)
+		? redactUrlForTransportDisplay(config.url)
 		: redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 

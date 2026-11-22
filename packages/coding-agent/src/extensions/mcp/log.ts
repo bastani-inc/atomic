@@ -7,9 +7,12 @@
 
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import { redactOAuthErrorText } from "./client/oauth/redact.js";
+import { redactOAuthErrorText, redactOAuthErrorTextCapped } from "./client/oauth/redact.js";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
+/** Bound each formatted notification entry so multi-megabyte server logs cannot stall the event loop. */
+const MAX_LOG_MESSAGE_CHARS = 64 * 1024;
+const LOG_REDACTION_LOOKAHEAD_CHARS = 4 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -37,7 +40,17 @@ export function formatMcpLogMessage(
 	const rawLogger = typeof message.logger === "string" && message.logger ? message.logger : "";
 	const logger = rawLogger ? ` ${preRedacted ? rawLogger : redactOAuthErrorText(rawLogger, secrets)}:` : "";
 	const rawText = formatData(message.data);
-	const text = (preRedacted ? rawText : redactOAuthErrorText(rawText, secrets)).replace(/\r?\n/g, "\n    ");
+	let safeText: string;
+	if (preRedacted) {
+		safeText =
+			rawText.length > MAX_LOG_MESSAGE_CHARS ? `${rawText.slice(0, MAX_LOG_MESSAGE_CHARS)} … [truncated]` : rawText;
+	} else if (rawText.length > MAX_LOG_MESSAGE_CHARS) {
+		const window = rawText.slice(0, MAX_LOG_MESSAGE_CHARS + LOG_REDACTION_LOOKAHEAD_CHARS);
+		safeText = `${redactOAuthErrorTextCapped(window, secrets, MAX_LOG_MESSAGE_CHARS)} … [truncated]`;
+	} else {
+		safeText = redactOAuthErrorText(rawText, secrets);
+	}
+	const text = safeText.replace(/\r?\n/g, "\n    ");
 	return `${now.toISOString()} [${server}] ${level}${logger} ${text}\n`;
 }
 

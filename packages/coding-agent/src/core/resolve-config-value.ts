@@ -495,47 +495,37 @@ export async function resolveConfigValueOrThrowAsync(
 	throw unresolvedConfigValueError(config, description, env);
 }
 
-const ALLOWED_AUTH_SCHEME_LITERALS = new Set(["bearer", "basic", "token", "apikey", "digest", "oauth"]);
-
-function isSafeDiagnosticLiteral(value: string, isFirstPart: boolean): boolean {
-	// Pure whitespace / structural delimiters (e.g. ":", "/", ",", "-", " ")
-	let allDelim = true;
-	for (let i = 0; i < value.length; i++) {
-		const c = value.charCodeAt(i);
-		const ok =
-			c <= 32 || c === 58 || c === 59 || c === 44 || c === 47 || c === 124 || c === 43 || c === 46 || c === 45;
-		if (!ok) {
-			allDelim = false;
-			break;
+function isPosixEnvVarName(name: string): boolean {
+	if (name.length === 0 || !LEGACY_ENV_VAR_NAME_RE.test(name)) return false;
+	const first = name.charCodeAt(0);
+	if (first < 65 || first > 90) return false;
+	let digits = 0;
+	let trailingDigits = 0;
+	let alternations = 0;
+	let prevWasDigit = false;
+	let hasUnderscore = false;
+	for (let i = 0; i < name.length; i++) {
+		const c = name.charCodeAt(i);
+		const isDigit = c >= 48 && c <= 57;
+		if (c === 95) hasUnderscore = true;
+		if (isDigit) {
+			digits++;
+			trailingDigits++;
+			if (i > 0 && !prevWasDigit) alternations++;
+		} else {
+			trailingDigits = 0;
+			if (i > 0 && prevWasDigit) alternations++;
 		}
+		prevWasDigit = isDigit;
 	}
-	if (allDelim) return true;
-	// Leading HTTP auth scheme prefix (e.g. "Bearer ", "Basic ", "Token ")
-	if (isFirstPart) {
-		const trimmed = value.trim();
-		if (value.endsWith(" ") && ALLOWED_AUTH_SCHEME_LITERALS.has(trimmed.toLowerCase())) {
-			return true;
-		}
-	}
-	return false;
-}
-
-function isMultiWordUpperEnvName(name: string): boolean {
-	return LEGACY_ENV_VAR_NAME_RE.test(name) && name.includes("_");
+	if (digits === 0) return true;
+	return hasUnderscore && digits <= 2 && trailingDigits <= 2 && alternations <= 2;
 }
 
 function safeDiagnosticMissingEnvVars(
 	parts: readonly TemplatePart[],
 	env?: Record<string, string>,
 ): { missingCount: number; safeNames: string[] } {
-	let allLiteralsSafe = true;
-	for (let index = 0; index < parts.length; index++) {
-		const part = parts[index]!;
-		if (part.type === "literal" && !isSafeDiagnosticLiteral(part.value, index === 0)) {
-			allLiteralsSafe = false;
-			break;
-		}
-	}
 	const seen = new Set<string>();
 	const safeNames: string[] = [];
 	for (const part of parts) {
@@ -543,7 +533,8 @@ function safeDiagnosticMissingEnvVars(
 		if (resolveEnvConfigValue(part.name, env) !== undefined) continue;
 		if (seen.has(part.name)) continue;
 		seen.add(part.name);
-		if (allLiteralsSafe && (part.braced || (!part.glued && isMultiWordUpperEnvName(part.name)))) {
+		// Braced `${NAME}` is unambiguously an env var reference; unbraced `$NAME` is shown only when it reads like a POSIX env var name.
+		if (part.braced || (!part.glued && isPosixEnvVarName(part.name))) {
 			const safe = allowlistedEnvVarName(part.name);
 			if (safe !== undefined) safeNames.push(safe);
 		}

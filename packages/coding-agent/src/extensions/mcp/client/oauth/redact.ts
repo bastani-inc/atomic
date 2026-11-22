@@ -523,19 +523,6 @@ export function looksLikeSecretValue(value: string): boolean {
 	return (hasUpper && hasLower) || hasDigit || hasSymbol;
 }
 
-/** Allowlist of public OAuth authorization URL parameters that may be shown to the user. */
-const ALLOWED_AUTHORIZATION_URL_PARAMS = new Set([
-	"response_type",
-	"client_id",
-	"code_challenge",
-	"code_challenge_method",
-	"redirect_uri",
-	"state",
-	"scope",
-	"prompt",
-	"resource",
-]);
-
 /**
  * Strip only `username`, `password`, and `hash` from a URL while preserving wire query parameters
  * (such as RFC 8707 `resource` parameters like `?tenant=acme`).
@@ -574,24 +561,71 @@ export function redactUrlForDisplay(rawUrl: string): string {
 }
 
 /**
- * Build a displayable OAuth authorization URL from allowlisted public parts only:
- * `origin` + `pathname` (no userinfo) and only allowlisted public OAuth parameters,
- * with URL-valued parameters (`resource`, `redirect_uri`) stripped of userinfo/query/fragment.
+ * Format a server URL for transport display (`atomic mcp list`, `/mcp`):
+ * strip userinfo and fragment, preserve benign query parameters (such as `?tenant=acme`),
+ * and omit only query parameters with sensitive names or credential-like values.
+ */
+export function redactUrlForTransportDisplay(rawUrl: string): string {
+	if (!URL.canParse(rawUrl)) return redactUrlForDisplay(rawUrl);
+	const parsed = new URL(rawUrl);
+	let changed = false;
+	if (parsed.username || parsed.password) {
+		parsed.username = "";
+		parsed.password = "";
+		changed = true;
+	}
+	if (parsed.hash) {
+		parsed.hash = "";
+		changed = true;
+	}
+	const keysToDelete: string[] = [];
+	for (const [key, value] of parsed.searchParams.entries()) {
+		if (
+			SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
+			isSensitiveKeyName(key) ||
+			looksLikeSecretValue(value)
+		) {
+			keysToDelete.push(key);
+		}
+	}
+	if (keysToDelete.length > 0) {
+		for (const key of keysToDelete) parsed.searchParams.delete(key);
+		changed = true;
+	}
+	return changed ? parsed.href : rawUrl;
+}
+
+/**
+ * Prepare an OAuth authorization URL for display, copy, or browser open:
+ * keep the full query intact (so PKCE/OAuth sign-in always works) while stripping only
+ * URL userinfo (including inside URL-valued parameters) and any `client_secret` query parameter.
  */
 export function redactAuthorizationUrlForDisplay(input: string | URL): string {
 	const raw = typeof input === "string" ? input : input.href;
-	if (!URL.canParse(raw)) return redactUrlForDisplay(raw);
-	const source = new URL(raw);
-	const clean = new URL(`${source.origin}${source.pathname}`);
-	for (const [key, value] of source.searchParams.entries()) {
-		if (!ALLOWED_AUTHORIZATION_URL_PARAMS.has(key)) continue;
-		if (key === "resource" || key === "redirect_uri") {
-			clean.searchParams.append(key, redactUrlForDisplay(value));
-		} else {
-			clean.searchParams.append(key, value);
+	if (!URL.canParse(raw)) return redactUrlCredentials(raw, "text");
+	const url = new URL(raw);
+	let changed = false;
+	if (url.username || url.password) {
+		url.username = "";
+		url.password = "";
+		changed = true;
+	}
+	const keysToDelete: string[] = [];
+	const updates: [string, string][] = [];
+	for (const [key, value] of url.searchParams.entries()) {
+		if (key.toLowerCase() === "client_secret") {
+			keysToDelete.push(key);
+		} else if (value.includes("://") && value.includes("@")) {
+			const stripped = stripUrlUserinfoAndHash(value);
+			if (stripped !== value) updates.push([key, stripped]);
 		}
 	}
-	return clean.href;
+	if (keysToDelete.length > 0 || updates.length > 0) {
+		for (const key of keysToDelete) url.searchParams.delete(key);
+		for (const [key, value] of updates) url.searchParams.set(key, value);
+		changed = true;
+	}
+	return changed ? url.href : raw;
 }
 
 function isAsciiAlphaNumOrUnderscore(code: number): boolean {
@@ -905,38 +939,62 @@ function isWwwAuthenticateChallengeParam(text: string, start: number): boolean {
 
 /**
  * Strip ANSI CSI/OSC sequences into `plain`, recording for each index of `plain` its index in `text`
- * (plus `text.length` sentinel at the end). Strictly linear single pass, zero regular expressions.
+ * (plus `text.length` sentinel at the end). Chunked linear single pass, zero regular expressions.
  */
-function stripAnsiWithOrigin(text: string): { readonly plain: string; readonly origin: readonly number[] | undefined } {
+function stripAnsiWithOrigin(text: string): {
+	readonly plain: string;
+	readonly origin: Int32Array | undefined;
+} {
 	if (!text.includes("\x1b")) return { plain: text, origin: undefined };
-	let plain = "";
-	const origin: number[] = [];
+	const chunks: string[] = [];
+	const origin = new Int32Array(text.length + 1);
+	let plainLen = 0;
+	let copied = 0;
 	let i = 0;
+
+	const flush = (end: number) => {
+		if (end <= copied) return;
+		chunks.push(text.slice(copied, end));
+		for (let k = copied; k < end; k++) origin[plainLen++] = k;
+		copied = end;
+	};
+
 	while (i < text.length) {
-		if (text.charCodeAt(i) === 0x1b && i + 1 < text.length) {
-			const next = text.charCodeAt(i + 1);
+		const esc = text.indexOf("\x1b", i);
+		if (esc === -1) {
+			flush(text.length);
+			break;
+		}
+		if (esc + 1 < text.length) {
+			const next = text.charCodeAt(esc + 1);
 			if (next === 0x5b) {
 				// CSI: ESC [ [0-?]* [ -/]* [@-~]
-				let j = i + 2;
+				let j = esc + 2;
 				while (j < text.length && text.charCodeAt(j) >= 0x30 && text.charCodeAt(j) <= 0x3f) j++;
 				while (j < text.length && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
 				if (j < text.length && text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) {
+					flush(esc);
+					copied = j + 1;
 					i = j + 1;
 					continue;
 				}
 			} else if (next === 0x5d) {
 				// OSC: ESC ] [^\x07\x1b]* (BEL | ESC \) — break on any ESC so unterminated OSC stays O(n).
-				let j = i + 2;
+				let j = esc + 2;
 				let matched = false;
 				while (j < text.length) {
 					const c = text.charCodeAt(j);
 					if (c === 0x07) {
+						flush(esc);
+						copied = j + 1;
 						i = j + 1;
 						matched = true;
 						break;
 					}
 					if (c === 0x1b) {
 						if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
+							flush(esc);
+							copied = j + 2;
 							i = j + 2;
 							matched = true;
 						}
@@ -947,12 +1005,11 @@ function stripAnsiWithOrigin(text: string): { readonly plain: string; readonly o
 				if (matched) continue;
 			}
 		}
-		origin.push(i);
-		plain += text[i]!;
-		i++;
+		i = esc + 1;
 	}
-	origin.push(text.length);
-	return { plain, origin };
+	if (copied < text.length) flush(text.length);
+	origin[plainLen] = text.length;
+	return { plain: chunks.join(""), origin };
 }
 
 /**
@@ -1168,13 +1225,22 @@ function redactOAuthStructuredCredentials(text: string): string {
 	return parts.join("");
 }
 
+function chooseFreshPlaceholderPrefix(text: string): string {
+	for (let counter = 0; ; counter++) {
+		const prefix = `ATOMICPRX${counter}P`;
+		if (!text.includes(prefix)) return prefix;
+	}
+}
+
 /**
- * Run `redactCredentialShapes` as a secondary net while protecting non-secret `bearer <prose>` phrases
- * and RFC 7235/6750/9728 `Bearer <param>=...` challenge headers that `redactCredentialShapes`'s generic
- * `Bearer` pattern would otherwise erase.
+ * Run `redactCredentialShapes` ONCE over the intact text while protecting non-secret `bearer <prose>`
+ * phrases and RFC 7235/6750/9728 `Bearer` challenge prefixes via fresh, same-line, delimiter-free,
+ * non-credential placeholders. Because the text is never split, enclosing JSON quotes, Cookie headers,
+ * PEM blocks, and bare `password:` lines are redacted whole, and any placeholder consumed inside a wider
+ * redaction is never restored.
  */
 function redactRemainingCredentialShapes(text: string): string {
-	const protectedSpans: { start: number; end: number }[] = [];
+	const protectedSpans: { start: number; end: number; original: string }[] = [];
 	let i = 0;
 	while (i < text.length) {
 		const prevWord = i > 0 && isAsciiAlphaNumOrUnderscore(text.charCodeAt(i - 1));
@@ -1183,8 +1249,8 @@ function redactRemainingCredentialShapes(text: string): string {
 			const valStart = skipHorizontalWs(text, afterKw);
 			if (valStart > afterKw && valStart < text.length) {
 				if (isWwwAuthenticateChallengeParam(text, valStart)) {
-					// Protect ONLY `"Bearer "` (scheme + whitespace), so URLs/secrets inside the challenge params are still redacted!
-					protectedSpans.push({ start: i, end: valStart });
+					// Protect only the `Bearer` scheme word (keeping the whitespace after it intact).
+					protectedSpans.push({ start: i, end: afterKw, original: text.slice(i, afterKw) });
 					i = valStart;
 					continue;
 				}
@@ -1192,7 +1258,7 @@ function redactRemainingCredentialShapes(text: string): string {
 				while (valEnd < text.length && !isTokenStopChar(text.charCodeAt(valEnd))) valEnd++;
 				const word = text.slice(valStart, valEnd);
 				if (!isAuthorizationPrefixContext(text, i) && BEARER_PROSE_WORDS.has(word.toLowerCase())) {
-					protectedSpans.push({ start: i, end: valEnd });
+					protectedSpans.push({ start: i, end: valEnd, original: text.slice(i, valEnd) });
 					i = valEnd;
 					continue;
 				}
@@ -1201,15 +1267,47 @@ function redactRemainingCredentialShapes(text: string): string {
 		i++;
 	}
 	if (protectedSpans.length === 0) return redactCredentialShapes(text);
-	const out: string[] = [];
+
+	const prefix = chooseFreshPlaceholderPrefix(text);
+	const substitutedParts: string[] = [];
 	let cursor = 0;
-	for (const span of protectedSpans) {
-		if (span.start > cursor) out.push(redactCredentialShapes(text.slice(cursor, span.start)));
-		out.push(text.slice(span.start, span.end));
+	for (let idx = 0; idx < protectedSpans.length; idx++) {
+		const span = protectedSpans[idx]!;
+		if (span.start > cursor) substitutedParts.push(text.slice(cursor, span.start));
+		substitutedParts.push(`${prefix}${idx}X`);
 		cursor = span.end;
 	}
-	if (cursor < text.length) out.push(redactCredentialShapes(text.slice(cursor)));
-	return out.join("");
+	if (cursor < text.length) substitutedParts.push(text.slice(cursor));
+
+	const redacted = redactCredentialShapes(substitutedParts.join(""));
+	if (!redacted.includes(prefix)) return redacted;
+
+	// Restore only placeholders that survived outside wider redactions, in a single linear pass.
+	const restoredParts: string[] = [];
+	let copyFrom = 0;
+	let pos = redacted.indexOf(prefix, 0);
+	while (pos !== -1) {
+		const numStart = pos + prefix.length;
+		let numEnd = numStart;
+		while (numEnd < redacted.length && redacted.charCodeAt(numEnd) >= 48 && redacted.charCodeAt(numEnd) <= 57) {
+			numEnd++;
+		}
+		if (numEnd > numStart && numEnd < redacted.length && redacted.charCodeAt(numEnd) === 88) {
+			const idx = Number(redacted.slice(numStart, numEnd));
+			const span = protectedSpans[idx];
+			if (span !== undefined) {
+				if (pos > copyFrom) restoredParts.push(redacted.slice(copyFrom, pos));
+				restoredParts.push(span.original);
+				copyFrom = numEnd + 1;
+				pos = redacted.indexOf(prefix, copyFrom);
+				continue;
+			}
+		}
+		pos = redacted.indexOf(prefix, pos + prefix.length);
+	}
+	if (copyFrom === 0) return redacted;
+	if (copyFrom < redacted.length) restoredParts.push(redacted.slice(copyFrom));
+	return restoredParts.join("");
 }
 
 /**
