@@ -90,10 +90,10 @@ async function presenceReleased(returnAddress: string): Promise<void> {
 
 /**
  * What the shared database holds for a session that returns with id `id` from `returnAddress`, for a failure to name: the
- * binding of the id (the claim that last bound it, its owner, and when that owner last renewed it), the presence leases
- * of the return address, the session's known-session rows and the brokers' membership leases, with the database's clock.
- * The claim of the id, the reclaim of an unanswered claim and the departure of the session's earlier registration each
- * decide from these rows (#5607).
+ * bindings of the id and of any fresh id the session got (the claim that last bound each, its owner, and when that owner
+ * last renewed it), the presence leases of the return address, the session's known-session rows and the brokers'
+ * membership leases, with the database's clock. The claim of the id, the reclaim of an unanswered claim and the departure
+ * of the session's earlier registration each decide from these rows (#5607).
  */
 async function sharedRowsFor(id: string, returnAddress: string): Promise<string> {
 	sharedDatabase ??= await harness.openSharedStorage("b");
@@ -103,8 +103,9 @@ async function sharedRowsFor(id: string, returnAddress: string): Promise<string>
 	const [clock, bindings, presence, known, brokers] = await Promise.all([
 		database.get(`SELECT ${nowMs} AS now`),
 		database.all(
-			`SELECT * FROM ${TWO_BROKER_STORAGE_PREFIX}intercom_session_bindings WHERE intercom_session_id = ?`,
+			`SELECT * FROM ${TWO_BROKER_STORAGE_PREFIX}intercom_session_bindings WHERE intercom_session_id = ? OR return_address = ?`,
 			id,
+			returnAddress,
 		),
 		database.all(
 			`SELECT key, holder_id, fencing_token, renewed_at FROM "${SHARED_LEASES_TABLE}"
@@ -140,13 +141,37 @@ async function explained(id: string, returnAddress: string, region: () => Promis
 	}
 }
 
+/** The database's clock, and when it last recorded the session with id `id` as known (undefined: never). */
+async function knownRecord(id: string): Promise<{ now: number; recordedAt: number | undefined }> {
+	sharedDatabase ??= await harness.openSharedStorage("b");
+	const database = sharedDatabase;
+	const row = await database.get<{ now: number | bigint; recorded_at: number | bigint | null }>(
+		`SELECT ${dialectOf(database).nowMs} AS now,
+			(SELECT max(recorded_at) FROM ${TWO_BROKER_STORAGE_PREFIX}intercom_known_sessions WHERE intercom_session_id = ?) AS recorded_at`,
+		id,
+	);
+	assert.ok(row !== undefined);
+	return { now: Number(row.now), recordedAt: row.recorded_at === null ? undefined : Number(row.recorded_at) };
+}
+
 /**
  * `original` leaves as a session that will return, and this resolves once its broker has finished its departure (its
- * presence is gone from `observer`'s list and from the shared database), so the registration that brings it back does
- * not queue behind that work.
+ * presence is gone from `observer`'s list and from the shared database, and the departure has recorded the session, its
+ * last write), so the registration that brings it back does not queue behind that work, and `holdRegistration` parks
+ * that registration's record of the session, never the departure's.
  */
 async function leaveAway(original: TwoBrokerClient, observer: TwoBrokerClient): Promise<string> {
 	const id = original.sessionId;
+	// The departure's record of the session is told from its registration's by a later time on the database's clock.
+	const registeredAt = await vi.waitFor(
+		async () => {
+			const { recordedAt } = await knownRecord(id);
+			assert.ok(recordedAt !== undefined, "the registration has not recorded the session yet");
+			return recordedAt;
+		},
+		{ timeout: 15_000 },
+	);
+	await vi.waitFor(async () => assert.ok((await knownRecord(id)).now > registeredAt), { timeout: 15_000 });
 	await original.client.disconnect({ resumable: true });
 	original.disconnected = true;
 	await vi.waitFor(
@@ -154,6 +179,16 @@ async function leaveAway(original: TwoBrokerClient, observer: TwoBrokerClient): 
 		{ timeout: 15_000 },
 	);
 	await presenceReleased(original.returnAddress);
+	await vi.waitFor(
+		async () => {
+			const { recordedAt } = await knownRecord(id);
+			assert.ok(
+				recordedAt !== undefined && recordedAt > registeredAt,
+				"the departure has not recorded the session yet",
+			);
+		},
+		{ timeout: 15_000 },
+	);
 	return id;
 }
 
@@ -302,6 +337,38 @@ test(
 				});
 				assert.ok(harness.idClaimStalled(original.returnAddress));
 				await harness.registrationParked(original.name);
+				assert.equal(back.sessionId, id, "the database wrote the id for this registration");
+			});
+		} finally {
+			harness.releaseRegistration();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session keeps the id the database wrote for it while its broker is still recording the departure of its earlier connection (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const original = await harness.connect("a", unique("returning"));
+		const id = original.sessionId;
+		// The departure's last write, the record of the session that left, waits on the database: the broker is still
+		// working through that departure when the session comes back.
+		harness.holdRegistration(original.name);
+		try {
+			await original.client.disconnect({ resumable: true });
+			original.disconnected = true;
+			await harness.registrationParked(original.name);
+			await presenceReleased(original.returnAddress);
+			harness.stallIdClaim(original.returnAddress, PAST_CLAIM_BOUND_STALL_MS);
+
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
+				assert.ok(harness.idClaimStalled(original.returnAddress));
 				assert.equal(back.sessionId, id, "the database wrote the id for this registration");
 			});
 		} finally {
