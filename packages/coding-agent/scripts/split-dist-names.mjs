@@ -1,5 +1,5 @@
 /**
- * Shared chunk naming and startup chunk grouping for `split-dist.mjs`.
+ * Shared chunk naming, release compatibility re-exports, and startup chunk grouping for `split-dist.mjs`.
  *
  * A shared file is named by the first of the package's own modules it holds, by path, and by the names it exports:
  * not by its content. An install updated in place keeps the name of every shared file whose first module and exports
@@ -37,6 +37,46 @@ export function sharedFileName(stem, meta, output) {
 }
 
 /**
+ * The files to write so that each shared file `released` names, which a recorded earlier release imports on demand,
+ * is still there when this split does not write it: one that re-exports the names that release's file exported from the
+ * shared (or compiled thread-entry) file this split writes for the same module (the same stem), which exports every one
+ * of them. A process of that release imports such a file by its name, and must find this build's code of that module,
+ * not a second copy. Fails, naming the file, when no file of this split, or more than one, can stand for it.
+ *
+ * @param {readonly { version: string, path: string, names: readonly string[] }[]} released
+ * @param {readonly { file: string, stem: string, exports: readonly string[] }[]} outputs
+ * @param {string} directory the shared files' directory below `dist`
+ * @returns {{ path: string, contents: string }[]}
+ */
+export function compatSharedFiles(released, outputs, directory) {
+	const written = new Set(outputs.map((output) => `${directory}/${output.file}`));
+	/** @type {Map<string, { path: string, contents: string }>} */
+	const files = new Map();
+	for (const { version, path, names } of released) {
+		if (written.has(path) || files.has(path)) continue;
+		const stem = new RegExp(`^${directory}/([^/]+)-[A-Z2-7]{8}\\.js$`).exec(path)?.[1];
+		const candidates = outputs.filter(
+			(output) => output.stem === stem && names.every((name) => output.exports.includes(name)),
+		);
+		if (candidates.length !== 1)
+			throw new Error(
+				`split-dist: ${version} imports dist/${path} on demand, and ${candidates.length === 0 ? "no" : "more than one"} shared file of this build holds its module with its exports (${names.join(", ")})`,
+			);
+		const file = path.slice(directory.length + 1);
+		const specifier = candidates[0].file.startsWith(".") ? candidates[0].file : `./${candidates[0].file}`;
+		files.set(path, {
+			path,
+			contents: `export { ${[...names].sort().join(", ")} } from ${JSON.stringify(specifier)};\n//# sourceMappingURL=${file}.map\n`,
+		});
+		files.set(`${path}.map`, {
+			path: `${path}.map`,
+			contents: `${JSON.stringify({ version: 3, file, sources: [], names: [], mappings: "" })}\n`,
+		});
+	}
+	return [...files.values()];
+}
+
+/**
  * Maps a condensed-DAG topological depth inside a given `ownerMask` partition monotonically into compact startup layers
  * so `mainCore` forms ~12-15 balanced (~400-950 KB) acyclic chunks for `write-startup-stages.mjs`.
  * Monotonicity (`d1 <= d2 => bucket(m, d1) <= bucket(m, d2)`) guarantees strictly acyclic inter-layer static edges.
@@ -64,20 +104,22 @@ export function startupDepthBucket(depth, ownerMask = 0) {
 }
 
 /**
- * Partitions bundled non-inline modules into strictly disjoint tiers so startup loads ~14-20 shared files instead of
- * ~130-170 per-entry Venn-diagram shards, while preserving acyclic startup-stage layers, body-edit/private-leaf
- * filename stability, owner-entry private-leaf containment, and complete isolation of lazy/cold features.
- *
- * Every overlapping combination between `http`, `main`, `modeInteractive`, `modeRpc`, and `sdk` receives a dedicated
- * group so no narrower entry ever pulls in a heavier tier (e.g. `main`/`sdk` never pull `http`/`undici`; `rpc-mode`
- * never pulls `mode-interactive`; `sdk` never pulls `mode-interactive` or `mode-rpc`).
+ * Partitions bundled non-inline modules into strictly disjoint tiers so startup loads ~15-20 shared files instead of
+ * ~130-170 per-entry Venn-diagram shards, while keeping the early-editor path (`elig` and `shell`) ultra-lightweight,
+ * preserving acyclic startup-stage layers without `strictExecutionOrder` (`__esmMin`), keeping body-edit/private-leaf
+ * filename stability and owner-entry private-leaf containment, and isolating lazy/cold features.
  *
  * @param {readonly string[]} allIds Every bundled module id in the graph.
  * @param {ReadonlySet<string>} inlineEntryIds Entry module ids kept inline in their own entry files (`cli.js` + `OWNER_ENTRIES`).
  * @param {readonly string[]} ownerEntryIds `OWNER_ENTRIES` module ids (external singletons that sit between shared chunks).
  * @param {{
+ *   cli: readonly string[],
+ *   prewarm: readonly string[],
+ *   elig: readonly string[],
  *   shell: readonly string[],
+ *   stages: readonly string[],
  *   http: readonly string[],
+ *   settingsStartup: readonly string[],
  *   main: readonly string[],
  *   modeInteractive: readonly string[],
  *   modeRpc: readonly string[],
@@ -104,8 +146,13 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 		return seen;
 	};
 
+	const cliReach = staticReach(tierRoots.cli);
+	const prewarmReach = staticReach(tierRoots.prewarm);
+	const eligReach = staticReach(tierRoots.elig);
 	const shellReach = staticReach(tierRoots.shell);
+	const stagesReach = staticReach(tierRoots.stages);
 	const httpReach = staticReach(tierRoots.http);
+	const settingsStartupReach = staticReach(tierRoots.settingsStartup);
 	const mainReach = staticReach(tierRoots.main);
 	const interactiveReach = staticReach(tierRoots.modeInteractive);
 	const rpcReach = staticReach(tierRoots.modeRpc);
@@ -147,18 +194,51 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 
 	for (const id of allIds) {
 		if (inlineEntryIds.has(id) || ownerPrivate.has(id)) continue;
+		const inCli = cliReach.has(id);
+		const inPrewarm = prewarmReach.has(id);
+		const inElig = eligReach.has(id);
 		const inShell = shellReach.has(id);
+		const inStages = stagesReach.has(id);
 		const inHttp = httpReach.has(id);
+		const inSettingsStartup = settingsStartupReach.has(id);
 		const inMain = mainReach.has(id);
 		const inInteractive = interactiveReach.has(id);
 		const inRpc = rpcReach.has(id);
 		const inSdk = sdkReach.has(id);
 
-		if (inShell) {
-			groups.set(id, "shell");
-		} else if (inHttp && !inMain && !inInteractive && !inRpc && !inSdk) {
-			// Strictly exclusive to `http-dispatcher` (e.g. bundled `undici`), never pulled in by `main` or `sdk`.
+		// Pre-editor phases P0 (cli) -> P1a (prewarm) -> P1b (elig) -> P2 (shell) -> P3a (stages) and standalone
+		// `http-dispatcher` / `settings-startup` stay strictly phase-monotone: no earlier phase ever pulls modules
+		// exclusive to a later phase, standalone entries never pull `startup-0-*` or unrelated UI/lockfile code, and
+		// an engine child (which loads P0 + P3b, skipping P2 shell) never pulls P2-only shell modules.
+		if (inCli) {
+			groups.set(id, "p0-cli");
+		} else if (inPrewarm && inElig) {
+			groups.set(id, "p1-shared");
+		} else if (inPrewarm) {
+			groups.set(id, "p1a-prewarm");
+		} else if (inElig && inShell) {
+			// Tiny helpers shared between eligibility and startup-shell, isolated from `p1b-elig`'s lockfile deps so
+			// standalone `startup-shell` never pulls `proper-lockfile`.
+			groups.set(id, "p1-elig-shell");
+		} else if (inElig) {
+			groups.set(id, "p1b-elig");
+		} else if (inShell && inHttp) {
+			// Tiny shared constants (e.g. `core/settings-defaults.js`) used by both `startup-shell` and
+			// `http-dispatcher`, kept out of `p2-shell-main` so standalone `http-dispatcher` never pulls TUI/theme.
+			groups.set(id, "p2-common");
+		} else if (inShell && inMain) {
+			// Modules shared by both `startup-shell` and `main` so neither loads anything exclusive to the other.
+			groups.set(id, "p2-shell-main");
+		} else if (inShell) {
+			groups.set(id, "p2-shell");
+		} else if (inStages && !inMain && !inHttp && !inSettingsStartup && !inInteractive && !inRpc && !inSdk) {
+			groups.set(id, "p3a-stages");
+		} else if (inHttp) {
+			// `core/http-dispatcher` (+ bundled `undici` when inlined), strictly isolated from `startup-0-*`.
 			groups.set(id, "http");
+		} else if (inSettingsStartup) {
+			// `cli/settings-startup` (~6 tiny error/config helpers + chalk), strictly isolated from `startup-0-*`.
+			groups.set(id, "settings-startup");
 		} else if (inMain) {
 			mainCore.add(id);
 		} else if (inInteractive && inRpc) {
@@ -178,12 +258,16 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 
 	if (mainCore.size === 0) return groups;
 
-	// Include main-reachable owner entries in the DAG analysis so depths and owner barriers flow accurately across
-	// external owner boundaries without assigning the owner entries themselves to a shared chunk.
+	// Include main-reachable inline entries (such as OWNER_ENTRIES and intermediate SPLIT_ENTRIES) AND owner-private
+	// modules in the DAG analysis so every transitive edge through an entry file is seen when computing ownerMask,
+	// depths, and private-leaf contraction — guaranteeing zero TDZ cycles and zero synthetic exports on entry files.
 	/** @type {Set<string>} */
 	const graphNodes = new Set(mainCore);
-	for (const ownerId of ownerEntryIds) {
-		if (mainReach.has(ownerId)) graphNodes.add(ownerId);
+	for (const entryId of inlineEntryIds) {
+		if (mainReach.has(entryId)) graphNodes.add(entryId);
+	}
+	for (const privId of ownerPrivate) {
+		if (mainReach.has(privId)) graphNodes.add(privId);
 	}
 
 	// Build induced static subgraph on `graphNodes`.
@@ -205,7 +289,7 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 		}
 	}
 
-	// Contract private single-importer leaves into their sole non-owner parent so adding a helper leaf module imported
+	// Contract private single-importer leaves into their sole non-entry parent so adding a helper leaf module imported
 	// by one existing module never increments any existing module's topological depth or shifts chunk boundaries.
 	/** @type {Map<string, string>} */
 	const contractedInto = new Map();
@@ -214,13 +298,13 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 	for (let changed = true; changed; ) {
 		changed = false;
 		for (const id of [...active].sort()) {
-			if (ownerBit.has(id)) continue;
+			if (inlineEntryIds.has(id) || ownerPrivate.has(id)) continue;
 			const deps = (outEdges.get(id) ?? []).filter((d) => active.has(d));
 			if (deps.length !== 0) continue;
 			const parents = [...(inEdges.get(id) ?? [])].filter((p) => active.has(p));
 			if (parents.length !== 1) continue;
 			const soleParent = /** @type {string} */ (parents[0]);
-			if (ownerBit.has(soleParent)) continue;
+			if (inlineEntryIds.has(soleParent) || ownerPrivate.has(soleParent)) continue;
 			contractedInto.set(id, soleParent);
 			active.delete(id);
 			changed = true;

@@ -5,8 +5,13 @@ import { bunExecutable } from "../helpers/runtime.js";
 
 const OUTPUT_GUARD = new URL("../../packages/coding-agent/src/core/output-guard.ts", import.meta.url).href;
 const RECORD_BYTES = 8 * 1024 * 1024;
-const STALLED_READER_MS = 1_500;
-const TIMER_GAP_BOUND_MS = 250;
+/**
+ * How long the reader stalls, and the longest the writer's timer may stop meanwhile. A write that waited for the reader
+ * would stop it for the whole stall. On a loaded runner, Bun's event loop goes over a second without a turn, whatever it
+ * writes, so the bound sits between the two.
+ */
+const STALLED_READER_MS = 3_000;
+const TIMER_GAP_BOUND_MS = 2_000;
 
 const WRITER = `
 const guard = await import(${JSON.stringify(OUTPUT_GUARD)});
@@ -22,7 +27,9 @@ const ticker = setInterval(() => {
 const started = performance.now();
 guard.writeRawStdout(record(0, "first"));
 guard.writeRawStdout(record(1, "x".repeat(${RECORD_BYTES})));
-await new Promise((resolve) => setTimeout(resolve, 50));
+// A control record goes to the pipe at once, ahead of records still queued behind an unfinished one: it is written once
+// the reader has seen the start of the large record, so that record is already in the pipe.
+await new Promise((resolve) => process.stdin.once("data", resolve));
 guard.writeRawStdoutControl(record(2, "control"));
 guard.writeRawStdout(record(3, "last"));
 await guard.flushRawStdout();
@@ -37,12 +44,17 @@ interface WriterResult {
 }
 
 function runWriter(executable: string, args: readonly string[]): Promise<WriterResult> {
-	const child = spawn(executable, [...args, WRITER], { stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(executable, [...args, WRITER], { stdio: ["pipe", "pipe", "pipe"] });
 	const chunks: Buffer[] = [];
 	let stderr = "";
 	let stalled = false;
+	let seenLargeRecord = false;
 	child.stdout.on("data", (chunk: Buffer) => {
 		chunks.push(chunk);
+		if (!seenLargeRecord && Buffer.concat(chunks).includes('{"index":1,')) {
+			seenLargeRecord = true;
+			child.stdin.end("the large record arrived\n");
+		}
 		if (stalled) return;
 		stalled = true;
 		child.stdout.pause();

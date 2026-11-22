@@ -42,6 +42,21 @@ function scrubFeedback(title: string, body: string) {
 const MARKER_SCAN_TIMEOUT_MS = 250;
 const STRUCTURAL_SCAN_TIMEOUT_MS = 250;
 const PRIVATE_KEY_SCAN_TIMEOUT_MS = 250;
+/**
+ * How many times a timed scan runs. Its fastest run is compared with its bound: a loaded machine can stop the test for
+ * longer than a bound now and then, but a scan that does too much work is slow every time.
+ */
+const TIMED_SCAN_RUNS = 5;
+
+/** Runs `scan` {@link TIMED_SCAN_RUNS} times; returns its last result and how long its fastest run took. */
+function timedScan<T>(scan: () => T): { result: T; fastestMs: number } {
+	const runs = Array.from({ length: TIMED_SCAN_RUNS }, () => {
+		const started = performance.now();
+		const result = scan();
+		return { result, ms: performance.now() - started };
+	});
+	return { result: runs.at(-1)!.result, fastestMs: Math.min(...runs.map((run) => run.ms)) };
+}
 
 // Regression coverage for bastani-inc/atomic#2799.
 describe("feedback privacy core", () => {
@@ -510,9 +525,9 @@ describe("feedback privacy core", () => {
 	});
 	test("bounds marker-only credential candidates", () => {
 		const input = "*".repeat(32_000);
-		const started = performance.now();
-		assert.equal(scrubFeedback("safe", input).body, input);
-		assert.ok(performance.now() - started < MARKER_SCAN_TIMEOUT_MS);
+		const { result, fastestMs } = timedScan(() => scrubFeedback("safe", input));
+		assert.equal(result.body, input);
+		assert.ok(fastestMs < MARKER_SCAN_TIMEOUT_MS, `the scan took ${Math.round(fastestMs)} ms`);
 	});
 	test("does not leak punctuation-adjacent credential tails or strong leading-slash values", () => {
 		for (const [input, expected] of [
@@ -904,9 +919,7 @@ describe("feedback privacy core", () => {
 		for (const size of [32_000, 166_000]) {
 			const count = Math.floor(size / (row.length + 1));
 			const input = Array.from({ length: count }, () => row).join("\n");
-			const start = performance.now();
-			const result = scrubFeedback("safe", input);
-			const elapsed = performance.now() - start;
+			const { result, fastestMs: elapsed } = timedScan(() => scrubFeedback("safe", input));
 			assert.equal(result.body, Array.from({ length: count }, () => "[REDACTED]").join("\n"));
 			assert.deepEqual(result.replacements, [{ category: "private-key", count }]);
 			assert.ok(elapsed < PRIVATE_KEY_SCAN_TIMEOUT_MS, `private-key mention scan took ${elapsed}ms`);
@@ -1025,16 +1038,14 @@ describe("feedback privacy core", () => {
 	});
 	test("does not rescan the line prefix for every embedded quote", () => {
 		const input = `${"x".repeat(32_000)} token=${"`".repeat(32_000)}`;
-		const started = performance.now();
-		const result = scrubFeedback("safe", input);
-		assert.ok(performance.now() - started < STRUCTURAL_SCAN_TIMEOUT_MS);
+		const { result, fastestMs } = timedScan(() => scrubFeedback("safe", input));
+		assert.ok(fastestMs < STRUCTURAL_SCAN_TIMEOUT_MS, `the scan took ${Math.round(fastestMs)} ms`);
 		assert.deepEqual(scrubFeedback(result.title, result.body).replacements, []);
 	});
 	test("keeps blank-line boundary scanning responsive", () => {
 		const input = `API_KEY="v${"\n".repeat(32_000)}tail"`;
-		const started = performance.now();
-		scrubFeedback("safe", input);
-		assert.ok(performance.now() - started < STRUCTURAL_SCAN_TIMEOUT_MS);
+		const { fastestMs } = timedScan(() => scrubFeedback("safe", input));
+		assert.ok(fastestMs < STRUCTURAL_SCAN_TIMEOUT_MS, `the scan took ${Math.round(fastestMs)} ms`);
 	});
 });
 
@@ -1061,6 +1072,38 @@ test("scrubs emails and bearer tokens idempotently with count-only summaries", (
 		{ category: "email", count: 2 },
 	]);
 	assert.deepEqual(scrub(result.text), { text: result.text, replacements: [] });
+});
+
+test("redacts an email from its first word boundary to the end of its domain, and one right after another", () => {
+	for (const [input, text, count] of [
+		["--first.last@example.com--", "--[REDACTED]--", 1],
+		["name+tag%x@sub.example.co.uk.", "[REDACTED].", 1],
+		["a@b.com.x@c.com", "[REDACTED][REDACTED]", 2],
+		["x@y.c no@tld u@@v.com @w.com", "x@y.c no@tld u@@v.com @w.com", 0],
+		// Ignoring case, "ſ" is the letter s, so it starts a word and an email.
+		["ſ@a.aa", "[REDACTED]", 1],
+		// A domain ends at a word boundary, so one that runs on into "_x" is no email.
+		["a@b.co_x", "a@b.co_x", 0],
+	] as const) {
+		const result = scrub(input);
+		assert.equal(result.text, text, input);
+		assert.deepEqual(result.replacements, count ? [{ category: "email", count }] : [], input);
+	}
+});
+
+/**
+ * Generous for a scan that reads the text a few times, which takes milliseconds here. One that reads on to the end of a
+ * run of local-part characters from each word boundary in it takes over 10 s here on an idle machine.
+ */
+const EMAIL_SCAN_TIMEOUT_MS = 2_000;
+
+test("finds an email after a long run of local-part characters in one pass", () => {
+	const run = "a-".repeat(64_000);
+	const started = performance.now();
+	const result = scrub(`${run} user@example.com`);
+	const elapsedMs = performance.now() - started;
+	assert.equal(result.text, `${run} [REDACTED]`);
+	assert.ok(elapsedMs < EMAIL_SCAN_TIMEOUT_MS, `the scan took ${Math.round(elapsedMs)} ms`);
 });
 
 test("scrub CLI accepts a file path and preserves safe Markdown and empty stdin", async () => {

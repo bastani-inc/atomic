@@ -30,7 +30,7 @@ import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transform } from "esbuild";
 import { rolldown } from "rolldown";
-import { assignStartupGroups, groupName, sharedFileName } from "./split-dist-names.mjs";
+import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } from "./split-dist-names.mjs";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
@@ -356,12 +356,19 @@ if (!existsSync(RELEASE_RECORDS))
 		`split-dist: ${RELEASE_RECORDS} is missing; the split keeps the modules the releases recorded there import on demand`,
 	);
 const releasedLazyTargets = new Set();
+/** The shared files a recorded release imports on demand, with the names it exported: see `compatSharedFiles`. */
+const releasedSharedTargets = [];
 for (const file of readdirSync(RELEASE_RECORDS).filter((name) => /^\d.*\.json$/.test(name))) {
 	const record = JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8"));
-	for (const key of Object.keys(record.packages["@bastani/atomic"]?.lazy ?? {})) {
+	const atomic = record.packages["@bastani/atomic"];
+	for (const key of Object.keys(atomic?.lazy ?? {})) {
 		const prefix = "@bastani/atomic:dist/";
-		if (!key.startsWith(prefix) || key.startsWith(`${prefix}${SHARED_DIRECTORY}/`)) continue;
+		if (!key.startsWith(prefix)) continue;
 		const path = key.slice(prefix.length);
+		if (path.startsWith(`${SHARED_DIRECTORY}/`)) {
+			releasedSharedTargets.push({ version: record.version, path, names: atomic.files?.[`dist/${path}`] ?? [] });
+			continue;
+		}
 		if (!existsSync(join(dist, path)) && !existsSync(join(COMPILED_ENTRIES, path)))
 			throw new Error(
 				`split-dist: ${record.version} imports dist/${path} on demand, and no module of this package compiles to it; keep a module at that path`,
@@ -423,10 +430,21 @@ function inlineSourceMap(source, mapFile) {
 
 const owners = new Set(OWNER_ENTRIES.map((entry) => `${entry}.js`));
 const ownerEntryIds = OWNER_ENTRIES.map((entry) => join(dist, `${entry}.js`));
-const entryFilesByName = Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, join(dist, `${entry}.js`)]));
-// Keep `cli.js` (parsed for dynamic entry imports by write-startup-files/stages) and `OWNER_ENTRIES` (external
-// singletons whose code must stay in their own files across releases) inline in their own entry files.
-const inlineEntryIds = new Set([join(dist, "cli.js"), ...ownerEntryIds]);
+// Keep `cli.js` (parsed by write-startup-files/stages), `rpc-entry.js` (executable shebang), and `OWNER_ENTRIES`
+// (external singletons whose code stays in their own files across releases) as direct inline entries. Every other
+// `SPLIT_ENTRIES` entry is loaded through a 1-line virtual facade (`\0entry:<entry>`) so Rolldown places the module
+// itself into its shared group and never merges shared chunks into an entry path or adds synthetic exports to it.
+const directEntryNames = new Set(["cli", "rpc-entry", ...OWNER_ENTRIES]);
+const VIRTUAL_ENTRY_PREFIX = "\0atomic-entry:";
+const VIRTUAL_COMPAT_PREFIX = "\0atomic-compat:";
+const virtualEntryTargets = new Set(SPLIT_ENTRIES.filter((entry) => !directEntryNames.has(entry)).map((entry) => `${entry}.js`));
+const entryFilesByName = Object.fromEntries(
+	SPLIT_ENTRIES.map((entry) => [
+		entry,
+		directEntryNames.has(entry) ? join(dist, `${entry}.js`) : `${VIRTUAL_ENTRY_PREFIX}${entry}`,
+	]),
+);
+const inlineEntryIds = new Set([...directEntryNames].map((entry) => join(dist, `${entry}.js`)));
 const toPosix = (value) => value.split(sep).join("/");
 const normalizeId = (id) => (id.startsWith("\0") ? id : id.split("?")[0]);
 const relFromPackage = (id) => {
@@ -446,6 +464,11 @@ const nodeModulesExternalImports = new Map();
 const allBundledIds = new Set();
 /** @type {Set<string>} */
 const emittedDynamicNodeModules = new Set();
+const releasedSharedStems = new Set(
+	releasedSharedTargets
+		.map(({ path }) => new RegExp(`^${SHARED_DIRECTORY}/([^/]+)-[A-Z2-7]{8}\\.js$`).exec(path)?.[1])
+		.filter((stem) => stem !== undefined),
+);
 
 const bundle = await rolldown({
 	cwd: packageDir,
@@ -465,8 +488,29 @@ const bundle = await rolldown({
 	plugins: [
 		{
 			name: "dist-module-url",
+			buildStart() {
+				// Emit a Rolldown facade chunk for any bundled `threadModules` module (such as
+				// `utils/compile-cache-warmup-host.js`) that a recorded earlier release imports on demand from
+				// `dist/_shared/`. Keeping its code in its startup group (`p0-cli`) and emitting a facade ensures
+				// the compat file shares the exact same bundled module singleton without adding a file open at startup.
+				for (const path of threadModules) {
+					const stem = path.slice(path.lastIndexOf("/") + 1).replace(/\.js$/, "");
+					if (!releasedSharedStems.has(stem)) continue;
+					const full = join(dist, path);
+					if (existsSync(full) || existsSync(join(COMPILED_ENTRIES, path))) {
+						this.emitFile({
+							type: "chunk",
+							id: `${VIRTUAL_COMPAT_PREFIX}${path}`,
+							name: stem,
+							preserveSignature: "allow-extension",
+						});
+					}
+				}
+			},
 			async resolveId(source, importer, extra) {
+				if (source.startsWith(VIRTUAL_ENTRY_PREFIX) || source.startsWith(VIRTUAL_COMPAT_PREFIX)) return source;
 				if (!importer) return null;
+				if (importer.startsWith(VIRTUAL_ENTRY_PREFIX) || importer.startsWith(VIRTUAL_COMPAT_PREFIX)) return source;
 				const cleanImporter = normalizeId(importer);
 				const recordNodeModuleExternal = (specifier) => {
 					if (/(?:^|\/)node_modules\//.test(toPosix(cleanImporter))) {
@@ -494,6 +538,13 @@ const bundle = await rolldown({
 					if (compiledModules.has(target) || owners.has(target)) {
 						return { id: `${DIST_PATH_MARK}${target}`, external: true };
 					}
+					// Keep dynamic `import("./...")` calls targeting a split entry pointing at that entry's own path
+					// (e.g. `cli.js` dynamically importing `utils/startup-stages.js`, `main.js`, `startup-shell.js`,
+					// `http-dispatcher.js`, etc.) so `write-startup-files.mjs`, `write-startup-stages.mjs`, and
+					// lazy-loaded entries preserve their exact dynamic import boundary.
+					if (extra.kind === "dynamic-import" && virtualEntryTargets.has(target)) {
+						return `${VIRTUAL_ENTRY_PREFIX}${target.slice(0, -3)}`;
+					}
 					const file = join(dist, target);
 					if (!existsSync(file) && existsSync(join(COMPILED_ENTRIES, target))) return file;
 					return null;
@@ -515,6 +566,32 @@ const bundle = await rolldown({
 				return { id: source, external: true };
 			},
 			async load(rawId) {
+				if (rawId.startsWith(VIRTUAL_ENTRY_PREFIX)) {
+					const entry = rawId.slice(VIRTUAL_ENTRY_PREFIX.length);
+					const target = join(dist, `${entry}.js`);
+					const code = compiledEntries.get(target)?.code ?? "";
+					const hasDefault = /\bexport\s+default\b|\bas\s+default\b/.test(code);
+					const spec = JSON.stringify(target);
+					return {
+						code: hasDefault
+							? `export * from ${spec};\nexport { default } from ${spec};\n`
+							: `export * from ${spec};\n`,
+						map: null,
+					};
+				}
+				if (rawId.startsWith(VIRTUAL_COMPAT_PREFIX)) {
+					const path = rawId.slice(VIRTUAL_COMPAT_PREFIX.length);
+					const target = join(dist, path);
+					const code = compiledSource(path);
+					const hasDefault = /\bexport\s+default\b|\bas\s+default\b/.test(code);
+					const spec = JSON.stringify(target);
+					return {
+						code: hasDefault
+							? `export * from ${spec};\nexport { default } from ${spec};\n`
+							: `export * from ${spec};\n`,
+						map: null,
+					};
+				}
 				const id = normalizeId(rawId);
 				if (!isInDist(id) || !id.endsWith(".js")) return null;
 				const entry = compiledEntries.get(id);
@@ -585,13 +662,13 @@ const bundle = await rolldown({
 					inlineEntryIds,
 					ownerEntryIds,
 					{
-						shell: entryIfPresent([
-							"cli",
-							"modes/interactive/startup-shell",
-							"cli/settings-startup",
-							"modes/interactive-engine/engine-prewarm",
-						]),
+						cli: entryIfPresent(["cli"]),
+						prewarm: entryIfPresent(["modes/interactive-engine/engine-prewarm"]),
+						elig: entryIfPresent(["modes/interactive/startup-shell-eligibility"]),
+						shell: entryIfPresent(["modes/interactive/startup-shell"]),
+						stages: entryIfPresent(["utils/startup-stages"]),
 						http: entryIfPresent(["core/http-dispatcher"]),
+						settingsStartup: entryIfPresent(["cli/settings-startup"]),
 						main: entryIfPresent(["main"]),
 						modeInteractive: entryIfPresent(["modes/interactive/interactive-mode"]),
 						modeRpc: entryIfPresent(["modes/rpc/rpc-mode"]),
@@ -604,31 +681,35 @@ const bundle = await rolldown({
 	],
 });
 
+const formatSharedChunkFileName = (chunk) => {
+	const realIds = chunk.moduleIds.map(normalizeId).filter((id) => !id.startsWith("\0"));
+	const relInputs = Object.fromEntries(realIds.map((id) => [relFromPackage(id), {}]));
+	let filename;
+	if (realIds.length === 0) {
+		// Synthetic runtime helper chunk (e.g. rolldown:runtime) or empty re-export facade: hash module id/facade
+		// plus sorted exports so new helpers produce a fresh filename and never collide with an earlier release.
+		const facade = chunk.facadeModuleId?.startsWith(VIRTUAL_COMPAT_PREFIX)
+			? `dist/${chunk.facadeModuleId.slice(VIRTUAL_COMPAT_PREFIX.length)}`
+			: chunk.facadeModuleId
+				? relFromPackage(normalizeId(chunk.facadeModuleId))
+				: undefined;
+		const first = facade ? `entry:${facade}` : `runtime:${[...chunk.moduleIds].sort()[0] ?? chunk.name}`;
+		const stem = chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+		filename = `${stem}-${groupName(`${first}\0${[...chunk.exports].sort().join(",")}`)}.js`;
+	} else {
+		const groupNames = new Set(realIds.map((id) => groups.get(id)).filter((g) => g !== undefined));
+		const stem = groupNames.size === 1 ? [...groupNames][0] : chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+		const entryPoint = chunk.facadeModuleId ? relFromPackage(normalizeId(chunk.facadeModuleId)) : undefined;
+		filename = sharedFileName(stem, { inputs: relInputs, exports: chunk.exports, entryPoint }, chunk.name);
+	}
+	return `${SHARED_DIRECTORY}/${filename}`;
+};
+
 const generated = await bundle.generate({
 	format: "esm",
-	entryFileNames: "[name].js",
-	chunkFileNames: (chunk) => {
-		const realIds = chunk.moduleIds.map(normalizeId).filter((id) => !id.startsWith("\0"));
-		const relInputs = Object.fromEntries(realIds.map((id) => [relFromPackage(id), {}]));
-		let filename;
-		if (realIds.length === 0) {
-			// Synthetic runtime helper chunk (e.g. rolldown:runtime) or empty re-export facade: hash module id/facade
-			// plus sorted exports so new helpers produce a fresh filename and never collide with an earlier release.
-			const first = chunk.facadeModuleId
-				? `entry:${relFromPackage(normalizeId(chunk.facadeModuleId))}`
-				: `runtime:${[...chunk.moduleIds].sort()[0] ?? chunk.name}`;
-			const stem = chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_");
-			filename = `${stem}-${groupName(`${first}\0${[...chunk.exports].sort().join(",")}`)}.js`;
-		} else {
-			const groupNames = new Set(realIds.map((id) => groups.get(id)).filter((g) => g !== undefined));
-			const stem = groupNames.size === 1 ? [...groupNames][0] : chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_");
-			const entryPoint = chunk.facadeModuleId ? relFromPackage(normalizeId(chunk.facadeModuleId)) : undefined;
-			filename = sharedFileName(stem, { inputs: relInputs, exports: chunk.exports, entryPoint }, chunk.name);
-		}
-		return `${SHARED_DIRECTORY}/${filename}`;
-	},
+	entryFileNames: (chunk) => (chunk.name in entryFilesByName ? "[name].js" : formatSharedChunkFileName(chunk)),
+	chunkFileNames: formatSharedChunkFileName,
 	keepNames: true,
-	strictExecutionOrder: true,
 	sourcemap: true,
 	sourcemapExcludeSources: true,
 	minifyInternalExports: false,
@@ -782,6 +863,23 @@ for (const file of ordered) {
 	renameSync(`${file.path}.split`, file.path);
 }
 for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
+// A shared file a recorded release imports on demand that this split no longer writes, as when the module it holds
+// changed its exports or bundler layout: a process of that release still imports it by that name, so it stays, naming
+// this build's file of the same module.
+const sharedChunks = generated.output.flatMap((item) => {
+	if (item.type !== "chunk") return [];
+	const match = new RegExp(`^${SHARED_DIRECTORY}/([^/]+)-([A-Z2-7]{8})\\.js$`).exec(item.fileName);
+	return match === null
+		? []
+		: [{ file: `${match[1]}-${match[2]}.js`, stem: match[1], exports: item.exports, isEntry: item.isEntry }];
+});
+const sharedEntryStems = new Set(sharedChunks.filter((c) => c.isEntry).map((c) => c.stem));
+const sharedOutputs = sharedChunks
+	.filter((c) => c.isEntry || !sharedEntryStems.has(c.stem))
+	.map(({ file, stem, exports }) => ({ file, stem, exports }));
+for (const { path, contents } of compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY)) {
+	writeFileSync(join(dist, path), contents);
+}
 writeFileSync(
 	join(dist, "THIRD_PARTY_NOTICES.md"),
 	`# Third-party notices\n\nThe shared files in \`dist/${SHARED_DIRECTORY}/\` include code from these packages.\n\n${notices.join("\n")}`,

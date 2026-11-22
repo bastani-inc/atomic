@@ -6,9 +6,11 @@ import { Type } from "@bastani/atomic-ai";
 import { afterEach, describe, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
-import { createEventBus } from "../src/core/event-bus.js";
+import { canonicalEventBusFor, createEventBus } from "../src/core/event-bus.js";
+import { sessionScopedExtensionState } from "../src/core/extension-session-state.ts";
 import {
 	createLazyBuiltinFactory,
+	getLazyBuiltinSpec,
 	type LazyBuiltinSpec,
 	registerLazyBuiltin,
 	unregisterLazyBuiltinForTest,
@@ -17,6 +19,7 @@ import { instantiateExtensions, loadExtensionFromFactory, loadExtensions } from 
 import { rollbackExtensionFactories } from "../src/core/extensions/loader-rollback.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import { isStaleExtensionContextError } from "../src/core/extensions/stale-context.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "../src/core/extensions/types.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -32,10 +35,16 @@ function deferred<T>() {
 }
 
 const tempDirs: string[] = [];
-const registeredLabels: Array<"subagents" | "mcp" | "web-access" | "intercom"> = [];
+const savedSpecs: Array<{
+	label: "subagents" | "mcp" | "web-access" | "intercom";
+	previous: LazyBuiltinSpec | undefined;
+}> = [];
 
 afterEach(() => {
-	for (const label of registeredLabels.splice(0)) unregisterLazyBuiltinForTest(label);
+	for (const { label, previous } of savedSpecs.splice(0).reverse()) {
+		if (previous) registerLazyBuiltin(label, previous);
+		else unregisterLazyBuiltinForTest(label);
+	}
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -628,6 +637,7 @@ describe("lazy builtin extension mechanism", () => {
 		const entryPath = join(webLocation.packageDir, "index.ts");
 		let executed = false;
 
+		savedSpecs.push({ label: "web-access", previous: getLazyBuiltinSpec("web-access") });
 		registerLazyBuiltin("web-access", {
 			label: "web-access",
 			register(pi, controller) {
@@ -652,7 +662,6 @@ describe("lazy builtin extension mechanism", () => {
 				});
 			},
 		});
-		registeredLabels.push("web-access");
 
 		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-loader-"));
 		tempDirs.push(dir);
@@ -860,5 +869,69 @@ describe("lazy builtin extension mechanism", () => {
 		});
 		await call;
 		assert.deepEqual(observed, ["session_start", "turn_start", "message_start:intercom_message", "execute"]);
+	});
+
+	test("preserves non-writable non-configurable symbol properties, canonical event bus identity, and stale-context errors on retired proxy emit", async () => {
+		const sym = Symbol.for("atomic.test/non-configurable-writer@1");
+		const writerFn = (ownerId: string) => `writer:${ownerId}`;
+		const stateKey = Symbol("atomic.test.lazy-session-state");
+		let observedValue: unknown;
+		let capturedProxyEvents: ExtensionAPI["events"] | undefined;
+		let stateFromProxy: { count: number } | undefined;
+		const spec: LazyBuiltinSpec = {
+			label: "proxy-invariants",
+			register(pi, controller) {
+				assert.equal((pi as unknown as Record<symbol, unknown>)[sym], writerFn);
+				pi.registerTool({
+					name: "inv_tool",
+					label: "InvTool",
+					description: "InvTool",
+					parameters: Type.Object({}),
+					execute: (...args) => controller.executeTool("inv_tool", args),
+				});
+			},
+		};
+		const baseFactory = createLazyBuiltinFactory(spec, async () => (pi) => {
+			observedValue = (pi as unknown as Record<symbol, unknown>)[sym];
+			capturedProxyEvents = pi.events;
+			stateFromProxy = sessionScopedExtensionState(pi.events, stateKey, () => ({ count: 0 }));
+			stateFromProxy.count += 1;
+			pi.registerTool({
+				name: "inv_tool",
+				label: "InvTool",
+				description: "InvTool",
+				parameters: Type.Object({}),
+				execute: async () => ({
+					content: [{ type: "text", text: (observedValue as (id: string) => string)("s1") }],
+					details: {},
+				}),
+			});
+		});
+		const wrappedFactory: ExtensionFactory = (pi) => {
+			Object.defineProperty(pi, sym, { value: writerFn });
+			return baseFactory(pi);
+		};
+		const { extension, runner, eventBus } = await mountExtension(wrappedFactory);
+		const stateFromRoot = sessionScopedExtensionState(eventBus, stateKey, () => ({ count: 0 }));
+		await runner.emit({ type: "session_start", reason: "startup" });
+		const res = await extension.tools
+			.get("inv_tool")!
+			.definition.execute("c1", {}, undefined, undefined, runner.createContext());
+
+		// 1. Non-writable non-configurable symbol property preserved by identity.
+		assert.equal(observedValue, writerFn);
+		assert.deepEqual(res.content, [{ type: "text", text: "writer:s1" }]);
+
+		// 2. Canonical EventBus identity preserved so sessionScopedExtensionState shares state with host bus.
+		assert.equal(canonicalEventBusFor(capturedProxyEvents!), canonicalEventBusFor(eventBus));
+		assert.equal(stateFromProxy, stateFromRoot);
+		assert.equal(stateFromRoot.count, 1);
+
+		// 3. Retired captureProxy events.emit throws STALE_EXTENSION_CONTEXT_MESSAGE (recognized by isStaleExtensionContextError).
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
+		assert.throws(
+			() => capturedProxyEvents!.emit("late:event", {}),
+			(err: unknown) => isStaleExtensionContextError(err),
+		);
 	});
 });
