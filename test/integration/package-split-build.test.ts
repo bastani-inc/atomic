@@ -874,8 +874,9 @@ test(
 			const files = Object.keys(gateFiles).filter((path) => path.endsWith(".js"));
 			const gate = fs.readFileSync(join(dist, "core", "export-html", "index.js"), "utf8");
 			return {
-				gated: files.filter((path) => path.endsWith(".impl.js")).sort(),
-				stubs: files.filter((path) => !path.endsWith(".impl.js")).sort(),
+				gated: files.filter((path) => path.endsWith(".code.js")).sort(),
+				aliases: files.filter((path) => path.endsWith(".impl.js")).sort(),
+				stubs: files.filter((path) => !/\.(?:code|impl)\.js$/.test(path)).sort(),
 				probes: /for \(const path of (\[[^\]]*\])\)/.exec(gate)?.[1],
 			};
 		};
@@ -883,7 +884,7 @@ test(
 		assert.equal(clean.status, 0, clean.stderr);
 		const expected = decisions();
 		assert.ok(expected.stubs.includes("_shared/chunk-CDOYTDYM.js"), "0.10.4-alpha.1's module path holds a stub");
-		assert.ok(expected.gated.includes("core/export-html/index.impl.js"), "the export module is gated");
+		assert.ok(expected.gated.includes("core/export-html/index.code.js"), "the export module is gated");
 		// What an earlier build leaves: its own shared file at 0.10.4-alpha.1's module path, a shared file that imports
 		// the export module statically, and the export module's code as an earlier build wrote it beside its gate.
 		fs.writeFileSync(
@@ -894,7 +895,7 @@ test(
 			join(dist, "_shared", "chunk-AAAAAAAA.js"),
 			'import { exportSessionToHtml } from "../core/export-html/index.js";\nexport { exportSessionToHtml };\n',
 		);
-		fs.writeFileSync(join(dist, "core", "export-html", "index.impl.js"), "export const exportSessionToHtml = 1;\n");
+		fs.writeFileSync(join(dist, "core", "export-html", "index.code.js"), "export const exportSessionToHtml = 1;\n");
 		const over = split();
 		assert.equal(over.status, 0, over.stderr);
 		assert.deepEqual(decisions(), expected);
@@ -938,7 +939,7 @@ test(
 );
 
 test(
-	"a gate implementation path an earlier release imported on demand stays, also when this build does not gate its module",
+	"a path an earlier release imported a module's code at stays, also when this build does not gate its module",
 	() => {
 		const { nodeModules } = installedLayout();
 		const build = join(dirname(nodeModules), "released-impl-paths");
@@ -948,7 +949,7 @@ test(
 		assert.ok(fs.existsSync(join(build, "in-place-update", "0.10.4.json")), "0.10.4 is recorded");
 		const withRecorded = split();
 		assert.equal(withRecorded.status, 0, withRecorded.stderr);
-		// A release that imported a gate implementation path whose module is now statically imported (not gated).
+		// A release that imported a module's code at `<module>.impl.js`, whose module is now statically imported (not gated).
 		const record = (path: string) =>
 			fs.writeFileSync(
 				join(build, "in-place-update", "0.0.1.json"),
@@ -962,8 +963,11 @@ test(
 		assert.equal(kept.status, 0, kept.stderr);
 		const implPath = join(build, "dist", "core", "agent-session.impl.js");
 		const modulePath = join(build, "dist", "core", "agent-session.js");
-		assert.ok(fs.existsSync(implPath), "the gate implementation path stays as a re-export file");
-		assert.ok(fs.existsSync(`${implPath}.map`), "the re-export file ships with a source map");
+		assert.ok(fs.existsSync(implPath), "the path stays");
+		assert.ok(fs.existsSync(`${implPath}.map`), "with a source map");
+		// That release does not guard its own imports, so its path is a gate, which gives the module's single copy (the
+		// module is gated here too, as that release imports it on demand: its code is at `agent-session.code.js`).
+		assert.match(fs.readFileSync(implPath, "utf8"), /module = await import\("\.\/agent-session\.code\.js"\)/);
 		const probe = spawnSync(
 			process.execPath,
 			[
@@ -977,9 +981,48 @@ process.stdout.write(JSON.stringify({ same: impl.AgentSession === current.AgentS
 		);
 		assert.equal(probe.status, 0, probe.stderr);
 		assert.deepEqual(JSON.parse(probe.stdout), { same: true, hasClass: true });
-		// Running the split again over the shim succeeds cleanly.
+		// Running the split again over the gate succeeds cleanly.
 		const again = split();
 		assert.equal(again.status, 0, again.stderr);
+		// A release that guards its own imports (0.10.5 and later) needs no gate at the path it imports; once no earlier
+		// release imports the module on demand, this build does not gate it, and that path gives the module's exports.
+		fs.writeFileSync(
+			join(build, "in-place-update", "0.0.1.json"),
+			JSON.stringify({ version: "0.0.1", packages: { "@bastani/atomic": { lazy: {} } } }),
+		);
+		fs.writeFileSync(
+			join(build, "in-place-update", "0.10.5.json"),
+			JSON.stringify({
+				version: "0.10.5",
+				packages: {
+					"@bastani/atomic": { lazy: { "@bastani/atomic:dist/core/agent-session.code.js": ["dist/main.js"] } },
+				},
+			}),
+		);
+		const guarded = split();
+		assert.equal(guarded.status, 0, guarded.stderr);
+		const aliasPath = join(build, "dist", "core", "agent-session.code.js");
+		const alias = fs.readFileSync(aliasPath, "utf8");
+		assert.match(
+			alias,
+			/^export \* from "\.\/agent-session\.js";$/m,
+			"a guarded release's path gives the module's exports",
+		);
+		assert.doesNotMatch(alias, /await import/, "and holds no gate");
+		const guardedProbe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`const alias = await import(${JSON.stringify(pathToFileURL(aliasPath).href)});
+const current = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
+process.stdout.write(JSON.stringify({ same: alias.AgentSession === current.AgentSession }));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(guardedProbe.status, 0, guardedProbe.stderr);
+		assert.deepEqual(JSON.parse(guardedProbe.stdout), { same: true });
+		fs.rmSync(join(build, "in-place-update", "0.10.5.json"));
 		// When the underlying module no longer compiles, the build still fails.
 		record("core/a-module-this-package-never-had.impl.js");
 		const failed = split();
