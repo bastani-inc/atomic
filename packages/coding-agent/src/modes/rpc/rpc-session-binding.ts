@@ -12,6 +12,7 @@ import {
 	type QueuedDeliveryRelay,
 	withQueuedDeliveryChange,
 } from "../../core/queued-message-delivery.ts";
+import { userMessageOrigin } from "../../core/user-message-origin.js";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
@@ -290,9 +291,14 @@ export class RpcSessionBinding {
 				event.message.role === "user"
 					? queuedMessageReceiptId(event.message)
 					: undefined;
+			// A user message's start carries the host prompt send id it originated from, when the prompt named one.
+			const originSendId =
+				this.queuedDeliveries !== undefined && event.type === "message_start" && event.message.role === "user"
+					? userMessageOrigin(event.message)
+					: undefined;
 			const record = withQueuedDeliveryChange(
 				withSaved,
-				this.queuedDeliveries?.note(session, event, queuedMessageId),
+				this.queuedDeliveries?.note(session, event, queuedMessageId, originSendId),
 			);
 			this.output(receipt ? { ...record, atomicChatReceipt: receipt } : record);
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();

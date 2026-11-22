@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `SessionResume` now carries optional per-axis `retainedSettings` provenance (`"held"`, `"none"`, or `"not-held"`) for the active branch's latest model and thinking-level changes, allowing partial-history sessions to distinguish confirmed absence from unretained pre-window settings without additional store reads (while keeping `SessionManager.getLatestBranchSettings` and custom stores omitting `retainedSettings` compatible with 0.10.4).
+
 ### Fixed
 
 - A session that started on 0.10.4 and keeps running after an in-place update (`npm install -g`, `bun add -g`) now says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` when the update's code for a feature it loads on demand cannot load into it, instead of failing with the runtime's error. A session that starts on this release or later says so by itself for every later update, whatever that release changes; features whose updated code loads keep working as before.
 - In the standalone binary and under Bun, Amazon Bedrock requests whose proxy or HTTP/1.1 TLS connection closes before its handshake finishes — including plain-HTTP Bedrock endpoints through an `https://` proxy — now retry at the provider SDK level (`retry.provider.maxRetries`) and recover from transient closes as on Node.js instead of failing on the first attempt ([#6448](https://github.com/bastani-inc/atomic/pull/6448)).
+- On Node.js, requests through an `https://` proxy now handle TLS SNI consistently across hostnames and IP addresses: plain-HTTP Amazon Bedrock endpoints send SNI for hostname `https://` proxies (fixing virtual-hosted and SNI-requiring proxies), and the global HTTP dispatcher omits IP-literal `servername` values for IPv4 and IPv6 `https://` proxies (fixing IPv6 `https://[::1]` proxy certificate verification and removing RFC 6066 IP-SNI deprecation warnings while preserving IP SAN checks and explicit non-IP `servername` overrides) ([#6458](https://github.com/bastani-inc/atomic/pull/6458)).
+- Skip redundant filesystem canonicalization when matching identical project paths in `history://` and session listings, and bound cross-path `history://` authorization checks to the call's time budget and abort signal so slow filesystem lookups cannot silently truncate requested slices or hang past cancellation.
+- Fixed echoed user messages in the main chat crossing or disappearing when an extension's `input` hook or a slash template rewrites one submission to the same text as another submission already echoed on screen. Each prompt submission now matches its own echoed row directly, while older interactive engines and hosts continue falling back to text matching.
 - On Windows, MCP server shutdown and process-tree kill commands now validate their working directory through canonical path resolution and explicit drive-root handling, so `taskkill.exe` never runs inside the project folder even when `SystemRoot` or `windir` points to a junction, `subst` drive, extended-length alias, bare drive, or directory inside the project.
 
 ## [0.10.4] - 2026-11-22
