@@ -17,13 +17,20 @@ export type BuiltinImageProvider = {
 type BuiltinImageModel<TProvider extends BuiltinImageProvider, TModelId extends ImageModelIds<TProvider>> =
 	Catalog[TProvider][TModelId] extends ImageModel<infer TApi extends ImageApi> ? ImageModel<TApi> : never;
 
-const imageModelsByProvider = new Map<string, Map<string, ImageModel<ImageApi>>>();
-for (const [provider, models] of Object.entries(IMAGE_MODELS)) {
-	const imageModels = new Map<string, ImageModel<ImageApi>>();
-	for (const model of Object.values(models as Record<string, ImageModel<ImageApi>>)) {
-		imageModels.set(model.id, model);
+let imageModelsByProvider: Map<string, Map<string, ImageModel<ImageApi>>> | undefined;
+
+function getImageModelsByProvider(): Map<string, Map<string, ImageModel<ImageApi>>> {
+	if (imageModelsByProvider !== undefined) return imageModelsByProvider;
+	const byProvider = new Map<string, Map<string, ImageModel<ImageApi>>>();
+	for (const [provider, models] of Object.entries(IMAGE_MODELS)) {
+		const imageModels = new Map<string, ImageModel<ImageApi>>();
+		for (const model of Object.values(models as Record<string, ImageModel<ImageApi>>)) {
+			imageModels.set(model.id, model);
+		}
+		if (imageModels.size > 0) byProvider.set(provider, imageModels);
 	}
-	if (imageModels.size > 0) imageModelsByProvider.set(provider, imageModels);
+	imageModelsByProvider = byProvider;
+	return byProvider;
 }
 
 /** @deprecated Static catalog read. Use `getBuiltinImageModel` from "@bastani/atomic-ai/providers/all" or `Models.getModelOfType("image", ...)`. */
@@ -31,18 +38,18 @@ export function getImageModel<TProvider extends BuiltinImageProvider, TModelId e
 	provider: TProvider,
 	modelId: TModelId,
 ): BuiltinImageModel<TProvider, TModelId> {
-	return imageModelsByProvider.get(provider)?.get(modelId as string) as BuiltinImageModel<TProvider, TModelId>;
+	return getImageModelsByProvider().get(provider)?.get(modelId as string) as BuiltinImageModel<TProvider, TModelId>;
 }
 
 /** @deprecated Static catalog read. Use `Models.getProviders()`. */
 export function getImageProviders(): BuiltinImageProvider[] {
-	return Array.from(imageModelsByProvider.keys()) as BuiltinImageProvider[];
+	return Array.from(getImageModelsByProvider().keys()) as BuiltinImageProvider[];
 }
 
 /** @deprecated Static catalog read. Use `getBuiltinImageModels` from "@bastani/atomic-ai/providers/all" or `Models.getModelsOfType("image")`. */
 export function getImageModels<TProvider extends BuiltinImageProvider>(
 	provider: TProvider,
 ): BuiltinImageModel<TProvider, ImageModelIds<TProvider>>[] {
-	const models = imageModelsByProvider.get(provider);
+	const models = getImageModelsByProvider().get(provider);
 	return models ? (Array.from(models.values()) as BuiltinImageModel<TProvider, ImageModelIds<TProvider>>[]) : [];
 }

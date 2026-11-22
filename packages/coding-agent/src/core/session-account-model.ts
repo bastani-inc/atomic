@@ -97,7 +97,7 @@ export async function readSelectedAccountModel(
 		const controller = new AbortController();
 		deadline = controller;
 		const signal = caller ? AbortSignal.any([caller, controller.signal]) : controller.signal;
-		timer = setTimeout(() => controller.abort(), 15_000).unref();
+		timer = setTimeout(() => controller.abort(), 15_000);
 		const request = await raceWithAbortSignal(accountRequest(initial, signal), signal);
 		if (!request || !sameSource(initial, source()) || signal.aborted) return undefined;
 		let selected: Model<Api> | null;

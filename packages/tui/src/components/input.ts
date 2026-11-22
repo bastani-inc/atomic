@@ -13,8 +13,6 @@ import { UndoStack } from "../undo-stack.ts";
 import { getGraphemeSegmenter, isWhitespaceChar, sliceByColumn, truncateToWidth, visibleWidth } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
 
-const segmenter = getGraphemeSegmenter();
-
 interface InputState {
 	value: string;
 	cursor: number;
@@ -177,7 +175,7 @@ export class Input implements Component, Focusable {
 			this.lastAction = null;
 			if (this.cursor > 0) {
 				const beforeCursor = this.value.slice(0, this.cursor);
-				const graphemes = [...segmenter.segment(beforeCursor)];
+				const graphemes = [...getGraphemeSegmenter().segment(beforeCursor)];
 				const lastGrapheme = graphemes[graphemes.length - 1];
 				this.cursor -= lastGrapheme ? lastGrapheme.segment.length : 1;
 			}
@@ -188,7 +186,7 @@ export class Input implements Component, Focusable {
 			this.lastAction = null;
 			if (this.cursor < this.value.length) {
 				const afterCursor = this.value.slice(this.cursor);
-				const graphemes = [...segmenter.segment(afterCursor)];
+				const graphemes = [...getGraphemeSegmenter().segment(afterCursor)];
 				const firstGrapheme = graphemes[0];
 				this.cursor += firstGrapheme ? firstGrapheme.segment.length : 1;
 			}
@@ -244,7 +242,7 @@ export class Input implements Component, Focusable {
 		const targetColumn = this.renderedStartColumn + visibleColumn;
 		let currentColumn = 0;
 		this.cursor = this.value.length;
-		for (const grapheme of segmenter.segment(this.value)) {
+		for (const grapheme of getGraphemeSegmenter().segment(this.value)) {
 			const nextColumn = currentColumn + visibleWidth(grapheme.segment);
 			if (targetColumn < nextColumn) {
 				this.cursor = grapheme.index;
@@ -272,7 +270,7 @@ export class Input implements Component, Focusable {
 		if (this.cursor > 0) {
 			this.pushUndo();
 			const beforeCursor = this.value.slice(0, this.cursor);
-			const graphemes = [...segmenter.segment(beforeCursor)];
+			const graphemes = [...getGraphemeSegmenter().segment(beforeCursor)];
 			const lastGrapheme = graphemes[graphemes.length - 1];
 			const graphemeLength = lastGrapheme ? lastGrapheme.segment.length : 1;
 			this.value = this.value.slice(0, this.cursor - graphemeLength) + this.value.slice(this.cursor);
@@ -285,7 +283,7 @@ export class Input implements Component, Focusable {
 		if (this.cursor < this.value.length) {
 			this.pushUndo();
 			const afterCursor = this.value.slice(this.cursor);
-			const graphemes = [...segmenter.segment(afterCursor)];
+			const graphemes = [...getGraphemeSegmenter().segment(afterCursor)];
 			const firstGrapheme = graphemes[0];
 			const graphemeLength = firstGrapheme ? firstGrapheme.segment.length : 1;
 			this.value = this.value.slice(0, this.cursor) + this.value.slice(this.cursor + graphemeLength);
@@ -431,7 +429,7 @@ export class Input implements Component, Focusable {
 
 		if (this.value.length === 0 && this.placeholder) {
 			const placeholder = truncateToWidth(this.placeholder, availableWidth, "");
-			const graphemes = [...segmenter.segment(placeholder)];
+			const graphemes = [...getGraphemeSegmenter().segment(placeholder)];
 			const atCursor = graphemes[0]?.segment ?? " ";
 			const afterCursor = placeholder.slice(atCursor.length);
 			const marker = this.focused ? CURSOR_MARKER : "";
@@ -482,7 +480,7 @@ export class Input implements Component, Focusable {
 
 		// Build line with fake cursor
 		// Insert cursor character at cursor position
-		const graphemes = [...segmenter.segment(visibleText.slice(cursorDisplay))];
+		const graphemes = [...getGraphemeSegmenter().segment(visibleText.slice(cursorDisplay))];
 		const cursorGrapheme = graphemes[0];
 
 		const beforeCursor = visibleText.slice(0, cursorDisplay);

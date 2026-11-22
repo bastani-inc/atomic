@@ -9,6 +9,7 @@
 ### Changed
 
 - `SessionResume` now carries optional per-axis `retainedSettings` provenance (`"held"`, `"none"`, or `"not-held"`) for the active branch's latest model and thinking-level changes, allowing partial-history sessions to distinguish confirmed absence from unretained pre-window settings without additional store reads (while keeping `SessionManager.getLatestBranchSettings` and custom stores omitting `retainedSettings` compatible with 0.10.4).
+- Interactive sessions reach the editor and first model request faster on warm starts: early theme and settings defaults no longer load TypeBox or `@bastani/atomic-ai` before the editor paints (falling back lazily to the full TypeBox validator for any invalid theme), prewarmed engines preload RPC mode and the native addon while waiting for adoption, and skill discovery avoids unnecessary ignore-file reads, batches shared parent-directory path resolution, and parses safe YAML frontmatter linearly.
 
 ### Fixed
 
@@ -28,6 +29,8 @@
 - Restored a lost subagent chat's known-unsaved queued messages into that child chat's own editor ahead of any draft (immediately if open and writable, or on first writable reopen in the same session, with a main-chat notice while closed and fallback to the full-text notice when read-only or from an older engine).
 - Editing the `debug` or `httpProxy` global setting in `settings.json` while Atomic is starting no longer discards a same-build prewarmed interactive engine and starts a second one: the updated setting values are reconciled over the engine adoption handshake before the engine configures HTTP or starts its session.
 - Blueprint build locks on Windows now read fresh process start times when recording newly started steps and build holders without the native module, retry transient fallback start-time lookups and concurrent Windows lock-file read/rename refusals while a build runs or settles, and check process liveness before querying fallback start times so reused PIDs never record a stale start and dead builds settle promptly.
+- Fixed the Windows installer (`install.ps1`) failing with "Access to the path ... is denied" when reinstalling, repairing, or rolling back a version whose directory, launcher shim, staged copy, or backup was briefly locked by antivirus scanning, the search indexer, or a just-exited `atomic` process. All transaction, rollback, and leftover-recovery renames now use atomic same-directory `Rename-Item` with a bounded retry up to ~9.5 seconds (which also prevents PowerShell 7's `Move-Item` from splitting a locked version directory across the live and backup paths), and rollback/staged-tree removals now retry transient I/O and access violations within a shared bounded budget so a brief lock cannot leave a half-removed version or stage directory behind.
+- Standalone SDK scripts that await `session.abort()`, `session.interruptTurn()`, `session.pauseTurn()`, an aborted `session.prompt()`, or bounded storage/RPC teardown timeouts against a stalled operation no longer exit prematurely (exit code `13` on Node.js or skipped post-await continuation under Bun) when no other event-loop handle is open; idle, settled, disposed, and unawaited sessions still let the process exit immediately.
 
 ## [0.10.4] - 2026-11-22
 
