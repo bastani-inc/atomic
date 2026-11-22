@@ -1263,7 +1263,17 @@ function pausedOwnerGoneReason(childName: string): string {
  * confirm it before that broker was gone: it may have reached it, so the failure does not say it was not delivered.
  */
 export function mayHaveReachedReason(childName: string, reason: string): string {
-	const why = reason.replace(/\s*The message was not delivered[^.]*\.?/, "").trim();
+	const marker = "The message was not delivered";
+	const idx = reason.indexOf(marker);
+	let stripped = reason;
+	if (idx !== -1) {
+		let start = idx;
+		while (start > 0 && /\s/.test(reason[start - 1]!)) start--;
+		const dot = reason.indexOf(".", idx + marker.length);
+		const end = dot === -1 ? reason.length : dot + 1;
+		stripped = `${reason.slice(0, start)}${reason.slice(end)}`;
+	}
+	const why = stripped.trim();
 	return `Subagent ${JSON.stringify(childName)} may already have this message: Intercom handed it over before it restarted, and the subagent had not confirmed it. It was not handed over again. ${why}`;
 }
 

@@ -1,12 +1,79 @@
 import { dialectOf, type SqliteDatabase } from "@bastani/atomic/storage";
 
+function isLineTerminatorCode(code: number): boolean {
+	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+}
+
+function matchesAsciiCaseInsensitiveAt(text: string, lowerNeedle: string, offset: number): boolean {
+	if (offset < 0 || offset + lowerNeedle.length > text.length) return false;
+	for (let i = 0; i < lowerNeedle.length; i++) {
+		let code = text.charCodeAt(offset + i);
+		if (code >= 0x41 && code <= 0x5a) code += 32;
+		if (code !== lowerNeedle.charCodeAt(i)) return false;
+	}
+	return true;
+}
+
+function findAsciiCaseInsensitive(text: string, lowerNeedle: string, fromIndex: number): number {
+	const limit = text.length - lowerNeedle.length;
+	if (fromIndex > limit) return -1;
+	const firstLower = lowerNeedle.charCodeAt(0);
+	const isAsciiLetter = firstLower >= 0x61 && firstLower <= 0x7a;
+	if (!isAsciiLetter) {
+		const firstChar = lowerNeedle[0]!;
+		let pos = fromIndex;
+		while (pos <= limit) {
+			const idx = text.indexOf(firstChar, pos);
+			if (idx === -1 || idx > limit) return -1;
+			if (matchesAsciiCaseInsensitiveAt(text, lowerNeedle, idx)) return idx;
+			pos = idx + 1;
+		}
+		return -1;
+	}
+	const firstUpper = firstLower - 32;
+	for (let pos = fromIndex; pos <= limit; pos++) {
+		const code = text.charCodeAt(pos);
+		if ((code === firstLower || code === firstUpper) && matchesAsciiCaseInsensitiveAt(text, lowerNeedle, pos)) {
+			return pos;
+		}
+	}
+	return -1;
+}
+
+function matchesColumnAlreadyExists(text: string): boolean {
+	const firstLower = "column ";
+	const secondLower = " already exists";
+	let searchFrom = 0;
+	let nextSecond = -1;
+	let nextSecondLineStart = 0;
+	let ltScan = 0;
+	while (searchFrom < text.length) {
+		const pos = findAsciiCaseInsensitive(text, firstLower, searchFrom);
+		if (pos === -1) return false;
+		const endFirst = pos + firstLower.length;
+		if (nextSecond < endFirst) {
+			nextSecond = findAsciiCaseInsensitive(text, secondLower, endFirst);
+			if (nextSecond === -1) return false;
+			while (ltScan < nextSecond) {
+				if (isLineTerminatorCode(text.charCodeAt(ltScan))) {
+					nextSecondLineStart = ltScan + 1;
+				}
+				ltScan++;
+			}
+		}
+		if (endFirst >= nextSecondLineStart) return true;
+		searchFrom = nextSecondLineStart;
+	}
+	return false;
+}
+
 /**
  * Whether adding a column failed because it is already there: SQLite's "duplicate column name", Postgres's
  * `column "…" of relation "…" already exists` (SQLSTATE 42701), in the error's message or its cause.
  */
 function isDuplicateColumn(error: unknown): boolean {
 	const text = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : "";
-	return /duplicate column|column .* already exists/i.test(text);
+	return /duplicate column/i.test(text) || matchesColumnAlreadyExists(text);
 }
 
 /**

@@ -324,7 +324,19 @@ export function formatCacheWarmingStatus(status: CacheWarmingStatus, now = Date.
 	];
 	return `${parts.length ? `Decision in ${parts.join(" ")}` : "Decision now"} (${details})`;
 }
+function formatWarmingCost(totalCost: number): string {
+	const fixed = totalCost.toFixed(6);
+	const dot = fixed.indexOf(".");
+	if (dot === -1) return fixed;
+	const minEnd = dot + 4;
+	let end = fixed.length;
+	while (end > minEnd && fixed.charCodeAt(end - 1) === 0x30) {
+		end--;
+	}
+	return fixed.slice(0, end);
+}
+
 /** One-line transcript text for the total cost of one or more consecutive cache warms. */
 export function formatCacheWarmingUsage(totalCost: number, note?: string): string {
-	return `Cache warmed${note ? ` (${note})` : ""}: $${totalCost.toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1")}`;
+	return `Cache warmed${note ? ` (${note})` : ""}: $${formatWarmingCost(totalCost)}`;
 }

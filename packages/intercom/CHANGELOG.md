@@ -13,6 +13,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 - An Intercom broker no longer creates its directory again after the agent directory was deleted while it still ran, as when a session was killed and its agent directory removed at once. It recreated the directory when a session registered, when it opened its store of messages for subagents that ended, or, with multi-node routing on macOS and Windows, when it saved an id for this machine, and then took its socket lock there as it shut down. It now keeps what it would have written in memory, and writes nothing into a directory created after it by a later broker.
 - With multi-node routing, a session that its broker moved back to its earlier Intercom ID keeps the ID it had meanwhile as a second ID when that broker restarts before the session registers again, as it does without the restart. Before, the restart lost that ID. The broker now keeps these moves, for up to about 7 days, with the asks it keeps for away sessions.
 - The lightweight `intercom` and `contact_supervisor` tool registrations now share the same parameter schemas, descriptions, and shortcut metadata as the loaded implementation, including `delivery`, the `groups` action, and the full `contact_supervisor` schema.
+- Database duplicate-column detection and departed-child delivery-failure messages no longer slow down on long error strings with repeated `column ` phrases or leading whitespace, returning the same results in one linear pass.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

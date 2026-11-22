@@ -18,6 +18,7 @@ import { lookup } from "node:dns/promises";
 import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
 import { Agent, type Dispatcher, request as undiciRequest } from "undici";
+import { findAsciiCaseInsensitive, isAsciiWordCode } from "../../utils/linear-text.js";
 import { getArtifactManager } from "./artifacts.ts";
 import { extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import { isReadableUrlPath, repairCollapsedScheme } from "./readable-url-path.ts";
@@ -495,10 +496,29 @@ async function tryLlmEndpoints(
 	return null;
 }
 
+function extractLinkTags(head: string): string[] {
+	const tags: string[] = [];
+	let searchFrom = 0;
+	while (searchFrom < head.length) {
+		const start = findAsciiCaseInsensitive(head, "<link", searchFrom);
+		if (start === -1) break;
+		const afterName = start + 5;
+		if (afterName < head.length && isAsciiWordCode(head.charCodeAt(afterName))) {
+			searchFrom = afterName;
+			continue;
+		}
+		const end = head.indexOf(">", afterName);
+		if (end === -1) break;
+		tags.push(head.slice(start, end + 1));
+		searchFrom = end + 1;
+	}
+	return tags;
+}
+
 function parseAlternateMarkdownLink(html: string, pageUrl: string): string | undefined {
 	const headEnd = html.toLowerCase().indexOf("</head>");
 	const head = html.slice(0, headEnd >= 0 ? headEnd + 7 : html.length);
-	const links = [...head.matchAll(/<link\b[^>]*>/gi)].map((m) => m[0] ?? "");
+	const links = extractLinkTags(head);
 	for (const tag of links) {
 		const rel = /rel=["']?([^"'>]+)["']?/i.exec(tag)?.[1] ?? "";
 		const type = /type=["']?([^"'>]+)["']?/i.exec(tag)?.[1] ?? "";
