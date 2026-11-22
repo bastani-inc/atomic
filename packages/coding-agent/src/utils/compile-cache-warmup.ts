@@ -70,6 +70,8 @@ const SESSION_MODULES = [
 	"../core/http-dispatcher.js",
 	"../cli/settings-startup.js",
 	"../modes/interactive-engine/engine-prewarm.js",
+	"../modes/interactive/interactive-mode.js",
+	"../modes/rpc/rpc-mode.js",
 	"../index.js",
 ];
 /** Modules a session loads later; one that cannot load without native modules is compiled by the session instead. */

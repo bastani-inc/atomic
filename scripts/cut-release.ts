@@ -20,10 +20,8 @@
  *   4. stamp the real version into the worktree via scripts/bump-version.ts
  *      (including package-lock.json's workspace entries: `npm ci` refuses to
  *      install when the lockfile and a package.json disagree)
- *   5. regenerate release artifacts that must carry the stamped version, including
- *      packages/coding-agent/npm-shrinkwrap.json
- *   6. commit `Release <version>` and tag `<version>` inside the worktree
- *   7. remove the worktree — the tag (and its commit) persist in the repo
+ *   5. commit `Release <version>` and tag `<version>` inside the worktree
+ *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
  * Pushing the version tag directly starts publish.yml, which verifies the tag
  * commit identity before building and publishing the release.
@@ -322,12 +320,8 @@ async function main(): Promise<void> {
 		await $`git -C ${ROOT} worktree add --detach ${worktreeDir} ${baseSha}`.quiet();
 		worktreeAdded = true;
 
-		// Stamp the real version into the detached worktree only, then regenerate
-		// release artifacts that encode the stamped version. The shrinkwrap generator
-		// is hermetic: internal Atomic packages use deterministic registry tarball
-		// URLs derived from local package metadata rather than npm registry metadata.
+		// Stamp the real version into the detached worktree only.
 		await $`bun run ${join(ROOT, "scripts/bump-version.ts")} ${version} --root ${worktreeDir}`;
-		await $`bun run ${join(ROOT, "scripts/generate-coding-agent-shrinkwrap.mjs")} --root ${worktreeDir}`;
 
 		// bump-version.ts also stamps package-lock.json's workspace entries, so the
 		// tagged commit installs cleanly with `npm ci`. No relock is needed: only
