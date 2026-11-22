@@ -393,7 +393,7 @@ test("Enter on a subagent in /tasks asks for it before /tasks closes, keeping th
 		component.handleInput(ENTER);
 	}).ui;
 	await openTasks(engineSession, engineStore, engineUi, "a1");
-	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a1", keepScreen: true }]);
+	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a1", requestId: 1, keepScreen: true }]);
 });
 
 test("Enter on a finished subagent in /tasks, while the panel lists nothing, says the panel lists it once shown", async () => {
@@ -426,7 +426,15 @@ test("Enter on a finished subagent in /tasks, while the panel lists nothing, say
 		// `panel` keeps its meaning for older hosts; a host that tells the engine first what it is about to show waits.
 		assert.deepEqual(
 			sent,
-			[{ type: "engine_view_agent", taskId: "a1", keepScreen: true, ...(dismissed ? {} : { panelOnView: true }) }],
+			[
+				{
+					type: "engine_view_agent",
+					taskId: "a1",
+					requestId: 1,
+					keepScreen: true,
+					...(dismissed ? {} : { panelOnView: true }),
+				},
+			],
 			`dismissed: ${dismissed}`,
 		);
 		// Told that a1 is about to be shown, the panel back from /tasks lists it as shown: the frame the host waits for.
@@ -536,7 +544,7 @@ test("in the engine, set_viewed_agent marks the shown subagent in its panel, and
 	});
 	await showAgentPanel(session, ui);
 	// ↓ focused the newest row, explorer; the host decides, so the engine's mark waits for its answer.
-	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a2" }]);
+	assert.deepEqual(sent, [{ type: "engine_view_agent", taskId: "a2", requestId: 1 }]);
 	assert.match(panel.lines().find((line) => isShownRow(line)) ?? "", /worker/);
 
 	await handleSetViewedAgent({ type: "set_viewed_agent" }, context);
