@@ -1470,21 +1470,47 @@ async function unpushedHistory(root: string, head: string, signal?: AbortSignal)
 	};
 }
 
-/** Whether a snapshot's omission of its checkout's history, `omission`, still holds for `unpushed` under `settings`. */
-function historyStillLeftOut(
+/**
+ * Whether a snapshot's omission of the history of the checkout at `root`, `omission`, still holds for `unpushed` under
+ * `settings`, exactly. A denied omission must name exactly the denied commits of `unpushed`: when the remote branch
+ * moved back, more commits are unpushed, and any of them can be denied too. This process knows which of them are when
+ * it last left out exactly these commits, in any session ({@link leftOutHistory}): denied, it names them; over the cap,
+ * none is. Otherwise they are checked against the deny-list again, and remembered for later captures.
+ */
+async function historyStillLeftOut(
+	root: string,
 	omission: HistoryOmission,
 	unpushed: readonly string[],
 	settings: WorktreeSnapshotSettings,
-): boolean {
+	signal?: AbortSignal,
+): Promise<boolean> {
 	if (omission.reason === "unpushed-history-denied") {
 		// Pushing a denied commit makes it no longer the snapshot's to leave out.
 		const listed = new Set(unpushed);
-		return omission.commits.every((commit) => listed.has(commit));
+		if (!omission.commits.every((commit) => listed.has(commit))) return false;
+		const fingerprint = sha256Hex(unpushed.join("\n"));
+		const remembered = leftOutHistory.get(root);
+		// What this process last left out for exactly these commits, for either reason, says which of them are denied.
+		if (remembered?.fingerprint === fingerprint) return sameDenial(remembered.omission, omission);
+		const denied = await deniedHistory(root, unpushed, signal);
+		const now: HistoryOmission = { reason: "unpushed-history-denied", ...denied };
+		// Remembered as captureHistory remembers it, which a capture of these commits then takes as it is.
+		if (denied.commits.length > 0) leftOutHistory.set(root, { fingerprint, omission: now, packs: undefined });
+		return sameDenial(now, omission);
 	}
 	return (
 		omission.bytes > settings.maxSnapshotBytes &&
 		omission.commits.length === unpushed.length &&
 		omission.commits.every((commit, index) => commit === unpushed[index])
+	);
+}
+
+/** Whether `left` and `right` both leave history out for denied paths, naming the same commits and paths. */
+function sameDenial(left: HistoryOmission, right: HistoryOmission): boolean {
+	return (
+		left.reason === "unpushed-history-denied" &&
+		right.reason === "unpushed-history-denied" &&
+		JSON.stringify([left.commits, left.paths]) === JSON.stringify([right.commits, right.paths])
 	);
 }
 
@@ -1692,7 +1718,13 @@ async function captureCheckout(
 		if (leftOut.length === 0) return unchanged;
 		listed = await unpushedHistory(root, head, signal);
 		const { unpushed } = listed;
-		if (leftOut.every((omission) => historyStillLeftOut(omission, unpushed, settings))) return unchanged;
+		const kept = async () => {
+			for (const omission of leftOut) {
+				if (!(await historyStillLeftOut(root, omission, unpushed, settings, signal))) return false;
+			}
+			return true;
+		};
+		if (await kept()) return unchanged;
 	}
 	return withScratchDirectory(async (scratch) => {
 		const config = await readRepositoryConfig(root, signal);
