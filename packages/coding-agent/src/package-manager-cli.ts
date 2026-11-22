@@ -36,9 +36,8 @@ import { formatPackageInstallWarning } from "./core/resource-loader-extension-wa
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import {
-	getPackageCommandUsage,
+	handlePackageCommandParseOutcome,
 	parsePackageCommand,
-	printPackageCommandHelp,
 	type UpdateTarget,
 } from "./package-manager-cli-parser.ts";
 import { renderSelfUpdateNote, resolveSelfUpdatePlan, type SelfUpdatePlan } from "./self-update-plan.ts";
@@ -421,45 +420,9 @@ export async function handlePackageCommand(
 ): Promise<boolean> {
 	const options = parsePackageCommand(args);
 	if (!options) return false;
-	if (options.help) {
-		printPackageCommandHelp(options.command);
-		return true;
-	}
-	if (options.invalidOption) {
-		console.error(chalk.red(`Unknown option ${options.invalidOption} for "${options.command}".`));
-		console.error(chalk.dim(`Use "${APP_NAME} --help" or "${getPackageCommandUsage(options.command)}".`));
-		process.exitCode = 1;
-		return true;
-	}
-	if (options.missingOptionValue) {
-		console.error(chalk.red(`Missing value for ${options.missingOptionValue}.`));
-		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
-		process.exitCode = 1;
-		return true;
-	}
-
-	if (options.invalidArgument) {
-		console.error(chalk.red(`Unexpected argument ${options.invalidArgument}.`));
-		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
-		process.exitCode = 1;
-		return true;
-	}
-
-	if (options.conflictingOptions) {
-		console.error(chalk.red(options.conflictingOptions));
-		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
-		process.exitCode = 1;
-		return true;
-	}
+	if (handlePackageCommandParseOutcome(options)) return true;
 
 	const source = options.source;
-	if ((options.command === "install" || options.command === "remove") && !source) {
-		console.error(chalk.red(`Missing ${options.command} source.`));
-		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
-		process.exitCode = 1;
-		return true;
-	}
-
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
 	const writesProjectPackageConfig = (options.command === "install" || options.command === "remove") && options.local;
