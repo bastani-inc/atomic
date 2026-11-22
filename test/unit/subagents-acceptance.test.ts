@@ -129,6 +129,12 @@ describe("subagent acceptance removal", () => {
 		assert.equal(Value.Check(SubagentParams, { action: "resume", id: "old-run", index: 0 }), false);
 		assert.equal(Value.Check(SubagentParams, { action: "resume", id: "run:0", message: "continue" }), true);
 	});
+	test("subagent schema says `share` uploads nothing, and still accepts it", () => {
+		const properties = (SubagentParams as { properties: Record<string, { description?: string }> }).properties;
+		assert.equal(properties.share?.description, "Has no effect: nothing is uploaded or shared (default: false)");
+		assert.doesNotMatch(properties.sessionDir?.description ?? "", /share/);
+		assert.equal(Value.Check(SubagentParams, { agent: "worker", task: "inspect", share: true }), true);
+	});
 	test("subagent schema omits sequential execution and dynamic fan-out", () => {
 		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;
 		const removedExecutionField = "chain";

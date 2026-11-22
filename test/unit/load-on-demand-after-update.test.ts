@@ -8,7 +8,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
 import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	makeTempDirectory,
+	moduleDir,
+	removeTempDirectory,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "../..");
 // The source modules: the package bundles them and ships no file of their own.
@@ -245,6 +251,65 @@ test(
 		const error = userExtensionLoadError();
 		assert.match(error, /^Failed to load extension: Cannot find (?:module|package) 'left-pad-not-installed-atomic'/);
 		assert.doesNotMatch(error, /restart it/);
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+/**
+ * Under Bun, a module of the installation that an update removed after Bun read its folder: Bun fails it with a
+ * `BuildMessage` that names the file and carries no code. With `update`, the installation's package.json names a new
+ * version first.
+ */
+function loadRemovedUnderBun(update: boolean): Outcome {
+	const dir = makeTempDirectory("atomic-load-on-demand-bun-");
+	dirs.push(dir);
+	const installation = join(dir, "installation");
+	const modules = join(installation, "dist");
+	mkdirSync(modules, { recursive: true });
+	writeFileSync(join(modules, "earlier.mjs"), "export const kept = 1;\n");
+	writeFileSync(join(modules, "removed.mjs"), "export const value = 1;\n");
+	const script = join(dir, "session.mjs");
+	writeFileSync(
+		script,
+		`import { rmSync, writeFileSync } from "node:fs";
+const installation = ${JSON.stringify(installation)};
+writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.90" }));
+const { loadOnDemand } = await import(${JSON.stringify(pathToFileURL(join(SOURCE, "utils/updated-install.ts")).href)});
+await import(${JSON.stringify(pathToFileURL(join(modules, "earlier.mjs")).href)});
+rmSync(installation + "/dist/removed.mjs");
+${update ? 'writeFileSync(installation + "/package.json", JSON.stringify({ name: "@bastani/atomic", version: "0.10.91" }));' : ""}
+try {
+	await loadOnDemand("the probe", () => import(${JSON.stringify(pathToFileURL(join(modules, "removed.mjs")).href)}));
+	process.stdout.write(JSON.stringify({ loaded: "yes" }));
+} catch (error) {
+	process.stdout.write(JSON.stringify({ name: error?.name, message: error?.message, cause: error?.cause?.code ?? error?.cause?.name }));
+}
+`,
+	);
+	const result = spawnSyncCollect([bunExecutable(), script], {
+		cwd: dir,
+		env: { ...process.env, ATOMIC_PACKAGE_DIR: installation, PI_PACKAGE_DIR: "" },
+		timeout: CHILD_TIMEOUT_MS,
+	});
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	return JSON.parse(result.stdout.toString()) as Outcome;
+}
+
+test(
+	"under Bun, a module the update removed says to restart, though Bun's error names no code",
+	() => {
+		const outcome = loadRemovedUnderBun(true);
+		assert.equal(outcome.name, "UpdatedInstallError");
+		assert.equal(outcome.cause, "BuildMessage");
+		const [first, ...rest] = (outcome.message ?? "").split("\n");
+		assert.equal(
+			first,
+			"atomic was updated to 0.10.91 while this session was running; restart it to keep using the probe.",
+		);
+		assert.match(rest.join("\n"), /^ENOENT reading ".*removed\.mjs"$/);
+		const unchanged = loadRemovedUnderBun(false);
+		assert.equal(unchanged.name, "BuildMessage");
+		assert.match(unchanged.message ?? "", /^ENOENT reading ".*removed\.mjs"$/);
 	},
 	CHILD_TIMEOUT_MS,
 );

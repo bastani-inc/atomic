@@ -2,7 +2,7 @@
 
 `@bastani/web-access` is Atomic's bundled extension for web search, webpage and PDF extraction, GitHub repository cloning, DeepWiki code search, and YouTube and local video analysis.
 
-See the [web access guide](../coding-agent/docs/web-access.md) for usage examples and fetch argument troubleshooting.
+See the [web access guide](https://docs.bastani.ai/web-access) for usage examples and fetch argument troubleshooting.
 
 ## Setup
 

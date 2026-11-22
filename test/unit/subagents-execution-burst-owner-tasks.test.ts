@@ -644,6 +644,23 @@ test.each(["worktree", "share", "includeProgress"] as const)(
 	},
 );
 
+test("sibling calls launch together when one sets share to true and the other leaves it out, since share has no effect", async () => {
+	const launched: string[] = [];
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		launched.push(task);
+		return childResult(task);
+	});
+	const [shared, omitted] = await Promise.all([
+		call("true-share", { agent: "echo", task: "shared", share: true }),
+		call("omitted-share", { agent: "echo", task: "omitted" }),
+	]);
+	assert.notEqual(shared.isError, true, text(shared));
+	assert.notEqual(omitted.isError, true, text(omitted));
+	assert.match(await settledOutput(call, single(shared).observation.taskId), /output:shared/);
+	assert.match(await settledOutput(call, single(omitted).observation.taskId), /output:omitted/);
+	assert.deepEqual(launched.sort(), ["omitted", "shared"]);
+});
+
 test("a sibling aborted while its message's failed merged run is checked never launches, and the next launch still runs (#3427)", async () => {
 	const launched: string[] = [];
 	const checking = Promise.withResolvers<void>();
