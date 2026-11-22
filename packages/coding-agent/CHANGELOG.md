@@ -33,6 +33,7 @@
 - While Atomic loads at start, the editor it shows echoes what you type as you type it, instead of all at once when loading has finished: the rest of Atomic loads in steps with room to answer keys between them, each module once and in the order Atomic's build saw.
 - A worktree snapshot capture no longer runs Git to list the files staged in your index despite an ignore rule while the index and `HEAD` are as they were at an earlier capture in the same Atomic process, so each turn that changes files starts one Git process fewer. Where Git does not trust file modes, as on Windows by default, a capture that records a change also no longer asks Git whether the previous snapshot's tree exists once it has read that tree. On Windows each Git process takes about 30 ms to start.
 - An npm or Bun install of Atomic writes about 2,090 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 3,880 files and 71 MB unpacked with them, 1,790 files and 43 MB now).
+- An interactive session in a trusted folder takes your first prompt sooner: Atomic now starts loading the engine that runs the session while the window is still loading its own part, instead of after it. On Linux a prompt typed at launch starts its turn about 0.18 s sooner (1.25 s to 1.07 s on a warm start). A start with `--name` loads them one after the other, as before.
 
 ### Fixed
 
