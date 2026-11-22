@@ -42,7 +42,7 @@ use windows_sys::Win32::System::JobObjects::{
 	JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
 	JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows_sys::Win32::System::Threading::{
 	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
 	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
@@ -53,6 +53,11 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 const READ_CHUNK_BYTES: usize = 64 * 1024;
+/// Output events the host has been sent and has not handled yet. A reader waits while there are this many, so a program
+/// that writes faster than the host handles its output waits on its pipe, as it does under `child_process`, instead of
+/// queueing all of it in memory and exiting before the host saw its output; and each read then takes what gathered in
+/// the pipe meanwhile.
+const UNHANDLED_OUTPUT_EVENTS: usize = 8;
 /// The longest current directory `CreateProcessW` takes; libuv shortens a longer one.
 const MAX_PATH: usize = 260;
 
@@ -148,6 +153,9 @@ pub(super) struct Shared {
 	input: Mutex<Input>,
 	input_changed: Condvar,
 	callback: Mutex<Option<EventCallback>>,
+	/// Output events sent to the host and not yet handled there (see [`UNHANDLED_OUTPUT_EVENTS`]).
+	unhandled_output: Mutex<usize>,
+	output_handled: Condvar,
 	/// A manual-reset event set by the host's release.
 	stop: OwnedHandle,
 	stopping: AtomicBool,
@@ -242,12 +250,50 @@ impl Shared {
 			SetEvent(raw(&self.stop));
 		}
 		self.input_changed.notify_all();
+		self.output_handled.notify_all();
 	}
 
 	fn emit(&self, event: HostProcessEvent) {
 		if let Some(callback) = locked(&self.callback).as_ref() {
 			callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
 		}
+	}
+
+	/// Sends output to the host once fewer than [`UNHANDLED_OUTPUT_EVENTS`] it was sent are unhandled, waiting until
+	/// then. False when the host released the process meanwhile: the output is not sent.
+	fn emit_output(self: &Arc<Self>, event: HostProcessEvent) -> bool {
+		let mut unhandled = locked(&self.unhandled_output);
+		while *unhandled >= UNHANDLED_OUTPUT_EVENTS {
+			if self.stopping.load(Ordering::Acquire) {
+				return false;
+			}
+			unhandled = self.output_handled.wait(unhandled).unwrap_or_else(PoisonError::into_inner);
+		}
+		if self.stopping.load(Ordering::Acquire) {
+			return false;
+		}
+		*unhandled += 1;
+		drop(unhandled);
+		let handled = self.clone();
+		let sent = locked(&self.callback).as_ref().is_some_and(|callback| {
+			callback.call_with_return_value(
+				event,
+				ThreadsafeFunctionCallMode::NonBlocking,
+				move |_, _| {
+					handled.output_was_handled();
+					Ok(())
+				},
+			) == Status::Ok
+		});
+		if !sent {
+			self.output_was_handled();
+		}
+		true
+	}
+
+	fn output_was_handled(&self) {
+		*locked(&self.unhandled_output) -= 1;
+		self.output_handled.notify_all();
 	}
 }
 
@@ -490,7 +536,27 @@ fn cancel_until_finished(thread: &JoinHandle<()>) {
 	}
 }
 
-fn read_output(shared: &Shared, mut file: File, stderr: bool) {
+/// Reads what the pipe holds into `buffer`: waits for the first bytes, then takes what else is already there, up to
+/// the buffer's size, so a program that writes line by line is not delivered line by line. `Ok(0)` is the pipe's end.
+fn read_available(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
+	let mut count = file.read(buffer)?;
+	while count > 0 && count < buffer.len() {
+		let mut available = 0u32;
+		if unsafe { PeekNamedPipe(raw(file), null_mut(), 0, null_mut(), &mut available, null_mut()) }
+			== 0 || available == 0
+		{
+			break;
+		}
+		let wanted = (available as usize).min(buffer.len() - count);
+		match file.read(&mut buffer[count..count + wanted]) {
+			Ok(0) | Err(_) => break,
+			Ok(more) => count += more,
+		}
+	}
+	Ok(count)
+}
+
+fn read_output(shared: &Arc<Shared>, mut file: File, stderr: bool) {
 	let (data, end) = if stderr {
 		(HostProcessEventKind::Stderr, HostProcessEventKind::StderrEnd)
 	} else {
@@ -501,16 +567,16 @@ fn read_output(shared: &Shared, mut file: File, stderr: bool) {
 		if shared.stopping.load(Ordering::Acquire) {
 			return;
 		}
-		match file.read(&mut buffer) {
+		match read_available(&mut file, &mut buffer) {
 			Ok(0) => break,
 			Ok(count) => {
-				if shared.stopping.load(Ordering::Acquire) {
-					return;
-				}
-				shared.emit(HostProcessEvent {
+				let event = HostProcessEvent {
 					data: Some(Buffer::from(buffer[..count].to_vec())),
 					..HostProcessEvent::of(data)
-				});
+				};
+				if !shared.emit_output(event) {
+					return;
+				}
 			},
 			Err(error)
 				if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
@@ -744,6 +810,8 @@ pub(super) fn start(
 		input: Mutex::new(Input { chunks: VecDeque::new(), ended: false, closed: stdin.is_none() }),
 		input_changed: Condvar::new(),
 		callback: Mutex::new(Some(on_event)),
+		unhandled_output: Mutex::new(0),
+		output_handled: Condvar::new(),
 		stop: unsafe { OwnedHandle::from_raw_handle(stop) },
 		stopping: AtomicBool::new(false),
 		killed_with: AtomicI32::new(0),
