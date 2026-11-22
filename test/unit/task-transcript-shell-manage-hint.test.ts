@@ -16,6 +16,7 @@ import { keptTaskId } from "../../packages/coding-agent/src/modes/interactive/co
 import { dismissedTasks } from "../../packages/coding-agent/src/modes/interactive/components/task-dismissal.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
@@ -447,4 +448,88 @@ test("a subagent's chat reads its task list as often for many background command
 		return counted;
 	};
 	assert.equal(await readsPerFrame(16), await readsPerFrame(1));
+});
+
+test("the main chat's Bash block draws a clickable route-less /tasks hint for a managed background command", () => {
+	initTheme("dark");
+	const managed = shell("shell-main", "npm test");
+	const renderMain = () => {
+		const env = taskTranscriptEnvironment({ keybindings: new KeybindingsManager() });
+		const chat = env.createChat({
+			style: env.style,
+			keybindings: env.keybindings,
+			editorTheme: env.editorTheme,
+			getChatRenderSettings: () => ({
+				getTaskRecord: (id) => (id === managed.ref.taskId ? managed : undefined),
+			}),
+		});
+		chat.replaceMessages(
+			transcript([
+				{ callId: "call-main", command: "npm test", taskId: "shell-main" },
+				{ callId: "call-gone", command: "npm run old", taskId: "shell-gone" },
+			]),
+		);
+		const raw = chat.renderBody(100, 30);
+		chat.dispose();
+		return raw;
+	};
+	for (const noColor of [false, true]) {
+		if (noColor) process.env.NO_COLOR = "1";
+		else delete process.env.NO_COLOR;
+		const raw = renderMain();
+		const rows = plain(raw);
+		const managedRow = rows.findIndex((row) => row.includes("Bash(npm test)")) + 1;
+		const goneRow = rows.findIndex((row) => row.includes("Bash(npm run old)")) + 1;
+		assert.equal(rows[managedRow], "   ⎿  Running in background · /tasks to manage", rows.join("\n"));
+		assert.equal(rows[goneRow], "   ⎿  Running in background", rows.join("\n"));
+		const { spans } = readHintSpans(raw[managedRow] ?? "");
+		if (noColor) {
+			assert.deepEqual(spans, []);
+		} else {
+			assert.equal(spans.length, 1, raw[managedRow]);
+			assert.deepEqual(spans[0]?.action, { kind: "command", command: "/tasks" });
+			assert.equal(rows[managedRow]?.slice(spans[0]!.start, spans[0]!.end), "/tasks to manage");
+		}
+		assert.deepEqual(readHintSpans(raw[goneRow] ?? "").spans, []);
+	}
+});
+
+test("disposing a subagent's task page unregisters its /tasks hint route so the page is collected", async () => {
+	initTheme("dark");
+	const tasks = [{ ...taskRecord(agent), agentName: "worker" }, shell("shell-own", "npm run build", agent)];
+	const source = transcriptOnlySource({
+		tasks,
+		ownerTasks: tasks,
+		readTaskTranscript: () => ({
+			ok: true,
+			value: { messages: transcript([{ callId: "call-own", command: "npm run build", taskId: "shell-own" }]) },
+		}),
+		followTaskTranscript: () => undefined,
+		sendTaskMessage: async () => {},
+	});
+	const tracked = trackCollection();
+	const routes: string[] = [];
+	const openAndDispose = async () => {
+		const env = taskTranscriptEnvironment({
+			keybindings: new KeybindingsManager(),
+			createChat: (options) => new ChatSessionHost(options),
+		});
+		const page = new TaskAgentTranscriptPage(source, agent, env, () => {});
+		await page.load();
+		const raw = page.renderView(100, 30);
+		const row = raw[plain(raw).findIndex((line) => line.includes("Bash(npm run build)")) + 1] ?? "";
+		const action = readHintSpans(row).spans[0]?.action;
+		assert.ok(action?.kind === "command" && action.route !== undefined, row);
+		routes.push(action.route);
+		tracked.track(page);
+		page.dispose();
+	};
+	for (let index = 0; index < 8; index += 1) await openAndDispose();
+	await collectEverythingTracked(tracked);
+	assert.deepEqual(
+		tracked.uncollected(),
+		[],
+		`disposed pages remained retained by their hint routes: ${tracked.uncollected().join(", ")}`,
+	);
+	for (const route of routes) assert.equal(runHintRoute(route, "/tasks"), false);
 });

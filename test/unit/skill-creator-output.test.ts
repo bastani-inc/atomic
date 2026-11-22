@@ -7,6 +7,7 @@ import {
 	createScriptSandbox,
 	python,
 	pyyaml,
+	pyyamlIsolated,
 	pyyamlRequired,
 	type ScriptSandbox,
 	skillCreatorDir,
@@ -71,6 +72,7 @@ function loopOutput(box: ScriptSandbox): string {
 test.runIf(pyyamlRequired)("Python and PyYAML are installed for the tests that need them, as CI provides them", () => {
 	assert.ok(python, "no Python 3.10 or later on PATH");
 	assert.ok(pyyaml, `${python} cannot import PyYAML with the scripts' environment`);
+	assert.ok(pyyamlIsolated, `${python} -I cannot import PyYAML outside the user site`);
 });
 
 describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
@@ -180,21 +182,22 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 		() => {
 			const box = sandbox();
 			const iteration = benchmarkFolder(box, "iteration-1");
-			const runs: [script: string, args: string[], expected: string][] = [
-				["aggregate_benchmark.py", [iteration], `Generated: ${join(iteration, "benchmark.md")}\n`],
-				["generate_report.py", [loopOutput(box), "--skill-name", "reports"], "<title>reports \u2014 "],
-				["quick_validate.py", [box.skill], "Skill is valid!\n"],
+			const runs: [script: string, args: string[], expected: string, includeIsolated: boolean][] = [
+				["aggregate_benchmark.py", [iteration], `Generated: ${join(iteration, "benchmark.md")}\n`, true],
+				["generate_report.py", [loopOutput(box), "--skill-name", "reports"], "<title>reports \u2014 ", true],
+				["quick_validate.py", [box.skill], "Skill is valid!\n", false],
 			];
 			// An isolated interpreter, Python 3.11's safe path, and runpy from another program: nothing puts the
 			// script's folder on the module path.
 			const runpy = "import runpy, sys\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')";
-			for (const [script, args, expected] of runs) {
+			for (const [script, args, expected, includeIsolated] of runs) {
 				const path = join(skillCreatorDir, "scripts", script);
-				for (const command of [
-					["-I", path, ...args],
+				const commands = [
+					...(includeIsolated ? [["-I", path, ...args]] : []),
 					[path, ...args],
 					["-c", runpy, path, ...args],
-				]) {
+				];
+				for (const command of commands) {
 					const result = spawnSyncCollect([python ?? "python3", ...command], {
 						cwd: box.project,
 						env: box.env({ ...ANSI_PIPE, PYTHONPATH: "", PYTHONSAFEPATH: "1" }),
@@ -206,6 +209,17 @@ describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 			}
 		},
 	);
+
+	test.skipIf(!pyyamlIsolated)("quick_validate runs by its path under an isolated interpreter (-I)", () => {
+		const box = sandbox();
+		const result = spawnSyncCollect(
+			[python ?? "python3", "-I", join(skillCreatorDir, "scripts", "quick_validate.py"), box.skill],
+			{ cwd: box.project, env: box.env({ ...ANSI_PIPE, PYTHONPATH: "", PYTHONSAFEPATH: "1" }) },
+		);
+		const stdout = result.stdout.toString().replaceAll("\r\n", "\n");
+		assert.equal(result.exitCode, 0, `quick_validate.py: ${result.stderr.toString()}`);
+		assert.equal(stdout, "Skill is valid!\n");
+	});
 
 	test.skipIf(!pyyaml)(
 		"each script run with its output captured in place, as by runpy, writes its output there",
