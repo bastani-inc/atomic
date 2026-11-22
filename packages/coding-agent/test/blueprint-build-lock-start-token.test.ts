@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -14,6 +15,14 @@ vi.mock("node:fs", async (importOriginal) => {
 	return {
 		...actual,
 		renameSync: vi.fn(actual.renameSync),
+	};
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		readFile: vi.fn(actual.readFile),
 	};
 });
 
@@ -366,6 +375,125 @@ describe("blueprint build lock step starts (#4748)", () => {
 			assert.deepEqual(told, [], "transient Windows rename refusal did not drop the lock update or warn");
 		} finally {
 			vi.mocked(renameSync).mockImplementation(actualRename);
+		}
+	});
+
+	test("on Windows, a transient EBUSY while reading a build lock retries and preserves the live lock, while persistent EBUSY settles as corrupt within the bound (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const holder = sleeper();
+		startTokens.setNativeProcessCreationTimeForTesting(null);
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: () => ["-e", 'console.log("132000000000000091")'],
+		});
+		const lockFile = buildLockPath(dir, root());
+		writeLock({ pid: holder.pid, start: windowsToken("132000000000000091"), steps: [] });
+		const actualRead = vi.mocked(readFile).getMockImplementation()!;
+		let transientCalls = 0;
+		vi.mocked(readFile).mockImplementation(((path, options) => {
+			if (String(path) === lockFile && ++transientCalls <= 2) {
+				return Promise.reject(Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }));
+			}
+			return actualRead(path, options as never);
+		}) as typeof readFile);
+		try {
+			const settled = await settleOtherBuilds(dir, [root()], { waitMs: 150 });
+			await settled.release();
+			assert.equal(settled.warnings.length, 1);
+			assert.match(
+				settled.warnings[0]!,
+				/^Another process \(pid \d+\) still seemed to build /,
+				"transient EBUSY recovered the live lock instead of reporting it corrupt",
+			);
+			assert.equal(existsSync(lockFile), true, "the live build's lock was not removed on transient EBUSY");
+			assert.ok(transientCalls >= 3, "retried past the transient EBUSY reads");
+
+			// Persistent EBUSY on Windows stops retrying at the bound and reports corrupt.
+			let persistentCalls = 0;
+			vi.mocked(readFile).mockImplementation(((path, options) => {
+				if (String(path) === lockFile) {
+					persistentCalls++;
+					return Promise.reject(Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }));
+				}
+				return actualRead(path, options as never);
+			}) as typeof readFile);
+			const started = performance.now();
+			const stuck = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+			await stuck.release();
+			assert.equal(stuck.warnings.length, 1);
+			assert.match(stuck.warnings[0]!, /could not be read; building it anyway/);
+			assert.equal(persistentCalls, 25, "bounded to 25 attempts on persistent Windows EBUSY");
+			assert.ok(performance.now() - started < 3_000, "bounded retry finishes promptly");
+
+			// Truly corrupt JSON and non-transient EISDIR on Windows do not retry at all.
+			writeFileSync(lockFile, "{broken");
+			let badJsonCalls = 0;
+			vi.mocked(readFile).mockImplementation(((path, options) => {
+				if (String(path) === lockFile) badJsonCalls++;
+				return actualRead(path, options as never);
+			}) as typeof readFile);
+			const corrupt = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+			await corrupt.release();
+			assert.match(corrupt.warnings[0] ?? "", /could not be read/);
+			assert.equal(badJsonCalls, 1, "truly corrupt JSON returns corrupt on the first read");
+
+			mkdirSync(lockFile, { recursive: true });
+			let eisdirCalls = 0;
+			vi.mocked(readFile).mockImplementation(((path, options) => {
+				if (String(path) === lockFile) {
+					eisdirCalls++;
+					return Promise.reject(
+						Object.assign(new Error("EISDIR: illegal operation on a directory"), { code: "EISDIR" }),
+					);
+				}
+				return actualRead(path, options as never);
+			}) as typeof readFile);
+			const dirLock = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+			await dirLock.release();
+			assert.match(dirLock.warnings[0] ?? "", /could not be read/);
+			assert.equal(eisdirCalls, 1, "non-transient EISDIR returns corrupt on the first read");
+			rmSync(lockFile, { recursive: true, force: true });
+
+			// Aborting during Windows read retry rejects immediately and preserves the lock file.
+			writeLock({ pid: holder.pid, start: windowsToken("132000000000000091"), steps: [] });
+			const controller = new AbortController();
+			let abortCalls = 0;
+			vi.mocked(readFile).mockImplementation(((path, options) => {
+				if (String(path) === lockFile) {
+					if (++abortCalls === 1) controller.abort(new Error("aborted-read"));
+					return Promise.reject(Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }));
+				}
+				return actualRead(path, options as never);
+			}) as typeof readFile);
+			await assert.rejects(settleOtherBuilds(dir, [root()], { signal: controller.signal }), /aborted-read/);
+			assert.equal(abortCalls, 1);
+			assert.equal(existsSync(lockFile), true, "aborted read retry leaves the lock file intact");
+		} finally {
+			vi.mocked(readFile).mockImplementation(actualRead);
+		}
+	});
+
+	test("on POSIX, an unreadable lock returns corrupt immediately with no retry delay (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "linux" });
+		const lockFile = buildLockPath(dir, root());
+		writeLock({ pid: process.pid + 1, steps: [] });
+		const actualRead = vi.mocked(readFile).getMockImplementation()!;
+		let posixCalls = 0;
+		vi.mocked(readFile).mockImplementation(((path, options) => {
+			if (String(path) === lockFile) {
+				posixCalls++;
+				return Promise.reject(Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" }));
+			}
+			return actualRead(path, options as never);
+		}) as typeof readFile);
+		try {
+			const settled = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+			await settled.release();
+			assert.match(settled.warnings[0] ?? "", /could not be read; building it anyway/);
+			assert.equal(posixCalls, 1, "POSIX does not retry readFile on EBUSY");
+		} finally {
+			vi.mocked(readFile).mockImplementation(actualRead);
 		}
 	});
 });

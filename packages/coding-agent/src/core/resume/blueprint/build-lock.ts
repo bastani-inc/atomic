@@ -91,12 +91,34 @@ function isLockedProcess(value: unknown): value is LockedProcess {
 	);
 }
 
-async function readLockFile(file: string): Promise<ReadLock> {
+const STEP_START_MAX_ATTEMPTS = 4;
+const STEP_START_RETRY_MS = 500;
+const LOCK_IO_MAX_ATTEMPTS = 25;
+const LOCK_IO_RETRY_MS = 20;
+const TRANSIENT_LOCK_IO_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
+const HOLDER_RETRY_KEY = -1;
+const WRITE_RETRY_KEY = -2;
+
+function isTransientWindowsLockError(error: unknown, attempt: number): boolean {
+	const code = (error as NodeJS.ErrnoException).code ?? "";
+	return process.platform === "win32" && attempt < LOCK_IO_MAX_ATTEMPTS && TRANSIENT_LOCK_IO_CODES.has(code);
+}
+
+async function readLockFile(file: string, signal?: AbortSignal): Promise<ReadLock> {
 	let text: string;
-	try {
-		text = await readFile(file, "utf8");
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "corrupt" };
+	for (let attempt = 1; ; attempt++) {
+		signal?.throwIfAborted();
+		try {
+			text = await readFile(file, "utf8");
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "none" };
+			if (isTransientWindowsLockError(error, attempt)) {
+				await delay(LOCK_IO_RETRY_MS, signal);
+				continue;
+			}
+			return { kind: "corrupt" };
+		}
 	}
 	try {
 		const lock = JSON.parse(text) as Partial<BuildLock> | null;
@@ -120,14 +142,6 @@ async function removeLock(file: string): Promise<void> {
 		await rm(file, { force: true });
 	} catch {}
 }
-
-const STEP_START_MAX_ATTEMPTS = 4;
-const STEP_START_RETRY_MS = 500;
-const LOCK_WRITE_MAX_ATTEMPTS = 25;
-const LOCK_WRITE_RETRY_MS = 20;
-const TRANSIENT_RENAME_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
-const HOLDER_RETRY_KEY = -1;
-const WRITE_RETRY_KEY = -2;
 
 interface BuildLockWriter {
 	readonly files: ReadonlyMap<string, string>;
@@ -231,8 +245,7 @@ function writeBuildLocksDurably(writer: BuildLockWriter, attempt = 1): void {
 			try {
 				rmSync(temporary, { force: true });
 			} catch {}
-			const code = (error as NodeJS.ErrnoException).code ?? "";
-			if (process.platform === "win32" && attempt < LOCK_WRITE_MAX_ATTEMPTS && TRANSIENT_RENAME_CODES.has(code)) {
+			if (isTransientWindowsLockError(error, attempt)) {
 				retryTransient = true;
 				continue;
 			}
@@ -248,7 +261,7 @@ function writeBuildLocksDurably(writer: BuildLockWriter, attempt = 1): void {
 		const timer = setTimeout(() => {
 			writer.retryTimers.delete(WRITE_RETRY_KEY);
 			writeBuildLocksDurably(writer, attempt + 1);
-		}, LOCK_WRITE_RETRY_MS);
+		}, LOCK_IO_RETRY_MS);
 		timer.unref?.();
 		writer.retryTimers.set(WRITE_RETRY_KEY, timer);
 	}
@@ -450,7 +463,7 @@ async function settleLock(
 	};
 	let stopped = false;
 	for (;;) {
-		const read = await readLockFile(file);
+		const read = await readLockFile(file, options.signal);
 		if (read.kind === "none") return { warnings: [], cancelled: false };
 		if (read.kind === "corrupt") {
 			await remove();
