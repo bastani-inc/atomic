@@ -33,6 +33,7 @@
 - Worktree snapshots work with Git 2.30 to 2.35, as Debian 11 and Ubuntu 22.04 install it. Before Git 2.36, restoring a session's checkout into a new worktree failed with `unknown switch 'z'`; before Git 2.31, a turn whose checkout had unpushed commits recorded no snapshot (`Refusing to create empty bundle`), and a restore could read a wrong path for its store.
 - Resuming or going back in a session kept in a database (SQLite, libSQL or PostgreSQL) no longer fails with a `SyntaxError`, or takes an extension's text for one of Atomic's lists, when an extension's custom entry has text that looks like JSON under `owner`, `tasks` or `groups`, such as `"[draft"`: the session reads that text as text, as a session kept in JSONL files does.
 - After you change a Git packing setting, such as `core.compression` or `pack.window`, unpushed commits that a worktree snapshot left out because their bundle was over `snapshots.maxSnapshotBytes` are bundled again, and recorded when they now fit. Atomic kept leaving them out until the commits or the repository's packs changed.
+- A line written straight to standard output while Atomic starts, for example by an extension as it loads, is no longer lost when the editor shown before the session is ready gives way to it: it shows once, where it would without that editor, whether Atomic then exits or the session goes on ([#6344](https://github.com/bastani-inc/atomic/pull/6344))
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
