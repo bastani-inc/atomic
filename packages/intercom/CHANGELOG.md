@@ -8,6 +8,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 - With multi-node routing, a session answering a sender outside its groups can no longer send a fourth answer after that sender's latest message when the shared database failed to record that message as delivered and it was handed to the session again. Answers the session sent since the message first reached it now count toward that message's 3.
 - On Windows, an Intercom broker no longer waits for good to start when an earlier broker stopped while it was starting and Windows gave that broker's process ID to another process. Brokers now record when their process was created next to its ID, so a later process with the same ID is not taken for the earlier broker. A broker of an earlier version still goes by the process ID alone.
+- The Intercom broker drops the reply routes it keeps for a released subagent's unanswered asks once the session that launched the subagent has been gone for a week, as it drops the asks it keeps for any session that has been away that long. Before, a broker kept them for as long as it ran, and enough of them made later released subagents' asks fail at once with "the Intercom broker's released-subagent reply routes are full".
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

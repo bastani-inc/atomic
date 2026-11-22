@@ -1,4 +1,5 @@
 import { ASK_REPLY_TIMEOUT_MS } from "../retry-policy.js";
+import { AWAY_ASK_RETENTION_MS } from "./away-asks.js";
 import type { SessionInfo } from "../types.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { normalizeReservationTarget } from "./released-children.js";
@@ -75,6 +76,11 @@ export class ReleasedAskerReplies {
 	private readonly byQuestion = new Map<string, Set<Entry>>();
 	private readonly byChild = new Map<string, Set<Entry>>();
 	private readonly byOwner = new Map<string, Set<Entry>>();
+	/**
+	 * Routes with no owner, each with when it lost its owner or was kept without one, oldest first: one whose owner has
+	 * not come back for {@link unownedRetentionMs} is dropped, as the asks kept for an away session are.
+	 */
+	private readonly unowned = new Map<Entry, number>();
 	/** #4829: where each route is written while it is kept, so it outlives this broker (see {@link persistWith}). */
 	private durable: ReleasedAskerReplyStore | undefined;
 	/** Routes refused because the broker's capacity was full, since this broker started. */
@@ -85,6 +91,7 @@ export class ReleasedAskerReplies {
 		private readonly ttlMs: number = ASK_REPLY_TIMEOUT_MS,
 		private readonly maxRoutes: number = DEFAULT_MAX_ROUTES,
 		private readonly onFirstOverflow: () => void = () => {},
+		private readonly unownedRetentionMs: number = AWAY_ASK_RETENTION_MS,
 	) {}
 
 	/**
@@ -121,6 +128,7 @@ export class ReleasedAskerReplies {
 				if (existing.ownerSessionId === undefined && ownerSessionId !== undefined) {
 					existing.ownerSessionId = ownerSessionId;
 					addTo(this.byOwner, ownerSessionId, existing);
+					this.unowned.delete(existing);
 				}
 				continue;
 			}
@@ -147,6 +155,7 @@ export class ReleasedAskerReplies {
 			addTo(this.byQuestion, entry.questionId, entry);
 			addTo(this.byChild, childKey, entry);
 			if (ownerSessionId !== undefined) addTo(this.byOwner, ownerSessionId, entry);
+			else this.unowned.set(entry, this.now());
 			kept += 1;
 		}
 		return kept;
@@ -159,6 +168,7 @@ export class ReleasedAskerReplies {
 			if (entry.ownerSessionId !== undefined) continue;
 			entry.ownerSessionId = ownerSessionId;
 			addTo(this.byOwner, ownerSessionId, entry);
+			this.unowned.delete(entry);
 			attached += 1;
 		}
 		return attached;
@@ -222,6 +232,7 @@ export class ReleasedAskerReplies {
 		addTo(this.byQuestion, entry.questionId, entry);
 		addTo(this.byChild, entry.childKey, entry);
 		if (ownerSessionId !== undefined) addTo(this.byOwner, ownerSessionId, entry);
+		else this.unowned.set(entry, this.now());
 	}
 
 	/**
@@ -275,9 +286,11 @@ export class ReleasedAskerReplies {
 
 	dropOwner(ownerSessionId: string): number {
 		const owned = [...(this.byOwner.get(ownerSessionId) ?? [])];
+		const at = this.now();
 		for (const entry of owned) {
 			removeFrom(this.byOwner, ownerSessionId, entry);
 			entry.ownerSessionId = undefined;
+			this.unowned.set(entry, at);
 		}
 		return owned.length;
 	}
@@ -297,6 +310,7 @@ export class ReleasedAskerReplies {
 		this.byQuestion.clear();
 		this.byChild.clear();
 		this.byOwner.clear();
+		this.unowned.clear();
 	}
 
 	private recordOverflow(route: RefusedReleasedAskerRoute): void {
@@ -321,7 +335,11 @@ export class ReleasedAskerReplies {
 	private expire(): void {
 		const now = this.now();
 		for (const entry of this.entries) {
-			if (entry.expiresAt > now) return;
+			if (entry.expiresAt > now) break;
+			this.remove(entry);
+		}
+		for (const [entry, since] of this.unowned) {
+			if (since + this.unownedRetentionMs > now) break;
 			this.remove(entry);
 		}
 	}
@@ -329,6 +347,7 @@ export class ReleasedAskerReplies {
 	private remove(entry: Entry): void {
 		this.durable?.removed(questionOf(entry));
 		this.entries.delete(entry);
+		this.unowned.delete(entry);
 		removeFrom(this.byQuestion, entry.questionId, entry);
 		removeFrom(this.byChild, entry.childKey, entry);
 		if (entry.ownerSessionId !== undefined) removeFrom(this.byOwner, entry.ownerSessionId, entry);
