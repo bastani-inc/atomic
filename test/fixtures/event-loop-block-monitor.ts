@@ -37,6 +37,26 @@ async function settle(ms: number): Promise<void> {
 	for (let turn = 0; turn < SETTLE_TURNS || performance.now() < until; turn++) await delay(TURN_MS);
 }
 
+/**
+ * Watches the event loop's turns with a timer of its own. `stop` returns the longest it went without a turn: what a
+ * block lasted, whether the code that ran or the machine's scheduler held the loop.
+ */
+function watchTurns(): { stop(): number } {
+	let last = performance.now();
+	let longest = 0;
+	const timer = setInterval(() => {
+		const now = performance.now();
+		longest = Math.max(longest, now - last);
+		last = now;
+	}, 5);
+	return {
+		stop: () => {
+			clearInterval(timer);
+			return Math.max(longest, performance.now() - last);
+		},
+	};
+}
+
 const created: string[] = [];
 const hook = process.versions.bun ? undefined : createHook({ init: (_id, type) => created.push(type) });
 hook?.enable();
@@ -62,10 +82,12 @@ if (mode === "anonymous") {
 	});
 }
 await settle(Number(settleMs));
+const aroundBriefBlock = watchTurns();
 holdTheEventLoopBriefly(Number(shortBlockMs));
 await settle(Number(settleMs));
+const briefBlockGapMs = aroundBriefBlock.stop();
 markEventLoopStartupComplete();
 await settle(Number(settleMs));
 markEventLoopShutdown();
 await settle(Number(settleMs));
-console.log(JSON.stringify({ started, created }));
+console.log(JSON.stringify({ started, created, briefBlockGapMs }));

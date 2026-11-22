@@ -47,6 +47,8 @@ const RUNTIMES = [
 interface ChildReport {
 	readonly started: boolean;
 	readonly created: readonly string[];
+	/** The longest the fixture's event loop went without a turn around its brief block, by the fixture's own timer. */
+	readonly briefBlockGapMs: number;
 }
 
 interface LogRecord {
@@ -141,7 +143,10 @@ for (const runtime of RUNTIMES) {
 					long[0]?.hotFrames?.some((entry) => entry.frame.startsWith("holdTheEventLoopForLong ")),
 					`the hot frames do not name the function: ${JSON.stringify(long[0]?.hotFrames)}`,
 				);
-				assert.deepEqual(blocksNaming(records, "holdTheEventLoopBriefly"), []);
+				// A loaded machine's scheduler can hold the loop past the threshold while the brief block runs, and then the
+				// monitor rightly records that block: the brief block is never recorded when the loop turned in time.
+				if ((report?.briefBlockGapMs ?? Number.POSITIVE_INFINITY) < THRESHOLD_MS)
+					assert.deepEqual(blocksNaming(records, "holdTheEventLoopBriefly"), []);
 
 				const delays = records.filter((record) => record.type === "delay");
 				assert.deepEqual(
@@ -226,7 +231,7 @@ for (const runtime of RUNTIMES) {
 			() => {
 				const log = join(temp, "blocks.jsonl");
 				const { report } = runChild(runtime, { ATOMIC_EVENT_LOOP_BLOCK_LOG: log });
-				assert.deepEqual(report, { started: false, created: [] });
+				assert.deepEqual({ started: report?.started, created: report?.created }, { started: false, created: [] });
 				assert.equal(fileExistsSync(log), false);
 				assert.equal(fileExistsSync(join(temp, "agent/event-loop-blocks.jsonl")), false);
 			},
