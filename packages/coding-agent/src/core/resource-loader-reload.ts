@@ -5,7 +5,7 @@ import { pathExists as exists } from "../utils/path-exists.ts";
 import { canonicalizePathAsync, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
-import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
+import { clearExtensionCache, createExtensionRuntime, setExtensionRuntimeEventBus } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { findLegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
@@ -54,19 +54,28 @@ import { buildSkillCatalogAsync } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
 
-async function filterDisabledBuiltinExtensionPaths(paths: string[], disabled: Set<string>): Promise<string[]> {
-	if (disabled.size === 0) return paths;
-	const roots = await Promise.all(
+async function resolveDisabledBuiltinRoots(disabled: Set<string>): Promise<string[]> {
+	if (disabled.size === 0) return [];
+	return Promise.all(
 		getAllBuiltinPackageLocations()
 			.filter((location) => disabled.has(location.distDirName))
 			.map((location) => canonicalizePathAsync(location.packageDir)),
 	);
+}
+
+async function filterDisabledBuiltinPaths(
+	paths: string[],
+	disabled: Set<string>,
+	roots?: readonly string[],
+): Promise<string[]> {
+	if (disabled.size === 0 || paths.length === 0) return paths;
+	const resolvedRoots = roots ?? (await resolveDisabledBuiltinRoots(disabled));
 	const kept = await Promise.all(
 		paths.map(async (path) => {
 			if (path.startsWith(BUILTIN_PATH_PREFIX)) return !disabled.has(path.slice(BUILTIN_PATH_PREFIX.length));
-			if (roots.length === 0) return true;
+			if (resolvedRoots.length === 0) return true;
 			const canonicalPath = await canonicalizePathAsync(path);
-			return !roots.some((root) => {
+			return !resolvedRoots.some((root) => {
 				const child = relative(root, canonicalPath);
 				return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 			});
@@ -176,7 +185,7 @@ export async function loadProjectTrustExtensions(
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	// The builtin Herdr reporter supersedes the installed file integration in a
 	// Herdr pane; see extensions/herdr-file-integration.ts.
-	const extensionPaths = await filterDisabledBuiltinExtensionPaths(
+	const extensionPaths = await filterDisabledBuiltinPaths(
 		filterSupersededHerdrIntegrationPaths(
 			await mergeResourcePaths(
 				state.cwd,
@@ -225,21 +234,38 @@ export async function reloadDefaultResourceLoader(
 	await complete();
 }
 
+/**
+ * Complete an initial deferred startup load by discovering resources and loading only extensions not already present in
+ * `preloadedExtensions`, preserving canonical extension order without clearing the extension module cache.
+ */
+export async function reloadDefaultResourceLoaderWithPreloaded(
+	loader: DefaultResourceLoader,
+	preloadedExtensions: LoadExtensionsResult,
+	options?: Pick<ResourceLoaderReloadOptions, "useLoadedSettings">,
+): Promise<void> {
+	const complete = await prepareDefaultResourceLoaderReload(loader, options, undefined, preloadedExtensions);
+	await complete();
+}
+
 /** Resolve trust without loading the approved project resources until continuation. */
 export async function prepareDefaultResourceLoaderReload(
 	loader: DefaultResourceLoader,
 	options?: ResourceLoaderReloadOptions,
 	startupSessionQuit?: () => boolean,
+	preloadedStartupExtensions?: LoadExtensionsResult,
 ): Promise<() => Promise<void>> {
 	const state = resourceInternals(loader);
 	resetTimings("extensions");
 	await hostStoragePackagesRegistered();
-	if (state.loaded) {
+	if (state.loaded && preloadedStartupExtensions === undefined) {
 		clearExtensionCache();
 	}
-	let preTrustExtensions: LoadExtensionsResult | undefined;
+	let preTrustExtensions: LoadExtensionsResult | undefined = preloadedStartupExtensions;
 	const initialProjectTrusted = state.settingsManager.isProjectTrusted();
-	if (options?.resolveProjectTrust || options?.resolveBorrowedProjectTrust) {
+	if (
+		preloadedStartupExtensions === undefined &&
+		(options?.resolveProjectTrust || options?.resolveBorrowedProjectTrust)
+	) {
 		preTrustExtensions = await loadProjectTrustExtensions(loader, options.preTrustExtensions);
 	}
 	const resolveTrust = async () => {
@@ -262,10 +288,12 @@ export async function prepareDefaultResourceLoaderReload(
 	const complete = async () => {
 		if (options?.deferResources && !options.resolveProjectTrust && !options.resolveBorrowedProjectTrust) {
 			await state.settingsManager.reload();
+			const deferredRuntime = createExtensionRuntime();
+			setExtensionRuntimeEventBus(deferredRuntime, state.eventBus);
 			const deferredExtensions: LoadExtensionsResult = {
 				extensions: [],
 				errors: [],
-				runtime: createExtensionRuntime(),
+				runtime: deferredRuntime,
 			};
 			const extensionsResult = state.extensionsOverride
 				? state.extensionsOverride(deferredExtensions)
@@ -315,6 +343,13 @@ export async function prepareDefaultResourceLoaderReload(
 				: baseAppend;
 			state.appendSystemPromptSourcePaths = appendSystemPromptSourcePaths;
 			state.loaded = true;
+			state.deferredInitialLoad = true;
+			state.deferredInitialSettings = {
+				projectTrusted: state.settingsManager.isProjectTrusted(),
+				globalSettings: state.settingsManager.getGlobalSettings(),
+				projectSettings: state.settingsManager.getProjectSettings(),
+				settings: state.settingsManager.getSettings(),
+			};
 			return;
 		}
 		const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
@@ -383,7 +418,8 @@ export async function prepareDefaultResourceLoaderReload(
 
 		// The builtin Herdr reporter supersedes the installed file integration in a
 		// Herdr pane; see extensions/herdr-file-integration.ts.
-		const extensionPaths = await filterDisabledBuiltinExtensionPaths(
+		const disabledBuiltinRoots = await resolveDisabledBuiltinRoots(state.disabledBuiltinExtensions);
+		const extensionPaths = await filterDisabledBuiltinPaths(
 			filterSupersededHerdrIntegrationPaths(
 				await mergeResourcePaths(
 					state.cwd,
@@ -392,6 +428,7 @@ export async function prepareDefaultResourceLoaderReload(
 				),
 			),
 			state.disabledBuiltinExtensions,
+			disabledBuiltinRoots,
 		);
 
 		const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
@@ -451,13 +488,17 @@ export async function prepareDefaultResourceLoaderReload(
 		}
 		resolveInheritedExtensionOverlaps(state.extensionsResult);
 
-		const skillPaths = state.noSkills
-			? await mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
-			: await mergeResourcePaths(
-					state.cwd,
-					[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
-					state.additionalSkillPaths,
-				);
+		const skillPaths = await filterDisabledBuiltinPaths(
+			state.noSkills
+				? await mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
+				: await mergeResourcePaths(
+						state.cwd,
+						[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
+						state.additionalSkillPaths,
+					),
+			state.disabledBuiltinExtensions,
+			disabledBuiltinRoots,
+		);
 
 		state.lastSkillPaths = skillPaths;
 		const skillsStartedAt = Date.now();
@@ -474,13 +515,17 @@ export async function prepareDefaultResourceLoaderReload(
 			}
 		}
 
-		const promptPaths = state.noPromptTemplates
-			? await mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
-			: await mergeResourcePaths(
-					state.cwd,
-					[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
-					state.additionalPromptTemplatePaths,
-				);
+		const promptPaths = await filterDisabledBuiltinPaths(
+			state.noPromptTemplates
+				? await mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
+				: await mergeResourcePaths(
+						state.cwd,
+						[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
+						state.additionalPromptTemplatePaths,
+					),
+			state.disabledBuiltinExtensions,
+			disabledBuiltinRoots,
+		);
 
 		state.lastPromptPaths = promptPaths;
 		const promptsStartedAt = Date.now();
@@ -501,13 +546,17 @@ export async function prepareDefaultResourceLoaderReload(
 			}
 		}
 
-		const themePaths = state.noThemes
-			? await mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
-			: await mergeResourcePaths(
-					state.cwd,
-					[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
-					state.additionalThemePaths,
-				);
+		const themePaths = await filterDisabledBuiltinPaths(
+			state.noThemes
+				? await mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
+				: await mergeResourcePaths(
+						state.cwd,
+						[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
+						state.additionalThemePaths,
+					),
+			state.disabledBuiltinExtensions,
+			disabledBuiltinRoots,
+		);
 
 		state.lastThemePaths = themePaths;
 		const themesStartedAt = Date.now();
@@ -555,6 +604,8 @@ export async function prepareDefaultResourceLoaderReload(
 			: baseAppend;
 		state.appendSystemPromptSourcePaths = appendSystemPromptSourcePaths;
 		state.loaded = true;
+		state.deferredInitialLoad = false;
+		state.deferredInitialSettings = undefined;
 		endTimingSpan(promptFilesSpan);
 		await yieldToEventLoopIfSlow(promptFilesStartedAt);
 	};
