@@ -40,8 +40,11 @@ const { default: intercomLightweight } = await import("../../packages/intercom/i
 
 /** A start budget a real child start on a loaded machine reaches its extensions' start within. */
 const BUDGET_MS = 12_000;
-/** How long the first start is held: past its budget, then let go so the retry may open a session. */
-const STALL_MS = BUDGET_MS + 500;
+/**
+ * The longest the first start is held if its launch never reports the retry: the stall is let go as soon as the launch
+ * has given up on that start and waits for it to let go of its session.
+ */
+const STALL_BOUND_MS = 4 * BUDGET_MS;
 /** Structural cost: a real broker and two real child starts, the first held past its budget. */
 const REAL_RETRY_TEST_TIMEOUT_MS = 180_000;
 const STALL_HOOK = "__subagentStartRetryHoldStall";
@@ -197,12 +200,16 @@ for (const { stallAt, resume } of [
 			});
 			fixture.onCleanup(() => optionsSource.dispose());
 
-			// A child-only extension: the first start stalls in session_start past its budget, then lets go.
+			// A child-only extension: the first start stalls past its budget, then lets go once its launch reports the retry.
+			// A stall of a fixed length would also have to cover how long the start took to get there, which a loaded
+			// runner stretches past the time the launch waits for a stalled start to let go of its session.
 			let starts = 0;
+			const retryReported = Promise.withResolvers<void>();
 			const retryDisposing = Promise.withResolvers<void>();
 			const releaseRetry = Promise.withResolvers<void>();
 			globals[STALL_HOOK] = (point) => {
-				if (point === "start") return ++starts === 1 ? sleep(STALL_MS) : undefined;
+				if (point === "start")
+					return ++starts === 1 ? Promise.race([retryReported.promise, sleep(STALL_BOUND_MS)]) : undefined;
 				if (starts !== 2) return undefined;
 				retryDisposing.resolve();
 				return releaseRetry.promise;
@@ -275,6 +282,7 @@ for (const { stallAt, resume } of [
 				reportStart: (progress) => {
 					if (progress === undefined) return;
 					reports.push(`attempt ${progress.attempt}: ${progress.step}`);
+					if (progress.attempt === 2) retryReported.resolve();
 					if (progress.attempt === 2 && gapSend === undefined)
 						gapSend = peer.send(childName, { text: "GAP-2 while the first start stalled" });
 				},
