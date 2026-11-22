@@ -1,6 +1,6 @@
 {
   "name": "@bastani/intercom",
-  "version": "0.0.0",
+  "version": "0.10.4-alpha.2",
   "private": true,
   "description": "Atomic extension for direct messaging and coordination between parent, child, and peer agent sessions.",
   "contributors": [
