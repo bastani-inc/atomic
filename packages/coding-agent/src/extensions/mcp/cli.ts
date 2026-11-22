@@ -15,6 +15,11 @@ import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.js";
 import {
+	redactAuthorizationUrlForDisplay,
+	redactOAuthErrorText,
+	redactUrlForTransportDisplay,
+} from "./client/oauth/redact.js";
+import {
 	addMcpServerConfigAsync,
 	getMcpToolExposure,
 	type LoadedMcpConfig,
@@ -111,12 +116,14 @@ interface ServerReport {
 }
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return redactOAuthErrorText(error instanceof Error ? error.message : String(error));
 }
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
-	return "url" in config ? config.url : [config.command, ...(config.args ?? [])].join(" ");
+	return "url" in config
+		? redactUrlForTransportDisplay(config.url)
+		: redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 
 function getAuthProvider(entry: McpServerEntry): string | undefined {
@@ -162,9 +169,9 @@ function createProviderTokenReader(
 		} catch (error) {
 			// Missing or unrefreshable credentials: the server's 401 then reports that sign-in is needed. The reason
 			// goes to mcp.log, so the fallback stays visible.
-			log.write(provider, {
+			log.writeRedacted(provider, {
 				level: "warning",
-				data: `Could not read the ${provider} credentials: ${error instanceof Error ? error.message : String(error)}`,
+				data: `Could not read the ${provider} credentials: ${errorMessage(error)}`,
 			});
 			return undefined;
 		}
@@ -209,7 +216,10 @@ function parseOptions(
 		const name = arg.slice(2);
 		const kind = known[name];
 		if (!kind) {
-			error(`Unknown option ${typed}.\n${HELP_HINT}`);
+			const eq = typed.indexOf("=");
+			const safeTyped =
+				eq > 0 ? `${redactOAuthErrorText(typed.slice(0, eq))}=[redacted]` : redactOAuthErrorText(typed);
+			error(`Unknown option ${safeTyped}.\n${HELP_HINT}`);
 			return undefined;
 		}
 		if (kind === "flag") {
@@ -392,7 +402,7 @@ async function runServerCommand(
 			}
 		}
 		default:
-			error(`Unknown mcp command "${command}".\n${HELP_HINT}`);
+			error(`Unknown mcp command "${redactOAuthErrorText(command)}".\n${HELP_HINT}`);
 			return 1;
 	}
 }
@@ -417,7 +427,7 @@ function parsePairs(option: string, pairs: string[] | undefined, error: (line: s
 	for (const pair of pairs) {
 		const separator = pair.indexOf("=");
 		if (separator <= 0) {
-			error(`--${option} expects KEY=VALUE, got "${pair}".`);
+			error(`--${option} expects KEY=VALUE.`);
 			return undefined;
 		}
 		record[pair.slice(0, separator)] = pair.slice(separator + 1);
@@ -694,7 +704,7 @@ async function login(
 		return 0;
 	} catch {
 		if (connection.state !== "needs-auth") {
-			error(`MCP server "${name}" failed to connect: ${connection.error ?? "unknown error"}`);
+			error(`MCP server "${name}" failed to connect: ${redactOAuthErrorText(connection.error ?? "unknown error")}`);
 			return 1;
 		}
 	}
@@ -709,7 +719,8 @@ async function login(
 			challenge: connection.challenge,
 			prompt: {
 				showAuthorizationUrl: (authorizationUrl) => {
-					log(`Sign in to MCP server "${name}" in your browser:\n${authorizationUrl.href}`);
+					const displayUrl = redactAuthorizationUrlForDisplay(authorizationUrl);
+					log(`Sign in to MCP server "${name}" in your browser:\n${displayUrl}`);
 					openUrl(authorizationUrl.href);
 				},
 				promptForRedirectUrl: (signal) => waitForRedirectUrl(signal, interactive),

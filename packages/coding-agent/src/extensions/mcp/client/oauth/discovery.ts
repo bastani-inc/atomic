@@ -7,6 +7,7 @@
 import type { McpFetch } from "../auth-provider.js";
 import { LATEST_PROTOCOL_VERSION } from "../protocol/types.js";
 import { OAuthIssuerMismatchError } from "./errors.js";
+import { redactUrlForDisplay } from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	type OAuthChallenge,
@@ -67,6 +68,15 @@ async function fetchMetadata(
 	});
 }
 
+async function parseJsonBody(response: Response, label: string): Promise<unknown> {
+	const text = await response.text();
+	try {
+		return JSON.parse(text);
+	} catch {
+		throw new Error(`Invalid ${label}`);
+	}
+}
+
 export async function discoverProtectedResourceMetadata(
 	serverUrl: string | URL,
 	options: {
@@ -100,7 +110,7 @@ export async function discoverProtectedResourceMetadata(
 		discard(response);
 		throw new Error(`HTTP ${response.status} loading OAuth protected resource metadata`);
 	}
-	return parseProtectedResourceMetadata(await response.json());
+	return parseProtectedResourceMetadata(await parseJsonBody(response, "OAuth protected resource metadata"));
 }
 
 export function buildAuthorizationServerDiscoveryUrls(
@@ -131,9 +141,11 @@ export async function discoverAuthorizationServerMetadata(
 		if (!response.ok) {
 			discard(response);
 			if (isDiscoveryMiss(response.status)) continue;
-			throw new Error(`HTTP ${response.status} loading authorization server metadata from ${url}`);
+			throw new Error(
+				`HTTP ${response.status} loading authorization server metadata from ${redactUrlForDisplay(url.href)}`,
+			);
 		}
-		const metadata = parseAuthorizationServerMetadata(await response.json());
+		const metadata = parseAuthorizationServerMetadata(await parseJsonBody(response, "authorization server metadata"));
 		if (!options.skipIssuerValidation) {
 			const expected = String(authorizationServerUrl);
 			// URL parsing adds a trailing slash to bare origins, so compare without one on either side.
@@ -176,12 +188,17 @@ export async function discoverOAuthServerInfo(
 		);
 		if (!response.ok) {
 			discard(response);
-			throw new Error(`HTTP ${response.status} loading authorization server metadata from ${url}`);
+			throw new Error(
+				`HTTP ${response.status} loading authorization server metadata from ${redactUrlForDisplay(url.href)}`,
+			);
 		}
-		const metadata = parseAuthorizationServerMetadata(await response.json());
+		const metadata = parseAuthorizationServerMetadata(await parseJsonBody(response, "authorization server metadata"));
 		return { authorizationServerUrl: metadata.issuer, authorizationServerMetadata: metadata, resourceMetadata };
 	}
-	const authorizationServerUrl = resourceMetadata?.authorization_servers?.[0] ?? String(new URL("/", serverUrl));
+	const fallbackOrigin = new URL("/", serverUrl);
+	fallbackOrigin.username = "";
+	fallbackOrigin.password = "";
+	const authorizationServerUrl = resourceMetadata?.authorization_servers?.[0] ?? String(fallbackOrigin);
 	return {
 		authorizationServerUrl,
 		authorizationServerMetadata: await discoverAuthorizationServerMetadata(authorizationServerUrl, {
@@ -195,6 +212,8 @@ export async function discoverOAuthServerInfo(
 
 export function resourceUrlFromServerUrl(value: string | URL): URL {
 	const url = new URL(value);
+	url.username = "";
+	url.password = "";
 	url.hash = "";
 	return url;
 }
@@ -204,12 +223,16 @@ export function selectResource(serverUrl: string | URL, metadata?: OAuthProtecte
 	const requested = resourceUrlFromServerUrl(serverUrl);
 	const configured = new URL(metadata.resource);
 	if (requested.origin !== configured.origin) {
-		throw new Error(`Protected resource ${metadata.resource} does not match MCP server ${requested}`);
+		throw new Error(
+			`Protected resource ${redactUrlForDisplay(metadata.resource)} does not match MCP server ${redactUrlForDisplay(requested.href)}`,
+		);
 	}
 	const requestedPath = requested.pathname.endsWith("/") ? requested.pathname : `${requested.pathname}/`;
 	const configuredPath = configured.pathname.endsWith("/") ? configured.pathname : `${configured.pathname}/`;
 	if (!requestedPath.startsWith(configuredPath)) {
-		throw new Error(`Protected resource ${metadata.resource} does not match MCP server ${requested}`);
+		throw new Error(
+			`Protected resource ${redactUrlForDisplay(metadata.resource)} does not match MCP server ${redactUrlForDisplay(requested.href)}`,
+		);
 	}
 	return metadata.resource;
 }

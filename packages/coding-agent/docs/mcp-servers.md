@@ -61,7 +61,7 @@ HTTP servers use `url`, optional `headers`, and optional `oauth`. For bearer aut
 }
 ```
 
-URLs support `${NAME}` and `$env:NAME` environment references. Atomic resolves them in memory before validating the URL, without rewriting configuration files. `env`, `headers`, and `oauth.clientSecret` support `${NAME}` environment references and whole-value `!command` expressions, for example `"Authorization": "!echo Bearer $(gh auth token)"`. Only use commands from configuration you trust.
+URLs support `${NAME}` and `$env:NAME` environment references. Atomic resolves them in memory before validating the URL, without rewriting configuration files. `env`, `headers`, and `oauth.clientSecret` support `${NAME}` environment references and whole-value `!command` expressions, for example `"Authorization": "!echo Bearer $(gh auth token)"`. Only use commands from configuration you trust. Use `$$` for a literal `$` and `$!` for a literal `!`. When resolution fails, Atomic never echoes `!command` text; braced `${NAME}` references report the unset variable name, while unbraced `$NAME` references report the name only when it reads like a POSIX environment variable name so literal secrets containing `$` do not leak fragments.
 
 Both transports support:
 

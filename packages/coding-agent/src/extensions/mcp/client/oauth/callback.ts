@@ -1,4 +1,5 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
+import { redactOAuthErrorText } from "./redact.js";
 
 export interface OAuthCallback {
 	code: string;
@@ -142,7 +143,9 @@ export class OAuthCallbackServer {
 		}
 		const error = url.searchParams.get("error");
 		if (error) {
-			const description = url.searchParams.get("error_description") ?? error;
+			const description = redactOAuthErrorText(url.searchParams.get("error_description") || error, [
+				url.searchParams.get("code") ?? undefined,
+			]);
 			pending.reject(new Error(description));
 			this.reply(response, 200, {
 				ok: false,
