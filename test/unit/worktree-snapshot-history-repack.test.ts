@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 
-/** Runs once, just before the next `git bundle create` the code under test starts. */
-const hooks = vi.hoisted(() => ({ beforeBundle: undefined as (() => void) | undefined }));
+/** Run once, just before the next `git bundle create`, or `git var`, the code under test starts. */
+const hooks = vi.hoisted(() => ({
+	beforeBundle: undefined as (() => void) | undefined,
+	beforeVar: undefined as (() => void) | undefined,
+}));
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -17,6 +21,11 @@ vi.mock("node:child_process", async (importOriginal) => {
 			if (hooks.beforeBundle !== undefined && words[0] === "bundle" && words[1] === "create") {
 				const hook = hooks.beforeBundle;
 				hooks.beforeBundle = undefined;
+				hook();
+			}
+			if (hooks.beforeVar !== undefined && words[0] === "var") {
+				const hook = hooks.beforeVar;
+				hooks.beforeVar = undefined;
 				hook();
 			}
 			return (actual.spawn as (...parameters: unknown[]) => unknown)(command, args, options);
@@ -38,6 +47,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	hooks.beforeBundle = undefined;
+	hooks.beforeVar = undefined;
 	sandbox.dispose();
 });
 
@@ -103,6 +113,58 @@ test("history whose packing setting changed while it was bundled is bundled agai
 	await sandbox.git(clone, "config", "core.compression", "9");
 	sandbox.write(join(clone, "edit.txt"), "edit\n");
 	const second = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.deepEqual(second.snapshot.omitted, []);
+	assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+});
+
+test("history whose attributes turned delta compression off while it was bundled is bundled again once they are back", async () => {
+	const data = `${randomBytes(48 * 1024)
+		.toString("base64")
+		.replace(/.{76}/g, "$&\n")}\n`;
+	const { clone } = await sandbox.remoteWithClone("repo", { "sub/data.txt": data });
+	sandbox.write(join(clone, "sub", "data.txt"), `edited ${data}`);
+	const commit = await sandbox.commitAll(clone, "edit data");
+	const attributes = join(clone, ".git", "info", "attributes");
+	// Delta compression is turned off for the file just before the commit is bundled: its bundle is over the cap.
+	hooks.beforeBundle = () => sandbox.write(attributes, "sub/data.txt -delta\n");
+	const settings = { maxSnapshotBytes: 16 * 1024 };
+	sandbox.write(join(clone, "edit.txt"), "one\n");
+	const first = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.equal(hooks.beforeBundle, undefined, "the commit was bundled");
+	assert.equal(first.snapshot.omitted[0]?.reason, "bundle-over-cap");
+
+	// Back to the attributes the capture started with, the commit's bundle fits under the cap.
+	rmSync(attributes);
+	sandbox.write(join(clone, "edit.txt"), "two\n");
+	const second = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.deepEqual(second.snapshot.omitted, []);
+	assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+});
+
+test("history whose attributes changed while Git named the system's attributes file is bundled again", async () => {
+	const data = `${randomBytes(48 * 1024)
+		.toString("base64")
+		.replace(/.{76}/g, "$&\n")}\n`;
+	const { clone } = await sandbox.remoteWithClone("repo", { "sub/data.txt": data });
+	sandbox.write(join(clone, "sub", "data.txt"), `edited ${data}`);
+	const commit = await sandbox.commitAll(clone, "edit data");
+	const attributes = join(clone, ".git", "info", "attributes");
+	sandbox.write(attributes, "sub/data.txt -delta\n");
+	// A new process, which asks Git for the system's attributes file after its first bundle over the cap.
+	vi.resetModules();
+	const capture = await import("../../packages/coding-agent/src/core/worktree-snapshot/capture.ts");
+	const git = await import("../../packages/coding-agent/src/core/worktree-snapshot/git.ts");
+	git.setWorktreeSnapshotGit(async () => sandbox.executable);
+	// Delta compression is turned on again for the file while Git is asked.
+	hooks.beforeVar = () => rmSync(attributes);
+	const settings = { maxSnapshotBytes: 16 * 1024 };
+	sandbox.write(join(clone, "edit.txt"), "one\n");
+	const first = captured(await capture.captureWorktreeSnapshot(clone, { settings }));
+	assert.equal(hooks.beforeVar, undefined, "Git was asked");
+	assert.equal(first.snapshot.omitted[0]?.reason, "bundle-over-cap");
+
+	sandbox.write(join(clone, "edit.txt"), "two\n");
+	const second = captured(await capture.captureWorktreeSnapshot(clone, { settings }));
 	assert.deepEqual(second.snapshot.omitted, []);
 	assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
 });

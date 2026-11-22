@@ -300,6 +300,18 @@ async function excludedDirectory(cwd: string): Promise<WorkspaceSnapshotError | 
 	return undefined;
 }
 
+function environmentOf(executable: GitExecutable): NodeJS.ProcessEnv {
+	return createGitEnvironment(
+		{ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GCM_INTERACTIVE: "never" },
+		createChildProcessEnvironment(executable.env),
+	);
+}
+
+/** The environment Git runs in through {@link runGit}, before a command's own variables. */
+export async function gitEnvironment(signal?: AbortSignal): Promise<NodeJS.ProcessEnv> {
+	return environmentOf(scopedExecutable.getStore() ?? (await resolveExecutable(signal)));
+}
+
 /**
  * Runs one Git command through the injected executable. Rejects with the signal's reason when aborted, and with
  * `not-a-repository` before resolving Git when the working directory lies in a root excluded from snapshots.
@@ -310,10 +322,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	if (excluded !== undefined) throw excluded;
 	const executable = scopedExecutable.getStore() ?? (await resolveExecutable(options.signal));
 	options.signal?.throwIfAborted();
-	const env = createGitEnvironment(
-		{ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GCM_INTERACTIVE: "never" },
-		createChildProcessEnvironment(executable.env),
-	);
+	const env = environmentOf(executable);
 	Object.assign(env, options.env);
 	if (options.nonInteractive && !env.GIT_SSH_COMMAND && !env.GIT_SSH && !(await configuresSshCommand(options))) {
 		env.GIT_SSH_COMMAND = `ssh -o BatchMode=yes -o ConnectTimeout=${NON_INTERACTIVE_SSH_CONNECT_TIMEOUT_SECONDS}`;
