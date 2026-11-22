@@ -35,6 +35,8 @@ export type {
 	CustomMessageEntry,
 	FileEntry,
 	LabelEntry,
+	LatestBranchSetting,
+	LatestBranchSettings,
 	ModelChangeEntry,
 	ModelFallbackRecord,
 	NewSessionOptions,

@@ -54,6 +54,8 @@ const STAGED_DIST_REFRESH = "scripts/refresh-package-dist.mjs";
 
 /** Bundles each forked package's compiled modules into a few shared files (see the script). */
 const BUNDLER = "scripts/bundle-package-dist.mjs";
+/** What the bundler writes the strings of the code it generates with. */
+const BUNDLER_LITERALS = "packages/coding-agent/scripts/code-string-literal.mjs";
 
 /** @param {string} relative */
 const isGeneratedModelSource = (relative) =>
@@ -86,7 +88,13 @@ export const BUILD_STEPS = [
 	{
 		name: "schema",
 		packageDir: "packages/schema",
-		inputs: ["packages/schema/src", "packages/schema/package.json", "packages/schema/tsconfig.build.json", BUNDLER],
+		inputs: [
+			"packages/schema/src",
+			"packages/schema/package.json",
+			"packages/schema/tsconfig.build.json",
+			BUNDLER,
+			BUNDLER_LITERALS,
+		],
 		outputs: ["packages/schema/dist"],
 		scripts: [],
 		staged: true,
@@ -99,6 +107,7 @@ export const BUILD_STEPS = [
 			"packages/telemetry/package.json",
 			"packages/telemetry/tsconfig.build.json",
 			BUNDLER,
+			BUNDLER_LITERALS,
 		],
 		outputs: ["packages/telemetry/dist"],
 		scripts: [],
@@ -137,6 +146,7 @@ export const BUILD_STEPS = [
 			"packages/ai/tsconfig.build.json",
 			"packages/ai/tsconfig.json",
 			BUNDLER,
+			BUNDLER_LITERALS,
 		],
 		outputs: ["packages/ai/dist"],
 		// The data the ai-models step left is checked as is: a stale catalog fails the build rather than being fetched again.
@@ -147,7 +157,13 @@ export const BUILD_STEPS = [
 	{
 		name: "tui",
 		packageDir: "packages/tui",
-		inputs: ["packages/tui/src", "packages/tui/package.json", "packages/tui/tsconfig.build.json", BUNDLER],
+		inputs: [
+			"packages/tui/src",
+			"packages/tui/package.json",
+			"packages/tui/tsconfig.build.json",
+			BUNDLER,
+			BUNDLER_LITERALS,
+		],
 		outputs: ["packages/tui/dist"],
 		scripts: [],
 		staged: true,
@@ -155,7 +171,13 @@ export const BUILD_STEPS = [
 	{
 		name: "agent",
 		packageDir: "packages/agent",
-		inputs: ["packages/agent/src", "packages/agent/package.json", "packages/agent/tsconfig.build.json", BUNDLER],
+		inputs: [
+			"packages/agent/src",
+			"packages/agent/package.json",
+			"packages/agent/tsconfig.build.json",
+			BUNDLER,
+			BUNDLER_LITERALS,
+		],
 		outputs: ["packages/agent/dist"],
 		scripts: [],
 		staged: true,
