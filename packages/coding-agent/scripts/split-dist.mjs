@@ -576,7 +576,7 @@ const bundle = await rolldown({
 					const entry = rawId.slice(VIRTUAL_ENTRY_PREFIX.length);
 					const target = join(dist, `${entry}.js`);
 					const code = compiledEntries.get(target)?.code ?? "";
-					const hasDefault = /\bexport\s+default\b|\bas\s+default\b/.test(code);
+					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
 					const spec = JSON.stringify(target);
 					return {
 						code: hasDefault
@@ -589,7 +589,7 @@ const bundle = await rolldown({
 					const path = rawId.slice(VIRTUAL_COMPAT_PREFIX.length);
 					const target = join(dist, path);
 					const code = compiledSource(path);
-					const hasDefault = /\bexport\s+default\b|\bas\s+default\b/.test(code);
+					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
 					const spec = JSON.stringify(target);
 					return {
 						code: hasDefault
@@ -844,13 +844,17 @@ for (const item of generated.output) {
 		if (contents.includes(DIST_PATH_MARK)) {
 			throw new Error(`split-dist: ${item.fileName} retained an unrewritten ${DIST_PATH_MARK} path`);
 		}
-		// Synthetic runtime chunks (e.g. rolldown:runtime) emit no source map; write an empty valid v3 map beside
-		// every shared chunk so tooling and tests inspecting `<shared>.js.map` always find a valid source map.
-		if (item.fileName.startsWith(`${SHARED_DIRECTORY}/`) && !emittedMaps.has(`${item.fileName}.map`)) {
+		// Synthetic runtime chunks (e.g. rolldown:runtime) and thin virtual facade entries emit no source map; write an
+		// empty valid v3 map beside every emitted `.js` chunk lacking one and link it with `sourceMappingURL` so
+		// pre-split `tsc` maps for facade entries are overwritten instead of shipped stale in `dist/`.
+		if (item.fileName.endsWith(".js") && !emittedMaps.has(`${item.fileName}.map`)) {
 			const base = item.fileName.slice(item.fileName.lastIndexOf("/") + 1);
+			if (!contents.includes("//# sourceMappingURL=")) {
+				contents = `${contents.endsWith("\n") ? contents : `${contents}\n`}//# sourceMappingURL=${base}.map\n`;
+			}
 			outputFiles.push({
 				path: `${path}.map`,
-				contents: JSON.stringify({ version: 3, file: base, sources: [], names: [], mappings: "" }),
+				contents: `${JSON.stringify({ version: 3, file: base, sources: [], names: [], mappings: "" })}\n`,
 			});
 		}
 	}

@@ -318,3 +318,25 @@ console.log(JSON.stringify({ sameAsBundled: compat.warmCompileCache === p0Mod.wa
 	},
 	CHILD_TIMEOUT_MS,
 );
+
+builtTest("virtual facade split entries overwrite pre-split tsc source maps and link their .js.map files", () => {
+	for (const entry of ["main.js", "index.js", "modes/interactive/startup-shell.js", "modes/rpc/rpc-mode.js"]) {
+		const jsPath = join(DIST, entry);
+		const mapPath = `${jsPath}.map`;
+		const base = entry.slice(entry.lastIndexOf("/") + 1);
+		const js = readFileSync(jsPath, "utf8");
+		assert.ok(
+			js.includes(`//# sourceMappingURL=${base}.map`),
+			`expected ${entry} to reference //# sourceMappingURL=${base}.map`,
+		);
+		assert.ok(existsSync(mapPath), `expected ${entry}.map to exist`);
+		const rawMap = readFileSync(mapPath, "utf8");
+		assert.ok(
+			rawMap.length < 1024,
+			`expected ${entry}.map to be a compact facade map (< 1 KB), got ${rawMap.length} bytes (stale pre-split tsc map?)`,
+		);
+		const parsed = JSON.parse(rawMap) as { version?: number; file?: string; sources?: unknown[] };
+		assert.equal(parsed.version, 3);
+		assert.equal(parsed.file, base);
+	}
+});
