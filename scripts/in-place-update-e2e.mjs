@@ -19,7 +19,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Atomic's packages an update puts in place: the application first. */
@@ -42,7 +42,7 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const HOST = `
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 const [packageDir, held, targets] = [process.argv[2], JSON.parse(process.argv[3]), JSON.parse(process.argv[4])];
 const load = (path) => import(pathToFileURL(join(packageDir, path)).href);
 for (const path of held) await load(path);
@@ -84,6 +84,15 @@ function installedPackageDirs(root) {
 	};
 	visit(join(root, "node_modules"));
 	return found;
+}
+
+/**
+ * Unpacks the tarball `file` into the directory `into`. The archive is named relative to its directory: GNU tar, which
+ * Git for Windows puts on PATH, takes `C:` in an archive's path for a remote host.
+ */
+function untar(file, into) {
+	const result = spawnSync("tar", ["-xzf", basename(file), "-C", into], { cwd: dirname(file) });
+	if (result.status !== 0) throw new Error(`could not unpack ${file}: ${result.stderr}`);
 }
 
 /** The tarball of package `name` in `dir`, as `npm pack` names it. */
@@ -169,8 +178,7 @@ export async function updateRunningRelease(record, tarballs, version, work) {
 		// The update: each of Atomic's packages is replaced by the build's, where the release's install put it.
 		for (const { name, dir } of installedPackageDirs(prefix)) {
 			const unpacked = mkdtempSync(join(work, "unpacked-"));
-			const result = spawnSync("tar", ["-xzf", tarballOf(tarballs, name), "-C", unpacked]);
-			if (result.status !== 0) throw new Error(`could not unpack ${name}: ${result.stderr}`);
+			untar(tarballOf(tarballs, name), unpacked);
 			const nested = join(dir, "node_modules");
 			for (const entry of readdirSync(dir))
 				if (join(dir, entry) !== nested) rmSync(join(dir, entry), { recursive: true });
@@ -212,7 +220,7 @@ async function main(argv) {
 		.filter((record) => versions.length === 0 || versions.includes(record.version));
 	const work = mkdtempSync(join(tmpdir(), "atomic-in-place-update-e2e-"));
 	const unpacked = mkdtempSync(join(work, "build-"));
-	spawnSync("tar", ["-xzf", tarballOf(tarballs, "@bastani/atomic"), "-C", unpacked]);
+	untar(tarballOf(tarballs, "@bastani/atomic"), unpacked);
 	const version = JSON.parse(readFileSync(join(unpacked, "package", "package.json"), "utf8")).version;
 	let ok = true;
 	try {
