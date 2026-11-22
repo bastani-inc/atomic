@@ -3,6 +3,7 @@ import { drainPendingOAuthRotations, normalizeProviderId } from "@bastani/atomic
 import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
+import { shouldRunFirstTimeSetup } from "./cli/first-time-setup-check.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
 import {
 	ENV_DEBUG,
@@ -100,7 +101,6 @@ import {
 	resolveDeferredStartupModel,
 } from "./main-deferred-startup.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
-import { runFirstTimeSetup } from "./main-first-time-setup.ts";
 import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
 	createResumeProgress,
@@ -1427,7 +1427,10 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, stdinContent);
 	time("prepareInitialMessage");
-	startupEarlyInputCapture = await runFirstTimeSetup(appMode, settingsManager, startupEarlyInputCapture);
+	if (appMode === "interactive" && shouldRunFirstTimeSetup()) {
+		const { runFirstTimeSetup } = await import("./main-first-time-setup.ts");
+		startupEarlyInputCapture = await runFirstTimeSetup(appMode, settingsManager, startupEarlyInputCapture);
+	}
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 

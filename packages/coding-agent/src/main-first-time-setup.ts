@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { ENV_AGENT_DIR, getEnvValue, getSettingsPath } from "./config.js";
+import { shouldRunFirstTimeSetup, showFirstTimeSetup } from "./cli/startup-ui.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
 import type { EarlyInputCapture } from "./main-early-input.ts";
@@ -9,9 +8,7 @@ export async function runFirstTimeSetup(
 	settingsManager: SettingsManager,
 	capture: EarlyInputCapture | undefined,
 ): Promise<EarlyInputCapture | undefined> {
-	if (appMode !== "interactive" || getEnvValue(ENV_AGENT_DIR) || existsSync(getSettingsPath())) return capture;
-	const { shouldRunFirstTimeSetup, showFirstTimeSetup } = await import("./cli/startup-ui.ts");
-	if (!shouldRunFirstTimeSetup()) return capture;
+	if (appMode !== "interactive" || !shouldRunFirstTimeSetup()) return capture;
 	await showFirstTimeSetup(settingsManager);
 	return capture;
 }
