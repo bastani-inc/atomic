@@ -19,8 +19,13 @@ use linux as platform;
 use windows as platform;
 
 /// Delivers a process's events to the host, keeping its event loop alive until the process has ended.
+#[cfg(not(windows))]
 type EventCallback =
 	ThreadsafeFunction<HostProcessEvent, Unknown<'static>, HostProcessEvent, Status, false>;
+/// On Windows an output event takes its bytes only when the host's thread gets to it (see `windows::Delivery`).
+#[cfg(windows)]
+type EventCallback =
+	ThreadsafeFunction<windows::Delivery, Unknown<'static>, windows::Delivery, Status, false>;
 
 #[napi(object)]
 pub struct HostProcessOptions {
@@ -184,6 +189,8 @@ impl Drop for HostProcess {
 /// process starts suspended in a job of its own, and a start that cannot put it there throws `ENOTSUP` before the
 /// program ran. Off Linux and Windows it always refuses with `ENOSYS`.
 #[napi(js_name = "startHostProcess")]
+// On Windows the callback's events are a type of the Windows module, which converts them to `HostProcessEvent`.
+#[cfg_attr(windows, allow(private_interfaces))]
 pub fn start_host_process(
 	options: HostProcessOptions,
 	#[napi(ts_arg_type = "(event: HostProcessEvent) => void")] on_event: EventCallback,

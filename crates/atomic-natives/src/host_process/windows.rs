@@ -42,7 +42,7 @@ use windows_sys::Win32::System::JobObjects::{
 	JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
 	JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
 	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
 	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
@@ -55,21 +55,38 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// The longest current directory `CreateProcessW` takes; libuv shortens a longer one.
 const MAX_PATH: usize = 260;
-/// How much of a stream's output may wait for the host beyond the event it is handling: the reader waits while this much
-/// does, so a program that writes faster than the host handles its output waits on its pipe, as under `child_process`,
-/// instead of having all of it queued in memory and exiting before the host saw it.
+/// How much of a stream's output may wait for the host: the reader waits while this much does, so a program that writes
+/// faster than the host handles its output waits on its pipe, as under `child_process`, instead of having all of it
+/// queued in memory and exiting before the host saw it.
 const PENDING_OUTPUT_BYTES: usize = 1024 * 1024;
 
-/// One output stream's way to the host. At most one of its events is unhandled there at a time; what the stream reads
-/// meanwhile gathers and goes as one event once the host handled that one, as `child_process` takes everything a pipe
-/// holds in one read.
+/// What a stream read and the host has not taken yet. Its bytes go as one event, taken when the host's thread gets to
+/// that event: what the stream reads until then joins it, as `child_process` reads everything a pipe holds once its
+/// loop gets to it. A program that writes a line in two writes, as PowerShell does, is delivered a line at a time.
 #[derive(Default)]
 struct StreamOutput {
 	pending: Vec<u8>,
-	in_flight: bool,
-	/// The stream reached its end, whose event follows its last bytes.
-	ended: bool,
-	end_sent: bool,
+	/// An event that takes `pending` is on its way to the host.
+	scheduled: bool,
+}
+
+/// What goes to the host: an event, or what a stream gathered, taken as the host's thread converts it.
+pub(super) enum Delivery {
+	Event(HostProcessEvent),
+	Gathered(Arc<Shared>, usize),
+}
+
+impl napi::bindgen_prelude::ToNapiValue for Delivery {
+	unsafe fn to_napi_value(
+		env: napi::sys::napi_env,
+		delivery: Self,
+	) -> napi::Result<napi::sys::napi_value> {
+		let event = match delivery {
+			Delivery::Event(event) => event,
+			Delivery::Gathered(shared, index) => shared.take_gathered(index),
+		};
+		unsafe { <HostProcessEvent as napi::bindgen_prelude::ToNapiValue>::to_napi_value(env, event) }
+	}
 }
 
 /// The data and end events of stream `index` (0 standard output, 1 standard error).
@@ -275,14 +292,13 @@ impl Shared {
 
 	fn emit(&self, event: HostProcessEvent) {
 		if let Some(callback) = locked(&self.callback).as_ref() {
-			callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+			callback.call(Delivery::Event(event), ThreadsafeFunctionCallMode::NonBlocking);
 		}
 	}
 
-	/// Takes `bytes` that stream `index` read toward the host: sends them at once when none of its events is unhandled
-	/// there, and otherwise adds them to what goes next. Waits while [`PENDING_OUTPUT_BYTES`] wait. False once the host
-	/// released the process.
-	fn send_output(self: &Arc<Self>, index: usize, bytes: &[u8]) -> bool {
+	/// Adds `bytes` that stream `index` read to what goes to the host, sending an event that takes them unless one is
+	/// on its way. Waits while [`PENDING_OUTPUT_BYTES`] wait. False once the host released the process.
+	fn gather_output(self: &Arc<Self>, index: usize, bytes: &[u8]) -> bool {
 		let mut outputs = locked(&self.outputs);
 		while outputs[index].pending.len() >= PENDING_OUTPUT_BYTES
 			&& !self.stopping.load(Ordering::Acquire)
@@ -294,81 +310,33 @@ impl Shared {
 		}
 		let output = &mut outputs[index];
 		output.pending.extend_from_slice(bytes);
-		if output.in_flight {
+		if output.scheduled {
 			return true;
 		}
-		output.in_flight = true;
-		let data = std::mem::take(&mut output.pending);
+		output.scheduled = true;
 		drop(outputs);
-		self.send_data(index, data);
+		let sent = locked(&self.callback).as_ref().is_some_and(|callback| {
+			callback
+				.call(Delivery::Gathered(self.clone(), index), ThreadsafeFunctionCallMode::NonBlocking)
+				== Status::Ok
+		});
+		if !sent {
+			self.take_gathered(index);
+		}
 		true
 	}
 
-	/// Sends `data` of stream `index`; once the host handled it, what gathered meanwhile follows, or the stream's end.
-	fn send_data(self: &Arc<Self>, index: usize, data: Vec<u8>) {
-		let event = HostProcessEvent {
+	/// The event that takes what stream `index` gathered, as the host's thread converts it.
+	fn take_gathered(&self, index: usize) -> HostProcessEvent {
+		let mut outputs = locked(&self.outputs);
+		let output = &mut outputs[index];
+		output.scheduled = false;
+		let data = std::mem::take(&mut output.pending);
+		drop(outputs);
+		self.outputs_changed.notify_all();
+		HostProcessEvent {
 			data: Some(Buffer::from(data)),
 			..HostProcessEvent::of(stream_kinds(index).0)
-		};
-		let next = self.clone();
-		let sent = locked(&self.callback).as_ref().is_some_and(|callback| {
-			callback.call_with_return_value(
-				event,
-				ThreadsafeFunctionCallMode::NonBlocking,
-				move |_, _| {
-					next.output_handled(index);
-					Ok(())
-				},
-			) == Status::Ok
-		});
-		if !sent {
-			self.output_handled(index);
-		}
-	}
-
-	/// The host handled stream `index`'s event (on its thread), or it could not be sent.
-	fn output_handled(self: &Arc<Self>, index: usize) {
-		let mut outputs = locked(&self.outputs);
-		let stopping = self.stopping.load(Ordering::Acquire);
-		let output = &mut outputs[index];
-		if !output.pending.is_empty() && !stopping {
-			let data = std::mem::take(&mut output.pending);
-			drop(outputs);
-			self.outputs_changed.notify_all();
-			self.send_data(index, data);
-			return;
-		}
-		output.in_flight = false;
-		let end = output.ended && !output.end_sent && !stopping;
-		output.end_sent |= end;
-		drop(outputs);
-		self.outputs_changed.notify_all();
-		if end {
-			self.emit(HostProcessEvent::of(stream_kinds(index).1));
-		}
-	}
-
-	/// Stream `index` reached its end: its end event goes now, or once the host handled its last bytes.
-	fn end_output(&self, index: usize) {
-		let mut outputs = locked(&self.outputs);
-		let output = &mut outputs[index];
-		output.ended = true;
-		let end = !output.in_flight && !output.end_sent;
-		output.end_sent |= end;
-		drop(outputs);
-		self.outputs_changed.notify_all();
-		if end {
-			self.emit(HostProcessEvent::of(stream_kinds(index).1));
-		}
-	}
-
-	/// Waits until every stream that ended has sent its end event, or the host released the process.
-	fn wait_for_ends(&self) {
-		let mut outputs = locked(&self.outputs);
-		while !self.stopping.load(Ordering::Acquire)
-			&& outputs.iter().any(|output| output.ended && !output.end_sent)
-		{
-			outputs = self.outputs_changed.wait(outputs).unwrap_or_else(PoisonError::into_inner);
 		}
 	}
 }
@@ -612,34 +580,16 @@ fn cancel_until_finished(thread: &JoinHandle<()>) {
 	}
 }
 
-/// Reads the pipe into `buffer`: waits for its first bytes, then takes once what else it holds by then, as
-/// `child_process` reads what a pipe holds when its loop gets to it. A program that writes a line in two writes, as
-/// PowerShell does, is then read a line at a time, not half a line. `Ok(0)` is the pipe's end.
-fn read_available(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
-	let count = file.read(buffer)?;
-	let mut available = 0u32;
-	if count == 0
-		|| count == buffer.len()
-		|| unsafe { PeekNamedPipe(raw(file), null_mut(), 0, null_mut(), &mut available, null_mut()) }
-			== 0
-		|| available == 0
-	{
-		return Ok(count);
-	}
-	let wanted = (available as usize).min(buffer.len() - count);
-	Ok(count + file.read(&mut buffer[count..count + wanted]).unwrap_or(0))
-}
-
 fn read_output(shared: &Arc<Shared>, mut file: File, index: usize) {
 	let mut buffer = vec![0u8; READ_CHUNK_BYTES];
 	loop {
 		if shared.stopping.load(Ordering::Acquire) {
 			return;
 		}
-		match read_available(&mut file, &mut buffer) {
+		match file.read(&mut buffer) {
 			Ok(0) => break,
 			Ok(count) => {
-				if !shared.send_output(index, &buffer[..count]) {
+				if !shared.gather_output(index, &buffer[..count]) {
 					return;
 				}
 			},
@@ -649,7 +599,8 @@ fn read_output(shared: &Arc<Shared>, mut file: File, index: usize) {
 			Err(_) => break,
 		}
 	}
-	shared.end_output(index);
+	// After the event that takes the stream's last bytes, if one is on its way: events reach the host in order.
+	shared.emit(HostProcessEvent::of(stream_kinds(index).1));
 }
 
 fn write_input(shared: &Shared, mut file: File) {
@@ -726,7 +677,6 @@ fn supervise(shared: &Shared, readers: Vec<JoinHandle<()>>, writer: Option<JoinH
 				break;
 			}
 		}
-		shared.wait_for_ends();
 	}
 	shared.stopping.store(true, Ordering::Release);
 	shared.close_input();
