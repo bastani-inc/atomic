@@ -17,7 +17,12 @@ import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
-import { abandonedToolResult, toolAbortGraceMs } from "./tools/tool-abort-grace.ts";
+import {
+	abandonedToolResult,
+	armToolAbortGraceTimer,
+	clearToolAbortGraceTimer,
+	toolAbortGraceMs,
+} from "./tools/tool-abort-grace.ts";
 import {
 	resolveToolConcurrency,
 	type ToolConcurrencyMode,
@@ -573,8 +578,7 @@ export function detachableTool(
 				interrupted = true;
 				abort(signal?.reason);
 				graceMs = toolAbortGraceMs();
-				graceTimer = setTimeout(() => open(ABANDON), graceMs);
-				graceTimer.unref?.();
+				graceTimer = armToolAbortGraceTimer(session, graceMs, () => open(ABANDON));
 			};
 			if (signal?.aborted) forwardAbort();
 			else signal?.addEventListener("abort", forwardAbort, { once: true });
@@ -610,7 +614,7 @@ export function detachableTool(
 			} finally {
 				hold.gate = undefined;
 				clearTimeout(timer);
-				clearTimeout(graceTimer);
+				clearToolAbortGraceTimer(session, graceTimer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}

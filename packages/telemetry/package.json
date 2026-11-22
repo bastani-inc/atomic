@@ -40,7 +40,7 @@
 		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order",
 		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\""
 	},
 	"keywords": [

@@ -3,8 +3,6 @@ import { getKeybindings } from "./keybindings.ts";
 import type { Component, Focusable } from "./tui.ts";
 import { getGraphemeSegmenter, stripTerminalSequences, truncateToWidth, visibleWidth } from "./utils.ts";
 
-const segmenter = getGraphemeSegmenter();
-
 interface SearchSourceSpan {
 	textStart: number;
 	textEnd: number;
@@ -77,7 +75,7 @@ function buildSearchCorpus(lines: readonly string[]): SearchCorpus {
 				index = end;
 			}
 		} else {
-			for (const grapheme of segmenter.segment(line)) {
+			for (const grapheme of getGraphemeSegmenter().segment(line)) {
 				const text = grapheme.segment;
 				const width = visibleWidth(text);
 				if (/^\s+$/u.test(text)) {

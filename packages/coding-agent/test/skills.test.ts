@@ -1,8 +1,10 @@
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
 import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.ts";
+import { loadSkillsAsync } from "../src/core/skills-async.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 const fixturesDir = resolve(__dirname, "fixtures/skills");
@@ -427,6 +429,139 @@ describe("skills", () => {
 			expect(skillMap.get("calendar")?.sourceInfo.source).toBe("first");
 			expect(collisionWarnings).toHaveLength(1);
 			expect(collisionWarnings[0].message).toContain("name collision");
+		});
+	});
+
+	describe("loadSkillsAsync parity and ignore-file avoidance", () => {
+		it("matches loadSkills order, diagnostics, and .gitignore rules while skipping missing ignore-file reads", async () => {
+			const root = mkdtempSync(join(tmpdir(), "atomic-skills-async-"));
+			try {
+				const dirA = join(root, "skills-a");
+				const dirB = join(root, "skills-b");
+				mkdirSync(join(dirA, "alpha"), { recursive: true });
+				mkdirSync(join(dirA, "beta"), { recursive: true });
+				mkdirSync(join(dirA, "ignored-skill"), { recursive: true });
+				mkdirSync(join(dirB, "gamma"), { recursive: true });
+				mkdirSync(join(dirB, "alpha"), { recursive: true });
+
+				writeFileSync(join(dirA, ".gitignore"), "ignored-skill/\n");
+				writeFileSync(join(dirA, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: First alpha\n---\nBody\n");
+				writeFileSync(join(dirA, "beta", "SKILL.md"), "---\nname: beta\ndescription: Beta skill\n---\nBody\n");
+				writeFileSync(
+					join(dirA, "ignored-skill", "SKILL.md"),
+					"---\nname: ignored-skill\ndescription: Should be ignored\n---\nBody\n",
+				);
+				writeFileSync(join(dirB, "gamma", "SKILL.md"), "---\nname: gamma\ndescription: Gamma skill\n---\nBody\n");
+				writeFileSync(
+					join(dirB, "alpha", "SKILL.md"),
+					"---\nname: alpha\ndescription: Colliding alpha\n---\nBody\n",
+				);
+
+				const options = {
+					cwd: root,
+					agentDir: join(root, "agent"),
+					skillPaths: [dirA, join(root, "missing-dir"), dirB],
+					includeDefaults: false,
+				};
+				const syncResult = loadSkills(options);
+				const asyncResult = await loadSkillsAsync(options);
+
+				expect(asyncResult.skills).toEqual(syncResult.skills);
+				expect(asyncResult.candidates).toEqual(syncResult.candidates);
+				expect(asyncResult.diagnostics).toEqual(syncResult.diagnostics);
+				expect(asyncResult.skills.map((s) => s.name)).toEqual(["alpha", "beta", "gamma"]);
+				expect(asyncResult.diagnostics.some((d) => d.message.includes("does not exist"))).toBe(true);
+				expect(asyncResult.diagnostics.some((d) => d.type === "collision")).toBe(true);
+
+				// In a fresh child process, verify loadSkillsAsync does not issue readFile calls for absent ignore files.
+				const { spawnSync } = await import("node:child_process");
+				const skillsAsyncUrl = new URL("../src/core/skills-async.ts", import.meta.url).href;
+				const probe = spawnSync(
+					process.execPath,
+					[
+						"--input-type=module",
+						"-e",
+						`import { existsSync } from "node:fs";
+						import fsPromises from "node:fs/promises";
+						import { registerHooks, syncBuiltinESMExports } from "node:module";
+						import { fileURLToPath } from "node:url";
+						const readIgnoreCalls = [];
+						const orig = fsPromises.readFile;
+						fsPromises.readFile = function(p, ...rest) {
+							const s = String(p);
+							if (s.endsWith(".gitignore") || s.endsWith(".ignore") || s.endsWith(".fdignore")) readIgnoreCalls.push(s);
+							return orig.call(this, p, ...rest);
+						};
+						syncBuiltinESMExports();
+						registerHooks({
+							resolve(specifier, context, next) {
+								if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL?.startsWith("file:")) {
+									const tsUrl = new URL(specifier.slice(0, -3) + ".ts", context.parentURL);
+									if (existsSync(fileURLToPath(tsUrl))) return { url: tsUrl.href, shortCircuit: true };
+								}
+								return next(specifier, context);
+							},
+						});
+						const { loadSkillsAsync } = await import(${JSON.stringify(skillsAsyncUrl)});
+						await loadSkillsAsync({ cwd: ${JSON.stringify(root)}, agentDir: ${JSON.stringify(join(root, "agent"))}, skillPaths: [${JSON.stringify(dirA)}, ${JSON.stringify(dirB)}], includeDefaults: false });
+						process.stdout.write(JSON.stringify(readIgnoreCalls));`,
+					],
+					{ encoding: "utf8" },
+				);
+				expect(probe.status, probe.stderr).toBe(0);
+				expect(JSON.parse(probe.stdout)).toEqual([join(dirA, ".gitignore")]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it("matches sync loadSkills diagnostics on ENOTDIR, ELOOP, and uppercase ignore files", async () => {
+			const root = mkdtempSync(join(tmpdir(), "skills-async-errors-"));
+			try {
+				const regularFile = join(root, "not-a-dir.md");
+				writeFileSync(regularFile, "plain");
+				const enotdirPath = join(regularFile, "child");
+
+				const paths = [enotdirPath];
+				if (process.platform !== "win32") {
+					const loopA = join(root, "loop-a");
+					const loopB = join(root, "loop-b");
+					symlinkSync(loopB, loopA);
+					symlinkSync(loopA, loopB);
+					paths.push(loopA);
+				}
+
+				const upperIgnoreDir = join(root, "upper-ignore");
+				mkdirSync(join(upperIgnoreDir, "ignored-sub"), { recursive: true });
+				mkdirSync(join(upperIgnoreDir, "kept-sub"), { recursive: true });
+				writeFileSync(join(upperIgnoreDir, ".GITIGNORE"), "ignored-sub/\n");
+				writeFileSync(
+					join(upperIgnoreDir, "ignored-sub", "SKILL.md"),
+					"---\nname: ignored-sub\ndescription: Ignored on case-insensitive FS\n---\nBody\n",
+				);
+				writeFileSync(
+					join(upperIgnoreDir, "kept-sub", "SKILL.md"),
+					"---\nname: kept-sub\ndescription: Kept skill\n---\nBody\n",
+				);
+				paths.push(upperIgnoreDir);
+
+				const options = {
+					cwd: root,
+					agentDir: join(root, "agent"),
+					skillPaths: paths,
+					includeDefaults: false,
+				};
+				const syncResult = loadSkills(options);
+				const asyncResult = await loadSkillsAsync(options);
+				expect(asyncResult.skills).toEqual(syncResult.skills);
+				expect(asyncResult.candidates).toEqual(syncResult.candidates);
+				expect(asyncResult.diagnostics).toEqual(syncResult.diagnostics);
+				expect(asyncResult.diagnostics.filter((d) => d.message === "skill path does not exist").length).toBe(
+					process.platform === "win32" ? 1 : 2,
+				);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
 		});
 	});
 });

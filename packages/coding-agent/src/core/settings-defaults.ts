@@ -1,4 +1,5 @@
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/retry";
+/** Mirrors `DEFAULT_MAX_AGENT_RETRY_DELAY_MS` from `@bastani/atomic-ai/utils/retry` without loading the AI package before the early editor paints. */
+const DEFAULT_MAX_AGENT_RETRY_DELAY_MS = 60_000;
 
 /** Runtime defaults shared by settings accessors and the published JSON Schema. */
 export const SETTINGS_DEFAULTS = {

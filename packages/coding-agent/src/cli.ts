@@ -156,6 +156,11 @@ if (heapArgs.length > 0) {
 					};
 					const flag = flags.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
 					if (!adopted && flag !== undefined && args.includes(flag)) flushPersistentCompileCache();
+					if (!adopted) {
+						const prewarmRpc = (mainModule as { prewarmInteractiveEngineRpcMode?: () => Promise<void> })
+							.prewarmInteractiveEngineRpcMode;
+						if (typeof prewarmRpc === "function") void prewarmRpc().catch(() => {});
+					}
 					// The api of the model the settings select, read with the arguments its host was started with.
 					const hostArgs = flags.prewarmHostArguments?.(args);
 					if (!adopted && hostArgs !== undefined) {
