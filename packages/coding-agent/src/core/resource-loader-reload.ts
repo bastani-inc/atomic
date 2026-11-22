@@ -13,9 +13,12 @@ import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } f
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
 import { hostStoragePackagesRegistered } from "./package-manager-storage-adapters.js";
 import {
-	updatePromptsFromPathsAsync,
-	updateSkillsFromPathsAsync,
-	updateThemesFromPathsAsync,
+	loadPromptsStageAsync,
+	loadSkillsStageAsync,
+	loadThemesStageAsync,
+	preparePromptsCommitAsync,
+	prepareSkillsCommitAsync,
+	prepareThemesCommitAsync,
 } from "./resource-loader-assets.ts";
 import {
 	loadProjectContextFilesAsync,
@@ -152,10 +155,13 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 	}
 }
 
-async function resolvePromptInputs(inputs: readonly string[]): Promise<string[]> {
+async function resolvePromptInputs(
+	inputs: readonly string[],
+	onWarning?: (message: string) => void,
+): Promise<string[]> {
 	const resolved: string[] = [];
 	for (const input of inputs) {
-		const prompt = await resolvePromptInput(input, "append system prompt");
+		const prompt = await resolvePromptInput(input, "append system prompt", onWarning);
 		if (prompt !== undefined) resolved.push(prompt);
 	}
 	return resolved;
@@ -488,126 +494,218 @@ export async function prepareDefaultResourceLoaderReload(
 		}
 		resolveInheritedExtensionOverlaps(state.extensionsResult);
 
-		const skillPaths = await filterDisabledBuiltinPaths(
-			state.noSkills
-				? await mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
-				: await mergeResourcePaths(
-						state.cwd,
-						[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
-						state.additionalSkillPaths,
-					),
-			state.disabledBuiltinExtensions,
-			disabledBuiltinRoots,
-		);
-
-		state.lastSkillPaths = skillPaths;
-		const skillsStartedAt = Date.now();
-		const skillsSpan = startTimingSpan("DefaultResourceLoader.reload.updateSkillsFromPathsAsync");
-		await updateSkillsFromPathsAsync(loader, skillPaths, metadataByPath);
-		endTimingSpan(skillsSpan);
-		await yieldToEventLoopIfSlow(skillsStartedAt);
-		for (const p of state.additionalSkillPaths) {
-			if (isLocalPath(p)) {
-				const resolved = resolveResourcePath(state.cwd, p);
-				if (!(await exists(resolved)) && !state.skillDiagnostics.some((d) => d.path === resolved)) {
-					state.skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: resolved });
-				}
-			}
-		}
-
-		const promptPaths = await filterDisabledBuiltinPaths(
-			state.noPromptTemplates
-				? await mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
-				: await mergeResourcePaths(
-						state.cwd,
-						[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
-						state.additionalPromptTemplatePaths,
-					),
-			state.disabledBuiltinExtensions,
-			disabledBuiltinRoots,
-		);
-
-		state.lastPromptPaths = promptPaths;
-		const promptsStartedAt = Date.now();
-		const promptsSpan = startTimingSpan("DefaultResourceLoader.reload.updatePromptsFromPathsAsync");
-		await updatePromptsFromPathsAsync(loader, promptPaths, metadataByPath);
-		endTimingSpan(promptsSpan);
-		await yieldToEventLoopIfSlow(promptsStartedAt);
-		for (const p of state.additionalPromptTemplatePaths) {
-			if (isLocalPath(p)) {
-				const resolved = resolveResourcePath(state.cwd, p);
-				if (!(await exists(resolved)) && !state.promptDiagnostics.some((d) => d.path === resolved)) {
-					state.promptDiagnostics.push({
-						type: "error",
-						message: "Prompt template path does not exist",
-						path: resolved,
-					});
-				}
-			}
-		}
-
-		const themePaths = await filterDisabledBuiltinPaths(
-			state.noThemes
-				? await mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
-				: await mergeResourcePaths(
-						state.cwd,
-						[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
-						state.additionalThemePaths,
-					),
-			state.disabledBuiltinExtensions,
-			disabledBuiltinRoots,
-		);
-
-		state.lastThemePaths = themePaths;
-		const themesStartedAt = Date.now();
-		const themesSpan = startTimingSpan("DefaultResourceLoader.reload.updateThemesFromPathsAsync");
-		await updateThemesFromPathsAsync(loader, themePaths, metadataByPath);
-		endTimingSpan(themesSpan);
-		await yieldToEventLoopIfSlow(themesStartedAt);
-		for (const p of state.additionalThemePaths) {
-			const resolved = resolveResourcePath(state.cwd, p);
-			if (!(await exists(resolved)) && !state.themeDiagnostics.some((d) => d.path === resolved)) {
-				state.themeDiagnostics.push({ type: "error", message: "Theme path does not exist", path: resolved });
-			}
-		}
-
-		const contextFilesStartedAt = Date.now();
-		const contextFilesSpan = startTimingSpan("DefaultResourceLoader.reload.loadProjectContextFiles");
-		const agentsFiles = {
-			agentsFiles: state.noContextFiles
-				? []
-				: await loadProjectContextFilesAsync({
-						cwd: state.cwd,
-						agentDir: state.agentDir,
-						projectTrusted: state.settingsManager.isProjectTrusted(),
+		const assetsStartedAt = Date.now();
+		// Phase 1: Pure concurrent I/O with zero loader state mutations, override calls, or stderr writes.
+		const loadSkillsIo = async () => {
+			const skillPaths = await filterDisabledBuiltinPaths(
+				state.noSkills
+					? await mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
+					: await mergeResourcePaths(
+							state.cwd,
+							[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
+							state.additionalSkillPaths,
+						),
+				state.disabledBuiltinExtensions,
+				disabledBuiltinRoots,
+			);
+			const skillsSpan = startTimingSpan("DefaultResourceLoader.reload.updateSkillsFromPathsAsync");
+			const stage = await loadSkillsStageAsync(loader, skillPaths, metadataByPath);
+			endTimingSpan(skillsSpan);
+			const missingSkills = (
+				await Promise.all(
+					state.additionalSkillPaths.map(async (p) => {
+						if (!isLocalPath(p)) return undefined;
+						const resolved = resolveResourcePath(state.cwd, p);
+						return (await exists(resolved)) ? undefined : resolved;
 					}),
+				)
+			).filter((p): p is string => p !== undefined);
+			return { stage, missingSkills };
 		};
-		endTimingSpan(contextFilesSpan);
-		await yieldToEventLoopIfSlow(contextFilesStartedAt);
-		const resolvedAgentsFiles = state.agentsFilesOverride ? state.agentsFilesOverride(agentsFiles) : agentsFiles;
+
+		const loadPromptsIo = async () => {
+			const promptPaths = await filterDisabledBuiltinPaths(
+				state.noPromptTemplates
+					? await mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
+					: await mergeResourcePaths(
+							state.cwd,
+							[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
+							state.additionalPromptTemplatePaths,
+						),
+				state.disabledBuiltinExtensions,
+				disabledBuiltinRoots,
+			);
+			const promptsSpan = startTimingSpan("DefaultResourceLoader.reload.updatePromptsFromPathsAsync");
+			const stage = await loadPromptsStageAsync(loader, promptPaths, metadataByPath);
+			endTimingSpan(promptsSpan);
+			const missingPrompts = (
+				await Promise.all(
+					state.additionalPromptTemplatePaths.map(async (p) => {
+						if (!isLocalPath(p)) return undefined;
+						const resolved = resolveResourcePath(state.cwd, p);
+						return (await exists(resolved)) ? undefined : resolved;
+					}),
+				)
+			).filter((p): p is string => p !== undefined);
+			return { stage, missingPrompts };
+		};
+
+		const loadThemesIo = async () => {
+			const themePaths = await filterDisabledBuiltinPaths(
+				state.noThemes
+					? await mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
+					: await mergeResourcePaths(
+							state.cwd,
+							[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
+							state.additionalThemePaths,
+						),
+				state.disabledBuiltinExtensions,
+				disabledBuiltinRoots,
+			);
+			const themesSpan = startTimingSpan("DefaultResourceLoader.reload.updateThemesFromPathsAsync");
+			const stage = await loadThemesStageAsync(loader, themePaths);
+			endTimingSpan(themesSpan);
+			const missingThemes = (
+				await Promise.all(
+					state.additionalThemePaths.map(async (p) => {
+						const resolved = resolveResourcePath(state.cwd, p);
+						return (await exists(resolved)) ? undefined : resolved;
+					}),
+				)
+			).filter((p): p is string => p !== undefined);
+			return { stage, missingThemes };
+		};
+
+		const loadContextFilesIo = async () => {
+			const contextFilesSpan = startTimingSpan("DefaultResourceLoader.reload.loadProjectContextFiles");
+			const warnings: string[] = [];
+			const agentsFiles = {
+				agentsFiles: state.noContextFiles
+					? []
+					: await loadProjectContextFilesAsync(
+							{
+								cwd: state.cwd,
+								agentDir: state.agentDir,
+								projectTrusted: state.settingsManager.isProjectTrusted(),
+							},
+							(msg) => warnings.push(msg),
+						),
+			};
+			endTimingSpan(contextFilesSpan);
+			return { agentsFiles, warnings };
+		};
+
+		const loadPromptFilesIo = async () => {
+			const promptFilesSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePromptFiles");
+			const [sysSourceRes, appendDiscoveredRes] = await Promise.allSettled([
+				state.systemPromptSource !== undefined
+					? Promise.resolve(state.systemPromptSource)
+					: discoverSystemPromptFile(loader),
+				discoverAppendSystemPromptFile(loader),
+			]);
+			if (sysSourceRes.status === "rejected") throw sysSourceRes.reason;
+			if (appendDiscoveredRes.status === "rejected") throw appendDiscoveredRes.reason;
+			const systemPromptSource = sysSourceRes.value;
+			const discoveredAppend = appendDiscoveredRes.value;
+			const appendSources = state.appendSystemPromptSource ?? (discoveredAppend ? [discoveredAppend] : []);
+			const systemWarnings: string[] = [];
+			const appendWarnings: string[] = [];
+			const [baseSystemRes, systemPathRes, baseAppendRes, appendPathsRes] = await Promise.allSettled([
+				resolvePromptInput(systemPromptSource, "system prompt", (msg) => systemWarnings.push(msg)),
+				resolveExistingPromptSourcePath(systemPromptSource),
+				resolvePromptInputs(appendSources, (msg) => appendWarnings.push(msg)),
+				resolveExistingPromptSourcePaths(appendSources),
+			]);
+			endTimingSpan(promptFilesSpan);
+			if (baseSystemRes.status === "rejected") throw baseSystemRes.reason;
+			if (systemPathRes.status === "rejected") throw systemPathRes.reason;
+			if (baseAppendRes.status === "rejected") throw baseAppendRes.reason;
+			if (appendPathsRes.status === "rejected") throw appendPathsRes.reason;
+			return {
+				baseSystemPrompt: baseSystemRes.value,
+				systemPromptSourcePath: systemPathRes.value,
+				baseAppend: baseAppendRes.value,
+				appendSystemPromptSourcePaths: appendPathsRes.value,
+				warnings: [...systemWarnings, ...appendWarnings],
+			};
+		};
+
+		const [skillsIoRes, promptsIoRes, themesIoRes, contextIoRes, promptFilesIoRes] = await Promise.allSettled([
+			loadSkillsIo(),
+			loadPromptsIo(),
+			loadThemesIo(),
+			loadContextFilesIo(),
+			loadPromptFilesIo(),
+		]);
+		// Phase 2: All I/O branches have settled; throw the first I/O failure in main's exact order.
+		if (skillsIoRes.status === "rejected") throw skillsIoRes.reason;
+		if (promptsIoRes.status === "rejected") throw promptsIoRes.reason;
+		if (themesIoRes.status === "rejected") throw themesIoRes.reason;
+		if (contextIoRes.status === "rejected") throw contextIoRes.reason;
+		if (promptFilesIoRes.status === "rejected") throw promptFilesIoRes.reason;
+
+		// Phase 3: Run overrides and emit warnings sequentially into locals in main's exact order:
+		// skills -> prompts -> themes -> context -> promptFiles.
+		const skillsCommit = await prepareSkillsCommitAsync(
+			loader,
+			skillsIoRes.value.stage,
+			metadataByPath,
+			skillsIoRes.value.missingSkills,
+		);
+		const promptsCommit = await preparePromptsCommitAsync(
+			loader,
+			promptsIoRes.value.stage,
+			metadataByPath,
+			promptsIoRes.value.missingPrompts,
+		);
+		const themesCommit = await prepareThemesCommitAsync(
+			loader,
+			themesIoRes.value.stage,
+			metadataByPath,
+			themesIoRes.value.missingThemes,
+		);
+		for (const warning of contextIoRes.value.warnings) console.error(warning);
+		const resolvedAgentsFiles = state.agentsFilesOverride
+			? state.agentsFilesOverride(contextIoRes.value.agentsFiles)
+			: contextIoRes.value.agentsFiles;
+		for (const warning of promptFilesIoRes.value.warnings) console.error(warning);
+		const resolvedSystemPrompt = state.systemPromptOverride
+			? state.systemPromptOverride(promptFilesIoRes.value.baseSystemPrompt)
+			: promptFilesIoRes.value.baseSystemPrompt;
+		const resolvedAppendSystemPrompt = state.appendSystemPromptOverride
+			? state.appendSystemPromptOverride(promptFilesIoRes.value.baseAppend)
+			: promptFilesIoRes.value.baseAppend;
+
+		// Phase 4: All I/O and overrides succeeded; commit loader state synchronously.
+		state.lastSkillPaths = skillsCommit.lastSkillPaths;
+		state.skills = skillsCommit.skills;
+		state.skillCatalog = skillsCommit.skillCatalog;
+		state.skillDiagnostics = skillsCommit.skillDiagnostics;
+
+		state.lastPromptPaths = promptsCommit.lastPromptPaths;
+		for (const [filePath, info] of promptsCommit.promptSourceInfos) {
+			state.extensionPromptSourceInfos.set(filePath, info);
+		}
+		state.extensionsResult.overlaps ??= [];
+		const overlaps = state.extensionsResult.overlaps;
+		const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
+		overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...promptsCommit.promptOverlaps);
+		state.prompts = promptsCommit.prompts;
+		state.promptDiagnostics = promptsCommit.promptDiagnostics;
+
+		state.lastThemePaths = themesCommit.lastThemePaths;
+		state.themes = themesCommit.themes;
+		state.themeDiagnostics = themesCommit.themeDiagnostics;
+
 		state.agentsFiles = resolvedAgentsFiles.agentsFiles;
-
-		const promptFilesStartedAt = Date.now();
-		const promptFilesSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePromptFiles");
-		const systemPromptSource = state.systemPromptSource ?? (await discoverSystemPromptFile(loader));
-		const baseSystemPrompt = await resolvePromptInput(systemPromptSource, "system prompt");
-		const systemPromptSourcePath = await resolveExistingPromptSourcePath(systemPromptSource);
-
-		const discoveredAppend = await discoverAppendSystemPromptFile(loader);
-		const appendSources = state.appendSystemPromptSource ?? (discoveredAppend ? [discoveredAppend] : []);
-		const baseAppend = await resolvePromptInputs(appendSources);
-		const appendSystemPromptSourcePaths = await resolveExistingPromptSourcePaths(appendSources);
-		state.systemPrompt = state.systemPromptOverride ? state.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
-		state.systemPromptSourcePath = systemPromptSourcePath;
-		state.appendSystemPrompt = state.appendSystemPromptOverride
-			? state.appendSystemPromptOverride(baseAppend)
-			: baseAppend;
-		state.appendSystemPromptSourcePaths = appendSystemPromptSourcePaths;
+		state.systemPrompt = resolvedSystemPrompt;
+		state.systemPromptSourcePath = promptFilesIoRes.value.systemPromptSourcePath;
+		state.appendSystemPrompt = resolvedAppendSystemPrompt;
+		state.appendSystemPromptSourcePaths = promptFilesIoRes.value.appendSystemPromptSourcePaths;
 		state.loaded = true;
 		state.deferredInitialLoad = false;
 		state.deferredInitialSettings = undefined;
-		endTimingSpan(promptFilesSpan);
-		await yieldToEventLoopIfSlow(promptFilesStartedAt);
+		await yieldToEventLoopIfSlow(assetsStartedAt);
 	};
 	if (options?.deferProjectTrust && preTrustExtensions) {
 		state.extensionsResult = preTrustExtensions;
