@@ -207,6 +207,7 @@ test("synchronous throw before transport preserves promise ownership for flush, 
 				(err: unknown) => err === boom,
 			);
 			assert.equal(owner.flight, undefined);
+			assert.equal(owner.pending, undefined);
 		}
 
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -371,26 +372,124 @@ test("redundant skipUnchanged report arriving in the handoff microtask is cleare
 
 test("pending report queued during a failing flight drains within the same flight before it settles", async () => {
 	const fake = await fakeHerdr('finish(args.includes("working") ? 1 : 0);');
-	const owner = await claimPaneReporting(
-		fake.environment,
-		{ id: "parent" },
-		{ timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS },
-	);
+	const spy = vi.spyOn(childProcess, "execFile");
+	const previous = spy.getMockImplementation()!;
+	let callIndex = 0;
+	let flightDuringSecondCall: Promise<void> | undefined;
+	let owner!: Awaited<ReturnType<typeof claimPaneReporting>>;
+	spy.mockImplementation((...args: Parameters<typeof childProcess.execFile>) => {
+		callIndex++;
+		if (callIndex === 2) flightDuringSecondCall = owner.flight;
+		return previous(...args);
+	});
+	syncBuiltinESMExports();
 	try {
+		owner = await claimPaneReporting(fake.environment, { id: "parent" }, { timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS });
 		reportPaneActivity(owner, { state: "working", reason: "executing" });
 		reportPaneActivity(owner, { state: "idle", reason: "quiescent" });
 		const firstFlight = owner.flight!;
-		let flightWhenSettled: Promise<void> | undefined;
-		await firstFlight.then(() => {
-			flightWhenSettled = owner.flight;
-		});
-		assert.equal(flightWhenSettled, undefined);
+		await firstFlight;
+		assert.equal(flightDuringSecondCall, firstFlight);
+		assert.equal(owner.flight, undefined);
 		assert.deepEqual(
 			(await fake.calls()).filter((call) => call.phase === "start").map((call) => arg(call.args, "--state")),
 			["working", "idle"],
 		);
 	} finally {
+		spy.mockImplementation(previous);
+		syncBuiltinESMExports();
+		if (owner) await releasePaneReporting(owner);
+		await fake.dispose();
+	}
+});
+
+test("synchronous throw inside a handoff successor flight rejects flush with exact error and no unhandled rejection", async () => {
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => {
+		unhandled.push(reason);
+	};
+	process.on("unhandledRejection", onUnhandled);
+	const fake = await fakeHerdr('finish(args.includes("working") ? 1 : 0);');
+	try {
+		const boom = new Error("clock boom on handoff");
+		let clockCalls = 0;
+		let owner!: Awaited<ReturnType<typeof claimPaneReporting>>;
+		owner = await claimPaneReporting(
+			fake.environment,
+			{ id: "p8" },
+			{
+				timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+				clock: () => {
+					clockCalls++;
+					if (clockCalls === 2) throw boom;
+					return 1000 + clockCalls;
+				},
+				diagnostic: () => {
+					queueMicrotask(() => {
+						reportPaneActivity(owner, { state: "idle", reason: "quiescent" });
+					});
+				},
+			},
+		);
+		reportPaneActivity(owner, { state: "working", reason: "executing" });
+		await assert.rejects(
+			() => owner.flush(),
+			(err: unknown) => err === boom,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.equal(clockCalls, 2);
+		assert.equal(owner.flight, undefined);
+		assert.equal(owner.pending, undefined);
+		assert.deepEqual(unhandled, []);
 		await releasePaneReporting(owner);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+		await fake.dispose();
+	}
+});
+
+test("diagnostic throw while a pending report is queued surfaces the error and does not strand owner.pending", async () => {
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => {
+		unhandled.push(reason);
+	};
+	process.on("unhandledRejection", onUnhandled);
+	const fake = await fakeHerdr('finish(args.includes("working") ? 1 : 0);');
+	try {
+		const boom = new Error("diag boom with pending");
+		let threw = false;
+		const owner = await claimPaneReporting(
+			fake.environment,
+			{ id: "diag-pending" },
+			{
+				timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+				diagnostic: () => {
+					if (!threw) {
+						threw = true;
+						throw boom;
+					}
+				},
+			},
+		);
+		reportPaneActivity(owner, { state: "working", reason: "executing" });
+		reportPaneActivity(owner, { state: "idle", reason: "quiescent" });
+		await assert.rejects(
+			() => owner.flush(),
+			(err: unknown) => err === boom,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(owner.flight, undefined);
+		assert.equal(owner.pending, undefined);
+		assert.deepEqual(unhandled, []);
+		reportPaneActivity(owner, { state: "idle", reason: "quiescent" });
+		await owner.flush();
+		assert.deepEqual(
+			(await fake.calls()).filter((call) => call.phase === "start").map((call) => arg(call.args, "--state")),
+			["working", "idle"],
+		);
+		await releasePaneReporting(owner);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
 		await fake.dispose();
 	}
 });

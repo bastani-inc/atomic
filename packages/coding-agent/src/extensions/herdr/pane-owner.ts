@@ -28,24 +28,9 @@ export interface PaneOwner {
 	flush(): Promise<void>;
 }
 
-interface FlightGenerationState {
-	next: number;
-	active: number;
-}
-
 // Host module lifetime outlives inline extension factories and runner generations.
 const owners = new Map<string, PaneOwner>();
-const flightGenerations = new WeakMap<PaneOwner, FlightGenerationState>();
 let highWater = 0;
-
-function flightState(owner: PaneOwner): FlightGenerationState {
-	let state = flightGenerations.get(owner);
-	if (!state) {
-		state = { next: 0, active: 0 };
-		flightGenerations.set(owner, state);
-	}
-	return state;
-}
 
 const MAX_RESUME_ARGS = 64;
 const MAX_RESUME_BYTES = 8 * 1024;
@@ -112,7 +97,6 @@ export async function claimPaneReporting(
 		previous = owners.get(environment.paneId);
 		if (previous) await retirePaneReporting(previous);
 	} while (owners.get(environment.paneId) !== previous);
-	const state: FlightGenerationState = { next: 0, active: 0 };
 	const owner: PaneOwner = {
 		environment,
 		identity,
@@ -124,16 +108,9 @@ export async function claimPaneReporting(
 		// The same Herdr serves every session in a pane, so a rejection stays true for the successor.
 		resumeUnsupported: previous?.resumeUnsupported ?? false,
 		async flush() {
-			let current = this.flight;
-			if (!current) return;
-			const snapshot = state.active;
-			while (current && state.active === snapshot) {
-				await current;
-				current = this.flight;
-			}
+			await this.flight;
 		},
 	};
-	flightGenerations.set(owner, state);
 	owners.set(environment.paneId, owner);
 	return owner;
 }
@@ -146,8 +123,7 @@ function matchesActivity(previous: SessionActivity | undefined, activity: Sessio
 	);
 }
 
-function startFlight(owner: PaneOwner, state: FlightGenerationState, generation: number): void {
-	state.active = generation;
+function startFlight(owner: PaneOwner): Promise<void> {
 	let threw = false;
 	const flight = (async () => {
 		try {
@@ -184,13 +160,17 @@ function startFlight(owner: PaneOwner, state: FlightGenerationState, generation:
 	})().finally(() => {
 		if (owner.flight !== flight) return;
 		owner.flight = undefined;
-		if (!threw && owner.pending && owner.status === "active") {
-			startFlight(owner, state, generation);
-		} else {
-			state.active = 0;
+		if (threw) {
+			owner.pending = undefined;
+			return undefined;
 		}
+		if (owner.pending && owner.status === "active") {
+			return startFlight(owner);
+		}
+		return undefined;
 	});
 	owner.flight = flight;
+	return flight;
 }
 
 export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity, skipUnchanged = false): void {
@@ -203,8 +183,7 @@ export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity, 
 		owner.pending?.skipUnchanged === false && matchesActivity(owner.pending.activity, activity);
 	owner.pending = { activity, skipUnchanged: skipUnchanged && !pendingExplicitRefresh };
 	if (owner.flight) return;
-	const state = flightState(owner);
-	startFlight(owner, state, ++state.next);
+	startFlight(owner);
 }
 
 /** Fence and drain a local reporter without unregistering the still-running agent. */
