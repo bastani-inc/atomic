@@ -166,6 +166,10 @@ InteractiveModeBase.prototype.stop = function (
 	this: InteractiveModeBase,
 	fullscreenExitOutput: FullscreenExitOutput = this.settingsManager.getFullscreenExitOutput(),
 ): void {
+	if (this.postStartupTimer !== undefined) {
+		clearTimeout(this.postStartupTimer);
+		this.postStartupTimer = undefined;
+	}
 	if (this.chatContainer instanceof StartupChatContainer) this.chatContainer.cancelChatRecordPaint();
 	discardChatMount(this);
 	cancelApprovedResourceListing(this);

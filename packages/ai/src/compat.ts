@@ -33,6 +33,7 @@ import { azureOpenAIResponsesApi } from "./api/azure-openai-responses.lazy.ts";
 import { bedrockConverseStreamApi } from "./api/bedrock-converse-stream.lazy.ts";
 import { googleGenerativeAIApi } from "./api/google-generative-ai.lazy.ts";
 import { googleVertexApi } from "./api/google-vertex.lazy.ts";
+import { API_PROVIDER_PREWARM, type PrewarmableProviderStreams } from "./api/lazy.ts";
 import { mistralConversationsApi } from "./api/mistral-conversations.lazy.ts";
 import { openAICodexResponsesApi } from "./api/openai-codex-responses.lazy.ts";
 import { openAICompletionsApi } from "./api/openai-completions.lazy.ts";
@@ -201,6 +202,15 @@ export function registerBuiltInApiProviders(): void {
 	for (const [api, streams] of BUILTIN_APIS) {
 		if (!getApiProvider(api)) {
 			registerApiProvider({ api, stream: streams.stream, streamSimple: streams.streamSimple });
+			const prewarm = (streams as PrewarmableProviderStreams)[API_PROVIDER_PREWARM];
+			const registered = getApiProvider(api);
+			if (registered && typeof prewarm === "function") {
+				Object.defineProperty(registered, API_PROVIDER_PREWARM, {
+					value: prewarm,
+					enumerable: false,
+					configurable: true,
+				});
+			}
 		}
 		builtinApiProviderInstances.set(api, getApiProvider(api));
 	}

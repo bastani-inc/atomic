@@ -1,7 +1,8 @@
 import type { KeyId } from "@bastani/atomic-tui";
 import type { BuiltinPackageDirName } from "../builtin-install-layout.ts";
-import type { EventBus } from "../event-bus.js";
+import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.js";
 import type { AgentPanelSource } from "../tasks/agent-panel-source.ts";
+import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./stale-context.ts";
 import type {
 	EntryRenderer,
 	ExtensionAPI,
@@ -317,9 +318,15 @@ function waitWithAbortSignal<T>(promise: Promise<T>, signal?: AbortSignal): Prom
 	});
 }
 
+function isFixedDataProperty(target: object, prop: string | symbol): boolean {
+	const descriptor = Reflect.getOwnPropertyDescriptor(target, prop);
+	return descriptor !== undefined && !descriptor.configurable && !descriptor.writable && "value" in descriptor;
+}
+
 function createStaticRecordingApi(pi: ExtensionAPI, surface: StaticSurfaceSets): ExtensionAPI {
 	return new Proxy(pi, {
 		get(target, prop) {
+			if (isFixedDataProperty(target, prop)) return Reflect.get(target, prop, target);
 			if (prop === "registerTool") {
 				return (tool: ToolDefinition) => {
 					surface.tools.add(tool.name);
@@ -401,10 +408,11 @@ function createCaptureProxy(
 	interceptedBusEvents: ReadonlySet<string>,
 	interceptsMcpContributions: boolean,
 	assertLease: () => void,
+	assertLiveActionLease: () => void,
 ): ExtensionAPI {
 	const eventsProxy: EventBus = {
 		emit(channel, data) {
-			assertLease();
+			assertLiveActionLease();
 			pi.events.emit(channel, data);
 		},
 		on(channel, handler) {
@@ -428,9 +436,11 @@ function createCaptureProxy(
 			};
 		},
 	};
+	registerCanonicalEventBus(eventsProxy, canonicalEventBusFor(pi.events));
 
 	return new Proxy(pi, {
 		get(target, prop) {
+			if (isFixedDataProperty(target, prop)) return Reflect.get(target, prop, target);
 			if (prop === "events") return eventsProxy;
 			if (prop === "registerTool") {
 				return (tool: ToolDefinition) => {
@@ -543,7 +553,7 @@ function createCaptureProxy(
 			if (typeof value === "function") {
 				if (FENCED_ACTION_PROPS.has(prop)) {
 					return (...args: unknown[]) => {
-						assertLease();
+						assertLiveActionLease();
 						return Reflect.apply(value, target, args);
 					};
 				}
@@ -608,6 +618,10 @@ export function createLazyBuiltinFactory(
 
 		const assertLease = (lease: LazyLease): void => {
 			assertCurrentLifecycleLease(activeLease, lease, invalidatedMessage);
+		};
+
+		const assertLiveActionLease = (lease: LazyLease): void => {
+			assertCurrentLifecycleLease(activeLease, lease, STALE_EXTENSION_CONTEXT_MESSAGE);
 		};
 
 		const createHandle = (captured: CapturedLazyBuiltin, lease: LazyLease): LazyBuiltinHandle => ({
@@ -810,6 +824,7 @@ export function createLazyBuiltinFactory(
 						interceptedBusEvents,
 						spec.interceptsMcpContributions === true,
 						() => assertLease(lease),
+						() => assertLiveActionLease(lease),
 					);
 					await factory(proxy);
 					assertLease(lease);
