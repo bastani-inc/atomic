@@ -394,6 +394,50 @@ export interface MultiNodeRouterOptions {
 	readonly processStartedAt?: (pid: number) => number | null | undefined | Promise<number | null | undefined>;
 	/** #5154: how long a recipient whose end was lost stays gone before its asks fail; `lostRecipientBounds()`. */
 	readonly lostRecipientBounds?: LostRecipientBounds;
+	/**
+	 * #5607: where this broker keeps the hand-overs it gave (held or lapsed) beyond its own run, so the next broker of its
+	 * directory still honours one a session presents after a restart. Without it they live in memory only.
+	 */
+	readonly handoffs?: SavedHandoffStore;
+}
+
+/**
+ * #5607: a hand-over as a broker keeps it beyond its run: for the session of delivery identity `identity`, the one-use
+ * value its next registration presents, the id it was moved back to, the id it had meanwhile with the token that still
+ * owns it, the value only a registration that presented the hand-over carries, and when the hold began or lapsed
+ * (`Date.now()`).
+ */
+export interface SavedHandoff {
+	readonly identity: string;
+	readonly handoff: string;
+	readonly id: string;
+	readonly alias: string;
+	readonly aliasToken?: string;
+	readonly recovery: string;
+	readonly at: number;
+}
+
+/** #5607: where the hand-overs of {@link SavedHandoff} are kept; a failing save leaves them in memory. */
+export interface SavedHandoffStore {
+	load(): readonly SavedHandoff[];
+	save(handoffs: readonly SavedHandoff[]): void;
+}
+
+/** A map that reports every change of its entries. */
+class ReportingMap<K, V> extends Map<K, V> {
+	changed: () => void = () => {};
+
+	override set(key: K, value: V): this {
+		super.set(key, value);
+		this.changed();
+		return this;
+	}
+
+	override delete(key: K): boolean {
+		const deleted = super.delete(key);
+		if (deleted) this.changed();
+		return deleted;
+	}
 }
 
 interface Inflight {
@@ -971,13 +1015,15 @@ export class MultiNodeRouter {
 	/** #5607: the local sessions holding an id as an alias, by that id. */
 	private readonly aliases = new Map<string, BrokerConnectedSession>();
 	/** #5607: ids taken back for sessions that awaited them, by the session's delivery identity. */
-	private readonly reservedIds = new Map<string, ReservedId>();
+	private readonly reservedIds = new ReportingMap<string, ReservedId>();
 	/**
 	 * #5607: by delivery identity, hand-overs whose hold lapsed before the session registered again: the hand-over, the id
 	 * it was for (given back), the id the session had meanwhile with the token it is still written with (no longer
 	 * renewed, so another registration may take it once it goes stale), and when the hold lapsed.
 	 */
-	private readonly lapsedHandoffs = new Map<string, LapsedHandoff>();
+	private readonly lapsedHandoffs = new ReportingMap<string, LapsedHandoff>();
+	/** #5607: where the hand-overs this broker gave are kept beyond its run (`MultiNodeRouterOptions.handoffs`). */
+	private readonly handoffStore: SavedHandoffStore | undefined;
 	/** #5607: tokens of held ids that a registration coming back is taking, until it is registered here. */
 	private readonly consumingTokens = new Set<string>();
 	/** #5607: tokens of unanswered claims whose registration's binding write has not decided yet. */
@@ -1009,6 +1055,72 @@ export class MultiNodeRouter {
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 		this.processStartedAt = options.processStartedAt ?? ((pid) => processStartedAt(pid));
 		this.lostBounds = options.lostRecipientBounds ?? lostRecipientBounds();
+		this.handoffStore = options.handoffs;
+		this.loadSavedHandoffs();
+		this.reservedIds.changed = () => this.saveHandoffs();
+		this.lapsedHandoffs.changed = () => this.saveHandoffs();
+	}
+
+	/**
+	 * #5607: the hand-overs an earlier broker of this directory gave and kept, taken up as lapsed: a hold that was still
+	 * running ended with that broker. One kept longer than a lapsed hand-over is kept is gone.
+	 */
+	private loadSavedHandoffs(): void {
+		let saved: readonly SavedHandoff[];
+		try {
+			saved = this.handoffStore?.load() ?? [];
+		} catch (error) {
+			this.report(error);
+			return;
+		}
+		const now = Date.now();
+		for (const handoff of saved) {
+			const age = Math.max(0, now - handoff.at);
+			if (age >= LAPSED_HANDOFF_KEEP_MS || handoff.alias === handoff.id) continue;
+			// The latest of an identity's hand-overs is the one its session holds.
+			const earlier = this.lapsedHandoffs.get(handoff.identity);
+			if (earlier !== undefined && earlier.lapsedAt.wall > handoff.at) continue;
+			this.lapsedHandoffs.set(handoff.identity, {
+				handoff: handoff.handoff,
+				id: handoff.id,
+				alias: handoff.alias,
+				...(handoff.aliasToken === undefined ? {} : { aliasToken: handoff.aliasToken }),
+				lapsedAt: { monotonic: performance.now() - age, wall: handoff.at },
+				recovery: handoff.recovery,
+			});
+		}
+	}
+
+	/** #5607: keep the hand-overs this broker gave (`loadSavedHandoffs`), as they are now. */
+	private saveHandoffs(): void {
+		if (this.handoffStore === undefined) return;
+		const handoffs: SavedHandoff[] = [];
+		for (const [identity, held] of this.reservedIds)
+			if (held.alias !== held.id)
+				handoffs.push({
+					identity,
+					handoff: held.handoff,
+					id: held.id,
+					alias: held.alias,
+					...(held.aliasToken === undefined ? {} : { aliasToken: held.aliasToken }),
+					recovery: held.recovery,
+					at: held.handedAt.wall,
+				});
+		for (const [identity, lapsed] of this.lapsedHandoffs)
+			handoffs.push({
+				identity,
+				handoff: lapsed.handoff,
+				id: lapsed.id,
+				alias: lapsed.alias,
+				...(lapsed.aliasToken === undefined ? {} : { aliasToken: lapsed.aliasToken }),
+				recovery: lapsed.recovery,
+				at: lapsed.lapsedAt.wall,
+			});
+		try {
+			this.handoffStore.save(handoffs);
+		} catch (error) {
+			this.report(error);
+		}
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
@@ -1599,6 +1711,7 @@ export class MultiNodeRouter {
 				delete entry.awaits;
 				held.handedAgain = true;
 				held.handedAt = clockMark();
+				this.saveHandoffs();
 				this.host.fence(session, "reclaimed", { sessionId: held.id, handoff: held.handoff });
 				continue;
 			}

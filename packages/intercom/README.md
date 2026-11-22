@@ -406,6 +406,7 @@ Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_
 - `delivered-messages.sqlite` and `delivered-messages.key` store durable delivery deduplication digests and their owner-only HMAC key.
 - `away-asks.sqlite` stores open asks and replies held for away sessions.
 - `ended-child-queue.sqlite` stores queued messages waiting to resume or reach finished and paused subagents across broker restarts.
+- `handoffs.json` (multi-node routing only, owner-only) records the sessions a broker moved back to their earlier Intercom ID until they register again (at most about 7 days), so the ID a session had meanwhile still reaches it after a broker restart.
 - `config.json` stores user configuration.
 
 ## Package layout

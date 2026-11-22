@@ -36,6 +36,7 @@ import {
 	getBrokerAwayAsksPath,
 	getBrokerDeliveredMessagesPath,
 	getBrokerEndedChildQueuePath,
+	getBrokerHandoffsPath,
 	getBrokerPidPath,
 	getBrokerWatchdogLogPath,
 	chooseBrokerSocketPath,
@@ -91,6 +92,7 @@ import {
   type UnansweredSessionIdClaim,
 } from "./multinode-router.js";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
+import { fileHandoffStore } from "./saved-handoffs.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
 import {
@@ -2132,6 +2134,8 @@ class IntercomBroker {
               home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
               // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
               instanceKey: SOCKET_PATH,
+              // #5607: a hand-over presented after this broker restarted still takes back what it was given for.
+              handoffs: fileHandoffStore(getBrokerHandoffsPath()),
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,
