@@ -85,7 +85,10 @@ function olderGits(): { readonly name: string; readonly executable: () => GitExe
 	return gits;
 }
 
-for (const { name, executable } of olderGits()) {
+const gits = olderGits();
+// Windows runs no shell script as Git: there, these run only against installs named in ATOMIC_TEST_OLDER_GIT.
+if (gits.length === 0) test.skip("snapshots with a Git older than 2.36 (none to run against here)", () => {});
+for (const { name, executable } of gits) {
 	describe(`snapshots with ${name}`, () => {
 		test("a checkout with an unpushed commit is captured with its bundle and restored into a pooled worktree", async () => {
 			const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "one\n" });

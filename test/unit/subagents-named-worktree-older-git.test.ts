@@ -93,7 +93,11 @@ function olderGitInstalls(): { readonly name: string; readonly use: () => void }
 	return installs;
 }
 
-for (const { name, use } of olderGitInstalls()) {
+const installs = olderGitInstalls();
+// Windows runs no shell script as Git: there, this runs only against installs named in ATOMIC_TEST_OLDER_GIT.
+if (installs.length === 0)
+	test.skip("a named worktree with a Git older than 2.33 (none to run against here)", () => {});
+for (const { name, use } of installs) {
 	test(`a named worktree is created, left unlocked and reused with ${name}`, async () => {
 		use();
 		const repo = join(temporaryDirectory("atomic-named-worktree-older-"), "repo");
