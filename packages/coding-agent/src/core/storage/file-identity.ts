@@ -127,6 +127,7 @@ interface StorageFileStat {
 	readonly dev: bigint;
 	readonly ino: bigint;
 	readonly birthtimeNs: bigint;
+	readonly directory: boolean;
 	readonly symbolicLink: boolean;
 }
 
@@ -226,7 +227,13 @@ function withNativeErrorCode(error: unknown): unknown {
 }
 
 function fileStat(stats: BigIntStats): StorageFileStat {
-	return { dev: stats.dev, ino: stats.ino, birthtimeNs: stats.birthtimeNs, symbolicLink: stats.isSymbolicLink() };
+	return {
+		dev: stats.dev,
+		ino: stats.ino,
+		birthtimeNs: stats.birthtimeNs,
+		directory: stats.isDirectory(),
+		symbolicLink: stats.isSymbolicLink(),
+	};
 }
 
 function isMissingEntry(error: unknown): boolean {
@@ -419,14 +426,32 @@ export async function fileIdentityAsync(path: string): Promise<string | undefine
 	}
 }
 
-function* fileIdentitySteps(path: string): StorageSteps<string | undefined> {
+interface FileIdentityStamp {
+	readonly identity: string;
+	readonly birthtimeNs?: string;
+	readonly directory: boolean;
+	readonly inodeBased: boolean;
+}
+
+function* fileIdentityStampSteps(path: string): StorageSteps<FileIdentityStamp | undefined> {
 	try {
-		const { dev, ino } = yield* io("stat", path);
-		if (ino !== 0n) return `${dev}:${ino}`;
-		return realPathIdentity(yield* io("realpath", path));
+		const { dev, ino, birthtimeNs, directory } = yield* io("stat", path);
+		if (ino !== 0n) {
+			return {
+				identity: `${dev}:${ino}`,
+				...(birthtimeNs > 0n ? { birthtimeNs: String(birthtimeNs) } : {}),
+				directory,
+				inodeBased: true,
+			};
+		}
+		return { identity: realPathIdentity(yield* io("realpath", path)), directory, inodeBased: false };
 	} catch {
 		return undefined;
 	}
+}
+
+function* fileIdentitySteps(path: string): StorageSteps<string | undefined> {
+	return (yield* fileIdentityStampSteps(path))?.identity;
 }
 
 function realPathIdentity(real: string): string {
@@ -1201,23 +1226,66 @@ interface StorageOwner {
 	readonly path: string;
 	readonly relativePath?: string;
 	readonly identity?: string;
+	readonly identityBirthtimeNs?: string;
 	readonly directoryIdentity?: string;
+	readonly directoryBirthtimeNs?: string;
+	readonly claimDirectoryIdentity?: string;
+	readonly claimDirectoryBirthtimeNs?: string;
 	readonly decisionId?: string;
 	readonly homeIdentity?: boolean;
 	readonly legacyTargets?: readonly string[];
 }
 
+function matchesIdentityStamp(
+	actual: FileIdentityStamp | undefined,
+	expectedIdentity: string | undefined,
+	expectedBirthtimeNs: string | undefined,
+): boolean {
+	if (actual === undefined || expectedIdentity === undefined || actual.identity !== expectedIdentity) return false;
+	if (
+		expectedBirthtimeNs !== undefined &&
+		actual.birthtimeNs !== undefined &&
+		actual.birthtimeNs !== expectedBirthtimeNs
+	) {
+		return false;
+	}
+	return true;
+}
+
+function* isClaimDirectoryCopiedSteps(owner: StorageOwner, claimDirectory: string): StorageSteps<boolean> {
+	if (owner.claimDirectoryIdentity === undefined) return false;
+	const stamp = yield* fileIdentityStampSteps(claimDirectory);
+	return !matchesIdentityStamp(stamp, owner.claimDirectoryIdentity, owner.claimDirectoryBirthtimeNs);
+}
+
+/**
+ * When the claim directory itself was copied to a new inode, inodes recorded before the copy can no longer identify
+ * subdirectories physically inside the copied directory (they may have been reused after deleting the original).
+ * External symlink/junction targets outside the copied directory are unaffected and keep their original inodes.
+ */
+function* canTrustInodeIdentitySteps(
+	candidate: string,
+	claimDirectory: string,
+	claimDirectoryCopied: boolean,
+): StorageSteps<boolean> {
+	if (!claimDirectoryCopied) return true;
+	const physicalClaimDir = yield* canonicalPathSteps(claimDirectory);
+	const physicalCandidate = yield* canonicalPathSteps(candidate);
+	return !containsPath(physicalClaimDir, physicalCandidate);
+}
+
 function* storageDecisionMetadataSteps(
 	path: string,
-): StorageSteps<Pick<StorageHomeDecision, "id" | "targets"> | undefined> {
+): StorageSteps<Pick<StorageHomeDecision, "id" | "targets" | "parentOwner"> | undefined> {
 	const contents = yield* readClaimFileSteps(storageHomeDecisionFile(path));
 	if (contents === undefined) return undefined;
 	try {
-		const decision = JSON.parse(contents) as Pick<StorageHomeDecision, "id" | "targets"> | null;
+		const decision = JSON.parse(contents) as Pick<StorageHomeDecision, "id" | "targets" | "parentOwner"> | null;
 		if (
 			decision === null ||
 			typeof decision !== "object" ||
 			(decision.id !== undefined && typeof decision.id !== "string") ||
+			(decision.parentOwner !== undefined && typeof decision.parentOwner !== "string") ||
 			(decision.targets !== undefined &&
 				(!Array.isArray(decision.targets) || decision.targets.some((target) => typeof target !== "string")))
 		)
@@ -1230,19 +1298,30 @@ function* storageDecisionMetadataSteps(
 
 function* storageOwnerSteps(path: string, claimDirectory?: string): StorageSteps<StorageOwner> {
 	const physical = yield* canonicalPathSteps(path);
-	const homeIdentity = yield* fileIdentitySteps(storageHomeDecisionFile(path));
+	const homeStamp = yield* fileIdentityStampSteps(storageHomeDecisionFile(path));
+	const dirStamp = yield* fileIdentityStampSteps(path);
+	const claimDirStamp = claimDirectory === undefined ? undefined : yield* fileIdentityStampSteps(claimDirectory);
 	const relativePath =
 		claimDirectory === undefined ? undefined : relative(yield* canonicalPathSteps(claimDirectory), physical);
-	const identity = homeIdentity ?? (yield* fileIdentitySteps(path));
+	const identityStamp = homeStamp ?? dirStamp;
 	const decisionId = (yield* storageDecisionMetadataSteps(path))?.id;
-	const directoryIdentity = yield* fileIdentitySteps(path);
 	return {
 		path: physical,
 		...(relativePath === undefined || isAbsolute(relativePath) ? {} : { relativePath: relativePath || "." }),
-		identity,
+		identity: identityStamp?.identity,
+		...(identityStamp?.birthtimeNs === undefined ? {} : { identityBirthtimeNs: identityStamp.birthtimeNs }),
 		decisionId,
-		directoryIdentity,
-		homeIdentity: homeIdentity !== undefined,
+		directoryIdentity: dirStamp?.identity,
+		...(dirStamp?.birthtimeNs === undefined ? {} : { directoryBirthtimeNs: dirStamp.birthtimeNs }),
+		...(claimDirStamp?.inodeBased
+			? {
+					claimDirectoryIdentity: claimDirStamp.identity,
+					...(claimDirStamp.birthtimeNs === undefined
+						? {}
+						: { claimDirectoryBirthtimeNs: claimDirStamp.birthtimeNs }),
+				}
+			: {}),
+		homeIdentity: homeStamp !== undefined,
 	};
 }
 
@@ -1264,7 +1343,11 @@ function* readStorageOwnerSteps(file: string): StorageSteps<StorageOwner | undef
 		(owner.relativePath !== undefined &&
 			(typeof owner.relativePath !== "string" || isAbsolute(owner.relativePath))) ||
 		(owner.identity !== undefined && typeof owner.identity !== "string") ||
+		(owner.identityBirthtimeNs !== undefined && typeof owner.identityBirthtimeNs !== "string") ||
 		(owner.directoryIdentity !== undefined && typeof owner.directoryIdentity !== "string") ||
+		(owner.directoryBirthtimeNs !== undefined && typeof owner.directoryBirthtimeNs !== "string") ||
+		(owner.claimDirectoryIdentity !== undefined && typeof owner.claimDirectoryIdentity !== "string") ||
+		(owner.claimDirectoryBirthtimeNs !== undefined && typeof owner.claimDirectoryBirthtimeNs !== "string") ||
 		(owner.decisionId !== undefined && typeof owner.decisionId !== "string") ||
 		(owner.homeIdentity !== undefined && typeof owner.homeIdentity !== "boolean") ||
 		(owner.legacyTargets !== undefined &&
@@ -1281,27 +1364,69 @@ function* currentStorageOwnerPathSteps(
 	claimedTarget?: string,
 ): StorageSteps<string | undefined> {
 	const path = owner.relativePath === undefined ? owner.path : resolve(claimDirectory, owner.relativePath);
-	if (
-		owner.identity === undefined ||
-		(yield* fileIdentitySteps(owner.homeIdentity ? storageHomeDecisionFile(path) : path)) === owner.identity
-	)
-		return path;
+	if (owner.identity === undefined) return path;
+	const claimDirectoryCopied = yield* isClaimDirectoryCopiedSteps(owner, claimDirectory);
+	const isParentClaim = claimedTarget === undefined;
+
+	function* matchesExactOwnerSteps(
+		candidate: string,
+		preloadedMetadata?: Pick<StorageHomeDecision, "id" | "targets" | "parentOwner">,
+		metadataLoaded = false,
+	): StorageSteps<boolean> {
+		if (!(yield* canTrustInodeIdentitySteps(candidate, claimDirectory, claimDirectoryCopied))) return false;
+		const idStamp = yield* fileIdentityStampSteps(
+			owner.homeIdentity ? storageHomeDecisionFile(candidate) : candidate,
+		);
+		if (!owner.homeIdentity && !idStamp?.directory) return false;
+		if (!matchesIdentityStamp(idStamp, owner.identity, owner.identityBirthtimeNs)) return false;
+		if (owner.homeIdentity && owner.directoryIdentity !== undefined) {
+			const dirStamp = yield* fileIdentityStampSteps(candidate);
+			if (
+				!dirStamp?.directory ||
+				!matchesIdentityStamp(dirStamp, owner.directoryIdentity, owner.directoryBirthtimeNs)
+			) {
+				return false;
+			}
+		}
+		if (owner.decisionId !== undefined || isParentClaim) {
+			const metadata = metadataLoaded ? preloadedMetadata : yield* storageDecisionMetadataSteps(candidate);
+			if (isParentClaim && metadata !== undefined && metadata.parentOwner === undefined) return false;
+			if (owner.decisionId !== undefined && metadata?.id !== owner.decisionId) return false;
+		}
+		return true;
+	}
+
+	if (yield* matchesExactOwnerSteps(path)) return path;
+
 	const exact: string[] = [];
 	const recorded: string[] = [];
 	const fallback: string[] = [];
+	const legacyDirectoryRecorded: string[] = [];
+	const legacyDirectoryFallback: string[] = [];
+	const legacyUnverifiedDirectory =
+		owner.decisionId !== undefined &&
+		owner.claimDirectoryIdentity === undefined &&
+		owner.directoryBirthtimeNs === undefined;
+
 	function* consider(candidate: string): StorageSteps<void> {
 		if (!(yield* io("isDirectory", candidate))) return;
-		const identity = yield* fileIdentitySteps(owner.homeIdentity ? storageHomeDecisionFile(candidate) : candidate);
+		const metadata = yield* storageDecisionMetadataSteps(candidate);
+		if (isParentClaim && metadata !== undefined && metadata.parentOwner === undefined) return;
 		let matches: string[];
-		if (identity === owner.identity) {
+		if (yield* matchesExactOwnerSteps(candidate, metadata, true)) {
 			matches = exact;
 		} else {
-			const metadata = yield* storageDecisionMetadataSteps(candidate);
+			const decisionMatches = owner.decisionId !== undefined && metadata?.id === owner.decisionId;
+			let directoryMatches = false;
 			if (
-				(owner.decisionId === undefined || metadata?.id !== owner.decisionId) &&
-				(owner.directoryIdentity === undefined || (yield* fileIdentitySteps(candidate)) !== owner.directoryIdentity)
-			)
-				return;
+				!decisionMatches &&
+				owner.directoryIdentity !== undefined &&
+				(yield* canTrustInodeIdentitySteps(candidate, claimDirectory, claimDirectoryCopied))
+			) {
+				const dirStamp = yield* fileIdentityStampSteps(candidate);
+				directoryMatches = matchesIdentityStamp(dirStamp, owner.directoryIdentity, owner.directoryBirthtimeNs);
+			}
+			if (!decisionMatches && !directoryMatches) return;
 			const atRecordedPath = yield* sameDirectorySteps(candidate, path);
 			const targets = [
 				...(metadata?.targets ?? []),
@@ -1337,7 +1462,11 @@ function* currentStorageOwnerPathSteps(
 					: yield* hasRelativeTargetEntriesSteps(candidate, candidate, unownedTargets, true))
 			)
 				return;
-			matches = atRecordedPath ? recorded : fallback;
+			if (!decisionMatches && legacyUnverifiedDirectory) {
+				matches = atRecordedPath ? legacyDirectoryRecorded : legacyDirectoryFallback;
+			} else {
+				matches = atRecordedPath ? recorded : fallback;
+			}
 		}
 		for (const match of matches) {
 			if (yield* sameDirectorySteps(match, candidate)) return;
@@ -1352,7 +1481,16 @@ function* currentStorageOwnerPathSteps(
 	} catch {
 		return undefined;
 	}
-	const matches = exact.length > 0 ? exact : recorded.length > 0 ? recorded : fallback;
+	const matches =
+		exact.length > 0
+			? exact
+			: recorded.length > 0
+				? recorded
+				: fallback.length > 0
+					? fallback
+					: legacyDirectoryRecorded.length > 0
+						? legacyDirectoryRecorded
+						: legacyDirectoryFallback;
 	return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -1369,7 +1507,11 @@ function* refreshStorageOwnerSteps(
 	};
 	if (
 		current.identity === owner.identity &&
+		current.identityBirthtimeNs === owner.identityBirthtimeNs &&
 		current.directoryIdentity === owner.directoryIdentity &&
+		current.directoryBirthtimeNs === owner.directoryBirthtimeNs &&
+		current.claimDirectoryIdentity === owner.claimDirectoryIdentity &&
+		current.claimDirectoryBirthtimeNs === owner.claimDirectoryBirthtimeNs &&
 		current.decisionId === owner.decisionId &&
 		current.relativePath === owner.relativePath &&
 		current.homeIdentity === owner.homeIdentity
@@ -1447,9 +1589,18 @@ function* applyStorageHomeDecisionSteps(
 	}
 	if (winnerPath !== undefined && (yield* sameDirectorySteps(winnerPath, agentPath)))
 		return createStorageHomeEntry(decision.home, claim);
+	const agentMetadata = yield* storageDecisionMetadataSteps(agentPath);
+	const claimDirectoryCopied = yield* isClaimDirectoryCopiedSteps(winner, decision.home);
 	const weakCandidate =
-		(winner.decisionId !== undefined && (yield* storageDecisionMetadataSteps(agentPath))?.id === winner.decisionId) ||
-		(winner.directoryIdentity !== undefined && (yield* fileIdentitySteps(agentPath)) === winner.directoryIdentity);
+		(agentMetadata === undefined || agentMetadata.parentOwner !== undefined) &&
+		((winner.decisionId !== undefined && agentMetadata?.id === winner.decisionId) ||
+			(winner.directoryIdentity !== undefined &&
+				(yield* canTrustInodeIdentitySteps(agentPath, decision.home, claimDirectoryCopied)) &&
+				matchesIdentityStamp(
+					yield* fileIdentityStampSteps(agentPath),
+					winner.directoryIdentity,
+					winner.directoryBirthtimeNs,
+				)));
 	return weakCandidate && winner.legacyTargets !== undefined
 		? { ...createStorageHomeEntry(agentPath), rejectedParentAdoption: { legacyTargets: winner.legacyTargets } }
 		: createStorageHomeEntry(agentPath);
