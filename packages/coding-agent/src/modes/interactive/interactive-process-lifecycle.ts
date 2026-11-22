@@ -1,3 +1,6 @@
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
@@ -66,6 +69,13 @@ interface HostEnding {
 }
 
 const hostEndings = new WeakMap<InteractiveModeBase, HostEnding>();
+const probeSessionEndedAt = new WeakMap<HostEnding, number>();
+const probeLostAt = new WeakMap<HostEnding, number>();
+function probeLog(line: string): void {
+	try {
+		appendFileSync(join(tmpdir(), "atomic-notice-latency.log"), `PROBE pid=${process.pid} ${line}\n`);
+	} catch {}
+}
 
 function hostEnding(mode: InteractiveModeBase): HostEnding {
 	let ending = hostEndings.get(mode);
@@ -111,6 +121,12 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
 	const ending = hostEnding(mode);
 	if (notice.kind === "console-closed") {
 		if (ending.consoleClosed) return;
+		const endedAt = probeSessionEndedAt.get(ending);
+		if (endedAt !== undefined) {
+			probeLog(`notice-after-dispose latencyMs=${Math.round(performance.now() - endedAt)}`);
+			ending.consoleClosed = true;
+			mode.emergencyTerminalExit();
+		}
 		ending.consoleClosed = true;
 		setTimeout(() => mode.emergencyTerminalExit(), Math.max(CONSOLE_CLOSED_SHUTDOWN_MS - notice.closedMsAgo, 0));
 		// The terminal is gone with the console: that loss goes through the mode's own handler, as any other does.
@@ -119,6 +135,7 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
 	}
 	if (ending.terminalLost) return;
 	ending.terminalLost = true;
+	probeLostAt.set(ending, performance.now());
 	ending.settleTerminalLoss();
 	spareEngineFromKill(mode);
 	killSupervisedProcessTrees();
@@ -299,6 +316,13 @@ InteractiveModeBase.prototype.shutdown = async function (
 			// Keep this bounded so Ctrl+C exits do not feel stalled on Windows.
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			if (!ending.terminalLost) stopTerminal(this);
+		}
+		if (ending.terminalLost && process.platform === "win32" && !ending.consoleClosed && !ending.lostExitDeciding) {
+			probeSessionEndedAt.set(ending, performance.now());
+			probeLog(
+				`dispose-done-without-notice lostAgoMs=${Math.round(performance.now() - (probeLostAt.get(ending) ?? 0))}`,
+			);
+			return;
 		}
 		if (ending.terminalLost) exitAsTerminalLost(ending);
 		else exitWithStatus(0);
