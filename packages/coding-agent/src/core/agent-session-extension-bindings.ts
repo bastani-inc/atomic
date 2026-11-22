@@ -1,4 +1,5 @@
 import { basename, dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Provider } from "@bastani/atomic-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
@@ -31,12 +32,18 @@ import { emitSessionShutdownEvent, stockResourceDiscovery } from "./extensions/r
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
 import { startupErrorHandlerTokens } from "./extensions/runner-events.ts";
 import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
+import {
+	canPrepareDeferredStartupCompletion,
+	getDeferredInitialSettingsSnapshot,
+	prepareDeferredStartupCompletion,
+} from "./mandatory-resource-loader.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import type { DeferredStartupSettingsSnapshot } from "./resource-loader-internals.ts";
 import {
 	abortSessionWork,
 	assertSessionOpen,
@@ -50,6 +57,7 @@ import {
 } from "./session-lifecycle-work.ts";
 import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts";
+import type { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import type { SlashCommandInfo } from "./slash-commands.js";
@@ -909,6 +917,164 @@ function sessionClosedProbe(session: AgentSession): () => boolean {
 	return () => session._disposed;
 }
 
+function settingsSnapshotMatches(
+	initial: DeferredStartupSettingsSnapshot | undefined,
+	candidate: SettingsManager,
+): boolean {
+	if (!initial) return false;
+	return (
+		initial.projectTrusted === candidate.isProjectTrusted() &&
+		isDeepStrictEqual(initial.globalSettings, candidate.getGlobalSettings()) &&
+		isDeepStrictEqual(initial.projectSettings, candidate.getProjectSettings()) &&
+		isDeepStrictEqual(initial.settings, candidate.getSettings())
+	);
+}
+
+async function completeDeferredStartupInPlace(
+	this: AgentSession,
+	retainedRuntimes: Set<ExtensionRuntime>,
+	settingsTransaction: { settingsManager: SettingsManager; commit: () => void },
+	previousFlagValues: Map<string, boolean | string>,
+	activeToolsAfterReload: (defaultTools: readonly string[]) => string[],
+	options: AgentSessionReloadOptions | undefined,
+): Promise<boolean> {
+	const oldRunner = this._extensionRunner;
+	const preloadedExtensions = this._resourceLoader.getExtensions();
+	const preloadedList = [...preloadedExtensions.extensions];
+	// Retain the live Phase-1 runtime before loading newcomers so any pre-commit rollback shuts down only newcomers.
+	retainedRuntimes.add(preloadedExtensions.runtime);
+	const resourceTransaction = await prepareDeferredStartupCompletion(
+		this._resourceLoader,
+		settingsTransaction.settingsManager,
+	);
+	let commitPreparedResources: (() => void) | undefined;
+	let rollbackPreparedResources: (() => void) | undefined;
+	const registeredProviderIds = new Set<string>();
+	let committed = false;
+	try {
+		const extensionsResult = resourceTransaction.loader.getExtensions();
+		const allPreloadedPreserved = preloadedList.every((extension) => extensionsResult.extensions.includes(extension));
+		if (!allPreloadedPreserved || resourceTransaction.unregisteredProviders.size > 0) {
+			resourceTransaction.rollback();
+			const fallbackFailures = await rollbackFactoryAcquisitions(retainedRuntimes);
+			retainedRuntimes.delete(preloadedExtensions.runtime);
+			if (fallbackFailures.length) {
+				throw Object.assign(new AggregateError(fallbackFailures, "Reload discovery cleanup failed"), {
+					code: "ShutdownFailed",
+				});
+			}
+			return false;
+		}
+		for (const [name, value] of previousFlagValues) {
+			extensionsResult.runtime.flagValues.set(name, value);
+			extensionsResult.runtime.explicitFlagNames ??= new Set();
+			extensionsResult.runtime.explicitFlagNames.add(name);
+		}
+		const errors = extensionsResult.errors;
+		if (options?.failOnExtensionErrors && errors.length > 0) {
+			throw new Error(
+				`Failed to load extensions: ${errors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,
+			);
+		}
+		if (this._disposed) throw hostInputError("SessionClosed");
+		await options?.beforeSessionStart?.();
+		if (this._disposed) throw hostInputError("SessionClosed");
+
+		const preparedResources = resourceTransaction.prepareCommit?.();
+		if (preparedResources) {
+			commitPreparedResources = () => preparedResources.commit();
+			rollbackPreparedResources = () => preparedResources.rollback();
+		}
+		const pendingProviders = [...extensionsResult.runtime.pendingProviderRegistrations];
+		if (pendingProviders.length > 0) {
+			const providerTransaction = this._modelRuntime.createExtensionProviderTransaction(this._extensionProviderIds);
+			for (const registration of pendingProviders) {
+				try {
+					const providerId = "provider" in registration ? registration.provider.id : registration.name;
+					if ("provider" in registration) providerTransaction.registerNativeProvider(registration.provider);
+					else providerTransaction.registerProvider(registration.name, registration.config);
+					registeredProviderIds.add(providerId);
+				} catch (error) {
+					oldRunner.emitError({
+						extensionPath: registration.extensionPath,
+						event: "register_provider",
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					});
+				}
+			}
+			await providerTransaction.commit();
+		}
+		if (this._disposed) throw hostInputError("SessionClosed");
+		settingsTransaction.commit();
+		resourceTransaction.activate(this.settingsManager);
+		if (commitPreparedResources) commitPreparedResources();
+		else resourceTransaction.commit();
+		extensionsResult.runtime.pendingProviderRegistrations = [];
+		committed = true;
+		for (const extension of extensionsResult.extensions) factoryAcquisitions.getStore()?.pending?.delete(extension);
+		const discoveryFailures = await rollbackFactoryAcquisitions(retainedRuntimes);
+		if (discoveryFailures.length) {
+			throw Object.assign(new AggregateError(discoveryFailures, "Reload discovery cleanup failed"), {
+				code: "ShutdownFailed",
+			});
+		}
+	} catch (error) {
+		if (!committed) {
+			try {
+				if (rollbackPreparedResources) rollbackPreparedResources();
+				else resourceTransaction.rollback();
+			} catch {
+				// Best-effort rollback of staged event bus and preloaded snapshots.
+			}
+		}
+		throw error;
+	}
+
+	const extensionsResult = this._resourceLoader.getExtensions();
+	if (registeredProviderIds.size > 0) {
+		resetApiProviders();
+		for (const providerId of registeredProviderIds) {
+			this._extensionProviderIds.add(providerId);
+			extensionsResult.runtime.extensionProviderIds.add(providerId);
+		}
+		await this.refreshCurrentModelFromRegistry();
+	}
+	const powerShellAvailable = await isPowerShellAvailableAsync();
+	const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, this._resourceLoader);
+	const defaultTools = applyToolModifiers(
+		this.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
+		this._defaultToolModifiers,
+	);
+	// Reopen the live runner that reloadAdmitted sealed while loading newcomers.
+	oldRunner.resumeAfterRejectedReload();
+	const startNewcomers = oldRunner.attachStartupExtensions(extensionsResult.extensions, (error) => {
+		if (recordStartupFailure(this, error)) oldRunner.emitError(error);
+	});
+	for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
+	this._restoredToolNames = new Set(this.getActiveToolNames());
+	this._buildRuntime({
+		activeToolNames: activeToolsAfterReload(defaultTools),
+		flagValues: previousFlagValues,
+		includeAllExtensionTools: true,
+		preserveRunner: true,
+		powerShellAvailable,
+	});
+	this._restoreToolsFromTranscript({ startup: true });
+	this._appliedDefaultTools = new Set(defaultTools);
+	if (this._disposed) throw hostInputError("SessionClosed");
+	sessionGenerationClosing.delete(this);
+	await startNewcomers();
+	if (this._disposed) throw hostInputError("SessionClosed");
+	await extendRunnerResources(this, oldRunner, this._resourceLoader, "startup", (error) => {
+		if (recordStartupFailure(this, error)) oldRunner.emitError(error);
+	});
+	if (this._disposed) throw hostInputError("SessionClosed");
+	this._rebuildSystemPrompt(this.getActiveToolNames());
+	oldRunner.reportUnhandledMcpServers();
+	return true;
+}
+
 async function reloadOwnedGeneration(
 	this: AgentSession,
 	retainedRuntimes: Set<ExtensionRuntime>,
@@ -980,6 +1146,33 @@ async function reloadOwnedGeneration(
 	}
 
 	const settingsTransaction = await this.settingsManager.prepareReload();
+	const preloadedExtensions = this._resourceLoader.getExtensions();
+	const canCompleteInPlace =
+		reason === "startup" &&
+		canPrepareDeferredStartupCompletion(this._resourceLoader) &&
+		startupErrorReports.get(this) === true &&
+		settingsSnapshotMatches(
+			getDeferredInitialSettingsSnapshot(this._resourceLoader),
+			settingsTransaction.settingsManager,
+		) &&
+		oldRunner.hasExactExtensions(preloadedExtensions.extensions) &&
+		preloadedExtensions.extensions.length > 0 &&
+		!oldRunner.hasHandlers("resources_discover") &&
+		preloadedExtensions.runtime.pendingProviderRegistrations.length === 0;
+	if (
+		canCompleteInPlace &&
+		(await completeDeferredStartupInPlace.call(
+			this,
+			retainedRuntimes,
+			settingsTransaction,
+			previousFlagValues,
+			activeToolsAfterReload,
+			options,
+		))
+	) {
+		return;
+	}
+
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
 	const powerShellAvailable = await isPowerShellAvailableAsync();
 	const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, resourceTransaction.loader);
