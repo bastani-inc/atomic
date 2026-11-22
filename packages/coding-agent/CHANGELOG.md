@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A session that started on 0.10.4 and keeps running after an in-place update (`npm install -g`, `bun add -g`) now says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` when the update's code for a feature it loads on demand cannot load into it, instead of failing with the runtime's error. A session that starts on this release or later says so by itself for every later update, whatever that release changes; features whose updated code loads keep working as before.
 - Interactive starts with a cold `NODE_COMPILE_CACHE` and `--offline`, `--debug`, or global `debug`/`httpProxy` settings no longer block the host at engine handover while writing its compile cache, avoiding a startup and first-prompt stall (especially on Windows) while still flushing the cache once startup settles so quitting remains fast.
 - Editing the `debug` or `httpProxy` global setting in `settings.json` while Atomic is starting no longer discards the prewarmed interactive engine and starts a second one: the updated setting values are reconciled over the engine adoption handshake before the engine configures HTTP or starts its session.
 
