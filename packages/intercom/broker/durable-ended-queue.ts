@@ -55,6 +55,15 @@ export function endedQueueOpenWaitMs(env: NodeJS.ProcessEnv = process.env): numb
 export const ENDED_QUEUE_TOTAL_WAIT_MS = PRESENCE_REGISTRATION_BOUND_MS;
 /** How long a send that may join a restored queue waits for the restored rows, at most. */
 export const ENDED_QUEUE_LOAD_WAIT_MS = 5_000;
+/** Test-only override of {@link ENDED_QUEUE_LOAD_WAIT_MS} for deterministic restore-barrier tests, in milliseconds. */
+export const ENDED_QUEUE_LOAD_WAIT_ENV = "ATOMIC_INTERCOM_ENDED_QUEUE_LOAD_WAIT_MS";
+
+/** The wait a broker gives restoring its kept rows: the default, unless a test overrides it. */
+export function endedQueueLoadWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+	const value = env[ENDED_QUEUE_LOAD_WAIT_ENV];
+	const parsed = value === undefined || value.trim() === "" ? Number.NaN : Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_TIMER_MS ? parsed : ENDED_QUEUE_LOAD_WAIT_MS;
+}
 
 /** What a queued message's sender is told while its `queued` answer still waits for the message to be kept. */
 type EarlyOutcome = { readonly kind: "delivered" } | { readonly kind: "failed"; readonly reason: string };
@@ -200,8 +209,16 @@ function isSessionInRestoredSet(
 export interface RestoreHoldLookupOptions {
 	/** Multi-node alias resolver (`localAliasTarget`), when multi-node routing is active. */
 	readonly localAliasTarget?: (target: string) => BrokerConnectedSession | undefined;
-	/** Additional sessions the sender can reach across groups (e.g. return paths or open ask reply routes). */
+	/**
+	 * Additional sessions the sender can reach directly across groups (matches `handleBrokerSend`'s `visibleCandidates`:
+	 * authorized supervisor target, open ask reply route, or supervisor-channel vertical-bypass reply).
+	 */
 	readonly extraReachable?: readonly BrokerConnectedSession[];
+	/**
+	 * Fallback-only cross-group sessions reachable via a return path (matches `handleBrokerSend`'s `returnPathCandidates`:
+	 * consulted only when no visible/direct candidate matches, and never by host session ID).
+	 */
+	readonly returnPathReachable?: readonly BrokerConnectedSession[];
 }
 
 /**
@@ -227,11 +244,20 @@ export function shouldHoldSendForEndedQueueRestore(
 	if (trimmed.length === 0) return false;
 	const localAliasTarget = typeof options === "function" ? options : options?.localAliasTarget;
 	const extraReachable = typeof options === "function" ? undefined : options?.extraReachable;
+	const returnPathReachable = typeof options === "function" ? undefined : options?.returnPathReachable;
 
 	const senderCanReach = (session: BrokerConnectedSession): boolean => {
 		if (sender === undefined) return false;
 		if (reachesSession(sender, session.info)) return true;
-		if (extraReachable !== undefined && extraReachable.includes(session)) return true;
+		if (extraReachable !== undefined && extraReachable.some((candidate) => candidate.info.id === session.info.id)) {
+			return true;
+		}
+		if (
+			returnPathReachable !== undefined &&
+			returnPathReachable.some((candidate) => candidate.info.id === session.info.id)
+		) {
+			return true;
+		}
 		return false;
 	};
 
@@ -248,26 +274,43 @@ export function shouldHoldSendForEndedQueueRestore(
 	if (aliased !== undefined) return holdResolved(aliased);
 
 	if (sender !== undefined) {
-		const visibleInfos: SessionInfo[] = [];
-		const visibleIds = new Set<string>();
+		const candidateInfos: SessionInfo[] = [];
+		const candidateIds = new Set<string>();
 		for (const session of sessions.values()) {
 			if (!isAgentRecipient(session.info) || !reachesSession(sender, session.info)) continue;
-			visibleInfos.push(session.info);
-			visibleIds.add(session.info.id);
+			candidateInfos.push(session.info);
+			candidateIds.add(session.info.id);
 		}
-		let resolved = resolveSessionTarget(visibleInfos, trimmed);
-		if (resolved.kind === "not_found" && extraReachable !== undefined && extraReachable.length > 0) {
-			const extraInfos = extraReachable
-				.map((session) => session.info)
-				.filter((info) => isAgentRecipient(info) && !visibleIds.has(info.id));
-			if (extraInfos.length > 0) {
-				const extraRes = resolveSessionTarget(extraInfos, trimmed);
-				if (extraRes.kind !== "not_found") resolved = extraRes;
+		if (extraReachable !== undefined) {
+			for (const session of extraReachable) {
+				if (!isAgentRecipient(session.info) || candidateIds.has(session.info.id)) continue;
+				candidateInfos.push(session.info);
+				candidateIds.add(session.info.id);
+			}
+		}
+		let resolved = resolveSessionTarget(candidateInfos, trimmed);
+		if (resolved.kind === "not_found" && returnPathReachable !== undefined && returnPathReachable.length > 0) {
+			const returnPathInfos: SessionInfo[] = [];
+			const returnPathIds = new Set<string>();
+			for (const session of returnPathReachable) {
+				if (
+					!isAgentRecipient(session.info) ||
+					candidateIds.has(session.info.id) ||
+					returnPathIds.has(session.info.id)
+				) {
+					continue;
+				}
+				returnPathInfos.push(session.info);
+				returnPathIds.add(session.info.id);
+			}
+			if (returnPathInfos.length > 0) {
+				const returnPathRes = resolveSessionTarget(returnPathInfos, trimmed);
+				if (returnPathRes.kind !== "not_found") resolved = returnPathRes;
 			}
 		}
 		if (resolved.kind === "not_found") {
 			resolved = resolveSessionTargetByHostSessionId(
-				visibleInfos,
+				candidateInfos,
 				trimmed,
 				(info) => sessions.get(info.id)?.registrationReturnAddress,
 			);
@@ -275,6 +318,8 @@ export function shouldHoldSendForEndedQueueRestore(
 		if (resolved.kind === "resolved") {
 			const live = sessions.get(resolved.session.id);
 			if (live !== undefined) return holdResolved(live);
+		} else if (resolved.kind !== "not_found") {
+			return false;
 		}
 	}
 
@@ -397,17 +442,18 @@ export class DurableEndedQueue {
 			}
 			this.journalBudget(store);
 			this.restoreState = { phase: "identifying_targets", deferred: this.restoreState.deferred };
-			// One bound covers both `store.targets()` and `store.load()`: past ENDED_QUEUE_LOAD_WAIT_MS, fall back to
+			// One bound covers both `store.targets()` and `store.load()`: past loadWaitMs, fall back to
 			// ready and release every held send so a slow or hung store never causes client send timeouts.
+			const loadWaitMs = endedQueueLoadWaitMs();
 			const restoreTimer = setTimeout(() => {
 				if (this.restoreTimer === restoreTimer) this.restoreTimer = undefined;
 				if (this.restoreState.phase === "identifying_targets" || this.restoreState.phase === "loading") {
 					this.host.log(
-						`Intercom broker stopped holding sends for subagents that ended after ${ENDED_QUEUE_LOAD_WAIT_MS} ms while reading their store`,
+						`Intercom broker stopped holding sends for subagents that ended after ${loadWaitMs} ms while reading their store`,
 					);
 					transitionToReady();
 				}
-			}, ENDED_QUEUE_LOAD_WAIT_MS);
+			}, loadWaitMs);
 			restoreTimer.unref();
 			this.restoreTimer = restoreTimer;
 			resolveDecided();
@@ -479,7 +525,7 @@ export class DurableEndedQueue {
 		if (this.restoreState.phase === "ready" || this.loading === undefined) return Promise.resolve();
 		return Promise.race([
 			this.loading,
-			new Promise<void>((resolve) => setTimeout(resolve, ENDED_QUEUE_LOAD_WAIT_MS).unref()),
+			new Promise<void>((resolve) => setTimeout(resolve, endedQueueLoadWaitMs()).unref()),
 		]);
 	}
 

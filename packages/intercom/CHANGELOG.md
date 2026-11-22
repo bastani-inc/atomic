@@ -4,6 +4,11 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- After an Intercom broker restarts, queued messages for a resumed subagent are now routed to that subagent's registered session ID instead of its display name, so renaming the subagent before queue restoration completes no longer drops its queued messages or misdelivers them to another session using the old name.
+- Supervisor replies sent across group isolation on the supervisor channel while the restarted broker is still restoring queued messages now wait behind the subagent's queued messages across every addressing form (session ID, prefix, name, or host session ID), without delaying sends to non-subagent peers.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added
