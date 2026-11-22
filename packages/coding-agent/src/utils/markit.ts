@@ -1,4 +1,5 @@
 import type { Markit, StreamInfo } from "markit-ai";
+import { loadOnDemand } from "./updated-install.ts";
 
 export interface MarkitConversionResult {
 	content: string;
@@ -64,7 +65,8 @@ function withMupdfDiagnostics(message: string): string {
 
 let markit: () => Markit | Promise<Markit> = async () => {
 	captureMupdfDiagnostics();
-	const promise = import("markit-ai").then(({ Markit }) => {
+	// A shared file of the installation: an update that replaced it while this process runs asks for a restart.
+	const promise = loadOnDemand("document conversion", () => import("markit-ai")).then(({ Markit }) => {
 		const instance = new Markit();
 		markit = () => instance;
 		return instance;

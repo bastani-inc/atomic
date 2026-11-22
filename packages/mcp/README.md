@@ -2,7 +2,7 @@
 
 Atomic's bundled [Model Context Protocol](https://modelcontextprotocol.io) support connects to servers over stdio and streamable HTTP. It provides a server manager, shell commands, OAuth, codemode and deferred tool discovery, direct tools, and standard resource tools. No separate installation is needed with Atomic.
 
-See the [MCP servers guide](../coding-agent/docs/mcp-servers.md) for configuration and [OAuth](OAUTH.md) for authentication.
+See the [MCP servers guide](https://docs.bastani.ai/mcp-servers) for configuration and [OAuth](OAUTH.md) for authentication.
 
 ## Quick setup
 
