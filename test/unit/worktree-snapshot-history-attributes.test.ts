@@ -3,6 +3,33 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+
+/**
+ * How many attributes files the code under test has open at once, and the most it had; reading a file named in
+ * `tooManyOpen` fails as it does when the process has too many files open.
+ */
+const reads = vi.hoisted(() => ({ open: 0, most: 0, tooManyOpen: new Set<string>() }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		readFile: async (...args: Parameters<typeof actual.readFile>) => {
+			if (reads.tooManyOpen.has(String(args[0]))) {
+				throw Object.assign(new Error("EMFILE: too many open files"), { code: "EMFILE" });
+			}
+			if (!String(args[0]).endsWith(".gitattributes")) return actual.readFile(...args);
+			reads.open++;
+			reads.most = Math.max(reads.most, reads.open);
+			try {
+				return await actual.readFile(...args);
+			} finally {
+				reads.open--;
+			}
+		},
+	};
+});
+
 import {
 	captureWorktreeSnapshot,
 	type WorktreeSnapshotCapture,
@@ -13,6 +40,7 @@ import { GitSandbox, startedGitProcesses } from "../helpers/worktree-snapshot.js
 let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
+	reads.tooManyOpen.clear();
 });
 afterEach(() => sandbox.dispose());
 
@@ -56,11 +84,12 @@ function commandsIn(trace: string): string[] {
 async function inNewProcess(
 	trace: string,
 	executable: string = sandbox.executable.path,
+	env: Record<string, string> = {},
 ): Promise<typeof captureWorktreeSnapshot> {
 	vi.resetModules();
 	const capture = await import("../../packages/coding-agent/src/core/worktree-snapshot/capture.ts");
 	const git = await import("../../packages/coding-agent/src/core/worktree-snapshot/git.ts");
-	const traced = { path: executable, env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace } };
+	const traced = { path: executable, env: { ...sandbox.executable.env, ...env, GIT_TRACE2_EVENT: trace } };
 	git.setWorktreeSnapshotGit(async () => traced);
 	return capture.captureWorktreeSnapshot;
 }
@@ -136,6 +165,53 @@ describe("unpushed history over the cap because an attribute turned delta compre
 		const commands = commandsIn(trace);
 		assert.ok(!commands.includes("bundle create") && !commands.includes("var"), commands.join(" "));
 	});
+
+	test("an attributes file that could not be read for too many open files keeps no size", async () => {
+		const { clone, commit } = await cloneWithEditedData();
+		const info = join(clone, ".git", "info", "attributes");
+		sandbox.write(info, "sub/data.txt -delta\n");
+		reads.tooManyOpen.add(info);
+		const first = await captureAfterEdit(clone, "one");
+		assert.equal(historyOmissions(first.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+
+		sandbox.write(info, "");
+		const second = await captureAfterEdit(clone, "two");
+		assert.deepEqual(historyOmissions(second.snapshot.omitted), []);
+		assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+	});
+
+	test("the attributes files of many directories are read a few at a time", async () => {
+		const { clone } = await cloneWithEditedData();
+		for (let index = 0; index < 200; index++) sandbox.write(join(clone, `d${index}`, "file.txt"), `${index}\n`);
+		await sandbox.commitAll(clone, "files in 200 directories");
+		reads.most = 0;
+		const bundled = captured(await captureWorktreeSnapshot(clone));
+		assert.equal(bundled.snapshot.bundle?.commits.length, 2);
+		assert.ok(reads.most > 0 && reads.most <= 16, `${reads.most} at once`);
+	});
+
+	test.skipIf(process.platform !== "win32")(
+		"the user's attributes file under a variable set in another case is watched",
+		async () => {
+			const { clone } = await cloneWithEditedData();
+			sandbox.write(join(clone, ".git", "info", "attributes"), "sub/data.txt -delta\n");
+			const config = sandbox.path("config");
+			const user = join(config, "git", "attributes");
+			sandbox.write(user, "*.png binary\n");
+			const trace = sandbox.path("case-trace.jsonl");
+			const capture = await inNewProcess(trace, sandbox.executable.path, { Xdg_Config_Home: config });
+			sandbox.write(join(clone, "edit.txt"), "one\n");
+			const first = captured(await capture(clone, { settings }));
+			assert.equal(historyOmissions(first.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+			commandsIn(trace);
+
+			sandbox.write(user, "*.jpg binary\n");
+			sandbox.write(join(clone, "edit.txt"), "two\n");
+			const second = captured(await capture(clone, { settings }));
+			assert.equal(historyOmissions(second.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+			assert.ok(commandsIn(trace).includes("bundle create"), "bundled again");
+		},
+	);
 
 	test("a capture whose unpushed commits fit asks Git nothing more about attributes", async () => {
 		const { clone } = await cloneWithEditedData();

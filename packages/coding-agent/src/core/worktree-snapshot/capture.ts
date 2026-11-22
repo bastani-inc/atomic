@@ -1350,22 +1350,56 @@ async function commonDirOf(gitDir: string): Promise<string | undefined> {
  * cannot be read.
  */
 async function packingOf(gitDir: string, packing: string, attributes: readonly string[]): Promise<string | undefined> {
-	const [packs, contents] = await Promise.all([packsOf(gitDir), contentsOf(attributes)]);
-	return packs === undefined ? undefined : sha256Hex(`${packs}\n${packing}\n${contents}`);
+	return packingKey(await packingRead(gitDir, attributes), packing, attributes);
 }
 
-/** The contents of the files `files`, as one hash; a file that cannot be read counts as the reason it cannot. */
-async function contentsOf(files: readonly string[]): Promise<string> {
-	const contents = await Promise.all(
-		files.map(async (file) => {
+/** The repository's packs ({@link packsOf}) and the contents of the files `files` ({@link contentsOf}), read once. */
+interface PackingRead {
+	readonly packs: string | undefined;
+	readonly contents: ReadonlyMap<string, string | undefined>;
+}
+
+async function packingRead(gitDir: string, files: readonly string[]): Promise<PackingRead> {
+	const [packs, contents] = await Promise.all([packsOf(gitDir), contentsOf(files)]);
+	return { packs, contents };
+}
+
+/**
+ * {@link packingOf} from what `read` read, for the packing settings `packing` and the attributes files `attributes`, a
+ * part of the files it read; undefined when the packs or any of those files could not be read.
+ */
+function packingKey(read: PackingRead, packing: string, attributes: readonly string[]): string | undefined {
+	const contents = attributes.map((file) => read.contents.get(file));
+	if (read.packs === undefined || contents.includes(undefined)) return undefined;
+	return sha256Hex(`${read.packs}\n${packing}\n${sha256Hex(JSON.stringify([attributes, contents]))}`);
+}
+
+/** How many attributes files {@link contentsOf} reads at once, well under any limit of open files. */
+const ATTRIBUTES_READS = 16;
+
+/** Why a file cannot be read that is the file's own: missing, a directory, or not readable to the user. */
+const UNREADABLE_FILE = new Set(["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"]);
+
+/**
+ * The contents of each of the files `files`, as a hash, {@link ATTRIBUTES_READS} at a time. A file Git cannot read
+ * either counts as the reason it cannot; undefined for one that could not be read for another reason, such as too
+ * many open files, which says nothing about the file.
+ */
+async function contentsOf(files: readonly string[]): Promise<Map<string, string | undefined>> {
+	const contents = new Map<string, string | undefined>();
+	let next = 0;
+	const reader = async () => {
+		for (let file = files[next++]; file !== undefined; file = files[next++]) {
 			try {
-				return sha256Hex(await readFile(file));
+				contents.set(file, sha256Hex(await readFile(file)));
 			} catch (error) {
-				return `!${(error as NodeJS.ErrnoException).code ?? "unreadable"}`;
+				const { code } = error as NodeJS.ErrnoException;
+				contents.set(file, code !== undefined && UNREADABLE_FILE.has(code) ? `!${code}` : undefined);
 			}
-		}),
-	);
-	return sha256Hex(JSON.stringify([files, contents]));
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(ATTRIBUTES_READS, files.length) }, reader));
+	return contents;
 }
 
 /** The system's attributes file, once Git told it in this process; null when it has none or did not tell. */
@@ -1375,15 +1409,18 @@ let systemAttributes: string | null | undefined;
  * The system's attributes file, as Git 2.42 and later tell it (`git var GIT_ATTR_SYSTEM`), asked once per process;
  * null when Git reads none (`GIT_ATTR_NOSYSTEM`) or is older.
  */
-async function systemAttributesFile(root: string): Promise<string | null> {
+async function systemAttributesFile(root: string, signal?: AbortSignal): Promise<string | null> {
 	if (systemAttributes !== undefined) return systemAttributes;
 	try {
 		const { exitCode, stdout } = await runGit(["var", "GIT_ATTR_SYSTEM"], {
 			cwd: root,
+			signal,
 			allowExitCodes: [1, 128, 129],
 		});
 		systemAttributes = exitCode === 0 ? stdout.toString("utf8").trim() || null : null;
-	} catch {
+	} catch (error) {
+		signal?.throwIfAborted();
+		if (isWorkspaceSnapshotError(error) || isGitUnavailableError(error)) throw error;
 		return null;
 	}
 	return systemAttributes;
@@ -1405,16 +1442,24 @@ async function attributesFilesOf(
 	signal?: AbortSignal,
 ): Promise<string[]> {
 	const env = await gitEnvironment(signal);
+	// Windows takes a variable's name in any case; the copy of the environment Git is given keeps the case it was set in.
+	const variable = (name: string): string | undefined =>
+		(process.platform === "win32"
+			? Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1]
+			: env[name]) || undefined;
+	const homeDrive = variable("HOMEDRIVE");
+	const homePath = variable("HOMEPATH");
 	const homes = [
-		env.HOME,
+		variable("HOME"),
 		...(process.platform === "win32"
-			? [env.HOMEDRIVE && env.HOMEPATH ? `${env.HOMEDRIVE}${env.HOMEPATH}` : undefined, env.USERPROFILE]
+			? [homeDrive && homePath ? `${homeDrive}${homePath}` : undefined, variable("USERPROFILE")]
 			: []),
-	].filter((home): home is string => home !== undefined && home !== "");
+	].filter((home): home is string => home !== undefined);
+	const xdg = variable("XDG_CONFIG_HOME");
 	let user: string[];
 	if (attributesFile === null) {
 		user = [
-			...(env.XDG_CONFIG_HOME ? [join(env.XDG_CONFIG_HOME, "git", "attributes")] : []),
+			...(xdg ? [join(xdg, "git", "attributes")] : []),
 			...homes.map((home) => join(home, ".config", "git", "attributes")),
 		];
 	} else if (attributesFile.startsWith("~/") || attributesFile.startsWith("~\\")) {
@@ -1695,14 +1740,17 @@ async function captureHistory(
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
 		const omission: HistoryOmission = { reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength };
-		// The size is kept for the packs, settings and attributes only when they are the same after bundling as before.
+		// The system's attributes file, which Git names once per process, is watched from then on: from the first bundle
+		// over the cap, which read it before Git named it, its contents after bundling.
+		const system = await systemAttributesFile(root, signal);
+		const watched = system === null || attributes.includes(system) ? attributes : [...attributes, system].sort();
+		// The size is kept for the packs, settings and attributes only when they are the same after bundling as before,
+		// all read once, last.
 		const now = await packingSettingsNow(root, signal);
-		if (now === undefined || packs !== (await packingOf(gitDir, now, attributes))) return leaveOut(omission);
-		// The system's attributes file, which Git names once per process, is watched from then on.
-		const system = await systemAttributesFile(root);
-		if (system === null || attributes.includes(system)) return leaveOut(omission, packs, attributes);
-		const watched = [...attributes, system].sort();
-		return leaveOut(omission, await packingOf(gitDir, now, watched), watched);
+		if (now === undefined) return leaveOut(omission);
+		const after = await packingRead(gitDir, watched);
+		if (packs === undefined || packs !== packingKey(after, now, attributes)) return leaveOut(omission);
+		return leaveOut(omission, packingKey(after, now, watched), watched);
 	}
 	const blob = snapshotBlob(data);
 	return { bundle: { blob: blob.hash, bytes: data.byteLength, commits: unpushed }, omitted: [], blob };
