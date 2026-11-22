@@ -48,7 +48,7 @@ The adapter works through a transaction-mode connection pooler (PgBouncer, Supav
 
 Each process also keeps one connection outside the pool that `LISTEN`s for wake-ups (`notifications` on the opened database), so Intercom brokers find new messages at once. A transaction-mode pooler does not deliver notifications to it: the adapter detects that with a probe and falls back to polling alone, unless `listenUrl` names the server's direct endpoint. Nothing is lost without wake-ups; work is found at the next poll. `atomic storage status` says which applies.
 
-A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and a refused server certificate fail at once. A missing privilege (`42501`) fails at once with `StorageConfigError` reason `missing-privilege`, which names the privilege and the grant or `atomic storage migrate` that fixes it. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence and the other storage options.
+A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and a refused server certificate fail at once. A missing privilege (`42501`) fails at once with `StorageConfigError` reason `missing-privilege`, which names the privilege and the grant or `atomic storage migrate` that fixes it. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](https://docs.bastani.ai/storage) for selection precedence and the other storage options.
 
 ## Azure
 
@@ -56,7 +56,7 @@ A failure that passes, such as a refused or lost connection, a lock conflict (SQ
 
 - Use `<server>.postgres.database.azure.com`: port 5432 reaches the server directly. Port 6432 is the built-in PgBouncer, which General Purpose and Memory Optimized servers offer once the server parameter `pgbouncer.enabled` is on; Burstable servers have none. Through 6432, set `listenUrl` to the same URL on port 5432 so wake-ups still arrive.
 - Azure's certificates chain to CAs Node trusts, so the URL needs no TLS parameter.
-- The administrator is a member of `azure_pg_admin`, not a superuser; the owner and runtime role setup in [Storage](../coding-agent/docs/storage.md#set-up-the-database) works as written.
+- The administrator is a member of `azure_pg_admin`, not a superuser; the owner and runtime role setup in [Storage](https://docs.bastani.ai/storage#set-up-the-database) works as written.
 - Add `PG_TRGM` to the server parameter `azure.extensions` before `atomic storage migrate`. Without it, searches of session history read each session a page at a time, and `atomic storage migrate` says so.
 - Mind the server's connection limit. A Burstable B1ms server allows 50 connections, 15 of them reserved for administrators, and each Atomic process opens up to `maxConnections` (8) plus one for wake-ups: lower `maxConnections`, connect through PgBouncer, or pick a larger server for more than a few processes.
 
@@ -99,7 +99,7 @@ Cloud tokens require TLS; keep `sslmode=verify-full` (the default for a remote h
 
 ### Least-privilege roles
 
-Atomic uses two roles: an owner role that owns the database and the `atomic` schema and runs `atomic storage migrate`, and a runtime role for hosts, roots, sessions and brokers, which runs no DDL. Give a cloud identity the runtime role's privileges, as [Set up the database](../coding-agent/docs/storage.md#set-up-the-database) lists them; after `atomic storage migrate`, as the owner role:
+Atomic uses two roles: an owner role that owns the database and the `atomic` schema and runs `atomic storage migrate`, and a runtime role for hosts, roots, sessions and brokers, which runs no DDL. Give a cloud identity the runtime role's privileges, as [Set up the database](https://docs.bastani.ai/storage#set-up-the-database) lists them; after `atomic storage migrate`, as the owner role:
 
 ```sql
 GRANT CONNECT ON DATABASE atomic TO "<identity>";

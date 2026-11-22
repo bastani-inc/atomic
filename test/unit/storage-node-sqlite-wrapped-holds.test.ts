@@ -799,8 +799,10 @@ test("a read or a call SQLite cannot prepare does not wait behind calls still qu
 			written++;
 		}),
 	);
-	await committed;
-	// The queued writes now run one per turn; calls made meanwhile that need no lock do not wait for them.
+	// The queued writes run one per turn from the moment the transaction lets go of the lock, before its answer reaches
+	// this thread, which takes file work on a loaded machine. Calls made once the first of them ran, while the others
+	// are still queued, need no lock and do not wait for them.
+	await writes[0];
 	const read = await other.get<{ n: number }>("SELECT count(*) AS n FROM items");
 	const failure = await other.all("SELECT * FROM nosuch").then(
 		() => undefined,
@@ -808,6 +810,7 @@ test("a read or a call SQLite cannot prepare does not wait behind calls still qu
 	);
 	const writtenMeanwhile = written;
 	await Promise.all(writes);
+	await committed;
 	assert.ok(writtenMeanwhile < 10, "the read and the failing call waited for the queued writes");
 	assert.ok(Number(read?.n) >= 2 && Number(read?.n) <= 2 + writtenMeanwhile, `it read ${read?.n} rows`);
 	assert.ok(failure instanceof StorageUnavailableError);

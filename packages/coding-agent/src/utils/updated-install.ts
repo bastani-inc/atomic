@@ -25,11 +25,17 @@ export class UpdatedInstallError extends Error {
 const LINK_FAILURE =
 	/does not provide an export named|Export named '[^']*' not found in module|Named export '[^']*' not found|^export '[^']*' not found in '/;
 const LOAD_FAILURE_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ERR_PACKAGE_PATH_NOT_EXPORTED"]);
+/**
+ * Bun, for a module file that went away after it read the file's directory: a `BuildMessage` with no code, naming the
+ * file it could not read.
+ */
+const BUN_MISSING_FILE = /^ENOENT reading "(.+)"$/;
 /** Atomic's own packages, by name or installed (a package manager that hoists dependencies, Bun, puts them beside it). */
 const OWN_PACKAGE =
 	/^@bastani\/atomic(?:-(?:ai|tui|agent-core|codemode|schema|telemetry|natives))?(?:\/|$)|[\\/]node_modules[\\/]@bastani[\\/]atomic(?:-(?:ai|tui|agent-core|codemode|schema|telemetry|natives))?[\\/]/;
 
 interface ModuleLoadError {
+	readonly name?: unknown;
 	readonly code?: unknown;
 	readonly message?: unknown;
 	readonly stack?: unknown;
@@ -48,8 +54,9 @@ interface ModuleLoadError {
  */
 export function isModuleLoadFailure(error: unknown): boolean {
 	if (typeof error !== "object" || error === null) return false;
-	const { code, message } = error as ModuleLoadError;
+	const { code, message, name } = error as ModuleLoadError;
 	if (typeof code === "string" && LOAD_FAILURE_CODES.has(code)) return true;
+	if (name === "BuildMessage" && typeof message === "string" && BUN_MISSING_FILE.test(message)) return true;
 	return error instanceof SyntaxError && typeof message === "string" && LINK_FAILURE.test(message);
 }
 
@@ -73,6 +80,7 @@ function requested(request: string, importer: string | undefined): string {
 function failedLoadLocation(error: ModuleLoadError): string | undefined {
 	const message = typeof error.message === "string" ? error.message : "";
 	if (typeof error.url === "string") return error.url;
+	if (error.name === "BuildMessage") return BUN_MISSING_FILE.exec(message)?.[1];
 	if (typeof error.referrer === "string" && typeof error.specifier === "string")
 		return requested(error.specifier, error.referrer);
 	if (Array.isArray(error.requireStack)) {
