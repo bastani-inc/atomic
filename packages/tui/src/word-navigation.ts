@@ -1,7 +1,5 @@
 import { getWordSegmenter, isWhitespaceChar, PUNCTUATION_REGEX } from "./utils.ts";
 
-const wordSegmenter = getWordSegmenter();
-
 /**
  * Options for word navigation functions.
  * When omitted, uses the default Intl.Segmenter word segmentation.
@@ -25,7 +23,7 @@ export function findWordBackward(text: string, cursor: number, options?: WordNav
 	const textBeforeCursor = text.slice(0, cursor);
 	const segmentFn = options?.segment;
 	const isAtomic = options?.isAtomicSegment;
-	const segments = segmentFn ? [...segmentFn(textBeforeCursor)] : [...wordSegmenter.segment(textBeforeCursor)];
+	const segments = segmentFn ? [...segmentFn(textBeforeCursor)] : [...getWordSegmenter().segment(textBeforeCursor)];
 	let newCursor = cursor;
 
 	// Skip trailing whitespace
@@ -81,7 +79,7 @@ export function findWordForward(text: string, cursor: number, options?: WordNavi
 	const textAfterCursor = text.slice(cursor);
 	const segmentFn = options?.segment;
 	const isAtomic = options?.isAtomicSegment;
-	const segments = segmentFn ? segmentFn(textAfterCursor) : wordSegmenter.segment(textAfterCursor);
+	const segments = segmentFn ? segmentFn(textAfterCursor) : getWordSegmenter().segment(textAfterCursor);
 	const iterator = segments[Symbol.iterator]();
 	let next = iterator.next();
 	let newCursor = cursor;

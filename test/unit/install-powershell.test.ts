@@ -166,7 +166,11 @@ test("Windows installer skips a healthy install before any download and keeps th
 	assert.match(health, /function Test-AtomicInstallVerified/u);
 	assert.match(health, /Join-Path \$BinDir "atomic\.cmd"/u);
 	assert.match(health, /ReadAllText\(\$shimItem\.FullName\) -ceq \$ExpectedShimContent/u);
-	assert.doesNotMatch(health, /&\s+\$|Invoke-WebRequest|Move-Item|Remove-Item/u, "the health check must be read-only");
+	assert.doesNotMatch(
+		health,
+		/&\s+\$|Invoke-WebRequest|Move-Item|Rename-Item|Move-AtomicItem|Remove-Item/u,
+		"the health check must be read-only",
+	);
 });
 
 test("Windows installer runs 'intercom upgrade' through the new shim after the commit and only warns on failure (#4538)", () => {
@@ -349,7 +353,7 @@ test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before 
 	assert.match(source, /which PATHEXT resolves before atomic\.cmd; remove it and rerun the installer\./u);
 	assert.doesNotMatch(
 		source.slice(shadowLoop, source.indexOf("$apiHeaders = @{")),
-		/PSIsContainer|Remove-Item|Move-Item/u,
+		/PSIsContainer|Remove-Item|Move-Item|Rename-Item|Move-AtomicItem/u,
 		"the shadowing preflight must report rather than delete or narrow to files",
 	);
 
@@ -409,7 +413,7 @@ test("Windows installer rejects bin directories inside transaction-owned install
 			source.indexOf("$ownedInstallPaths = @("),
 			source.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }'),
 		),
-		/Move-Item|Remove-Item|New-Item/u,
+		/Move-Item|Rename-Item|Move-AtomicItem|Remove-Item|New-Item/u,
 		"the transaction-owned path preflight must not mutate caller paths",
 	);
 });
@@ -497,7 +501,7 @@ test("Windows installer protects transaction pointer types before I/O", () => {
 	assert.match(source, /ATOMIC_BIN_DIR contains an unexpected atomic-current entry; refusing to replace it\./u);
 	assert.doesNotMatch(
 		source.slice(source.indexOf("$existingShimItem = Get-AtomicDirectoryEntry $shimPath"), apiHeaders),
-		/Move-Item|Remove-Item|New-Item/u,
+		/Move-Item|Rename-Item|Move-AtomicItem|Remove-Item|New-Item/u,
 		"the pointer preflight must not mutate caller entries",
 	);
 });
@@ -689,9 +693,11 @@ test("Windows installer records move intent and idempotently rolls back from cat
 		"ShimBackupIntended",
 		"ShimInstallIntended",
 	]) {
-		const intentAssignment = source.indexOf(`$transaction.${intent} = $true`);
-		const move = source.indexOf("Move-Item", intentAssignment);
-		assert.ok(intentAssignment >= 0 && move > intentAssignment, `${intent} is not recorded before its move`);
+		assert.match(
+			source,
+			new RegExp(`\\$transaction\\.${intent} = \\$true\\r?\\n\\s+Move-AtomicItem\\b`, "u"),
+			`${intent} is not recorded immediately before its atomic rename`,
+		);
 	}
 
 	const finalSmoke = source.indexOf("Installed atomic.cmd --version failed");
@@ -724,6 +730,125 @@ test("Windows installer records move intent and idempotently rolls back from cat
 	);
 	assert.match(committedFinally, /Remove-AtomicTransactionBackups/u);
 	assert.doesNotMatch(committedFinally, /Invoke-AtomicTransactionRollback/u);
+});
+
+test("Windows installer performs every transaction, rollback, and recovery move as a bounded atomic rename", () => {
+	const source = installerSource();
+	const moveHelperStart = source.indexOf("function Move-AtomicItem");
+	assert.ok(moveHelperStart >= 0, "Move-AtomicItem helper is missing");
+	const moveHelperEnd = source.indexOf("\nfunction ", moveHelperStart + 1);
+	const moveHelper = source.slice(moveHelperStart, moveHelperEnd);
+
+	assert.match(
+		moveHelper,
+		/Rename-Item -LiteralPath \$normalizedSource -NewName \$destinationLeaf -ErrorAction Stop/u,
+		"Move-AtomicItem must use atomic same-directory Rename-Item rather than Move-Item",
+	);
+	assert.doesNotMatch(
+		source,
+		/^(?!\s*#)[^\r\n]*\bMove-Item\b/mu,
+		"install.ps1 must not call Move-Item (non-atomic on PowerShell 7 when a directory contains a locked file)",
+	);
+	assert.match(
+		moveHelper,
+		/catch \[System\.IO\.IOException\], \[System\.UnauthorizedAccessException\]/u,
+		"Move-AtomicItem must retry only transient IO/access violations so Ctrl+C and non-IO errors propagate immediately",
+	);
+	assert.doesNotMatch(
+		moveHelper,
+		/\bcatch\s*\{/u,
+		"Move-AtomicItem must not have a bare catch-all that swallows Ctrl+C or non-IO errors",
+	);
+	assert.match(
+		moveHelper,
+		/\$attemptLimit = 1[5-9]/u,
+		"Move-AtomicItem retry limit must cover Windows antivirus scans",
+	);
+	assert.match(moveHelper, /\[Math\]::Min\(100 \* \$attempt, 1000\)/u);
+	assert.match(moveHelper, /Start-Sleep -Milliseconds \$delayMilliseconds/u);
+	assert.match(moveHelper, /Refusing non-local rename/u);
+	assert.match(moveHelper, /Source and destination path must be different/u);
+	assert.match(moveHelper, /Test-AtomicTransientFileSystemError \$_/u);
+	assert.match(moveHelper, /\[hashtable\]\$RetryBudget = \$null/u);
+
+	const transientHelperStart = source.indexOf("function Test-AtomicTransientFileSystemError");
+	assert.ok(transientHelperStart >= 0, "Test-AtomicTransientFileSystemError helper is missing");
+	const transientHelperEnd = source.indexOf("\nfunction ", transientHelperStart + 1);
+	const transientHelper = source.slice(transientHelperStart, transientHelperEnd);
+	for (const subclass of [
+		"FileNotFoundException",
+		"DirectoryNotFoundException",
+		"PathTooLongException",
+		"DriveNotFoundException",
+	]) {
+		assert.match(transientHelper, new RegExp(`\\[System\\.IO\\.${subclass}\\]`, "u"));
+	}
+	assert.match(transientHelper, /@\(39,\s*80,\s*112,\s*183\)/u);
+
+	const rollbackStart = source.indexOf("function Invoke-AtomicTransactionRollback");
+	const rollbackEnd = source.indexOf("function Remove-AtomicTransactionBackups", rollbackStart);
+	const rollback = source.slice(rollbackStart, rollbackEnd);
+	assert.equal(
+		(rollback.match(/\bMove-AtomicItem\b[^\r\n]*-RetryBudget \$Transaction\.RollbackRetryBudget/gu) ?? []).length,
+		4,
+		"all four rollback backup restores must pass the shared RollbackRetryBudget to Move-AtomicItem",
+	);
+	assert.match(
+		source,
+		/RollbackRetryBudget = @\{ RemainingMilliseconds = 9500 \}/u,
+		"transaction must initialize one shared rollback retry sleep budget",
+	);
+
+	const leftoversStart = source.indexOf("function Clear-AtomicInstallLeftovers");
+	const leftoversEnd = source.indexOf("\nfunction ", leftoversStart + 1);
+	const leftovers = source.slice(leftoversStart, leftoversEnd);
+	assert.match(
+		leftovers,
+		/Move-AtomicItem -LiteralPath \$backup\.FullName -Destination \$currentPath/u,
+		"leftover current-backup recovery must use Move-AtomicItem",
+	);
+
+	const linkRemovalStart = source.indexOf("function Remove-AtomicDirectoryLinkOrTree");
+	const linkRemovalEnd = source.indexOf("\nfunction ", linkRemovalStart + 1);
+	const linkRemoval = source.slice(linkRemovalStart, linkRemovalEnd);
+	assert.match(
+		linkRemoval,
+		/Remove-AtomicTreeWithRetry \$item\.FullName \$RetryLimit \$RetryDelayMilliseconds \$RetryBudget/u,
+		"Remove-AtomicDirectoryLinkOrTree must retry real directory tree removals with Remove-AtomicTreeWithRetry and forward RetryBudget",
+	);
+	assert.doesNotMatch(
+		linkRemoval,
+		/Remove-Item -LiteralPath/u,
+		"Remove-AtomicDirectoryLinkOrTree must not use bare single-attempt Remove-Item",
+	);
+	assert.match(
+		rollback,
+		/Remove-AtomicDirectoryLinkOrTree \$versionItem\.FullName \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds \$Transaction\.RollbackRetryBudget/u,
+		"rollback version removal must pass the shared RollbackRetryBudget",
+	);
+	assert.match(
+		rollback,
+		/Remove-AtomicTreeWithRetry \$shimItem\.FullName \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds \$Transaction\.RollbackRetryBudget/u,
+		"rollback shim removal must pass the shared RollbackRetryBudget",
+	);
+	assert.doesNotMatch(rollback, /Remove-Item -LiteralPath/u, "rollback must not use bare single-attempt Remove-Item");
+
+	const finalBlock = source.slice(source.indexOf("finally {"));
+	assert.match(
+		finalBlock,
+		/\$null = Remove-AtomicTreeWithRetry \$versionStagePath \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
+		"finally stage directory cleanup must use bounded Remove-AtomicTreeWithRetry while preserving best-effort semantics",
+	);
+	assert.match(
+		finalBlock,
+		/\$null = Remove-AtomicTreeWithRetry \$shimNextPath \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
+		"finally staged shim cleanup must use bounded Remove-AtomicTreeWithRetry while preserving best-effort semantics",
+	);
+	assert.doesNotMatch(
+		finalBlock,
+		/Remove-Item -LiteralPath \$(?:versionStagePath|shimNextPath)/u,
+		"finally must not use bare single-attempt Remove-Item for staged version or shim paths",
+	);
 });
 
 test("Windows installer cleans staged children before only snapshotted empty transaction-created parents", () => {
@@ -803,6 +928,7 @@ test("Windows installer removes its temporary download directory with bounded ve
 		2,
 		"the removal helper does not verify absence after both removal strategies",
 	);
+	assert.match(helper, /Test-AtomicTransientFileSystemError \$result\.LastError/u);
 	assert.match(helper, /Start-Sleep -Milliseconds \(\$RetryDelayMilliseconds \* \$result\.Attempts\)/u);
 	assert.doesNotMatch(helper, /Remove-Item -LiteralPath (?!\$Path\b)/u, "the helper removes a path it was not given");
 	assert.doesNotMatch(helper, /\[IO\.Directory\]::Delete\((?!\$Path,)/u, "the helper deletes a path it was not given");
@@ -920,10 +1046,17 @@ const powershellEngines = findPowerShellEngines();
 const powershellExecutable = powershellEngines.find(
 	(engine) => process.platform === "win32" && engine.major === 5,
 )?.executable;
+const powershell7Executable = powershellEngines.find(
+	(engine) => process.platform === "win32" && engine.major >= 7,
+)?.executable;
 const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
 const runOrSkipPowerShellFixture = powershellExecutable === undefined ? test.skip : test;
 function powershellTest(name: string, fn: () => void, timeout = POWERSHELL_FIXTURE_TIMEOUT_MS): void {
 	runOrSkipPowerShellFixture(name, fn, timeout);
+}
+const runOrSkipPowerShell7Fixture = powershell7Executable === undefined ? test.skip : test;
+function powershell7Test(name: string, fn: () => void, timeout = POWERSHELL_FIXTURE_TIMEOUT_MS): void {
+	runOrSkipPowerShell7Fixture(name, fn, timeout);
 }
 const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
 const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
@@ -1715,8 +1848,10 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 Set-StrictMode -Version Latest
 
-if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -lt 1) {
-    throw "Dynamic installer fixtures require Windows PowerShell 5.1."
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    $PSVersionTable.PSVersion.Major -lt 5 -or
+    ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -lt 1)) {
+    throw "Dynamic installer fixtures require Windows PowerShell 5.1 or PowerShell 7+ on Windows."
 }
 
 function Assert-Fixture {
@@ -1917,7 +2052,26 @@ public static class Program
     }
 }
 '@
-Add-Type -TypeDefinition $fixtureSource -OutputAssembly $fixtureExecutable -OutputType ConsoleApplication
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    Add-Type -TypeDefinition $fixtureSource -OutputAssembly $fixtureExecutable -OutputType ConsoleApplication
+}
+else {
+    $compilerScript = Join-Path $workspace "compile-fixture-atomic.ps1"
+    [IO.File]::WriteAllText($compilerScript, @'
+param([string]$SourcePath, [string]$OutputPath)
+Add-Type -TypeDefinition ([IO.File]::ReadAllText($SourcePath)) -OutputAssembly $OutputPath -OutputType ConsoleApplication
+'@)
+    $compilerSource = Join-Path $workspace "fixture-atomic.cs"
+    [IO.File]::WriteAllText($compilerSource, $fixtureSource)
+    try {
+        $winPs = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        & $winPs -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $compilerScript -SourcePath $compilerSource -OutputPath $fixtureExecutable
+        Assert-Fixture ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $fixtureExecutable -PathType Leaf)) "failed to compile fixture-atomic.exe for PowerShell 7"
+    }
+    finally {
+        Remove-Item -LiteralPath $compilerScript, $compilerSource -Force -ErrorAction SilentlyContinue
+    }
+}
 
 function Get-FixtureSha256 {
     param([string]$Path)
@@ -2103,6 +2257,24 @@ $global:AtomicFixtureBackupLockMode = $null
 $global:AtomicFixtureBackupLockPath = $null
 $global:AtomicFixtureBackupLockStream = $null
 $global:AtomicFixtureBackupRemovalAttempts = 0
+$global:AtomicFixtureMoveLockTarget = $null
+$global:AtomicFixtureMoveLockMode = $null
+$global:AtomicFixtureMoveLockStream = $null
+$global:AtomicFixtureMoveLockAttempts = 0
+$global:AtomicFixtureMoveLockSplitObserved = $false
+$global:AtomicFixtureRollbackMoveLockArmed = $false
+$global:AtomicFixtureRemoveLockTarget = $null
+$global:AtomicFixtureRemoveLockMode = $null
+$global:AtomicFixtureRemoveLockStream = $null
+$global:AtomicFixtureRemoveLockAttempts = 0
+$global:AtomicFixtureRollbackRemoveLockArmed = $false
+$global:AtomicFixtureStageCleanupLockedDir = $null
+$global:AtomicFixtureNonLockAttempts = 0
+$global:AtomicFixtureNonLockCollisionDir = $null
+$global:AtomicFixtureDualRollbackLockArmed = $false
+$global:AtomicFixtureDualRollbackLockStreams = New-Object System.Collections.ArrayList
+$global:AtomicFixtureDualRollbackRestoreAttempts = 0
+$global:AtomicFixtureDualRollbackBackupPaths = New-Object System.Collections.ArrayList
 $global:AtomicFixtureWarnings = New-Object System.Collections.ArrayList
 
 function global:Write-Warning {
@@ -2145,6 +2317,24 @@ function global:Remove-Item {
             $null -ne $global:AtomicFixtureBackupLockStream) {
             $global:AtomicFixtureBackupLockStream.Dispose()
             $global:AtomicFixtureBackupLockStream = $null
+        }
+    }
+
+    $removeLeaf = [IO.Path]::GetFileName($LiteralPath)
+    $matchesRemoveLock = $false
+    if ($global:AtomicFixtureRemoveLockTarget -eq "rollback-version" -and $removeLeaf -eq "1.0.0") {
+        $matchesRemoveLock = $true
+    }
+    elseif ($global:AtomicFixtureRemoveLockTarget -eq "stage-cleanup" -and $removeLeaf -match '^\.stage-[0-9a-f]{32}$') {
+        $matchesRemoveLock = $true
+    }
+    if ($matchesRemoveLock) {
+        $global:AtomicFixtureRemoveLockAttempts++
+        if ($global:AtomicFixtureRemoveLockMode -eq "one-shot" -and
+            $global:AtomicFixtureRemoveLockAttempts -ge 2 -and
+            $null -ne $global:AtomicFixtureRemoveLockStream) {
+            $global:AtomicFixtureRemoveLockStream.Dispose()
+            $global:AtomicFixtureRemoveLockStream = $null
         }
     }
 
@@ -2262,15 +2452,16 @@ function global:Set-Content {
     Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value $Value -Encoding $Encoding -NoNewline:$NoNewline
 }
 
-function global:Move-Item {
+function global:Rename-Item {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)][string]$LiteralPath,
-        [Parameter(Mandatory=$true)][string]$Destination
+        [Parameter(Mandatory=$true)][string]$NewName
     )
 
     $leafName = [IO.Path]::GetFileName($LiteralPath)
-    $destinationLeaf = [IO.Path]::GetFileName($Destination)
+    $destinationLeaf = $NewName
+    $destination = Join-Path ([IO.Path]::GetDirectoryName($LiteralPath)) $NewName
     if ($global:AtomicFixtureFailurePoint -eq "busy-stage-move" -and
         $leafName -match '^\.stage-[0-9a-f]{32}$' -and
         $global:AtomicFixtureBusyStageMoveRefusals -lt 2) {
@@ -2285,6 +2476,27 @@ function global:Move-Item {
         $leafName -match '^\.atomic-current-[0-9a-f]{32}$') {
         throw "Injected transaction failure: atomic-current-move"
     }
+    if ($global:AtomicFixtureFailurePoint -eq "stage-cleanup-probe" -and
+        $leafName -eq "1.0.0" -and
+        $destinationLeaf -match '^\.backup-[0-9a-f]{32}$') {
+        $versionsParent = [IO.Path]::GetDirectoryName($LiteralPath)
+        $stageEntry = @(Get-ChildItem -LiteralPath $versionsParent -Filter ".stage-*" -Force)[0]
+        if ($null -ne $stageEntry) {
+            $stageExe = Join-Path $stageEntry.FullName "atomic.exe"
+            $global:AtomicFixtureStageCleanupLockedDir = $stageEntry.FullName
+            $global:AtomicFixtureRemoveLockStream = [IO.File]::Open($stageExe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        }
+        throw "Injected transaction failure: stage-cleanup-probe"
+    }
+    if ($global:AtomicFixtureFailurePoint -eq "nonlock-exists-probe" -and
+        $leafName -eq "1.0.0" -and
+        $destinationLeaf -match '^\.backup-[0-9a-f]{32}$') {
+        $global:AtomicFixtureNonLockAttempts++
+        if (-not (Test-Path -LiteralPath $destination)) {
+            $global:AtomicFixtureNonLockCollisionDir = $destination
+            Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path $destination | Out-Null
+        }
+    }
 
     $restoreName = $null
     if ($leafName -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") { $restoreName = "shim-restore" }
@@ -2298,11 +2510,86 @@ function global:Move-Item {
         throw "Injected one-shot rollback restore failure: $restoreName"
     }
 
-    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+    $matchesMoveLock = $false
+    if ($global:AtomicFixtureMoveLockTarget -eq "version-backup" -and
+        $leafName -eq "1.0.0" -and $destinationLeaf -match '^\.backup-[0-9a-f]{32}$') {
+        $matchesMoveLock = $true
+    }
+    elseif ($global:AtomicFixtureMoveLockTarget -eq "shim-backup" -and
+        $leafName -eq "atomic.cmd" -and $destinationLeaf -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$') {
+        $matchesMoveLock = $true
+    }
+    elseif ($global:AtomicFixtureMoveLockTarget -eq "version-restore" -and
+        $leafName -match '^\.backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "1.0.0") {
+        $matchesMoveLock = $true
+    }
+    if ($global:AtomicFixtureMoveLockTarget -eq "dual-rollback-restore" -and
+        (($leafName -match '^\.backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "1.0.0") -or
+         ($leafName -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd"))) {
+        $global:AtomicFixtureDualRollbackRestoreAttempts++
+    }
+    if ($matchesMoveLock) {
+        $global:AtomicFixtureMoveLockAttempts++
+        if ($global:AtomicFixtureMoveLockMode -eq "one-shot" -and
+            $global:AtomicFixtureMoveLockAttempts -ge 2 -and
+            $null -ne $global:AtomicFixtureMoveLockStream) {
+            $global:AtomicFixtureMoveLockStream.Dispose()
+            $global:AtomicFixtureMoveLockStream = $null
+        }
+    }
+
+    try {
+        Microsoft.PowerShell.Management\Rename-Item -LiteralPath $LiteralPath -NewName $NewName -ErrorAction Stop
+    }
+    catch {
+        if ($matchesMoveLock -and (Test-Path -LiteralPath $destination)) {
+            $global:AtomicFixtureMoveLockSplitObserved = $true
+        }
+        throw
+    }
+
+    if ($global:AtomicFixtureDualRollbackLockArmed) {
+        if ($destinationLeaf -match '^\.backup-[0-9a-f]{32}$') {
+            $verBackupExe = Join-Path $destination "atomic.exe"
+            if ([IO.File]::Exists($verBackupExe)) {
+                [void]$global:AtomicFixtureDualRollbackBackupPaths.Add($destination)
+                [void]$global:AtomicFixtureDualRollbackLockStreams.Add(
+                    [IO.File]::Open($verBackupExe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+                )
+            }
+        }
+        elseif ($destinationLeaf -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$') {
+            if ([IO.File]::Exists($destination)) {
+                [void]$global:AtomicFixtureDualRollbackBackupPaths.Add($destination)
+                [void]$global:AtomicFixtureDualRollbackLockStreams.Add(
+                    [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                )
+            }
+        }
+    }
+    if ($global:AtomicFixtureRollbackMoveLockArmed -and
+        $destinationLeaf -match '^\.backup-[0-9a-f]{32}$' -and
+        $null -eq $global:AtomicFixtureMoveLockStream) {
+        $rollbackLockPath = Join-Path $destination "atomic.exe"
+        if ([IO.File]::Exists($rollbackLockPath)) {
+            $global:AtomicFixtureMoveLockStream = [IO.File]::Open($rollbackLockPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            $global:AtomicFixtureRollbackMoveLockArmed = $false
+        }
+    }
+    if ($global:AtomicFixtureRollbackRemoveLockArmed -and
+        $leafName -match '^\.stage-[0-9a-f]{32}$' -and
+        $destinationLeaf -eq "1.0.0" -and
+        $null -eq $global:AtomicFixtureRemoveLockStream) {
+        $rollbackRemoveLockPath = Join-Path $destination "atomic.exe"
+        if ([IO.File]::Exists($rollbackRemoveLockPath)) {
+            $global:AtomicFixtureRemoveLockStream = [IO.File]::Open($rollbackRemoveLockPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            $global:AtomicFixtureRollbackRemoveLockArmed = $false
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureBackupLockMode) -and
         $destinationLeaf -match '^\.backup-[0-9a-f]{32}$' -and
         $null -eq $global:AtomicFixtureBackupLockStream) {
-        $backupLockPath = Join-Path $Destination "atomic.exe"
+        $backupLockPath = Join-Path $destination "atomic.exe"
         if ([IO.File]::Exists($backupLockPath)) {
             $global:AtomicFixtureBackupLockPath = $backupLockPath
             $global:AtomicFixtureBackupLockStream = [IO.File]::Open($backupLockPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
@@ -2692,6 +2979,296 @@ try {
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "current\version.txt") -Raw) -eq "2.0.0") "a staged version move refused twice did not install the version"
         $probe = Invoke-FixtureShim (Join-Path $binDir "atomic.cmd") "--version"
         Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq "2.0.0") "shim failed after a staged version move was refused twice"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
+    elseif ($Scenario -eq "locked-version-backup") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $versionOne = Join-Path $installRoot "versions\1.0.0"
+        $exeOne = Join-Path $versionOne "atomic.exe"
+        $shim = Join-Path $binDir "atomic.cmd"
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (Test-Path -LiteralPath $exeOne -PathType Leaf) "seed 1.0.0 install did not complete"
+
+        # 1. Brief real OS read handle (FileShare.ReadWrite, like antivirus/indexer) on versions\1.0.0\atomic.exe
+        #    during version backup rename: attempt 1 fails atomically (no split), attempt 2 releases handle and succeeds.
+        $global:AtomicFixtureMoveLockTarget = "version-backup"
+        $global:AtomicFixtureMoveLockMode = "one-shot"
+        $global:AtomicFixtureMoveLockAttempts = 0
+        $global:AtomicFixtureMoveLockSplitObserved = $false
+        $global:AtomicFixtureMoveLockStream = [IO.File]::Open($exeOne, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        finally {
+            $global:AtomicFixtureMoveLockTarget = $null
+            $global:AtomicFixtureMoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureMoveLockStream) {
+                $global:AtomicFixtureMoveLockStream.Dispose()
+                $global:AtomicFixtureMoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($global:AtomicFixtureMoveLockAttempts -ge 2) "a real briefly locked versions\1.0.0 did not force a rename retry ($($global:AtomicFixtureMoveLockAttempts) attempts)"
+        Assert-Fixture (-not $global:AtomicFixtureMoveLockSplitObserved) "a failed version backup rename created a partial destination directory"
+        $probe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq "1.0.0") "shim failed after recovering from a locked version backup"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 2. Brief real OS read handle (FileShare.Read, without Delete) on atomic.cmd during shim backup rename.
+        $global:AtomicFixtureMoveLockTarget = "shim-backup"
+        $global:AtomicFixtureMoveLockMode = "one-shot"
+        $global:AtomicFixtureMoveLockAttempts = 0
+        $global:AtomicFixtureMoveLockSplitObserved = $false
+        $global:AtomicFixtureMoveLockStream = [IO.File]::Open($shim, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        finally {
+            $global:AtomicFixtureMoveLockTarget = $null
+            $global:AtomicFixtureMoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureMoveLockStream) {
+                $global:AtomicFixtureMoveLockStream.Dispose()
+                $global:AtomicFixtureMoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($global:AtomicFixtureMoveLockAttempts -ge 2) "a real briefly locked atomic.cmd did not force a rename retry ($($global:AtomicFixtureMoveLockAttempts) attempts)"
+        $probe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq "1.0.0") "shim failed after recovering from a locked shim backup"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 3. Brief real OS handle on .backup-*\atomic.exe during rollback restore after a failing final smoke.
+        Set-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Value "rollback-preserved" -NoNewline
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureMoveLockTarget = "version-restore"
+        $global:AtomicFixtureMoveLockMode = "one-shot"
+        $global:AtomicFixtureMoveLockAttempts = 0
+        $global:AtomicFixtureMoveLockSplitObserved = $false
+        $global:AtomicFixtureRollbackMoveLockArmed = $true
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $rollbackSmokeFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $rollbackSmokeFailure = $_
+        }
+        finally {
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+            $global:AtomicFixtureRollbackMoveLockArmed = $false
+            $global:AtomicFixtureMoveLockTarget = $null
+            $global:AtomicFixtureMoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureMoveLockStream) {
+                $global:AtomicFixtureMoveLockStream.Dispose()
+                $global:AtomicFixtureMoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($null -ne $rollbackSmokeFailure) "a failing final smoke reported success"
+        Assert-Fixture ($global:AtomicFixtureMoveLockAttempts -ge 2) "a real briefly locked version backup during rollback did not force a restore retry ($($global:AtomicFixtureMoveLockAttempts) attempts)"
+        Assert-Fixture (-not $global:AtomicFixtureMoveLockSplitObserved) "a failed rollback restore rename created a partial destination directory"
+        $rollbackWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'Failed to restore|rollback remains incomplete' })
+        Assert-Fixture ($rollbackWarnings.Count -eq 0) "a recovered rollback restore still warned: $($rollbackWarnings -join '; ')"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "rollback did not restore the previous version directory"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 4. Permanent real OS handle on versions\1.0.0\atomic.exe: exhausts bounded retries, fails cleanly,
+        #    and leaves versions\1.0.0 completely intact (no split, no incomplete rollback, runnable shim).
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureMoveLockTarget = "version-backup"
+        $global:AtomicFixtureMoveLockMode = "sticky"
+        $global:AtomicFixtureMoveLockAttempts = 0
+        $global:AtomicFixtureMoveLockSplitObserved = $false
+        $global:AtomicFixtureMoveLockStream = [IO.File]::Open($exeOne, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $permanentFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $permanentFailure = $_
+        }
+        finally {
+            $global:AtomicFixtureMoveLockTarget = $null
+            $global:AtomicFixtureMoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureMoveLockStream) {
+                $global:AtomicFixtureMoveLockStream.Dispose()
+                $global:AtomicFixtureMoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($null -ne $permanentFailure) "a permanently locked versions\1.0.0 unexpectedly succeeded"
+        Assert-Fixture ($global:AtomicFixtureMoveLockAttempts -eq 15) "a permanently locked version backup did not exhaust the bounded retry budget ($($global:AtomicFixtureMoveLockAttempts) attempts)"
+        Assert-Fixture (-not $global:AtomicFixtureMoveLockSplitObserved) "a permanently locked version backup split files into a partial backup directory"
+        $permanentRollbackWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'rollback remains incomplete' })
+        Assert-Fixture ($permanentRollbackWarnings.Count -eq 0) "a permanently locked version backup left rollback incomplete: $($permanentRollbackWarnings -join '; ')"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "a permanently locked version backup damaged the existing version payload"
+        foreach ($requiredFile in @("atomic.exe", "package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js", ".atomic-launcher.sha256")) {
+            Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne $requiredFile) -PathType Leaf) "a permanently locked version backup removed $requiredFile from versions\1.0.0"
+        }
+        $probe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq "1.0.0") "shim failed after a permanently locked reinstall rolled back"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 5. Brief real OS handle (FileShare.ReadWrite) on newly-installed versions\1.0.0\atomic.exe during
+        #    rollback version removal (Invoke-AtomicTransactionRollback -> Remove-AtomicDirectoryLinkOrTree):
+        #    attempt 1 fails with real OS lock, attempt 2 releases handle and completes rollback cleanly.
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureRemoveLockTarget = "rollback-version"
+        $global:AtomicFixtureRemoveLockMode = "one-shot"
+        $global:AtomicFixtureRemoveLockAttempts = 0
+        $global:AtomicFixtureRollbackRemoveLockArmed = $true
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $rollbackRemoveFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $rollbackRemoveFailure = $_
+        }
+        finally {
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+            $global:AtomicFixtureRollbackRemoveLockArmed = $false
+            $global:AtomicFixtureRemoveLockTarget = $null
+            $global:AtomicFixtureRemoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureRemoveLockStream) {
+                $global:AtomicFixtureRemoveLockStream.Dispose()
+                $global:AtomicFixtureRemoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($null -ne $rollbackRemoveFailure) "a failing final smoke with locked rollback removal reported success"
+        Assert-Fixture ($global:AtomicFixtureRemoveLockAttempts -ge 2) "a real briefly locked rollback version directory did not force a removal retry ($($global:AtomicFixtureRemoveLockAttempts) attempts)"
+        $rollbackRemoveWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'Failed to remove the unsuccessful version directory|Failed to restore|rollback remains incomplete' })
+        Assert-Fixture ($rollbackRemoveWarnings.Count -eq 0) "a recovered rollback version removal still warned: $($rollbackRemoveWarnings -join '; ')"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "rollback did not restore the previous version directory after retrying version removal"
+        $probe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq "1.0.0") "shim failed after retrying rollback version removal"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 6a. Brief real OS handle (FileShare.ReadWrite) on versions\.stage-*\atomic.exe during finally stage cleanup:
+        #     attempt 1 fails with real OS lock, attempt 2 releases handle and leaves no stage residue.
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureFailurePoint = "stage-cleanup-probe"
+        $global:AtomicFixtureRemoveLockTarget = "stage-cleanup"
+        $global:AtomicFixtureRemoveLockMode = "one-shot"
+        $global:AtomicFixtureRemoveLockAttempts = 0
+        $global:AtomicFixtureStageCleanupLockedDir = $null
+        $stageOneShotFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $stageOneShotFailure = $_
+        }
+        finally {
+            $global:AtomicFixtureFailurePoint = $null
+            $global:AtomicFixtureRemoveLockTarget = $null
+            $global:AtomicFixtureRemoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureRemoveLockStream) {
+                $global:AtomicFixtureRemoveLockStream.Dispose()
+                $global:AtomicFixtureRemoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($null -ne $stageOneShotFailure -and $stageOneShotFailure.Exception.Message -match 'Injected transaction failure: stage-cleanup-probe') "the stage-cleanup-probe failure was lost: $stageOneShotFailure"
+        Assert-Fixture ($global:AtomicFixtureRemoveLockAttempts -ge 2) "a real briefly locked stage directory in finally did not force a removal retry ($($global:AtomicFixtureRemoveLockAttempts) attempts)"
+        Assert-Fixture (-not (Test-Path -LiteralPath $global:AtomicFixtureStageCleanupLockedDir)) "finally left the briefly locked stage directory behind: $($global:AtomicFixtureStageCleanupLockedDir)"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "a stage-cleanup failure altered the existing version"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 6b. Sticky real OS handle on versions\.stage-*\atomic.exe during finally stage cleanup:
+        #     exhausts bounded retries, preserves best-effort SilentlyContinue semantics (never masks primary error
+        #     or blocks temp cleanup), and leaves the existing install intact.
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureFailurePoint = "stage-cleanup-probe"
+        $global:AtomicFixtureRemoveLockTarget = "stage-cleanup"
+        $global:AtomicFixtureRemoveLockMode = "sticky"
+        $global:AtomicFixtureRemoveLockAttempts = 0
+        $global:AtomicFixtureStageCleanupLockedDir = $null
+        $stageStickyFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $stageStickyFailure = $_
+        }
+        finally {
+            $global:AtomicFixtureFailurePoint = $null
+            $global:AtomicFixtureRemoveLockTarget = $null
+            $global:AtomicFixtureRemoveLockMode = $null
+            if ($null -ne $global:AtomicFixtureRemoveLockStream) {
+                $global:AtomicFixtureRemoveLockStream.Dispose()
+                $global:AtomicFixtureRemoveLockStream = $null
+            }
+        }
+        Assert-Fixture ($null -ne $stageStickyFailure -and $stageStickyFailure.Exception.Message -match 'Injected transaction failure: stage-cleanup-probe') "an exhausted best-effort stage cleanup replaced the primary error: $stageStickyFailure"
+        Assert-Fixture ($global:AtomicFixtureRemoveLockAttempts -eq 9) "a permanently locked stage directory did not exhaust the bounded removal retry budget ($($global:AtomicFixtureRemoveLockAttempts) attempts)"
+        $stickyStageTempResidue = Get-TempResidueReport $fixtureTemp
+        Assert-Fixture ($stickyStageTempResidue.Count -eq 0) "an exhausted stage cleanup blocked temp directory cleanup: $($stickyStageTempResidue.Paths)"
+        if ($null -ne $global:AtomicFixtureStageCleanupLockedDir -and (Test-Path -LiteralPath $global:AtomicFixtureStageCleanupLockedDir)) {
+            Remove-Item -LiteralPath $global:AtomicFixtureStageCleanupLockedDir -Recurse -Force
+        }
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "an exhausted stage cleanup altered the existing version"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 7. Non-lock IOException (ERROR_ALREADY_EXISTS 0x800700B7) fails fast on attempt 1 with 0 retries.
+        $global:AtomicFixtureFailurePoint = "nonlock-exists-probe"
+        $global:AtomicFixtureNonLockAttempts = 0
+        $global:AtomicFixtureNonLockCollisionDir = $null
+        $nonLockFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $nonLockFailure = $_
+        }
+        finally {
+            $global:AtomicFixtureFailurePoint = $null
+        }
+        Assert-Fixture ($null -ne $nonLockFailure) "an existing backup destination unexpectedly succeeded"
+        Assert-Fixture ($global:AtomicFixtureNonLockAttempts -eq 1) "a non-lock ERROR_ALREADY_EXISTS IOException was retried ($($global:AtomicFixtureNonLockAttempts) attempts)"
+        if ($null -ne $global:AtomicFixtureNonLockCollisionDir -and (Test-Path -LiteralPath $global:AtomicFixtureNonLockCollisionDir)) {
+            Remove-Item -LiteralPath $global:AtomicFixtureNonLockCollisionDir -Recurse -Force
+        }
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "a non-lock collision altered the existing version"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 8. Two permanently locked rollback restores share one bounded rollback retry sleep budget across
+        #    catch + all finally rollback passes (never compounding 4x per item).
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureMoveLockTarget = "dual-rollback-restore"
+        $global:AtomicFixtureDualRollbackLockArmed = $true
+        $global:AtomicFixtureDualRollbackLockStreams.Clear()
+        $global:AtomicFixtureDualRollbackBackupPaths.Clear()
+        $global:AtomicFixtureDualRollbackRestoreAttempts = 0
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $dualRollbackFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $dualRollbackFailure = $_
+        }
+        finally {
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+            $global:AtomicFixtureMoveLockTarget = $null
+            $global:AtomicFixtureDualRollbackLockArmed = $false
+            foreach ($lockedStream in @($global:AtomicFixtureDualRollbackLockStreams)) {
+                if ($null -ne $lockedStream) { $lockedStream.Dispose() }
+            }
+            $global:AtomicFixtureDualRollbackLockStreams.Clear()
+        }
+        Assert-Fixture ($null -ne $dualRollbackFailure) "a failing final smoke with locked rollback backups reported success"
+        # With one shared 9.5 s budget across catch + 3 finally passes: first locked restore exhausts the budget (~15 attempts),
+        # and every remaining item/pass still makes 1 attempt without sleeping (~22 total vs ~130 without a shared budget).
+        Assert-Fixture ($global:AtomicFixtureDualRollbackRestoreAttempts -ge 15 -and $global:AtomicFixtureDualRollbackRestoreAttempts -le 25) "two permanently locked rollback restores did not share one bounded retry budget ($($global:AtomicFixtureDualRollbackRestoreAttempts) attempts)"
+        $dualIncompleteWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'rollback remains incomplete' })
+        Assert-Fixture ($dualIncompleteWarnings.Count -eq 1) "a permanently locked rollback did not report incomplete rollback once ($($dualIncompleteWarnings.Count))"
+        # Clean up retained backups from the deliberately incomplete rollback and restore a clean install.
+        foreach ($retainedBackup in @($global:AtomicFixtureDualRollbackBackupPaths)) {
+            if (-not [string]::IsNullOrWhiteSpace($retainedBackup) -and (Test-Path -LiteralPath $retainedBackup)) {
+                Remove-Item -LiteralPath $retainedBackup -Recurse -Force
+            }
+        }
+        $global:AtomicFixtureDualRollbackBackupPaths.Clear()
+        Reset-FixtureInstallState @($installRoot, $binDir)
+        & $InstallerPath -Ref "1.0.0" | Out-Null
         Assert-NoTransactionResidue $installRoot $binDir
     }
     elseif ($Scenario -eq "unicode") {
@@ -3569,6 +4146,18 @@ try {
     Write-Output "SCENARIO_OK:$Scenario"
 }
 finally {
+    if ($null -ne $global:AtomicFixtureMoveLockStream) {
+        $global:AtomicFixtureMoveLockStream.Dispose()
+        $global:AtomicFixtureMoveLockStream = $null
+    }
+    if ($null -ne $global:AtomicFixtureRemoveLockStream) {
+        $global:AtomicFixtureRemoveLockStream.Dispose()
+        $global:AtomicFixtureRemoveLockStream = $null
+    }
+    foreach ($lockedStream in @($global:AtomicFixtureDualRollbackLockStreams)) {
+        if ($null -ne $lockedStream) { $lockedStream.Dispose() }
+    }
+    $global:AtomicFixtureDualRollbackLockStreams.Clear()
     [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
     foreach ($name in $environmentNames) {
         [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
@@ -3680,15 +4269,15 @@ function global:Get-ChildItem {
 }
 
 $global:AtomicCtrlCPauseDelivered = $false
-function global:Move-Item {
+function global:Rename-Item {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)][string]$LiteralPath,
-        [Parameter(Mandatory=$true)][string]$Destination
+        [Parameter(Mandatory=$true)][string]$NewName
     )
 
     $sourceLeaf = [IO.Path]::GetFileName($LiteralPath)
-    $destinationLeaf = [IO.Path]::GetFileName($Destination)
+    $destinationLeaf = $NewName
     $moveName = $null
     if ($sourceLeaf -eq "2.0.0" -and $destinationLeaf -match '^\.backup-[0-9a-f]{32}$') { $moveName = "version-backup" }
     elseif ($sourceLeaf -match '^\.stage-[0-9a-f]{32}$' -and $destinationLeaf -eq "2.0.0") { $moveName = "version-install" }
@@ -3712,7 +4301,7 @@ function global:Move-Item {
         throw "Injected one-shot rollback restore failure: $RollbackFailure"
     }
 
-    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+    Microsoft.PowerShell.Management\Rename-Item -LiteralPath $LiteralPath -NewName $NewName -ErrorAction Stop
     if ($null -ne $moveName) {
         [IO.File]::AppendAllText($MoveLogPath, "MOVED:$moveName" + [Environment]::NewLine)
         if (-not $global:AtomicCtrlCPauseDelivered -and $moveName -eq $PauseMove) {
@@ -4084,7 +4673,7 @@ test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event a
 	assert.match(ctrlCHelperSource, /AttachConsole\(process\.dwProcessId\)/u);
 	assert.match(ctrlCHelperSource, /SetConsoleCtrlHandler\(null, true\)/u);
 	assert.match(ctrlCHelperSource, /GenerateConsoleCtrlEvent\(CTRL_C_EVENT, 0\)/u);
-	assert.match(ctrlCChildHarness, /Microsoft\.PowerShell\.Management\\Move-Item[\s\S]+WriteAllText\(\$ReadyPath/u);
+	assert.match(ctrlCChildHarness, /Microsoft\.PowerShell\.Management\\Rename-Item[\s\S]+WriteAllText\(\$ReadyPath/u);
 	assert.match(ctrlCChildHarness, /while \(\$true\) \{ Start-Sleep -Milliseconds 200 \}/u);
 	assert.match(ctrlCChildHarness, /finally[\s\S]+CHILD_FINALLY/u);
 	assert.doesNotMatch(ctrlCChildHarness, /Injected transaction failure|throw "Ctrl\+C"/u);
@@ -4244,6 +4833,7 @@ function runPowerShellFixture(
 		| "checksum"
 		| "final-smoke"
 		| "busy-stage-move"
+		| "locked-version-backup"
 		| "unicode"
 		| "dangling-junction"
 		| "rollback-retries"
@@ -4258,8 +4848,9 @@ function runPowerShellFixture(
 		| "skip-installed"
 		| "backup-cleanup"
 		| "temp-cleanup",
+	executable: string | undefined = powershellExecutable,
 ): string {
-	assert.ok(powershellExecutable);
+	assert.ok(executable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
 	const harnessPath = join(workspace, "fixture.ps1");
 	if (scenario === "ctrl-c") {
@@ -4282,7 +4873,7 @@ function runPowerShellFixture(
 								: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
-				powershellExecutable,
+				executable,
 				"-NoLogo",
 				"-NoProfile",
 				"-NonInteractive",
@@ -4340,6 +4931,20 @@ powershellTest("PowerShell 5.1 fixture rolls back a failing final shim smoke and
 powershellTest("PowerShell 5.1 fixture installs when Windows refuses the staged version move twice", () => {
 	runPowerShellFixture("busy-stage-move");
 });
+
+powershellTest(
+	"PowerShell 5.1 fixture retries briefly locked version, shim, and rollback renames and rolls back permanent locks cleanly",
+	() => {
+		runPowerShellFixture("locked-version-backup");
+	},
+);
+
+powershell7Test(
+	"PowerShell 7 fixture retries briefly locked version, shim, and rollback renames atomically without splitting directories",
+	() => {
+		runPowerShellFixture("locked-version-backup", powershell7Executable);
+	},
+);
 
 powershellTest("PowerShell 5.1 fixture preserves Unicode install paths and rolls back final smoke failure", () => {
 	runPowerShellFixture("unicode");
