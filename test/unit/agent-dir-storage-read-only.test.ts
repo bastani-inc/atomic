@@ -1084,3 +1084,185 @@ test("existing parent claims are never rewritten on upgrade or read-only parents
 	const decisionReads = fsFaults.recordedReads.filter((p) => p === resolve(join(targetAgent, ".atomic-storage-home")));
 	assert.deepEqual(decisionReads, []);
 });
+
+test("stale cached decision IDs never reject a live refreshed owner, and symlinked or sibling lookups never reread another owner's decision file (#5242)", () => {
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+	const refreshedId = "22222222-2222-4222-8222-222222222222";
+
+	// 1. Stale cached decisionId on a local-home target owner (with own workflows/journal.sqlite) after live disk refresh.
+	const staleHome = join(root, "stale-cache-home");
+	useHome(staleHome);
+	const staleParent = join(root, "stale-cache-parent");
+	const staleAgent = join(staleParent, "a1");
+	mkdirSync(join(staleAgent, "workflows"), { recursive: true });
+	writeFileSync(join(staleAgent, "workflows", "journal.sqlite"), "local-workflows");
+	writeFileSync(join(staleParent, "history.sqlite"), "shared-sessions");
+	assert.equal(storagePathBaseDir("history.sqlite", staleAgent, settings), staleParent);
+
+	const staleDecisionFile = join(staleAgent, ".atomic-storage-home");
+	const staleDecision = JSON.parse(readFileSync(staleDecisionFile, "utf8")) as Record<string, unknown>;
+	writeFileSync(staleDecisionFile, `${JSON.stringify({ ...staleDecision, id: refreshedId })}\n`);
+	for (const entry of readdirSync(staleParent)) {
+		if (!entry.startsWith(".atomic-storage-target-")) continue;
+		const claimPath = join(staleParent, entry);
+		const owner = JSON.parse(readFileSync(claimPath, "utf8")) as Record<string, unknown>;
+		writeFileSync(claimPath, `${JSON.stringify({ ...owner, decisionId: refreshedId })}\n`);
+	}
+	// Warm lookup without resetting cache must read live disk and keep staleParent without writing a .local marker.
+	assert.equal(storagePathBaseDir("history.sqlite", staleAgent, settings), staleParent);
+	assert.deepEqual(
+		readdirSync(staleAgent).filter((name) => name.startsWith(".atomic-storage-home.local-")),
+		[],
+	);
+
+	// 2. Symlinked HOME warm default-target lookup and sibling lookups never reread the owner's .atomic-storage-home.
+	const realHome = join(root, "sym-real-home");
+	const linkHome = join(root, "sym-link-home");
+	const realDefAgent = join(realHome, ".atomic", "agent");
+	mkdirSync(realDefAgent, { recursive: true });
+	writeFileSync(join(realHome, ".atomic", "history.sqlite"), "shared");
+	symlinkSync(realHome, linkHome, "junction");
+	useHome(linkHome);
+	const linkDefAgent = join(linkHome, ".atomic", "agent");
+	assert.equal(storagePathBaseDir("history.sqlite", linkDefAgent, settings), join(linkHome, ".atomic"));
+	fsFaults.recordedReads.length = 0;
+	for (let index = 0; index < 3; index++) {
+		assert.equal(storagePathBaseDir("history.sqlite", linkDefAgent, settings), join(linkHome, ".atomic"));
+	}
+	assert.deepEqual(
+		fsFaults.recordedReads.filter((p) => p.endsWith(".atomic-storage-home")),
+		[],
+	);
+
+	// Sibling checks against another owner's parent/target never read that owner's .atomic-storage-home.
+	useHome(staleHome);
+	const sibParent = join(root, "sib-no-read-parent");
+	const sibOwner = join(sibParent, "a1");
+	const sibOther = join(sibParent, "a2");
+	mkdirSync(sibOwner, { recursive: true });
+	mkdirSync(sibOther, { recursive: true });
+	mkdirSync(join(sibParent, "workflows"), { recursive: true });
+	writeFileSync(join(sibParent, "workflows", "journal.sqlite"), "sessions");
+	writeFileSync(join(sibParent, "history.sqlite"), "shared");
+	assert.equal(storageHomeDir(sibOwner, {}), sibParent);
+	assert.equal(storagePathBaseDir("history.sqlite", sibOwner, settings), sibParent);
+
+	const ownerDecisionPath = resolve(join(sibOwner, ".atomic-storage-home"));
+	fsFaults.unreadableFiles.set(ownerDecisionPath, "EACCES");
+	fsFaults.recordedReads.length = 0;
+	resetStorageHomeCacheForTests();
+	assert.equal(coLocatesWorkflowStore(sibOther, {}), true);
+	assert.deepEqual(
+		fsFaults.recordedReads.filter((p) => p === ownerDecisionPath),
+		[],
+	);
+	fsFaults.unreadableFiles.clear();
+	assert.equal(storagePathBaseDir("history.sqlite", sibOther, settings), sibOther);
+	fsFaults.unreadableFiles.set(ownerDecisionPath, "EACCES");
+	fsFaults.recordedReads.length = 0;
+	assert.equal(storagePathBaseDir("history.sqlite", sibOther, settings), sibOther);
+	assert.deepEqual(
+		fsFaults.recordedReads.filter((p) => p === ownerDecisionPath),
+		[],
+	);
+});
+
+test("in-place decision file replacement, zero-inode shares, and homeIdentity-false races keep ownership even beside a backup clone (#5242)", () => {
+	const home = join(root, "inplace-replace-home");
+	useHome(home);
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+	const replacedId = "99999999-9999-4999-8999-999999999999";
+
+	for (const zeroIno of [false, true]) {
+		fsFaults.globalZeroIno = zeroIno;
+		const suffix = zeroIno ? "zeroino" : "ino";
+
+		// 1. Adopting owner + backup clone (carrying original decisionId) + in-place decision overwrite on owner.
+		const adParent = join(root, `inplace-ad-${suffix}`);
+		const adOwner = join(adParent, "a1");
+		const adClone = join(adParent, "a1-backup");
+		mkdirSync(adOwner, { recursive: true });
+		mkdirSync(join(adParent, "workflows"), { recursive: true });
+		writeFileSync(join(adParent, "workflows", "journal.sqlite"), "sessions");
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(adOwner, {}), adParent);
+		cpSync(adOwner, adClone, { recursive: true });
+		const adDecisionFile = join(adOwner, ".atomic-storage-home");
+		const adDecision = JSON.parse(readFileSync(adDecisionFile, "utf8")) as Record<string, unknown>;
+		if (zeroIno) rmSync(adDecisionFile);
+		writeFileSync(adDecisionFile, `${JSON.stringify({ ...adDecision, id: replacedId })}\n`);
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(adOwner, {}), adParent);
+		assert.equal(storageHomeDir(adClone, {}), adClone);
+
+		// 2. Local-home target owner (with own workflows/journal.sqlite) + backup clone + in-place overwrite on owner.
+		const tgtParent = join(root, `inplace-tgt-${suffix}`);
+		const tgtOwner = join(tgtParent, "a1");
+		const tgtClone = join(tgtParent, "a1-backup");
+		mkdirSync(tgtOwner, { recursive: true });
+		writeFileSync(join(tgtParent, "history.sqlite"), "shared");
+		resetStorageHomeCacheForTests();
+		assert.equal(storagePathBaseDir("history.sqlite", tgtOwner, settings), tgtParent);
+		cpSync(tgtOwner, tgtClone, { recursive: true });
+		mkdirSync(join(tgtOwner, "workflows"), { recursive: true });
+		writeFileSync(join(tgtOwner, "workflows", "journal.sqlite"), "local-workflows");
+		const tgtDecisionFile = join(tgtOwner, ".atomic-storage-home");
+		const tgtDecision = JSON.parse(readFileSync(tgtDecisionFile, "utf8")) as Record<string, unknown>;
+		if (zeroIno) rmSync(tgtDecisionFile);
+		writeFileSync(tgtDecisionFile, `${JSON.stringify({ ...tgtDecision, id: replacedId })}\n`);
+		resetStorageHomeCacheForTests();
+		assert.equal(storagePathBaseDir("history.sqlite", tgtOwner, settings), tgtParent);
+		assert.equal(storagePathBaseDir("history.sqlite", tgtClone, settings), tgtClone);
+		assert.deepEqual(
+			readdirSync(tgtOwner).filter((name) => name.startsWith(".atomic-storage-home.local-")),
+			[],
+		);
+
+		// 3. Owner claim missing directoryIdentity (no clone) keeps ownership on in-place decision overwrite.
+		const noDirParent = join(root, `inplace-nodir-${suffix}`);
+		const noDirOwner = join(noDirParent, "a1");
+		mkdirSync(noDirOwner, { recursive: true });
+		mkdirSync(join(noDirParent, "workflows"), { recursive: true });
+		writeFileSync(join(noDirParent, "workflows", "journal.sqlite"), "sessions");
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(noDirOwner, {}), noDirParent);
+		const noDirClaim = join(noDirParent, ".atomic-storage-parent-owner");
+		const noDirClaimObj = JSON.parse(readFileSync(noDirClaim, "utf8")) as Record<string, unknown>;
+		delete noDirClaimObj.directoryIdentity;
+		writeFileSync(noDirClaim, `${JSON.stringify(noDirClaimObj)}\n`);
+		const noDirDecFile = join(noDirOwner, ".atomic-storage-home");
+		const noDirDec = JSON.parse(readFileSync(noDirDecFile, "utf8")) as Record<string, unknown>;
+		if (zeroIno) rmSync(noDirDecFile);
+		writeFileSync(noDirDecFile, `${JSON.stringify({ ...noDirDec, id: replacedId })}\n`);
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(noDirOwner, {}), noDirParent);
+	}
+
+	// 4. homeIdentity: false + decisionId (settle race) + backup clone + deleted/recreated decision file.
+	fsFaults.globalZeroIno = false;
+	const raceParent = join(root, "home-identity-false-race");
+	const raceOwner = join(raceParent, "a1");
+	const raceClone = join(raceParent, "a1-backup");
+	mkdirSync(join(raceOwner, "workflows"), { recursive: true });
+	writeFileSync(join(raceOwner, "workflows", "journal.sqlite"), "local-workflows");
+	writeFileSync(join(raceParent, "history.sqlite"), "shared");
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", raceOwner, settings), raceParent);
+	cpSync(raceOwner, raceClone, { recursive: true });
+	const ownerDirStat = statSync(raceOwner, { bigint: true });
+	for (const entry of readdirSync(raceParent)) {
+		if (!entry.startsWith(".atomic-storage-target-")) continue;
+		const claimPath = join(raceParent, entry);
+		const owner = JSON.parse(readFileSync(claimPath, "utf8")) as Record<string, unknown>;
+		writeFileSync(
+			claimPath,
+			`${JSON.stringify({ ...owner, identity: `${ownerDirStat.dev}:${ownerDirStat.ino}`, homeIdentity: false })}\n`,
+		);
+	}
+	const raceDecFile = join(raceOwner, ".atomic-storage-home");
+	const raceDec = JSON.parse(readFileSync(raceDecFile, "utf8")) as Record<string, unknown>;
+	rmSync(raceDecFile);
+	writeFileSync(raceDecFile, `${JSON.stringify({ ...raceDec, id: replacedId })}\n`);
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", raceOwner, settings), raceParent);
+});
