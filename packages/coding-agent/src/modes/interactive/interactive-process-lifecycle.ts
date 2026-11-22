@@ -109,9 +109,23 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
 	ending.settleTerminalLoss();
 	spareEngineFromKill(mode);
 	killSupervisedProcessTrees();
-	setTimeout(() => mode.emergencyTerminalExit(), TERMINAL_LOST_SHUTDOWN_MS);
+	setTimeout(() => lostTerminalBoundEnded(mode), TERMINAL_LOST_SHUTDOWN_MS);
 	// A quit or a signal that is already shutting the session down goes on as it started.
 	void mode.shutdown({ fromSignal: true });
+}
+
+/**
+ * The lost terminal's bound has run out. On Windows, a host too busy to run its timers on time can get here with a
+ * console-close notice already received but not yet read: Windows' own, read in this turn after the timers, or the
+ * interactive engine's, whose line its reader parses in the turn after. Unless the close is already proven, those two
+ * turns, and nothing more, are given to it before Atomic exits, so that it still decides the status.
+ */
+function lostTerminalBoundEnded(mode: InteractiveModeBase): void {
+	if (process.platform === "win32" && !hostEnding(mode).consoleClosed) {
+		setImmediate(() => setImmediate(() => mode.emergencyTerminalExit()));
+		return;
+	}
+	mode.emergencyTerminalExit();
 }
 
 /**

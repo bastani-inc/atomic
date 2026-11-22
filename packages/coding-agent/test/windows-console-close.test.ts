@@ -20,6 +20,12 @@ const OWN_EXIT_MS = 1_000;
 const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
 /** The lost terminal's exit status (#6104). */
 const TERMINAL_LOST_EXIT_CODE = 129;
+/**
+ * The turns of the event loop Atomic gives a console-close notice it already received but has not read yet, before it
+ * exits at the lost terminal's bound: Windows' own is read in the first, the engine's line is parsed in the second.
+ * Fake timers run each turn a millisecond apart.
+ */
+const PENDING_NOTICE_TURNS_MS = 2;
 
 interface Context {
 	isShuttingDown: boolean;
@@ -325,7 +331,7 @@ describe("a console Atomic finds gone before Windows says it closed", () => {
 			await settle();
 			await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
 			assert.deepEqual(exits, []);
-			await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
+			await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
 			assert.deepEqual(exits, [TERMINAL_LOST_EXIT_CODE]);
 		});
 
@@ -354,6 +360,52 @@ describe("a console Atomic finds gone before Windows says it closed", () => {
 			await vi.advanceTimersByTimeAsync(1_000 - 1);
 			assert.deepEqual(exits, []);
 			await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
+			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		});
+
+		// A host too busy to run its timers on time can find the lost terminal's bound run out with a close notice already
+		// received but not yet read: it is read in the same turn, after the bound's timer.
+		test(`when ${loss}, Windows' notice received but not yet read when the lost terminal's bound runs out still decides the status`, async () => {
+			const { closeConsole } = createWindowsHost(() => new Promise<void>(() => {}));
+
+			lose();
+			await settle();
+			await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
+			assert.deepEqual(exits, []);
+			// Scheduled after the bound's timer, for the same moment: it runs in the same turn, after that timer.
+			setTimeout(closeConsole, 1);
+			await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
+			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		});
+
+		test(`when ${loss}, the engine's notice received but not yet read when the lost terminal's bound runs out still decides the status`, async () => {
+			const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+			const runtime = Object.assign(
+				Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime,
+				{
+					getReadyEngineChildPid: () => undefined,
+					onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
+						engineListeners.push(listener);
+						return () => engineListeners.splice(engineListeners.indexOf(listener), 1);
+					},
+				},
+			);
+			createWindowsHost(() => new Promise<void>(() => {}), runtime);
+
+			lose();
+			await settle();
+			await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
+			assert.deepEqual(exits, []);
+			// The engine's line is read in the same turn as the bound's timer, after it, and its reader parses the lines it
+			// read in a turn of their own.
+			setTimeout(
+				() =>
+					setImmediate(() => {
+						for (const listener of [...engineListeners]) listener({ type: "engine_console_closed" });
+					}),
+				1,
+			);
+			await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
 			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
 		});
 	}
