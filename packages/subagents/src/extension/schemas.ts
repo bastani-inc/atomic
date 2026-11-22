@@ -251,7 +251,7 @@ export const SubagentParams = Type.Object(
 		sessionDir: Type.Optional(
 			Type.String({
 				description:
-					"Keep the subagents' sessions as JSONL files in this directory instead of the launching session's store",
+					"Keep fresh (not forked) subagents' sessions as JSONL files under this directory instead of the launching session's store",
 			}),
 		),
 		control: Type.Optional(ControlOverrides),

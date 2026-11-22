@@ -366,7 +366,7 @@ The package ships a parent-only `subagent` skill (`skills/subagent/SKILL.md`) th
 
 When one assistant message emits several execution-mode `subagent` calls synchronously, Atomic collects the burst before launching any child and runs it as one indexed parallel set. Each original call receives only its own children's results, updates, and errors in source order, while the TUI renders one aggregate widget.
 
-In a burst, a call's top-level `agent` task runs before its `tasks` array, `count` expands in place, and `parallel.maxTasks` applies to the flattened total. Per-call `cwd` and `group` values stay attached to their children (a task-level `group` wins). For `worktree: true`, every call-level `cwd` must resolve to the same path. Shared run-wide options (`concurrency`, `worktree: true`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`) must agree across sibling calls; mismatches reject the burst before launch and name the conflicting field. Prefer one explicit `{ tasks: [...] }` call when planning parallel work.
+In a burst, a call's top-level `agent` task runs before its `tasks` array, `count` expands in place, and `parallel.maxTasks` applies to the flattened total. Per-call `cwd` and `group` values stay attached to their children (a task-level `group` wins). For `worktree: true`, every call-level `cwd` must resolve to the same path. Shared run-wide options (`concurrency`, `worktree: true`, `context`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`) must agree across sibling calls; mismatches reject the burst before launch and name the conflicting field. Prefer one explicit `{ tasks: [...] }` call when planning parallel work.
 
 ### Management actions
 
