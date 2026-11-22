@@ -6,6 +6,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } from "./agent-session-types.js";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { cancelFirstPromptModel } from "./first-prompt-model.ts";
+import { prewarmModelApi } from "./model-api-prewarm.ts";
 import { requestedThinkingLevelForModelSwitch } from "./model-switch-thinking-level.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import type { SessionEntry, ThinkingLevelChangeEntry } from "./session-manager-types.ts";
@@ -153,6 +154,7 @@ export async function setModel(
 			await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 			this._clearFallbackModelScope?.();
 			this.agent.state.model = nextModel;
+			void prewarmModelApi(nextModel);
 			if (options.persist) {
 				settingsWriteOwner.run(this, () =>
 					this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id),

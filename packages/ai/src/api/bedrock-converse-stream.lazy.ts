@@ -36,8 +36,10 @@ export function setBedrockProviderLoader(load: () => Promise<ProviderStreams>): 
 }
 
 export const bedrockConverseStreamApi = (): ProviderStreams =>
-	lazyApi(async () =>
-		bedrockModuleLoader
-			? await bedrockModuleLoader()
-			: ((await importNodeOnlyApi("./bedrock-converse-stream.ts")) as ProviderStreams),
+	lazyApi(
+		async () =>
+			bedrockModuleLoader
+				? await bedrockModuleLoader()
+				: ((await importNodeOnlyApi("./bedrock-converse-stream.ts")) as ProviderStreams),
+		{ dynamicLoader: true },
 	);

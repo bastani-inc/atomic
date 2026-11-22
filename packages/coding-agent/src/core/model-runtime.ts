@@ -206,6 +206,7 @@ export class ModelRuntime implements Models {
 	private availabilityError: string | undefined;
 	private refreshSequence = 0;
 	private readonly registrationRefreshes = new Set<Promise<ModelsRefreshResult>>();
+	private startupCatalogRestoredMark: { readonly inputs: number; readonly seq: number } | undefined;
 	private constructor(
 		credentials: RuntimeCredentials,
 		config: ModelConfig,
@@ -285,6 +286,21 @@ export class ModelRuntime implements Models {
 			if (timeout) clearTimeout(timeout);
 		}
 		return runtime;
+	}
+	/** Internal one-shot marker shared by `agent-session-services` and `sdk` to avoid an immediate duplicate restore. */
+	static markStartupCatalogRestored(runtime: ModelRuntime): void {
+		runtime.startupCatalogRestoredMark = {
+			inputs: runtime.catalogInputsGeneration,
+			seq: runtime.refreshSequence,
+		};
+	}
+	/** Consumes the one-shot startup-restore marker; true only when no input or refresh changed since marking. */
+	static consumeStartupCatalogRestored(runtime: ModelRuntime): boolean {
+		const mark = runtime.startupCatalogRestoredMark;
+		runtime.startupCatalogRestoredMark = undefined;
+		return (
+			mark !== undefined && mark.inputs === runtime.catalogInputsGeneration && mark.seq === runtime.refreshSequence
+		);
 	}
 	/** Brand check without a property lookup on a borrowed or decorated runtime. */
 	static [sessionAccountCheckpoint](runtime: ModelRuntime): boolean {
@@ -466,14 +482,23 @@ export class ModelRuntime implements Models {
 		const providers = this.models.getProviders();
 		const passFailed = new AbortController();
 		const passSignal = AbortSignal.any([signal, passFailed.signal]);
-		const [available, checks, credentials] = await Promise.all([
-			this.models.getAvailable(undefined, { signal: passSignal }),
+		const [entries, credentials] = await Promise.all([
 			Promise.all(
 				providers.map(
-					async (provider): Promise<[string, AuthCheck | undefined]> => [
-						provider.id,
-						await this.models.checkAuth(provider.id, { signal: passSignal }),
-					],
+					async (
+						provider,
+					): Promise<{
+						provider: Provider;
+						auth: AuthCheck | undefined;
+						available: readonly Model<Api>[];
+					}> => {
+						const auth = await this.models.checkAuth(provider.id, { signal: passSignal });
+						if (!auth) return { provider, auth, available: [] };
+						const available = provider.filterModels
+							? await this.models.getAvailable(provider.id, { signal: passSignal })
+							: provider.getModels();
+						return { provider, auth, available };
+					},
 				),
 			),
 			this.credentials.list({ signal: passSignal }),
@@ -482,7 +507,9 @@ export class ModelRuntime implements Models {
 			throw error;
 		});
 		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return false;
-		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
+		const checks: [string, AuthCheck | undefined][] = entries.map(({ provider, auth }) => [provider.id, auth]);
+		const available = entries.flatMap((entry) => entry.available);
+		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], available, checks, credentials);
 		this.availabilityCredentials.clear();
 		this.recordAvailabilityCredentials([...this.snapshot.auth.keys(), ...this.snapshot.storedProviders]);
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
