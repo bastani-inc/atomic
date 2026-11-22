@@ -302,7 +302,9 @@ describe("tool-block-families linear-time footer parsing", () => {
 			argsComplete: true,
 			theme: identityTheme,
 		});
-		assert.equal(findNested?.details?.render(80).join("\n").includes("1 match"), true);
+		const findRendered = stripAnsi(findNested?.details?.render(80).join("\n") ?? "");
+		assert.equal(findRendered.includes("1 file"), true, findRendered);
+		assert.equal(findRendered.includes("outer notice"), false, findRendered);
 	});
 });
 
