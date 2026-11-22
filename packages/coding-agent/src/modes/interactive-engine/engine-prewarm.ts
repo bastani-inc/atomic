@@ -7,20 +7,10 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { stat } from "node:fs/promises";
 import { availableParallelism } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename } from "node:path";
 import type { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
-import {
-	ENV_AGENT_DIR,
-	ENV_STARTUP_BENCHMARK,
-	ENV_TIMING,
-	getAgentDir,
-	getEnvValue,
-	isBunBinary,
-	VERSION,
-} from "../../config.js";
+import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue, VERSION } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { engineCompileCacheMatchHostEnv, engineCompileCacheWarmupEnv } from "../../utils/compile-cache-deferral.ts";
 import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
@@ -169,47 +159,15 @@ const PREWARM_READY_MAX_BYTES = 4096;
 const PREWARM_BUILD_STAMP = "__ATOMIC_PREWARM_BUILD_STAMP__";
 const PREWARM_BUILD_STAMP_UNSTAMPED = ["__ATOMIC_PREWARM", "BUILD_STAMP__"].join("_");
 
-function syncPrewarmBuildIdentity(): string | undefined {
+/**
+ * Identifies this running Atomic build when stamped at build time (`scripts/split-dist.mjs`), straight from loaded
+ * module memory (zero I/O, immune to on-disk replacement after launch). Returns `undefined` in unstamped builds (such
+ * as a direct source checkout), where prewarm adoption keeps only exact-launch matching and never adopts across an
+ * environment edit.
+ */
+function prewarmBuildIdentity(): string | undefined {
 	if (PREWARM_BUILD_STAMP === PREWARM_BUILD_STAMP_UNSTAMPED) return undefined;
 	return `v1:${VERSION}:${PREWARM_BUILD_STAMP}:${import.meta.url}`;
-}
-
-let cachedBuildIdentityPromise: Promise<string> | undefined;
-
-/**
- * Identifies this running Atomic build so a host adopts a prewarmed child only when both processes run the same build.
- * In a split `dist/` install this reads the build-stamped digest straight from loaded module memory (zero I/O, immune
- * to on-disk replacement after launch); in a compiled binary or source checkout it falls back to VERSION, module URL,
- * and entrypoint file metadata.
- */
-async function resolvePrewarmBuildIdentity(): Promise<string> {
-	const stamped = syncPrewarmBuildIdentity();
-	if (stamped !== undefined) return stamped;
-	cachedBuildIdentityPromise ??= (async () => {
-		const fingerprintTarget = isBunBinary
-			? join(dirname(process.execPath), "app.js")
-			: import.meta.url.startsWith("file:")
-				? fileURLToPath(import.meta.url)
-				: process.argv[1];
-		let statPart = "no-stat";
-		if (fingerprintTarget) {
-			try {
-				const info = await stat(fingerprintTarget);
-				statPart = `${info.size}:${Math.trunc(info.mtimeMs)}`;
-			} catch {
-				if (isBunBinary) {
-					try {
-						const exeInfo = await stat(process.execPath);
-						statPart = `exe:${exeInfo.size}:${Math.trunc(exeInfo.mtimeMs)}`;
-					} catch {
-						// Keep fallback.
-					}
-				}
-			}
-		}
-		return `v1:${VERSION}:dev:${statPart}:${import.meta.url}`;
-	})();
-	return cachedBuildIdentityPromise;
 }
 
 /** The per-spawn handoff nonce a prewarmed child was started with, if its host opted into verified handoff. */
@@ -447,16 +405,12 @@ export async function prewarmInteractiveEngineForArgs(args: readonly string[]): 
 	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args)) return;
 	const unchanged = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 	await applyArgumentEnvironment(args);
-	const [settingsEnv, buildIdentity] = await Promise.all([
-		settingsEnvironmentForEarlyChild(getAgentDir()),
-		resolvePrewarmBuildIdentity(),
-	]);
+	const settingsEnv = await settingsEnvironmentForEarlyChild(getAgentDir());
 	const derived = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 	const launch = { ...derived, env: { ...derived.env, ...settingsEnv } };
 	prewarmInteractiveEngine(args, {
 		launch,
 		basis: sameEngineLaunch(unchanged, launch) ? "unchanged" : "derived",
-		buildIdentity,
 	});
 }
 
@@ -465,7 +419,8 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args, options.host)) return;
 	let launch: EngineLaunch;
 	let child: ChildProcess;
-	const nonce = randomBytes(12).toString("hex");
+	const buildIdentity = options.buildIdentity ?? prewarmBuildIdentity();
+	const nonce = buildIdentity !== undefined ? randomBytes(12).toString("hex") : undefined;
 	try {
 		launch =
 			options.launch ?? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
@@ -480,7 +435,7 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 			...(args.includes("--no-session") ? [PREWARM_NO_DATABASE] : []),
 			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
 			...(hostArguments ? [hostArguments] : []),
-			`${INTERACTIVE_ENGINE_PREWARM_HANDOFF_FLAG}=${nonce}`,
+			...(nonce !== undefined ? [`${INTERACTIVE_ENGINE_PREWARM_HANDOFF_FLAG}=${nonce}`] : []),
 		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,
@@ -495,24 +450,15 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 	child.on("error", () => {});
 	child.stdin?.on("error", () => {});
 	child.stdout?.on("error", () => {});
-	const handoff = attachPrewarmReadyReader(child, child.stdout, nonce);
+	const handoff = nonce !== undefined ? attachPrewarmReadyReader(child, child.stdout, nonce) : undefined;
 	setReferenced(child, false);
-	const prewarm: Prewarm = {
+	prewarmState[PREWARM_KEY] = {
 		launch,
 		child,
 		basis: options.basis ?? "unchanged",
 		handoff,
-		buildIdentity: options.buildIdentity ?? syncPrewarmBuildIdentity(),
+		buildIdentity,
 	};
-	prewarmState[PREWARM_KEY] = prewarm;
-	if (prewarm.buildIdentity === undefined) {
-		void resolvePrewarmBuildIdentity().then(
-			(identity) => {
-				if (prewarmState[PREWARM_KEY] === prewarm) prewarm.buildIdentity = identity;
-			},
-			() => {},
-		);
-	}
 	process.once("exit", discardPrewarmedEngine);
 }
 
@@ -595,24 +541,15 @@ export async function waitForPrewarmedEngineReady(timeoutMs = 200): Promise<void
 	const { child } = prewarm;
 	const alive = child.pid !== undefined && child.exitCode === null && child.signalCode === null && !child.killed;
 	if (!alive) return;
-	const tasks: Promise<unknown>[] = [prewarm.handoff.waitUntilSettled(timeoutMs)];
-	if (prewarm.buildIdentity === undefined) {
-		tasks.push(
-			resolvePrewarmBuildIdentity().then(
-				(identity) => {
-					if (prewarmState[PREWARM_KEY] === prewarm) prewarm.buildIdentity = identity;
-				},
-				() => {},
-			),
-		);
-	}
-	await Promise.all(tasks);
+	await prewarm.handoff.waitUntilSettled(timeoutMs);
 }
 
 /**
- * The prewarmed child started as `launch` would start (or differing only in settings-derived environment keys, which
- * travel in the stdin handshake), now running with `engineArgs`; or undefined, after discarding any prewarmed child,
- * when there is none or it would differ from a fresh one. `onBasis` learns the adopted child's
+ * The prewarmed child started as `launch` would start (or, in a build-stamped install whose child advertised a matching
+ * build identity and env-handoff capability, differing only in settings-derived environment keys which travel in the
+ * stdin handshake), now running with `engineArgs`; or undefined, after discarding any prewarmed child, when there is
+ * none or it would differ from a fresh one. In unstamped builds (such as a direct source checkout), keeps exact-launch
+ * matching only and never adopts across an environment edit. `onBasis` learns the adopted child's
  * {@link PrewarmLaunchBasis}. A callback, rather than another return value or export, so that a host whose module of an
  * earlier version is still loaded beside a later one keeps working either way: an earlier version ignores it.
  */
@@ -625,12 +562,23 @@ export function adoptPrewarmedEngine(
 	if (!prewarm) return undefined;
 	const { child } = prewarm;
 	const alive = child.pid !== undefined && child.exitCode === null && child.signalCode === null && !child.killed;
+	if (prewarm.buildIdentity === undefined) {
+		// Unstamped build (or a prewarm created by an earlier release without verified handoff): exact-launch matching
+		// only; never adopt across an environment edit.
+		if (!alive || !sameEngineLaunch(prewarm.launch, launch)) {
+			discardPrewarmedEngine();
+			return undefined;
+		}
+		prewarmState[PREWARM_KEY] = undefined;
+		process.off("exit", discardPrewarmedEngine);
+		prewarm.handoff?.cleanup();
+		setReferenced(child, true);
+		child.stdin?.write(`${JSON.stringify({ args: engineArgs })}\n`);
+		onBasis?.(prewarm.basis);
+		return child;
+	}
 	const ready = alive ? prewarm.handoff?.drain() : undefined;
-	const sameBuild =
-		ready?.status === "ready" &&
-		ready.envHandoff &&
-		typeof prewarm.buildIdentity === "string" &&
-		ready.build === prewarm.buildIdentity;
+	const sameBuild = ready?.status === "ready" && ready.envHandoff && ready.build === prewarm.buildIdentity;
 	const envDelta = sameBuild ? prewarmHandoffEnvDelta(prewarm.launch, launch) : undefined;
 	if (!alive || !sameBuild || envDelta === undefined) {
 		discardPrewarmedEngine();
@@ -648,20 +596,17 @@ export function adoptPrewarmedEngine(
 }
 
 /**
- * In a prewarmed child: if the host opted into verified handoff via {@link INTERACTIVE_ENGINE_PREWARM_HANDOFF_FLAG},
- * advertises this build's identity and env-handoff capability as one JSON line on stdout before reading the engine
- * arguments (plus any settings-derived environment updates) from the first stdin line. Everything after that line stays
- * on stdin for the engine. Exits quietly when the host closes stdin without adopting this child.
+ * In a prewarmed child: if this build is stamped (or an explicit `buildIdentity` is supplied) and the host opted into
+ * verified handoff via {@link INTERACTIVE_ENGINE_PREWARM_HANDOFF_FLAG}, advertises this build's identity and
+ * env-handoff capability as one JSON line on stdout before reading the engine arguments (plus any settings-derived
+ * environment updates) from the first stdin line. Everything after that line stays on stdin for the engine. Exits
+ * quietly when the host closes stdin without adopting this child.
  */
-export function readPrewarmedEngineArgs(): Promise<string[]> {
+export function readPrewarmedEngineArgs(options?: { readonly buildIdentity?: string }): Promise<string[]> {
 	return new Promise((resolve) => {
 		let buffered = Buffer.alloc(0);
-		let stdinEnded = false;
 		const stdin = process.stdin;
-		const onEnd = () => {
-			stdinEnded = true;
-			process.exit(0);
-		};
+		const onEnd = () => process.exit(0);
 		// Pull-mode reads: once the 'readable' listener is gone the stream is neither flowing nor paused, so the engine's
 		// own reader starts it as it would a stream nobody read.
 		const onReadable = () => {
@@ -682,35 +627,16 @@ export function readPrewarmedEngineArgs(): Promise<string[]> {
 				return;
 			}
 		};
-		const emitReady = (nonce: string, build: string): void => {
-			if (stdinEnded) return;
+		const nonce = prewarmHandoffNonce(process.argv.slice(2));
+		const build = options?.buildIdentity ?? prewarmBuildIdentity();
+		if (nonce !== undefined && build !== undefined) {
 			try {
 				process.stdout.write(`${JSON.stringify({ type: "prewarm_ready", nonce, build, envHandoff: true })}\n`);
 			} catch {
 				// Host closed the pipe before adoption.
 			}
-		};
-		const handoffNonce = prewarmHandoffNonce(process.argv.slice(2));
-		stdin.on("end", onEnd);
-		if (handoffNonce !== undefined) {
-			const stamped = syncPrewarmBuildIdentity();
-			if (stamped !== undefined) {
-				emitReady(handoffNonce, stamped);
-				stdin.on("readable", onReadable);
-			} else {
-				void resolvePrewarmBuildIdentity().then(
-					(build) => {
-						emitReady(handoffNonce, build);
-						if (!stdinEnded) {
-							stdin.on("readable", onReadable);
-							onReadable();
-						}
-					},
-					() => {},
-				);
-			}
-		} else {
-			stdin.on("readable", onReadable);
 		}
+		stdin.on("readable", onReadable);
+		stdin.on("end", onEnd);
 	});
 }

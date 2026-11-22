@@ -38,12 +38,16 @@ afterEach(() => {
  * A stand-in engine child: it writes its pid to `pid` beside it, reads its arguments as a prewarmed engine does, then
  * reads stdin with the RPC reader, as the engine does, and reports both on stdout.
  */
-function writeEngineScript(): string {
+function writeEngineScript(buildIdentity?: string): string {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-prewarm-"));
 	tempDirs.push(dir);
 	const path = join(dir, "engine.mjs");
 	const prewarm = new URL("../src/modes/interactive-engine/engine-prewarm.ts", import.meta.url).href;
 	const jsonl = new URL("../src/modes/rpc/jsonl.ts", import.meta.url).href;
+	const readArgsCall =
+		buildIdentity === undefined
+			? "readPrewarmedEngineArgs()"
+			: `readPrewarmedEngineArgs({ buildIdentity: ${JSON.stringify(buildIdentity)} })`;
 	writeFileSync(
 		path,
 		`import { renameSync, writeFileSync } from "node:fs";\n` +
@@ -53,7 +57,7 @@ function writeEngineScript(): string {
 			`const publish = (name, text) => { const target = join(dir, name); writeFileSync(target + ".tmp", text); renameSync(target + ".tmp", target); };\n` +
 			`publish("prewarm-argv", JSON.stringify(process.argv.slice(2)));\n` +
 			`const hasHandoffFlag = process.argv.slice(2).some((arg) => arg.startsWith("--internal-engine-prewarm-handoff="));\n` +
-			`if (hasHandoffFlag) {\n` +
+			`if (hasHandoffFlag && ${JSON.stringify(buildIdentity !== undefined)}) {\n` +
 			`  const origWrite = process.stdout.write.bind(process.stdout);\n` +
 			`  let readyPublished = false;\n` +
 			`  process.stdout.write = (chunk, ...rest) => {\n` +
@@ -69,7 +73,7 @@ function writeEngineScript(): string {
 			`}\n` +
 			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
-			"const args = await readPrewarmedEngineArgs();\n" +
+			`const args = await ${readArgsCall};\n` +
 			'process.stdout.write(JSON.stringify({ args, argv: process.argv.slice(2), env: { ATOMIC_DEBUG_SETTING: process.env.ATOMIC_DEBUG_SETTING ?? null, HTTP_PROXY: process.env.HTTP_PROXY ?? null, HTTPS_PROXY: process.env.HTTPS_PROXY ?? null, OTHER_TEST_VAR: process.env.OTHER_TEST_VAR ?? null } }) + "\\n");\n' +
 			'attachJsonlLineReader(process.stdin, (line) => process.stdout.write(JSON.stringify({ line }) + "\\n"));\n',
 	);
@@ -192,13 +196,18 @@ describe("adopting a prewarmed engine child", () => {
 
 	const terminal = { stdinIsTTY: true, stdoutIsTTY: true, cpus: 8 };
 	/** Prewarms the stand-in engine as `launch` starts it, and returns its pid once it runs. */
-	async function prewarm(script: string, launch: EngineLaunch, basis?: PrewarmLaunchBasis): Promise<number> {
-		prewarmInteractiveEngine([], { host: terminal, launch, basis });
+	async function prewarm(
+		script: string,
+		launch: EngineLaunch,
+		basis?: PrewarmLaunchBasis,
+		buildIdentity?: string,
+	): Promise<number> {
+		prewarmInteractiveEngine([], { host: terminal, launch, basis, buildIdentity });
 		const pidFile = join(script, "..", "pid");
 		await vi.waitFor(() => assert.ok(existsSync(pidFile) && readFileSync(pidFile, "utf8")), {
 			timeout: ENGINE_START_OR_EXIT_WAIT_MS,
 		});
-		// Let the parent's I/O poll ingest the already-flushed readiness line from the child's stdout pipe.
+		// Let the parent's I/O poll ingest any already-flushed readiness line from the child's stdout pipe.
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		return Number(readFileSync(pidFile, "utf8"));
 	}
@@ -237,8 +246,12 @@ describe("adopting a prewarmed engine child", () => {
 		const argvFile = join(dir, "argv");
 		/** The flags a child was started with, the one that carries the host's arguments by its name. */
 		const flagsOf = (argv: string[]) => argv.map((arg) => arg.replace(/=.*$/s, ""));
-		const startedArgv = async (hostArgs: string[], basis?: PrewarmLaunchBasis): Promise<string[]> => {
-			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script), basis });
+		const startedArgv = async (
+			hostArgs: string[],
+			basis?: PrewarmLaunchBasis,
+			buildIdentity?: string,
+		): Promise<string[]> => {
+			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script), basis, buildIdentity });
 			await vi.waitFor(() => assert.ok(existsSync(argvFile)), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
 			const argv = JSON.parse(readFileSync(argvFile, "utf8")) as string[];
 			discardPrewarmedEngine();
@@ -247,16 +260,23 @@ describe("adopting a prewarmed engine child", () => {
 		};
 		const DEFAULT_MODEL_API = INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG;
 		const HANDOFF = INTERACTIVE_ENGINE_PREWARM_HANDOFF_FLAG;
+		// Unstamped runs (no buildIdentity) omit the handoff flag and keep exact main launch flags.
 		assert.deepEqual(flagsOf(await startedArgv(["--no-session"])), [
+			"--internal-engine-prewarm",
+			"--internal-engine-prewarm-no-database",
+			DEFAULT_MODEL_API,
+		]);
+		assert.deepEqual(flagsOf(await startedArgv([])), ["--internal-engine-prewarm", DEFAULT_MODEL_API]);
+		// Stamped runs append the per-spawn handoff nonce flag after the existing flags.
+		assert.deepEqual(flagsOf(await startedArgv(["--no-session"], undefined, "v1:0.0.0:stamp")), [
 			"--internal-engine-prewarm",
 			"--internal-engine-prewarm-no-database",
 			DEFAULT_MODEL_API,
 			HANDOFF,
 		]);
-		assert.deepEqual(flagsOf(await startedArgv([])), ["--internal-engine-prewarm", DEFAULT_MODEL_API, HANDOFF]);
 		// The engine reads the no-database marker as its second argument; the other flags come after it.
 		assert.deepEqual(
-			flagsOf(await startedArgv(["--no-session"], "derived")),
+			flagsOf(await startedArgv(["--no-session"], "derived", "v1:0.0.0:stamp")),
 			process.platform === "win32"
 				? ["--internal-engine-prewarm", "--internal-engine-prewarm-no-database", DEFAULT_MODEL_API, HANDOFF]
 				: [
@@ -278,14 +298,17 @@ describe("adopting a prewarmed engine child", () => {
 		// Not arguments too long to pass on: that child loads nothing before its host takes it over.
 		const longMessage = "x".repeat(PREWARM_HOST_ARGUMENTS_MAX_LENGTH);
 		const argv = await startedArgv(["--approve", longMessage]);
-		assert.deepEqual(flagsOf(argv), ["--internal-engine-prewarm", HANDOFF]);
+		assert.deepEqual(argv, ["--internal-engine-prewarm"]);
 		assert.equal(prewarmHostArguments(argv), undefined);
+		const stampedLongArgv = await startedArgv(["--approve", longMessage], undefined, "v1:0.0.0:stamp");
+		assert.deepEqual(flagsOf(stampedLongArgv), ["--internal-engine-prewarm", HANDOFF]);
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
-		const script = writeEngineScript();
+		const buildId = "v1:0.0.0:same-build";
+		const script = writeEngineScript(buildId);
 		const prewarmed = standIn(script);
-		const pid = await prewarm(script, prewarmed);
+		const pid = await prewarm(script, prewarmed, undefined, buildId);
 		const bases: PrewarmLaunchBasis[] = [];
 		const child = adoptPrewarmedEngine({ ...prewarmed, env: { ...prewarmed.env } }, ["--mode", "rpc"], (basis) =>
 			bases.push(basis),
@@ -313,8 +336,9 @@ describe("adopting a prewarmed engine child", () => {
 		);
 	});
 
-	test("adopts the prewarmed child across a settings-derived environment edit and reconciles its env on handshake", async () => {
-		const script = writeEngineScript();
+	test("adopts a stamped prewarmed child across a settings-derived environment edit and reconciles its env on handshake", async () => {
+		const buildId = "v1:0.0.0:same-build";
+		const script = writeEngineScript(buildId);
 		const baseEnv = { ...standIn(script).env };
 		delete baseEnv.HTTP_PROXY;
 		delete baseEnv.HTTPS_PROXY;
@@ -327,7 +351,7 @@ describe("adopting a prewarmed engine child", () => {
 				HTTPS_PROXY: "http://127.0.0.1:9",
 			},
 		};
-		const pid = await prewarm(script, prewarmed, "unchanged");
+		const pid = await prewarm(script, prewarmed, "unchanged", buildId);
 		const settledEnv = { ...baseEnv, ATOMIC_DEBUG_SETTING: "1", HTTPS_PROXY: "http://127.0.0.1:10" };
 		const bases: PrewarmLaunchBasis[] = [];
 		const child = adoptPrewarmedEngine({ ...prewarmed, env: settledEnv }, ["--mode", "rpc"], (basis) =>
@@ -350,10 +374,41 @@ describe("adopting a prewarmed engine child", () => {
 		assert.deepEqual(second, { line: '{"id":"1"}' });
 	});
 
+	test("when unstamped, keeps exact-launch adoption and discards across any settings-derived environment edit", async () => {
+		const exactScript = writeEngineScript();
+		const exactLaunch = standIn(exactScript);
+		const exactPid = await prewarm(exactScript, exactLaunch, "unchanged");
+		const exactAdopted = adoptPrewarmedEngine({ ...exactLaunch, env: { ...exactLaunch.env } }, ["--mode", "rpc"]);
+		assert.ok(exactAdopted, "unstamped build keeps exact-launch adoption");
+		children.push(exactAdopted);
+		assert.equal(exactAdopted.pid, exactPid);
+		const exactOut = readLines(exactAdopted, 1);
+		exactAdopted.stdin!.write('{"id":"exact"}\n');
+		assert.deepEqual((await exactOut)[0]?.args, ["--mode", "rpc"]);
+
+		const editScript = writeEngineScript();
+		const baseEnv = { ...standIn(editScript).env };
+		delete baseEnv.HTTP_PROXY;
+		delete baseEnv.HTTPS_PROXY;
+		const prewarmed: EngineLaunch = {
+			...standIn(editScript),
+			env: { ...baseEnv, ATOMIC_DEBUG_SETTING: "0", HTTP_PROXY: "http://127.0.0.1:9" },
+		};
+		const editPid = await prewarm(editScript, prewarmed, "unchanged");
+		const settledEnv = { ...baseEnv, ATOMIC_DEBUG_SETTING: "1" };
+		assert.equal(
+			adoptPrewarmedEngine({ ...prewarmed, env: settledEnv }, ["--mode", "rpc"]),
+			undefined,
+			"unstamped build must never adopt across a settings-derived env edit",
+		);
+		await vi.waitFor(() => assert.equal(running(editPid), false), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
+	});
+
 	test("tells its host that the prewarm carried environment the arguments or settings add", async () => {
-		const script = writeEngineScript();
+		const buildId = "v1:0.0.0:same-build";
+		const script = writeEngineScript(buildId);
 		const prewarmed = standIn(script);
-		await prewarm(script, prewarmed, "derived");
+		await prewarm(script, prewarmed, "derived", buildId);
 		const bases: PrewarmLaunchBasis[] = [];
 		const child = adoptPrewarmedEngine(prewarmed, ["--mode", "rpc"], (basis) => bases.push(basis));
 		assert.ok(child, "the prewarmed child is adopted");
