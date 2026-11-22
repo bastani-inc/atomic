@@ -212,3 +212,22 @@ describe("unpushed history a capture left out", () => {
 		assert.equal(historyOmissions(again.snapshot.omitted)[0]?.reason, "bundle-over-cap");
 	});
 });
+
+describe("unpushed history over the cap, packed under other settings", () => {
+	test("a packing setting changed since the commits were bundled has them bundled again", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		// Text that compresses well: uncompressed its bundle is far over the cap, compressed far under it.
+		sandbox.write(join(clone, "data.txt"), "a line that repeats and compresses well\n".repeat(4096));
+		const commit = await sandbox.commitAll(clone, "data");
+		await sandbox.git(clone, "config", "core.compression", "0");
+		const settings = { maxSnapshotBytes: 32 * 1024 };
+		const first = captured(await captureWorktreeSnapshot(clone, { settings }));
+		assert.equal(historyOmissions(first.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+
+		await sandbox.git(clone, "config", "core.compression", "9");
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const second = captured(await captureWorktreeSnapshot(clone, { settings, previous: first.snapshot }));
+		assert.deepEqual(historyOmissions(second.snapshot.omitted), []);
+		assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+	});
+});

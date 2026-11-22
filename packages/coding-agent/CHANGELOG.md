@@ -11,6 +11,7 @@
 
 - On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
 - A `/` command or `@` file typed before Atomic's screen appears, as when it starts with a command-line argument such as `-c`, now opens its completion menu once completions are ready, instead of no menu until the next key. A click in the prompt before completions are ready drops such a completion, as a key does, so clicking away and back no longer opens a menu ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+- After you change a Git packing setting, such as `core.compression` or `pack.window`, unpushed commits that a worktree snapshot left out because their bundle was over `snapshots.maxSnapshotBytes` are bundled again, and recorded when they now fit. Atomic kept leaving them out until the commits or the repository's packs changed.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
