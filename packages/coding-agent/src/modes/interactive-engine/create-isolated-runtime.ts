@@ -72,6 +72,8 @@ function startInteractiveEngine(options: InteractiveEngineStartOptions, holdOutp
 		},
 		async abandon() {
 			await client.stop().catch(() => {});
+			// A start still writing its bootstrap file removes it before it ends.
+			await started.catch(() => {});
 		},
 	};
 }

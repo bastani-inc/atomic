@@ -122,6 +122,8 @@ export class RpcClient extends RpcClientApi {
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
+	/** The latest generation whose child's exit this client has handled. */
+	private exitedGeneration = 0;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
 	private startingMonitor: Promise<InteractiveEngineMonitor | undefined> | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
@@ -146,8 +148,11 @@ export class RpcClient extends RpcClientApi {
 	private stoppingEngine: ChildProcess | undefined;
 	/** Contains and reports what the listeners of an interactive engine's host throw; a raw client has none. */
 	private readonly listenerFailures: HostListenerFailures | undefined;
-	/** What the engine child wrote, and how it ended, while {@link holdChildOutput} holds them, in arrival order. */
-	private heldChildOutput: Array<() => void> | undefined;
+	/**
+	 * What the engine child wrote, and how it ended, in arrival order, while {@link holdChildOutput} holds them and until
+	 * their release has handed all of them over.
+	 */
+	private heldChildOutput: { readonly items: Array<() => void>; released: boolean } | undefined;
 
 	private declare options: RpcClientOptions;
 
@@ -165,20 +170,34 @@ export class RpcClient extends RpcClientApi {
 	 * listeners that read it exist. A stop releases them first.
 	 */
 	holdChildOutput(): () => void {
-		const held: Array<() => void> = [];
+		const held = { items: [] as Array<() => void>, released: false };
 		this.heldChildOutput = held;
 		return () => this.releaseChildOutput(held);
 	}
 
-	private releaseChildOutput(held: Array<() => void> | undefined = this.heldChildOutput): void {
-		if (held === undefined || this.heldChildOutput !== held) return;
-		this.heldChildOutput = undefined;
-		for (const handle of held) handle();
+	/**
+	 * Hand over what is held one item per turn of the event loop, from the next turn on, as the child's output and exit
+	 * arrive when nothing holds them: what each item starts settles before the next one runs. What arrives meanwhile
+	 * waits behind them; the hold ends once nothing is left.
+	 */
+	private releaseChildOutput(held = this.heldChildOutput): void {
+		if (held === undefined || this.heldChildOutput !== held || held.released) return;
+		held.released = true;
+		const handOver = (): void => {
+			const handle = held.items.shift();
+			if (handle === undefined) {
+				if (this.heldChildOutput === held) this.heldChildOutput = undefined;
+				return;
+			}
+			setImmediate(handOver);
+			handle();
+		};
+		setImmediate(handOver);
 	}
 
-	/** Handle something the engine child wrote or did now, or once its held output is released. */
+	/** Handle something the engine child wrote or did now, or once its held output is handed over. */
 	private receive(handle: () => void): void {
-		if (this.heldChildOutput) this.heldChildOutput.push(handle);
+		if (this.heldChildOutput) this.heldChildOutput.items.push(handle);
 		else handle();
 	}
 
@@ -264,7 +283,10 @@ export class RpcClient extends RpcClientApi {
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
 
 		childProcess.once("exit", (code, signal) =>
-			this.receive(() => this.failGeneration(this.createProcessExitError(code, signal), generation, "exit")),
+			this.receive(() => {
+				this.exitedGeneration = generation;
+				this.failGeneration(this.createProcessExitError(code, signal), generation, "exit");
+			}),
 		);
 		childProcess.once("error", (rawError) =>
 			this.receive(() => this.failGeneration(rawError, generation, "process-error")),
@@ -309,7 +331,8 @@ export class RpcClient extends RpcClientApi {
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
 		else await sleep(100);
 
-		if (generation !== this.generation || this.process?.exitCode !== null) {
+		// An exit this client has not handled yet, such as one still held, has not happened for it.
+		if (generation !== this.generation || this.process === null || this.exitedGeneration === generation) {
 			throw rpcTransportError(`Agent process exited immediately. Stderr: ${this.stderr}`);
 		}
 	}

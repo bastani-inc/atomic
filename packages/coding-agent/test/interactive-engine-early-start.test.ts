@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
@@ -39,6 +39,8 @@ vi.mock("../src/modes/interactive-engine/engine-prewarm.ts", async (importOrigin
 
 /** How long a host's runtime creation waits for the engine child it started to say it is running. */
 const ENGINE_CHILD_START_MAX_MS = 60_000;
+/** How long a host waits to replace an engine that ended after it started, once the host's runtime exists. */
+const ENGINE_REPLACEMENT_MAX_MS = 30_000;
 
 const roots: string[] = [];
 afterEach(() => {
@@ -167,16 +169,21 @@ test("an isolated host whose engine inputs are not final yet starts its engine o
 });
 
 test("a host whose own runtime fails after its engine started stops that engine and reports the failure", async () => {
-	const { agentDir, root, modelRuntime, sessionManager } = await fixture();
-	const start = vi.spyOn(RpcClient.prototype, "start").mockImplementation(() => new Promise(() => {}));
+	const { root, agentDir, modelRuntime, sessionManager } = await fixture();
+	const running = join(root, "engine-running");
+	engine.script = join(root, "engine.cjs");
+	// A child that never says it is ready, like an engine still loading.
+	writeFileSync(
+		engine.script,
+		`require("node:fs").writeFileSync(${JSON.stringify(running)}, String(process.pid));\nprocess.stdin.resume();\n`,
+	);
 	const stop = vi.spyOn(RpcClient.prototype, "stop");
 	const inputsFinal = Promise.withResolvers<void>();
 	await assert.rejects(
 		createRuntimeForMode(
 			hostRuntimeFactory(modelRuntime, async () => {
 				inputsFinal.resolve();
-				await new Promise((resolve) => setTimeout(resolve, 0));
-				assert.equal(start.mock.calls.length, 1);
+				assert.ok(await waitFor(() => existsSync(running), ENGINE_CHILD_START_MAX_MS));
 				throw new Error("host runtime failed");
 			}),
 			root,
@@ -193,7 +200,18 @@ test("a host whose own runtime fails after its engine started stops that engine 
 		/host runtime failed/,
 	);
 	assert.equal(stop.mock.calls.length, 1);
-});
+	const pid = Number(readFileSync(running, "utf8"));
+	assert.ok(
+		await waitFor(() => {
+			try {
+				process.kill(pid, 0);
+				return false;
+			} catch {
+				return true;
+			}
+		}, ENGINE_CHILD_START_MAX_MS),
+	);
+}, 120_000);
 
 test("an engine that fails to start before the host's runtime exists fails that runtime's startup", async () => {
 	const { agentDir, root, modelRuntime, sessionManager } = await fixture();
@@ -228,5 +246,115 @@ test("an engine that fails to start before the host's runtime exists fails that 
 		assert.equal(runtime.getEnginePid(), undefined);
 	} finally {
 		await runtime.dispose({ fromSignal: true });
+	}
+});
+
+test("an engine that ends after it started, while the host was still creating its runtime, is replaced as one that ends later is", async () => {
+	const { root, agentDir, modelRuntime, sessionManager } = await fixture();
+	const ended = join(root, "engine-ending");
+	engine.script = join(root, "engine.mjs");
+	writeFileSync(
+		engine.script,
+		`import { writeFileSync } from "node:fs";
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+send({ type: "engine_ready", protocolVersion: ${INTERACTIVE_ENGINE_PROTOCOL_VERSION}, pid: process.pid });
+send({ type: "engine_bound" });
+// It ends once the host has read both lines.
+process.stdout.write("", () =>
+	setTimeout(() => {
+		writeFileSync(${JSON.stringify(ended)}, String(process.pid));
+		process.kill(process.pid, "SIGKILL");
+	}, 1000),
+);
+process.stdin.resume();
+`,
+	);
+	// The replacement itself is not under test: it fails at once, as one that cannot start does.
+	const restart = vi.spyOn(RpcClient.prototype, "restart").mockRejectedValue(new Error("replacement not started"));
+	const inputsFinal = Promise.withResolvers<void>();
+	const runtime = await createRuntimeForMode(
+		hostRuntimeFactory(modelRuntime, async () => {
+			inputsFinal.resolve();
+			assert.ok(await waitFor(() => existsSync(ended), ENGINE_CHILD_START_MAX_MS));
+			const pid = Number(readFileSync(ended, "utf8"));
+			const gone = () => {
+				try {
+					process.kill(pid, 0);
+					return false;
+				} catch {
+					return true;
+				}
+			};
+			assert.ok(await waitFor(gone, ENGINE_CHILD_START_MAX_MS));
+			// Its exit reaches this process before the host's runtime exists.
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}),
+		root,
+		agentDir,
+		sessionManager,
+		true,
+		false,
+		parseArgs([]),
+		{},
+		true,
+		undefined,
+		inputsFinal.promise,
+	);
+	try {
+		assert.ok(runtime instanceof IsolatedInteractiveRuntime);
+		assert.ok(await waitFor(() => restart.mock.calls.length === 1, ENGINE_REPLACEMENT_MAX_MS));
+	} finally {
+		await runtime.dispose({ fromSignal: true });
+	}
+}, 120_000);
+
+test("a host whose own runtime fails while its engine is still starting reports the failure once that start has ended", async () => {
+	const { root, agentDir, modelRuntime, sessionManager } = await fixture();
+	engine.script = join(root, "never-started.mjs");
+	const temp = join(root, "temp");
+	mkdirSync(temp);
+	for (const name of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(name, temp);
+	const original = RpcClient.prototype.start;
+	let startEnded = false;
+	vi.spyOn(RpcClient.prototype, "start").mockImplementation(function (this: RpcClient, ...args) {
+		const started = original.apply(this, args);
+		started.then(
+			() => {
+				startEnded = true;
+			},
+			() => {
+				startEnded = true;
+			},
+		);
+		return started;
+	});
+	const inputsFinal = Promise.withResolvers<void>();
+	try {
+		await assert.rejects(
+			createRuntimeForMode(
+				hostRuntimeFactory(modelRuntime, async () => {
+					inputsFinal.resolve();
+					throw new Error("host runtime failed");
+				}),
+				root,
+				agentDir,
+				sessionManager,
+				true,
+				false,
+				parseArgs([]),
+				{},
+				true,
+				undefined,
+				inputsFinal.promise,
+			),
+			/host runtime failed/,
+		);
+		assert.equal(startEnded, true);
+		assert.deepEqual(
+			readdirSync(temp).filter((name) => name.startsWith("atomic-engine-bootstrap-")),
+			[],
+		);
+	} finally {
+		vi.unstubAllEnvs();
 	}
 });
