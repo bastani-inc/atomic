@@ -1334,23 +1334,43 @@ const BUN_SUBPROCESS_TIMEOUT_MS = 60_000;
 describe("OAuth credential shapes and linear-time scanning across Node and Bun", () => {
 	test("redacts auth=Bearer, Authorization=Basic, and other assigned auth schemes without dropping the token", () => {
 		const cases: readonly (readonly [string, string])[] = [
-			["auth=Bearer opaqueAuthEqTok9988", "auth= [redacted]"],
-			["auth=Bearer\topaqueTabTok9988", "auth= [redacted]"],
-			["Authorization=Bearer opaqueAuthEqTok9988", "Authorization= [redacted]"],
-			["Authorization=Basic Y2xpZW50OnNlY3JldDEyMw==", "Authorization= [redacted]"],
-			["auth=Digest opaqueDigTok99", "auth= [redacted]"],
-			["auth=Token opaqueTok99", "auth= [redacted]"],
-			["auth=ApiKey opaqueKey99", "auth= [redacted]"],
-			["auth=OAuth opaqueOAuth99", "auth= [redacted]"],
-			['{"auth": Bearer opaqueJsonBearer99}', '{"auth": [redacted]}'],
-			["auth=Bearer opaqueTok99 PORT=8080", "auth= [redacted] PORT=8080"],
+			["auth=Bearer opaqueAuthEqTok9988", "auth= [redacted] [redacted]"],
+			["auth=Bearer\topaqueTabTok9988", "auth= [redacted]\t[redacted]"],
+			["Authorization=Bearer opaqueAuthEqTok9988", "Authorization= [redacted] [redacted]"],
+			["Authorization=Basic Y2xpZW50OnNlY3JldDEyMw==", "Authorization= [redacted] [redacted]"],
+			["auth=Digest opaqueDigTok99", "auth= [redacted] [redacted]"],
+			["auth=Token opaqueTok99", "auth= [redacted] [redacted]"],
+			["auth=ApiKey opaqueKey99", "auth= [redacted] [redacted]"],
+			["auth=OAuth opaqueOAuth99", "auth= [redacted] [redacted]"],
+			['{"auth": Bearer opaqueJsonBearer99}', '{"auth": [redacted] [redacted]}'],
+			["auth=Bearer opaqueTok99 PORT=8080", "auth= [redacted] [redacted] PORT=8080"],
 			["auth=Bearer\nnext", "auth= [redacted]\nnext"],
-			["Bearer tok%2Ftail%3D", "[redacted]"],
-			["Bearer tok:secretTail", "[redacted]"],
+			["Bearer tok%2Ftail%3D", "[redacted][redacted]"],
+			["Bearer tok:secretTail", "[redacted][redacted]"],
 			["Expected Bearer https://example.com/auth", "Expected [redacted]://example.com/auth"],
 			["Cookie: a=}}", "Cookie: a=[redacted]}"],
 			["login u password smachine h", "login u password [redacted]machine h"],
 			["password:  . Aa", "password: [redacted]. Aa"],
+			// Position-based alignment: never steal across lines or corrupt earlier/later fields
+			["token=x mySecret99\nauth=Bearer mySecret99", "token= [redacted] mySecret99\nauth= [redacted] [redacted]"],
+			['token="x":secretTail\nBearer realTok:secretTail', "token= [redacted]:secretTail\n[redacted][redacted]"],
+			[
+				'token="x"%2FsecretTail\nBearer realTok%2FsecretTail',
+				"token= [redacted]%2FsecretTail\n[redacted][redacted]",
+			],
+			["auth=Bearer Bearer tok%2FsecretTail", "auth= [redacted] [redacted][redacted]"],
+			// Combined --code-verifier + code_verifier: | + code_verifier= + base markers stay intact
+			[
+				"--code-verifier x code_verifier=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+				"--code-verifier [redacted] code_verifier= [redacted]",
+			],
+			[
+				"code_verifier: |\n  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\npassword=MAIN_SECRET_99\ncode_verifier=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+				"code_verifier: |\n  [redacted]\npassword= [redacted]\ncode_verifier= [redacted]",
+			],
+			// Long-line JSON password marker integrity (no [redacted]] corruption)
+			[`${"x".repeat(4100)} {"password":"SEC99"}`, `${"x".repeat(4100)} {"password": [redacted]}`],
+			[`${"x".repeat(4100)} {\\"password\\":\\"SEC99\\"}`, `${"x".repeat(4100)} {\\"password\\": [redacted]}`],
 			// Regression coverage: netrc ANSI-split, doubled schemes, adjacent fields, backslash/paren passwords, ANSI reset
 			[
 				"machine example.com login alice pass\x1b[31mword\x1b[0m mySecretToken99",
@@ -1369,6 +1389,9 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 			["code_verifier=token: mySecretToken99", "code_verifier=token: [redacted]"],
 			["--code-verifier token: mySecretToken99", "--code-verifier token: [redacted]"],
 			["\x1b[31mPASSWORD=mySecret99\x1b[0m \n", "\x1b[31mPASSWORD= [redacted]\x1b[0m \n"],
+			["auth=\x1b[31mBearer\x1b[0m mySecret99", "auth=\x1b[31m [redacted]\x1b[0m [redacted]"],
+			["Bearer tok\x1b[31m%2Fsecret\x1b[0m", "[redacted]\x1b[31m[redacted]\x1b[0m"],
+			["rejected \x1b[31mBasic\x1b[0m Y2xpZW50OnNlY3JldA==", "rejected \x1b[31m[redacted]\x1b[0m [redacted]"],
 		];
 		for (const [input, expected] of cases) {
 			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
@@ -1514,16 +1537,25 @@ const cases = [
 	["standalone_basic", "rejected Basic Y2xpZW50OnNlY3JldDEyMw==", "Y2xpZW50OnNlY3JldDEyMw=="],
 	["standalone_basic_lower", "rejected Basic ajpqampq", "ajpqampq"],
 	["code_verifier_json", '{"code_verifier":"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE"}', "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE"],
+	["pwd_env_3kb_semi_sp", "password=myEnvSecret9988" + " ;".repeat(1535) + "x", "myEnvSecret9988"],
 	["pwd_env_8kb", "password=myEnvSecret9988 " + "z ".repeat(4000), "myEnvSecret9988"],
 	["pwd_env_1mb", "password=myEnvSecret9988 " + "z ".repeat(500_000), "myEnvSecret9988"],
 	["pwd_semi_40kb", "password=mySemiSecret9988" + ";x".repeat(20_000), "mySemiSecret9988"],
 	["pwd_bare_260kb", "password: myBareSecret9988 " + "z ".repeat(130_000), "myBareSecret9988"],
 	["quoted_esc_500kb", '"password":"' + "\\\\a".repeat(250_000) + 'myQuotedSec99"', "myQuotedSec99"],
 	["esc_json_750kb", '\\\\"password\\\\":\\\\"' + "\\\\\\\\a".repeat(250_000) + 'myEscSec99\\\\"', "myEscSec99"],
+	["yaml_nextline_pwd", 'password:\\n  "' + "\\\\a".repeat(130_000) + 'myYamlPwd99"', "myYamlPwd99"],
+	["yaml_nextline_tok", 'token:\\n  "' + "\\\\a".repeat(70_000) + 'myYamlTok99"', "myYamlTok99"],
 	["provider_key_1mb", 'openaiKey="' + "\\\\a".repeat(550_000) + 'myProvSec99"', "myProvSec99"],
 	["cookie_bs_1mb", "Cookie: sid=" + "\\\\x".repeat(550_000) + "myCookSec99", "myCookSec99"],
 	["cookie_brace_1mb", "Cookie: sid=" + "}x".repeat(550_000) + "myCookSec99", "myCookSec99"],
-	["netrc_1mb", "machine h " + "login a ".repeat(150_000) + "password myNetrcSec99", "myNetrcSec99"],
+	["cookie_array_1mb", '{"set-cookie":["sid=' + "\\\\x".repeat(550_000) + 'myCookArr99"]}', "myCookArr99"],
+	["cookie_opt_b_1mb", 'curl -b "sid=' + "\\\\x".repeat(550_000) + 'myCookOptB99" https://x', "myCookOptB99"],
+	["cookie_opt_long_1mb", "curl --cookie sid=" + "\\\\x".repeat(550_000) + "myCookOptL99 https://x", "myCookOptL99"],
+	["netrc_4mb_single", "machine h " + "login a ".repeat(500_000) + "password myNetrc4m99", "myNetrc4m99"],
+	["netrc_4mb_multi", "machine h\\n" + "login a\\n".repeat(500_000) + "password myNetrcM4m99", "myNetrcM4m99"],
+	["pem_4mb_words", "-----BEGIN " + "A ".repeat(1_000_000) + "PRIVATE KEY-----\\nmyPem4m99\\n-----END PRIVATE KEY-----", "myPem4m99"],
+	["cred_opt_4mb_prefix", "--" + "a-".repeat(1_000_000) + "password myCredOpt4m99", "myCredOpt4m99"],
 ];
 for (const [label, input, needle] of cases) {
 	const started = performance.now();
