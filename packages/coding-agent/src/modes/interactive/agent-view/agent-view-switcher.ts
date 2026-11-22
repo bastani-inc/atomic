@@ -1,5 +1,5 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import type { AgentViewBridge, AgentViewRequestOptions } from "./agent-view-bridge.ts";
+import type { AgentViewBridge, AgentViewBridgeState, AgentViewRequestOptions } from "./agent-view-bridge.ts";
 import { type AgentViewChange, type AgentViewPort, VIEWING_MAIN, type ViewedTarget } from "./contracts.ts";
 
 /** How a pending request ended: its subagent was shown, could not be, or another request replaced it. */
@@ -74,6 +74,14 @@ export class AgentViewSwitcher implements AgentViewBridge {
 
 	viewedTaskId(): TaskId | undefined {
 		return this.current.kind === "agent" ? this.current.port.status().taskId : undefined;
+	}
+
+	viewState(): AgentViewBridgeState {
+		const shown = this.viewedTaskId();
+		if (this.pending !== undefined) {
+			return { kind: "opening", taskId: this.pending, ...(shown === undefined ? {} : { previous: shown }) };
+		}
+		return shown === undefined ? { kind: "main" } : { kind: "agent", taskId: shown };
 	}
 
 	/**

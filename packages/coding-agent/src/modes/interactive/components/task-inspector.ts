@@ -1236,6 +1236,13 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
+		const syncAwayAnchor = () => {
+			if (this.navigation.focus.kind !== "detail" || this.selectionPhase.kind !== "away") return;
+			const nextId = this.navigation.selectedId;
+			if (nextId === undefined || nextId === this.selectionPhase.anchor.selectedId) return;
+			const moved = this.captureListAnchor(nextId, this.selected());
+			if (moved !== undefined) this.selectionPhase = { kind: "away", anchor: moved };
+		};
 		const task = this.selected();
 		if (task && this.navigation.focus.kind === "detail") {
 			const actions = taskDetailActions(task.execution, task.attention, this.stdinAvailable());
@@ -1257,16 +1264,13 @@ export class TaskInspector implements Component {
 				void this.navigation.activate(actions[Math.min(this.actionIndex, actions.length - 1)]);
 			else {
 				if (this.boardStale && (matchesKey(data, "home") || matchesKey(data, "end"))) this.refreshOrder();
-				const beforeId = this.navigation.selectedId;
 				if (!this.navigation.handleInput(data, "tasks")) return false;
-				if (this.navigation.selectedId !== beforeId && this.selectionPhase.kind === "away") {
-					const moved = this.captureListAnchor(this.navigation.selectedId, this.selected());
-					if (moved !== undefined) this.selectionPhase = { kind: "away", anchor: moved };
-				}
+				syncAwayAnchor();
 			}
 		} else {
 			if (this.boardStale && (matchesKey(data, "home") || matchesKey(data, "end"))) this.refreshOrder();
 			if (!this.navigation.handleInput(data, "tasks")) return false;
+			syncAwayAnchor();
 		}
 		this.requestRender();
 		return true;

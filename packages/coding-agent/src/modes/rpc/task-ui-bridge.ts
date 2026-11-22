@@ -186,7 +186,9 @@ export async function showTaskInspector(
 	} else if (taskId !== undefined) {
 		inspector.open(taskId as TaskId);
 	} else if (trackReturn) {
-		const viewedId = bridge?.viewedTaskId();
+		const viewState = bridge?.viewState?.();
+		const viewedId =
+			viewState === undefined ? bridge?.viewedTaskId() : viewState.kind === "main" ? undefined : viewState.taskId;
 		const listedViewed =
 			viewedId === undefined
 				? undefined
@@ -199,9 +201,12 @@ export async function showTaskInspector(
 			(saved.selectedId === viewedId ||
 				(listedViewed !== undefined && saved.selectedId === listedViewed.ref.taskId) ||
 				(viewedChildKey !== undefined && saved.childKey === viewedChildKey));
-		if (viewedId !== undefined && !sameAsSaved) {
+		// Only synthesize a fresh viewed-agent anchor when that subagent is actually present in `store`;
+		// if a resumed viewed attempt was already evicted, keep `saved` so nearest-neighbour fallback uses
+		// the departure order instead of an empty order.
+		if (viewedId !== undefined && listedViewed !== undefined && !sameAsSaved) {
 			inspector.restoreAnchor({
-				selectedId: listedViewed?.ref.taskId ?? viewedId,
+				selectedId: listedViewed.ref.taskId,
 				...(viewedChildKey === undefined ? {} : { childKey: viewedChildKey }),
 				order: [],
 				scroll: 0,
@@ -305,10 +310,16 @@ export async function showTaskInspector(
 				inspector.returnAnchor !== undefined
 			) {
 				saveTasksReturnAnchor(store, inspector.returnAnchor);
-			} else if (bridge?.viewedTaskId() === undefined) {
-				// Only clear the saved return anchor when dismissing `/tasks` on `main`; closing `/tasks` with Esc
-				// while still viewing a subagent keeps its saved departure order & scroll intact.
-				clearTasksReturnAnchor(store);
+			} else {
+				const viewState = bridge?.viewState?.();
+				const settledOnMain =
+					viewState !== undefined ? viewState.kind === "main" : bridge?.viewedTaskId() === undefined;
+				if (settledOnMain) {
+					// Only clear the saved return anchor when dismissing `/tasks` while settled on `main`;
+					// dismissing `/tasks` while viewing a subagent or while a view request is in flight keeps
+					// its departure order & scroll intact.
+					clearTasksReturnAnchor(store);
+				}
 			}
 		}
 		inspector?.dispose();

@@ -49,6 +49,7 @@ const RIGHT = "\x1b[C";
 const LEFT = "\x1b[D";
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
+const HOME = "\x1b[H";
 const ESC = "\x1b";
 const SPACE = " ";
 const ALT_W = "\x1bw";
@@ -1021,4 +1022,259 @@ test("focused agent panel follows a selected subagent that resumes under a new a
 	} finally {
 		inspector.dispose();
 	}
+});
+
+test("V1: Home on TaskDetail after the viewed task was removed keeps the new selection when returning to /tasks", async () => {
+	const a1 = agent("a1", "first alpha", 1);
+	const a2 = agent("a2", "second beta", 2);
+	const a3 = agent("a3", "third gamma", 3);
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
+	const inspector = new TaskInspector(
+		ownerTaskViewSource(store),
+		() => {},
+		() => {},
+	);
+	try {
+		// Board order: [a3, a2, a1]. Select middle a2 and open TaskDetail (Space -> Enter).
+		inspector.handleInput(DOWN);
+		assert.equal(inspector.navigation.selectedId, "a2");
+		inspector.handleInput(SPACE);
+		inspector.handleInput(ENTER);
+		await tick();
+		assert.equal(inspector.navigation.focus.kind, "detail");
+
+		// Remove viewed task a2 while in TaskDetail, then press Home -> jumps to a3.
+		store.set([a1, a3]);
+		inspector.handleInput(HOME);
+		assert.equal(inspector.navigation.focus.kind, "detail");
+		assert.equal(inspector.navigation.selectedId, "a3");
+
+		// Return to /tasks via Esc (and also verify <-): must stay on a3, not snap back to stale neighbour a1.
+		inspector.handleInput(ESC);
+		assert.equal(inspector.navigation.focus.kind, "tasks");
+		assert.equal(inspector.navigation.selectedId, "a3");
+	} finally {
+		inspector.dispose();
+	}
+});
+
+test("V2: focused agent panel follows a resumed subagent even when the previous attempt is evicted from backgroundTasks", async () => {
+	const session = { extensionRunner: {} };
+	const a1 = agent("a1", "first alpha", 1, "op-1");
+	const a2 = agent("a2", "second beta", 2, "op-2");
+	const a3 = agent("a3", "third gamma", 3, "op-3");
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
+	bindOwnerTaskStore(session, store);
+	const bridge = fakeBridge();
+	setAgentViewBridge(session, bridge);
+
+	let afterResume = "";
+	await showAgentPanel(
+		session,
+		mountUi(async (component, rows) => {
+			component.handleInput(DOWN); // select middle a2
+			assert.match(selectedLine(rows()), /second beta/);
+			// a2 resumes as a2r AND a2 is evicted from backgroundTasks.
+			const a2r = agent("a2r", "second beta resumed", 4, "op-2:resume:1");
+			store.set([a1, a2r, a3]);
+			await tick();
+			afterResume = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterResume, /second beta resumed/, "evicted old attempt still resolves to resumed attempt a2r");
+});
+
+test("V3: re-entering /tasks after an opened subagent resumed and its resumed attempt was evicted selects original nearest neighbour", async () => {
+	const session = { extensionRunner: {} };
+	const a1 = agent("a1", "first alpha", 1, "op-1");
+	const a2 = agent("a2", "second beta", 2, "op-2");
+	const a3 = agent("a3", "third gamma", 3, "op-3");
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
+	bindOwnerTaskStore(session, store);
+	const bridge = fakeBridge();
+	setAgentViewBridge(session, bridge);
+
+	// Open middle a2 from /tasks ([a3, a2, a1]).
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	assert.equal(bridge.viewedTaskId(), "a2");
+
+	// a2 resumes to a2r (bridge now names a2r), then both a2 and a2r are evicted before the bridge clears.
+	bridge.show("a2r");
+	store.set([a1, a3]);
+
+	let reentered = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			reentered = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(reentered, /first alpha/, "evicted resumed attempt falls back to departure neighbour a1, not top a3");
+});
+
+test("V4: isolated engine Esc on /tasks before set_viewed_agent arrives keeps the return anchor alive across the pending view", async () => {
+	const session = { extensionRunner: {} } as never as AgentSession;
+	const store = new FakeOwnerTaskStore([
+		agent("a1", "first alpha", 1),
+		agent("a2", "second beta", 2),
+		agent("a3", "third gamma", 3),
+	]);
+	bindOwnerTaskStore(session, store);
+	const sent: InteractiveEngineMessage[] = [];
+	const context = { session, send: (message: InteractiveEngineMessage) => sent.push(message) } as never;
+	disposers.push(installEngineAgentViewBridge(context));
+
+	// Open /tasks, select a2, press Enter -> engine sends engine_view_agent(a2) (pending, not acked yet).
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	assert.equal(sent.at(-1)?.type, "engine_view_agent");
+
+	// Re-open /tasks BEFORE set_viewed_agent(a2) arrives, then press Esc.
+	let beforeAck = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			beforeAck = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(beforeAck, /second beta/);
+
+	// Now host delivers set_viewed_agent(a2), then user goes back to main (set_viewed_agent(undefined)).
+	await handleSetViewedAgent({ id: "v1", type: "set_viewed_agent", taskId: "a2" }, context);
+	await handleSetViewedAgent({ id: "v2", type: "set_viewed_agent" }, context);
+
+	// Re-open /tasks on main: must STILL restore a2 (anchor survived the in-flight Esc!).
+	let afterReturn = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterReturn = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterReturn, /second beta/, "return anchor survived Esc during in-flight view request");
+
+	// And dismissing /tasks on settled main (no pending view) still clears the anchor for the next fresh /tasks.
+	let freshOnMain = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			freshOnMain = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(freshOnMain, /third gamma/, "Esc on settled main clears anchor so fresh /tasks starts at top");
+
+	// Also verify failed open recovery: Enter a2 (pending) -> host fails and sends set_viewed_agent(undefined) ->
+	// bridge settles back to main, so a subsequent /tasks -> Esc clears the anchor cleanly.
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await handleSetViewedAgent({ id: "v3", type: "set_viewed_agent" }, context);
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /second beta/);
+			component.handleInput(ESC);
+		}).ui,
+	);
+	let freshAfterFailedOpen = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			freshAfterFailedOpen = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(freshAfterFailedOpen, /third gamma/, "failed open settled to main so Esc cleared the anchor");
+});
+
+test("clicking a nested shell on the 4th row of a >4-row idle agent panel returns to the next full-panel neighbour when it finishes", async () => {
+	const session = { extensionRunner: {} };
+	const store = new FakeOwnerTaskStore([
+		agent("a1", "row-1", 1),
+		agent("a2", "row-2", 2),
+		agent("a3", "row-3", 3),
+		agent("a4", "row-4", 4),
+		agent("a5", "row-5", 5),
+		shell("s3", "shell-3", 6, "a3"),
+	]);
+	bindOwnerTaskStore(session, store);
+	const bridge = fakeBridge();
+	setAgentViewBridge(session, bridge);
+
+	// Full panel order: [a5, a4, a3, s3, a2, a1]. Idle cap (4 rows) shows [main, a5, a4, a3, s3, +2 more].
+	// Click s3 -> s3 finishes -> <- opens focused panel: next surviving neighbour after s3 is a2 (row-2), not a3 or a5!
+	let returnedSelected = "";
+	const { ui } = mountUi(async (component, rows, mountIndex) => {
+		if (mountIndex === 1) {
+			await tick();
+			store.update("s3", done);
+			component.handleInput(LEFT);
+		} else {
+			returnedSelected = selectedLine(rows());
+			component.handleInput(ESC);
+		}
+	});
+	let widget: Mounted | undefined;
+	disposers.push(
+		bindAgentPanel(
+			session as never,
+			{
+				setWidget(_key: string, content: unknown) {
+					widget = typeof content === "function" ? (content({} as never, {} as never) as Mounted) : undefined;
+				},
+				requestRender() {},
+			} as never,
+			undefined,
+			ui,
+		),
+	);
+	const idleLines = plain(widget!.render(100));
+	const s3Row = idleLines.findIndex((line) => line.includes("shell-3"));
+	assert.notEqual(s3Row, -1, idleLines.join("\n"));
+	widget!.handleMouse?.({
+		type: "click",
+		button: "left",
+		x: 6,
+		y: s3Row,
+		screenX: 6,
+		screenY: 30 + s3Row,
+		width: 100,
+		height: idleLines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	});
+	await tick();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.match(returnedSelected, /row-2/, "next neighbour below the 4-row idle cap is selected");
 });

@@ -60,7 +60,12 @@ import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
-import { clearTasksReturnAnchor, type ListSelectionAnchor } from "../interactive/components/task-selection-state.js";
+import {
+	clearTasksReturnAnchor,
+	type ListSelectionAnchor,
+	resolveChildAttemptId,
+	subagentChildKey,
+} from "../interactive/components/task-selection-state.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getGlobalTheme } from "../interactive/theme/global-theme.ts";
 import { theme } from "../interactive/theme/theme.js";
@@ -725,9 +730,24 @@ export function bindAgentPanel(
 						}
 						const row = painted.rows.find((candidate) => candidate.id === id);
 						if (row === undefined) return undefined;
+						// When rows are folded below the 4-row idle cap, capture the full panel order so returning
+						// from a nested shell on the last idle row sees its next neighbour below the cap.
+						let order = painted.rows.map((candidate) => candidate.id);
+						if (painted.hiddenBelow > 0) {
+							try {
+								const fullOrder = rankPanelSession(session).rows.map((candidate) => candidate.id);
+								if (fullOrder.includes(row.id)) order = fullOrder;
+							} catch {}
+						}
+						const taskId = panelTaskId(row);
+						const childKey =
+							taskId === undefined
+								? undefined
+								: subagentChildKey(getOwnerTaskStore(session)?.taskRecord(taskId));
 						const anchor: ListSelectionAnchor = {
 							selectedId: row.id,
-							order: painted.rows.map((candidate) => candidate.id),
+							...(childKey === undefined ? {} : { childKey }),
+							order,
 							scroll: 0,
 						};
 						openPanelRow(session, inspector, materializePanelItem(row), report, anchor).catch(report);
@@ -968,14 +988,32 @@ export async function showAgentPanel(
 	const bridge = agentViewBridge(session);
 	/** The shown subagent's row, as the last ranking found it. */
 	let focusViewed: string | undefined;
+	/** Stable child keys seen during this focused panel session, surviving eviction of superseded attempts. */
+	const rowChildKeys = new Map<string, string>();
+	if (returnAnchor?.childKey !== undefined) rowChildKeys.set(returnAnchor.selectedId, returnAnchor.childKey);
+	const recordChildKeys = () => {
+		if (store === undefined) return;
+		for (const task of ownerTaskViewSource(store).backgroundTasks) {
+			const key = subagentChildKey(task);
+			if (key !== undefined) rowChildKeys.set(`task:${task.ref.taskId}`, key);
+		}
+	};
 	const resolvePanelAlias = (id: string, nextOrder: readonly string[]): string | undefined => {
 		if (store === undefined || !id.startsWith("task:")) return undefined;
-		const latest = latestSubagentAttempt(ownerTaskViewSource(store).backgroundTasks, id.slice(5) as TaskId);
-		if (latest === undefined) return undefined;
-		const mapped = `task:${latest.ref.taskId}`;
-		return nextOrder.includes(mapped) ? mapped : undefined;
+		const tasks = ownerTaskViewSource(store).backgroundTasks;
+		const latest = latestSubagentAttempt(tasks, id.slice(5) as TaskId);
+		if (latest !== undefined) {
+			const mapped = `task:${latest.ref.taskId}`;
+			if (nextOrder.includes(mapped)) return mapped;
+		}
+		const cachedKey = rowChildKeys.get(id);
+		if (cachedKey === undefined) return undefined;
+		const taskOrder = nextOrder.filter((rowId) => rowId.startsWith("task:")).map((rowId) => rowId.slice(5));
+		const matched = resolveChildAttemptId(tasks, taskOrder, cachedKey);
+		return matched === undefined ? undefined : `task:${matched}`;
 	};
 	const focusedRows = (scroll: number) => {
+		recordChildKeys();
 		const ranking = rankPanelSession(session, { start: Math.max(0, scroll), limit: AGENT_PANEL_FOCUSED_ROWS });
 		focusViewed = ranking.viewed;
 		return ranking.rows;
@@ -1023,7 +1061,9 @@ export async function showAgentPanel(
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const item = materializePanelItem(row);
-						const anchor = focus.captureAnchor(row.id);
+						const baseAnchor = focus.captureAnchor(row.id);
+						const childKey = rowChildKeys.get(row.id);
+						const anchor: ListSelectionAnchor = childKey === undefined ? baseAnchor : { ...baseAnchor, childKey };
 						next = () => openPanelRow(session, ui, item, report, anchor);
 						finish();
 					},
