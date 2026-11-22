@@ -12,6 +12,11 @@ export function armDeferredHostCompileCacheFlush(): void {
 	state[DEFERRED_HOST_CACHE_FLUSH_KEY] = true;
 }
 
+/** Whether a deferred host compile-cache flush is currently pending. */
+export function hasDeferredHostCompileCacheFlush(): boolean {
+	return state[DEFERRED_HOST_CACHE_FLUSH_KEY] === true;
+}
+
 /**
  * Flush this host's compile cache once if a derived prewarm adoption deferred it. Subsequent calls are no-ops until
  * armed again. Returns true when a deferred flush ran.

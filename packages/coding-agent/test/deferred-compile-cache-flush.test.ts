@@ -3,6 +3,7 @@ import { afterEach, describe, test } from "vitest";
 import {
 	armDeferredHostCompileCacheFlush,
 	flushDeferredHostCompileCache,
+	hasDeferredHostCompileCacheFlush,
 } from "../src/utils/deferred-compile-cache-flush.ts";
 
 afterEach(() => {
@@ -13,6 +14,7 @@ afterEach(() => {
 describe("deferred host compile-cache flush", () => {
 	test("is a no-op when not armed", () => {
 		let calls = 0;
+		assert.equal(hasDeferredHostCompileCacheFlush(), false);
 		assert.equal(
 			flushDeferredHostCompileCache(() => {
 				calls++;
@@ -28,14 +30,18 @@ describe("deferred host compile-cache flush", () => {
 			calls++;
 		};
 		armDeferredHostCompileCacheFlush();
+		assert.equal(hasDeferredHostCompileCacheFlush(), true);
 		armDeferredHostCompileCacheFlush();
 		assert.equal(flushDeferredHostCompileCache(flush), true);
+		assert.equal(hasDeferredHostCompileCacheFlush(), false);
 		assert.equal(calls, 1);
 		assert.equal(flushDeferredHostCompileCache(flush), false);
 		assert.equal(calls, 1);
 
 		armDeferredHostCompileCacheFlush();
+		assert.equal(hasDeferredHostCompileCacheFlush(), true);
 		assert.equal(flushDeferredHostCompileCache(flush), true);
+		assert.equal(hasDeferredHostCompileCacheFlush(), false);
 		assert.equal(calls, 2);
 	});
 });

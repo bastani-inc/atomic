@@ -6,7 +6,10 @@ import { prewarmModelApi } from "../../core/model-api-prewarm.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
 import { recordStartupThinkingLevel } from "../../core/startup-thinking-level.ts";
-import { flushDeferredHostCompileCache } from "../../utils/deferred-compile-cache-flush.ts";
+import {
+	flushDeferredHostCompileCache,
+	hasDeferredHostCompileCacheFlush,
+} from "../../utils/deferred-compile-cache-flush.ts";
 import { runsInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -179,10 +182,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 	// A host that adopted a prewarmed engine with derived startup environment deferred its compile-cache flush off
 	// handover. Flush once idle here (or shortly after if the user has an unsubmitted draft); an active early prompt
 	// flushes after the prompt is handed to the engine.
-	if (!this.isShuttingDown && !this.promptTurnWorkingLoaderActive) {
-		if (this.editor.getText().length === 0) {
+	if (hasDeferredHostCompileCacheFlush() && !this.isShuttingDown && !this.promptTurnWorkingLoaderActive) {
+		const isEditorEmpty = () => (this.editor?.getText?.().length ?? 0) === 0;
+		if (isEditorEmpty()) {
 			setImmediate(() => {
-				if (!this.isShuttingDown && !this.promptTurnWorkingLoaderActive && this.editor.getText().length === 0) {
+				if (!this.isShuttingDown && !this.promptTurnWorkingLoaderActive && isEditorEmpty()) {
 					flushDeferredHostCompileCache();
 				}
 			});
