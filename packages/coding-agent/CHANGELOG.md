@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `SessionResume` now carries optional per-axis `retainedSettings` provenance (`"held"`, `"none"`, or `"not-held"`) for the active branch's latest model and thinking-level changes, allowing partial-history sessions to distinguish confirmed absence from unretained pre-window settings without additional store reads (while keeping `SessionManager.getLatestBranchSettings` and custom stores omitting `retainedSettings` compatible with 0.10.4).
+
 ### Fixed
 
 - A session that started on 0.10.4 and keeps running after an in-place update (`npm install -g`, `bun add -g`) now says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` when the update's code for a feature it loads on demand cannot load into it, instead of failing with the runtime's error. A session that starts on this release or later says so by itself for every later update, whatever that release changes; features whose updated code loads keep working as before.
