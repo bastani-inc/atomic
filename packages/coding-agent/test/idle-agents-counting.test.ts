@@ -295,16 +295,20 @@ const STORE_COUNT_SAMPLES = 5;
 const STORE_COUNT_GAP_MS = 100;
 
 /**
- * Async context stores once their count holds still, and the counts it took. Under load, work still finishing after a
- * wave was seen holding one store more for one count, gone once the wave had settled: counted at once, that read as a
- * store the released agents keep. A store an agent keeps stays in every count, so it still fails the comparison.
+ * Async context stores once their count holds still, and the counts it took: counted after a settle, then again a settle
+ * apart until two counts agree or one is `expected`. Under load, work still finishing after a wave was seen holding one
+ * store more for one count, gone once the wave had settled: counted at once, that read as a store the released agents
+ * keep. A store an agent keeps stays in every count, so it still fails the comparison. Each count is a full collection
+ * and a walk of the whole heap, so a count that is already `expected` is the last.
  */
 async function asyncContextStoresOnceSettled(
 	settle: () => Promise<unknown>,
+	expected?: number,
 ): Promise<{ stores: number; counts: number[] }> {
 	await settle();
 	const counts = [asyncContextStores()];
-	while (counts.length < STORE_COUNT_SAMPLES && (counts.length < 2 || counts.at(-1) !== counts.at(-2))) {
+	const holdsStill = () => counts.at(-1) === expected || (counts.length > 1 && counts.at(-1) === counts.at(-2));
+	while (counts.length < STORE_COUNT_SAMPLES && !holdsStill()) {
 		await new Promise((resolve) => setTimeout(resolve, STORE_COUNT_GAP_MS));
 		await settle();
 		counts.push(asyncContextStores());
@@ -337,7 +341,7 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 		assert.equal(released.length, AGENTS_PER_WAVE * 3);
 		assert.deepEqual(await settledHandles(), afterFirst.handles);
 		assert.equal(h.subscriptions(), afterFirst.listeners);
-		const stores = await asyncContextStoresOnceSettled(h.settled);
+		const stores = await asyncContextStoresOnceSettled(h.settled, afterFirst.stores.stores);
 		assert.equal(
 			stores.stores,
 			afterFirst.stores.stores,
