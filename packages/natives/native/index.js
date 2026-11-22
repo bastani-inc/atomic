@@ -873,6 +873,7 @@ function __napiStampBindingTarget(exportsObject, target) {
 module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __napiLoadedBindingTarget)
 module.exports = nativeBinding
 module.exports.AdvisoryLock = nativeBinding.AdvisoryLock
+module.exports.HeldProcessDescendants = nativeBinding.HeldProcessDescendants
 module.exports.HostProcess = nativeBinding.HostProcess
 module.exports.HostSession = nativeBinding.HostSession
 module.exports.OwnerLease = nativeBinding.OwnerLease
@@ -902,6 +903,7 @@ module.exports.glob = nativeBinding.glob
 module.exports.grep = nativeBinding.grep
 module.exports.GrepOutputMode = nativeBinding.GrepOutputMode
 module.exports.hasMatch = nativeBinding.hasMatch
+module.exports.holdProcessDescendants = nativeBinding.holdProcessDescendants
 module.exports.HostProcessEventKind = nativeBinding.HostProcessEventKind
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees

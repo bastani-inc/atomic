@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
 import { afterEach, describe, test } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
@@ -21,6 +22,11 @@ const KEYS_APART_MS = 60;
 const LONE_ESCAPE_GAP_MS = 300;
 /** Long enough for several of a 50 ms check's turns. */
 const WRITER_CHECK_WAIT_MS = 500;
+/**
+ * How long a test that must act while the early editor shows holds back the session's main module, which the CLI
+ * imports once the early editor shows: far longer than the test takes to see the prompt and type, on a loaded machine.
+ */
+const SESSION_HELD_BACK_MS = 5_000;
 /** A real CLI child plus its startup under a loaded machine: structural, not a slow test. */
 const REAL_CLI_TEST_TIMEOUT_MS = 3 * CLI_TIMEOUT_MS;
 
@@ -333,6 +339,53 @@ test(
 	},
 	REAL_CLI_TEST_TIMEOUT_MS,
 );
+
+for (const [quit, keys] of [
+	["Ctrl+C twice", "\x03\x03"],
+	["Ctrl+D", "\x04"],
+] as const)
+	test(
+		`${quit} on the early editor's empty prompt exits and leaves its last frame on the screen, as the session does`,
+		async () => {
+			const dir = makeTempDirectory("atomic-early-editor-quit-");
+			roots.push(dir);
+			// The session's main module loads only after a wait, so the session cannot be ready before the keys typed
+			// meanwhile reach the early editor. Where Node holds input until that module has loaded, the keys still
+			// reach the early editor first, as soon as it has, long before the session it starts is ready.
+			// Only in the process that shows the early editor: an engine child (`--internal-engine-…`) loads as usual.
+			const hooks = join(dir, "hold-main.mjs");
+			writeFileSync(
+				hooks,
+				`export async function load(url, context, nextLoad) {
+	if (/[\\\\/]dist[\\\\/]main\\.js$/.test(url)) await new Promise((resolve) => setTimeout(resolve, ${SESSION_HELD_BACK_MS}));
+	return nextLoad(url, context);
+}
+`,
+			);
+			const preload = join(dir, "register-hold-main.mjs");
+			writeFileSync(
+				preload,
+				`import { register } from "node:module";\nif (!process.argv.some((arg) => arg.startsWith("--internal-engine"))) register(${JSON.stringify(pathToFileURL(hooks).href)});\n`,
+			);
+			const program = startCli(["--approve"], {
+				NODE_OPTIONS: `--import ${JSON.stringify(pathToFileURL(preload).href)}`,
+			});
+			await program.waitForScreen((screen) => screen.includes("❯"), CLI_TIMEOUT_MS, "the prompt");
+			program.write(keys);
+			const exit = (await program.exited) as PtyExit;
+			assert.equal(exit.timedOut, false);
+			assert.equal(exit.exitCode, 0);
+			const screen = (await screensOf(program.output(), 100, 30)).at(-1) ?? "";
+			assert.equal(screen.includes(SESSION_HEADER), false, `the early editor quit, not the session:\n${screen}`);
+			// What the session leaves when it exits: its last frame, here the prompt between its borders.
+			assert.equal(promptLine(screen), "❯", `the prompt stays on the screen:\n${screen}`);
+			assert.ok(
+				screen.split("\n").filter((line) => /^─{10,}/u.test(line.trim())).length >= 2,
+				`both borders stay on the screen:\n${screen}`,
+			);
+		},
+		REAL_CLI_TEST_TIMEOUT_MS,
+	);
 
 test(
 	"console and stderr writers installed while the early editor shows are still in place once the session has taken over",
