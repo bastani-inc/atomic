@@ -117,3 +117,20 @@ for (const { name, executable } of gits) {
 		});
 	});
 }
+
+test.skipIf(process.platform === "win32")(
+	"a store whose path has a line break is restored into and removed from with the installed Git",
+	async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "one\n" });
+		sandbox.write(join(clone, "a.txt"), "edited\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const captured = await captureWorktreeSnapshot(clone, { blobs });
+		assert.equal(captured.status, "captured", JSON.stringify(captured));
+		const snapshot = (captured as { snapshot: WorktreeSnapshot }).snapshot;
+		const storeDir = sandbox.path("machine\nb");
+		const restored = await restoreWorktree(snapshot, { blobs, storeDir });
+		assert.equal(readFileSync(join(restored.path, "a.txt"), "utf8"), "edited\n");
+		await removeRestoredWorktree(restored.path, { storeDir });
+		assert.equal(existsSync(restored.path), false);
+	},
+);

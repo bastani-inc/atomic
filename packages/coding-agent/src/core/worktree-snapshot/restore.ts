@@ -1354,32 +1354,34 @@ async function unshallowStore(
 	return false;
 }
 
-/** The shared object store a restored worktree's Git directory names: Atomic's own, never a user's repository. */
 /** What Git before 2.31, which has no `--path-format`, prints first when asked for it: the option itself. */
 const PATH_FORMAT_ABSOLUTE = "--path-format=absolute";
 
 /**
  * The common Git directory of the checkout at `git.cwd` as `git rev-parse --path-format=absolute --git-common-dir`
  * prints it, through any symlink, and its exit code, one of `allowExitCodes` (128 outside a repository; any other code
- * rejects as {@link runGit} does). Git before 2.31 prints the option back
- * and exits with 0, then the directory relative to the working directory, which Git is asked to resolve as it resolves
- * an absolute one.
+ * rejects as {@link runGit} does). Git before 2.31 prints the option back on a line of its own and exits with 0, then
+ * the directory relative to the working directory, which Git is asked to resolve as it resolves an absolute one. A path
+ * can hold a line break: all of what Git prints after the option is the path.
  */
 async function absoluteCommonDir(
 	git: GitRunOptions,
 	allowExitCodes: readonly number[] = [128],
 ): Promise<{ readonly exitCode: number; readonly path: string }> {
 	const asked = await runGit(["rev-parse", PATH_FORMAT_ABSOLUTE, "--git-common-dir"], { ...git, allowExitCodes });
-	const [first = "", named = ""] = asked.stdout.toString("utf8").trim().split("\n");
-	if (asked.exitCode !== 0 || first !== PATH_FORMAT_ABSOLUTE) return { exitCode: asked.exitCode, path: first };
+	const text = asked.stdout.toString("utf8").trim();
+	if (asked.exitCode !== 0 || !text.startsWith(`${PATH_FORMAT_ABSOLUTE}\n`)) {
+		return { exitCode: asked.exitCode, path: text };
+	}
 	const real = await runGit(["rev-parse", "--absolute-git-dir"], {
 		...git,
-		env: { ...git.env, GIT_DIR: resolve(git.cwd, named) },
+		env: { ...git.env, GIT_DIR: resolve(git.cwd, text.slice(PATH_FORMAT_ABSOLUTE.length + 1)) },
 		allowExitCodes,
 	});
 	return { exitCode: real.exitCode, path: real.stdout.toString("utf8").trim() };
 }
 
+/** The shared object store a restored worktree's Git directory names: Atomic's own, never a user's repository. */
 const SHARED_STORE = /[\\/]repositories[\\/][0-9a-f]{24}\.git$/;
 
 /**
@@ -1699,13 +1701,11 @@ const pullingHere = new Set<string>();
 
 /** `name` in the worktree's own Git directory. */
 async function worktreeGitPath(worktree: GitRunOptions, name: string): Promise<string> {
-	const [first = "", named = ""] = (
-		await gitText(["rev-parse", "--path-format=absolute", "--git-path", name], worktree)
-	).split("\n");
-	if (first !== PATH_FORMAT_ABSOLUTE) return resolve(worktree.cwd, first);
-	// Git before 2.31 printed the option back, then the path relative to the working directory: resolve it as Git
-	// resolves an absolute one, through any symlink, the file itself perhaps not there yet.
-	const path = resolve(worktree.cwd, named);
+	const text = await gitText(["rev-parse", PATH_FORMAT_ABSOLUTE, "--git-path", name], worktree);
+	if (!text.startsWith(`${PATH_FORMAT_ABSOLUTE}\n`)) return resolve(worktree.cwd, text);
+	// Git before 2.31 printed the option back on a line of its own, then the path relative to the working directory:
+	// resolve it as Git resolves an absolute one, through any symlink, the file itself perhaps not there yet.
+	const path = resolve(worktree.cwd, text.slice(PATH_FORMAT_ABSOLUTE.length + 1));
 	try {
 		return await realpath(path);
 	} catch {
