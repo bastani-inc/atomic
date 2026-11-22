@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Moving or copying a custom agent directory and its adopted parent store on filesystems that reuse freed inodes (such as ext4) no longer lets a sibling, recreated directory, or post-move clone hijack parent or relative-target ownership when a new file or directory receives a deleted owner's inode. Owner resolution now verifies the recorded decision ID, parent-adoption state, file creation timestamps, and claim-directory identity alongside device and inode numbers.
+- Moving or copying a custom agent directory and its adopted parent store on filesystems that reuse freed inodes (such as ext4) no longer lets a sibling or recreated directory hijack parent or relative-target ownership when its new `.atomic-storage-home` file receives a deleted owner's inode. Owner resolution now verifies that matching decision IDs agree before accepting an inode match.
 
 ## [0.10.4] - 2026-11-22
 

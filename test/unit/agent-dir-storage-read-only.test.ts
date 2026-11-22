@@ -30,21 +30,26 @@ const fsFaults = vi.hoisted(() => ({
 	unreadableFiles: new Map<string, FaultCode>(),
 	unreadableOpenDirs: new Map<string, FaultCode>(),
 	statOverrides: new Map<string, StatIdentityOverride>(),
+	globalZeroIno: false,
+	recordedReads: [] as string[],
+	recordedWriteAttempts: [] as string[],
 }));
 
 function applyStatOverride<T extends object | undefined>(path: PathLike, stats: T): T {
 	if (stats === undefined || typeof path !== "string") return stats;
 	const override = fsFaults.statOverrides.get(resolve(path));
-	if (override === undefined) return stats;
+	if (override === undefined && !fsFaults.globalZeroIno) return stats;
 	const isBigInt = typeof (stats as { ino?: unknown }).ino === "bigint";
 	const descriptors: PropertyDescriptorMap = {};
-	if (override.dev !== undefined) {
+	if (override?.dev !== undefined) {
 		descriptors.dev = { value: isBigInt ? override.dev : Number(override.dev), configurable: true };
 	}
-	if (override.ino !== undefined) {
+	if (override?.ino !== undefined) {
 		descriptors.ino = { value: isBigInt ? override.ino : Number(override.ino), configurable: true };
+	} else if (fsFaults.globalZeroIno) {
+		descriptors.ino = { value: isBigInt ? 0n : 0, configurable: true };
 	}
-	if (override.birthtimeNs !== undefined && isBigInt) {
+	if (override?.birthtimeNs !== undefined && isBigInt) {
 		descriptors.birthtimeNs = { value: override.birthtimeNs, configurable: true };
 	}
 	return Object.defineProperties(stats, descriptors);
@@ -85,6 +90,7 @@ vi.mock("node:fs", async (original) => {
 			return fs.mkdirSync(...args);
 		},
 		writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+			if (typeof args[0] === "string") fsFaults.recordedWriteAttempts.push(resolve(args[0]));
 			const match = matchingReadOnlyDir(args[0]);
 			if (match !== undefined) throw errnoException(match.code, "open", String(args[0]));
 			return fs.writeFileSync(...args);
@@ -112,6 +118,7 @@ vi.mock("node:fs", async (original) => {
 		},
 		readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
 			if (typeof args[0] === "string") {
+				fsFaults.recordedReads.push(resolve(args[0]));
 				const code = fsFaults.unreadableFiles.get(resolve(args[0]));
 				if (code !== undefined) throw errnoException(code, "open", args[0]);
 			}
@@ -229,6 +236,9 @@ beforeEach(() => {
 	fsFaults.unreadableFiles.clear();
 	fsFaults.unreadableOpenDirs.clear();
 	fsFaults.statOverrides.clear();
+	fsFaults.globalZeroIno = false;
+	fsFaults.recordedReads.length = 0;
+	fsFaults.recordedWriteAttempts.length = 0;
 	root = makeTempDirectory("storage-read-only-");
 	resetStorageHomeCacheForTests();
 	for (const name of [
@@ -250,6 +260,9 @@ afterEach(() => {
 	fsFaults.unreadableFiles.clear();
 	fsFaults.unreadableOpenDirs.clear();
 	fsFaults.statOverrides.clear();
+	fsFaults.globalZeroIno = false;
+	fsFaults.recordedReads.length = 0;
+	fsFaults.recordedWriteAttempts.length = 0;
 	vi.unstubAllEnvs();
 	removeTempDirectory(root);
 });
@@ -715,10 +728,10 @@ test("a rejected clone with its own relative session store retains that store wh
 	}
 });
 
-test("a moved and renamed owner keeps its parent store when a sibling or recreated old-name directory reuses the deleted owner's decision or directory inode (#5242)", async () => {
+test("a moved and renamed owner keeps its parent store when a sibling or recreated old-name directory reuses the deleted owner's decision inode (#5242)", async () => {
 	const home = join(root, "inode-reuse-home");
 	useHome(home);
-	for (const recordVariant of ["current", "legacy-without-birthtime", "legacy-minimal"] as const) {
+	for (const recordVariant of ["current", "legacy-minimal"] as const) {
 		fsFaults.statOverrides.clear();
 		const original = join(root, `inode-reuse-orig-${recordVariant}`);
 		const moved = join(root, `inode-reuse-moved-${recordVariant}`);
@@ -733,19 +746,12 @@ test("a moved and renamed owner keeps its parent store when a sibling or recreat
 		resetStorageHomeCacheForTests();
 		assert.equal(storageHomeDir(agent, {}), original);
 		const origHomeStat = statSync(join(agent, ".atomic-storage-home"), { bigint: true });
-		const origDirStat = statSync(agent, { bigint: true });
 
-		if (recordVariant !== "current") {
+		if (recordVariant === "legacy-minimal") {
 			const claimPath = join(original, ".atomic-storage-parent-owner");
 			const parsed = JSON.parse(readFileSync(claimPath, "utf8")) as Record<string, unknown>;
-			delete parsed.identityBirthtimeNs;
-			delete parsed.directoryBirthtimeNs;
-			delete parsed.claimDirectoryIdentity;
-			delete parsed.claimDirectoryBirthtimeNs;
-			if (recordVariant === "legacy-minimal") {
-				delete parsed.decisionId;
-				delete parsed.directoryIdentity;
-			}
+			delete parsed.decisionId;
+			delete parsed.directoryIdentity;
 			writeFileSync(claimPath, `${JSON.stringify(parsed)}\n`);
 		}
 
@@ -758,7 +764,7 @@ test("a moved and renamed owner keeps its parent store when a sibling or recreat
 		const claimFile = join(moved, ".atomic-storage-parent-owner");
 		const staleClaimRaw = readFileSync(claimFile, "utf8");
 
-		// Simulate the sibling's new .atomic-storage-home reusing the deleted owner's inode within the same clock tick.
+		// Simulate the sibling's new .atomic-storage-home reusing the deleted owner's inode.
 		fsFaults.statOverrides.set(resolve(join(movedSibling, ".atomic-storage-home")), {
 			dev: origHomeStat.dev,
 			ino: origHomeStat.ino,
@@ -769,112 +775,57 @@ test("a moved and renamed owner keeps its parent store when a sibling or recreat
 		assert.equal(readFileSync(claimFile, "utf8"), staleClaimRaw);
 
 		if (recordVariant === "legacy-minimal") {
-			// A minimal legacy record has no decisionId to follow a copied-and-renamed owner, but the sibling still
-			// must not hijack parent ownership.
+			// A minimal record without decisionId keeps existing behavior and never breaks sibling isolation.
 			resetStorageHomeCacheForTests();
 			assert.equal(storageHomeDir(movedSibling, {}), movedSibling);
 			continue;
 		}
 
-		// Also simulate a brand-new sibling created at the recorded old name ("a1") reusing the owner's deleted
-		// directory and decision inodes (fast-path and weak-match directoryIdentity checks).
-		const recreatedOldName = join(moved, "a1");
+		// Also verify a brand-new sibling at the recorded old name ("a1") whose settled .atomic-storage-home reuses
+		// the deleted owner's decision inode (fast-path exact check). Create the directory before removing a fresh
+		// copy's original so its directory inode is distinct while statOverrides injects the reused decision inode.
+		const fpOrig = join(root, `inode-reuse-fp-orig-${recordVariant}`);
+		const fpMoved = join(root, `inode-reuse-fp-moved-${recordVariant}`);
+		const fpAgent = join(fpOrig, "a1");
+		mkdirSync(fpAgent, { recursive: true });
+		mkdirSync(join(fpOrig, "workflows"), { recursive: true });
+		writeFileSync(join(fpOrig, "workflows", "journal.sqlite"), "");
+		writeFileSync(join(fpAgent, "settings.json"), JSON.stringify({ defaultThinkingLevel: "high" }));
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(fpAgent, {}), fpOrig);
+		const fpOrigHomeStat = statSync(join(fpAgent, ".atomic-storage-home"), { bigint: true });
+
+		cpSync(fpOrig, fpMoved, { recursive: true });
+		const fpCurrent = join(fpMoved, "main");
+		const recreatedOldName = join(fpMoved, "a1");
+		renameSyncWithRetry(join(fpMoved, "a1"), fpCurrent);
 		mkdirSync(recreatedOldName, { recursive: true });
-		fsFaults.statOverrides.set(resolve(recreatedOldName), {
-			dev: origDirStat.dev,
-			ino: origDirStat.ino,
-			birthtimeNs: origDirStat.birthtimeNs,
-		});
+		rmSync(fpOrig, { recursive: true });
+
+		const fpClaimFile = join(fpMoved, ".atomic-storage-parent-owner");
+		const fpStaleClaimRaw = readFileSync(fpClaimFile, "utf8");
 		resetStorageHomeCacheForTests();
-		// Even while empty (before settling its own .atomic-storage-home), it cannot hijack ownership from `current`.
 		assert.equal(storageHomeDir(recreatedOldName, {}), recreatedOldName);
-		assert.equal(readFileSync(claimFile, "utf8"), staleClaimRaw);
-		// And once settled, even if its .atomic-storage-home also reuses the deleted owner's decision inode:
+		assert.equal(readFileSync(fpClaimFile, "utf8"), fpStaleClaimRaw);
 		fsFaults.statOverrides.set(resolve(join(recreatedOldName, ".atomic-storage-home")), {
-			dev: origHomeStat.dev,
-			ino: origHomeStat.ino,
-			birthtimeNs: origHomeStat.birthtimeNs,
+			dev: fpOrigHomeStat.dev,
+			ino: fpOrigHomeStat.ino,
+			birthtimeNs: fpOrigHomeStat.birthtimeNs,
 		});
 		resetStorageHomeCacheForTests();
 		assert.equal(storageHomeDir(recreatedOldName, {}), recreatedOldName);
+		assert.equal(storageHomeDir(fpCurrent, {}), fpMoved);
+		const fpRefreshedClaim = JSON.parse(readFileSync(fpClaimFile, "utf8")) as { relativePath?: string };
+		assert.equal(fpRefreshedClaim.relativePath, "main");
+
+		resetStorageHomeCacheForTests();
 		assert.equal(storageHomeDir(current, {}), moved);
 		const refreshedClaim = JSON.parse(readFileSync(claimFile, "utf8")) as { relativePath?: string };
 		assert.equal(refreshedClaim.relativePath, "main");
 	}
 });
 
-test("a clone created after a copied-parent move cannot steal ownership from the recorded owner by reusing deleted inodes in the same clock tick (#5242)", () => {
-	const home = join(root, "clone-reuse-home");
-	useHome(home);
-	const original = join(root, "clone-reuse-orig");
-	const moved = join(root, "clone-reuse-moved");
-	const agent = join(original, "a1");
-	mkdirSync(agent, { recursive: true });
-	mkdirSync(join(original, "workflows"), { recursive: true });
-	writeFileSync(join(original, "workflows", "journal.sqlite"), "");
-	writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultThinkingLevel: "high" }));
-
-	assert.equal(storageHomeDir(agent, {}), original);
-	const origDirStat = statSync(agent, { bigint: true });
-	const origHomeStat = statSync(join(agent, ".atomic-storage-home"), { bigint: true });
-
-	cpSync(original, moved, { recursive: true });
-	rmSync(original, { recursive: true });
-	const current = join(moved, "a1");
-	const clone = join(moved, "a1-backup");
-	cpSync(current, clone, { recursive: true });
-
-	// Simulate the post-removal clone reusing BOTH the deleted original directory and decision inodes in the same tick.
-	fsFaults.statOverrides.set(resolve(clone), {
-		dev: origDirStat.dev,
-		ino: origDirStat.ino,
-		birthtimeNs: origDirStat.birthtimeNs,
-	});
-	fsFaults.statOverrides.set(resolve(join(clone, ".atomic-storage-home")), {
-		dev: origHomeStat.dev,
-		ino: origHomeStat.ino,
-		birthtimeNs: origHomeStat.birthtimeNs,
-	});
-
-	resetStorageHomeCacheForTests();
-	assert.equal(storageHomeDir(clone, {}), clone);
-	assert.equal(storageHomeDir(current, {}), moved);
-});
-
-test("a fresh sibling directory that reuses a deleted owner's inode with a newer birthtime cannot claim the parent store (#5242)", () => {
-	const home = join(root, "deleted-owner-reuse-home");
-	useHome(home);
-	for (const readOnlyOwner of [false, true]) {
-		fsFaults.readOnlyDirs.clear();
-		fsFaults.statOverrides.clear();
-		const parent = join(root, `deleted-owner-parent-${readOnlyOwner ? "ro" : "rw"}`);
-		const agent = join(parent, "a1");
-		mkdirSync(agent, { recursive: true });
-		mkdirSync(join(parent, "workflows"), { recursive: true });
-		writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
-		writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultThinkingLevel: "high" }));
-		if (readOnlyOwner) fsFaults.readOnlyDirs.set(agent, "EACCES");
-
-		resetStorageHomeCacheForTests();
-		assert.equal(storageHomeDir(agent, {}), parent);
-		const origDirStat = statSync(agent, { bigint: true });
-
-		fsFaults.readOnlyDirs.clear();
-		rmSync(agent, { recursive: true });
-		const fresh = join(parent, readOnlyOwner ? "a1" : "fresh");
-		mkdirSync(fresh, { recursive: true });
-		fsFaults.statOverrides.set(resolve(fresh), {
-			dev: origDirStat.dev,
-			ino: origDirStat.ino,
-			birthtimeNs: origDirStat.birthtimeNs + 10_000_000n,
-		});
-
-		resetStorageHomeCacheForTests();
-		assert.equal(storageHomeDir(fresh, {}), fresh);
-	}
-});
-
-test("relative storage target ownership rejects reused sibling inodes while preserving a local-home owner's target claim (#5242)", () => {
+test("relative storage target ownership rejects reused sibling decision inodes while preserving a local-home owner's target claim (#5242)", () => {
 	const home = join(root, "target-reuse-home");
 	useHome(home);
 	const parent = join(root, "target-reuse-parent");
@@ -906,7 +857,7 @@ test("relative storage target ownership rejects reused sibling inodes while pres
 	});
 
 	// Replace `a1` by copying to `main` and removing `a1` (freeing `a1`'s inodes while keeping `parent/history.sqlite`
-	// and its target claim intact). Then sibling's .atomic-storage-home reuses `origHomeStat`'s inode and birthtime.
+	// and its target claim intact). Then sibling's .atomic-storage-home reuses `origHomeStat`'s inode.
 	cpSync(agent, current, { recursive: true });
 	rmSync(agent, { recursive: true });
 	fsFaults.statOverrides.set(resolve(join(sibling, ".atomic-storage-home")), {
@@ -924,4 +875,212 @@ test("relative storage target ownership rejects reused sibling inodes while pres
 		kind: "sqlite",
 		path: join(parent, "history.sqlite"),
 	});
+});
+
+test("in-place birthtime changes on unchanged inodes keep parent and relative target ownership intact (#5242)", () => {
+	const home = join(root, "btime-parity-home");
+	useHome(home);
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+
+	// 1. Local-home target owner with its own workflows store (mutated birthtime on parent, agent, and decision file).
+	const targetParent = join(root, "btime-target-parent");
+	const targetAgent = join(targetParent, "a1");
+	mkdirSync(join(targetAgent, "workflows"), { recursive: true });
+	writeFileSync(join(targetAgent, "workflows", "journal.sqlite"), "local-workflows");
+	writeFileSync(join(targetParent, "history.sqlite"), "shared-target");
+	assert.equal(storagePathBaseDir("history.sqlite", targetAgent, settings), targetParent);
+
+	const parentStat = statSync(targetParent, { bigint: true });
+	const agentStat = statSync(targetAgent, { bigint: true });
+	const homeFileStat = statSync(join(targetAgent, ".atomic-storage-home"), { bigint: true });
+	fsFaults.statOverrides.set(resolve(targetParent), { birthtimeNs: parentStat.birthtimeNs - 86_400_000_000_000n });
+	fsFaults.statOverrides.set(resolve(targetAgent), { birthtimeNs: agentStat.birthtimeNs - 86_400_000_000_000n });
+	fsFaults.statOverrides.set(resolve(join(targetAgent, ".atomic-storage-home")), {
+		birthtimeNs: homeFileStat.birthtimeNs - 86_400_000_000_000n,
+	});
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", targetAgent, settings), targetParent);
+
+	// 2. Read-only adopting owner (no decisionId) and renamed owner beside a backup clone when parent birthtime changes.
+	fsFaults.statOverrides.clear();
+	const roParent = join(root, "btime-ro-parent");
+	const roAgent = join(roParent, "a1");
+	mkdirSync(roAgent, { recursive: true });
+	mkdirSync(join(roParent, "workflows"), { recursive: true });
+	writeFileSync(join(roParent, "workflows", "journal.sqlite"), "sessions");
+	fsFaults.readOnlyDirs.set(roAgent, "EACCES");
+	assert.equal(storageHomeDir(roAgent, {}), roParent);
+	const roParentStat = statSync(roParent, { bigint: true });
+	fsFaults.statOverrides.set(resolve(roParent), { birthtimeNs: roParentStat.birthtimeNs + 10_000_000n });
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(roAgent, {}), roParent);
+
+	fsFaults.readOnlyDirs.clear();
+	fsFaults.statOverrides.clear();
+	const cloneParent = join(root, "btime-clone-parent");
+	const cloneAgent = join(cloneParent, "a1");
+	const cloneRenamed = join(cloneParent, "main");
+	const backupClone = join(cloneParent, "a1-backup");
+	mkdirSync(cloneAgent, { recursive: true });
+	mkdirSync(join(cloneParent, "workflows"), { recursive: true });
+	writeFileSync(join(cloneParent, "workflows", "journal.sqlite"), "sessions");
+	assert.equal(storageHomeDir(cloneAgent, {}), cloneParent);
+	cpSync(cloneAgent, backupClone, { recursive: true });
+	renameSyncWithRetry(cloneAgent, cloneRenamed);
+	const cloneParentStat = statSync(cloneParent, { bigint: true });
+	fsFaults.statOverrides.set(resolve(cloneParent), { birthtimeNs: cloneParentStat.birthtimeNs - 86_400_000_000_000n });
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(cloneRenamed, {}), cloneParent);
+	assert.equal(storageHomeDir(backupClone, {}), backupClone);
+});
+
+test("container moves, recreated owner directories keeping the decision file inode, and bind mounts keep ownership intact (#5242)", () => {
+	const home = join(root, "container-move-home");
+	useHome(home);
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+
+	// 1. Moving all entries into a new container directory (new parent inode, children keep inodes).
+	const srcParent = join(root, "move-contents-src");
+	const dstParent = join(root, "move-contents-dst");
+	const srcAgent = join(srcParent, "a1");
+	mkdirSync(join(srcAgent, "workflows"), { recursive: true });
+	writeFileSync(join(srcAgent, "workflows", "journal.sqlite"), "local-workflows");
+	writeFileSync(join(srcParent, "history.sqlite"), "shared-target");
+	assert.equal(storagePathBaseDir("history.sqlite", srcAgent, settings), srcParent);
+	mkdirSync(dstParent, { recursive: true });
+	for (const entry of readdirSync(srcParent)) {
+		renameSyncWithRetry(join(srcParent, entry), join(dstParent, entry));
+	}
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", join(dstParent, "a1"), settings), dstParent);
+
+	// Read-only adopting owner moved into a new container directory.
+	const roSrc = join(root, "move-contents-ro-src");
+	const roDst = join(root, "move-contents-ro-dst");
+	const roAgent = join(roSrc, "a1");
+	mkdirSync(roAgent, { recursive: true });
+	mkdirSync(join(roSrc, "workflows"), { recursive: true });
+	writeFileSync(join(roSrc, "workflows", "journal.sqlite"), "sessions");
+	fsFaults.readOnlyDirs.set(roAgent, "EACCES");
+	assert.equal(storageHomeDir(roAgent, {}), roSrc);
+	fsFaults.readOnlyDirs.clear();
+	mkdirSync(roDst, { recursive: true });
+	for (const entry of readdirSync(roSrc)) {
+		renameSyncWithRetry(join(roSrc, entry), join(roDst, entry));
+	}
+	fsFaults.readOnlyDirs.set(join(roDst, "a1"), "EACCES");
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(join(roDst, "a1"), {}), roDst);
+	fsFaults.readOnlyDirs.clear();
+
+	// 2. Recreating the owner directory (or hardlink backup restore) while keeping .atomic-storage-home's inode.
+	const recParent = join(root, "recreate-dir-parent");
+	const recAgent = join(recParent, "a1");
+	mkdirSync(join(recAgent, "workflows"), { recursive: true });
+	writeFileSync(join(recAgent, "workflows", "journal.sqlite"), "local-workflows");
+	writeFileSync(join(recParent, "history.sqlite"), "shared-target");
+	assert.equal(storagePathBaseDir("history.sqlite", recAgent, settings), recParent);
+	const tmpAgent = join(recParent, "a1-tmp");
+	mkdirSync(tmpAgent);
+	for (const entry of readdirSync(recAgent)) {
+		renameSyncWithRetry(join(recAgent, entry), join(tmpAgent, entry));
+	}
+	rmSync(recAgent, { recursive: true });
+	renameSyncWithRetry(tmpAgent, recAgent);
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", recAgent, settings), recParent);
+
+	// 3. Bind mount (child on a different device mounted under a recreated container parent).
+	const bmParent = join(root, "bind-mount-parent");
+	const bmAgent = join(bmParent, "a1");
+	mkdirSync(join(bmAgent, "workflows"), { recursive: true });
+	writeFileSync(join(bmAgent, "workflows", "journal.sqlite"), "local-workflows");
+	writeFileSync(join(bmParent, "history.sqlite"), "shared-target");
+	fsFaults.statOverrides.set(resolve(bmParent), { dev: 100n, ino: 1001n });
+	fsFaults.statOverrides.set(resolve(bmAgent), { dev: 200n, ino: 2001n });
+	assert.equal(storagePathBaseDir("history.sqlite", bmAgent, settings), bmParent);
+	// Container parent recreated on dev 100 with a new inode; bind-mounted child on dev 200 keeps its inodes.
+	fsFaults.statOverrides.set(resolve(bmParent), { dev: 100n, ino: 1002n });
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", bmAgent, settings), bmParent);
+});
+
+test("deleting an owner's decision file beside a backup clone retains ownership on both inode and zero-inode filesystems (#5242)", () => {
+	const home = join(root, "deleted-decision-clone-home");
+	useHome(home);
+	for (const zeroIno of [false, true]) {
+		fsFaults.globalZeroIno = zeroIno;
+		const parent = join(root, `deleted-decision-parent-${zeroIno ? "zeroino" : "ino"}`);
+		const agent = join(parent, "a1");
+		const clone = join(parent, "a1-backup");
+		mkdirSync(agent, { recursive: true });
+		mkdirSync(join(parent, "workflows"), { recursive: true });
+		writeFileSync(join(parent, "workflows", "journal.sqlite"), "sessions");
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(agent, {}), parent);
+		cpSync(agent, clone, { recursive: true });
+		rmSync(join(agent, ".atomic-storage-home"));
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(agent, {}), parent);
+		assert.equal(storageHomeDir(clone, {}), clone);
+	}
+});
+
+test("existing parent claims are never rewritten on upgrade or read-only parents, and warm target checks do not reread the owner's decision file (#5242)", () => {
+	const home = join(root, "steady-state-home");
+	useHome(home);
+
+	// 1. Existing 0.10.4 claim format is preserved byte-for-byte with zero refresh write attempts (writable & RO parent).
+	const parent = join(root, "steady-parent");
+	const agent = join(parent, "a1");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "sessions");
+	assert.equal(storageHomeDir(agent, {}), parent);
+	const claimFile = join(parent, ".atomic-storage-parent-owner");
+	const claimObj = JSON.parse(readFileSync(claimFile, "utf8")) as Record<string, unknown>;
+	assert.deepEqual(Object.keys(claimObj).sort(), [
+		"decisionId",
+		"directoryIdentity",
+		"homeIdentity",
+		"identity",
+		"legacyTargets",
+		"path",
+		"relativePath",
+	]);
+	const initialClaimRaw = readFileSync(claimFile, "utf8");
+
+	fsFaults.recordedWriteAttempts.length = 0;
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(agent, {}), parent);
+	assert.equal(readFileSync(claimFile, "utf8"), initialClaimRaw);
+	assert.deepEqual(
+		fsFaults.recordedWriteAttempts.filter((p) => p.includes(".atomic-storage-parent-owner.") && p.endsWith(".tmp")),
+		[],
+	);
+
+	fsFaults.readOnlyDirs.set(parent, "EACCES");
+	fsFaults.recordedWriteAttempts.length = 0;
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(agent, {}), parent);
+	assert.deepEqual(
+		fsFaults.recordedWriteAttempts.filter((p) => p.includes(".atomic-storage-parent-owner.") && p.endsWith(".tmp")),
+		[],
+	);
+	fsFaults.readOnlyDirs.clear();
+
+	// 2. Warm target lookup reuses the settled owner's decisionId without rereading .atomic-storage-home.
+	const targetParent = join(root, "steady-target-parent");
+	const targetAgent = join(targetParent, "a1");
+	mkdirSync(targetAgent, { recursive: true });
+	writeFileSync(join(targetParent, "history.sqlite"), "history");
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+	assert.equal(storagePathBaseDir("history.sqlite", targetAgent, settings), targetParent);
+
+	fsFaults.recordedReads.length = 0;
+	for (let index = 0; index < 3; index++) {
+		assert.equal(storagePathBaseDir("history.sqlite", targetAgent, settings), targetParent);
+	}
+	const decisionReads = fsFaults.recordedReads.filter((p) => p === resolve(join(targetAgent, ".atomic-storage-home")));
+	assert.deepEqual(decisionReads, []);
 });
