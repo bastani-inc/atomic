@@ -115,3 +115,42 @@ test("an append to a database a newer build upgraded fails as newer before anyth
 	assert.equal(rows?.n, 0);
 	await assert.rejects(store.append("s1", [message("lost", null)], { expectSeq: 0 }), SessionNotFoundError);
 });
+
+/** The bytes a request to the connection's thread carries in its statements' text and parameters. */
+function requestBytes(request: ConnectionRequest): number {
+	const statements =
+		request.kind === "sequence"
+			? request.statements
+			: request.kind === "run" || request.kind === "get" || request.kind === "all"
+				? [request]
+				: [];
+	let bytes = 0;
+	for (const { sql, params } of statements) {
+		bytes += sql.length;
+		for (const value of params)
+			bytes += typeof value === "string" ? value.length : value instanceof Uint8Array ? value.byteLength : 8;
+	}
+	return bytes;
+}
+
+test("a large write sends its entries a few at a time as it makes them, not all in one request", async () => {
+	const { store } = await openStore();
+	let largest = 0;
+	const interception = interceptConnectionRequests((request, send) => {
+		largest = Math.max(largest, requestBytes(request));
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
+	const entries: SessionEntry[] = [];
+	for (let index = 0; index < 24; index++)
+		entries.push(message(`${index}`.padEnd(400 * 1024, "x"), entries.at(-1)?.id ?? null));
+	const created = await store.create(header("bulk"), entries);
+	assert.equal(created.lastSeq, 24);
+	await store.append("bulk", [message("then one more", entries.at(-1)!.id)], {
+		expectSeq: created.lastSeq,
+		epoch: created.epoch,
+	});
+	// About 9.6 MiB of entries: no request carries more than one batch's worth and the entry that ended it.
+	assert.ok(largest < 2 * 1024 * 1024, `the largest request carried ${largest} bytes`);
+	assert.equal((await store.load("bulk")).entries.length, 25);
+});
