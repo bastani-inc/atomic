@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
@@ -468,6 +468,25 @@ test("the real sources save a private machine id once and run commands (#5038)",
 		assert.equal(await sources.run(process.execPath, ["-e", "process.stdout.write('out')"]), "out");
 		if (process.platform === "linux")
 			assert.equal(sources.readLink("/proc/self/ns/pid"), readlinkSync("/proc/self/ns/pid"));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a broker's sources save a machine id only into the Intercom directory it holds, never into a removed one again", () => {
+	const dir = mkdtempSync(join(tmpdir(), "intercom-host-"));
+	try {
+		const intercom = join(dir, "intercom");
+		mkdirSync(intercom);
+		let held = true;
+		const sources = systemSources(intercom, () => held);
+		const id = persistedMachineId(sources);
+		assert.match(id ?? "", /^[0-9a-f-]{36}$/, "saved while the directory is held");
+
+		rmSync(intercom, { recursive: true });
+		held = false;
+		assert.equal(persistedMachineId(sources), undefined);
+		assert.equal(existsSync(intercom), false, "the removed directory is not made again");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
