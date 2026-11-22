@@ -3131,6 +3131,87 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal(retry.routeUnavailable, true, JSON.stringify(retry));
 	});
 
+	test("a registration that presented a lapsed hand-over and whose own binding write is still on its way is told to retry its answer to an ask to the fresh id, which goes out once the write answers (#5607)", async () => {
+		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
+		const third = await startNode(shared, { process: { home: "third-home" } });
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const ask = randomUUID();
+		await third.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		// The claim's write answers; the registration's own binding write of the id is slow (answers after the 5 s bound).
+		const knownSessions = here.state.knownSessions;
+		const realBind = knownSessions.bind.bind(knownSessions);
+		let idWrites = 0;
+		let release: (() => void) | undefined;
+		vi.spyOn(knownSessions, "bind").mockImplementation((...args: Parameters<typeof realBind>) => {
+			if (args[0] === live.info.id && ++idWrites === 2)
+				return new Promise((resolve, reject) => {
+					release = () => realBind(...args).then(resolve, reject);
+				});
+			return realBind(...args);
+		});
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "granted" && claim.grant.alias === fresh.info.id, JSON.stringify(claim));
+		const back = registeringAs(fresh, live.info.id);
+		const registered = registeredOn(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		assert.ok(release !== undefined, "the registration's binding write is on its way");
+
+		const reply = () => {
+			const send = remoteSend(back, asker.info.id, false);
+			const message = { ...send.request.message, replyTo: ask };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage: { ...send.request.clientMessage, message },
+				requirePendingReply: true,
+				expectedRecipientId: asker.info.id,
+			});
+			return send.id;
+		};
+		const outcome = async (id: string) =>
+			vi.waitFor(async () => {
+				await vi.advanceTimersByTimeAsync(100);
+				const found = framesOf(back).find(
+					(frame) => (frame.type === "delivery_failed" || frame.type === "delivered") && frame.messageId === id,
+				);
+				assert.ok(found !== undefined, "no outcome yet");
+				return found;
+			});
+		const first = await outcome(reply());
+		assert.ok(first.type === "delivery_failed" && first.routeUnavailable === true, JSON.stringify(first));
+		// The binding write answers: the registration takes the fresh id back, and a retry of the answer goes out.
+		release!();
+		await vi.advanceTimersByTimeAsync(1_000);
+		const retried = reply();
+		const answers = () =>
+			framesOf(asker).flatMap((frame) =>
+				frame.type === "message" ? [[frame.from.id, frame.message.id, frame.message.replyTo]] : [],
+			);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.ok(
+				answers().some((answer) => answer[1] === retried),
+				JSON.stringify(framesOf(back)),
+			);
+		});
+	});
 	test("a registration that presented a lapsed hand-over but could not take the fresh id back yet is told to retry its answer to an ask to that id, while a broker is down (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
 		const third = await startNode(shared, { process: { home: "third-home" } });

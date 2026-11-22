@@ -495,6 +495,11 @@ interface PresenceEntry {
 	pendingAlias?: { readonly alias: string; readonly aliasToken?: string; readonly recovery?: string; taking?: boolean };
 	/** #5607: it is being moved back to the id it awaited: its own id stays owned, by the same token, for its next registration. */
 	handsOver?: true;
+	/**
+	 * #5607: the value a lapsed hand-over gave the claim this registration presented, kept from the moment it registers:
+	 * it may take that hand-over's alias back once its writes answer, however long they take.
+	 */
+	presented?: string;
 }
 
 /**
@@ -867,7 +872,8 @@ export class MultiNodeRouter {
 	/**
 	 * #5607: whether the ask `replyTo` went to the id that its replier's session had before it moved back to its own, which
 	 * only the registration presenting that move's lapsed hand-over takes back (`lapsedHandoffs`), and this registration
-	 * cannot: it holds no such alias, has none pending, and does not await its id with that hand-over. The ask's route
+	 * cannot: it holds no such alias, has none pending, does not await its id with that hand-over, and presented no
+	 * hand-over as it registered (whose writes may still be on their way). The ask's route
 	 * is to that id, so no route a stopped broker may keep authorizes this registration's reply either.
 	 */
 	private async askedOfAliasItCannotTake(
@@ -886,6 +892,7 @@ export class MultiNodeRouter {
 			entry?.alias?.intercomSessionId === alias ||
 			entry?.pendingAlias?.alias === alias ||
 			entry?.awaits?.recovery === lapsed.recovery ||
+			entry?.presented !== undefined ||
 			entry?.handsOver === true ||
 			this.reservedIds.has(identity)
 		)
@@ -1956,6 +1963,8 @@ export class MultiNodeRouter {
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
+		const presented = grant?.recovery ?? reclaim?.recovery ?? recovery;
+		if (presented !== undefined) entry.presented = presented;
 		// An unanswered claim's registration awaits the id only once its binding write did not keep it (below).
 		if (
 			awaits !== undefined &&
