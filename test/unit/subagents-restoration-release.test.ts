@@ -39,7 +39,7 @@ test("a restored subagent waiting for its run's slot stays restored while its pa
 		source: "project",
 		filePath: join(dir, "worker.md"),
 	};
-	const pi = {
+	const atomic = {
 		events: { on: () => () => {}, emit() {} },
 		appendEntry: async (customType: string, data: unknown) => void (await owner.appendCustomEntry(customType, data)),
 		getSessionName: () => "owner",
@@ -51,14 +51,14 @@ test("a restored subagent waiting for its run's slot stays restored while its pa
 		ui: {},
 		modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
 	} as unknown as ExtensionContext;
-	const recordChild = createSubagentChildRecordSink(pi, ctx);
+	const recordChild = createSubagentChildRecordSink(atomic, ctx);
 	let runs = 0;
 	const runSync = async (): Promise<SingleResult> => {
 		runs++;
 		throw new Error("no child runs here");
 	};
 	const deps = {
-		pi,
+		pi: atomic,
 		config: {},
 		discoverAgents: () => ({ agents: [agent] }),
 		runtime: { runSync },

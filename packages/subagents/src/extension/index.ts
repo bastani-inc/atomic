@@ -248,8 +248,8 @@ class SubagentControlNoticeComponent implements Component {
 	}
 }
 
-export default function registerSubagentExtension(pi: ExtensionAPI): void {
-	const lifecycle = beginApiLifecycle(pi);
+export default function registerSubagentExtension(atomic: ExtensionAPI): void {
+	const lifecycle = beginApiLifecycle(atomic);
 	const registrationFailureCleanups: Array<() => void> = [];
 	let runtimeCleanupInstalled = false;
 	try {
@@ -275,7 +275,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		};
 		registrationFailureCleanups.push(stopMaintenance);
 		const executorDeps = {
-			pi,
+			pi: atomic,
 			state,
 			config,
 			getSubagentSessionRoot: subagentSessionRoot,
@@ -298,17 +298,19 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			childExecutors.set(key, childExecutor);
 			return childExecutor;
 		};
-		pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
+		atomic.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 			const details = resolveSlashMessageDetails(message.details);
 			if (!details) return undefined;
-			return createSlashResultComponent(details, options, theme, pi);
+			return createSlashResultComponent(details, options, theme, atomic);
 		});
-		pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", renderSubagentNotification);
-		pi.registerMessageRenderer(SUBAGENT_LATE_TOOL_RESULT_TYPE, (message, options) =>
+		atomic.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", renderSubagentNotification);
+		atomic.registerMessageRenderer(SUBAGENT_LATE_TOOL_RESULT_TYPE, (message, options) =>
 			renderLateToolResultNotice(message, options),
 		);
-		pi.registerMessageRenderer(SUBAGENT_RESUME_NOTE_TYPE, (message, options) => renderResumeNote(message, options));
-		pi.registerMessageRenderer<SubagentControlMessageDetails>(
+		atomic.registerMessageRenderer(SUBAGENT_RESUME_NOTE_TYPE, (message, options) =>
+			renderResumeNote(message, options),
+		);
+		atomic.registerMessageRenderer<SubagentControlMessageDetails>(
 			SUBAGENT_CONTROL_MESSAGE_TYPE,
 			(message, _options, theme) => {
 				const details = message.details as SubagentControlMessageDetails | undefined;
@@ -339,7 +341,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				);
 		};
 		const slashBridge = registerSlashSubagentBridge({
-			events: pi.events,
+			events: atomic.events,
 			getContext: () => state.lastUiContext,
 			execute: (id, params, signal, onUpdate, ctx) => executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
 		});
@@ -348,7 +350,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			slashBridge.dispose();
 		});
 		const promptTemplateBridge = registerPromptTemplateDelegationBridge({
-			events: pi.events,
+			events: atomic.events,
 			getContext: () => state.lastUiContext,
 			execute: async (requestId, request, signal, ctx, onUpdate) => {
 				if (request.tasks && request.tasks.length > 0) {
@@ -405,15 +407,15 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				return renderSubagentToolResult(result, options, theme, context);
 			},
 		};
-		pi.registerTool(tool);
-		registerSlashCommands(pi, state);
-		const notifyCleanup = registerSubagentNotify(pi);
+		atomic.registerTool(tool);
+		registerSlashCommands(atomic, state);
+		const notifyCleanup = registerSubagentNotify(atomic);
 		registrationFailureCleanups.push(notifyCleanup);
-		const visibleControlNotices = getApiScopedSet(pi, "__piSubagentVisibleControlNoticesByApi");
+		const visibleControlNotices = getApiScopedSet(atomic, "__piSubagentVisibleControlNoticesByApi");
 		const controlEventHandler = (payload: unknown) => {
 			if (!lifecycle.isCurrent()) return;
 			handleSubagentControlNotice({
-				pi,
+				pi: atomic,
 				state,
 				visibleControlNotices,
 				details: payload as SubagentControlMessageDetails,
@@ -421,8 +423,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		};
 		const eventUnsubscribes: Array<() => void> = [];
 		// The children this session launches name its own Intercom id as their supervisor.
-		eventUnsubscribes.push(trackOwnIntercomSession(pi.events, state));
-		const unsubscribeControl = pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler);
+		eventUnsubscribes.push(trackOwnIntercomSession(atomic.events, state));
+		const unsubscribeControl = atomic.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler);
 		eventUnsubscribes.push(unsubscribeControl);
 		registrationFailureCleanups.push(unsubscribeControl);
 		let cleaned = false;
@@ -436,7 +438,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				() => stopResultAnimations(),
 				() => clearPendingForegroundControlNotices(state),
 				() => childExecutors.clear(),
-				() => clearSlashSnapshots(pi),
+				() => clearSlashSnapshots(atomic),
 				() => slashBridge.cancelAll(),
 				() => slashBridge.dispose(),
 				() => promptTemplateBridge.cancelAll(),
@@ -464,15 +466,15 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			state.lastUiContext = ctx;
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
-			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
+			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), atomic);
 			// A subagent's own session launches no children (#4395): it adds nothing to the child index.
 			if (!isSubagentChildSession(ctx)) releaseCards = bindSubagentChildCards(ctx);
 		};
 		let unbindChildOwner: (() => void) | undefined;
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
-		pi.on("agent_start", () => taskResumer?.ensure());
-		pi.on("session_start", async (event, ctx) => {
+		atomic.on("agent_start", () => taskResumer?.ensure());
+		atomic.on("session_start", async (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
 				releaseStartupCleanup = claimStartupCleanup(maintenance);
@@ -489,15 +491,21 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					ctx,
 					() => {
 						unbindChildOwner?.();
-						unbindChildOwner = bindSubagentChildOwner(pi, ctx);
-						stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events, undefined, (start) => {
-							startWakes = start;
-						});
+						unbindChildOwner = bindSubagentChildOwner(atomic, ctx);
+						stopReleasedChildWakes = bindReleasedChildWakes(
+							executorDeps,
+							ctx,
+							atomic.events,
+							undefined,
+							(start) => {
+								startWakes = start;
+							},
+						);
 					},
 					"commit",
 				);
 				const started = publishExtensionContextEffect(ctx, () => {
-					const writer = subagentChildOwnerWriter(pi, ctx.sessionManager);
+					const writer = subagentChildOwnerWriter(atomic, ctx.sessionManager);
 					void saveUnsavedSubagentChildRecords(writer, subagentChildOwner(ctx).sessionId);
 					startWakes?.();
 					// A finished child continues from its chat: the message the reader sends resumes it in its own session.
@@ -505,7 +513,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					taskResumer = bindSubagentTaskResumer(executorDeps, ctx);
 				});
 				await Promise.all([committed, started]);
-				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
+				if (opened) void holdRunningSubagentChildren(atomic.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(
 						executorDeps,
@@ -515,17 +523,17 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					);
 			}
 		});
-		pi.on("session_recovery_restore", async (_event, ctx) => {
+		atomic.on("session_recovery_restore", async (_event, ctx) => {
 			// Subagent children never own children.
 			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
-			const writer = subagentChildOwnerWriter(pi, ctx.sessionManager);
+			const writer = subagentChildOwnerWriter(atomic, ctx.sessionManager);
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
 			const notices = subagentChildRestoreNotices(outcomes);
 			// Report once: record the children the notices call gone, so later restarts neither retry nor repeat them.
 			await recordReportedGoneSubagentChildren(writer, outcomes);
 			return { notices };
 		});
-		const unsubscribeChildRestoration = pi.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
+		const unsubscribeChildRestoration = atomic.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
 			const request = payload as Partial<SubagentAwaitChildRestorationRequest> | null;
 			if (!lifecycle.isCurrent() || !request || request.completion) return;
 			if (typeof request.ownerSessionId !== "string" || typeof request.target !== "string") return;
@@ -546,18 +554,18 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		eventUnsubscribes.push(unsubscribeChildRestoration);
 		// Intercom asks which children a `subagents:` send reaches (#4752).
-		eventUnsubscribes.push(answerIntercomChildrenRequests(pi.events, lifecycle.isCurrent));
+		eventUnsubscribes.push(answerIntercomChildrenRequests(atomic.events, lifecycle.isCurrent));
 		// Intercom asks which unanswered asks came from a child's attempt that is over (#6168).
-		eventUnsubscribes.push(answerFinishedAskRequests(pi.events, lifecycle.isCurrent));
+		eventUnsubscribes.push(answerFinishedAskRequests(atomic.events, lifecycle.isCurrent));
 		// Intercom asks which relaunched children have not registered yet before it judges the peers of interrupted deliveries.
-		const unsubscribeRestoredPeers = pi.events.on(SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT, (payload) => {
+		const unsubscribeRestoredPeers = atomic.events.on(SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT, (payload) => {
 			const request = payload as Partial<SubagentRestoredIntercomPeersRequest> | null;
 			if (!lifecycle.isCurrent() || !request || request.completion || typeof request.ownerSessionId !== "string")
 				return;
 			request.completion = Promise.resolve(restoredChildrenAwaitingIntercom(request.ownerSessionId));
 		});
 		eventUnsubscribes.push(unsubscribeRestoredPeers);
-		pi.on("session_shutdown", (_event, ctx) => {
+		atomic.on("session_shutdown", (_event, ctx) => {
 			releaseCards?.();
 			releaseCards = undefined;
 			unbindChildOwner?.();

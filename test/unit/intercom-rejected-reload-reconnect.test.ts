@@ -52,11 +52,11 @@ test.each(["its candidate failed to prepare", "an extension's start failed in th
 		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
 
 		const lifecycle: string[] = [];
-		const recorder = (pi: ExtensionAPI) => {
-			pi.on("session_start", (event) => {
+		const recorder = (atomic: ExtensionAPI) => {
+			atomic.on("session_start", (event) => {
 				lifecycle.push(`start:${(event as { reason?: string }).reason}`);
 			});
-			pi.on("session_shutdown", (event) => {
+			atomic.on("session_shutdown", (event) => {
 				lifecycle.push(`shutdown:${(event as { reason?: string }).reason}`);
 			});
 		};
@@ -68,8 +68,8 @@ test.each(["its candidate failed to prepare", "an extension's start failed in th
 			// A host that does not report startup errors (SDK, RPC without a custom UI) rejects a reload whose extension
 			// fails to start, and keeps the session running on its current extensions.
 			const candidate = await createTestExtensionsResult([
-				(pi: ExtensionAPI) => {
-					pi.on("session_start", () => {
+				(atomic: ExtensionAPI) => {
+					atomic.on("session_start", () => {
 						throw new Error("candidate startup rejected");
 					});
 				},

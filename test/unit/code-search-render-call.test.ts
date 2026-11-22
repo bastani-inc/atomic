@@ -11,7 +11,7 @@ initTheme("dark", false);
 async function codeSearchTool() {
 	const { default: webAccess } = (await import(
 		new URL("../../packages/web-access/index.ts", import.meta.url).href
-	)) as { default: (pi: ExtensionAPI) => void };
+	)) as { default: (atomic: ExtensionAPI) => void };
 	const tools = new Map<string, ToolDefinition>();
 	webAccess({
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),

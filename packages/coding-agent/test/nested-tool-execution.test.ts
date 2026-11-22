@@ -9,8 +9,8 @@ test("nested calls validate arguments, run hooks, and record only the parent's r
 	const calls: string[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "child",
 					label: "Child",
 					description: "child",
@@ -21,7 +21,7 @@ test("nested calls validate arguments, run hooks, and record only the parent's r
 						return { content: [{ type: "text", text: args.value }], details: {} };
 					},
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "parent",
 					label: "Parent",
 					description: "parent",
@@ -34,7 +34,7 @@ test("nested calls validate arguments, run hooks, and record only the parent's r
 						return good.result;
 					},
 				});
-				pi.on("tool_call", (event) => {
+				atomic.on("tool_call", (event) => {
 					if (event.parentToolCallId) calls.push("hook");
 				});
 			},
@@ -61,8 +61,8 @@ test("nested calls validate arguments, run hooks, and record only the parent's r
 test("nested records remain bounded while usage includes every call exactly once", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "priced",
 					label: "Priced",
 					description: "fixture",
@@ -81,7 +81,7 @@ test("nested records remain bounded while usage includes every call exactly once
 						},
 					}),
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "parent",
 					label: "Parent",
 					description: "parent",
@@ -118,8 +118,8 @@ test("retained nested-tool context cannot borrow a completed parent's execution"
 	let executed = false;
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "child",
 					label: "Child",
 					description: "fixture",
@@ -130,7 +130,7 @@ test("retained nested-tool context cannot borrow a completed parent's execution"
 						return { content: [], details: {} };
 					},
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "parent",
 					label: "Parent",
 					description: "fixture",
@@ -168,8 +168,8 @@ test("nested tools honor sequential execution mode inside parallel script calls"
 	const calls: string[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "serial",
 					label: "Serial",
 					description: "fixture",
@@ -186,7 +186,7 @@ test("nested tools honor sequential execution mode inside parallel script calls"
 						return { content: [], details: {} };
 					},
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "parent",
 					label: "Parent",
 					description: "fixture",
@@ -241,14 +241,14 @@ test.each([
 	const ended: boolean[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("tool_call", (event) => {
+			(atomic) => {
+				atomic.on("tool_call", (event) => {
 					if (event.toolName === "serial" && event.input.id === "B") admitted.resolve();
 				});
-				pi.on("tool_execution_end", (event) => {
+				atomic.on("tool_execution_end", (event) => {
 					if (event.toolName === "serial") ended.push(event.isError);
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "serial",
 					label: "Serial",
 					description: "fixture",
@@ -278,7 +278,7 @@ test.each([
 						return { content: [], details: {} };
 					},
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "parent",
 					label: "Parent",
 					description: "fixture",

@@ -7,7 +7,7 @@ Sleep 500ms
 Enter
 Sleep 12s
 Set TypingSpeed 26ms
-Type "Create .atomic/extensions/safe-bash.ts. Default-export a function taking pi: ExtensionAPI that registers pi.on('tool_call', ...): when event.toolName is bash and the command contains 'rm -rf', return { block: true, reason: 'Blocked by safe-bash policy' }. Write the file, nothing else."
+Type "Create .atomic/extensions/safe-bash.ts. Default-export a function taking atomic: ExtensionAPI that registers atomic.on('tool_call', ...): when event.toolName is bash and the command contains 'rm -rf', return { block: true, reason: 'Blocked by safe-bash policy' }. Write the file, nothing else."
 Sleep 1s
 Enter
 Sleep 50s

@@ -77,8 +77,8 @@ export function hookGate(
 	gate: Gate,
 ): ExtensionFactory {
 	const run = gateOnce(gate);
-	return (pi) => {
-		pi.on(event, async () => {
+	return (atomic) => {
+		atomic.on(event, async () => {
 			await run();
 		});
 	};

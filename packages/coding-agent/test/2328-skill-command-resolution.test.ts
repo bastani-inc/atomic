@@ -177,8 +177,8 @@ describe("issue #2328 exact skill command resolution", () => {
 			noSkills: true,
 			additionalSkillPaths: [userPath, packagePath],
 			extensionFactories: [
-				(pi) => {
-					sdkCommands = () => pi.getCommands();
+				(atomic) => {
+					sdkCommands = () => atomic.getCommands();
 				},
 			],
 		});

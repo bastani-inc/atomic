@@ -26,8 +26,8 @@ it("keeps custom-message run prompt sections across tool calls (#10267)", async 
 			},
 		],
 		extensionFactories: [
-			(pi) => {
-				pi.on("before_agent_start", (event) => {
+			(atomic) => {
+				atomic.on("before_agent_start", (event) => {
 					events.push(event.messageType);
 					event.systemPromptOptions.sections.extension_rules = "Answer in one word.";
 				});
@@ -74,8 +74,8 @@ it.each(["user", "custom"] as const)("queues messages during %s run setup (#1073
 	const requests: TranscriptContext[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("before_agent_start", async () => {
+			(atomic) => {
+				atomic.on("before_agent_start", async () => {
 					entered.resolve();
 					await release.promise;
 				});
@@ -132,12 +132,12 @@ it("rejects tree navigation during user run preparation without moving the promp
 	let treeEvents = 0;
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("before_agent_start", async () => {
+			(atomic) => {
+				atomic.on("before_agent_start", async () => {
 					entered.resolve();
 					await release.promise;
 				});
-				pi.on("session_before_tree", () => {
+				atomic.on("session_before_tree", () => {
 					treeEvents++;
 				});
 			},
@@ -180,8 +180,8 @@ it.each(["user", "custom"] as const)("honors abort during %s run setup (#10739)"
 	const release = Promise.withResolvers<void>();
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("before_agent_start", async () => {
+			(atomic) => {
+				atomic.on("before_agent_start", async () => {
 					entered.resolve();
 					await release.promise;
 				});
@@ -225,8 +225,8 @@ it("does not start a custom run paused during setup (#10739)", async () => {
 	let requests = 0;
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("before_agent_start", async () => {
+			(atomic) => {
+				atomic.on("before_agent_start", async () => {
 					entered.resolve();
 					await release.promise;
 				});
@@ -418,10 +418,10 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness({
 			models: [{ id: "wide" }, { id: "strict" }],
 			extensionFactories: [
-				(pi) => {
-					pi.on("before_agent_start", async () => {
+				(atomic) => {
+					atomic.on("before_agent_start", async () => {
 						if (!strictModel) throw new Error("Expected strict model");
-						await pi.setModel(strictModel);
+						await atomic.setModel(strictModel);
 					});
 				},
 			],
@@ -534,8 +534,8 @@ describe("AgentSession prompt characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(atomic) => {
+					atomic.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);
@@ -572,8 +572,8 @@ describe("AgentSession prompt characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(atomic) => {
+					atomic.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);
@@ -599,8 +599,8 @@ describe("AgentSession prompt characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(atomic) => {
+					atomic.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);
@@ -662,8 +662,8 @@ describe("AgentSession prompt characterization", () => {
 		const inputEvents: InputEvent[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("input", (event) => {
+				(atomic) => {
+					atomic.on("input", (event) => {
 						inputEvents.push(event);
 					});
 				},
@@ -700,8 +700,8 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness({
 			tools: [waitTool],
 			extensionFactories: [
-				(pi) => {
-					pi.on("input", (event) => {
+				(atomic) => {
+					atomic.on("input", (event) => {
 						inputEvents.push(event);
 					});
 				},

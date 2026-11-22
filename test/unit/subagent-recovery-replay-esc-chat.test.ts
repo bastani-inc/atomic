@@ -74,9 +74,9 @@ const wakes = [
 	{
 		wake: "a chat message",
 		text: "chat message after Esc",
-		send: (pi: ExtensionAPI, context: ExtensionContext, text: string) => {
+		send: (atomic: ExtensionAPI, context: ExtensionContext, text: string) => {
 			const admitted = admitActiveSessionInbound(context, () =>
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ customType: "intercom_message", content: text, display: true },
 					{ triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: "intercom:chat-after-esc" },
 				),
@@ -87,9 +87,9 @@ const wakes = [
 	{
 		wake: "its own extension's interrupting message",
 		text: "background work finished",
-		send: (pi: ExtensionAPI, _context: ExtensionContext, text: string) =>
+		send: (atomic: ExtensionAPI, _context: ExtensionContext, text: string) =>
 			Promise.resolve(
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ customType: "intercom_message", content: text, display: true },
 					{ triggerTurn: true, deliverAs: "interrupt" },
 				),
@@ -124,7 +124,7 @@ test.each(wakes)(
 		const stop = new AbortController();
 		const replayBlocked = Promise.withResolvers<void>();
 		const transcript = Promise.withResolvers<{ source: TaskTranscriptSource; session: AgentSession }>();
-		let pi: ExtensionAPI | undefined;
+		let atomic: ExtensionAPI | undefined;
 		let context: ExtensionContext | undefined;
 		let startsAfterEsc = 0;
 		let escPressed = false;
@@ -138,7 +138,7 @@ test.each(wakes)(
 				resourceLoaderInheritanceSnapshot: {
 					extensionFactories: [
 						(api: ExtensionAPI) => {
-							pi = api;
+							atomic = api;
 							api.on("session_start", (_event, ctx) => {
 								context = ctx;
 							});
@@ -180,7 +180,7 @@ test.each(wakes)(
 			assert.equal(env.faux.getPendingResponseCount(), pendingBeforeEsc, "no model call was made while it waited");
 			assert.equal(session.isStreaming, false);
 
-			await within(send(pi!, context!, text), "the waiting child never accepted the message");
+			await within(send(atomic!, context!, text), "the waiting child never accepted the message");
 			const result = await within(run, "the woken child never completed");
 
 			assert.equal(result.status ?? "ok", "ok");

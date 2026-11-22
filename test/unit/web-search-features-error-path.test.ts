@@ -33,7 +33,7 @@ interface SearchReturnPayload {
 type SearchReturnBuilder = (opts: SearchReturnOptions) => Promise<SearchReturnPayload>;
 
 interface WebSearchFeaturesModule {
-	registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearchConfig): void;
+	registerWebSearchFeatures(atomic: ExtensionAPI, initConfig: WebSearchConfig): void;
 }
 
 type EventHandler = (event: object, ctx: ExtensionContext) => Promise<void> | void;
@@ -207,9 +207,9 @@ function setup(options: Parameters<typeof createPi>[0] = {}): ExtensionAPI {
 			},
 		] satisfies ExtractedContent[]);
 	});
-	const pi = createPi(options);
-	registerWebSearchFeatures(pi, {} as WebSearchConfig);
-	return pi;
+	const atomic = createPi(options);
+	registerWebSearchFeatures(atomic, {} as WebSearchConfig);
+	return atomic;
 }
 
 async function startSession(): Promise<void> {

@@ -28,14 +28,14 @@ function extension(): Extension {
 
 test("exported predicate recognizes a real stale extension API error", () => {
 	const runtime = createExtensionRuntime();
-	const { api: pi } = createExtensionAPI(extension(), runtime, "/tmp", createEventBus());
+	const { api: atomic } = createExtensionAPI(extension(), runtime, "/tmp", createEventBus());
 
-	pi.registerMarkdownTransformer((markdown) => markdown);
+	atomic.registerMarkdownTransformer((markdown) => markdown);
 	runtime.invalidate();
 
 	let caught: unknown;
 	try {
-		pi.registerMarkdownTransformer((markdown) => markdown);
+		atomic.registerMarkdownTransformer((markdown) => markdown);
 	} catch (error) {
 		caught = error;
 	}

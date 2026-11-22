@@ -409,13 +409,13 @@ test.each(["sendMessage", "sendUserMessage"] as const)(
 		let woke = false;
 		const extensionsResult = await createTestExtensionsResult(
 			[
-				(pi) => {
+				(atomic) => {
 					// The message arrives while the scoped run settles; its turn starts once the run has settled.
-					pi.on("agent_settled", async () => {
+					atomic.on("agent_settled", async () => {
 						if (woke) return;
 						woke = true;
-						if (delivery === "sendMessage") await pi.sendMessage(NOTICE, { triggerTurn: true });
-						else pi.sendUserMessage("The workflow finished.");
+						if (delivery === "sendMessage") await atomic.sendMessage(NOTICE, { triggerTurn: true });
+						else atomic.sendUserMessage("The workflow finished.");
 					});
 				},
 			],

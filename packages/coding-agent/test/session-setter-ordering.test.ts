@@ -155,9 +155,9 @@ test("model-select handlers can await a subsequent choice without deadlocking th
 			{ id: "two", reasoning: true },
 		],
 		extensionFactories: [
-			(pi) => {
-				pi.on("model_select", async () => {
-					await pi.setThinkingLevel("low");
+			(atomic) => {
+				atomic.on("model_select", async () => {
+					await atomic.setThinkingLevel("low");
 				});
 			},
 		],

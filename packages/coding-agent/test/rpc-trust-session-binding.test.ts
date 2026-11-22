@@ -49,8 +49,8 @@ test("RPC startup bind yields to a session replacement that retires its session 
 	const releaseDiscover = Promise.withResolvers<void>();
 	const first = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("resources_discover", async () => {
+			(atomic) => {
+				atomic.on("resources_discover", async () => {
 					discovering.resolve();
 					await releaseDiscover.promise;
 					return {};
@@ -108,8 +108,8 @@ test("RPC startup bind settles quietly when shutdown closes its session mid-star
 	const releaseDiscover = Promise.withResolvers<void>();
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("resources_discover", async () => {
+			(atomic) => {
+				atomic.on("resources_discover", async () => {
 					discovering.resolve();
 					await releaseDiscover.promise;
 					return {};

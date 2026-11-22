@@ -24,12 +24,12 @@ test("isolated /tasks is navigation, while genuine custom approvals still report
 	const events: string[] = [];
 	let openPromptCount = 0;
 	const extension = await loadExtensionFromFactory(
-		(pi) => {
-			pi.on("ui_prompt_start", () => {
+		(atomic) => {
+			atomic.on("ui_prompt_start", () => {
 				openPromptCount++;
 				events.push("start");
 			});
-			pi.on("ui_prompt_end", () => {
+			atomic.on("ui_prompt_end", () => {
 				openPromptCount--;
 				events.push("end");
 			});

@@ -109,8 +109,8 @@ test("RPC bash reaches a user_bash handler and still runs a real command without
 	const intercepted: string[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("user_bash", async (event) => {
+			(atomic) => {
+				atomic.on("user_bash", async (event) => {
 					intercepted.push(event.command);
 					if (!event.command.startsWith("handled")) return undefined;
 					return { result: { output: "from handler", exitCode: 0, cancelled: false, truncated: false } };

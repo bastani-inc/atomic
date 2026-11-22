@@ -109,10 +109,10 @@ for (const busy of ["model", "tool"] as const) {
 		// Match production: task completion and extensions must share the runtime event bus.
 		const runtime = createExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
-			(pi) => {
-				api = pi;
-				intercomHeavy(pi);
-				pi.on("session_start", (_event, ctx) => {
+			(atomic) => {
+				api = atomic;
+				intercomHeavy(atomic);
+				atomic.on("session_start", (_event, ctx) => {
 					context = ctx;
 				});
 			},

@@ -422,12 +422,12 @@ function withDeferredGraphRecording(
 	factory: ExtensionFactory,
 	owner: RetainedTransformedLoad,
 ): ExtensionFactory {
-	return async (pi) => {
+	return async (atomic) => {
 		const recorder = createGraphRecorder(cacheDir);
 		activeGraphRecorders.add(recorder);
 		installReadFileSyncObserver();
 		try {
-			return await factory(pi);
+			return await factory(atomic);
 		} finally {
 			activeGraphRecorders.delete(recorder);
 			uninstallReadFileSyncObserver();
@@ -983,9 +983,9 @@ async function importExtensionModule(
 	const flushingFactory = (loadedFactory: ExtensionFactory): ExtensionFactory =>
 		cacheDir === undefined
 			? loadedFactory
-			: async (pi) => {
+			: async (atomic) => {
 					try {
-						return await loadedFactory(pi);
+						return await loadedFactory(atomic);
 					} finally {
 						await transformSource.flush();
 					}

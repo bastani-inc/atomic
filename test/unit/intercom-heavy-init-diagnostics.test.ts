@@ -12,7 +12,7 @@ import intercom from "../../packages/intercom/index.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import { toolContext } from "../helpers/tool-context.js";
 
-type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
+type HeavyModule = { default: (atomic: ExtensionAPI) => void | Promise<void> };
 type ConsoleErrorCall = [message?: unknown, ...optionalParams: unknown[]];
 type ImportResult = { error: unknown } | { module: HeavyModule | Promise<HeavyModule> };
 type LifecycleHandler = (event: object, ctx: ExtensionContext) => void | Promise<void>;
@@ -227,13 +227,13 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			[
 				{
 					module: {
-						default(pi) {
-							pi.on("session_start", async () => {
+						default(atomic) {
+							atomic.on("session_start", async () => {
 								entered.resolve();
 								await release.promise;
 								throw failure;
 							});
-							pi.on("session_shutdown", () => {
+							atomic.on("session_shutdown", () => {
 								throw cleanupFailure;
 							});
 						},
@@ -386,12 +386,12 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 						assert.equal(current.imports, 1);
 						if (phase === "during import") runner.invalidate();
 						imported.resolve({
-							default(pi) {
+							default(atomic) {
 								if (phase === "after factory") {
 									assert.equal(invocation.mode, mode);
 									queueMicrotask(() => runner.invalidate());
 								}
-								pi.on("session_start", (_event, ctx) => {
+								atomic.on("session_start", (_event, ctx) => {
 									assert.equal(ctx, startup);
 									assert.throws(() => ctx.mode, /extension ctx is stale/);
 									throw failure;
@@ -435,12 +435,12 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					assert.equal(current.imports, 1, "the successful import is still pending");
 					if (phase === "during import") owner.invalidate();
 					imported.resolve({
-						default(pi) {
+						default(atomic) {
 							if (phase === "after factory") {
 								assert.equal(owner.ctx.mode, mode, "the factory starts with a live owner");
 								queueMicrotask(() => owner.invalidate());
 							}
-							pi.on("session_start", (_event, ctx) => {
+							atomic.on("session_start", (_event, ctx) => {
 								assert.equal(ctx, owner.ctx);
 								assert.throws(() => ctx.mode, /Extension context is stale/);
 								throw failure;
@@ -481,8 +481,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					const failure = new Error("Connection closen");
 					const cleanupFailure = new Error("cleanup failed");
 					const module: HeavyModule = {
-						default(pi) {
-							pi.on("session_start", async (_event, ctx) => {
+						default(atomic) {
+							atomic.on("session_start", async (_event, ctx) => {
 								if (ctx === other.ctx) {
 									replayEntered.resolve();
 									await replayRelease.promise;
@@ -493,7 +493,7 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 								else assert.equal(ctx.mode, mode);
 								throw failure;
 							});
-							pi.on("session_shutdown", (_event, ctx) => {
+							atomic.on("session_shutdown", (_event, ctx) => {
 								assert.equal(ctx, owner.ctx, "cleanup follows the failed replay owner");
 								throw cleanupFailure;
 							});
@@ -568,9 +568,9 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 				const current = fixture([
 					{
 						module: {
-							async default(pi) {
+							async default(atomic) {
 								if (phase === "initializing") await fail();
-								else pi.on("session_start", fail);
+								else atomic.on("session_start", fail);
 							},
 						},
 					},
@@ -610,13 +610,13 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			const current = fixture([
 				{
 					module: {
-						default(pi) {
-							pi.on("session_start", async () => {
+						default(atomic) {
+							atomic.on("session_start", async () => {
 								replayEntered.resolve();
 								await replayRelease.promise;
 								throw failure;
 							});
-							pi.on("session_shutdown", async () => {
+							atomic.on("session_shutdown", async () => {
 								cleanupEntered.resolve();
 								await cleanupRelease.promise;
 								throw cleanupFailure;
@@ -688,8 +688,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 				const current = fixture([
 					{
 						module: {
-							default(pi) {
-								pi.events.on(eventName, async () => {
+							default(atomic) {
+								atomic.events.on(eventName, async () => {
 									entered.resolve();
 									await release.promise;
 									throw failure;
@@ -764,12 +764,12 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 				[
 					{
 						module: {
-							default(pi) {
-								successfulHeavyModule().default(pi);
-								pi.events.on(eventName, () => {
+							default(atomic) {
+								successfulHeavyModule().default(atomic);
+								atomic.events.on(eventName, () => {
 									relays++;
 								});
-								pi.on("session_shutdown", async () => {
+								atomic.on("session_shutdown", async () => {
 									cleanups++;
 									entered.resolve();
 									await drain.promise;
@@ -856,8 +856,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 			[
 				{
 					module: {
-						default(pi) {
-							pi.on("session_start", () => {
+						default(atomic) {
+							atomic.on("session_start", () => {
 								throw failure;
 							});
 						},
@@ -897,11 +897,11 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 				[
 					{
 						module: {
-							default(pi) {
-								pi.on("session_start", () => {
+							default(atomic) {
+								atomic.on("session_start", () => {
 									throw failure;
 								});
-								pi.on("session_shutdown", () => {
+								atomic.on("session_shutdown", () => {
 									cleanups++;
 									throw cleanupFailure;
 								});
@@ -945,8 +945,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					[
 						{
 							module: {
-								default(pi) {
-									pi.events.on(eventName, () => {
+								default(atomic) {
+									atomic.events.on(eventName, () => {
 										throw failure;
 									});
 								},
@@ -991,8 +991,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 		const current = fixture([
 			{
 				module: {
-					default(pi) {
-						pi.events.on(eventName, () => {
+					default(atomic) {
+						atomic.events.on(eventName, () => {
 							throw failure;
 						});
 					},
@@ -1023,8 +1023,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 					[
 						{
 							module: {
-								default(pi) {
-									pi.events.on(eventName, () => {
+								default(atomic) {
+									atomic.events.on(eventName, () => {
 										throw failure;
 									});
 								},
@@ -1082,11 +1082,11 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 						[
 							{
 								module: {
-									default(pi) {
-										pi.on("session_start", () => {
+									default(atomic) {
+										atomic.on("session_start", () => {
 											throw failure;
 										});
-										pi.on("session_shutdown", () => {
+										atomic.on("session_shutdown", () => {
 											cleanups++;
 											throw cleanupFailure;
 										});
@@ -1095,8 +1095,8 @@ describe("Intercom lazy heavy-initialization diagnostics", () => {
 							},
 							{
 								module: {
-									default(pi) {
-										pi.registerTool({
+									default(atomic) {
+										atomic.registerTool({
 											name: "intercom",
 											label: "Intercom",
 											description: "recovered send",

@@ -199,8 +199,8 @@ describe("trusted ordinary Intercom sessions", () => {
 			settingsManager: SettingsManager.create(cwd, agentDir),
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi) => {
-						pi.registerTool(fakeIntercomTool());
+					(atomic) => {
+						atomic.registerTool(fakeIntercomTool());
 					},
 				],
 				extensionsOverride: (base) => ({ ...base, extensions: [...base.extensions] }),
@@ -369,7 +369,7 @@ describe("trusted ordinary Intercom sessions", () => {
 		await baseLoader.reload();
 		const runtime = createExtensionRuntime();
 		const forged = await loadExtensionFromFactory(
-			(pi) => pi.registerTool(fakeIntercomTool()),
+			(atomic) => atomic.registerTool(fakeIntercomTool()),
 			cwd,
 			createEventBus(),
 			runtime,

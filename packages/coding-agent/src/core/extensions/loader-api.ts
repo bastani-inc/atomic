@@ -252,7 +252,7 @@ export function createExtensionAPI(
 			assertActive();
 			if (typeof name !== "string" || name.length === 0) {
 				throw new Error(
-					`Command registered by extension "${extension.path}" must have a non-empty string name. Use pi.registerCommand("name", { description, handler }).`,
+					`Command registered by extension "${extension.path}" must have a non-empty string name. Use atomic.registerCommand("name", { description, handler }).`,
 				);
 			}
 			if (typeof options?.handler !== "function") {

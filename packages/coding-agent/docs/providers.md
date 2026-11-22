@@ -655,8 +655,8 @@ export default {
       extensionFactories: [
         {
           name: "cloudflare-gateway-binding",
-          factory: async (pi) => {
-            await pi.registerProvider("cloudflare-ai-gateway", {
+          factory: async (atomic) => {
+            await atomic.registerProvider("cloudflare-ai-gateway", {
               // Placeholder credential; Cloudflare's gateway recognizes and strips it on binding fetch.
               apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
               api: "anthropic-messages",

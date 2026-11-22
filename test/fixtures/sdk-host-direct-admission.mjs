@@ -13,10 +13,10 @@ let api, enter, release, shutdown = false;
 const entered = new Promise(resolve => { enter = resolve; });
 const gate = new Promise(resolve => { release = resolve; });
 const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true,
-  extensionFactories: [pi => {
-    pi.on("session_start", () => { api = pi; });
-    pi.on("session_shutdown", async () => {
-      if (mode === "close") { enter(); await gate; await pi.appendEntry("cleanup", { complete: true }); }
+  extensionFactories: [atomic => {
+    atomic.on("session_start", () => { api = atomic; });
+    atomic.on("session_shutdown", async () => {
+      if (mode === "close") { enter(); await gate; await atomic.appendEntry("cleanup", { complete: true }); }
       shutdown = true;
     });
   }] });

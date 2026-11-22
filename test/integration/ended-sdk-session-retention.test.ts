@@ -23,8 +23,8 @@ import {
 /** A service the first session to need it starts and every later session shares, until the process exits. */
 let processWideService: ReturnType<typeof setInterval> | undefined;
 
-function startsProcessWideService(pi: ExtensionAPI): void {
-	pi.on("session_start", () => {
+function startsProcessWideService(atomic: ExtensionAPI): void {
+	atomic.on("session_start", () => {
 		processWideService ??= setInterval(() => {}, 3_600_000);
 	});
 }

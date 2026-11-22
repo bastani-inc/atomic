@@ -13,8 +13,8 @@ describe("lax message content normalization", () => {
 	it("normalizes null content returned by a message_end extension", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", (event) => {
+				(atomic) => {
+					atomic.on("message_end", (event) => {
 						if (event.message.role !== "assistant") return;
 						return { message: { ...event.message, content: null as never } };
 					});
@@ -33,8 +33,8 @@ describe("lax message content normalization", () => {
 	it("normalizes omitted content returned by a message_end extension", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", (event) => {
+				(atomic) => {
+					atomic.on("message_end", (event) => {
 						if (event.message.role !== "assistant") return;
 						const replacement = { ...event.message } as typeof event.message & { content?: never };
 						delete replacement.content;
@@ -55,8 +55,8 @@ describe("lax message content normalization", () => {
 	it("normalizes null content injected by before_agent_start", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("before_agent_start", () => ({
+				(atomic) => {
+					atomic.on("before_agent_start", () => ({
 						message: { customType: "lax", content: null as never, display: false },
 					}));
 				},

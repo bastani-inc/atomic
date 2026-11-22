@@ -15,7 +15,7 @@ interface ExtractedContent {
 
 interface ContentToolsModule {
 	registerContentTools(
-		pi: ExtensionAPI,
+		atomic: ExtensionAPI,
 		deps: {
 			maxInlineContent: number;
 			stripThumbnails(results: ExtractedContent[]): ExtractedContent[];
@@ -25,7 +25,7 @@ interface ContentToolsModule {
 }
 
 interface WebAccessModule {
-	default(pi: ExtensionAPI): void;
+	default(atomic: ExtensionAPI): void;
 }
 
 const fetchAllContent = vi.hoisted(() =>
@@ -53,11 +53,11 @@ const { registerContentTools } = await vi.importActual<ContentToolsModule>(
 const { default: registerWebAccess } = await vi.importActual<WebAccessModule>("../../packages/web-access/index.js");
 
 function capture(
-	register: (pi: ExtensionAPI) => void,
+	register: (atomic: ExtensionAPI) => void,
 	appendEntry: ExtensionAPI["appendEntry"] = async () => {},
 ): ToolDefinition {
 	const tools: ToolDefinition[] = [];
-	const pi: Pick<ExtensionAPI, "registerTool" | "on" | "registerShortcut" | "registerCommand" | "appendEntry"> = {
+	const atomic: Pick<ExtensionAPI, "registerTool" | "on" | "registerShortcut" | "registerCommand" | "appendEntry"> = {
 		registerTool: (tool) => {
 			tools.push(tool);
 		},
@@ -66,7 +66,7 @@ function capture(
 		registerCommand: () => {},
 		appendEntry,
 	};
-	register(pi as ExtensionAPI);
+	register(atomic as ExtensionAPI);
 	const tool = tools.find((tool) => tool.name === "fetch_content");
 	assert.ok(tool);
 	return tool;
@@ -75,8 +75,8 @@ function capture(
 const registrations = {
 	lazy: () => capture(registerWebAccess),
 	heavy: () =>
-		capture((pi) =>
-			registerContentTools(pi, {
+		capture((atomic) =>
+			registerContentTools(atomic, {
 				maxInlineContent: 1000,
 				stripThumbnails: (results) => results,
 				formatFullResults: () => "",
@@ -234,8 +234,8 @@ test("fetch_content preserves successful content retrieval guidance for mixed ba
 test("fetch_content reports a rejected session commit through its tool error path", async () => {
 	const failure = new StorageUnavailableError({ adapter: "test", location: "fetch" }, new Error("write failed"));
 	const tool = capture(
-		(pi) =>
-			registerContentTools(pi, {
+		(atomic) =>
+			registerContentTools(atomic, {
 				maxInlineContent: 1000,
 				stripThumbnails: (results) => results,
 				formatFullResults: () => "",

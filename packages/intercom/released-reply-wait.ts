@@ -78,14 +78,14 @@ export function isReleasedReplyHandoffResult(details: JsonValue | undefined): bo
  * its connection existed marks itself ready only once local routing is confirmed.
  */
 export async function prepareReleasedReplyWait(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	wait: ReplyWait,
 	signal: AbortSignal | undefined,
 	data: Omit<ReleasedReplyWaitData, "deadline">,
 	routingConfirmedLocal: () => boolean,
 ): Promise<void> {
 	if (signal === undefined || !toolCallNeedsDetachmentHandoff(signal) || !routingConfirmedLocal()) return;
-	await pi.appendEntry(RELEASED_REPLY_WAIT_ENTRY, { ...data, deadline: wait.deadline });
+	await atomic.appendEntry(RELEASED_REPLY_WAIT_ENTRY, { ...data, deadline: wait.deadline });
 	if (!wait.isPending()) return;
 	wait.readyForHandoff();
 	markToolCallReadyForDetachment(signal);

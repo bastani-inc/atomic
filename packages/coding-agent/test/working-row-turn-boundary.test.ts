@@ -40,8 +40,8 @@ describe.each(["in-process", "isolated"] as const)("the working row between two 
 		const betweenTurns = Promise.withResolvers<void>();
 		// An extension's turn_start handler runs before the session announces the turn, so holding it holds the chat
 		// between the first turn's end and the second turn's start, for as long as a slow next request would.
-		const holdSecondTurn: ExtensionFactory = (pi) => {
-			pi.on("turn_start", async (event) => {
+		const holdSecondTurn: ExtensionFactory = (atomic) => {
+			atomic.on("turn_start", async (event) => {
 				if (event.turnIndex < 1) return;
 				betweenTurns.resolve();
 				await nextTurn.promise;

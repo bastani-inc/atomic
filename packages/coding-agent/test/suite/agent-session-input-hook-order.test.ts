@@ -28,8 +28,8 @@ async function busyHarnessWithSlowInputHook(slowText: string) {
 	const harness = await createHarness({
 		tools: [waitTool],
 		extensionFactories: [
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text !== slowText) return;
 					slowHookEntered.resolve();
 					await hookRelease.promise;
@@ -109,8 +109,8 @@ it("does not hold input that an input hook submits and awaits behind the hook's 
 	const harness = await createHarness({
 		tools: [waitTool],
 		extensionFactories: [
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text === "A") await session?.prompt("nested", { streamingBehavior: "steer" });
 				});
 			},
@@ -157,8 +157,8 @@ it("lets a reload awaited by an input hook finish while later input waits behind
 	const harness = await createHarness({
 		tools: [waitTool],
 		extensionFactories: [
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text !== "A") return;
 					await laterInputWaiting.promise;
 					await session?.reload();

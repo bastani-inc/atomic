@@ -51,7 +51,7 @@ try {
   });
   // Failed SDK cleanup retention is independent of native bounded transport
   // retirement. Inject that failure only after the native resource is retired.
-  const cleanup = pi => pi.on("session_shutdown", () => {
+  const cleanup = atomic => atomic.on("session_shutdown", () => {
    assert.equal(state.active, 0); assert.equal(state.attempts, 1);
    state.cleanupCalls++;
    if (state.fail) throw new Error("companion cleanup failed after native retirement");
@@ -81,8 +81,8 @@ try {
     } };
    }
   }
-  const resourceLoader = new Loader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [pi => {
-   const id = ++next; pi.on("session_start", () => { active.add(id); }); pi.on("session_shutdown", () => { active.delete(id); if (id === 4 && mode === "activate-cleanup") throw new Error("candidate cleanup failed"); });
+  const resourceLoader = new Loader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [atomic => {
+   const id = ++next; atomic.on("session_start", () => { active.add(id); }); atomic.on("session_shutdown", () => { active.delete(id); if (id === 4 && mode === "activate-cleanup") throw new Error("candidate cleanup failed"); });
   }] });
   await resourceLoader.reload(); ({ session } = await createAgentSession({ ...options, resourceLoader }));
   if (mode === "settings") { const prepare = settingsManager.prepareReload.bind(settingsManager); settingsManager.prepareReload = async () => ({ ...await prepare(), commit() { throw new Error("settings commit failed"); } }); }

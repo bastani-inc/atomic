@@ -1772,12 +1772,12 @@ export function subagentChildRestoreNotices(outcomes: readonly SubagentChildRest
  * progress. A failed write only means a later restart reports the child again.
  */
 export async function recordReportedGoneSubagentChildren(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	outcomes: readonly SubagentChildRestoreOutcome[],
 ): Promise<void> {
 	for (const outcome of outcomes) {
 		if (outcome.kind !== "unrestorable" || !outcome.record) continue;
-		await recordSubagentChildGone(pi, outcome.record).catch(() => undefined);
+		await recordSubagentChildGone(atomic, outcome.record).catch(() => undefined);
 	}
 }
 
