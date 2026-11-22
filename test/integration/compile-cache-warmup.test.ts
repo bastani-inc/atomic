@@ -377,6 +377,16 @@ describe.skipIf(!onNode)("the compile cache of an interactive session", () => {
 				assert.ok(engine, "the engine reported its compile cache");
 				assert.equal(engine.cacheDir === null, windows);
 				await quit(program);
+				if (windows) await waitForWarmCache(fixture.cacheBase, engine);
+				// Host and engine share one compile-cache directory instead of writing two (#6222).
+				const tagDirs = existsSync(fixture.cacheBase)
+					? readdirSync(fixture.cacheBase, { withFileTypes: true }).filter((entry) => entry.isDirectory())
+					: [];
+				assert.equal(
+					tagDirs.length,
+					1,
+					`expected one shared compile-cache directory, found: ${tagDirs.map((entry) => entry.name).join(", ")}`,
+				);
 			} finally {
 				program?.kill();
 				await program?.exited;
