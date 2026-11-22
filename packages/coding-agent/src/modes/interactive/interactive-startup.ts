@@ -80,6 +80,11 @@ import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
+import {
+	armPostStartupHighlightWarmup,
+	beginPostStartupPromptTurn,
+	onPostStartupTimerFired,
+} from "./post-startup-highlight.ts";
 import { showSessionNotices } from "./session-notices.ts";
 import {
 	abortStartupShell,
@@ -583,6 +588,21 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 	if (this.postStartupTimer !== undefined) {
 		clearTimeout(this.postStartupTimer);
 	}
+	armPostStartupHighlightWarmup(this, (signal) => {
+		// A session that left its cold compile cache alone has a helper write it once startup and
+		// any first prompt have settled, so it does not compete with first-prompt I/O.
+		if (processCompileCacheDeferral() && !this.isShuttingDown) {
+			void import("../../utils/compile-cache-warmup-host.ts")
+				.then(({ warmCompileCache }) => warmCompileCache(engineHeapRuntimeArgsForHost(true)))
+				.catch(() => {});
+		}
+		// Load non-core highlight.js language grammars off the first-prompt critical path.
+		return loadAllHighlightLanguages({ signal }).then(() => {
+			if (this.isShuttingDown || signal.aborted) return;
+			this.ui.invalidate();
+			this.ui.requestRender();
+		});
+	});
 	this.postStartupTimer = setTimeout(() => {
 		this.postStartupTimer = undefined;
 		if (this.isShuttingDown) return;
@@ -606,18 +626,7 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 		if (!this.deferredStartupPending && !this.deferredStartupPromise) {
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, startupNoticesContainer);
 		}
-		// A session that left its cold compile cache alone has a helper write it now that the session is on screen.
-		if (processCompileCacheDeferral() && !this.isShuttingDown) {
-			void import("../../utils/compile-cache-warmup-host.ts")
-				.then(({ warmCompileCache }) => warmCompileCache(engineHeapRuntimeArgsForHost(true)))
-				.catch(() => {});
-		}
-		// Load non-core highlight.js language grammars off the first-prompt critical path.
-		void loadAllHighlightLanguages().then(() => {
-			if (this.isShuttingDown) return;
-			this.ui.invalidate();
-			this.ui.requestRender();
-		});
+		onPostStartupTimerFired(this);
 	}, 500);
 	this.postStartupTimer.unref?.();
 
@@ -653,21 +662,27 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 
 	// Process initial messages
 	if (initialMessage) {
+		const endInitialTurn = beginPostStartupPromptTurn(this);
 		try {
 			await this.session.prompt(initialMessage, { images: initialImages });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			this.showError(errorMessage);
+		} finally {
+			endInitialTurn();
 		}
 	}
 
 	if (initialMessages) {
 		for (const message of initialMessages) {
+			const endInitialTurn = beginPostStartupPromptTurn(this);
 			try {
 				await this.session.prompt(message);
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
+			} finally {
+				endInitialTurn();
 			}
 		}
 	}

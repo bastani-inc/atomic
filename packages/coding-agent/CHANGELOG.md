@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed slow cold-start first prompts in the in-process interactive host on Windows by deferring background syntax-highlighter grammar loading (and cold compile-cache warmup) until deferred startup and any active prompt turn finish, loading non-eager grammars in small non-blocking slices instead of a single blocking pass, and overlapping the active model's provider API load with deferred startup on early prompts.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

@@ -8,6 +8,7 @@ import { releaseSavedChatHistory } from "./interactive-saved-chat-history.js";
 import { stopRendererWatch } from "./interactive-session-runtime.ts";
 import { cancelApprovedResourceListing } from "./interactive-startup.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
+import { stopPostStartupHighlightWarmup } from "./post-startup-highlight.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
 export const COMPACTION_ALREADY_IN_PROGRESS_WARNING =
@@ -171,6 +172,7 @@ InteractiveModeBase.prototype.stop = function (
 		clearTimeout(this.postStartupTimer);
 		this.postStartupTimer = undefined;
 	}
+	stopPostStartupHighlightWarmup(this);
 	if (this.chatContainer instanceof StartupChatContainer) this.chatContainer.cancelChatRecordPaint();
 	discardChatMount(this);
 	cancelApprovedResourceListing(this);

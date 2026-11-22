@@ -24,6 +24,7 @@ import {
 } from "./interactive-mode-deps.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
+import { notifyPostStartupDeferredComplete } from "./post-startup-highlight.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
 import { showLegacyWorkflowNotice, showSessionNotices } from "./session-notices.ts";
 
@@ -47,6 +48,7 @@ export async function ensureDeferredStartupComplete(mode: DeferredStartupMode): 
 		if (mode.deferredStartupPromise === startupPromise && !mode.deferredStartupPending) {
 			mode.deferredStartupPromise = undefined;
 		}
+		notifyPostStartupDeferredComplete(mode);
 	}
 }
 
@@ -113,10 +115,16 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 				await applyDeferredModelScope(this);
 			}
 			await this.retryDeferredModelRestore(this.startupNoticesContainer);
-			if (!runsInteractiveEngine(this.runtimeHost) && !this.promptTurnWorkingLoaderActive) {
-				setImmediate(() => {
-					if (!this.isShuttingDown) void prewarmModelApi(this.session.model, this.session.modelRuntime);
-				});
+			if (!runsInteractiveEngine(this.runtimeHost) && !this.isShuttingDown) {
+				if (this.promptTurnWorkingLoaderActive) {
+					// Early Enter already submitted a turn: overlap lazy provider API loading with
+					// the rest of deferred startup instead of waiting until session.prompt() runs.
+					void prewarmModelApi(this.session.model, this.session.modelRuntime);
+				} else {
+					setImmediate(() => {
+						if (!this.isShuttingDown) void prewarmModelApi(this.session.model, this.session.modelRuntime);
+					});
+				}
 			}
 		} finally {
 			checkFallbackModels();
@@ -175,6 +183,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 	await reportUnavailableTools(this);
 	// Interrupted work is recovered whatever extension loading did: what could not load only means less to restore.
 	this.startSessionRecovery("startup");
+	notifyPostStartupDeferredComplete(this);
 };
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {

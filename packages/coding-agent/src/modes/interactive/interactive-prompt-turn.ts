@@ -7,11 +7,13 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { followStartedRunEcho, type StartedRunEchoFollower } from "./interactive-render-chat.ts";
 import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
+import { beginPostStartupPromptTurn } from "./post-startup-highlight.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	this: InteractiveModeBase,
 	input: InteractiveSubmission | string,
 ): Promise<void> {
+	const endPostStartupPromptTurn = beginPostStartupPromptTurn(this);
 	const { text: userInput, draft, echo: submittedEcho } = toInteractiveSubmission(input);
 	// An extension command's hold of the prompt's slot ends with the turn at the latest.
 	const extensionCommandHold = typeof input === "string" ? undefined : takeSubmittedExtensionCommandHold(input);
@@ -111,5 +113,6 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 		}
+		endPostStartupPromptTurn();
 	}
 };
