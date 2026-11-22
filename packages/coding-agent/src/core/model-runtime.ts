@@ -232,7 +232,6 @@ export class ModelRuntime implements Models {
 			},
 			() => this.credentials.reload(),
 		);
-		this.rebuildBuiltinProviders();
 		this.rebuildProviders();
 	}
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
@@ -270,6 +269,8 @@ export class ModelRuntime implements Models {
 			providers,
 			!isOfflineModeEnabled(),
 		);
+		runtime.rebuildBuiltinProviders();
+		runtime.rebuildProviders();
 		const allowModelNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork;
 		runtime.#sessionDiscoveryEnabled = allowModelNetwork !== false;
 		const refreshFromNetwork = allowModelNetwork === true;
@@ -279,12 +280,7 @@ export class ModelRuntime implements Models {
 			: undefined;
 		try {
 			if (options.refreshOnCreate !== false) {
-				await runtime.runRefresh(
-					{ allowNetwork: refreshFromNetwork, signal: controller?.signal },
-					++runtime.refreshSequence,
-					false,
-					config,
-				);
+				await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
 			}
 		} finally {
 			if (timeout) clearTimeout(timeout);
@@ -1388,7 +1384,6 @@ export class ModelRuntime implements Models {
 		options: ModelsRefreshOptions,
 		sequence: number,
 		discardIfSuperseded = false,
-		preloadedConfig?: ModelConfig,
 	): Promise<ModelsRefreshResult> {
 		const creation = sessionLifecycleCreation.getStore();
 		const receipt =
@@ -1396,20 +1391,17 @@ export class ModelRuntime implements Models {
 				? options
 				: undefined;
 		if (receipt) creation!.copilotObservation = "restoring";
-		const reusePreloaded = preloadedConfig !== undefined && !options.providers;
-		if (!reusePreloaded) {
-			const config = await ModelConfig.load(this.modelsPath);
-			if (discardIfSuperseded && sequence !== this.refreshSequence) {
-				return { aborted: true, errors: new Map<string, Error>() };
-			}
-			this.config = config;
-			this.rebuildBuiltinProviders();
-			if (options.providers) options = { ...options, providers: options.providers.map(normalizeProviderId) };
-			if (options.providers) {
-				for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
-				this.updateModelSnapshot();
-			} else this.rebuildProviders();
+		const config = await ModelConfig.load(this.modelsPath);
+		if (discardIfSuperseded && sequence !== this.refreshSequence) {
+			return { aborted: true, errors: new Map<string, Error>() };
 		}
+		this.config = config;
+		this.rebuildBuiltinProviders();
+		if (options.providers) options = { ...options, providers: options.providers.map(normalizeProviderId) };
+		if (options.providers) {
+			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
+			this.updateModelSnapshot();
+		} else this.rebuildProviders();
 		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.isNetworkRefreshEnabled() };
 		if (receipt) this.#accountCatalog ??= observeAccountCatalog(this.defaultBuiltins.get("github-copilot"));
 		const observation = #accountCatalog in this ? this.#accountCatalog : undefined;
