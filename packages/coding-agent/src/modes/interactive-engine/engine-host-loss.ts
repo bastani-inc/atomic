@@ -47,14 +47,14 @@ function pauseNow(ms: number): void {
  * extensions started, a command a `session_shutdown` handler started, and what a finished command left running stay as
  * they are, as after a quit. Only for an engine its host started itself, and not on Windows, where the host's end ends
  * the engine and the processes it started. `channelClosed` says whether the engine's input ended or a write to its
- * output failed.
+ * output failed, also while the engine shuts down. Returns whether this engine watches for its host's loss so.
  */
 export function endCommandsWhenHostIsGone(
 	hostPid: number,
 	quitAnnounced: () => boolean,
 	channelClosed: () => boolean,
-): void {
-	if (process.platform === "win32" || process.ppid !== hostPid) return;
+): boolean {
+	if (process.platform === "win32" || process.ppid !== hostPid) return false;
 	process.on("exit", () => {
 		if (
 			hasQuitStoppableCommands() &&
@@ -70,4 +70,5 @@ export function endCommandsWhenHostIsGone(
 			killQuitStoppableCommandsNow();
 		}
 	});
+	return true;
 }

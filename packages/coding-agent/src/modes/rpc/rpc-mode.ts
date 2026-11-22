@@ -27,8 +27,10 @@ import { interactiveEngineStartupEnv, isInteractiveEngineChild } from "../../uti
 import { exitWithStatus } from "../../utils/process-exit-status.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { CONSOLE_CLOSED_EXIT_CODE, CONSOLE_CLOSED_SHUTDOWN_MS } from "../../utils/windows-console-close.js";
+import { markHintRoutesAsEngine } from "../interactive/components/hint-routes.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import { handleEngineHintRouteLine } from "../interactive-engine/engine-hint-route.ts";
 import { endCommandsWhenHostIsGone } from "../interactive-engine/engine-host-loss.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
@@ -75,6 +77,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	takeOverStdout({ nonBlockingPipe: true });
 
 	const interactiveEngineChild = isInteractiveEngineChild();
+	// The hints its chats draw are clicked in its host, which hands their routes back to it.
+	if (interactiveEngineChild) markHintRoutesAsEngine();
 	const deferInteractiveEngineResources = interactiveEngineChild && options.deferInteractiveEngineResources === true;
 	const resourceReadiness = new RpcResourceReadiness();
 	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
@@ -99,13 +103,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const hostPid = Number.parseInt(interactiveEngineStartupEnv().hostPid ?? "", 10);
 	/** Whether this process's input ended: for an engine child, its host closed it or is gone. */
 	let inputEnded = false;
-	if (quitIntent && Number.isSafeInteger(hostPid) && hostPid > 0) {
+	/** Whether this engine's exit ends its commands' processes when its host is gone, which reads `inputEnded`. */
+	const watchesHostLoss =
+		quitIntent !== undefined &&
+		Number.isSafeInteger(hostPid) &&
+		hostPid > 0 &&
 		endCommandsWhenHostIsGone(
 			hostPid,
 			() => quitIntent.explicitQuitRequested,
 			() => inputEnded || rawStdoutWriteFailed(),
 		);
-	}
 	const projectTrust = interactiveEngineChild
 		? new EngineProjectTrustService(() => runtimeHost.session.extensionRunner)
 		: undefined;
@@ -249,7 +256,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		// console was closed, records its shutdown as an explicit quit does.
 		if (interactiveEngineChild && cause !== "request") markEventLoopShutdown();
 		detachInput();
-		process.stdin.pause();
+		if (watchesHostLoss) {
+			// Read the input to its end and drop it: a host killed while this engine shuts down after its signal closes
+			// the input, and the exit then waits for the system to give this engine another parent before it decides
+			// whether the host is gone.
+			process.stdin.once("end", () => {
+				inputEnded = true;
+			});
+			process.stdin.resume();
+		} else process.stdin.pause();
 		await handleCommand.disposeActiveBash();
 		sessionBinding.disposeSubscriptions();
 		stopAnnouncingBuilds();
@@ -359,7 +374,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 						renderService?.handleLine(line) === true ||
 						sessionPicker?.handleLine(line) === true ||
 						inputForm?.handleLine(line) === true ||
-						projectTrust?.handleLine(line) === true
+						projectTrust?.handleLine(line) === true ||
+						(interactiveEngineChild && handleEngineHintRouteLine(line))
 				: undefined,
 	});
 

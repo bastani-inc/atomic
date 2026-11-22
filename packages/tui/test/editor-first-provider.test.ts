@@ -24,6 +24,23 @@ function type(editor: Editor, text: string): void {
 	for (const ch of text) editor.handleInput(ch);
 }
 
+/** A left click on the first text row (below the top border), `x` columns in. */
+function clickText(editor: Editor, x: number): void {
+	editor.handleMouse({
+		type: "click",
+		button: "left",
+		x,
+		y: 1,
+		screenX: x,
+		screenY: 1,
+		width: 80,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+}
+
 /** A provider that offers `/model` and `/mode` for command names, and `src/main.ts` for a forced file lookup. */
 function catalog(asked: string[] = []): AutocompleteProvider {
 	return {
@@ -100,6 +117,34 @@ describe("Editor completion typed before it has a provider", () => {
 		}
 	});
 
+	it("looks up nothing after a click placed the cursor, even back where it was", async () => {
+		for (const clicks of [[1, 3], [3]] as const) {
+			const asked: string[] = [];
+			const editor = createEditor();
+			type(editor, "/mo");
+			rows(editor);
+			for (const x of clicks) clickText(editor, x);
+			assert.deepEqual(editor.getCursor(), { line: 0, col: 3 }, JSON.stringify(clicks));
+			editor.setAutocompleteProvider(catalog(asked));
+			await settle();
+			assert.equal(editor.isShowingAutocomplete(), false, JSON.stringify(clicks));
+			assert.deepEqual(asked, [], JSON.stringify(clicks));
+		}
+	});
+
+	it("still asks again, for a click in the text, about the open menu's text up to the new cursor", async () => {
+		const asked: string[] = [];
+		const editor = createEditor();
+		editor.setAutocompleteProvider(catalog(asked));
+		type(editor, "/mo");
+		await settle();
+		assert.ok(rows(editor).includes("❯ /model"));
+		clickText(editor, 2);
+		await settle();
+		assert.deepEqual(asked, ["/mo", "/m"]);
+		assert.equal(editor.isShowingAutocomplete(), true);
+	});
+
 	it("looks up nothing for a prompt put back after it was sent", async () => {
 		const asked: string[] = [];
 		const editor = createEditor();
@@ -149,5 +194,53 @@ describe("Editor completion typed before it has a provider", () => {
 		await settle();
 		assert.equal(main.isShowingAutocomplete(), false);
 		assert.deepEqual(asked, []);
+	});
+});
+
+describe("Editor text put in as typed", () => {
+	it("looks up what typing the text's last character asks for once the first provider arrives", async () => {
+		const asked: string[] = [];
+		const editor = createEditor();
+		editor.setTextAsTyped("/mo");
+		assert.equal(editor.getText(), "/mo");
+		editor.setAutocompleteProvider(catalog(asked));
+		await settle();
+		assert.ok(rows(editor).includes("❯ /model"));
+		assert.deepEqual(asked, ["/mo"]);
+	});
+
+	it("looks it up at once in an editor that has a provider", async () => {
+		const editor = createEditor();
+		editor.setAutocompleteProvider(catalog());
+		editor.setTextAsTyped("/mo");
+		await settle();
+		assert.ok(rows(editor).includes("❯ /model"));
+	});
+
+	it("looks up nothing for text whose last character asks for no lookup when typed", async () => {
+		for (const text of ["/mo ", "hello", "first line\n/mo", "/mo!"]) {
+			const asked: string[] = [];
+			const editor = createEditor();
+			editor.setTextAsTyped(text);
+			editor.setAutocompleteProvider(catalog(asked));
+			await settle();
+			assert.equal(editor.isShowingAutocomplete(), false, JSON.stringify(text));
+			assert.deepEqual(asked, [], JSON.stringify(text));
+		}
+	});
+
+	it("looks up nothing once a key or a click moved on from the text", async () => {
+		for (const moveOn of ["key", "click"] as const) {
+			const asked: string[] = [];
+			const editor = createEditor();
+			editor.setTextAsTyped("/mo");
+			rows(editor);
+			if (moveOn === "key") editor.handleInput("\x1b[D");
+			else clickText(editor, 1);
+			editor.setAutocompleteProvider(catalog(asked));
+			await settle();
+			assert.equal(editor.isShowingAutocomplete(), false, moveOn);
+			assert.deepEqual(asked, [], moveOn);
+		}
 	});
 });

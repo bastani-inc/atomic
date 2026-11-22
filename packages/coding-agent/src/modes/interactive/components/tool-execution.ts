@@ -60,6 +60,11 @@ export interface ToolExecutionOptions {
 	 * offered to `/tasks`.
 	 */
 	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
+	/**
+	 * Where a click on the chat's own `/tasks` hint runs it (`ownTasks`): the route the chat registered. Without it the
+	 * hint is text, since a click on a command hint otherwise runs the main chat's command.
+	 */
+	keptTaskRoute?: string;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 }
 
@@ -109,6 +114,7 @@ export class ToolExecutionComponent extends Container {
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
 	private readonly keptTaskAction: ToolExecutionOptions["keptTaskAction"];
+	private readonly keptTaskRoute: string | undefined;
 	private readonly toolRendererReader: ToolExecutionOptions["getToolDefinition"];
 	private stopWorkingClock: (() => void) | undefined;
 	private disposed = false;
@@ -163,6 +169,7 @@ export class ToolExecutionComponent extends Container {
 		this.outputPad = options.outputPad ?? 1;
 		this.taskRecordReader = options.getTaskRecord;
 		this.keptTaskAction = options.keptTaskAction;
+		this.keptTaskRoute = options.keptTaskRoute;
 		this.toolRendererReader = options.getToolDefinition;
 		this.ui = ui;
 		this.cwd = cwd;
@@ -553,6 +560,7 @@ export class ToolExecutionComponent extends Container {
 			...(this.keptTaskAction === undefined
 				? {}
 				: { keptTaskAction: (taskId: string) => this.keptTaskAction?.(taskId as TaskId) }),
+			...(this.keptTaskRoute === undefined ? {} : { keptTaskRoute: this.keptTaskRoute }),
 		});
 		const canonicalCall = presentation !== undefined && (!callRenderer || isBuiltinToolCallRenderer(callRenderer));
 		const canonicalResult =

@@ -167,4 +167,22 @@ describe("a capture of an unchanged checkout whose unpushed history was left out
 		assert.equal(second.status, "unchanged");
 		assert.ok(!commandsIn(trace).includes("rev-list"));
 	});
+
+	for (const [name, edit] of [
+		["matches HEAD", () => {}],
+		["has uncommitted changes", (clone: string) => sandbox.write(join(clone, "notes.txt"), "uncommitted\n")],
+	] as const) {
+		test(`stays unchanged without listing commits when everything is pushed and the checkout ${name}`, async () => {
+			const { clone } = await sandbox.remoteWithClone();
+			edit(clone);
+			const first = recorded(await captureWorktreeSnapshot(clone));
+			assert.equal(first.snapshot.bundle, null);
+			assert.deepEqual(historyOmissions(first.snapshot), []);
+			const trace = sandbox.traceGitProcesses();
+			const second = recorded(await captureWorktreeSnapshot(clone, { previous: first.snapshot }));
+			assert.equal(second.status, "unchanged");
+			const commands = commandsIn(trace);
+			assert.ok(!commands.includes("rev-list"), commands.join(" "));
+		});
+	}
 });

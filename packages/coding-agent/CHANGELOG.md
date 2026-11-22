@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- In a subagent's chat on its page in a task list, a click on `/tasks to manage` under a command the subagent started opens the subagent's own task list, as typing `/tasks` there does. It works only while the chat takes what you type. Without colour the hint is text, as the main chat's hints are.
+
+### Fixed
+
+- On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
+- A `/` command or `@` file typed before Atomic's screen appears, as when it starts with a command-line argument such as `-c`, now opens its completion menu once completions are ready, instead of no menu until the next key. A click in the prompt before completions are ready drops such a completion, as a key does, so clicking away and back no longer opens a menu ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Breaking Changes
 
 - Atomic now uses its own copy of TypeBox instead of the `typebox` package. Code that imports the `typebox` package itself and shared Atomic's installed copy before, such as an SDK app installed with Bun or with pnpm hoisting (with npm it already did not share it), or a package an extension depends on that imports `typebox` itself, no longer shares it: schemas built with it still validate, but formats, settings or a locale registered through it no longer reach Atomic's tool validation. To share Atomic's copy, import TypeBox from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format`, `/system` and TypeBox's other subpaths) instead of `typebox`. An extension's own `typebox` imports resolve to Atomic's copy.
