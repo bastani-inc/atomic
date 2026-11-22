@@ -6,6 +6,7 @@
  * process started while that process certainly runs, and signals the pid only while it still names a process that
  * started then. Each check reads the start again: a remembered read may describe the earlier process.
  */
+import { createRequire } from "node:module";
 import {
 	readProcessCreationTime,
 	readProcessStartToken,
@@ -13,7 +14,16 @@ import {
 import { sleep } from "./runtime.js";
 
 /** Where a process's start can be read, so that a pid is never taken for a later process given the same pid. */
-export const READS_PROCESS_STARTS = process.platform === "linux" || process.platform === "win32";
+export const READS_PROCESS_STARTS =
+	process.platform === "linux" || process.platform === "win32" || process.platform === "darwin";
+
+/** When macOS process `pid` started, as the native module reads it; undefined once it is gone. */
+function macOSProcessStart(pid: number): string | undefined {
+	const natives = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+		readonly processCreationTime: (pid: number) => string | null;
+	};
+	return natives.processCreationTime(pid) ?? undefined;
+}
 
 /** A process a test started, and when it started. */
 export interface RecordedProcess {
@@ -24,6 +34,7 @@ export interface RecordedProcess {
 
 /** When process `pid` started, read now; undefined once it is gone, or where starts cannot be read. */
 export function currentProcessStart(pid: number): Promise<string | undefined> {
+	if (process.platform === "darwin") return Promise.resolve(macOSProcessStart(pid));
 	return process.platform === "win32" ? readProcessCreationTime(pid) : readProcessStartToken(pid);
 }
 

@@ -1,18 +1,19 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as atomicHost from "@bastani/atomic";
 import { hostCommandEnvironment } from "./host-command-environment.js";
+import { processCreationTimeOf } from "./start-announcement.js";
 
 /**
  * A broker process found by its pid, told apart from a later process the OS gives the same pid (#6133). Windows gives
  * the pid of an exited process to another within seconds, so a pid alone names the broker only while it runs.
  *
- * On Windows a process is told by its creation time, on Linux by its start token (`/proc`), on macOS by its start as `ps`
- * prints it, to the second. macOS gives pids out again only after the whole range has been used, so a later process
- * given the pid within the same second as the broker started is not told apart there.
+ * On Windows a process is told by its creation time, on Linux by its start token (`/proc`), on macOS by its start to the
+ * microsecond, read by the native module without starting a process, in the same form as the spawn and socket locks
+ * record it.
  */
 export interface BrokerProcess {
 	readonly pid: number;
@@ -126,7 +127,7 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 	try {
 		if (process.platform === "win32") return await readProcessCreationTime(pid);
 		if (process.platform === "linux") return await readProcessStartToken(pid);
-		if (process.platform === "darwin") return await readPsProcessStart(pid);
+		if (process.platform === "darwin") return processCreationTimeOf(pid);
 	} catch {
 		// A reader that failed read no start.
 	}
@@ -135,49 +136,17 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 
 /**
  * When process `pid` started, as {@link readProcessStart} reads it, but only where reading it starts no process: Linux
- * `/proc` and the Windows native module. Undefined elsewhere (the Windows PowerShell fallback, macOS `ps`).
+ * `/proc` and the native module on Windows and macOS. Undefined elsewhere (the Windows PowerShell fallback).
  */
 export async function readProcessStartWithoutProcess(pid: number): Promise<string | undefined> {
 	try {
 		if (process.platform === "linux") return await readProcessStartToken(pid);
 		if (process.platform === "win32") return nativeProcessCreationTime(pid);
+		if (process.platform === "darwin") return processCreationTimeOf(pid);
 	} catch {
 		// A reader that failed read no start.
 	}
 	return undefined;
-}
-
-/** How long reading a start with `ps` may take before it is judged unreadable. */
-const PS_START_TIMEOUT_MS = 2_000;
-
-/**
- * When process `pid` started, as `ps` prints it in UTC, to the second; undefined where `ps` cannot read it (the process
- * is gone, or `ps` failed or took too long). The macOS reader, which starts `ps`: only the broker restart and upgrade
- * paths read it.
- */
-export function readPsProcessStart(pid: number): Promise<string | undefined> {
-	return new Promise((resolve) => {
-		try {
-			execFile(
-				"/bin/ps",
-				["-o", "lstart=", "-p", String(pid)],
-				{
-					encoding: "utf8",
-					env: { ...hostCommandEnvironment(), LC_ALL: "C", TZ: "UTC" },
-					maxBuffer: 1024,
-					timeout: PS_START_TIMEOUT_MS,
-					windowsHide: true,
-				},
-				(error, stdout) => {
-					const started = error === null ? stdout.trim() : "";
-					resolve(started === "" ? undefined : started);
-				},
-			);
-		} catch {
-			// `ps` could not be started at all (a sandbox that denies it, for one): no start is read.
-			resolve(undefined);
-		}
-	});
 }
 
 /**
@@ -398,7 +367,7 @@ export async function endUnansweredBroker(broker: BrokerProcess): Promise<void> 
 		return;
 	}
 	if (process.platform === "darwin" && broker.started !== undefined) {
-		const current = await readPsProcessStart(broker.pid);
+		const current = processCreationTimeOf(broker.pid);
 		if (current !== undefined && current !== broker.started) return;
 	}
 	try {

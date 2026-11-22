@@ -604,7 +604,7 @@ const CREDENTIAL_OPTION = new RegExp(
 const JOINED_PASSWORD_OPTION =
 	/(?<!\S)-p(?:"([^"\n]*)"?|'([^'\n]*)'?|(?![\d.:]+(?:\/[a-z]+)?(?![^\s'"]))(?![/.~])(?=[^\s'"]{6})([A-Za-z]*[^\sA-Za-z'"][^\s'"]*)|([A-Za-z]{6,})(?![^\s'"]))/dgu;
 /** A MySQL or MariaDB client, or a `-u` user option, before a `-p` on its line. */
-const MYSQL_CONTEXT = /(?:\b(?:mysql|mariadb)[\w-]*|(?<!\S)-u\S+)[^\n]*$/u;
+const MYSQL_CONTEXT = /(?:\b(?:mysql|mariadb)|(?<!\S)-u\S)/u;
 /** How far back on its line a MySQL client is looked for. */
 const MYSQL_CONTEXT_LENGTH = 200;
 

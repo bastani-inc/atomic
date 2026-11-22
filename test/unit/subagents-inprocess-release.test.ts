@@ -17,6 +17,7 @@ import {
 	terminate_child_attempt,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
+import { waitedOnCalls } from "../helpers/held-tool-results.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 
 /** A live child loads its real resources; that load is the structural cost of these tests. */
@@ -149,7 +150,7 @@ test(
 		});
 
 		assert.equal(woken.status, "interrupted");
-		assert.deepEqual(woken.released?.waitingOn, [{ toolCallId: "ci-2", toolName: "wait_for_ci" }]);
+		assert.deepEqual(waitedOnCalls(woken.released?.waitingOn), [{ toolCallId: "ci-2", toolName: "wait_for_ci" }]);
 		assert.deepEqual(woken.pendingMessages, ["Resume: deploy now.", "A message held while you were released."]);
 		assert.equal(woken.pendingTaskExpands, undefined, "both are delivered as written");
 		assert.deepEqual(savedTranscript(await SessionManager.open(store, childSession.getSessionId())).slice(2), [
@@ -178,7 +179,7 @@ test(
 
 		assert.equal(result.status, "interrupted");
 		assert.equal(result.interrupted, true);
-		assert.deepEqual(result.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
+		assert.deepEqual(waitedOnCalls(result.released?.waitingOn), [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
 		assert.equal(result.envelope, releasedEnvelope([{ toolCallId: "ci-1", toolName: "wait_for_ci" }]));
 		assert.deepEqual(
 			result.released?.calls.map((call) => [call.toolCallId, call.toolName]),
@@ -308,7 +309,7 @@ test(
 		});
 
 		assert.equal(result.status, "interrupted");
-		assert.deepEqual(result.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
+		assert.deepEqual(waitedOnCalls(result.released?.waitingOn), [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
 		assert.equal(result.model, "faux/faux-2");
 		assert.equal(result.thinking, "low");
 		assert.deepEqual(result.attemptedModels, ["faux/faux-1", "faux/faux-2"]);

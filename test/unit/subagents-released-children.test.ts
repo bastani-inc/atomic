@@ -17,7 +17,9 @@ import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVEN
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import {
 	lateToolResultNotice,
+	lateToolResultNoticeCalls,
 	lateToolResultNoticeIds,
+	lateToolResultNoticeKey,
 	legacyLateToolResultMessage,
 	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
@@ -38,10 +40,12 @@ import {
 	decideReleasedChildWake,
 	forwardDetachedResults,
 	handleReleasedChildWakes,
+	heldForWake,
 	interruptedByRestart,
 	needsRedispatch,
 	pendingToolCalls,
 	planReleasedChildWake,
+	type ReadBackToolResult,
 	readHeldToolResultsBack,
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
@@ -123,6 +127,40 @@ test("a message wake answers every pending call first, then prompts (#4326)", ()
 		lateResults: [],
 		skipPrompt: false,
 	});
+});
+
+test("the results of two earlier calls a provider gave one id are each read late, once per call (#3274)", () => {
+	const first = result("ci-1", "run 6 passed");
+	const second = result("ci-1", "run 7 passed");
+	const plan = planReleasedChildWake(
+		new Map([["ci-1", "wait_for_ci"]]),
+		[first, second, first],
+		false,
+		undefined,
+		new Map([
+			[first, "first-call-entry"],
+			[second, "second-call-entry"],
+		]),
+	);
+
+	assert.deepEqual(plan.lateResults, [first, second]);
+	assert.deepEqual(plan.resumeToolResults, [stillRunning("ci-1")], "the pending call with that id is still running");
+});
+
+test("a late-result notice names the call of each result it holds, also of two results with one id (#3274)", () => {
+	const first = result("ci-1", "run 6 passed");
+	const second = result("ci-1", "run 7 passed");
+	const notice = lateToolResultNotice([first, second]);
+	const message = {
+		customType: notice.customType,
+		details: notice.details,
+		stageAdmissionKey: lateToolResultNoticeKey([first, second], ["first-call-entry", "second-call-entry"]),
+	};
+
+	assert.deepEqual(lateToolResultNoticeCalls(message), [
+		{ toolCallId: "ci-1", callEntryId: "first-call-entry" },
+		{ toolCallId: "ci-1", callEntryId: "second-call-entry" },
+	]);
 });
 
 test("results for calls already answered are late: each read once, in arrival order, and they need no prompt of their own", () => {
@@ -536,6 +574,65 @@ test("a wake that fails hands every result of its batch and a typed failure to t
 	stop();
 });
 
+test("a wake that fails after its action held what it carried hands the owner none of that, and the rest it did not hold (#3274)", async () => {
+	const { sessionManager, ctx, ownerSessionId } = owner();
+	await sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, childRecord(ownerSessionId));
+	const dispatcher = new AgentWakeDispatcher();
+	const failed: DetachedToolResult[][] = [];
+	let holds = true;
+	const stop = handleReleasedChildWakes(
+		ctx,
+		{
+			wake: async (_child, decision) => {
+				// Held in the child's record, as a wake holds what it carries before its child runs; then the wake fails.
+				if (holds) heldForWake(decision.toolResults);
+				throw new Error("launch refused");
+			},
+			hold: async () => {},
+			fail: async (_child, results) => {
+				failed.push([...results]);
+			},
+		},
+		dispatcher,
+	);
+	await assert.rejects(dispatcher.deliver(subagentWakeKey(ownerSessionId, "run:0"), toolWake("ci-1")));
+	holds = false;
+	await assert.rejects(dispatcher.deliver(subagentWakeKey(ownerSessionId, "run:0"), toolWake("ci-2")));
+
+	assert.deepEqual(failed, [[], [result("ci-2")]]);
+	stop();
+});
+
+test("a wake that fails after its action held what it carried hands the owner no repeat of a result held before (#3274)", async () => {
+	const { sessionManager, ctx, ownerSessionId } = owner();
+	const held = { ...result("ci-1"), heldSeq: 1 };
+	await sessionManager.appendCustomEntry(
+		SUBAGENT_CHILD_RECORD_TYPE,
+		childRecord(ownerSessionId, { heldToolResults: [held], heldToolResultSeq: 1 }),
+	);
+	const dispatcher = new AgentWakeDispatcher();
+	const failed: DetachedToolResult[][] = [];
+	const stop = handleReleasedChildWakes(
+		ctx,
+		{
+			wake: async (_child, decision) => {
+				heldForWake(decision.toolResults);
+				throw new Error("launch refused");
+			},
+			hold: async () => {},
+			fail: async (_child, results) => {
+				failed.push([...results]);
+			},
+		},
+		dispatcher,
+	);
+	// The same result delivered again: a repeat of the one the child holds.
+	await assert.rejects(dispatcher.deliver(subagentWakeKey(ownerSessionId, "run:0"), toolWake("ci-1")));
+
+	assert.deepEqual(failed, [[]]);
+	stop();
+});
+
 test("a broker notice for a released child becomes an intercom wake on its key (#4326)", async () => {
 	const { sessionManager, ctx, ownerSessionId } = owner();
 	await sessionManager.appendCustomEntry(
@@ -662,6 +759,30 @@ test("a new process is a restart: a call a child waited on in the earlier proces
 	const record = releasedRecordOf(earlier);
 	assert.equal(interruptedByRestart(record)("bash-1"), true);
 	assert.equal(needsRedispatch(record), true);
+});
+
+test("a call an earlier process ran is not started again while the result a wake bound to it is held (#3274)", () => {
+	const earlier = "earlier-process";
+	const held = { ...result("bash-1", "built"), heldSeq: 1 };
+	const waiting: SubagentChildRecord = {
+		...releasedRecordOf(earlier),
+		waitingOn: [{ toolCallId: "bash-1", toolName: "bash", callEntryId: "bash-call-entry" }],
+		heldToolResults: [held],
+	};
+
+	// A wake bound it to the call the child waits on, then failed, stopped or lost its process before a run took it.
+	assert.equal(needsRedispatch({ ...waiting, heldToolResultCalls: { "1": "bash-call-entry" } }), false);
+	// An earlier version named no call entry: the result held with the id is the one, as it always was.
+	assert.equal(
+		needsRedispatch({
+			...waiting,
+			waitingOn: [{ toolCallId: "bash-1", toolName: "bash" }],
+			heldToolResultCalls: { "1": "bash-call-entry" },
+		}),
+		false,
+	);
+	// The held result is an earlier call's, which a provider gave the same id: the call waited on died with that process.
+	assert.equal(needsRedispatch({ ...waiting, heldToolResultCalls: { "1": "earlier-call-entry" } }), true);
 });
 
 test("a held result counts as saved once the transcript holds it as its call's result, in a late-result notice or as an earlier build's late message, never as a still-running answer (#5012)", () => {
@@ -819,6 +940,167 @@ test("reading a woken child's history back finds the entry of the newest call of
 		["ci-1", deploy],
 		["ci-2", lint],
 	]);
+});
+
+/**
+ * A child whose call `ci-1` (`first`) kept running in the background, whose late result was read in a notice keyed to
+ * that call, and which then made another call a provider gave the same id (`newer`): answered with its own result, told
+ * it is still running, or still waiting on it.
+ */
+async function readThenReusedId(newer: "answered" | "still running" | "pending" | "unread") {
+	const store = new MemorySessionStore();
+	const child = await SessionManager.create(store, "/repo");
+	const call = (run: string) =>
+		child.appendMessage({
+			...fauxAssistantMessage([fauxToolCall("wait_for_ci", { run }, { id: "ci-1" })], { stopReason: "toolUse" }),
+		});
+	await child.appendMessage({ role: "user", content: "watch CI", timestamp: 1 });
+	const first = await call("7");
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-1",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+		isError: false,
+		timestamp: 2,
+	});
+	const late = result("ci-1", "run 7 deployed");
+	if (newer !== "unread") {
+		const notice = lateToolResultNotice([late]);
+		await child.appendCustomMessageEntry(
+			notice.customType,
+			notice.content,
+			true,
+			notice.details,
+			true,
+			{ delivery: "steer" },
+			lateToolResultNoticeKey([late], [first]),
+		);
+	}
+	const second = await call("8");
+	if (newer === "answered" || newer === "still running")
+		await child.appendMessage({
+			role: "toolResult",
+			toolCallId: "ci-1",
+			toolName: "wait_for_ci",
+			content: [{ type: "text", text: newer === "answered" ? "run 8 passed" : SUBAGENT_STILL_RUNNING_RESULT }],
+			isError: false,
+			timestamp: 3,
+		});
+	const bound: ReadBackToolResult = { ...late, callEntryId: first };
+	return { child, late, bound, first, second };
+}
+
+for (const newer of ["answered", "still running", "pending"] as const)
+	test(`a held result a wake bound to its call and a run then read is found read past a newer call with its id, ${newer} (#3274)`, async () => {
+		const { child, bound } = await readThenReusedId(newer);
+
+		const found = await readHeldToolResultsBack(child, [bound]);
+
+		assert.deepEqual(found.saved, ["ci-1"], "the run that read it saved it; only its release was not recorded");
+		assert.deepEqual([...found.issuingCalls], []);
+	});
+
+test("a held result bound to an older call than the one its child waits on with that id is late, never that call's result (#3274)", async () => {
+	const { child, bound, late, first } = await readThenReusedId("unread");
+
+	const found = await readHeldToolResultsBack(child, [bound]);
+	assert.deepEqual(found.saved, []);
+	assert.deepEqual([...found.issuingCalls], [["ci-1", first]], "its own call");
+	assert.equal(found.results[0]?.older, true);
+
+	const plan = planReleasedChildWake(pendingToolCalls(child), [late], false, undefined, new Map([[late, first]]));
+	assert.deepEqual(plan.lateResults, [late]);
+	assert.deepEqual(plan.resumeToolResults, [stillRunning("ci-1")], "the newer call is still running");
+});
+
+test("a held result bound to its call is not taken as read from a newer call's own result with its id (#3274)", async () => {
+	const { child, bound } = await readThenReusedId("unread");
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-1",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: "run 8 passed" }],
+		isError: false,
+		timestamp: 3,
+	});
+
+	const found = await readHeldToolResultsBack(child, [bound]);
+
+	assert.deepEqual(found.saved, [], "the run that read run 8's result never read this one");
+});
+
+test("a notice of an older call's result read after a newer call with the same id does not count as reading that newer call's (#3274)", async () => {
+	const { child } = await readThenReusedId("pending");
+	// The notice of an older call's result, read after the newer call was made.
+	const older = result("ci-1", "run 7 deployed");
+	const notice = lateToolResultNotice([older]);
+	const branch = child.getBranch();
+	const firstCall = branch.find((entry) => entry.type === "message" && entry.message.role === "assistant")?.id;
+	assert.ok(firstCall);
+	await child.appendCustomMessageEntry(
+		notice.customType,
+		notice.content,
+		true,
+		notice.details,
+		true,
+		{ delivery: "steer" },
+		lateToolResultNoticeKey([older], [firstCall]),
+	);
+	const newerResult = result("ci-1", "run 8 passed");
+
+	const found = await readHeldToolResultsBack(child, [newerResult]);
+
+	assert.deepEqual(found.saved, [], "the newer call's result was never read");
+});
+
+test("a late result read in a notice admitted under the key that names its call is found read in the child's context too (#5012)", async () => {
+	const child = SessionManager.inMemory("/repo");
+	const call = await child.appendMessage({
+		...fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "7" }, { id: "ci-1" })], { stopReason: "toolUse" }),
+	});
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-1",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+		isError: false,
+		timestamp: 2,
+	});
+	const late = result("ci-1", "run 7 deployed");
+	const notice = lateToolResultNotice([late]);
+	await child.appendCustomMessageEntry(
+		notice.customType,
+		notice.content,
+		true,
+		notice.details,
+		true,
+		{ delivery: "steer" },
+		lateToolResultNoticeKey([late], [call]),
+	);
+
+	assert.deepEqual(savedToolResultIds(child, [late]), ["ci-1"]);
+	assert.deepEqual(await savedToolResultIdsInHistory(child, [late]), ["ci-1"]);
+});
+
+test("a result for a later call a provider gave the same id wakes its child, though one for an earlier call is still held (#3274)", () => {
+	const earlier = { ...result("ci-1", "run 7 deployed"), heldSeq: 1 };
+	const later = result("ci-1", "run 8 passed");
+	const wake = { id: "tool-result:later", kind: "tool-result" as const, toolResult: later };
+	const released = {
+		state: "terminal" as const,
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		heldToolResults: [earlier],
+	};
+
+	// A wake gave the earlier result to a run, bound to its call: the later one is another result.
+	assert.deepEqual(decideReleasedChildWake({ ...released, heldToolResultCalls: { "1": "call-entry-7" } }, [wake]), {
+		kind: "wake",
+		toolResults: [earlier, later],
+		prompt: false,
+	});
+	// Not bound yet: the one held is the result an arrival with its id repeats.
+	assert.deepEqual(decideReleasedChildWake(released, [wake]), { kind: "wake", toolResults: [earlier], prompt: false });
 });
 
 test("a woken child's history is read back only as far as the call of each result it may have read", async () => {

@@ -10,7 +10,15 @@ import {
 	scheduleReleasedReplyTimeouts,
 	withReleasedReplyTimeouts,
 } from "../../packages/subagents/src/runs/foreground/released-child-replies.js";
-import type { SubagentChildWaitingCall } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import {
+	SUBAGENT_OWNER_GENERATION,
+	wakeReleasedChildrenOfEarlierProcess,
+} from "../../packages/subagents/src/runs/foreground/released-children.js";
+import {
+	SUBAGENT_CHILD_RELEASED_STATUS,
+	type SubagentChildRecord,
+	type SubagentChildWaitingCall,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 
 const ASK: SubagentChildWaitingCall = {
 	toolCallId: "ask-1",
@@ -82,6 +90,84 @@ test("a deadline whose call was already answered, or whose question the child no
 
 	assert.deepEqual(withReleasedReplyTimeouts({ waitingOn: [ASK], heldToolResults: [answered] }, [deadline]), []);
 	assert.deepEqual(withReleasedReplyTimeouts({ waitingOn: [], heldToolResults: [] }, [deadline]), []);
+});
+
+test("a deadline still fires for a question asked by a later call a provider gave the id of an earlier one whose answer is held (#3274)", () => {
+	const deadline: AgentWake = { id: releasedReplyTimeoutId("question-1"), kind: "tool-result" };
+	// The earlier call's answer, which a wake bound to that call and gave to a run.
+	const earlier = {
+		toolCallId: "ask-1",
+		toolName: "intercom",
+		result: { content: [], details: undefined },
+		isError: false,
+		heldSeq: 1,
+	};
+
+	const [wake] = withReleasedReplyTimeouts(
+		{
+			waitingOn: [{ ...ASK, callEntryId: "later-call-entry" }],
+			heldToolResults: [earlier],
+			heldToolResultCalls: { "1": "earlier-call-entry" },
+		},
+		[deadline],
+	);
+
+	assert.equal(wake?.toolResult?.toolCallId, "ask-1");
+	assert.equal(wake?.toolResult?.isError, true, "the later call's question timed out");
+});
+
+test("a deadline is dropped while the answer a wake bound to the call that asked is held, as before the wake bound it (#3274)", () => {
+	const deadline: AgentWake = { id: releasedReplyTimeoutId("question-1"), kind: "tool-result" };
+	const answer = {
+		toolCallId: "ask-1",
+		toolName: "intercom",
+		result: { content: [], details: undefined },
+		isError: false,
+		heldSeq: 1,
+	};
+	const bound = { heldToolResults: [answer], heldToolResultCalls: { "1": "ask-call-entry" } };
+
+	// A wake bound the answer to the call that asked, then failed or stopped before a run took it.
+	assert.deepEqual(
+		withReleasedReplyTimeouts({ ...bound, waitingOn: [{ ...ASK, callEntryId: "ask-call-entry" }] }, [deadline]),
+		[],
+	);
+	// What an earlier version wrote names no call entry: an answer held with the id is the one, as it always was.
+	assert.deepEqual(withReleasedReplyTimeouts({ ...bound, waitingOn: [ASK] }, [deadline]), []);
+});
+
+test("an owner reading its released children again sets no deadline for a question whose answer a wake bound to the call that asked (#3274)", () => {
+	const time = handClock();
+	const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+	const asking = { ...ASK, callEntryId: "ask-call-entry" };
+	const answer = {
+		toolCallId: "ask-1",
+		toolName: "intercom",
+		result: { content: [], details: undefined },
+		isError: false,
+		heldSeq: 1,
+	};
+	const record = (call: string): SubagentChildRecord => ({
+		version: 1,
+		childId: "ask:0",
+		owner: { kind: "session", sessionId: "owner" },
+		runId: "ask",
+		index: 0,
+		agent: "worker",
+		cwd: "/repo",
+		state: "terminal",
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		ownerGeneration: SUBAGENT_OWNER_GENERATION,
+		waitingOn: [asking],
+		heldToolResults: [answer],
+		heldToolResultCalls: { "1": call },
+	});
+
+	wakeReleasedChildrenOfEarlierProcess(dispatcher, "owner", [record("ask-call-entry")]);
+	assert.equal(dispatcher.stats().scheduled, 0, "its answer is held");
+	// The answer held is an earlier call's, which a provider gave the same id: this call's question still has a deadline.
+	wakeReleasedChildrenOfEarlierProcess(dispatcher, "owner", [record("earlier-call-entry")]);
+	assert.equal(dispatcher.stats().scheduled, 1);
 });
 
 test("a wake that is not a deadline passes through unchanged and in order (#4326)", () => {

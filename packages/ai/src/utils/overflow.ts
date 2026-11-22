@@ -35,6 +35,9 @@ import type { AssistantMessage } from "../types.ts";
  * - DashScope/Qwen: "Range of input length should be [1, X]" (HTTP 400 invalid_parameter_error)
  * - Ollama: Some deployments truncate silently, others return errors like "prompt too long; exceeded max context length by X tokens"
  */
+const INPUT_TOKEN_COUNT_OVERFLOW_PATTERN =
+	/input token count(?:(?!input token count)[^\r\n\u2028\u2029])*exceeds the maximum/i;
+
 const OVERFLOW_PATTERNS = [
 	/prompt (?:is )?too long/i, // Anthropic and z.ai token overflow
 	/prompt exceeds max length/i, // z.ai CN endpoint token overflow
@@ -43,7 +46,7 @@ const OVERFLOW_PATTERNS = [
 	/exceeds the context window/i, // OpenAI (Completions & Responses API)
 	/exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))/i, // OpenAI-compatible proxies (LiteLLM)
 	/context window exceeded/i, // LiteLLM pre-call check (ContextWindowExceededError)
-	/input token count.*exceeds the maximum/i, // Google (Gemini)
+	INPUT_TOKEN_COUNT_OVERFLOW_PATTERN, // Google (Gemini)
 	/maximum prompt length is \d+/i, // xAI (Grok)
 	/reduce the length of the messages/i, // Groq
 	/maximum context length is \d+ tokens/i, // OpenRouter (most backends)
@@ -65,6 +68,8 @@ const OVERFLOW_PATTERNS = [
 	// Match raw SDK errors and formatProviderError's prefix, not a status mentioned in the body.
 	/^(?:[\w .-]+ API error \(413\):|413(?:\s|:|$))/i,
 ];
+
+const DIRECT_OVERFLOW_PATTERNS = OVERFLOW_PATTERNS.filter((p) => p !== INPUT_TOKEN_COUNT_OVERFLOW_PATTERN);
 
 /** Typed GitHub Copilot rejections too general to rule overflow out; their provider text is checked instead. */
 const TEXT_CHECKED_COPILOT_CODES: ReadonlySet<GitHubCopilotErrorCode> = new Set<GitHubCopilotErrorCode>([
@@ -96,6 +101,61 @@ const NON_OVERFLOW_PATTERNS = [
 	/rate limit/i, // Generic rate limiting
 	/too many requests/i, // Generic HTTP 429 style
 ];
+
+function isLineTerminatorCode(code: number): boolean {
+	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+}
+
+function matchesAsciiCaseInsensitiveAt(text: string, lowerNeedle: string, offset: number): boolean {
+	if (offset < 0 || offset + lowerNeedle.length > text.length) return false;
+	for (let i = 0; i < lowerNeedle.length; i++) {
+		let code = text.charCodeAt(offset + i);
+		if (code >= 0x41 && code <= 0x5a) code += 32;
+		if (code !== lowerNeedle.charCodeAt(i)) return false;
+	}
+	return true;
+}
+
+function findAsciiCaseInsensitive(text: string, lowerNeedle: string, fromIndex: number): number {
+	const limit = text.length - lowerNeedle.length;
+	if (fromIndex > limit) return -1;
+	const firstLower = lowerNeedle.charCodeAt(0);
+	const firstUpper = firstLower - 32;
+	for (let pos = fromIndex; pos <= limit; pos++) {
+		const code = text.charCodeAt(pos);
+		if ((code === firstLower || code === firstUpper) && matchesAsciiCaseInsensitiveAt(text, lowerNeedle, pos)) {
+			return pos;
+		}
+	}
+	return -1;
+}
+
+function matchesInputTokenCountOverflow(text: string): boolean {
+	const firstLower = "input token count";
+	const secondLower = "exceeds the maximum";
+	let searchFrom = 0;
+	let nextSecond = -1;
+	let nextSecondLineStart = 0;
+	let ltScan = 0;
+	while (searchFrom < text.length) {
+		const pos = findAsciiCaseInsensitive(text, firstLower, searchFrom);
+		if (pos === -1) return false;
+		const endFirst = pos + firstLower.length;
+		if (nextSecond < endFirst) {
+			nextSecond = findAsciiCaseInsensitive(text, secondLower, endFirst);
+			if (nextSecond === -1) return false;
+			while (ltScan < nextSecond) {
+				if (isLineTerminatorCode(text.charCodeAt(ltScan))) {
+					nextSecondLineStart = ltScan + 1;
+				}
+				ltScan++;
+			}
+		}
+		if (endFirst >= nextSecondLineStart) return true;
+		searchFrom = nextSecondLineStart;
+	}
+	return false;
+}
 
 /**
  * Check if an assistant message represents a context overflow error.
@@ -169,7 +229,10 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 		// Skip messages matching known non-overflow patterns (e.g. throttling / rate-limit)
 		const isNonOverflow = NON_OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!));
 		if (!isNonOverflow) {
-			if (OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!))) {
+			if (
+				DIRECT_OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!)) ||
+				matchesInputTokenCountOverflow(message.errorMessage)
+			) {
 				return true;
 			}
 			if (message.provider === "cerebras" && isCerebrasBodylessOverflow(message.errorMessage)) {

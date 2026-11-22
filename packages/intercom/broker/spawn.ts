@@ -27,6 +27,7 @@ import {
   BROKER_ANNOUNCE_PATH_ENV,
   BROKER_ANNOUNCE_START_ENV,
   BROKER_ANNOUNCE_TOKEN_ENV,
+  processCreationTimeOf,
   type AnnouncedBroker,
   type BrokerStartAnnouncement,
   readBrokerStartAnnouncementAsync,
@@ -1209,12 +1210,13 @@ function lockedProcessLine(content: string, nowMs: number): string | undefined {
 
 /**
  * The start the spawn lock records beside a pid: read without starting a process (Linux `/proc`, the Windows native
- * module), so taking the lock never waits on one; undefined elsewhere, or with a host that has no such reader, where the
- * lock follows the pid alone.
+ * module, and on macOS the broker's own native reader), so taking the lock never waits on one; undefined elsewhere, or
+ * with a host that has no such reader, where the lock follows the pid alone.
  */
 function lockProcessStart(pid: number): string | undefined {
   if (process.platform === "linux") return processStartToken(pid);
   if (process.platform === "win32") return nativeProcessCreationTime(pid);
+  if (process.platform === "darwin") return processCreationTimeOf(pid);
   return undefined;
 }
 
@@ -1222,6 +1224,7 @@ function lockProcessStart(pid: number): string | undefined {
 async function lockProcessStartAsync(pid: number): Promise<string | undefined> {
   if (process.platform === "linux") return readProcessStartToken(pid);
   if (process.platform === "win32") return nativeProcessCreationTime(pid);
+  if (process.platform === "darwin") return processCreationTimeOf(pid);
   return undefined;
 }
 
@@ -1254,7 +1257,8 @@ async function ownLockProcessLineAsync(): Promise<string> {
 
 /** The start a found broker is recorded with: only one read while that broker held its pid. */
 function foundBrokerStart(found: BrokerProcess): string | undefined {
-  if (process.platform === "linux") return found.started;
+  // Read as the spawn lock reads a start (`lockProcessStart`), so a lock line and a found broker never differ in form.
+  if (process.platform === "linux" || process.platform === "darwin") return found.started;
   if (process.platform === "win32" && found.wroteBrokerPid === "yes") return found.started;
   return undefined;
 }

@@ -785,8 +785,8 @@ export declare function pinWindowsFile(path: string): Promise<WindowsFileIdentit
 
 /**
  * When running process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC (the
- * Windows process creation time), or `null` where that cannot be read: on other platforms, for a process that is gone
- * or has exited, and for one this process may not query.
+ * Windows process creation time; on macOS its start, to the microsecond, in the same count), or `null` where that
+ * cannot be read: on other platforms, for a process that is gone or has exited, and for one this process may not query.
  */
 export declare function processCreationTime(pid: number): string | null
 

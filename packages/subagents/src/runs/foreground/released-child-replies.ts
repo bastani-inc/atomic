@@ -8,6 +8,7 @@ import type {
 } from "@bastani/atomic";
 import type { Message } from "../../../../intercom/types.js";
 import type { IntercomEventBus } from "../../shared/types.js";
+import { issuedCallIds } from "./branch-read-back.js";
 import { ReleasedChildError } from "./released-child-errors.js";
 import {
 	RELEASED_REPLY_FORMAT_EVENT,
@@ -16,7 +17,7 @@ import {
 	type ReleasedReplyPayload,
 	type ReleasedReplyWaitData,
 } from "./released-reply-protocol.js";
-import type { SubagentChildRecord, SubagentChildWaitingCall } from "./subagent-child-records.js";
+import { holdsResultOf, type SubagentChildRecord, type SubagentChildWaitingCall } from "./subagent-child-records.js";
 
 /** Read only plain correlation facts from the child's saved session, for calls that actually detached. */
 export function releasedChildWaitingCalls(
@@ -24,7 +25,12 @@ export function releasedChildWaitingCalls(
 	calls: readonly DetachedToolCall[],
 ): SubagentChildWaitingCall[] {
 	const waits = new Map<string, ReleasedReplyWaitData>();
+	// The entry that issued each call: the newest with its id, which a provider may have given an earlier call (#3274).
+	const waited = new Set(calls.map((call) => call.toolCallId));
+	const issued = new Map<string, string>();
 	for (const entry of manager.getEntries()) {
+		if (entry.type === "message")
+			for (const id of issuedCallIds(entry.message)) if (waited.has(id)) issued.set(id, entry.id);
 		if (entry.type !== "custom" || entry.customType !== RELEASED_REPLY_WAIT_ENTRY) continue;
 		const data = entry.data as Partial<ReleasedReplyWaitData> | undefined;
 		if (
@@ -39,9 +45,11 @@ export function releasedChildWaitingCalls(
 	}
 	return calls.map(({ toolCallId, toolName }) => {
 		const wait = waits.get(toolCallId);
+		const callEntryId = issued.get(toolCallId);
 		return {
 			toolCallId,
 			toolName,
+			...(callEntryId === undefined ? {} : { callEntryId }),
 			...(wait === undefined
 				? {}
 				: {
@@ -68,15 +76,14 @@ export function releasedReplyTimeoutId(questionId: string): string {
  * asker costs the dispatcher one plain node, and a reply that came first is never overtaken by its own deadline.
  */
 export function withReleasedReplyTimeouts(
-	record: Pick<SubagentChildRecord, "waitingOn" | "heldToolResults">,
+	record: Pick<SubagentChildRecord, "waitingOn" | "heldToolResults" | "heldToolResultCalls">,
 	wakes: readonly AgentWake[],
 ): AgentWake[] {
 	return wakes.flatMap((wake): AgentWake[] => {
 		if (!wake.id.startsWith(REPLY_TIMEOUT_PREFIX)) return [wake];
 		const questionId = wake.id.slice(REPLY_TIMEOUT_PREFIX.length);
 		const call = record.waitingOn?.find((waiting) => waiting.replyWait?.questionId === questionId);
-		if (call === undefined || (record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId))
-			return [];
+		if (call === undefined || holdsResultOf(record, call)) return [];
 		return [{ ...wake, toolResult: releasedReplyTimeout(call) }];
 	});
 }

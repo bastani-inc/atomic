@@ -15,7 +15,7 @@ import {
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
 import { issuedCallIds, visitBranchBack } from "./branch-read-back.js";
-import { lateToolResultNoticeIds, legacyLateToolResultMessage } from "./late-tool-result-notice.js";
+import { lateToolResultNoticeCalls, legacyLateToolResultMessage } from "./late-tool-result-notice.js";
 import { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import { SUBAGENT_QUESTION_TOOLS } from "./released-child-questions.js";
@@ -38,6 +38,8 @@ import {
 } from "./subagent-child-card-state.js";
 import {
 	holdInterruptedStillRunningCalls,
+	holdsResultOf,
+	holdsToolResultFor,
 	observeChildRecordFailure,
 	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_GONE_STATUS,
@@ -87,9 +89,7 @@ function isResumeWake(wake: AgentWake): wake is ReleasedChildResumeWake {
 }
 
 function waitsOnHeldResult(record: SubagentChildRecord): boolean {
-	return (record.waitingOn ?? []).some((call) =>
-		(record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId),
-	);
+	return (record.waitingOn ?? []).some((call) => holdsResultOf(record, call));
 }
 
 function releasedByEarlierProcess(record: SubagentChildRecord): boolean {
@@ -188,9 +188,7 @@ export function wakeReleasedChildrenOfEarlierProcess(
 		scheduleReleasedReplyTimeouts(
 			dispatcher,
 			wakeKey,
-			(record.waitingOn ?? []).filter(
-				(call) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId),
-			),
+			(record.waitingOn ?? []).filter((call) => !holdsResultOf(record, call)),
 		);
 		if (!releasedByEarlierProcess(record)) continue;
 		if (needsRedispatch(record))
@@ -319,46 +317,129 @@ interface SavedMessage {
 	readonly content?: Parameters<typeof textOf>[0];
 	readonly customType?: string;
 	readonly details?: unknown;
+	readonly stageAdmissionKey?: unknown;
 }
 
 /**
  * The ids of `results` a message shows read: its call's own result (one that is not "still running"), the notice a woken
- * child reads late results in, or the message an earlier version built from a late result.
+ * child reads late results in, which names each one's call when it was admitted knowing it, or the message an earlier
+ * version built from a late result.
  */
-function readIds(message: SavedMessage, results: readonly DetachedToolResult[]): readonly string[] {
+function readsOf(
+	message: SavedMessage,
+	results: readonly DetachedToolResult[],
+): ReadonlyArray<{ readonly toolCallId: string; readonly callEntryId?: string }> {
 	if (message.role === "toolResult")
 		return message.toolCallId !== undefined && textOf(message.content ?? "") !== SUBAGENT_STILL_RUNNING_RESULT
-			? [message.toolCallId]
+			? [{ toolCallId: message.toolCallId }]
 			: [];
-	if (message.role === "custom") return lateToolResultNoticeIds(message);
+	if (message.role === "custom") return lateToolResultNoticeCalls(message);
 	if (message.role !== "user") return [];
 	const text = textOf(message.content ?? "");
-	return results.flatMap((result) => (legacyLateToolResultMessage(result) === text ? [result.toolCallId] : []));
+	return results.flatMap((result) =>
+		legacyLateToolResultMessage(result) === text ? [{ toolCallId: result.toolCallId }] : [],
+	);
+}
+
+/** A result read back for: as it was held or arrived, and the entry of the call a wake bound it to, if any (#3274). */
+export interface ReadBackToolResult extends DetachedToolResult {
+	readonly callEntryId?: string;
+}
+
+/** What reading back for one result knows until it reaches the call the result is for. */
+interface OpenResult {
+	/** Its place among the results read back for. */
+	readonly index: number;
+	/** The entry of that call, when a wake bound the result to it; otherwise it is the newest call with the id. */
+	readonly call?: string;
+	/** A message read the id since the last call with it passed, which issued the call whose result it read. */
+	read: boolean;
+	/** For a result not bound to its call: the calls whose results notices since named. */
+	readonly noticed: Set<string>;
+	/** It passed a newer call with its id on the way to its own. */
+	passedNewer: boolean;
+}
+
+/** What reading back found of one result. */
+export interface ReadBackOfResult {
+	/** The child read it. */
+	readonly saved: boolean;
+	/** For one it has not read, the entry that issued its call, when the read-back found it or a wake bound it there. */
+	readonly call?: string;
+	/** It is bound to a call older than the newest with its id: never the result of that newer call. */
+	readonly older: boolean;
+}
+
+/** The results still read back for, by call id, each the first one held or arrived for its call. */
+function openResults(results: readonly ReadBackToolResult[]): Map<string, OpenResult[]> {
+	const open = new Map<string, OpenResult[]>();
+	results.forEach((result, index) => {
+		const states = open.get(result.toolCallId) ?? [];
+		if (states.some((state) => state.call === result.callEntryId)) return;
+		states.push({
+			index,
+			...(result.callEntryId === undefined ? {} : { call: result.callEntryId }),
+			read: false,
+			noticed: new Set(),
+			passedNewer: false,
+		});
+		open.set(result.toolCallId, states);
+	});
+	return open;
+}
+
+function close(open: Map<string, OpenResult[]>, id: string, state: OpenResult): void {
+	const states = (open.get(id) ?? []).filter((other) => other !== state);
+	if (states.length === 0) open.delete(id);
+	else open.set(id, states);
 }
 
 /**
- * Reads `messages`, oldest first, from the newest back, as the branch back from its newest entry or the next older
- * part of it. An id still `open` is `saved` when a message reads it after the newest call that issued it. That call
- * closes it unread: a result is read only after its call, and a provider can give a later call the id of an earlier
- * one, whose result is not this one (#3274).
+ * Reads `message`, the entry `entryId` when known, as the next one back from the newest. A result is read only after its
+ * call, and a provider can give a later call the id of an earlier one, whose result is not this one (#3274). So a result
+ * still `open` is saved when a message read it after the call it is for, and that call closes it: the newest call with
+ * its id, or the one a wake bound it to, past newer calls whose results those reads may be. A notice that names the
+ * call it read the result of counts for that call only, once entries are known.
  */
 function readBack(
-	messages: readonly SavedMessage[],
+	message: SavedMessage,
+	entryId: string | undefined,
 	results: readonly DetachedToolResult[],
-	open: Set<string>,
-	saved: Set<string>,
+	open: Map<string, OpenResult[]>,
+	found: Map<number, ReadBackOfResult>,
 ): void {
-	for (let index = messages.length - 1; index >= 0 && open.size > 0; index--) {
-		const message = messages[index];
-		if (message === undefined) continue;
-		for (const id of issuedCallIds(message)) open.delete(id);
-		for (const id of readIds(message, results)) if (open.delete(id)) saved.add(id);
+	for (const id of issuedCallIds(message))
+		for (const state of [...(open.get(id) ?? [])]) {
+			if (state.call !== undefined && entryId !== undefined && entryId !== state.call) {
+				// A newer call with its id: what was read since was that call's result.
+				state.read = false;
+				state.passedNewer = true;
+				continue;
+			}
+			close(open, id, state);
+			const saved = state.read || (entryId !== undefined && state.noticed.has(entryId));
+			found.set(state.index, {
+				saved,
+				...(saved || entryId === undefined ? {} : { call: entryId }),
+				older: !saved && state.passedNewer,
+			});
+		}
+	for (const read of readsOf(message, results)) {
+		// Without entries, a notice is read by its call's id alone.
+		const readCall = entryId === undefined ? undefined : read.callEntryId;
+		for (const state of [...(open.get(read.toolCallId) ?? [])]) {
+			if (readCall === undefined ? state.call === undefined || entryId === undefined : readCall === state.call) {
+				close(open, read.toolCallId, state);
+				found.set(state.index, { saved: true, older: false });
+			} else if (readCall === undefined) state.read = true;
+			else if (state.call === undefined) state.noticed.add(readCall);
+		}
 	}
 }
 
-/** The ids of `results` in `saved`, in their order, once each. */
-function savedOf(results: readonly DetachedToolResult[], saved: ReadonlySet<string>): string[] {
-	return [...new Set(results.flatMap((result) => (saved.has(result.toolCallId) ? [result.toolCallId] : [])))];
+/** The ids of `results` read, in their order, once each. */
+function savedOf(results: readonly DetachedToolResult[], found: ReadonlyMap<number, ReadBackOfResult>): string[] {
+	return [...new Set(results.flatMap((result, index) => (found.get(index)?.saved ? [result.toolCallId] : [])))];
 }
 
 /**
@@ -372,20 +453,26 @@ export function savedToolResultIds(
 	results: readonly DetachedToolResult[],
 ): string[] {
 	if (results.length === 0) return [];
-	const saved = new Set<string>();
-	readBack(
-		sessionManager.buildSessionProjection().messages,
-		results,
-		new Set(results.map((result) => result.toolCallId)),
-		saved,
-	);
-	return savedOf(results, saved);
+	const messages = sessionManager.buildSessionProjection().messages;
+	const open = openResults(results);
+	const found = new Map<number, ReadBackOfResult>();
+	for (let index = messages.length - 1; index >= 0 && open.size > 0; index--) {
+		const message = messages[index];
+		if (message !== undefined) readBack(message, undefined, results, open, found);
+	}
+	return savedOf(results, found);
 }
 
 /** The message a session entry holds, as {@link readBack} reads it. */
 function savedMessageOf(entry: SessionEntry): SavedMessage | undefined {
 	if (entry.type === "message") return entry.message;
-	if (entry.type === "custom_message") return { role: "custom", customType: entry.customType, details: entry.details };
+	if (entry.type === "custom_message")
+		return {
+			role: "custom",
+			customType: entry.customType,
+			details: entry.details,
+			...(entry.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: entry.stageAdmissionKey }),
+		};
 	return undefined;
 }
 
@@ -394,10 +481,12 @@ export interface HeldToolResultsReadBack {
 	/** The ids of the results the child already read, as {@link savedToolResultIds} gives them. */
 	readonly saved: string[];
 	/**
-	 * By id, the entry that issued the newest call with that id, for each result the child has not read since that call:
-	 * the read-back stops there, so this is where a late result's call is (#3274).
+	 * By id, for each result the child has not read, the entry that issued its call: the one a wake bound it to, or else
+	 * the newest call with that id. The read-back stops there, so this is where a late result's call is (#3274).
 	 */
 	readonly issuingCalls: ReadonlyMap<string, string>;
+	/** For each result read back for, in their order, what was found of it. */
+	readonly results: readonly ReadBackOfResult[];
 }
 
 /**
@@ -407,21 +496,43 @@ export interface HeldToolResultsReadBack {
  */
 export async function readHeldToolResultsBack(
 	sessionManager: Pick<SessionManager, "getBranch" | "readHistory" | "getLeafId" | "getEntrySeq">,
-	results: readonly DetachedToolResult[],
+	results: readonly ReadBackToolResult[],
 ): Promise<HeldToolResultsReadBack> {
-	const saved = new Set<string>();
-	const issuingCalls = new Map<string, string>();
-	const open = new Set(results.map((result) => result.toolCallId));
-	if (open.size === 0) return { saved: [], issuingCalls };
-	await visitBranchBack(sessionManager, (entry) => {
-		const message = savedMessageOf(entry);
-		if (message !== undefined) {
-			for (const id of issuedCallIds(message)) if (open.has(id)) issuingCalls.set(id, entry.id);
-			readBack([message], results, open, saved);
-		}
-		return open.size === 0;
+	const open = openResults(results);
+	const found = new Map<number, ReadBackOfResult>();
+	if (open.size > 0)
+		await visitBranchBack(sessionManager, (entry) => {
+			const message = savedMessageOf(entry);
+			if (message !== undefined) readBack(message, entry.id, results, open, found);
+			return open.size === 0;
+		});
+	// One bound to a call the branch no longer holds keeps that call.
+	for (const states of open.values())
+		for (const state of states)
+			found.set(state.index, {
+				saved: false,
+				...(state.call === undefined ? {} : { call: state.call }),
+				older: state.passedNewer,
+			});
+	// A result given twice for one call (as held, and as the wake that carried it) is read once.
+	const of = results.map((result, index): ReadBackOfResult => {
+		const own = found.get(index);
+		if (own !== undefined) return own;
+		const first = results.findIndex(
+			(other) => other.toolCallId === result.toolCallId && other.callEntryId === result.callEntryId,
+		);
+		return found.get(first) ?? { saved: false, older: false };
 	});
-	return { saved: savedOf(results, saved), issuingCalls };
+	const issuingCalls = new Map<string, string>();
+	results.forEach((result, index) => {
+		const call = of[index]?.call;
+		if (call !== undefined && !of[index]?.saved) issuingCalls.set(result.toolCallId, call);
+	});
+	return {
+		saved: savedOf(results, new Map(of.map((value, index) => [index, value]))),
+		issuingCalls,
+		results: of,
+	};
 }
 
 /** The ids of {@link readHeldToolResultsBack}'s results the child already read. */
@@ -446,22 +557,42 @@ export interface ReleasedChildWakePlan {
 }
 
 /**
+ * The call a result a wake reads is for: the newest call with its id, or, for one bound to an older call (`older`), that
+ * call (#3274). A wake reads one result per call.
+ */
+export function releasedWakeResultKey(
+	result: DetachedToolResult,
+	older: ReadonlyMap<DetachedToolResult, string>,
+): string {
+	const call = older.get(result);
+	return call === undefined ? `newest\u0000${result.toolCallId}` : `older\u0000${call}\u0000${result.toolCallId}`;
+}
+
+/**
  * Plan a wake from the calls the transcript is waiting on and the results that arrived. When the results answer every
  * pending call and nothing else woke the child, the turn simply continues. Otherwise every pending call is answered
  * first, a call still running with {@link SUBAGENT_STILL_RUNNING_RESULT} and one that died with an earlier owner
  * process with {@link SUBAGENT_INTERRUPTED_BY_RESTART_RESULT}, so the transcript never ends on a call without a result
  * before a new message. A result whose call was answered already is late: it is read in a notice, never as a prompt.
+ * So is one for an older call than the pending call with its id (`older`, by the entry of its call: a provider reusing
+ * ids, #3274), which is read beside a result for that pending call. Each call's result is read once.
  */
 export function planReleasedChildWake(
 	pending: ReadonlyMap<string, string>,
 	results: readonly DetachedToolResult[],
 	hasOtherInput: boolean,
 	interrupted: (toolCallId: string) => boolean = () => false,
+	older: ReadonlyMap<DetachedToolResult, string> = new Map(),
 ): ReleasedChildWakePlan {
 	const seen = new Set<string>();
-	const unique = results.filter((result) => !seen.has(result.toolCallId) && seen.add(result.toolCallId));
-	const onTime = unique.filter((result) => pending.has(result.toolCallId));
-	const late = unique.filter((result) => !pending.has(result.toolCallId));
+	const unique = results.filter((result) => {
+		const key = releasedWakeResultKey(result, older);
+		return !seen.has(key) && seen.add(key);
+	});
+	// A result for an older call than the pending one with its id is never that call's: it is late.
+	const answers = (result: DetachedToolResult) => pending.has(result.toolCallId) && !older.has(result);
+	const onTime = unique.filter(answers);
+	const late = unique.filter((result) => !answers(result));
 	const stillRunning: DetachedToolResult[] = [...pending]
 		.filter(([toolCallId]) => !onTime.some((result) => result.toolCallId === toolCallId))
 		.map(([toolCallId, toolName]) => {
@@ -506,7 +637,7 @@ export type ReleasedChildWakeDecision =
  * woken with every result it holds. Messages and asks wake only a released child: a live one already has them.
  */
 export function decideReleasedChildWake(
-	record: Pick<SubagentChildRecord, "state" | "terminalStatus" | "heldToolResults">,
+	record: Pick<SubagentChildRecord, "state" | "terminalStatus" | "heldToolResults" | "heldToolResultCalls">,
 	wakes: readonly AgentWake[],
 ): ReleasedChildWakeDecision {
 	const status = record.terminalStatus;
@@ -514,7 +645,7 @@ export function decideReleasedChildWake(
 	const arrived = wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
 	const fresh = arrived.filter(
 		(result, index) =>
-			!held.some((kept) => kept.toolCallId === result.toolCallId) &&
+			!holdsToolResultFor(record, result.toolCallId) &&
 			arrived.findIndex((other) => other.toolCallId === result.toolCallId) === index,
 	);
 	const toolResults = [...held, ...fresh];
@@ -584,6 +715,9 @@ export function handleReleasedChildWakes(
 			// this wake's relaunch decision instead of queuing behind the run it starts (#5485).
 			setReleasedChildWakeActive(wakeKey, true);
 			let record: SubagentChildRecord;
+			// The results this batch carries, once read, and the ones its action holds: the others repeat ones held already.
+			let carried: readonly DetachedToolResult[] | undefined;
+			let handed: readonly DetachedToolResult[] | undefined;
 			try {
 				record = await latest(childId);
 			} catch (error) {
@@ -602,6 +736,7 @@ export function handleReleasedChildWakes(
 						(wake) => !isRedispatchWake(wake) && (!isResumeWake(wake) || takeReleasedChildResume(wake.id)),
 					),
 				);
+				carried = others.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
 				if (others.length === 0) return;
 				const resumes = others.filter(isResumeWake);
 				if (resumes.length > 0 && actions.resume !== undefined) {
@@ -611,6 +746,7 @@ export function handleReleasedChildWakes(
 						.slice(1)
 						.flatMap((wake) => (wake.resume.message ? [wake.resume.message] : []));
 					const toolResults = others.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
+					handed = toolResults;
 					const outcome = await actions.resume(current, {
 						...first.resume,
 						toolResults,
@@ -620,12 +756,21 @@ export function handleReleasedChildWakes(
 					return;
 				}
 				const decision = decideReleasedChildWake(current, others);
+				if (decision.kind !== "ignore") handed = decision.toolResults;
 				if (decision.kind === "hold") await actions.hold(current, decision.toolResults);
 				else if (decision.kind === "wake") await actions.wake(current, decision, slot);
 			} catch (error) {
-				const results = withReleasedReplyTimeouts(record, wakes).flatMap((wake) =>
-					wake.toolResult === undefined ? [] : [wake.toolResult],
-				);
+				// What an action held already is held once: its record has it, and may have bound it to its call (#3274). Once
+				// it held all it was handed, the batch's other results repeated results held before.
+				const results =
+					handed?.every((result) => heldByWake.has(result)) === true
+						? []
+						: (
+								carried ??
+								withReleasedReplyTimeouts(record, wakes).flatMap((wake) =>
+									wake.toolResult === undefined ? [] : [wake.toolResult],
+								)
+							).filter((result) => !heldByWake.has(result));
 				await actions.fail?.(record, results, wakeFailureOf(error as Error, childId)).catch((secondary: Error) => {
 					observeChildRecordFailure(ownerSessionId, wakeFailureOf(secondary, childId));
 				});
@@ -636,6 +781,14 @@ export function handleReleasedChildWakes(
 		},
 		{ replace: true, ...(maxConcurrent === undefined ? {} : { maxConcurrent }) },
 	);
+}
+
+/** Results a wake's action held in its child's record: a wake that then fails does not hold them again. */
+const heldByWake = new WeakSet<DetachedToolResult>();
+
+/** Note that `results`, handed to a wake's action, are held in the child's record now. */
+export function heldForWake(results: readonly DetachedToolResult[]): void {
+	for (const result of results) heldByWake.add(result);
 }
 
 /** Keep new results for a child that cannot take them now, durably, beside those it holds, for its next wake or resume. */
