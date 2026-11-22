@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Added
 
 - `intercom({ action: "cancel", replyTo })` closes an ask sent to you that you will not answer: it leaves `pending` and stays closed after restarts, and nothing is sent to its sender ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
