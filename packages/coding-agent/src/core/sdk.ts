@@ -69,6 +69,7 @@ import {
 	repairOrphanToolResults,
 	withImagesBlocked,
 } from "./messages.ts";
+import { prewarmModelApi } from "./model-api-prewarm.ts";
 import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
@@ -588,6 +589,10 @@ async function constructAgentSession(
 		thinkingLevel = "off";
 	} else {
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
+	}
+
+	if (!deferStart && model) {
+		void prewarmModelApi(model);
 	}
 
 	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
