@@ -81,16 +81,33 @@ if (heapArgs.length > 0) {
 	if (interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)) startStartupPrefetch(getPackageDir());
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
-	// An interactive session's database opens on a thread of its own: start that thread now, while the modules load.
-	// `--no-session` keeps the session in memory and opens no database; a prewarmed engine learns it from its host.
-	const opensDatabase = prewarmedEngine
+	// A session's database opens on a thread of its own: start that thread now, while the modules load.
+	// Plain interactive launches without CLI/env storage overrides stay on the zero-import fast path;
+	// headless/print/RPC runs and storage-overridden invocations resolve through the full CLI/storage parser.
+	let mainStarted = false;
+	const fastSpareDatabase = prewarmedEngine
 		? args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE
-		: isPlainInteractiveSessionInvocation(args, terminal) && !args.includes("--no-session");
-	if (opensDatabase)
+		: isPlainInteractiveSessionInvocation(args, terminal) &&
+			!args.some(
+				(arg) =>
+					arg === "--no-session" || arg === "--session-dir" || arg === "--storage" || arg === "--storage-file",
+			) &&
+			!process.env.ATOMIC_STORAGE &&
+			!process.env.ATOMIC_SESSIONS_STORAGE &&
+			!process.env.ATOMIC_CODING_AGENT_SESSION_DIR &&
+			!process.env.ATOMIC_SESSION_DIR &&
+			!process.env.ATOMIC_PROFILE &&
+			!process.env.ATOMIC_TEAM_URL;
+	if (fastSpareDatabase || !prewarmedEngine) {
 		void import("./core/storage/node-sqlite-thread.js").then(
-			({ ThreadConnection }) => ThreadConnection.startSpare(),
+			({ ThreadConnection }) => {
+				if (mainStarted) return;
+				if (fastSpareDatabase) ThreadConnection.startSpare();
+				else return ThreadConnection.startSpareIfSqlNeeded(args, terminal, () => !mainStarted);
+			},
 			() => {},
 		);
+	}
 	const prewarmed = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
@@ -144,6 +161,7 @@ if (heapArgs.length > 0) {
 			return Promise.all([loaded, mainArgs]);
 		})
 		.then(([[{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }], runArgs]) => {
+			mainStarted = true;
 			configureHttpDispatcher();
 			main(runArgs).catch(exitOnDecisionConfigError);
 		})

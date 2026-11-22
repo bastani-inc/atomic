@@ -11,6 +11,7 @@ repository = "https://github.com/bastani-inc/atomic"
 
 [profile.release]
 lto = true
+codegen-units = 1
 strip = "symbols"
 
 [workspace.dependencies]
@@ -29,17 +30,4 @@ portable-pty = "0.9"
 rayon = "1.12"
 sha2 = "0.11.0"
 smallvec = "1.15"
-tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
-tree-sitter = "0.27"
-tree-sitter-typescript = "0.23"
-tree-sitter-javascript = "0.25"
-tree-sitter-python = "0.25"
-tree-sitter-rust = "0.24"
-tree-sitter-go = "0.25"
-tree-sitter-ruby = "0.23"
-tree-sitter-css = "0.25"
-tree-sitter-json = "0.24"
-tree-sitter-bash = "0.25"
-tree-sitter-c = "0.24"
-tree-sitter-cpp = "0.23"
-tree-sitter-java = "0.23"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
