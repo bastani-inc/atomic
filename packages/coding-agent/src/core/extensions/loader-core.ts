@@ -14,6 +14,7 @@ import { endTimingSpan, startTimingSpan } from "../timings.ts";
 import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.ts";
 import { installBuiltinChildRecordWriter } from "./builtin-subagent-record-writer.js";
 import { createLazyBuiltinFactory, getLazyBuiltinSpec } from "./lazy-builtin.js";
+import { ensureDefaultLazyBuiltinsRegistered } from "./lazy-builtins/index.js";
 import { createExtensionAPI } from "./loader-api.ts";
 import {
 	bindRegistrationCallbacks,
@@ -196,6 +197,7 @@ async function loadExtension(
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
 	try {
+		ensureDefaultLazyBuiltinsRegistered();
 		const builtinLabel = getBuiltinExtensionEntryLabel(resolvedPath);
 		const lazySpec = builtinLabel ? getLazyBuiltinSpec(builtinLabel) : undefined;
 		let factory: ExtensionFactory | undefined;

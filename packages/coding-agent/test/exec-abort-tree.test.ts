@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -38,11 +38,28 @@ function pidFile(): string {
 	return join(directory, "child.pid");
 }
 
+/**
+ * The text of `file`, or "" while it is missing or its writer still holds it open: Windows refuses to open a file for
+ * reading with EBUSY while PowerShell's Set-Content writes it.
+ */
+function writtenText(file: string): string {
+	try {
+		return readFileSync(file, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "EBUSY") return "";
+		throw error;
+	}
+}
+
 async function recordedFrom(file: string): Promise<RecordedProcess> {
 	const deadline = Date.now() + GONE_MS * 4;
-	while (!(existsSync(file) && readFileSync(file, "utf8") !== "") && Date.now() < deadline)
+	let written = writtenText(file);
+	while (written === "" && Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-	const recorded = await recordProcess(Number(readFileSync(file, "utf8")));
+		written = writtenText(file);
+	}
+	const recorded = await recordProcess(Number(written));
 	processes.push(recorded);
 	return recorded;
 }
@@ -86,12 +103,12 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 	test("also when the output limit ends it", async () => {
 		const file = pidFile();
 		const [flag, root] = commandStartingAProcess(file);
-		const running = execCommand(
-			process.execPath,
-			[flag!, `${root} setTimeout(() => process.stdout.write("x".repeat(4096)), 300);`],
-			process.cwd(),
-			{ maxBuffer: 1024 },
-		);
+		// The command passes the output limit only once the process it started has recorded its pid, however long
+		// that process takes to start on a loaded machine: ended before then, it would leave no pid to check.
+		const overflowOnceStarted = `const overflow = setInterval(() => { let pid = ""; try { pid = require("node:fs").readFileSync(${JSON.stringify(file)}, "utf8"); } catch {} if (pid === "") return; clearInterval(overflow); process.stdout.write("x".repeat(4096)); }, ${POLL_MS});`;
+		const running = execCommand(process.execPath, [flag!, `${root} ${overflowOnceStarted}`], process.cwd(), {
+			maxBuffer: 1024,
+		});
 		const started = await recordedFrom(file);
 
 		const result = await running;
