@@ -11,6 +11,7 @@ import { SUBAGENT_RELEASED_WAKE_PROMPT } from "../../packages/subagents/src/runs
 import { queuedResumeStart } from "../../packages/subagents/src/runs/foreground/task-execution.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import type { TaskExecutionHooks } from "../../packages/subagents/src/shared/types.ts";
+import { waitedOnCalls } from "../helpers/held-tool-results.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
@@ -261,7 +262,7 @@ test(
 		});
 
 		assert.equal(again.status, "interrupted");
-		assert.deepEqual(again.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
+		assert.deepEqual(waitedOnCalls(again.released?.waitingOn), [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
 		assert.equal(env.answers.length, 2, "the call ran again");
 		assert.equal(env.faux.getPendingResponseCount(), 1, "no model request was made");
 		assert.deepEqual(await roles(), before, "nothing was added to the transcript");
@@ -340,7 +341,7 @@ test(
 
 		const again = await runSingleInProcess(env.root, agent, start.task, start.options);
 
-		assert.deepEqual(again.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
+		assert.deepEqual(waitedOnCalls(again.released?.waitingOn), [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
 		assert.equal(env.faux.getPendingResponseCount(), 1, "no model request was made");
 		assert.deepEqual(again.pendingMessages, ["Check the flaky test too.", "Then rerun the linter."]);
 		assert.notEqual(again.pendingTaskExpands, true, "both are delivered as written");

@@ -23,6 +23,7 @@ import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagen
 import { queuedResumeStart } from "../../packages/subagents/src/runs/foreground/task-execution.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
+import { waitedOnCalls } from "../helpers/held-tool-results.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -102,7 +103,7 @@ async function childWaitingAfterStillRunning(env: Awaited<ReturnType<typeof live
 		}),
 	});
 	assert.equal(second.status, "interrupted");
-	assert.deepEqual(second.released?.waitingOn, [{ toolCallId: "ci-2", toolName: "wait_for_ci" }]);
+	assert.deepEqual(waitedOnCalls(second.released?.waitingOn), [{ toolCallId: "ci-2", toolName: "wait_for_ci" }]);
 	return { store, sessionId: childSession.getSessionId() };
 }
 
@@ -420,7 +421,7 @@ test(
 		cleanups.push(() => spy.mockRestore());
 		env.faux.setResponses([fauxAssistantMessage("Run 7 done.")]);
 		const late = result("ci-1", "RUN-7-OUTPUT");
-		const calls = new Map([["ci-1", callEntry]]);
+		const calls = [callEntry];
 
 		const woken = await runSingleInProcess(env.root, agent, "", {
 			...env.options("late-call-known", {

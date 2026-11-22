@@ -410,12 +410,66 @@ function collapseWhitespace(text: string): string {
 	return output.trim();
 }
 
+function matchesAsciiCaseInsensitiveAt(text: string, lowerNeedle: string, offset: number): boolean {
+	if (offset < 0 || offset + lowerNeedle.length > text.length) return false;
+	for (let i = 0; i < lowerNeedle.length; i++) {
+		let code = text.charCodeAt(offset + i);
+		if (code >= 0x41 && code <= 0x5a) code += 32;
+		if (code !== lowerNeedle.charCodeAt(i)) return false;
+	}
+	return true;
+}
+
+function findAsciiCaseInsensitive(text: string, lowerNeedle: string, fromIndex: number): number {
+	const limit = text.length - lowerNeedle.length;
+	if (fromIndex > limit) return -1;
+	const firstChar = lowerNeedle[0]!;
+	let pos = fromIndex;
+	while (pos <= limit) {
+		const idx = text.indexOf(firstChar, pos);
+		if (idx === -1 || idx > limit) return -1;
+		if (matchesAsciiCaseInsensitiveAt(text, lowerNeedle, idx)) return idx;
+		pos = idx + 1;
+	}
+	return -1;
+}
+
+function isBodyTagDelimiter(code: number): boolean {
+	return (
+		code === 0x3e ||
+		code === 0x2f ||
+		code === 0x20 ||
+		code === 0x09 ||
+		code === 0x0a ||
+		code === 0x0c ||
+		code === 0x0d
+	);
+}
+
+export function extractHtmlBody(html: string): string | undefined {
+	let searchFrom = 0;
+	while (searchFrom < html.length) {
+		const openStart = findAsciiCaseInsensitive(html, "<body", searchFrom);
+		if (openStart === -1) return undefined;
+		const afterName = openStart + 5;
+		if (afterName >= html.length) return undefined;
+		if (!isBodyTagDelimiter(html.charCodeAt(afterName))) {
+			searchFrom = afterName;
+			continue;
+		}
+		const openEnd = html.indexOf(">", afterName);
+		if (openEnd === -1) return undefined;
+		const closeStart = findAsciiCaseInsensitive(html, "</body>", openEnd + 1);
+		if (closeStart === -1) return undefined;
+		return html.slice(openEnd + 1, closeStart);
+	}
+	return undefined;
+}
+
 function isLikelyJSRendered(html: string): boolean {
 	// Extract body content
-	const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-	if (!bodyMatch) return false;
-
-	const bodyHtml = bodyMatch[1];
+	const bodyHtml = extractHtmlBody(html);
+	if (bodyHtml === undefined) return false;
 
 	// Strip tags to get text content
 	const textContent = collapseWhitespace(stripTags(stripElementBlocks(stripElementBlocks(bodyHtml, "script"), "style")));

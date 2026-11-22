@@ -4,6 +4,7 @@ import { access, appendFile, mkdir, readFile, rm, stat, writeFile } from "node:f
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { isBunBinary, isBunRuntime } from "../../../config.js";
+import { matchesOnSameLineCI } from "../../../utils/linear-text.js";
 import { getPowerShellConfigAsync, getShellConfigAsync, type ShellConfig } from "../../../utils/shell.ts";
 import { renameWithRetry } from "../../rename-retry.ts";
 import { isWorkspaceGitError } from "../../workspace/errors.ts";
@@ -504,8 +505,11 @@ async function readTextIfPresent(path: string): Promise<string | undefined> {
 
 class ActionNotFoundError extends Error {}
 
-const GIT_NOT_FOUND =
-	/couldn't find remote ref|not our ref|repository .* not found|does not appear to be a git repository/i;
+const GIT_NOT_FOUND_LITERALS = /couldn't find remote ref|not our ref|does not appear to be a git repository/i;
+
+function isGitNotFoundDetail(detail: string): boolean {
+	return GIT_NOT_FOUND_LITERALS.test(detail) || matchesOnSameLineCI(detail, "repository ", " not found");
+}
 
 const fetchFromGitHub: ActionFetcher = async ({ owner, repo, ref, destination, signal }) => {
 	const base = (process.env[ACTIONS_GITHUB_BASE_URL_ENV] || "https://github.com").replace(/\/+$/, "");
@@ -518,7 +522,7 @@ const fetchFromGitHub: ActionFetcher = async ({ owner, repo, ref, destination, s
 		});
 		await runGit(["checkout", "--quiet", "--detach", "FETCH_HEAD"], { ...options, neutral: true });
 	} catch (error) {
-		if (isWorkspaceGitError(error) && GIT_NOT_FOUND.test(error.detail)) {
+		if (isWorkspaceGitError(error) && isGitNotFoundDetail(error.detail)) {
 			throw new ActionNotFoundError(`${owner}/${repo}@${ref} does not exist`, { cause: error });
 		}
 		throw error;

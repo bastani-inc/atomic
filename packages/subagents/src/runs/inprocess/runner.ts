@@ -280,10 +280,10 @@ export interface ChildSpec {
 	 */
 	readonly resumeLateToolResults?: readonly DetachedToolResult[];
 	/**
-	 * By call id, the entry that issued each late result's call, as a restore reading the child's history back found it.
-	 * Without it, the history is read back to those calls before their notice is saved.
+	 * By position in `resumeLateToolResults`, the entry that issued each late result's call, as a restore reading the
+	 * child's history back found it. Without it, the history is read back to those calls before their notice is saved.
 	 */
-	readonly resumeLateToolResultCalls?: ReadonlyMap<string, string>;
+	readonly resumeLateToolResultCalls?: readonly (string | undefined)[];
 	/**
 	 * Notices of finished background tasks the child launched, held for it while it could not take them: each is
 	 * delivered with its next turn as the notice a running child gets, never as a message from the user.
@@ -1036,17 +1036,23 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			});
 		},
 		// As a real session saves a card: the notice is in its transcript, and a turn reads it.
-		sendCustomMessage: async (message: {
-			customType: string;
-			content: string;
-			display: boolean;
-			details?: unknown;
-		}) => {
+		sendCustomMessage: async (
+			message: {
+				customType: string;
+				content: string;
+				display: boolean;
+				details?: unknown;
+			},
+			options?: { readonly stageAdmissionKey?: string },
+		) => {
 			await sessionManager.appendCustomMessageEntry(
 				message.customType,
 				message.content,
 				message.display,
 				message.details,
+				undefined,
+				undefined,
+				options?.stageAdmissionKey,
 			);
 		},
 		pauseQueuedMessages: () => {
@@ -3186,12 +3192,15 @@ export class SubagentControlRuntime {
 								(await issuingCallEntries(
 									sessionManager,
 									lateResults.map((result) => result.toolCallId),
-								)),
+								).then((issued) => lateResults.map((result) => issued.get(result.toolCallId)))),
 						),
 					},
 				);
 				// Its card holds them now: the owner lets them go (#5012).
-				taskHooks?.toolResultsSaved?.(lateResults.map((result) => result.toolCallId));
+				taskHooks?.toolResultsSaved?.(
+					lateResults.map((result) => result.toolCallId),
+					true,
+				);
 			} else if (note !== undefined)
 				// Read with whatever else starts its turn, in its first request, or starting that turn when nothing else does;
 				// a restart before then replays it.
@@ -3234,13 +3243,13 @@ export class SubagentControlRuntime {
 					const reported = new Set<string>();
 					await session.resumeDetachedTurn(admitted.spec.resumeToolResults, (toolCallIds) => {
 						for (const toolCallId of toolCallIds) reported.add(toolCallId);
-						taskHooks?.toolResultsSaved?.(toolCallIds);
+						taskHooks?.toolResultsSaved?.(toolCallIds, false);
 					});
 					// The rest the transcript already held, or no longer waited on.
 					const rest = admitted.spec.resumeToolResults
 						.map((result) => result.toolCallId)
 						.filter((toolCallId) => !reported.has(toolCallId));
-					if (rest.length > 0) taskHooks?.toolResultsSaved?.(rest);
+					if (rest.length > 0) taskHooks?.toolResultsSaved?.(rest, false);
 				}
 				startBudget.end();
 			} else {

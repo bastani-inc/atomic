@@ -157,8 +157,11 @@ export interface RunSyncOptions {
 	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** Results of calls the child was already told are still running: read in one notice with its next turn. */
 	resumeLateToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
-	/** By call id, the entry that issued each late result's call, when the caller already read the history back to it. */
-	resumeLateToolResultCalls?: ReadonlyMap<string, string>;
+	/**
+	 * By position in `resumeLateToolResults`, the entry that issued each late result's call, when the caller already read
+	 * the history back to it.
+	 */
+	resumeLateToolResultCalls?: readonly (string | undefined)[];
 	/** Notices of finished background tasks held for the child: each delivered as a notice with its next turn. */
 	resumeNotices?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildHeldNotice[];
 	/** Why the child runs again, when Atomic says so rather than a message: read with its turn, never as a message. */
@@ -176,6 +179,12 @@ export interface RunSyncOptions {
 	 */
 	resumePaused?: boolean;
 	wakeToolResultIds?: readonly string[];
+	/**
+	 * The results held for the child that a wake gives it, each by the number it is held under, and whether it is read
+	 * late: only these are let go once saved, never a result held since for a later call a provider gave the same id
+	 * (#3274). A result an earlier version held has no number, and is let go by its id.
+	 */
+	wakeHeldToolResults?: readonly import("../runs/foreground/subagent-child-records.js").SubagentWakeHeldToolResult[];
 	/** The calls the child is told are still running, recorded with every record its run writes (#5014). */
 	stillRunning?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildStillRunningCall[];
 	redispatchDetachedCalls?: boolean;
