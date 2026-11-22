@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import { executeHerdr, HERDR_TIMEOUT_MS, type HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
-import { arg, fakeHerdr } from "./helpers/herdr.js";
+import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, FAKE_HERDR_EXPLICIT_TIMEOUT_MS, fakeHerdr } from "./helpers/herdr.js";
 
 // #2891: all subprocess tests use disposable executables, never Herdr.
 test("pane ownership serializes and coalesces reports across replacement and clock rollback", async () => {
@@ -10,7 +10,11 @@ test("pane ownership serializes and coalesces reports across replacement and clo
 	const environment = { ...fake.environment, paneId: "w1:p1; rm -rf /" };
 	const diagnostics: HerdrDiagnostic[] = [];
 	let clock = 1000;
-	const options = { clock: () => clock, diagnostic: (value: HerdrDiagnostic) => diagnostics.push(value) };
+	const options = {
+		clock: () => clock,
+		timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+		diagnostic: (value: HerdrDiagnostic) => diagnostics.push(value),
+	};
 	const owner = await claimPaneReporting(environment, { id: "parent", path: `${fake.dir}/parent.jsonl` }, options);
 	try {
 		reportPaneActivity(owner, { state: "working", reason: "executing" });
@@ -64,7 +68,11 @@ test("pane ownership serializes and coalesces reports across replacement and clo
 
 test("skipping a delivered snapshot does not discard the next explicit activity report (#3468)", async () => {
 	const fake = await fakeHerdr();
-	const owner = await claimPaneReporting(fake.environment, { id: "parent" });
+	const owner = await claimPaneReporting(
+		fake.environment,
+		{ id: "parent" },
+		{ timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS },
+	);
 	try {
 		const idle = { state: "idle", reason: "quiescent" } as const;
 		reportPaneActivity(owner, idle);
@@ -84,7 +92,11 @@ test("skipping a delivered snapshot does not discard the next explicit activity 
 
 test("an identical snapshot preserves an explicit refresh queued during delivery (#3468)", async () => {
 	const fake = await fakeHerdr();
-	const owner = await claimPaneReporting(fake.environment, { id: "parent" });
+	const owner = await claimPaneReporting(
+		fake.environment,
+		{ id: "parent" },
+		{ timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS },
+	);
 	try {
 		const working = { state: "working", reason: "executing" } as const;
 		reportPaneActivity(owner, working);
@@ -109,7 +121,7 @@ for (const queuedDuringFlight of [false, true]) {
 			fake.environment,
 			{ id: "parent" },
 			{
-				timeoutMs: 1000,
+				timeoutMs: FAKE_HERDR_EXPLICIT_TIMEOUT_MS,
 				diagnostic: (value) => diagnostics.push(value),
 			},
 		);
@@ -119,8 +131,15 @@ for (const queuedDuringFlight of [false, true]) {
 			await owner.flush();
 			reportPaneActivity(owner, { state: "working", reason: "executing" }, true);
 			await fake.waitForStarted(2);
-			if (!queuedDuringFlight) await owner.flush();
-			reportPaneActivity(owner, idle, true);
+			if (queuedDuringFlight) {
+				assert.ok(owner.flight, "expected working delivery to remain in flight while queueing idle");
+				reportPaneActivity(owner, idle, true);
+				fake.expireInFlight(FAKE_HERDR_EXPLICIT_TIMEOUT_MS);
+			} else {
+				fake.expireInFlight(FAKE_HERDR_EXPLICIT_TIMEOUT_MS);
+				await owner.flush();
+				reportPaneActivity(owner, idle, true);
+			}
 			await owner.flush();
 			assert.deepEqual(diagnostics, [{ kind: "timeout" }]);
 			assert.deepEqual(
@@ -140,6 +159,7 @@ test("pane reporting retries identity until success", async () => {
 	const diagnostics: HerdrDiagnostic[] = [];
 	const identity = { id: "parent", path: `${fake.dir}/parent.jsonl` };
 	const owner = await claimPaneReporting(fake.environment, identity, {
+		timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
 		diagnostic: (value) => diagnostics.push(value),
 	});
 	try {
@@ -170,7 +190,11 @@ test("pane reporting retries identity until success", async () => {
 // #2891: a failed response does not prove that Herdr never accepted authority.
 test("pane reporting releases after a failed report even without confirmed identity", async () => {
 	const fake = await fakeHerdr("finish(1);");
-	const owner = await claimPaneReporting(fake.environment, { id: "parent" });
+	const owner = await claimPaneReporting(
+		fake.environment,
+		{ id: "parent" },
+		{ timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS },
+	);
 	try {
 		reportPaneActivity(owner, { state: "working", reason: "executing" });
 		await owner.flush();
@@ -194,10 +218,15 @@ test("transport distinguishes spawn, timeout and protocol failures without expos
 		'if (args.includes("hang")) setInterval(() => {}, 1000); else { process.stderr.write("secret error body"); finish(1); }',
 	);
 	try {
-		assert.deepEqual(await executeHerdr({ ...fake.environment, bin: `${fake.dir}/missing` }, [], 50), {
-			kind: "spawn_failed",
+		assert.deepEqual(
+			await executeHerdr({ ...fake.environment, bin: `${fake.dir}/missing` }, [], FAKE_HERDR_CHILD_TIMEOUT_MS),
+			{
+				kind: "spawn_failed",
+			},
+		);
+		assert.deepEqual(await executeHerdr(fake.environment, [], FAKE_HERDR_CHILD_TIMEOUT_MS), {
+			kind: "protocol_rejected",
 		});
-		assert.deepEqual(await executeHerdr(fake.environment, [], 1000), { kind: "protocol_rejected" });
 		assert.deepEqual(await executeHerdr(fake.environment, ["hang"], 50), { kind: "timeout" });
 		assert.deepEqual(await executeHerdr({ ...fake.environment, bin: "invalid\0path" }, []), { kind: "spawn_failed" });
 	} finally {

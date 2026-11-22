@@ -727,7 +727,12 @@ function compiledPackage(target: string): void {
 	fs.mkdirSync(target, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(target, "package.json"));
 	fs.mkdirSync(join(target, "scripts"), { recursive: true });
-	for (const script of ["split-dist.mjs", "split-dist-names.mjs", "in-place-update-gate.mjs"])
+	for (const script of [
+		"split-dist.mjs",
+		"split-dist-names.mjs",
+		"in-place-update-gate.mjs",
+		"code-string-literal.mjs",
+	])
 		fs.copyFileSync(join(packageDir, "scripts", script), join(target, "scripts", script));
 	copyTree(join(packageDir, "in-place-update"), join(target, "in-place-update"));
 	// The sources say which compiled files are this build's (`split-dist.mjs` keeps no file an earlier build left).

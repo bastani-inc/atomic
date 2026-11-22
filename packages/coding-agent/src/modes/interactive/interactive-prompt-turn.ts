@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
@@ -5,7 +6,13 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { takeSubmittedExtensionCommandHold } from "./extension-command-hold.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
-import { followStartedRunEcho, type StartedRunEchoFollower } from "./interactive-render-chat.ts";
+import {
+	followStartedRunEcho,
+	noteDeferredEchoOrigin,
+	noteDeferredEchoShownBaseline,
+	type StartedRunEchoFollower,
+	taggedUserMessagesShownCount,
+} from "./interactive-render-chat.ts";
 import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
 import { beginPostStartupPromptTurn } from "./post-startup-highlight.ts";
 
@@ -15,6 +22,8 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 ): Promise<void> {
 	const endPostStartupPromptTurn = beginPostStartupPromptTurn(this);
 	const { text: userInput, draft, echo: submittedEcho } = toInteractiveSubmission(input);
+	const originSendId = randomUUID();
+	if (submittedEcho !== undefined) noteDeferredEchoOrigin(this, userInput, submittedEcho, originSendId);
 	// An extension command's hold of the prompt's slot ends with the turn at the latest.
 	const extensionCommandHold = typeof input === "string" ? undefined : takeSubmittedExtensionCommandHold(input);
 	const turn = this.promptTurn ?? { dispatched: false };
@@ -63,11 +72,18 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 				await this.session.resumeQueuedMessages();
 			}
 			const shownBefore = this.userMessagesShownBySession;
-			const startedEcho = followStartedRunEcho(this, userInput, { sendShowsWorkingRow: true, echo: submittedEcho });
+			if (submittedEcho !== undefined)
+				noteDeferredEchoShownBaseline(this, submittedEcho, taggedUserMessagesShownCount(this));
+			const startedEcho = followStartedRunEcho(this, userInput, {
+				sendShowsWorkingRow: true,
+				echo: submittedEcho,
+				originSendId,
+			});
 			echo = startedEcho;
 			let started = false;
 			await this.session.prompt(userInput, {
 				streamingBehavior: "steer",
+				originSendId,
 				preflightResult: (success, disposition) => {
 					refused = !success;
 					// A queued message is listed as queued, and one an `input` hook handled is not sent at all (#4285).

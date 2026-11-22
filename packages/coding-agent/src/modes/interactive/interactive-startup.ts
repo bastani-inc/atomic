@@ -413,7 +413,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// The early editor stops drawing and hands over its terminal and prompt; the keys it held reach this interface first.
 	// Only while it draws: without it, init reaches the interface's start without waiting, as it always did.
 	if (this.options.terminal === undefined && startupShellTerminal() !== undefined) await whenStartupShellCanHandOver();
+	if (this.isShuttingDown) return;
 	const earlyEditor = this.options.terminal === undefined ? handOverStartupShell() : undefined;
+	this.tuiStarted = true;
+	this.terminalStopped = false;
 	this.ui.start();
 	if (earlyEditor) {
 		this.defaultEditor.restoreDraft(earlyEditor.draft);
@@ -522,7 +525,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		}
 		const startup = this.sessionStartup;
 		await bindInitialEagerSession(this);
-		if (startup?.cancelled) return;
+		if (startup?.cancelled || this.isShuttingDown) return;
 		void reportUnavailableTools(this);
 	}
 
@@ -532,6 +535,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	if (!this.deferredStartupPending) this.startSessionRecovery("startup");
 	// Set up theme file watcher
 	onThemeChange(() => {
+		if (this.isShuttingDown || !this.isInitialized) return;
 		this.ui.invalidate();
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
@@ -540,13 +544,20 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	updateProviderCountFromSnapshot(this);
 };
 
-InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveModeBase): void {
-	const cwdBasename = path.basename(this.sessionManager.getCwd());
-	const sessionName = this.sessionManager.getSessionName();
+/** Writes Atomic's default terminal window title and clears {@link InteractiveModeBase.extensionTitleActive}. */
+export function writeDefaultTerminalTitle(mode: InteractiveModeBase): void {
+	const cwdBasename = path.basename(mode.sessionManager.getCwd());
+	const sessionName = mode.sessionManager.getSessionName();
 	// Session names come from session files: a BEL or ESC in the title would end the OSC title sequence early and send
 	// the rest to the terminal as escape sequences.
 	const title = sessionName ? `${APP_TITLE} - ${sessionName} - ${cwdBasename}` : `${APP_TITLE} - ${cwdBasename}`;
-	this.ui.terminal.setTitle(replaceControlCharacters(title));
+	mode.ui.terminal.setTitle(replaceControlCharacters(title));
+	mode.extensionTitleActive = false;
+}
+
+InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveModeBase): void {
+	if (this.isShuttingDown || this.terminalStopped || (this.isInitialized === false && !this.tuiStarted)) return;
+	writeDefaultTerminalTitle(this);
 };
 
 /**

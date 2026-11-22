@@ -227,15 +227,35 @@ export async function pressAltEnter(host: InteractiveSubmissionHost, text: strin
 	await Promise.resolve(followUp());
 }
 
-type ChatLine = Component & { text: string };
+type ChatLine = Component & { role: "user" | "assistant" | "boundary"; text: string };
+
+export interface ChatRowsView {
+	/** User message texts shown in the chat, in order. */
+	(): string[];
+	/** Every row in `chatContainer` (user, assistant, compaction boundary), in exact display order. */
+	timeline(): string[];
+}
+
+function assistantText(message: { content?: unknown }): string {
+	if (!Array.isArray(message.content)) return "";
+	return message.content
+		.flatMap((block) =>
+			typeof block === "object" && block !== null && "text" in block && typeof block.text === "string"
+				? [block.text]
+				: [],
+		)
+		.join("");
+}
 
 /**
- * Show user messages in a chat as InteractiveMode does: the host's own echo of a submission and the session's
- * `message_start` for it go through InteractiveMode's echo bookkeeping and its `message_start` handler. Returns the
- * user messages the chat shows, in order. The host's `rendered` and `discarded` records stop being kept.
+ * Show chat rows as InteractiveMode does: user echoes and `message_start` events go through InteractiveMode's echo
+ * bookkeeping and `handleEvent`, and assistant replies (and compaction boundaries when `addCompactionBoundaryToChat`
+ * is invoked) append to the same `chatContainer` just as `interactive-agent-events.ts` does. Returns a function
+ * listing user texts in order, with `.timeline()` exposing every row (`user:...`, `assistant:...`, `compaction-boundary`).
  */
-export function showUserMessagesInChat(host: InteractiveSubmissionHost): () => string[] {
+export function showUserMessagesInChat(host: InteractiveSubmissionHost): ChatRowsView {
 	const chat = new Container();
+	let streaming: ChatLine | undefined;
 	Object.assign(host, {
 		isInitialized: true,
 		footer: { invalidate() {} },
@@ -244,8 +264,23 @@ export function showUserMessagesInChat(host: InteractiveSubmissionHost): () => s
 		deferredRenderedUserInputs: [],
 		deferredRenderedUserInputComponents: new Map(),
 		addMessageToChat: (message: Parameters<InteractiveMode["getUserMessageText"]>[0]) => {
+			if (message.role === "assistant") {
+				const text = assistantText(message);
+				const line: ChatLine = { role: "assistant", text, render: () => [text], invalidate() {} };
+				chat.addChild(line);
+				return;
+			}
 			const text = host.getUserMessageText(message);
-			const line: ChatLine = { text, render: () => [text], invalidate() {} };
+			const line: ChatLine = { role: "user", text, render: () => [text], invalidate() {} };
+			chat.addChild(line);
+		},
+		addCompactionBoundaryToChat: () => {
+			const line: ChatLine = {
+				role: "boundary",
+				text: "compaction-boundary",
+				render: () => ["compaction-boundary"],
+				invalidate() {},
+			};
 			chat.addChild(line);
 		},
 	});
@@ -267,9 +302,27 @@ export function showUserMessagesInChat(host: InteractiveSubmissionHost): () => s
 		"handleEvent",
 	);
 	host.session.subscribe((event) => {
-		if (event.type === "message_start" && event.message.role === "user") void handleEvent.call(host, event);
+		if (event.type === "message_start" && event.message.role === "user") {
+			void handleEvent.call(host, event);
+		} else if (event.type === "message_start" && event.message.role === "assistant") {
+			const text = assistantText(event.message);
+			const line: ChatLine = { role: "assistant", text, render: () => [line.text], invalidate() {} };
+			streaming = line;
+			chat.addChild(line);
+		} else if (event.type === "message_end" && event.message.role === "assistant" && streaming !== undefined) {
+			streaming.text = assistantText(event.message);
+			streaming = undefined;
+		}
 	});
-	return () => chat.children.map((line) => (line as ChatLine).text);
+	const view = (() =>
+		chat.children
+			.filter((child): child is ChatLine => "role" in child && (child as ChatLine).role === "user")
+			.map((line) => line.text)) as ChatRowsView;
+	view.timeline = () =>
+		chat.children
+			.filter((child): child is ChatLine => "role" in child)
+			.map((line) => (line.role === "boundary" ? "compaction-boundary" : `${line.role}:${line.text}`));
+	return view;
 }
 
 export function startInteractiveInputLoop(host: InteractiveSubmissionHost): { stop: () => void; done: Promise<void> } {

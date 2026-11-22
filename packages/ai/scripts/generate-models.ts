@@ -1,10 +1,20 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { type AiGatewayPricing, getAiGatewayCost } from "./ai-gateway-pricing.ts";
-import { moveChangedFiles, removeCatalogFile, replaceFile } from "./catalog-files.ts";
+import { isRegularFile, moveChangedFiles, removeCatalogFile, replaceFile } from "./catalog-files.ts";
 import { buildOpenRouterCatalog, type OpenRouterCatalog, type OpenRouterModelListItem } from "./openrouter-catalog.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
@@ -683,11 +693,15 @@ async function generateModels() {
 		const stagedDataDir = join(stagedProvidersDir, "data");
 		const stagedAggregatorPath = join(stagedSrcDir, "models.generated.ts");
 		const catalogFiles = () => [
-			aggregatorPath,
-			...readdirSync(providersDir)
-				.filter((entry) => entry.endsWith(".models.ts"))
-				.map((entry) => join(providersDir, entry)),
-			...(existsSync(dataDir) ? readdirSync(dataDir).map((entry) => join(dataDir, entry)) : []),
+			...(isRegularFile(aggregatorPath) ? [aggregatorPath] : []),
+			...readdirSync(providersDir, { withFileTypes: true })
+				.filter((entry) => entry.isFile() && entry.name.endsWith(".models.ts"))
+				.map((entry) => join(providersDir, entry.name)),
+			...(existsSync(dataDir) && statSync(dataDir).isDirectory()
+				? readdirSync(dataDir, { withFileTypes: true })
+						.filter((entry) => entry.isFile())
+						.map((entry) => join(dataDir, entry.name))
+				: []),
 		];
 		let previousCatalog: Map<string, Buffer> | undefined;
 		try {
@@ -707,8 +721,9 @@ async function generateModels() {
 
 			if (generatorOptions.dataOnly) {
 				// The shards and the aggregator stay as they are: the data is validated against them.
-				for (const entry of readdirSync(providersDir)) {
-					if (entry.endsWith(".models.ts")) copyFileSync(join(providersDir, entry), join(stagedProvidersDir, entry));
+				for (const entry of readdirSync(providersDir, { withFileTypes: true })) {
+					if (entry.isFile() && entry.name.endsWith(".models.ts"))
+						copyFileSync(join(providersDir, entry.name), join(stagedProvidersDir, entry.name));
 				}
 				copyFileSync(aggregatorPath, stagedAggregatorPath);
 			} else {
@@ -806,7 +821,7 @@ export {
 				mkdirSync(restoreDir, { recursive: true });
 				for (const path of catalogFiles()) if (!previousCatalog.has(path)) removeCatalogFile(path);
 				for (const [path, content] of previousCatalog) {
-					if (existsSync(path) && readFileSync(path).equals(content)) continue;
+					if (isRegularFile(path) && readFileSync(path).equals(content)) continue;
 					const restored = join(restoreDir, basename(path));
 					writeFileSync(restored, content);
 					replaceFile(restored, path);

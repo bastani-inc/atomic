@@ -174,6 +174,8 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 	let nextBindingDelayMs: number | undefined;
 	let slowBindings: { address: string; ms: number } | undefined;
 	let slowRecord: { address: string; ms: number } | undefined;
+	/** A transaction on the bindings, sent by the broker, that the database has not answered yet. */
+	let bindingsAnswering: Promise<unknown> | undefined;
 	type Named = {
 		readonly returnAddress?: unknown;
 		readonly stallMs?: unknown;
@@ -245,8 +247,21 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 			? new Promise<T>((resolve) => setTimeout(() => setImmediate(() => resolve(answer)), 25))
 			: new Promise<T>(() => {});
 		if (typeof overdueCallbackMs === "number") {
-			// Both timers come due during the stall: the claim deadline first, then this unrelated callback before poll.
-			setTimeout(() => stall(overdueCallbackMs), stallMs);
+			// Both timers come due during the stall: the claim deadline first, then this unrelated callback before poll. A
+			// binding write the broker sent before it that the database is still answering (it waits for the write lock) is
+			// answered first, as it is when the lock is free, and the callback comes right after.
+			const overdue = () => {
+				writeFileSync(quiet, `${process.pid} ${Date.now() + overdueCallbackMs + quietBeyondStallMs}`);
+				stall(overdueCallbackMs);
+			};
+			setTimeout(() => {
+				const answering = bindingsAnswering;
+				if (answering === undefined) overdue();
+				else {
+					const after = () => setImmediate(overdue);
+					void answering.then(after, after);
+				}
+			}, stallMs);
 		}
 		stall(stallMs);
 		return reply;
@@ -279,7 +294,7 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 				await new Promise<void>((resolve) => setTimeout(resolve, delay));
 			}
 			let returnAddress: SqliteValue | undefined;
-			const answer = await database.transaction(
+			const answering = database.transaction(
 				(tx) =>
 					callback({
 						exec: (sql) => tx.exec(sql),
@@ -296,6 +311,14 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 					}),
 				options,
 			);
+			if (concurrency?.kind === "serial" && concurrency.domain?.endsWith("intercom_session_bindings"))
+				bindingsAnswering = answering;
+			let answer: Awaited<typeof answering>;
+			try {
+				answer = await answering;
+			} finally {
+				if (bindingsAnswering === answering) bindingsAnswering = undefined;
+			}
 			return stallIfNamed(returnAddress, answer);
 		},
 		close: () => database.close(),

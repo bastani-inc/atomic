@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../../../src/modes/interactive-engine/isolated-runtime.ts";
@@ -23,7 +24,13 @@ interface Context {
 	chatContainer: undefined;
 	writeExitOutputInSlices: boolean;
 	exitOutputWritten: Promise<void> | undefined;
-	sessionManager: { isPersisted(): boolean; getSessionFile(): string | undefined };
+	sessionManager: {
+		isPersisted(): boolean;
+		getSessionFile(): string | undefined;
+		getSessionStore?(): { descriptor: { adapter: string } };
+		getSessionDir?(): string;
+		getSessionId?(): string;
+	};
 	runtimeHost: { dispose: (options?: { fromSignal?: boolean }) => Promise<void> };
 	ui: { terminal: { drainInput: () => Promise<void> } };
 	themeController: { disableAutoSync: () => void };
@@ -225,6 +232,139 @@ describe("a terminal that is gone (#6104)", () => {
 
 		assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[]], "the quit's own disposal ran");
 		assert.deepEqual(exits, [129]);
+	});
+});
+
+describe("a deliberate quit after the session is disposed", () => {
+	const originalStdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+
+	beforeEach(() => {
+		Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+	});
+
+	afterEach(() => {
+		if (originalStdoutIsTTY) Object.defineProperty(process.stdout, "isTTY", originalStdoutIsTTY);
+		else Reflect.deleteProperty(process.stdout, "isTTY");
+	});
+
+	function persistedSession(onLookup?: () => void): Context["sessionManager"] {
+		return {
+			isPersisted: () => true,
+			getSessionFile: () => {
+				onLookup?.();
+				return tmpdir();
+			},
+			getSessionStore: () => ({ descriptor: { adapter: "jsonl" } }),
+			getSessionDir: () => tmpdir(),
+			getSessionId: () => "saved-session",
+		};
+	}
+
+	for (const [label, emitError] of [
+		[
+			"stdin",
+			() => process.stdin.emit("error", Object.assign(new Error("read EIO"), { code: "EIO", syscall: "read" })),
+		],
+		["stderr", () => process.stderr.emit("error", deadTerminal())],
+	] as const) {
+		test(`prints the resume hint and exits 0 when only ${label} hits EIO during hint lookup`, async () => {
+			const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+			const context = createContext(async () => {});
+			vi.mocked(context.stop).mockImplementation(() => context.unregisterSignalHandlers());
+			context.sessionManager = persistedSession(() => emitError());
+
+			await context.shutdown();
+
+			assert.deepEqual(exits, [0]);
+			assert.ok(
+				write.mock.calls.some(([chunk]) => String(chunk).includes("To resume this session:")),
+				"a live stdout still receives the resume hint",
+			);
+		});
+	}
+
+	test("skips writing the resume hint and exits 0 when stdout hits EIO during hint lookup", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		const context = createContext(async () => {});
+		vi.mocked(context.stop).mockImplementation(() => context.unregisterSignalHandlers());
+		context.sessionManager = persistedSession(() => process.stdout.emit("error", deadTerminal()));
+
+		await context.shutdown();
+
+		assert.deepEqual(exits, [0]);
+		assert.deepEqual(write.mock.calls, [], "nothing is written to a stdout that already reported EIO");
+	});
+
+	test("does not arm the 129 bound when a non-console-close EIO arrives during hint lookup", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		const context = createContext(async () => {});
+		vi.mocked(context.stop).mockImplementation(() => context.unregisterSignalHandlers());
+		let lookupStarted = false;
+		context.sessionManager = {
+			isPersisted: () => true,
+			getSessionFile: () => {
+				lookupStarted = true;
+				process.stdout.emit("error", deadTerminal());
+				return tmpdir();
+			},
+			getSessionStore: () => ({ descriptor: { adapter: "jsonl" } }),
+			getSessionDir: () => tmpdir(),
+			getSessionId: () => "saved-session",
+		};
+
+		await context.shutdown();
+		assert.equal(lookupStarted, true);
+		assert.deepEqual(exits, [0]);
+		assert.deepEqual(write.mock.calls, []);
+
+		// Advancing past the lost-terminal bound must not trigger a late emergency 129 exit.
+		await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS + PENDING_NOTICE_TURNS_MS);
+		assert.deepEqual(exits, [0]);
+	});
+
+	for (const code of ["EIO", "EPIPE", "ENOTCONN", "ENOTTY"] as const) {
+		test(`treats a synchronous ${code} from writing the resume hint as a no-op and exits 0`, async () => {
+			vi.spyOn(process.stdout, "write").mockImplementation(() => {
+				throw Object.assign(new Error(`write ${code}`), { code, syscall: "write" });
+			});
+			const context = createContext(async () => {});
+			vi.mocked(context.stop).mockImplementation(() => context.unregisterSignalHandlers());
+			context.sessionManager = persistedSession();
+
+			await context.shutdown();
+
+			assert.deepEqual(exits, [0]);
+		});
+	}
+
+	test("treats an asynchronous EIO emitted while writing the resume hint as a no-op and exits 0", async () => {
+		vi.spyOn(process.stdout, "write").mockImplementation(() => {
+			process.stdout.emit("error", deadTerminal());
+			return false;
+		});
+		const context = createContext(async () => {});
+		vi.mocked(context.stop).mockImplementation(() => context.unregisterSignalHandlers());
+		context.sessionManager = persistedSession();
+
+		await context.shutdown();
+
+		assert.deepEqual(exits, [0]);
+	});
+
+	test("still surfaces non-dead-terminal errors thrown while writing the resume hint", async () => {
+		const failure = Object.assign(new Error("write EACCES"), { code: "EACCES", syscall: "write" });
+		vi.spyOn(process.stdout, "write").mockImplementation(() => {
+			throw failure;
+		});
+		const context = createContext(async () => {});
+		vi.mocked(context.stop).mockImplementation(() => context.unregisterSignalHandlers());
+		context.sessionManager = persistedSession();
+
+		await assert.rejects(
+			() => prototype.shutdown.call(context),
+			(actual) => actual === failure,
+		);
+		assert.deepEqual(exits, []);
 	});
 });
 

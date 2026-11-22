@@ -6,7 +6,7 @@ import { BashExecutionComponent, type TruncationResult } from "./interactive-mod
 import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
 import { releaseSavedChatHistory } from "./interactive-saved-chat-history.js";
 import { stopRendererWatch } from "./interactive-session-runtime.ts";
-import { cancelApprovedResourceListing } from "./interactive-startup.ts";
+import { cancelApprovedResourceListing, writeDefaultTerminalTitle } from "./interactive-startup.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import { stopPostStartupHighlightWarmup } from "./post-startup-highlight.ts";
 
@@ -181,8 +181,13 @@ InteractiveModeBase.prototype.stop = function (
 	this.disposeAgentView?.();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
-	if (this.settingsManager.getShowTerminalProgress()) {
-		this.ui.terminal.setProgress(false);
+	if (this.isInitialized || this.tuiStarted) {
+		if (this.extensionTitleActive) {
+			writeDefaultTerminalTitle(this);
+		}
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(false);
+		}
 	}
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	this.themeController.disableAutoSync();
@@ -193,7 +198,7 @@ InteractiveModeBase.prototype.stop = function (
 	if (this.unsubscribe) {
 		this.unsubscribe();
 	}
-	if (this.isInitialized) {
+	if (this.isInitialized || this.tuiStarted) {
 		this.stopInteractiveTui(fullscreenExitOutput);
 		this.isInitialized = false;
 		// A mode started again checks fd, rg and git again: what it found may have changed while it was stopped.
