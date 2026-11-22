@@ -2,13 +2,15 @@
  * A running process of each recorded release, updated in place to this build (`scripts/in-place-update-e2e.mjs`):
  * every module it imports on demand by its path loads or says to restart, and the modules a session loads for its own
  * work load. The releases are installed from npm as published; this build is packed as the release workflow packs it.
+ * A running process of this build, updated to a later release whose code cannot load, says to restart at its own call
+ * sites.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
-import { updateRunningRelease } from "../../scripts/in-place-update-e2e.mjs";
+import { updateRunningBuild, updateRunningRelease } from "../../scripts/in-place-update-e2e.mjs";
 import { moduleDir, npmSpawnPrefix, removePath, spawnSyncCollect } from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "..", "..");
@@ -91,3 +93,12 @@ describe("a running process of a recorded release, updated in place to this buil
 		UPDATE_TIMEOUT_MS,
 	);
 });
+
+test(
+	"a running process of this build updated in place to a later release whose code cannot load says to restart at its own call sites",
+	async () => {
+		const version = JSON.parse(readFileSync(join(ROOT, "packages/coding-agent/package.json"), "utf8")).version;
+		assert.deepEqual(await updateRunningBuild(tarballs, version, ROOT), []);
+	},
+	UPDATE_TIMEOUT_MS,
+);

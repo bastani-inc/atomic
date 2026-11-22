@@ -31,11 +31,18 @@ import { fileURLToPath } from "node:url";
 import { transform } from "esbuild";
 import { rolldown } from "rolldown";
 import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } from "./split-dist-names.mjs";
+import { parse } from "acorn";
+import semver from "semver";
 import {
+	aliasSource,
+	CALL_SITE_GUARD,
+	callSiteGuardSource,
+	codePath,
 	GATE_FILE_MARK,
-	gatedImplementation,
-	gatedModuleOf,
+	GUARDED_SINCE,
+	gatedFeature,
 	gateSource,
+	moduleOfPath,
 	RELEASE_MODULE_STUB,
 	releaseVersionModules,
 } from "./in-place-update-gate.mjs";
@@ -386,45 +393,43 @@ if (!existsSync(RELEASE_RECORDS))
 		`split-dist: ${RELEASE_RECORDS} is missing; the split keeps the modules the releases recorded there import on demand`,
 	);
 const releasedLazyTargets = new Set();
-/**
- * Gate implementation paths (`<module>.impl.js`) a recorded release imports on demand, mapped to the compiled module
- * path they stand for and the export names recorded there. Each keeps its module at `<module>.js` (still failing when
- * no module compiles to it) and, if this build does not gate `<module>.js`, receives a re-export file at
- * `<module>.impl.js` so that release's processes still find the module at the path they import.
- * @type {Map<string, { target: string, names: Set<string> }>}
- */
-const releasedImplTargets = new Map();
 /** The shared files a recorded release imports on demand, with the names it exported: see `compatSharedFiles`. */
 const releasedSharedTargets = [];
 const releaseRecords = readdirSync(RELEASE_RECORDS)
 	.filter((name) => /^\d.*\.json$/.test(name))
 	.map((file) => JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8")));
+/**
+ * The modules a release before {@link GUARDED_SINCE} imports on demand: a process of such a release meets a gate there.
+ * A release since guards its own imports at the call site, and needs only the path to stay.
+ */
+const unguardedTargets = new Set();
+/**
+ * The paths a release imports on demand that name a module by another path (`<module>.impl.js` of 0.10.4,
+ * `<module>.code.js` since 0.10.5), with whether a release before {@link GUARDED_SINCE} imports it.
+ * @type {Map<string, { module: string, unguarded: boolean }>}
+ */
+const releasedAliases = new Map();
 for (const record of releaseRecords) {
 	const atomic = record.packages["@bastani/atomic"];
+	const unguarded = semver.lt(record.version, GUARDED_SINCE);
 	for (const key of Object.keys(atomic?.lazy ?? {})) {
 		const prefix = "@bastani/atomic:dist/";
 		if (!key.startsWith(prefix)) continue;
-		const path = key.slice(prefix.length);
-		if (path.startsWith(`${SHARED_DIRECTORY}/`)) {
-			releasedSharedTargets.push({ version: record.version, path, names: atomic.files?.[`dist/${path}`] ?? [] });
+		const recorded = key.slice(prefix.length);
+		if (recorded.startsWith(`${SHARED_DIRECTORY}/`)) {
+			releasedSharedTargets.push({ version: record.version, path: recorded, names: atomic.files?.[`dist/${recorded}`] ?? [] });
 			continue;
 		}
-		const implOf = compiledFromSource(path) ? undefined : gatedModuleOf(path);
-		const target = implOf ?? path;
-		if (!existsSync(join(dist, target)) && !existsSync(join(COMPILED_ENTRIES, target)))
+		const path = compiledFromSource(recorded) ? recorded : moduleOfPath(recorded);
+		if (path !== recorded)
+			releasedAliases.set(recorded, { module: path, unguarded: unguarded || releasedAliases.get(recorded)?.unguarded === true });
+		if (!existsSync(join(dist, path)) && !existsSync(join(COMPILED_ENTRIES, path)))
 			throw new Error(
-				`split-dist: ${record.version} imports dist/${path} on demand, and no module of this package compiles to ${implOf === undefined ? "it" : `dist/${target}`}; keep a module at that path`,
+				`split-dist: ${record.version} imports dist/${recorded} on demand, and no module of this package compiles to ${path === recorded ? "it" : `dist/${path}`}; keep a module at that path`,
 			);
-		if (implOf !== undefined) {
-			let entry = releasedImplTargets.get(path);
-			if (entry === undefined) {
-				entry = { target, names: new Set() };
-				releasedImplTargets.set(path, entry);
-			}
-			for (const name of atomic.files?.[`dist/${path}`] ?? []) entry.names.add(name);
-		}
-		releasedLazyTargets.add(target);
-		visitBundled(target);
+		releasedLazyTargets.add(path);
+		if (unguarded) unguardedTargets.add(path);
+		visitBundled(path);
 	}
 }
 const SPLIT_ENTRIES = [
@@ -995,28 +1000,82 @@ const entryExports = new Map(
 	generated.output.filter((item) => item.type === "chunk" && item.isEntry).map((item) => [item.fileName, item.exports]),
 );
 const gated = new Set(
-	[...releasedLazyTargets].filter(
+	[...unguardedTargets].filter(
 		(path) => entryExports.has(path) && !staticallyImported.has(path) && !loadedAtStart.has(path),
 	),
 );
-// This build's own code imports the module's code itself: only a process of an earlier release meets a gate, and a
-// bundle of the split package (as the standalone binary's, in CommonJS, which cannot hold a gate's top-level await)
-// never does. That holds for the compiled files the package keeps too; the compiled code of each one changed is kept in
-// the build state, and the next split starts from it.
-const towardsCode = (from, source) =>
-	source.replace(/\bimport\(\s*"(\.{1,2}\/[^"]+)"\s*\)/g, (call, specifier) =>
-		gated.has(relativeImport(from, specifier)) ? call.replace(specifier, specifier.replace(/\.js$/, ".impl.js")) : call,
-	);
+/** Where this build has the code of module `path` (in `dist`). */
+const codeOf = (path) => (gated.has(path) ? codePath(path) : path);
+const { probes, stubs } = releaseVersionModules(releaseRecords, (path) => kept.has(path));
+const buildVersion = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version;
+const buildApplication = (() => {
+	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+	const config = manifest.atomicConfig ?? manifest.piConfig;
+	return typeof config?.name === "string" ? config.name : "atomic";
+})();
+/** Whether a dynamic import's specifier names a module of Atomic's own packages, which an update replaces. */
+const isOwnPackage = (specifier) => /^@bastani\/atomic(?:-[a-z]+)?(?:\/|$)/.test(specifier);
+// This build's own code imports each module on demand where it has the module's code, never a gate: a fresh process
+// meets no gate, and a bundle of the split package (as the standalone binary's, in CommonJS, which cannot hold a gate's
+// top-level await) holds none. Each such import is guarded at its call site: when it fails in a process an update left
+// running, it says to restart (see `callSiteGuardSource`). That holds for the compiled files the package keeps too; the
+// compiled code of each one changed is kept in the build state, and the next split starts from it.
+const guardCallSites = (from, source) => {
+	let program;
+	try {
+		program = parse(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
+	} catch (error) {
+		throw new Error(`split-dist: cannot read the imports of dist/${from}: ${error.message}`);
+	}
+	/** @type {{ start: number, end: number, text: string }[]} */
+	const edits = [];
+	const visit = (node) => {
+		if (node === null || typeof node !== "object") return;
+		if (Array.isArray(node)) {
+			for (const child of node) visit(child);
+			return;
+		}
+		if (node.type === "ImportExpression" && node.source.type === "Literal" && typeof node.source.value === "string") {
+			const specifier = node.source.value;
+			const relativeSpecifier = /^\.{1,2}\//.test(specifier);
+			if (relativeSpecifier || isOwnPackage(specifier)) {
+				let feature = "this feature";
+				if (relativeSpecifier) {
+					const target = relativeImport(from, specifier);
+					feature = gatedFeature(target);
+					if (gated.has(target)) {
+						const code = specifier.replace(/\.js$/, ".code.js");
+						edits.push({ start: node.source.start, end: node.source.end, text: JSON.stringify(code) });
+					}
+				}
+				edits.push({
+					start: node.end,
+					end: node.end,
+					text: `.catch((error) => ${CALL_SITE_GUARD}(error, ${JSON.stringify(feature)}))`,
+				});
+			}
+		}
+		for (const [key, value] of Object.entries(node)) if (key !== "loc" && typeof value === "object") visit(value);
+	};
+	visit(program);
+	if (edits.length === 0) return source;
+	let rewritten = source;
+	for (const edit of edits.sort((a, b) => b.start - a.start))
+		rewritten = rewritten.slice(0, edit.start) + edit.text + rewritten.slice(edit.end);
+	const depth = from.split("/").length - 1;
+	const root = depth === 0 ? "./" : "../".repeat(depth);
+	return `${rewritten}${rewritten.endsWith("\n") ? "" : "\n"}${callSiteGuardSource({ root, probes, version: buildVersion, application: buildApplication })}`;
+};
 for (const { path: file } of outputFiles) {
 	if (!file.endsWith(".js")) continue;
 	const source = readFileSync(file, "utf8");
-	const rewritten = towardsCode(toPosix(relative(dist, file)), source);
+	const rewritten = guardCallSites(toPosix(relative(dist, file)), source);
 	if (rewritten !== source) writeFileSync(file, rewritten);
 }
 const gatedImporters = {};
 for (const path of compiledModules) {
 	const source = compiledSource(path);
-	const rewritten = towardsCode(path, source);
+	const rewritten = guardCallSites(path, source);
 	if (rewritten === source) continue;
 	const saved = join(STATE_DIRECTORY, "gated-importers", path);
 	mkdirSync(dirname(saved), { recursive: true });
@@ -1024,60 +1083,71 @@ for (const path of compiledModules) {
 	writeFileSync(join(dist, path), rewritten);
 	gatedImporters[path] = digest(rewritten);
 }
-const { probes, stubs } = releaseVersionModules(releaseRecords, (path) => kept.has(path));
-const buildVersion = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version;
 const gateFiles = {};
 const emptyMap = (file) => `${JSON.stringify({ version: 3, file, sources: [], names: [], mappings: "" })}\n`;
 const writeGateFile = (path, contents) => {
 	writeFileSync(join(dist, path), contents);
 	gateFiles[path] = digest(contents);
 };
+const baseOf = (path) => path.slice(path.lastIndexOf("/") + 1);
+/** The export names of module `path` (in `dist`): its entry's, or those its compiled file declares. */
+const exportsOf = (path) => {
+	const entry = entryExports.get(path);
+	if (entry !== undefined) return entry;
+	const names = [];
+	const program = parse(readFileSync(join(dist, path), "utf8"), { ecmaVersion: "latest", sourceType: "module" });
+	const nameOf = (node) => (node.type === "Identifier" ? node.name : String(node.value));
+	for (const node of program.body) {
+		if (node.type === "ExportDefaultDeclaration") names.push("default");
+		else if (node.type === "ExportAllDeclaration") {
+			if (node.exported === null) throw new Error(`split-dist: dist/${path} re-exports a module whole; name its exports`);
+			names.push(nameOf(node.exported));
+		} else if (node.type === "ExportNamedDeclaration") {
+			for (const specifier of node.specifiers) names.push(nameOf(specifier.exported));
+			const declaration = node.declaration;
+			if (declaration?.type === "VariableDeclaration")
+				for (const declarator of declaration.declarations)
+					if (declarator.id.type === "Identifier") names.push(declarator.id.name);
+					else throw new Error(`split-dist: dist/${path} exports a destructured binding; name its exports`);
+			else if (declaration?.id) names.push(declaration.id.name);
+		}
+	}
+	return names;
+};
 for (const path of gated) {
-	const implementation = gatedImplementation(path);
-	if (kept.has(implementation) || compiledFromSource(implementation))
-		throw new Error(`split-dist: dist/${implementation}, where the gate of dist/${path} puts its code, is taken`);
-	const base = path.slice(path.lastIndexOf("/") + 1);
-	const implementationBase = implementation.slice(implementation.lastIndexOf("/") + 1);
-	const code = readFileSync(join(dist, path), "utf8").replace(
-		`//# sourceMappingURL=${base}.map`,
-		`//# sourceMappingURL=${implementationBase}.map`,
+	const code = codePath(path);
+	if (kept.has(code) || compiledFromSource(code))
+		throw new Error(`split-dist: dist/${code}, where the gate of dist/${path} puts its code, is taken`);
+	const base = baseOf(path);
+	const codeBase = baseOf(code);
+	writeGateFile(
+		code,
+		readFileSync(join(dist, path), "utf8").replace(`//# sourceMappingURL=${base}.map`, `//# sourceMappingURL=${codeBase}.map`),
 	);
-	writeGateFile(implementation, code);
 	const map = join(dist, `${path}.map`);
 	writeGateFile(
-		`${implementation}.map`,
+		`${code}.map`,
 		existsSync(map)
-			? `${JSON.stringify({ ...JSON.parse(readFileSync(map, "utf8")), file: implementationBase })}\n`
-			: emptyMap(implementationBase),
+			? `${JSON.stringify({ ...JSON.parse(readFileSync(map, "utf8")), file: codeBase })}\n`
+			: emptyMap(codeBase),
 	);
-	const gate = `${gateSource({ path, exports: entryExports.get(path), probes, version: buildVersion })}//# sourceMappingURL=${base}.map\n`;
+	const gate = `${gateSource({ path, code: `./${codeBase}`, exports: entryExports.get(path), probes, version: buildVersion })}//# sourceMappingURL=${base}.map\n`;
 	writeFileSync(join(dist, path), gate);
 	writeFileSync(map, emptyMap(base));
 }
-// A gate implementation path (`<module>.impl.js`) a recorded release imports on demand whose module is not gated in
-// this build (for example, once the package imports it statically or loads it at startup): keep a re-export file at
-// that path so the release's process still finds this build's single copy of the module.
-for (const [implementation, { target, names }] of releasedImplTargets) {
-	if (gated.has(target)) continue;
-	if (kept.has(implementation) || compiledFromSource(implementation))
-		throw new Error(`split-dist: dist/${implementation}, kept for a recorded release, is taken`);
-	const base = target.slice(target.lastIndexOf("/") + 1);
-	const implementationBase = implementation.slice(implementation.lastIndexOf("/") + 1);
-	const targetExports = entryExports.get(target);
-	const hasDefault =
-		targetExports !== undefined
-			? targetExports.includes("default")
-			: names.has("default") ||
-				/\bexport\s+default\b|\bas\s+default\b/.test(readFileSync(join(dist, target), "utf8"));
-	const lines = [
-		`${GATE_FILE_MARK}: keeps a gate implementation path a recorded release imports on demand when its module is not gated here.`,
-		`export * from ${JSON.stringify(`./${base}`)};`,
-		...(hasDefault ? [`export { default } from ${JSON.stringify(`./${base}`)};`] : []),
-		`//# sourceMappingURL=${implementationBase}.map`,
-		"",
-	];
-	writeGateFile(implementation, lines.join("\n"));
-	writeGateFile(`${implementation}.map`, emptyMap(implementationBase));
+// An earlier release's other path of a module: a gate for a release before the call-site guards (as 0.10.4's
+// `<module>.impl.js`), else the module's exports. Neither is a path this build's own code imports.
+for (const [alias, { module, unguarded }] of releasedAliases) {
+	if (alias === codeOf(module)) continue;
+	if (kept.has(alias) || compiledFromSource(alias))
+		throw new Error(`split-dist: dist/${alias}, an earlier release's path of dist/${module}, is taken`);
+	const base = baseOf(alias);
+	const code = `./${baseOf(codeOf(module))}`;
+	const contents = unguarded
+		? gateSource({ path: alias, code, exports: exportsOf(module), probes, version: buildVersion })
+		: aliasSource({ code, exports: exportsOf(module) });
+	writeGateFile(alias, `${contents}//# sourceMappingURL=${base}.map\n`);
+	writeGateFile(`${alias}.map`, emptyMap(base));
 }
 writeFileSync(
 	join(dist, "THIRD_PARTY_NOTICES.md"),
