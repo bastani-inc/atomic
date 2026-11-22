@@ -236,7 +236,10 @@ describe("cancellation reaches the work-tree step of a capture", () => {
 			const unchanged = await captureWorktreeSnapshot(clone, { previous: first.snapshot });
 			assert.equal(unchanged.status, "unchanged");
 			const total = invocations;
-			assert.ok(total >= 5, "writing the working tree takes several Git commands");
+			assert.ok(
+				total >= 3,
+				"locating the checkout, listing its files and writing the tree take several Git commands",
+			);
 
 			invocations = 0;
 			abortAt = total - 1;

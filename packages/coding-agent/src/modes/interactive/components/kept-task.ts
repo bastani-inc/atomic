@@ -34,11 +34,13 @@ export type KeptTaskAction = "tasks" | "ownTasks" | "openWaited";
 
 /**
  * The hint a call's block shows for `action`: `/tasks to manage`, or `<key> opens it` while the key is bound. A click
- * on a command hint runs the main chat's command, so a subagent chat's own `/tasks` is named without one.
+ * on a command hint runs the main chat's command, so a subagent chat's own `/tasks` runs from a click only through the
+ * chat's `route`; without one it is named as text.
  */
-export function keptTaskHint(action: KeptTaskAction | undefined): string | undefined {
+export function keptTaskHint(action: KeptTaskAction | undefined, route?: string): string | undefined {
 	if (action === "tasks") return slashCommandHint("/tasks to manage");
-	if (action === "ownTasks") return "/tasks to manage";
+	if (action === "ownTasks")
+		return route === undefined ? "/tasks to manage" : slashCommandHint("/tasks to manage", route);
 	if (action !== "openWaited") return undefined;
 	const key = navActionText(getKeybindings(), "app.tasks.openWaited");
 	return key ? clickableKeyTextHint(key, " opens it") : undefined;
