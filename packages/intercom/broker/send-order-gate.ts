@@ -90,6 +90,18 @@ export interface WaitForEarlierOptions {
 	readonly localBound?: Promise<"expired">;
 	/** True when `localBound` has already expired synchronously before entering `waitForEarlier`. */
 	readonly localBoundExpired?: boolean;
+	/**
+	 * Monotonic timestamp (`performance.now()`) of the latest shared-store progress made by `earlier` or its
+	 * upstream blocker chain, or `undefined` when no store progress has occurred. When `localBound` expires while
+	 * the blocker is actively progressing, the wait extends by `progressSilenceMs` from that progress (up to
+	 * `maxLocalWaitUntil`) so healthy multi-step DB work never breaks FIFO, while a hung DB still releases at
+	 * `localBound`.
+	 */
+	readonly blockerProgressAt?: (earlier: SendOrderTicket) => number | undefined;
+	/** Silence window (ms) to wait past a progressing blocker's latest store answer; 0 disables extension. */
+	readonly progressSilenceMs?: number;
+	/** Hard monotonic deadline (`performance.now()`) past which progress extensions stop. */
+	readonly maxLocalWaitUntil?: number;
 }
 
 function rawTargetCouldMatch(rawTarget: string, target: TargetMatchInfo): boolean {
@@ -294,6 +306,16 @@ export class SendOrderGate {
 		return current.isLocal && (!earlier.isLocal || earlier.unbounded) && hasBound;
 	}
 
+	private extensionRemainingMs(earlier: InternalTicket, options: WaitForEarlierOptions): number {
+		const silenceMs = options.progressSilenceMs ?? 0;
+		if (silenceMs <= 0 || options.blockerProgressAt === undefined) return 0;
+		const progressAt = options.blockerProgressAt(earlier);
+		if (progressAt === undefined) return 0;
+		const now = performance.now();
+		const capUntil = options.maxLocalWaitUntil ?? Number.POSITIVE_INFINITY;
+		return Math.max(0, Math.min(capUntil, progressAt + silenceMs) - now);
+	}
+
 	private hasBlockingEarlier(
 		list: readonly InternalTicket[],
 		current: InternalTicket,
@@ -303,7 +325,12 @@ export class SendOrderGate {
 		for (const earlier of list) {
 			if (earlier.seq >= current.seq) break;
 			if (this.waitKind(earlier, current, options) === "skip") continue;
-			if (options.localBoundExpired === true && this.isBounded(current, earlier, hasBound)) continue;
+			if (
+				options.localBoundExpired === true &&
+				this.isBounded(current, earlier, hasBound) &&
+				this.extensionRemainingMs(earlier, options) <= 0
+			)
+				continue;
 			return true;
 		}
 		return false;
@@ -345,8 +372,26 @@ export class SendOrderGate {
 					const kind = this.waitKind(earlier, current, options);
 					if (kind === "skip") continue;
 					const bounded = this.isBounded(current, earlier, hasBound);
-					if (bounded && localBoundExpired) continue;
 					const wait = kind === "target" ? this.awaitTargetKnown(earlier) : this.awaitFinished(earlier);
+					if (bounded && localBoundExpired) {
+						const remainingMs = this.extensionRemainingMs(earlier, options);
+						if (remainingMs <= 0) continue;
+						let extTimer: ReturnType<typeof setTimeout> | undefined;
+						const extExpired = new Promise<"expired">((resolve) => {
+							extTimer = setTimeout(() => resolve("expired"), Math.ceil(remainingMs));
+							extTimer.unref?.();
+						});
+						current.waitingOn = earlier;
+						current.lastBlocker = earlier;
+						try {
+							await Promise.race([wait, extExpired]);
+						} finally {
+							clearTimeout(extTimer);
+							current.waitingOn = undefined;
+						}
+						waited = true;
+						break;
+					}
 					current.waitingOn = earlier;
 					current.lastBlocker = earlier;
 					if (bounded && boundPromise !== undefined) await Promise.race([wait, boundPromise]);
