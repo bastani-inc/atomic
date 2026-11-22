@@ -140,6 +140,7 @@ import {
 	refreshSessionStorage,
 	SessionSelectorConflictError,
 	sessionStorageWouldMove,
+	sessionStored,
 	startupResumeDiagnostics,
 	validateForkFlags,
 	validateImportFlags,
@@ -830,6 +831,16 @@ export async function main(argv: string[], options?: MainOptions) {
 	};
 	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async (options) =>
 		(await prepareRuntimeServices(options, options.sessionManager))(options.sessionManager);
+	// A startup that cannot open its session prints why and exits, or throws what it cannot explain.
+	const failOpeningSession: (error: unknown) => never = (error) => {
+		// Another live process resumed this session (#5135): nothing was changed.
+		const held = error instanceof SessionAlreadyOpenError;
+		const message = held ? error.message : resumeFailureMessage(error);
+		if (message === undefined) throw error;
+		startupEarlyInputCapture?.consume();
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(held ? SESSION_ALREADY_OPEN_EXIT_CODE : 1);
+	};
 	const prepareRuntimeServices = async (
 		{
 			cwd,
@@ -866,6 +877,10 @@ export async function main(argv: string[], options?: MainOptions) {
 		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
 			projectTrusted: initialProjectTrusted,
 		});
+		// A new session's create, which the isolated host started while it read the settings above, is in the store before
+		// the engine is handed the session or anything else of the runtime is made for it. Its failure fails the startup
+		// as a failure to open the session would.
+		if (openedSessionManager !== undefined) await sessionStored(openedSessionManager).catch(failOpeningSession);
 		// An isolated host's startup session: its engine can start now, unless the step that finishes the session's
 		// storage would still write what the engine reads when it opens the session (its name, or a move to another store).
 		if (
@@ -1524,6 +1539,9 @@ export async function main(argv: string[], options?: MainOptions) {
 			// Without a UI (-p, json, rpc), the first turn starts while the blueprint build runs (#4748).
 			interactive: appMode === "interactive" || engineEnv.child === "1",
 			claim: engineEnv.child !== "1",
+			// The isolated host's new session is created while the host reads its settings; its engine opens it after.
+			startCreate:
+				isolateInteractiveHost && appMode === "interactive" && engineEnv.child !== "1" && parsed.name === undefined,
 			progress: startupProgress,
 			chooseDirtyCheckout:
 				appMode === "interactive" ? (prompt) => promptForDirtyCheckout(prompt, startupSettingsManager) : undefined,
@@ -1546,13 +1564,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			);
 		}
 	} catch (error) {
-		// Another live process resumed this session (#5135): nothing was changed.
-		const held = error instanceof SessionAlreadyOpenError;
-		const message = held ? error.message : resumeFailureMessage(error);
-		if (message === undefined) throw error;
-		startupEarlyInputCapture?.consume();
-		console.error(chalk.red(`Error: ${message}`));
-		process.exit(held ? SESSION_ALREADY_OPEN_EXIT_CODE : 1);
+		failOpeningSession(error);
 	}
 	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {

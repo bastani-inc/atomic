@@ -404,6 +404,8 @@ export class SessionManager {
 		| { readonly sessionId: string; readonly store: SessionStore; readonly release: () => Promise<void> }
 		| undefined;
 	private mutation: Promise<void> = Promise.resolve();
+	/** Why the store's create of this session, which {@link startCreate} started, failed: then no write runs. */
+	private creationFailure?: unknown;
 	/** Custom entries written with a message, in its own store write, by the message they go with. */
 	private readonly messageCompanions = new WeakMap<object, () => MessageCompanionEntry | undefined>();
 	private fileEntries: FileEntry[] = [];
@@ -465,7 +467,10 @@ export class SessionManager {
 	}
 
 	private runMutation<T>(operation: () => Promise<T>): Promise<T> {
-		const result = this.mutation.then(operation);
+		const result = this.mutation.then(() => {
+			if (this.creationFailure !== undefined) throw this.creationFailure;
+			return operation();
+		});
 		this.mutation = result.then(
 			() => {},
 			() => {},
@@ -2840,6 +2845,38 @@ export class SessionManager {
 			}
 			throw error;
 		}
+	}
+
+	/**
+	 * @internal {@link create} for `store`, the store's create of the session started rather than awaited: the manager
+	 * is returned at once, every write of it waits for the create, and `stored` settles with it. Nothing but this manager
+	 * may look the session up in the store, nor be handed its id, before `stored` resolves. A failed create rejects
+	 * `stored` and every write.
+	 */
+	static startCreate(
+		store: SessionStore,
+		cwd: string,
+		options?: NewSessionOptions,
+	): { readonly manager: SessionManager; readonly stored: Promise<void> } {
+		const manager = new SessionManager(
+			store,
+			cwd,
+			store instanceof JsonlSessionStore ? store.descriptor.location : "",
+			options,
+		);
+		if (store instanceof JsonlSessionStore) {
+			manager.sessionFile = store.locationFor(manager.recordHeader());
+			manager.sessionDir = dirname(manager.sessionFile);
+		}
+		const stored = manager.initialize();
+		// Every write waits for the create, and none runs once it failed.
+		manager.mutation = stored.then(
+			() => {},
+			(failure: unknown) => {
+				manager.creationFailure = failure;
+			},
+		);
+		return { manager, stored };
 	}
 
 	static async create(cwd: string, sessionDir?: string, options?: NewSessionOptions): Promise<SessionManager>;

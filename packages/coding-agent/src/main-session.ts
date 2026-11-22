@@ -306,8 +306,30 @@ async function openSessionOrExit(sessionId: string, store: SessionStore): Promis
 const initialStorageKeys = new WeakMap<SessionManager, string>();
 const provisionalSessions = new WeakSet<SessionManager>();
 
-async function createProvisionalSession(store: SessionStore, cwd: string, id?: string): Promise<SessionManager> {
-	const manager = await SessionManager.create(store, cwd, { id });
+/** The store's create of a new session that `openCliSession` started rather than awaited (`startCreate`). */
+const pendingCreates = new WeakMap<SessionManager, Promise<void>>();
+
+/**
+ * Settles once the store holds `manager`'s session: at once, unless `openCliSession` was asked to start its create
+ * (`startCreate`), and then with that create, rejecting with its failure. Await it before handing the session's id to
+ * anything that looks the session up in the store.
+ */
+export function sessionStored(manager: SessionManager): Promise<void> {
+	return pendingCreates.get(manager) ?? Promise.resolve();
+}
+
+async function createProvisionalSession(
+	store: SessionStore,
+	cwd: string,
+	id?: string,
+	startCreate = false,
+): Promise<SessionManager> {
+	let manager: SessionManager;
+	if (startCreate) {
+		const started = SessionManager.startCreate(store, cwd, { id });
+		manager = started.manager;
+		pendingCreates.set(manager, started.stored);
+	} else manager = await SessionManager.create(store, cwd, { id });
 	provisionalSessions.add(manager);
 	return manager;
 }
@@ -378,6 +400,7 @@ export async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 	sessionStore?: SessionStore | StorageSelection,
+	startCreate = false,
 ): Promise<SessionManager> {
 	validateImportFlags(parsed);
 	const store = await resolveSessionStore(cwd, {
@@ -389,7 +412,7 @@ export async function createSessionManager(
 		sessionPrefix: parsed.sessionPrefix,
 	});
 	try {
-		const manager = await createSessionManagerWithStore(parsed, cwd, settingsManager, store);
+		const manager = await createSessionManagerWithStore(parsed, cwd, settingsManager, store, startCreate);
 		if (store !== sessionStore) ownedSessionManagerStores.set(manager, store);
 		const selection = await selectSessionStorageWithSettingsAsync(cwd, {
 			sessionStore,
@@ -412,6 +435,7 @@ async function createSessionManagerWithStore(
 	cwd: string,
 	settingsManager: SettingsManager,
 	store: SessionStore,
+	startCreate: boolean,
 ): Promise<SessionManager> {
 	if (parsed.import !== undefined) return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, store);
 	if (parsed.noSession) return createProvisionalSession(store, cwd, parsed.sessionId);
@@ -511,7 +535,7 @@ async function createSessionManagerWithStore(
 		console.error(chalk.yellow(`No session found with id '${parsed.sessionId}'; creating a new session.`));
 	}
 
-	return createProvisionalSession(store, cwd, parsed.sessionId);
+	return createProvisionalSession(store, cwd, parsed.sessionId, startCreate);
 }
 
 function promptStartupSelector(
@@ -650,6 +674,11 @@ export interface OpenCliSessionOptions {
 	 * interactive engine child, whose host claimed the session.
 	 */
 	readonly claim?: boolean;
+	/**
+	 * Whether a new session's create in the store is started rather than awaited, for a startup that awaits
+	 * {@link sessionStored} before anything looks the session up: the isolated host, before its engine opens it.
+	 */
+	readonly startCreate?: boolean;
 }
 
 export interface OpenedCliSession {
@@ -697,7 +726,14 @@ export async function openCliSession(
 					}
 				})
 			: undefined;
-	const sessionManager = await createSessionManager(parsed, cwd, undefined, settingsManager, options.sessionStorage)
+	const sessionManager = await createSessionManager(
+		parsed,
+		cwd,
+		undefined,
+		settingsManager,
+		options.sessionStorage,
+		options.startCreate,
+	)
 		.catch((error: unknown) => {
 			options.progress?.done();
 			throw resuming ? resumeLookupError(error, "session", parsed.session ?? null) : error;
