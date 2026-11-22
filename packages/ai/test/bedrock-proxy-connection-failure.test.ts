@@ -7,7 +7,7 @@ import { type Server as NetServer, createServer as createNetServer, type Socket 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { TLSSocket } from "node:tls";
+import { createSecureContext, createServer as createTlsServer, TLSSocket } from "node:tls";
 import { crc32 } from "node:zlib";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { afterEach, describe, it, vi } from "vitest";
@@ -25,15 +25,15 @@ const context = normalizeContext({ messages: [{ role: "user", content: "hello", 
 const SDK_RETRIES = 2;
 /** Structural: starts Bun, as the standalone binary runs Bedrock's proxy agents. */
 const BUN_CHILD_TIMEOUT_MS = 60_000;
+/** Structural: starts a fresh Node child process so NODE_EXTRA_CA_CERTS trusts the test CA cleanly. */
+const NODE_CA_CHILD_TIMEOUT_MS = 60_000;
+// Sources under packages/ai import `.js` specifiers that name `.ts` files; Node needs this hook to load them directly.
+const RESOLVE_TS_SOURCES = `import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+	try { return nextResolve(specifier, context); }
+	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
+} });`;
 
-const servers: (NetServer | HttpServer)[] = [];
-const tempDirs: string[] = [];
-afterEach(async () => {
-	for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
-	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-/** Encode one AWS event-stream frame (prelude, CRCs, string headers, payload) as Bedrock sends it. */
 function encodeEventStreamFrame(headers: Record<string, string>, payload: string): Buffer {
 	const headerBytes = Buffer.concat(
 		Object.entries(headers).map(([name, value]) => {
@@ -41,7 +41,6 @@ function encodeEventStreamFrame(headers: Record<string, string>, payload: string
 			const valueBytes = Buffer.from(value, "utf8");
 			const valueLength = Buffer.alloc(2);
 			valueLength.writeUInt16BE(valueBytes.length);
-			// Header value type 7 is a UTF-8 string.
 			return Buffer.concat([Buffer.from([nameBytes.length]), nameBytes, Buffer.from([7]), valueLength, valueBytes]);
 		}),
 	);
@@ -72,9 +71,16 @@ function bedrockEventStream(text: string): Buffer {
 	]);
 }
 
-async function listen(server: NetServer | HttpServer): Promise<number> {
+const servers: (NetServer | HttpServer)[] = [];
+const tempDirs: string[] = [];
+afterEach(async () => {
+	for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+async function listen(server: NetServer | HttpServer, host = "127.0.0.1"): Promise<number> {
 	servers.push(server);
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	await new Promise<void>((resolve) => server.listen(0, host, resolve));
 	const address = server.address();
 	assert.ok(address !== null && typeof address === "object");
 	return address.port;
@@ -681,4 +687,220 @@ describe("a provider's answer that names a connection error", () => {
 			assert.equal(isRetryableAssistantError(message), false, `${provider}: ${message.errorMessage}`);
 		}
 	});
+});
+
+describe("Amazon Bedrock TLS SNI through an https:// proxy", () => {
+	it(
+		"sends SNI for a hostname https:// proxy on a plain-HTTP endpoint, and omits IP SNI while still verifying IP SANs",
+		async () => {
+			const ca = createTestCertificate({ subject: "Bedrock SNI Test CA", ca: true, keyUsage: ["keyCertSign"] });
+			const issue = (name: string) =>
+				createTestCertificate({
+					subject: name,
+					issuer: ca,
+					keyUsage: ["digitalSignature"],
+					extendedKeyUsage: ["serverAuth"],
+					altNames: [name],
+				});
+			const certLocalhost = issue("localhost");
+			const certOther = issue("other.example");
+			const certIpv4 = issue("127.0.0.1");
+			const certIpv4Wrong = issue("127.0.0.2");
+			const certIpv6 = issue("::1");
+			const certIpv6Wrong = issue("::2");
+			const ctxLocalhost = createSecureContext({ cert: certLocalhost.cert, key: certLocalhost.key });
+
+			const caDir = mkdtempSync(join(tmpdir(), "atomic-bedrock-sni-ca-"));
+			tempDirs.push(caDir);
+			const caPath = join(caDir, "ca.pem");
+			writeFileSync(caPath, ca.cert);
+
+			const streamBody = bedrockEventStream("sni-ok");
+			const answerRequest = (socket: Socket) => {
+				socket.on("error", () => {});
+				let received = Buffer.alloc(0);
+				let responded = false;
+				socket.on("data", (chunk: Buffer) => {
+					received = Buffer.concat([received, chunk]);
+					if (responded) return;
+					const headerEnd = received.indexOf("\r\n\r\n");
+					if (headerEnd === -1) return;
+					const headersText = received.subarray(0, headerEnd).toString("latin1");
+					const lengthMatch = headersText.match(/\r\ncontent-length:\s*(\d+)/i);
+					const contentLength = lengthMatch ? Number(lengthMatch[1]) : 0;
+					if (received.length < headerEnd + 4 + contentLength) return;
+					responded = true;
+					socket.end(
+						Buffer.concat([
+							Buffer.from(
+								`HTTP/1.1 200 OK\r\nContent-Type: application/vnd.amazon.eventstream\r\nContent-Length: ${streamBody.length}\r\nConnection: close\r\n\r\n`,
+								"latin1",
+							),
+							streamBody,
+						]),
+					);
+				});
+			};
+
+			// 1. SNI-switching proxy: default cert is other.example; SNI "localhost" selects the valid localhost cert.
+			const switchSnis: (string | undefined)[] = [];
+			const sniSwitchProxy = createTlsServer(
+				{
+					cert: certOther.cert,
+					key: certOther.key,
+					SNICallback(servername, cb) {
+						switchSnis.push(servername);
+						cb(null, servername === "localhost" ? ctxLocalhost : undefined);
+					},
+				},
+				answerRequest,
+			);
+			sniSwitchProxy.on("tlsClientError", () => {});
+			const switchPort = await listen(sniSwitchProxy);
+
+			// 2. SNI-only proxy: no default cert; rejects any handshake without matching SNI.
+			const onlySnis: (string | undefined)[] = [];
+			const sniOnlyProxy = createTlsServer(
+				{
+					SNICallback(servername, cb) {
+						onlySnis.push(servername);
+						if (servername === "localhost") cb(null, ctxLocalhost);
+						else cb(new Error("SNI required"));
+					},
+				},
+				answerRequest,
+			);
+			sniOnlyProxy.on("tlsClientError", () => {});
+			const onlyPort = await listen(sniOnlyProxy);
+
+			// 3. Wrong-host proxy: valid CA-signed cert for other.example only (must still reject for localhost).
+			const wrongHostProxy = createTlsServer({ cert: certOther.cert, key: certOther.key }, answerRequest);
+			wrongHostProxy.on("tlsClientError", () => {});
+			const wrongHostPort = await listen(wrongHostProxy);
+
+			// 4. IPv4 proxies: valid 127.0.0.1 cert (must omit SNI per RFC 6066 and succeed) and wrong 127.0.0.2 cert (must reject).
+			const ipv4Snis: (string | undefined)[] = [];
+			const ipv4OkProxy = createTlsServer(
+				{
+					cert: certIpv4.cert,
+					key: certIpv4.key,
+					SNICallback(servername, cb) {
+						ipv4Snis.push(servername);
+						cb(null);
+					},
+				},
+				answerRequest,
+			);
+			ipv4OkProxy.on("tlsClientError", () => {});
+			const ipv4OkPort = await listen(ipv4OkProxy);
+
+			const ipv4WrongProxy = createTlsServer({ cert: certIpv4Wrong.cert, key: certIpv4Wrong.key }, answerRequest);
+			ipv4WrongProxy.on("tlsClientError", () => {});
+			const ipv4WrongPort = await listen(ipv4WrongProxy);
+
+			// 5. IPv6 proxies: valid ::1 cert (must omit SNI per RFC 6066 and succeed) and wrong ::2 cert (must reject).
+			const ipv6Snis: (string | undefined)[] = [];
+			const ipv6OkProxy = createTlsServer(
+				{
+					cert: certIpv6.cert,
+					key: certIpv6.key,
+					SNICallback(servername, cb) {
+						ipv6Snis.push(servername);
+						cb(null);
+					},
+				},
+				answerRequest,
+			);
+			ipv6OkProxy.on("tlsClientError", () => {});
+			const ipv6OkPort = await listen(ipv6OkProxy, "::1");
+
+			const ipv6WrongProxy = createTlsServer({ cert: certIpv6Wrong.cert, key: certIpv6Wrong.key }, answerRequest);
+			ipv6WrongProxy.on("tlsClientError", () => {});
+			const ipv6WrongPort = await listen(ipv6WrongProxy, "::1");
+
+			const cases = [
+				{ name: "sniSwitch", proxyUrl: `https://localhost:${switchPort}` },
+				{ name: "sniOnly", proxyUrl: `https://localhost:${onlyPort}` },
+				{ name: "wrongHost", proxyUrl: `https://localhost:${wrongHostPort}` },
+				{ name: "ipv4Ok", proxyUrl: `https://127.0.0.1:${ipv4OkPort}` },
+				{ name: "ipv4Wrong", proxyUrl: `https://127.0.0.1:${ipv4WrongPort}` },
+				{ name: "ipv6Ok", proxyUrl: `https://[::1]:${ipv6OkPort}` },
+				{ name: "ipv6Wrong", proxyUrl: `https://[::1]:${ipv6WrongPort}` },
+			];
+			const source = [
+				`const { stream } = await import(${JSON.stringify(new URL("../src/api/bedrock-converse-stream.ts", import.meta.url).href)});`,
+				`const { getModel } = await import(${JSON.stringify(new URL("../src/compat.ts", import.meta.url).href)});`,
+				`const { isRetryableAssistantError } = await import(${JSON.stringify(new URL("../src/utils/retry.ts", import.meta.url).href)});`,
+				`const warnings = [];`,
+				`process.on("warning", (w) => warnings.push(w.name + ": " + w.message));`,
+				`const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0");`,
+				`const results = {};`,
+				`for (const { name, proxyUrl } of ${JSON.stringify(cases)}) {`,
+				`	const env = { AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1", HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, NO_PROXY: "none.invalid" };`,
+				`	const message = await stream({ ...model, baseUrl: "http://127.0.0.1:9" }, { messages: [{ role: "user", content: "hello", timestamp: 1 }] }, { cacheRetention: "none", maxRetries: 0, env }).result();`,
+				`	const text = message.content.filter((b) => b.type === "text").map((b) => b.text).join("");`,
+				`	results[name] = { stopReason: message.stopReason, retryable: isRetryableAssistantError(message), errorMessage: message.errorMessage, text };`,
+				`}`,
+				`console.log(JSON.stringify({ results, warnings }));`,
+			].join("\n");
+
+			const printed = await new Promise<string>((resolve, reject) => {
+				execFile(
+					process.execPath,
+					[
+						"--import",
+						`data:text/javascript,${encodeURIComponent(RESOLVE_TS_SOURCES)}`,
+						"--input-type=module",
+						"--eval",
+						source,
+					],
+					{
+						cwd: new URL("..", import.meta.url),
+						env: { ...process.env, NODE_EXTRA_CA_CERTS: caPath },
+						timeout: NODE_CA_CHILD_TIMEOUT_MS,
+						encoding: "utf8",
+					},
+					(error, stdout, stderr) => (error ? reject(new Error(`${error.message}\n${stderr}`)) : resolve(stdout)),
+				);
+			});
+			const { results, warnings } = JSON.parse(printed) as {
+				results: Record<string, { stopReason: string; retryable: boolean; errorMessage?: string; text: string }>;
+				warnings: string[];
+			};
+
+			assert.equal(results.sniSwitch?.stopReason, "stop", results.sniSwitch?.errorMessage);
+			assert.equal(results.sniSwitch?.text, "sni-ok");
+			assert.deepEqual(switchSnis, ["localhost"]);
+
+			assert.equal(results.sniOnly?.stopReason, "stop", results.sniOnly?.errorMessage);
+			assert.equal(results.sniOnly?.text, "sni-ok");
+			assert.deepEqual(onlySnis, ["localhost"]);
+
+			assert.equal(results.wrongHost?.stopReason, "error");
+			assert.equal(results.wrongHost?.retryable, false);
+			assert.ok(results.wrongHost?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"), results.wrongHost?.errorMessage);
+			assert.ok(results.wrongHost?.errorMessage?.includes(`proxy localhost:${wrongHostPort}`), results.wrongHost?.errorMessage);
+
+			assert.equal(results.ipv4Ok?.stopReason, "stop", results.ipv4Ok?.errorMessage);
+			assert.equal(results.ipv4Ok?.text, "sni-ok");
+			assert.deepEqual(ipv4Snis, []);
+
+			assert.equal(results.ipv4Wrong?.stopReason, "error");
+			assert.equal(results.ipv4Wrong?.retryable, false);
+			assert.ok(results.ipv4Wrong?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"), results.ipv4Wrong?.errorMessage);
+			assert.ok(results.ipv4Wrong?.errorMessage?.includes(`proxy 127.0.0.1:${ipv4WrongPort}`), results.ipv4Wrong?.errorMessage);
+
+			assert.equal(results.ipv6Ok?.stopReason, "stop", results.ipv6Ok?.errorMessage);
+			assert.equal(results.ipv6Ok?.text, "sni-ok");
+			assert.deepEqual(ipv6Snis, []);
+
+			assert.equal(results.ipv6Wrong?.stopReason, "error");
+			assert.equal(results.ipv6Wrong?.retryable, false);
+			assert.ok(results.ipv6Wrong?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"), results.ipv6Wrong?.errorMessage);
+			assert.ok(results.ipv6Wrong?.errorMessage?.includes(`proxy [::1]:${ipv6WrongPort}`), results.ipv6Wrong?.errorMessage);
+
+			assert.deepEqual(warnings.filter((w) => w.includes("RFC 6066")), []);
+		},
+		NODE_CA_CHILD_TIMEOUT_MS,
+	);
 });
