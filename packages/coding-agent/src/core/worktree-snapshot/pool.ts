@@ -203,17 +203,54 @@ export interface SetAsideNote {
 	readonly logs: string;
 }
 
-const setAsideHere = new Map<string, string | undefined>();
+/** A set-aside worktree directory's exact 64-bit device, inode, and birth time as decimal strings. */
+interface SetAsideDirectoryIdentity {
+	readonly dev: string;
+	readonly ino: string;
+	readonly birthtimeNs: string;
+}
+
+const LEGACY_DIRECTORY_STRING = /^\d+:\d+:-?\d+$/;
+
+function isSetAsideDirectoryIdentity(value: unknown): value is SetAsideDirectoryIdentity {
+	if (typeof value !== "object" || value === null) return false;
+	const identity = value as Partial<SetAsideDirectoryIdentity>;
+	return (
+		typeof identity.dev === "string" &&
+		/^\d+$/.test(identity.dev) &&
+		typeof identity.ino === "string" &&
+		/^\d+$/.test(identity.ino) &&
+		typeof identity.birthtimeNs === "string" &&
+		/^-?\d+$/.test(identity.birthtimeNs)
+	);
+}
+
+function sameSetAsideDirectoryIdentity(a: SetAsideDirectoryIdentity, b: SetAsideDirectoryIdentity): boolean {
+	return a.dev === b.dev && a.ino === b.ino && a.birthtimeNs === b.birthtimeNs;
+}
+
+/** Legacy `dev:ino:trunc(birthtimeMs)` projection for interoperability with older readers and set-aside notes. */
+function legacyDirectoryString(identity: SetAsideDirectoryIdentity): string {
+	const birthtimeNs = BigInt(identity.birthtimeNs);
+	const birthtimeMs = Number(birthtimeNs / 1_000_000_000n) * 1000 + Number(birthtimeNs % 1_000_000_000n) / 1_000_000;
+	return `${Number(BigInt(identity.dev))}:${Number(BigInt(identity.ino))}:${Math.trunc(birthtimeMs)}`;
+}
+
+const setAsideHere = new Map<string, SetAsideDirectoryIdentity | undefined>();
 
 function setAsideFile(storeDir: string, path: string): string {
 	const key = createHash("sha256").update(resolve(path)).digest("hex").slice(0, 16);
 	return join(resolve(storeDir), "pool", "set-aside", `${key}.json`);
 }
 
-async function directoryIdentity(path: string): Promise<string | undefined> {
+async function directoryIdentity(path: string): Promise<SetAsideDirectoryIdentity | undefined> {
 	try {
-		const found = await stat(path);
-		return `${found.dev}:${found.ino}:${Math.trunc(found.birthtimeMs)}`;
+		const found = await stat(path, { bigint: true });
+		return {
+			dev: String(found.dev),
+			ino: String(found.ino),
+			birthtimeNs: String(found.birthtimeNs),
+		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT" || code === "ENOTDIR") return undefined;
@@ -222,19 +259,24 @@ async function directoryIdentity(path: string): Promise<string | undefined> {
 }
 
 export async function setAsideWorktree(storeDir: string, path: string, note: SetAsideNote): Promise<void> {
-	const directory = await directoryIdentity(path).catch(() => undefined);
-	setAsideHere.set(resolve(path), directory);
+	const identity = await directoryIdentity(path).catch(() => undefined);
+	const directory = identity === undefined ? undefined : legacyDirectoryString(identity);
+	setAsideHere.set(resolve(path), identity);
 	const file = setAsideFile(storeDir, path);
 	await mkdir(dirname(file), { recursive: true });
 	const temporary = `${file}.${randomUUID()}.tmp`;
-	await writeFile(temporary, JSON.stringify({ path: resolve(path), directory, ...note }), { mode: 0o600 });
+	await writeFile(
+		temporary,
+		JSON.stringify({ path: resolve(path), directory, directoryIdentity: identity, ...note }),
+		{ mode: 0o600 },
+	);
 	await renameWithRetry(temporary, file);
 }
 
 async function readSetAsideNote(
 	storeDir: string,
 	path: string,
-): Promise<(Partial<SetAsideNote> & { directory?: unknown }) | "absent" | "unreadable"> {
+): Promise<(Partial<SetAsideNote> & { directory?: unknown; directoryIdentity?: unknown }) | "absent" | "unreadable"> {
 	let text: string;
 	try {
 		text = await readFile(setAsideFile(storeDir, path), "utf8");
@@ -250,21 +292,40 @@ async function readSetAsideNote(
 	}
 }
 
-async function sameDirectory(path: string, directory: unknown): Promise<boolean> {
-	if (typeof directory !== "string") return true;
+async function sameDirectoryIdentity(path: string, expected: SetAsideDirectoryIdentity | undefined): Promise<boolean> {
+	if (expected === undefined) return true;
 	try {
-		return (await directoryIdentity(path)) === directory;
+		const current = await directoryIdentity(path);
+		return current !== undefined && sameSetAsideDirectoryIdentity(current, expected);
+	} catch {
+		return true;
+	}
+}
+
+async function sameSetAsideNote(
+	path: string,
+	note: { readonly directory?: unknown; readonly directoryIdentity?: unknown },
+): Promise<boolean> {
+	if ("directoryIdentity" in note && note.directoryIdentity !== undefined) {
+		if (!isSetAsideDirectoryIdentity(note.directoryIdentity)) return true;
+		return sameDirectoryIdentity(path, note.directoryIdentity);
+	}
+	if (typeof note.directory !== "string" || !LEGACY_DIRECTORY_STRING.test(note.directory)) return true;
+	try {
+		const current = await directoryIdentity(path);
+		return current !== undefined && legacyDirectoryString(current) === note.directory;
 	} catch {
 		return true;
 	}
 }
 
 export async function worktreeSetAside(storeDir: string, path: string): Promise<boolean> {
-	if (setAsideHere.has(resolve(path)) && (await sameDirectory(path, setAsideHere.get(resolve(path))))) return true;
+	if (setAsideHere.has(resolve(path)) && (await sameDirectoryIdentity(path, setAsideHere.get(resolve(path)))))
+		return true;
 	const note = await readSetAsideNote(storeDir, path);
 	if (note === "absent") return false;
 	if (note === "unreadable") return true;
-	return sameDirectory(path, note.directory);
+	return sameSetAsideNote(path, note);
 }
 
 async function exists(path: string): Promise<boolean> {

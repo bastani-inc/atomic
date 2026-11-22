@@ -192,8 +192,8 @@ export async function prepareTakeoverMutex(lockPath: string, holder?: ProcessRec
 /** Which directory `path` is now, or undefined when none is there or it is being removed. */
 export function lockHolder(lockPath: string): string | undefined {
 	try {
-		const stats = statSync(lockPath);
-		return `${stats.ino}:${stats.birthtimeMs}`;
+		const stats = statSync(lockPath, { bigint: true });
+		return `${stats.dev}:${stats.ino}:${stats.birthtimeNs}`;
 	} catch {
 		// None is there, or, on Windows, it is being removed and refuses to be stat'ed: it is changing hands.
 		return undefined;
@@ -202,8 +202,8 @@ export function lockHolder(lockPath: string): string | undefined {
 
 export async function lockHolderAsync(lockPath: string): Promise<string | undefined> {
 	try {
-		const stats = await stat(lockPath);
-		return `${stats.ino}:${stats.birthtimeMs}`;
+		const stats = await stat(lockPath, { bigint: true });
+		return `${stats.dev}:${stats.ino}:${stats.birthtimeNs}`;
 	} catch {
 		return undefined;
 	}

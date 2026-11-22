@@ -111,8 +111,8 @@ async function readHolderRecordAsync(lockPath: string): Promise<LockHolderRecord
 
 function parseHolderRecord(content: string): LockHolderRecord | undefined {
 	const record = JSON.parse(content) as Partial<LockHolderRecord>;
-	// A host or lock that is not a string never matches this host or a lock directory, so only these are checked.
-	if (!Number.isSafeInteger(record.pid)) return undefined;
+	if (typeof record.host !== "string" || !Number.isSafeInteger(record.pid) || typeof record.lock !== "string")
+		return undefined;
 	if (record.started !== undefined && typeof record.started !== "string") return undefined;
 	return record as LockHolderRecord;
 }

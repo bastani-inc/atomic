@@ -12,6 +12,16 @@ function identityOf(stats: BigIntStats): string {
 	return process.platform === "win32" ? `${stats.dev}:${stats.ino}:${stats.birthtimeNs}` : `${stats.dev}:${stats.ino}`;
 }
 
+/** The socket at `path`, by its exact device and 64-bit inode; undefined when it is gone or unreadable. */
+export function socketPathIdentity(path: string): string | undefined {
+	try {
+		const stats = statSync(path, { bigint: true });
+		return `${stats.dev}:${stats.ino}`;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Holds the directory at `path`, or `undefined` when there is none. Outside Windows it is kept open for as long as the
  * process runs: while it is, its inode is not given to a directory created at the path after it was removed, so its
