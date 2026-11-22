@@ -1063,6 +1063,34 @@ test("scrubs emails and bearer tokens idempotently with count-only summaries", (
 	assert.deepEqual(scrub(result.text), { text: result.text, replacements: [] });
 });
 
+test("redacts an email from its first word boundary to the end of its domain, and one right after another", () => {
+	for (const [input, text, count] of [
+		["--first.last@example.com--", "--[REDACTED]--", 1],
+		["name+tag%x@sub.example.co.uk.", "[REDACTED].", 1],
+		["a@b.com.x@c.com", "[REDACTED][REDACTED]", 2],
+		["x@y.c no@tld u@@v.com @w.com", "x@y.c no@tld u@@v.com @w.com", 0],
+	] as const) {
+		const result = scrub(input);
+		assert.equal(result.text, text, input);
+		assert.deepEqual(result.replacements, count ? [{ category: "email", count }] : [], input);
+	}
+});
+
+/**
+ * Generous for a scan that reads the text a few times, which takes milliseconds here. One that reads on to the end of a
+ * run of local-part characters from each word boundary in it takes over 10 s here on an idle machine.
+ */
+const EMAIL_SCAN_TIMEOUT_MS = 2_000;
+
+test("finds an email after a long run of local-part characters in one pass", () => {
+	const run = "a-".repeat(64_000);
+	const started = performance.now();
+	const result = scrub(`${run} user@example.com`);
+	const elapsedMs = performance.now() - started;
+	assert.equal(result.text, `${run} [REDACTED]`);
+	assert.ok(elapsedMs < EMAIL_SCAN_TIMEOUT_MS, `the scan took ${Math.round(elapsedMs)} ms`);
+});
+
 test("scrub CLI accepts a file path and preserves safe Markdown and empty stdin", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "feedback-scrub-"));
 	try {

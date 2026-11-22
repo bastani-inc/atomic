@@ -6,6 +6,7 @@
 
 - On Windows with Python 3.13 or 3.14, the `liteparse` skill's `search.py` no longer fails when its output goes to a pipe, as it does when Atomic runs it, on finding two or more matches or a match with text outside the system's code page: it now writes its output and errors as UTF-8, as it already did on Python 3.15. On every system it no longer fails on a document over 64 KiB with a character split between two 64 KiB blocks, or when the document, or a 64 KiB part of it, has fewer lines than the matches asked for (`-k`, 10 by default). A match after the first 64 KiB now shows its line numbers in the whole document, instead of counting from the start of its block, and a line that crossed a block boundary is no longer split in two.
 - With Git 2.30 to 2.32, a named worktree (`worktree: { branch }`) is created instead of failing with `unknown option 'reason'`. With those versions, one whose creation was cut off, for example by a killed Atomic, is reported as busy after a 30-second wait rather than at once.
+- The feedback skill's privacy scrub no longer takes seconds, or minutes on a busy machine, on long text that alternates letters or digits with `.`, `-`, `%` or `+`, such as `a-a-a-...`: 64 KiB took 4 s. It finds the same emails as before, in one pass.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
