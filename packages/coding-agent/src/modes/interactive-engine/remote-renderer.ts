@@ -201,10 +201,12 @@ abstract class RemoteRenderer implements Component {
 			if (this.canReplay) this.releaseIfRetired?.();
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
-			for (const remembered of this.rememberedIdentities) recentFrames.delete(remembered);
-			this.rememberedIdentities.clear();
-			if (this.lastScope !== undefined) {
-				recentFrames.delete(JSON.stringify([this.lastScope, this.frameIdentity()]));
+			if (message.evictCache) {
+				for (const remembered of this.rememberedIdentities) recentFrames.delete(remembered);
+				this.rememberedIdentities.clear();
+				if (this.lastScope !== undefined) {
+					recentFrames.delete(JSON.stringify([this.lastScope, this.frameIdentity()]));
+				}
 			}
 			this.changed();
 		}

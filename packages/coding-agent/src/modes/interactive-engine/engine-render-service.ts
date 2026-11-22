@@ -215,7 +215,7 @@ export class EngineRenderService {
 				if (record?.kind !== "message" || record.runner !== currentRunner) continue;
 				if (record.resolvedRenderer === nextRenderer) continue;
 				this.disposeRecord(componentId);
-				this.send({ type: "engine_custom_invalidate", componentId });
+				this.send({ type: "engine_custom_invalidate", componentId, evictCache: true });
 			}
 		}
 
@@ -248,7 +248,7 @@ export class EngineRenderService {
 				}
 				if (sameToolSource(record.resolvedToolSource, nextSource)) continue;
 				this.disposeRecord(componentId);
-				this.send({ type: "engine_custom_invalidate", componentId });
+				this.send({ type: "engine_custom_invalidate", componentId, evictCache: true });
 			}
 		}
 	}
