@@ -98,6 +98,20 @@ async function screensOf(output: string, cols: number, rows: number): Promise<st
 	return screens;
 }
 
+/**
+ * The lines of the normal screen, scrollback included, once `output` has been replayed, with trailing blanks dropped:
+ * what the user sees above their shell's next prompt.
+ */
+async function normalScreenLines(output: string, cols: number, rows: number): Promise<string[]> {
+	const replay = new xterm.Terminal({ cols, rows, allowProposedApi: true, scrollback: 1000 });
+	await new Promise<void>((resolve) => replay.write(output, resolve));
+	const buffer = replay.buffer.normal;
+	const lines: string[] = [];
+	for (let row = 0; row < buffer.length; row++)
+		lines.push(buffer.getLine(row)?.translateToString(true).trimEnd() ?? "");
+	return lines.filter((line) => line !== "");
+}
+
 /** The prompt line of the screen, from the prompt marker on. */
 function promptLine(screen: string): string | undefined {
 	return screen
@@ -340,6 +354,55 @@ test(
 	REAL_CLI_TEST_TIMEOUT_MS,
 );
 
+// While the session's screen is up, Windows' pseudo console redraws it in its own output instead of passing the
+// switch to it through, so the screen under it cannot be read there; the line is read there once Atomic exits.
+for (const after of ["Atomic exits", "the session starts"] as const)
+	test.skipIf(process.platform === "win32" && after === "the session starts")(
+		`a line written to standard output while the prompt shows is printed where the user sees it, once, when ${after}`,
+		async () => {
+			const dir = makeTempDirectory("atomic-early-editor-stdout-");
+			roots.push(dir);
+			const preload = join(dir, "stdout-line.cjs");
+			// Once the prompt is on the screen, another module writes a line to standard output itself, not through the
+			// console. Only in the process that shows the early editor: an engine child writes nothing.
+			writeFileSync(
+				preload,
+				`if (!process.argv.some((arg) => arg.startsWith("--internal-engine"))) {
+	const write = process.stdout.write;
+	let written = false;
+	process.stdout.write = function (chunk, ...rest) {
+		const result = write.call(this, chunk, ...rest);
+		if (!written && String(chunk).includes("❯")) {
+			written = true;
+			setImmediate(() =>
+				process.stdout.write("A LINE ON STANDARD OUTPUT\\n", () => {
+					if (${JSON.stringify(after === "Atomic exits")}) process.exit(1);
+				}),
+			);
+		}
+		return result;
+	};
+}
+`,
+			);
+			const program = startCli(["--approve"], { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` });
+			if (after === "Atomic exits") {
+				const exit = (await program.exited) as PtyExit;
+				assert.equal(exit.timedOut, false);
+				assert.equal(exit.exitCode, 1);
+			} else {
+				await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
+			}
+			const output = program.output();
+			assert.ok(output.includes("❯"), "the early editor showed");
+			// As without the early editor: the screen the user returns to (under the session's own screen while it runs)
+			// shows the line, once, and no line of the prompt.
+			const lines = await normalScreenLines(output, 100, 30);
+			assert.deepEqual(lines, ["A LINE ON STANDARD OUTPUT"], `only the line is on the screen:\n${lines.join("\n")}`);
+		},
+		REAL_CLI_TEST_TIMEOUT_MS,
+	);
+
 for (const [quit, keys] of [
 	["Ctrl+C twice", "\x03\x03"],
 	["Ctrl+D", "\x04"],
@@ -388,14 +451,14 @@ for (const [quit, keys] of [
 	);
 
 test(
-	"console and stderr writers installed while the early editor shows are still in place once the session has taken over",
+	"console, stderr and stdout writers installed while the early editor shows are still in place once the session has taken over",
 	async () => {
 		const dir = makeTempDirectory("atomic-early-editor-writers-");
 		roots.push(dir);
 		const preload = join(dir, "late-writer.cjs");
 		const report = join(dir, "report.txt");
-		// Once the early editor has started drawing, wrap console.warn and stderr as a diagnostics tool would, and
-		// record whether both wrappers are still the ones in place.
+		// Once the early editor has started drawing, wrap console.warn, stderr and stdout as a diagnostics tool would,
+		// and record whether the wrappers are still the ones in place.
 		writeFileSync(
 			preload,
 			`const fs = require("node:fs");
@@ -406,11 +469,18 @@ process.stdout.write = function (chunk, ...rest) {
 	if (mine === undefined && String(chunk).includes("\\x1b[?1049h")) {
 		const warn = console.warn;
 		const stderrWrite = process.stderr.write;
-		mine = { warn: (...args) => warn.apply(console, args), stderrWrite: (...args) => stderrWrite.apply(process.stderr, args) };
+		const stdoutWrite = process.stdout.write;
+		mine = {
+			warn: (...args) => warn.apply(console, args),
+			stderrWrite: (...args) => stderrWrite.apply(process.stderr, args),
+			stdoutWrite: (...args) => stdoutWrite.apply(process.stdout, args),
+		};
 		console.warn = mine.warn;
 		process.stderr.write = mine.stderrWrite;
+		process.stdout.write = mine.stdoutWrite;
 		setInterval(() => {
-			const kept = console.warn === mine.warn && process.stderr.write === mine.stderrWrite;
+			const kept =
+				console.warn === mine.warn && process.stderr.write === mine.stderrWrite && process.stdout.write === mine.stdoutWrite;
 			if (!kept || !fs.existsSync(report)) fs.writeFileSync(report, kept ? "kept" : "replaced");
 		}, 50).unref();
 	}

@@ -1,8 +1,9 @@
 /**
  * Sessions of one process that capture the same checkout into the same blob table, as a session and its subagents do,
  * share the work: turns that end together from the same earlier snapshot share at most two captures, every session
- * records a snapshot taken after its own writes and from its own earlier snapshot, never another session's, and a turn
- * that ends while a capture runs gets the next one at once. Real Git checkout and SQLite session store.
+ * records a snapshot taken after its own writes and from its own earlier snapshot, never another session's, and the
+ * turns that end while a capture runs share the next one, which starts when it ends. Real Git checkout and SQLite
+ * session store.
  */
 import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
@@ -13,13 +14,15 @@ import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { exportSessions } from "../src/core/session-transfer.js";
-import { SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.js";
+import { QUEUED_CAPTURE_MIN_WAIT_MS, SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { resolveWorktreeSnapshotSettings } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 const captures = vi.hoisted(() => ({
+	/** Turns that reached their capture: by then each has joined, queued or started one. */
+	entered: 0,
 	calls: 0,
 	previous: [] as (string | undefined)[],
 	/** Captures of these checkouts wait until `until` settles. */
@@ -30,6 +33,10 @@ vi.mock("../src/core/worktree-snapshot/capture.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("../src/core/worktree-snapshot/capture.ts")>();
 	return {
 		...original,
+		recordWorktreeCapture: (...args: Parameters<typeof original.recordWorktreeCapture>) => {
+			captures.entered++;
+			return original.recordWorktreeCapture(...args);
+		},
 		captureLocatedCheckout: async (...args: Parameters<typeof original.captureLocatedCheckout>) => {
 			captures.calls++;
 			captures.previous.push((args[1]?.previous as WorktreeSnapshot | undefined)?.id);
@@ -45,6 +52,7 @@ let sandbox: GitSandbox;
 const cleanups: Array<() => Promise<void>> = [];
 beforeEach(() => {
 	sandbox = new GitSandbox();
+	captures.entered = 0;
 	captures.calls = 0;
 	captures.previous = [];
 	captures.held = undefined;
@@ -140,28 +148,141 @@ test("a session that recorded a snapshot of a checkout captures it from its own 
 	assert.equal(captures.previous.at(-1), parentSnapshot.id);
 });
 
-test("a turn that ends while a capture of its checkout runs from before its writes gets the next capture, started at once", async () => {
+test("turns that end while a capture of their checkout runs from before their writes share the next capture, which starts when it ends", async () => {
+	// Captures of one checkout that run side by side slow each other down, on Windows several times over: the turns that
+	// end while one runs wait for it and then share one capture.
+	const { clone, sessions } = await checkoutWithSessions(3);
+	const [first, second, third] = sessions;
+	const release = Promise.withResolvers<void>();
+	captures.held = { roots: new Set([clone]), until: release.promise };
+	sandbox.write(join(clone, "a.txt"), "first\n");
+	const running = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+	let next: Promise<unknown> | undefined;
+	try {
+		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		sandbox.write(join(clone, "c.txt"), "third\n");
+		next = Promise.all([
+			second!.recorder.recordTurn(wrote(join(clone, "b.txt"))),
+			third!.recorder.recordTurn(wrote(join(clone, "c.txt"))),
+		]);
+		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+		assert.equal(captures.calls, 1, "no capture starts beside the running one");
+	} finally {
+		release.resolve();
+		await Promise.all([running, next]);
+	}
+	assert.equal(captures.calls, 2, "the turns that ended meanwhile share one capture");
+	for (const [session, path, content] of [
+		[second, "b.txt", "second"],
+		[third, "c.txt", "third"],
+	] as const) {
+		const snapshot = session!.manager.getLatestWorktreeSnapshots().get(clone);
+		assert.ok(snapshot);
+		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:${path}`), content);
+	}
+	// A turn after those captures gets one of its own that holds its writes.
+	sandbox.write(join(clone, "d.txt"), "fourth\n");
+	await first!.recorder.recordTurn(wrote(join(clone, "d.txt")));
+	const later = first!.manager.getLatestWorktreeSnapshots().get(clone);
+	assert.ok(later);
+	assert.equal(await sandbox.git(clone, "cat-file", "-p", `${later.tree}:d.txt`), "fourth");
+});
+
+test("a turn that ends while the capture queued for earlier turns runs gets a capture after it, which holds its writes", async () => {
+	const { clone, sessions } = await checkoutWithSessions(3);
+	const [first, second, third] = sessions;
+	const releaseFirst = Promise.withResolvers<void>();
+	const releaseSecond = Promise.withResolvers<void>();
+	captures.held = { roots: new Set([clone]), until: releaseFirst.promise };
+	sandbox.write(join(clone, "a.txt"), "first\n");
+	const turns: Promise<void>[] = [first!.recorder.recordTurn(wrote(join(clone, "a.txt")))];
+	try {
+		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		turns.push(second!.recorder.recordTurn(wrote(join(clone, "b.txt"))));
+		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		// The capture queued for the second turn starts once the first ends, and runs until released.
+		captures.held = { roots: new Set([clone]), until: releaseSecond.promise };
+		releaseFirst.resolve();
+		await vi.waitFor(() => assert.equal(captures.calls, 2), { interval: 5 });
+		sandbox.write(join(clone, "c.txt"), "third\n");
+		turns.push(third!.recorder.recordTurn(wrote(join(clone, "c.txt"))));
+		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+	} finally {
+		releaseFirst.resolve();
+		releaseSecond.resolve();
+		await Promise.all(turns);
+	}
+	assert.equal(captures.calls, 3);
+	const snapshot = third!.manager.getLatestWorktreeSnapshots().get(clone);
+	assert.ok(snapshot);
+	assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:c.txt`), "third");
+});
+
+test("a turn that commits and ends while a capture runs records a snapshot of the commit it made", async () => {
+	const { clone, sessions } = await checkoutWithSessions(3);
+	const [first, second, third] = sessions;
+	const release = Promise.withResolvers<void>();
+	captures.held = { roots: new Set([clone]), until: release.promise };
+	sandbox.write(join(clone, "a.txt"), "first\n");
+	const turns: Promise<void>[] = [first!.recorder.recordTurn(wrote(join(clone, "a.txt")))];
+	let committed = "";
+	try {
+		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		// One turn ends and queues a capture, which it looked the checkout up for before the next turn's commit.
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		turns.push(second!.recorder.recordTurn(wrote(join(clone, "b.txt"))));
+		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		// The next commits its work, as `git commit` through bash does, and ends while the first capture still runs.
+		sandbox.write(join(clone, "c.txt"), "third\n");
+		committed = (await sandbox.commitAll(clone, "third's work")).trim();
+		turns.push(third!.recorder.recordTurn(wrote(join(clone, "c.txt"))));
+		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+	} finally {
+		release.resolve();
+		await Promise.all(turns);
+	}
+	for (const session of [second, third]) {
+		const snapshot = session!.manager.getLatestWorktreeSnapshots().get(clone);
+		assert.ok(snapshot);
+		assert.equal(snapshot.head, committed, "the snapshot names the commit, so a restore keeps it");
+	}
+});
+
+test("a capture that runs far longer than captures do no longer holds the turns queued behind it", async () => {
 	const { clone, sessions } = await checkoutWithSessions(2);
 	const [first, second] = sessions;
 	const release = Promise.withResolvers<void>();
 	captures.held = { roots: new Set([clone]), until: release.promise };
 	sandbox.write(join(clone, "a.txt"), "first\n");
-	const running = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
-	let next: Promise<void> | undefined;
+	const stuck = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+	let queued: Promise<void> | undefined;
 	try {
 		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
 		sandbox.write(join(clone, "b.txt"), "second\n");
-		next = second!.recorder.recordTurn(wrote(join(clone, "b.txt")));
-		await vi.waitFor(() => assert.equal(captures.calls, 2, "the next capture starts while the first still runs"), {
+		// Only the first turn's capture is held: the one that starts once the wait is over runs.
+		captures.held = { roots: new Set(), until: release.promise };
+		queued = second!.recorder.recordTurn(wrote(join(clone, "b.txt")));
+		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		assert.equal(captures.calls, 1, "the turn waits for the running capture");
+		// However short the captures before were, it waits that long at least. A capture starts as its timer fires.
+		vi.advanceTimersByTime(QUEUED_CAPTURE_MIN_WAIT_MS / 2);
+		assert.equal(captures.calls, 1, "it still waits halfway through the wait");
+		vi.advanceTimersByTime(QUEUED_CAPTURE_MIN_WAIT_MS);
+		await vi.waitFor(() => assert.equal(captures.calls, 2, "past the wait, the queued capture starts beside it"), {
 			interval: 5,
 		});
+		await queued;
+		const snapshot = second!.manager.getLatestWorktreeSnapshots().get(clone);
+		assert.ok(snapshot);
+		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:b.txt`), "second");
 	} finally {
+		vi.useRealTimers();
 		release.resolve();
-		await Promise.all([running, next]);
+		await Promise.all([stuck, queued]);
 	}
-	const snapshot = second!.manager.getLatestWorktreeSnapshots().get(clone);
-	assert.ok(snapshot);
-	assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:b.txt`), "second");
 });
 
 test("a fresh session's exported history holds none of another session's earlier snapshots of the checkout", async () => {

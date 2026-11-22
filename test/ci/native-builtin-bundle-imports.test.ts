@@ -131,7 +131,23 @@ test(
 			);
 
 			const hostSpecifiers = new Set(Object.keys(await getVirtualModules()));
+			// Native loading for installed builtins verifies canonical package roots for these exact host packages
+			// (`NATIVE_BUILTIN_HOST_PACKAGES` + `@bastani/atomic` + optional `@bastani/atomic-natives`).
+			const nativeVerifiedPackages = new Set([
+				"@bastani/atomic",
+				"@bastani/atomic-ai",
+				"@bastani/atomic-tui",
+				"@bastani/atomic-agent-core",
+				"@bastani/atomic-natives",
+				"proper-lockfile",
+			]);
+			const packageOf = (specifier: string): string =>
+				specifier
+					.split("/")
+					.slice(0, specifier.startsWith("@") ? 2 : 1)
+					.join("/");
 			const unexpected: string[] = [];
+			const unverifiedNative: string[] = [];
 			const builtinRoot = join(packageRoot, "dist/builtin");
 			assert.equal(existsSync(join(builtinRoot, "workflows")), false);
 			const emittedArtifacts = Object.entries(INSTALLED_EXTENSION_ENTRIES).map(([dirName, entry]) =>
@@ -143,9 +159,16 @@ test(
 				for (const specifier of collectImportSpecifiers(source)) {
 					if (!isPermittedSpecifier(specifier, hostSpecifiers)) {
 						unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
+					} else if (
+						isBareSpecifier(specifier) &&
+						!isBuiltin(specifier) &&
+						!nativeVerifiedPackages.has(packageOf(specifier))
+					) {
+						unverifiedNative.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
 					}
 				}
 			}
+			assert.deepEqual(unverifiedNative, []);
 
 			// Bun marks each inlined module with its path; every package one comes from has its licence shipped.
 			const unlicensed: string[] = [];

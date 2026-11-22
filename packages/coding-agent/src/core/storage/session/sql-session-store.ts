@@ -10,10 +10,10 @@ import type {
 } from "../database.js";
 import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
-import { applyStorageMigrationsTogether } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import { sequenceRunner, statementBatch } from "../statement-sequence.js";
+import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
+import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
 import { bindChatEpoch, type SessionChatRecords } from "./chat-records.js";
 import {
