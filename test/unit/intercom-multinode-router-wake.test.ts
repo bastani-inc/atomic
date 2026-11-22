@@ -4,6 +4,7 @@ import type net from "node:net";
 import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { UNAUTHORIZED_REPLY_REASON } from "../../packages/intercom/broker/delivery-failure-reason.js";
 import {
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
@@ -210,7 +211,10 @@ async function startNode(
 		/** #5607: sessions registered on this broker before its routing across nodes turned on. */
 		readonly registeredBefore?: readonly BrokerConnectedSession[];
 		/** #5607: the broker's host and process, as its membership records them. */
-		readonly process?: Pick<MultiNodeRouterOptions, "hostIdentity" | "instanceKey" | "pid" | "isProcessAlive">;
+		readonly process?: Pick<
+			MultiNodeRouterOptions,
+			"hostIdentity" | "instanceKey" | "pid" | "isProcessAlive" | "home"
+		>;
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
@@ -2574,6 +2578,28 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		await flush();
 	}
 
+	/**
+	 * `target` registered as the broker registers a named session without a supervisor: its name is offered as a
+	 * reservation it may consume (`broker.ts`).
+	 */
+	function registeredAsNamed(
+		node: Node,
+		target: BrokerConnectedSession,
+		grant?: SessionIdGrant,
+		awaits?: string,
+		recovery?: string,
+	): Promise<void> {
+		node.sessions.set(target.info.id, target);
+		return node.router.sessionRegistered(
+			target,
+			{ childName: target.info.name!, groups: new Set([CREW]) },
+			undefined,
+			grant,
+			awaits,
+			recovery,
+		);
+	}
+
 	/** A send from `from` to the session `to` registered on the same broker; `local` counts its local-path answers. */
 	function localSend(from: BrokerConnectedSession, to: BrokerConnectedSession) {
 		const send = remoteSend(from, to.info.id, false);
@@ -2614,10 +2640,14 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 	 * `live` registered on `stopped`, whose broker then stops (nothing it owns is renewed any more), and the same session,
 	 * registered again on `here` under a fresh id while it awaits the one it asked for.
 	 */
-	async function awaitingWhileStopped() {
+	/** `homes`: each broker keeps its durable state under a home of its own, as installed brokers do (#4997). */
+	async function awaitingWhileStopped(homes = false) {
 		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
 		const shared = await cluster();
-		const [stopped, here] = [await startNode(shared), await startNode(shared)];
+		const [stopped, here] = [
+			await startNode(shared, homes ? { process: { home: "stopped-home" } } : {}),
+			await startNode(shared, homes ? { process: { home: "here-home" } } : {}),
+		];
 		const live = session("live");
 		await registeredOn(stopped, live);
 		const halted = new Error("the broker stopped");
@@ -3034,6 +3064,335 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		);
 		assert.ok(claim.status === "granted", JSON.stringify(claim));
 		assert.equal(claim.grant.alias, fresh.info.id);
+	});
+
+	test("a registration that cannot take back the fresh id a lapsed hand-over kept is refused for good when it answers an ask to that id, while a broker is down; the one that presented the hand-over is told to retry (#5607)", async () => {
+		// Brokers have homes of their own, so the stopped broker counts as one that may keep routes and is down.
+		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
+		const third = await startNode(shared, { process: { home: "third-home" } });
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const ask = randomUUID();
+		await third.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		// The session does not come back within the hold: the hand-over lapses, keeping the fresh id for whoever presents it.
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		// A registration of the session that never had the hand-over takes the id, as any may once the hold lapsed.
+		const other = twinOf(registeringAs(fresh, live.info.id), "other");
+		const otherClaim = here.router.claimSessionId(
+			live.info.id,
+			other.registrationReturnAddress!,
+			deliveryTargetIdentity(other),
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const otherGrant = await otherClaim;
+		assert.ok(otherGrant.status === "granted" && otherGrant.grant.alias === undefined, JSON.stringify(otherGrant));
+		const otherRegistered = registeredAsNamed(here, other, otherGrant.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await otherRegistered;
+		const reply = (from: BrokerConnectedSession) => {
+			const send = remoteSend(from, asker.info.id, false);
+			const message = { ...send.request.message, replyTo: ask };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage: { ...send.request.clientMessage, message },
+				requirePendingReply: true,
+				expectedRecipientId: asker.info.id,
+			});
+			return send.id;
+		};
+		const outcome = async (from: BrokerConnectedSession, id: string) =>
+			vi.waitFor(async () => {
+				await vi.advanceTimersByTimeAsync(100);
+				const found = framesOf(from).find((frame) => frame.type === "delivery_failed" && frame.messageId === id);
+				assert.ok(found?.type === "delivery_failed", "no outcome yet");
+				return found;
+			});
+
+		// Only the hand-over gives the fresh id back, and this registration never had it: its answer can never go out, so it
+		// is refused for good rather than as retryable while the stopped broker is down.
+		const refused = await outcome(other, reply(other));
+		assert.equal(refused.routeUnavailable, undefined, JSON.stringify(refused));
+		assert.equal(refused.reason, UNAUTHORIZED_REPLY_REASON);
+		// Only an ask whose route is to the fresh id is answered so: a reply to an ask this broker cannot place is still told
+		// to retry while the stopped broker may keep its route.
+		const unplaced = remoteSend(other, asker.info.id, false);
+		const unplacedMessage = { ...unplaced.request.message, replyTo: randomUUID() };
+		here.router.routeSend({
+			...unplaced.request,
+			message: unplacedMessage,
+			clientMessage: { ...unplaced.request.clientMessage, message: unplacedMessage },
+			requirePendingReply: true,
+			expectedRecipientId: asker.info.id,
+		});
+		const unplacedRefusal = await outcome(other, unplaced.id);
+		assert.equal(unplacedRefusal.routeUnavailable, true, JSON.stringify(unplacedRefusal));
+
+		// The registration that presents the hand-over awaits the id with it, and takes the fresh id back once it has the id:
+		// its answer meanwhile is still refused as retryable.
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const held = await claimed;
+		assert.ok(held.status === "held" && held.recovery !== undefined, JSON.stringify(held));
+		const again: BrokerConnectedSession = {
+			...fresh,
+			socket: fakeSocket(),
+			info: { ...fresh.info, id: randomUUID() },
+		};
+		here.sessions.set(again.info.id, again);
+		const registered = registeredAsNamed(here, again, undefined, live.info.id, held.recovery);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		const retry = await outcome(again, reply(again));
+		assert.equal(retry.routeUnavailable, true, JSON.stringify(retry));
+	});
+
+	test("a registration that presented a lapsed hand-over and whose own binding write is still on its way is told to retry its answer to an ask to the fresh id, which goes out once the write answers (#5607)", async () => {
+		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
+		const third = await startNode(shared, { process: { home: "third-home" } });
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const ask = randomUUID();
+		await third.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		// The claim's write answers; the registration's own binding write of the id is slow (answers after the 5 s bound).
+		const knownSessions = here.state.knownSessions;
+		const realBind = knownSessions.bind.bind(knownSessions);
+		let idWrites = 0;
+		let release: (() => void) | undefined;
+		vi.spyOn(knownSessions, "bind").mockImplementation((...args: Parameters<typeof realBind>) => {
+			if (args[0] === live.info.id && ++idWrites === 2)
+				return new Promise((resolve, reject) => {
+					release = () => realBind(...args).then(resolve, reject);
+				});
+			return realBind(...args);
+		});
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "granted" && claim.grant.alias === fresh.info.id, JSON.stringify(claim));
+		const back = registeringAs(fresh, live.info.id);
+		const registered = registeredAsNamed(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		assert.ok(release !== undefined, "the registration's binding write is on its way");
+
+		const reply = () => {
+			const send = remoteSend(back, asker.info.id, false);
+			const message = { ...send.request.message, replyTo: ask };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage: { ...send.request.clientMessage, message },
+				requirePendingReply: true,
+				expectedRecipientId: asker.info.id,
+			});
+			return send.id;
+		};
+		const outcome = async (id: string) =>
+			vi.waitFor(async () => {
+				await vi.advanceTimersByTimeAsync(100);
+				const found = framesOf(back).find(
+					(frame) => (frame.type === "delivery_failed" || frame.type === "delivered") && frame.messageId === id,
+				);
+				assert.ok(found !== undefined, "no outcome yet");
+				return found;
+			});
+		const first = await outcome(reply());
+		assert.ok(first.type === "delivery_failed" && first.routeUnavailable === true, JSON.stringify(first));
+		// The binding write answers: the registration takes the fresh id back, and a retry of the answer goes out.
+		release!();
+		await vi.advanceTimersByTimeAsync(1_000);
+		const retried = reply();
+		const answers = () =>
+			framesOf(asker).flatMap((frame) =>
+				frame.type === "message" ? [[frame.from.id, frame.message.id, frame.message.replyTo]] : [],
+			);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.ok(
+				answers().some((answer) => answer[1] === retried),
+				JSON.stringify(framesOf(back)),
+			);
+		});
+	});
+	test("a released subagent registering again without the hand-over, whose parked asks to the fresh id are rebound to it once its rebind write answers, is told to retry its answer meanwhile (#5607, #4386)", async () => {
+		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
+		const third = await startNode(shared, { process: { home: "third-home" } });
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const ask = randomUUID();
+		await third.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		const parent = randomUUID();
+		const childName = "child";
+		const parked = await third.state.pendingAsks.parkForTarget(fresh.info.id, {
+			ownerSessionId: parent,
+			reservationKey: releasedReservationKey(childName),
+		});
+		assert.ok(parked.status === "parked" && parked.parked === 1, JSON.stringify(parked));
+		await untilMovedBack(here, fresh);
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		const other = twinOf(registeringAs(fresh, live.info.id), "other");
+		const otherClaim = here.router.claimSessionId(
+			live.info.id,
+			other.registrationReturnAddress!,
+			deliveryTargetIdentity(other),
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const otherGrant = await otherClaim;
+		assert.ok(otherGrant.status === "granted" && otherGrant.grant.alias === undefined, JSON.stringify(otherGrant));
+		const pendingAsks = here.state.pendingAsks;
+		const realRebind = pendingAsks.rebindParked.bind(pendingAsks);
+		let rebindFails = true;
+		vi.spyOn(pendingAsks, "rebindParked").mockImplementation((...args: Parameters<typeof realRebind>) => {
+			if (rebindFails) {
+				rebindFails = false;
+				return Promise.reject(new Error("the database failed"));
+			}
+			return realRebind(...args);
+		});
+		here.sessions.set(other.info.id, other);
+		const registered = here.router.sessionRegistered(
+			other,
+			{ childName, authorizedBy: parent, groups: new Set([CREW]) },
+			undefined,
+			otherGrant.grant,
+		);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		assert.equal(rebindFails, false, "the rebind write failed once");
+
+		const reply = () => {
+			const send = remoteSend(other, asker.info.id, false);
+			const message = { ...send.request.message, replyTo: ask };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage: { ...send.request.clientMessage, message },
+				requirePendingReply: true,
+				expectedRecipientId: asker.info.id,
+			});
+			return send.id;
+		};
+		const firstId = reply();
+		const first = await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			const found = framesOf(other).find(
+				(frame) => (frame.type === "delivery_failed" || frame.type === "delivered") && frame.messageId === firstId,
+			);
+			assert.ok(found !== undefined, "no outcome yet");
+			return found;
+		});
+		assert.ok(first.type === "delivery_failed" && first.routeUnavailable === true, JSON.stringify(first));
+		// A renewal runs the rebind again: the parked ask now names this registration's id.
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS + 1_000);
+		const rebound = await here.state.pendingAsks.matchesReply({
+			replySenderSessionId: other.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask,
+		});
+		assert.equal(rebound.status, "match", "the parked ask names this registration");
+		const retried = reply();
+		const answers = () =>
+			framesOf(asker).flatMap((frame) =>
+				frame.type === "message" ? [[frame.from.id, frame.message.id, frame.message.replyTo]] : [],
+			);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.ok(
+				answers().some((answer) => answer[1] === retried),
+				JSON.stringify(framesOf(other)),
+			);
+		});
+	});
+
+	test("a registration that presented a lapsed hand-over but could not take the fresh id back yet is told to retry its answer to an ask to that id, while a broker is down (#5607)", async () => {
+		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
+		const third = await startNode(shared, { process: { home: "third-home" } });
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const ask = randomUUID();
+		await third.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		// It presents the hand-over late: it gets its id and the fresh id back, but the write taking the fresh id fails, so
+		// the fresh id stays pending until a later renewal takes it.
+		const knownSessions = here.state.knownSessions;
+		const realBind = knownSessions.bind.bind(knownSessions);
+		let aliasWriteFails = true;
+		vi.spyOn(knownSessions, "bind").mockImplementation((...args: Parameters<typeof realBind>) => {
+			if (aliasWriteFails && args[0] === fresh.info.id) {
+				aliasWriteFails = false;
+				return Promise.reject(new Error("the database failed"));
+			}
+			return realBind(...args);
+		});
+		const claimed = here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await claimed;
+		assert.ok(claim.status === "granted" && claim.grant.alias === fresh.info.id, JSON.stringify(claim));
+		const back = registeringAs(fresh, live.info.id);
+		const registered = registeredAsNamed(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		assert.equal(aliasWriteFails, false, "the write taking the fresh id failed");
+
+		const send = remoteSend(back, asker.info.id, false);
+		const message = { ...send.request.message, replyTo: ask };
+		here.router.routeSend({
+			...send.request,
+			message,
+			clientMessage: { ...send.request.clientMessage, message },
+			requirePendingReply: true,
+			expectedRecipientId: asker.info.id,
+		});
+		const outcome = await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			const found = framesOf(back).find((frame) => frame.type === "delivery_failed" && frame.messageId === send.id);
+			assert.ok(found?.type === "delivery_failed", "no outcome yet");
+			return found;
+		});
+		assert.equal(outcome.routeUnavailable, true, JSON.stringify(outcome));
 	});
 
 	test("a hand-over presented after its hold lapsed whose claim goes unanswered and is not kept leaves the session awaiting its id, and the move back keeps the fresh id (#5607)", async () => {
