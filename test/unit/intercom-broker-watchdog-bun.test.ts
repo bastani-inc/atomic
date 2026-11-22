@@ -32,13 +32,31 @@ const { getBrokerPidPath, getBrokerWatchdogLogPath, getIntercomDirPath } = await
 	"../../packages/intercom/broker/paths.js"
 );
 const { BROKER_READY_TIMEOUT_MS, spawnBrokerIfNeeded } = await import("../../packages/intercom/broker/spawn.js");
+const { BROKER_WATCHDOG_INTERVAL_MS, BROKER_WATCHDOG_PROBE_TIMEOUT_MS, BROKER_WATCHDOG_SILENCE_MS } = await import(
+	"../../packages/intercom/broker/watchdog.js"
+);
 const clients: InstanceType<typeof IntercomClient>[] = [];
 /** #6125: brokers this suite started, recorded while they run; the cleanup signals only those processes. */
 const ownedBrokers = new Map<number, RecordedProcess>();
-const REAL_STALLED_BROKER_TIMEOUT_MS = 100_000;
-const WATCHDOG_EXIT_BUDGET_MS = 80_000;
 const STARTUP_BUDGET_MS = 10_000;
 const SLOW_PROBE_DELAY_MS = 12_000;
+/** Longer than the watchdog's probe interval: a probe the broker answers comes within it. */
+const HEALTHY_PROBE_WAIT_MS = BROKER_WATCHDOG_INTERVAL_MS + 500;
+/** One probe the watchdog sends a broker that never answers: its interval, then the probe's timeout. */
+const UNANSWERED_PROBE_MS = BROKER_WATCHDOG_INTERVAL_MS + BROKER_WATCHDOG_PROBE_TIMEOUT_MS;
+/**
+ * How long the watchdog may take to end a broker whose main thread blocked. It ends it at the first unanswered probe
+ * that finds it silent for its silence period: the probe that ends that period, or the next one when timers that fire
+ * a millisecond early leave the silence just short. A loaded machine runs the watchdog's timers late: two more probes'
+ * time covers that.
+ */
+const WATCHDOG_EXIT_BUDGET_MS = BROKER_WATCHDOG_SILENCE_MS + 3 * UNANSWERED_PROBE_MS;
+/**
+ * Every wait before the replacement starts, at its deadline: the broker's start, the slow probe it survives and the
+ * waits for its healthy probes, the stall, the watchdog's exit, and the disconnect that follows.
+ */
+const REAL_STALLED_BROKER_TIMEOUT_MS =
+	4 * STARTUP_BUDGET_MS + SLOW_PROBE_DELAY_MS + 2 * HEALTHY_PROBE_WAIT_MS + WATCHDOG_EXIT_BUDGET_MS;
 /**
  * How long the replacement broker gets to start listening: `spawnBrokerIfNeeded`'s own default, sized from how long the
  * broker takes to load jiti and its module graph on a busy host with a cold cache (see `startup-timeout.ts`). This only
@@ -166,24 +184,29 @@ setInterval(() => {
 		);
 		const before = await connect("before-stall");
 		assert.equal((await before.listSessions()).length, 1);
-		await sleep(2_500);
+		await sleep(HEALTHY_PROBE_WAIT_MS);
 		writeTextSync(gate, String(SLOW_PROBE_DELAY_MS));
 		await waitUntil(() => fileExistsSync(recovered), SLOW_PROBE_DELAY_MS + STARTUP_BUDGET_MS);
-		await sleep(2_500);
+		await sleep(HEALTHY_PROBE_WAIT_MS);
 		removePathSync(blocked, { force: true });
 		assert.equal((await before.listSessions()).length, 1);
 		writeTextSync(gate, "stall");
 		await waitUntil(() => fileExistsSync(blocked), STARTUP_BUDGET_MS);
-		let exited = false;
+		const blockedAt = performance.now();
+		let exitedAt: number | undefined;
 		void child.exited.then(() => {
-			exited = true;
+			exitedAt = performance.now();
 		});
-		await waitUntil(() => exited, WATCHDOG_EXIT_BUDGET_MS);
+		await waitUntil(() => exitedAt !== undefined, WATCHDOG_EXIT_BUDGET_MS);
 		await waitUntil(() => !before.isConnected(), STARTUP_BUDGET_MS);
 		assert.notEqual(await child.exited, 0);
 		const diagnostic = readTextSync(getBrokerWatchdogLogPath(), "utf8");
 		assert.match(diagnostic, /stopped answering health requests/u);
-		assert.equal((JSON.parse(diagnostic) as { pid: number }).pid, child.pid);
+		const record = JSON.parse(diagnostic) as { pid: number; consecutiveFailures: number; silentForMs: number };
+		assert.equal(record.pid, child.pid);
+		console.info(
+			`The watchdog ended the ${runtime.name} broker ${Math.round((exitedAt ?? blockedAt) - blockedAt)} ms after its main thread blocked, after ${record.consecutiveFailures} unanswered probes and ${record.silentForMs} ms of silence.`,
+		);
 		assert.ok(Buffer.byteLength(diagnostic) < 1024);
 		ownedBrokers.delete(child.pid);
 		removePathSync(gate, { force: true });

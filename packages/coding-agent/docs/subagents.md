@@ -295,7 +295,7 @@ See [Background tasks](/background-tasks), [Viewing a subagent](/background-task
 ### Fresh vs. forked context
 
 - `context: "fresh"` starts an isolated in-process child session containing only the agent's prompt and task. Use `fresh` (the default unless an agent sets `defaultContext: fork`) for adversarial reviews and independent research.
-- `context: "fork"` branches from the parent's settled entry and fails fast if the parent cannot be forked (it never downgrades to fresh). It inherits model, thinking level, tool changes, `pi.appendEntry` data since the last clear, and referenced saved tool outputs without taking ownership of the parent's subagents or replaying parent Intercom cards.
+- `context: "fork"` branches from the parent's settled entry and fails fast if the parent cannot be forked (it never downgrades to fresh). It inherits model, thinking level, tool changes, `atomic.appendEntry` data since the last clear, and referenced saved tool outputs without taking ownership of the parent's subagents or replaying parent Intercom cards.
 
 Use `fork` when the child needs the parent's conversation. A forked child sends the exact conversation the parent last sent (system prompt, project context, skills, tools, and messages), followed by its own role, a short note, and its task. On the parent's model and thinking level, the first request reads from the parent's prompt cache and pays only for the new suffix; on another model or provider it reads nothing from that cache, and on another thinking level it may read only part of it.
 
@@ -310,7 +310,7 @@ Pass `worktree: true` to isolate parallel edits in temporary Git worktrees:
 - Worktrees and branches are cleaned up once every child in the batch finishes, after saving each child's changes as a patch under `worktree-diffs/<run-id>`.
 - Paused, quit, or session-closed children keep their worktree only if it has uncommitted or untracked changes or new commits. Clean worktrees are removed; `resume` recreates them from base plus the saved patch and writes later patches as `task-<n>-<agent>.<execution>.patch`. Permanently cancelled children release their worktrees, and unresumed stopped worktrees with changes remain under `.atomic/worktrees/`.
 - `pause`, `quit`, completion, and failed resume wait for Git cleanup. Pressing `Esc` stops waiting without cancelling cleanup; cleanup taking over 10 seconds warns and continues in the background. Never delete a worktree while `worktreeNote` reports pending cleanup or a sibling hold, or after a crash without checking for orphaned Git processes.
-- **Integration hook.** Subscribe to `pi.events.on("subagent:finishing", ({ runId, index, taskId, cwd, status }) => ...)` before launch, or check `ATOMIC_SUBAGENT_WORKTREE_PHASE=finishing` in Git filters, so external helpers do not block cleanup while waiting for the terminal report.
+- **Integration hook.** Subscribe to `atomic.events.on("subagent:finishing", ({ runId, index, taskId, cwd, status }) => ...)` before launch, or check `ATOMIC_SUBAGENT_WORKTREE_PHASE=finishing` in Git filters, so external helpers do not block cleanup while waiting for the terminal report.
 
 ### Named worktrees
 

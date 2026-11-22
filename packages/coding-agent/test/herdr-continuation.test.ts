@@ -32,8 +32,8 @@ test("repeated output-cap continuations stay working across quiet waits and sett
 		],
 		extensionFactories: [
 			createHerdrExtension({ env: fake.env, enabled: () => true }),
-			(pi) => {
-				pi.on("agent_start", async () => {
+			(atomic) => {
+				atomic.on("agent_start", async () => {
 					await fake.waitFor(++completedReports);
 				});
 			},

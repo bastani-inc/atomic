@@ -169,8 +169,8 @@ test("a failed SDK startup releases resources owned by the session's dispose ove
 		resourceLoaderOptions: {
 			builtinPackagePaths: [],
 			extensionFactories: [
-				(pi) =>
-					pi.on("session_start", () => {
+				(atomic) =>
+					atomic.on("session_start", () => {
 						throw new Error("failed to start");
 					}),
 			],
@@ -211,13 +211,13 @@ test.each(["bindExtensions", "run"] as const)(
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_start", async (_event, ctx) => {
+					(atomic) => {
+						atomic.on("session_start", async (_event, ctx) => {
 							signal = ctx.sessionSignal;
 							entered.resolve();
 							await once(signal, "abort");
 						});
-						pi.on("resources_discover", () => ({}));
+						atomic.on("resources_discover", () => ({}));
 					},
 				],
 			},
@@ -272,12 +272,12 @@ test.each(["bindExtensions", "run", "quitting run"] as const)(
 	async (entry) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode } = await createMode((pi) => {
-			pi.on("session_start", async () => {
+		const { mode } = await createMode((atomic) => {
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			});
-			pi.on("resources_discover", () => ({}));
+			atomic.on("resources_discover", () => ({}));
 		});
 		const runner = mode.session.extensionRunner;
 		const discover = runner.emitResourcesDiscover.bind(runner);
@@ -311,7 +311,7 @@ test.each(["bindExtensions", "run", "quitting run"] as const)(
 test(
 	"startup propagates a separate reload's error when a discovery decorator refreshes the catalog (#5697)",
 	async () => {
-		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
+		const { mode } = await createMode((atomic) => atomic.on("resources_discover", () => ({})));
 		const session = mode.session;
 		const runner = session.extensionRunner;
 		const discover = runner.emitResourcesDiscover.bind(runner);
@@ -360,8 +360,8 @@ test.each(["before run", "during session_start", "before a later runtime quit"] 
 			cleanup: disposeHarness,
 		} = await createHarness({
 			extensionFactories: [
-				(pi) =>
-					pi.on("session_start", async () => {
+				(atomic) =>
+					atomic.on("session_start", async () => {
 						entered.resolve();
 						await release.promise;
 					}),
@@ -431,8 +431,8 @@ test.each(["after", "before"] as const)(
 	async (timing) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode, faux } = await createMode((pi) =>
-			pi.on("session_start", async () => {
+		const { mode, faux } = await createMode((atomic) =>
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			}),
@@ -505,9 +505,9 @@ test(
 			}
 		}
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", () => ({ skillPaths: ["./catalog"] }));
-				pi.on("session_shutdown", revoke);
+			(atomic) => {
+				atomic.on("resources_discover", () => ({ skillPaths: ["./catalog"] }));
+				atomic.on("session_shutdown", revoke);
 			},
 			{ loaderClass: CatalogLoader },
 		);
@@ -542,8 +542,8 @@ test(
 			}
 		}
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", () => ({ skillPaths: ["./catalog"] }));
+			(atomic) => {
+				atomic.on("resources_discover", () => ({ skillPaths: ["./catalog"] }));
 			},
 			{ loaderClass: CatalogLoader },
 		);
@@ -559,12 +559,12 @@ test.each([false, true])(
 	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode } = await createMode((pi) => {
-			pi.on("session_start", async () => {
+		const { mode } = await createMode((atomic) => {
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			});
-			if (discoversResources) pi.on("resources_discover", () => ({}));
+			if (discoversResources) atomic.on("resources_discover", () => ({}));
 		});
 		const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
 			throw new Error(`process.exit(${code})`);
@@ -619,7 +619,7 @@ test.each(["mirror", "catalog"] as const)(
 		const { mode: remote } = await createMode(() => {});
 		const closedSession = remote.session;
 		await remote.runtimeHost.dispose();
-		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
+		const { mode } = await createMode((atomic) => atomic.on("resources_discover", () => ({})));
 		const failure = Promise.withResolvers<unknown>();
 		const reported: unknown[] = [];
 		const record = (error: unknown) => reported.push(error);
@@ -679,16 +679,16 @@ test.skipIf(Boolean(process.versions.bun))(
 	async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode } = await createMode((pi) =>
-			pi.on("session_start", async () => {
+		const { mode } = await createMode((atomic) =>
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			}),
 		);
 		const reloadEntered = Promise.withResolvers<void>();
 		const releaseReload = Promise.withResolvers<void>();
-		const { mode: catalog } = await createMode((pi) =>
-			pi.on("resources_discover", async ({ reason }) => {
+		const { mode: catalog } = await createMode((atomic) =>
+			atomic.on("resources_discover", async ({ reason }) => {
 				if (reason === "reload") {
 					reloadEntered.resolve();
 					await releaseReload.promise;
@@ -743,12 +743,12 @@ test(
 	async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode } = await createMode((pi) => {
-			pi.on("session_start", async () => {
+		const { mode } = await createMode((atomic) => {
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			});
-			pi.on("resources_discover", () => ({}));
+			atomic.on("resources_discover", () => ({}));
 		});
 		const session = mode.session;
 		const discover = session.extensionRunner.emitResourcesDiscover.bind(session.extensionRunner);
@@ -795,8 +795,8 @@ test(
 	async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode } = await createMode((pi) =>
-			pi.on("session_start", async () => {
+		const { mode } = await createMode((atomic) =>
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			}),
@@ -830,7 +830,7 @@ test(
 test(
 	"an SDK host awaiting event startup can read the original catalog response (#5697)",
 	async () => {
-		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
+		const { mode } = await createMode((atomic) => atomic.on("resources_discover", () => ({})));
 		const response = new Response("Service unavailable", { status: 503 });
 		const failure = new (class extends Error {
 			get code() {
@@ -895,12 +895,12 @@ test.each([false, true])(
 	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode } = await createMode((pi) => {
-			pi.on("session_start", async () => {
+		const { mode } = await createMode((atomic) => {
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			});
-			if (discoversResources) pi.on("resources_discover", () => ({}));
+			if (discoversResources) atomic.on("resources_discover", () => ({}));
 		});
 		const handle = vi.spyOn(mode, "handleEvent");
 		const unhandled: unknown[] = [];
@@ -929,8 +929,8 @@ test(
 	async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const { mode, faux } = await createMode((pi) =>
-			pi.on("session_start", async () => {
+		const { mode, faux } = await createMode((atomic) =>
+			atomic.on("session_start", async () => {
 				entered.resolve();
 				await release.promise;
 			}),
@@ -974,8 +974,8 @@ test(
 test(
 	"the in-process interactive host keeps its session when an extension throws in session_start and shows the error once (#5501)",
 	async () => {
-		const { mode, faux } = await createMode((pi) => {
-			pi.on("session_start", () => {
+		const { mode, faux } = await createMode((atomic) => {
+			atomic.on("session_start", () => {
 				throw new Error("boom in session_start");
 			});
 		});
@@ -999,8 +999,8 @@ test(
 	"an extension error reported during deferred interactive startup stays on screen after the transcript is rebuilt (#5501)",
 	async () => {
 		let starts = 0;
-		const { mode } = await createMode((pi) => {
-			pi.on("session_start", () => {
+		const { mode } = await createMode((atomic) => {
+			atomic.on("session_start", () => {
 				// Only the first start throws, so the startup reload that follows reports nothing more.
 				if (starts++ === 0) throw new Error("boom in session_start");
 			});
@@ -1043,8 +1043,8 @@ test.each([
 	async ({ extensionsOverride }) => {
 		const reasons: string[] = [];
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", ({ reason }) => {
+			(atomic) => {
+				atomic.on("resources_discover", ({ reason }) => {
 					reasons.push(reason);
 					throw new Error("directory unavailable");
 				});
@@ -1068,8 +1068,8 @@ test(
 	async () => {
 		let discoveries = 0;
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", () => {
+			(atomic) => {
+				atomic.on("resources_discover", () => {
 					discoveries++;
 					throw new Error("discovery failure");
 				});
@@ -1122,8 +1122,8 @@ test(
 			throw new Error("directory unavailable");
 		}
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", calls.length === 0 ? firstDirectory : secondDirectory);
+			(atomic) => {
+				atomic.on("resources_discover", calls.length === 0 ? firstDirectory : secondDirectory);
 			},
 			{
 				extensionsOverride: rebuildDiscovery(
@@ -1147,8 +1147,8 @@ test.each(["its own", "the first"] as const)(
 	"startup reports both installations when each forwards to %s handler (#5501)",
 	async (delegate) => {
 		let calls = 0;
-		const factory: ExtensionFactory = (pi) => {
-			pi.on("resources_discover", () => {
+		const factory: ExtensionFactory = (atomic) => {
+			atomic.on("resources_discover", () => {
 				calls++;
 				throw new Error("directory unavailable");
 			});
@@ -1194,8 +1194,8 @@ test(
 	"startup reports both failures when rebuilt discovery callbacks replace the handler's error (#5501)",
 	async () => {
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", () => {
+			(atomic) => {
+				atomic.on("resources_discover", () => {
 					throw new Error("directory unavailable");
 				});
 			},
@@ -1224,8 +1224,8 @@ test.each(["then", "skillPaths"])(
 	async (property) => {
 		let getterCalls = 0;
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", () => ({ skillPaths: [] }));
+			(atomic) => {
+				atomic.on("resources_discover", () => ({ skillPaths: [] }));
 			},
 			{
 				extensionsOverride: rebuildDiscovery(
@@ -1257,14 +1257,14 @@ test(
 	async () => {
 		let discoveries = 0;
 		const { mode } = await createMode(
-			(pi) => {
+			(atomic) => {
 				// Removing a preceding handler changes the others' list positions, not their identities.
-				const unsubscribe = pi.on("resources_discover", () => unsubscribe());
-				pi.on("resources_discover", function firstDirectory() {
+				const unsubscribe = atomic.on("resources_discover", () => unsubscribe());
+				atomic.on("resources_discover", function firstDirectory() {
 					discoveries++;
 					throw new Error("unavailable directory");
 				});
-				pi.on("resources_discover", function secondDirectory() {
+				atomic.on("resources_discover", function secondDirectory() {
 					if (discoveries === 2) throw new Error("unavailable directory");
 				});
 			},
@@ -1287,8 +1287,8 @@ test(
 		let overrides = 0;
 		let discoveries = 0;
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("resources_discover", function factoryDirectory() {
+			(atomic) => {
+				atomic.on("resources_discover", function factoryDirectory() {
 					discoveries++;
 					throw new Error("unavailable directory");
 				});
@@ -1325,8 +1325,8 @@ test(
 			if (++rawCalls > 2) throw new Error("startup error");
 		}
 		const { mode } = await createMode(
-			(pi) => {
-				pi.on("session_start", function factoryStartup() {
+			(atomic) => {
+				atomic.on("session_start", function factoryStartup() {
 					factoryCalls++;
 					throw new Error("startup error");
 				});
@@ -1389,8 +1389,8 @@ test.each([false, true])(
 			// With separate lists the last installation only fails on the completion pass.
 			if (++calls !== 3 || !separateLists) throw new Error("shared error");
 		}
-		const factory: ExtensionFactory = (pi) => {
-			pi.on("resources_discover", sharedSite);
+		const factory: ExtensionFactory = (atomic) => {
+			atomic.on("resources_discover", sharedSite);
 		};
 		const { mode } = await createMode(
 			[
@@ -1431,14 +1431,14 @@ test.each([
 	async ({ name, deferred, copy }) => {
 		let left = 0;
 		let right = 0;
-		const first: ExtensionFactory = (pi) => {
-			pi.on("resources_discover", function firstProvider() {
+		const first: ExtensionFactory = (atomic) => {
+			atomic.on("resources_discover", function firstProvider() {
 				left++;
 				throw new Error("provider error");
 			});
 		};
-		const second: ExtensionFactory = (pi) => {
-			pi.on("resources_discover", function secondProvider() {
+		const second: ExtensionFactory = (atomic) => {
+			atomic.on("resources_discover", function secondProvider() {
 				if (++right >= 2) throw new Error("provider error");
 			});
 		};
@@ -1467,11 +1467,14 @@ test.each([
 test(
 	"/reload in the interactive host shows the error of an extension whose session_start throws and keeps the reload (#5501)",
 	async () => {
-		const { mode } = await createMode((pi) => {
-			pi.on("session_start", (event) => {
+		const { mode } = await createMode((atomic) => {
+			atomic.on("session_start", (event) => {
 				if (event.reason === "reload") throw new Error("boom in reload");
 			});
-			pi.registerCommand("reloaded-command", { description: "registered by every load", handler: async () => {} });
+			atomic.registerCommand("reloaded-command", {
+				description: "registered by every load",
+				handler: async () => {},
+			});
 		});
 		await mode.bindCurrentSessionExtensions();
 		const runnerBefore = mode.session.extensionRunner;
@@ -1490,8 +1493,8 @@ test(
 test(
 	"/new in the interactive host shows the error of an extension whose session_start throws and opens the new session (#5501)",
 	async () => {
-		const { mode, faux } = await createMode((pi) => {
-			pi.on("session_start", (event) => {
+		const { mode, faux } = await createMode((atomic) => {
+			atomic.on("session_start", (event) => {
 				if (event.reason === "new") throw new Error("boom in new");
 			});
 		});

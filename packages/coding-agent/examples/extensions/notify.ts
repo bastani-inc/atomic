@@ -48,8 +48,8 @@ function notify(title: string, body: string): void {
 	}
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("agent_settled", async () => {
+export default function (atomic: ExtensionAPI) {
+	atomic.on("agent_settled", async () => {
 		notify("Pi", "Ready for input");
 	});
 }

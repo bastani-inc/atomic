@@ -107,8 +107,8 @@ test("codemode executes nested tools in a worker and persists successful branch-
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "echo",
 					label: "Echo",
 					description: "Echo",
@@ -151,8 +151,8 @@ test("codemode respects content redaction instead of leaking stale structured re
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "secret",
 					label: "Secret",
 					description: "fixture",
@@ -165,7 +165,7 @@ test("codemode respects content redaction instead of leaking stale structured re
 						details: {},
 					}),
 				});
-				pi.on("tool_result", (event) =>
+				atomic.on("tool_result", (event) =>
 					event.toolName === "secret" ? { content: [{ type: "text", text: "redacted" }] } : undefined,
 				);
 			},
@@ -269,8 +269,8 @@ test("codemode filters full nested output while direct calls retain the model-fa
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "large",
 					label: "Large",
 					description: "fixture",
@@ -309,8 +309,8 @@ test("codemode only hides direct declarations, snippets and guidelines without d
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension({ mode: "only" }),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "echo",
 					label: "Echo",
 					description: "Echo",
@@ -401,8 +401,8 @@ test("codemode describes namespace instructions on request without listing them 
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "docs-search",
 					label: "Search",
 					description: "Search docs",
@@ -1135,8 +1135,8 @@ test("codemode resolves a failing tool that declares an output schema and throws
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "plain",
 					label: "Plain",
 					description: "Fails with text only",
@@ -1146,7 +1146,7 @@ test("codemode resolves a failing tool that declares an output schema and throws
 						throw new Error("plain failed");
 					},
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "shaped",
 					label: "Shaped",
 					description: "Fails with a structured value",
@@ -1191,15 +1191,15 @@ test("codemode tells declared tools how scripts call them instead of repeating t
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "echo",
 					label: "Echo",
 					description: "Echo a value",
 					parameters: Type.Object({ value: Type.String() }),
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "stats",
 					label: "Stats",
 					description: "Report counts",
@@ -1242,8 +1242,8 @@ test("codemode summarizes union and multi-line output types instead of inlining 
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool(
+			(atomic) => {
+				atomic.registerTool(
 					outputTool(
 						"process",
 						Type.Union([
@@ -1259,10 +1259,10 @@ test("codemode summarizes union and multi-line output types instead of inlining 
 						]),
 					),
 				);
-				pi.registerTool(
+				atomic.registerTool(
 					outputTool("entries", Type.Array(Type.Object({ id: Type.String(), size: Type.Integer() })) as never),
 				);
-				pi.registerTool(outputTool("count", Type.Number() as never));
+				atomic.registerTool(outputTool("count", Type.Number() as never));
 			},
 		],
 		initialActiveToolNames: ["process", "entries", "count", "codemode"],
@@ -1289,8 +1289,8 @@ test("codemode tells scripts the fields of an MCP tool's structured content", as
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "mcp__docs__search",
 					label: "Search",
 					description: "Search docs",
@@ -1302,7 +1302,7 @@ test("codemode tells scripts the fields of an MCP tool's structured content", as
 					}),
 					execute: async () => ({ content: [], structuredContent: { content: [] }, details: {} }),
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "mcp__docs__fail",
 					label: "Fail",
 					description: "Fail",
@@ -1343,8 +1343,8 @@ test("codemode summarizes output fields behind local schema references (earendil
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool(
+			(atomic) => {
+				atomic.registerTool(
 					outputTool("report", {
 						$ref: "#/$defs/Report",
 						$defs: {
@@ -1358,7 +1358,7 @@ test("codemode summarizes output fields behind local schema references (earendil
 						},
 					}),
 				);
-				pi.registerTool(
+				atomic.registerTool(
 					outputTool("result", {
 						anyOf: [{ $ref: "#/$defs/Ok" }, { $ref: "#/$defs/Failed" }],
 						$defs: {
@@ -1367,7 +1367,7 @@ test("codemode summarizes output fields behind local schema references (earendil
 						},
 					}),
 				);
-				pi.registerTool({
+				atomic.registerTool({
 					name: "mcp__ledger__search",
 					label: "Search",
 					description: "Search ledger",
@@ -1410,8 +1410,8 @@ test("codemode output summaries keep the keywords beside a local schema referenc
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "start",
 					label: "start",
 					description: "start tool",
@@ -1507,10 +1507,10 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool(modelOnlyTool("delegate-work"));
-				pi.registerTool(modelOnlyTool("subagent"));
-				pi.registerTool(modelOnlyTool("workflow"));
+			(atomic) => {
+				atomic.registerTool(modelOnlyTool("delegate-work"));
+				atomic.registerTool(modelOnlyTool("subagent"));
+				atomic.registerTool(modelOnlyTool("workflow"));
 			},
 		],
 		initialActiveToolNames: ["read", "codemode", "delegate-work", "subagent", "workflow"],
@@ -1579,10 +1579,10 @@ test("codemode describeTool resolves equivalent MCP tool name forms and refuses 
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool(register("mcp__alteryx_local__alteryx_local__get_server_info"));
-				pi.registerTool(register("mcp__alteryx_local__designer_local__get_server_info"));
-				pi.registerTool(register("mcp__my_server__get_item_v2"));
+			(atomic) => {
+				atomic.registerTool(register("mcp__alteryx_local__alteryx_local__get_server_info"));
+				atomic.registerTool(register("mcp__alteryx_local__designer_local__get_server_info"));
+				atomic.registerTool(register("mcp__my_server__get_item_v2"));
 			},
 		],
 		initialActiveToolNames: [
@@ -1667,9 +1667,9 @@ test("codemode reaches a model-only tool only through its script access (#5087)"
 	const harness = await createHarness({
 		extensionFactories: [
 			createCodemodeExtension(),
-			(pi) => {
-				pi.registerTool(tool("coordinate", "model-only"));
-				pi.registerTool(tool("secret", "hidden"));
+			(atomic) => {
+				atomic.registerTool(tool("coordinate", "model-only"));
+				atomic.registerTool(tool("secret", "hidden"));
 			},
 		],
 		initialActiveToolNames: ["codemode", "coordinate", "secret"],

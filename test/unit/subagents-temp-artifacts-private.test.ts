@@ -81,7 +81,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test("registering the subagent extension leaves the session-less artifact directory to the first launch that needs it (#5324)", () => {
-	const pi = {
+	const atomic = {
 		events: { on: () => () => {}, emit: () => {} },
 		registerTool: () => {},
 		registerCommand: () => {},
@@ -90,7 +90,7 @@ test("registering the subagent extension leaves the session-less artifact direct
 		sendMessage: () => {},
 	} as unknown as ExtensionAPI;
 
-	registerSubagentExtension(pi);
+	registerSubagentExtension(atomic);
 
 	assert.equal(existsSync(join(agentDir, "cache", "tmp", "subagents")), false);
 });

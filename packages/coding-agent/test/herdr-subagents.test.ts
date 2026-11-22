@@ -121,11 +121,11 @@ test.each(["need_decision", "interview_request"] as const)(
 		const begin = Promise.withResolvers<void>();
 		const cancellation = new AbortController();
 		const prompts: string[] = [];
-		const observePrompts: ExtensionFactory = (pi) => {
-			pi.on("ui_prompt_start", () => {
+		const observePrompts: ExtensionFactory = (atomic) => {
+			atomic.on("ui_prompt_start", () => {
 				prompts.push("start");
 			});
-			pi.on("ui_prompt_end", () => {
+			atomic.on("ui_prompt_end", () => {
 				prompts.push("end");
 			});
 		};
@@ -177,21 +177,21 @@ test.each(["need_decision", "interview_request"] as const)(
 			extensionFactories: [
 				createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 				observePrompts,
-				(pi) => {
+				(atomic) => {
 					deliver = createIncomingMessageSender({
-						pi,
+						pi: atomic,
 						currentGeneration: () => 1,
 						canDeliver: () => true,
 						queueTurnContext: (context) => replies.queueTurnContext(context),
 					});
-					pi.on("agent_start", () => replies.beginTurn());
+					atomic.on("agent_start", () => replies.beginTurn());
 					// Mirror the Intercom lifecycle: a reply context binds when its message enters the model.
-					pi.on("message_start", (event, ctx) => {
+					atomic.on("message_start", (event, ctx) => {
 						const id = admittedIntercomMessageId(event.message, ctx);
 						if (id !== undefined) replies.admitTurnMessage(id);
 					});
-					pi.on("agent_end", () => replies.endTurn());
-					registerIntercomTool(pi, {
+					atomic.on("agent_end", () => replies.endTurn());
+					registerIntercomTool(atomic, {
 						ensureConnected: async () => parentClient,
 						syncPresenceIdentity() {},
 						homeGroup: () => "default",
@@ -206,8 +206,8 @@ test.each(["need_decision", "interview_request"] as const)(
 		const worker = await createHarnessWithExtensions({
 			extensionFactories: [
 				observePrompts,
-				(pi) =>
-					registerContactSupervisorTool(pi, {
+				(atomic) =>
+					registerContactSupervisorTool(atomic, {
 						childOrchestratorMetadata: {
 							orchestratorTarget: parent.id,
 							runId: "supervisor-only",

@@ -26,9 +26,9 @@ it("keeps --no-mcp disabled through CLI service composition, reload and child in
 				extensionFactories: [
 					{
 						name: "replacement",
-						factory: (pi) => {
-							pi.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
-							pi.on("session_start", (_event, ctx) => {
+						factory: (atomic) => {
+							atomic.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
+							atomic.on("session_start", (_event, ctx) => {
 								context = ctx;
 							});
 						},

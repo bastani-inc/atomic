@@ -202,10 +202,10 @@ calculateCost(model, output.usage);
 
 ### Registration
 
-Register your stream handler with `pi.registerProvider()`:
+Register your stream handler with `atomic.registerProvider()`:
 
 ```typescript
-await pi.registerProvider("my-provider", {
+await atomic.registerProvider("my-provider", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
   api: "my-custom-api",

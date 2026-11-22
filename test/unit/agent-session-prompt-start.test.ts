@@ -113,8 +113,8 @@ test("an async extension input handler reports its preflight disposition once, a
 	const events: string[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("input", async () => {
+			(atomic) => {
+				atomic.on("input", async () => {
 					events.push("handler started");
 					handlerStarted.resolve();
 					await finishHandler.promise;

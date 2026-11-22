@@ -65,9 +65,9 @@ describe("atomic update --models", () => {
 		await expect(
 			handlePackageCommand(["update", "--models"], {
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						factoryCalls += 1;
-						pi.registerProvider("extension-catalog", {
+						atomic.registerProvider("extension-catalog", {
 							apiKey: "test-key",
 							refreshModels: async ({ allowNetwork, force }) => {
 								refreshCalls += 1;
@@ -94,15 +94,15 @@ describe("atomic update --models", () => {
 
 		await handlePackageCommand(["update", "--models"], {
 			extensionFactories: [
-				(pi) => {
-					pi.registerProvider("signed-out-catalog", {
+				(atomic) => {
+					atomic.registerProvider("signed-out-catalog", {
 						apiKey: "test-key",
 						refreshModels: async ({ allowNetwork }) => {
 							if (allowNetwork) throw new ModelsError("oauth", "OAuth refresh failed for signed-out-catalog");
 							return [];
 						},
 					});
-					pi.registerProvider("working-catalog", {
+					atomic.registerProvider("working-catalog", {
 						apiKey: "test-key",
 						refreshModels: async ({ allowNetwork }) => {
 							if (allowNetwork) successfulRefreshes++;
@@ -132,13 +132,13 @@ describe("atomic update --models", () => {
 
 			await handlePackageCommand(["update", "--models"], {
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						for (const [provider, failure] of [
 							["signed-out-catalog", new ModelsError("oauth", "login expired")],
 							["broken-catalog", new ModelsError(code, "catalog refresh failed")],
 							["unavailable-catalog", new Error("catalog unavailable")],
 						] as const) {
-							pi.registerProvider(provider, {
+							atomic.registerProvider(provider, {
 								apiKey: "test-key",
 								refreshModels: async ({ allowNetwork }) => {
 									if (allowNetwork) throw failure;
@@ -185,8 +185,8 @@ describe("atomic update --models", () => {
 			await refreshModelCatalogs(primaryDir, {
 				cwd: home,
 				extensionFactories: [
-					(pi) => {
-						pi.registerProvider("legacy-catalog", {
+					(atomic) => {
+						atomic.registerProvider("legacy-catalog", {
 							refreshModels: async ({ credential }) => {
 								observedKey = credential?.type === "api_key" ? credential.key : undefined;
 								return [];

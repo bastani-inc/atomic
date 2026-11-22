@@ -308,8 +308,8 @@ test("the visible end of a long overtaking group does not leave its prompt below
 test("a refused second cancellation record never hides the earlier saved line at the same anchor (#5649)", async () => {
 	const h = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_compact", () => ({ cancel: true }));
+			(atomic) => {
+				atomic.on("session_before_compact", () => ({ cancel: true }));
 			},
 		],
 	});
@@ -352,8 +352,8 @@ test.each([
 	const h = await createHarness({
 		sessionManager: await SessionManager.create(store, directory),
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_compact", () => ({ cancel: true }));
+			(atomic) => {
+				atomic.on("session_before_compact", () => ({ cancel: true }));
 			},
 		],
 	});
@@ -622,8 +622,8 @@ test.each(["in-process", "isolated"])(
 	async (host) => {
 		const pair = await createEngineHostPair({
 			engineExtensions: [
-				(pi) => {
-					pi.on("session_before_compact", () => ({ compactedText: "retained" }));
+				(atomic) => {
+					atomic.on("session_before_compact", () => ({ compactedText: "retained" }));
 				},
 			],
 		});
@@ -670,13 +670,13 @@ test("a committed boundary precedes its unprefixed hard-limit error exactly once
 			},
 		},
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				let compacted = false;
-				pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
-				pi.on("session_compact", () => {
+				atomic.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
+				atomic.on("session_compact", () => {
 					compacted = true;
 				});
-				pi.on("context", (event) =>
+				atomic.on("context", (event) =>
 					compacted
 						? { messages: [...event.messages, { role: "user", content: "expanded ".repeat(2000), timestamp: 1 }] }
 						: undefined,
@@ -777,8 +777,8 @@ test.each(["in-process", "isolated"])(
 			sessionManager: manager,
 			hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
 			engineExtensions: [
-				(pi) => {
-					pi.on("session_before_compact", () => ({ compactedText: "fresh context" }));
+				(atomic) => {
+					atomic.on("session_before_compact", () => ({ compactedText: "fresh context" }));
 				},
 			],
 		});

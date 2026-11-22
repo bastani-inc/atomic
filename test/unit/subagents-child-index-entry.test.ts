@@ -107,7 +107,7 @@ function isChildEntry(entry: SessionEntry, childId: string): boolean {
 /** Register the subagents extension on `at`'s session; returns what starts it, which settles once its start has. */
 function startExtension(at: SessionManager, policy: { readonly depth: number }): () => Promise<unknown> {
 	const handlers = new Map<string, (event: { reason?: string }, ctx: ExtensionContext) => unknown>();
-	const pi = {
+	const atomic = {
 		events: { on: () => () => {}, emit() {} },
 		appendEntry: async (customType: string, data?: unknown) => {
 			await at.appendCustomEntry(customType, data);
@@ -120,7 +120,7 @@ function startExtension(at: SessionManager, policy: { readonly depth: number }):
 			handlers.set(event, handler);
 		},
 	} as unknown as ExtensionAPI;
-	registerSubagentExtension(pi);
+	registerSubagentExtension(atomic);
 	const ctx = {
 		cwd: at.getCwd(),
 		mode: "tui",

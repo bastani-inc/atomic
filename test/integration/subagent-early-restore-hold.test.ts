@@ -223,7 +223,7 @@ function resumedParent(name: string, cwd: string, sessionManager: SessionManager
 		cwd,
 		sessionManager,
 		host,
-		extensions: [(pi) => registerSubagentExtension(pi)],
+		extensions: [(atomic) => registerSubagentExtension(atomic)],
 		intercom: intercomLightweight,
 	});
 }

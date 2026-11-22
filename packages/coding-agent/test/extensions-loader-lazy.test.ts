@@ -13,8 +13,8 @@ test("loads an inline factory without importing either jiti entry", async () => 
 	const { createExtensionRuntime, loadExtensionFromFactory } = await import("../src/core/extensions/loader.js");
 	const { createEventBus } = await import("../src/core/event-bus.js");
 	const extension = await loadExtensionFromFactory(
-		(pi) => {
-			pi.registerCommand("lazy", { description: "fixture", handler: async () => {} });
+		(atomic) => {
+			atomic.registerCommand("lazy", { description: "fixture", handler: async () => {} });
 		},
 		process.cwd(),
 		createEventBus(),

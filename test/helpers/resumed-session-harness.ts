@@ -50,10 +50,10 @@ export interface ResumedSessionOptions {
 	readonly sessionManager: SessionManager;
 	readonly host: AgentTaskHost;
 	/** The lightweight Intercom extension, loaded last as in the host's bundled-extension order. */
-	readonly intercom: (pi: never) => unknown;
+	readonly intercom: (atomic: never) => unknown;
 	/** Extensions loaded before Intercom (workflows, subagents), in order, on the same event bus. */
 	readonly extensions?: ReadonlyArray<
-		(pi: never, session: { readonly events: ReturnType<typeof eventBus> }) => unknown
+		(atomic: never, session: { readonly events: ReturnType<typeof eventBus> }) => unknown
 	>;
 	readonly orchestrationContext?: object;
 }

@@ -2,7 +2,7 @@
  * Built-in MCP integration.
  *
  * Connects the servers from `mcp.json` and the servers extensions register with
- * `pi.registerMcpServer()` when a session starts, and servers registered later right away. A server
+ * `atomic.registerMcpServer()` when a session starts, and servers registered later right away. A server
  * in `mcp.json` takes precedence over a registered server of the same name. Connections run in the
  * background: the first prompt waits only for servers with `direct` tools, and codemode scripts,
  * `tool_search`, and the resource tools wait for the servers they need when they run. Tools are
@@ -437,7 +437,7 @@ function describeTransport(entry: McpServerEntry): string {
 const MCP_USAGE = "Usage: /mcp, /mcp login [server], /mcp logout [server], /mcp reconnect [server]";
 
 export function createMcpExtension(options: McpExtensionOptions = {}): ExtensionFactory {
-	return (pi: ExtensionAPI) => {
+	return (atomic: ExtensionAPI) => {
 		let servers: McpServer[] = [];
 		/** Servers from `mcp.json`, which take precedence over registered servers of the same name. */
 		let configuredEntries: McpServerEntry[] = [];
@@ -508,7 +508,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const registered: McpServer[] = [];
 			const overriddenNames: string[] = [];
 			const namespaceOwners = new Map<string, { name: string; origin: string }>();
-			for (const contribution of pi.getMcpServerContributions?.() ?? []) {
+			for (const contribution of atomic.getMcpServerContributions?.() ?? []) {
 				const { name, config, sourceInfo } = contribution;
 				const source = sourceInfo.path;
 				const hasProviderAuth =
@@ -635,7 +635,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		let sharedLinesRecorded = false;
 
 		// Render resumed MCP calls even when their server has not connected or never connects.
-		pi.registerToolRenderer((toolName, next) => {
+		atomic.registerToolRenderer((toolName, next) => {
 			const registered = next();
 			if (registered) return registered;
 			if (!toolName.startsWith("mcp__")) return undefined;
@@ -730,7 +730,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		/** Re-register a tool as hidden, which takes it out of the declared tools. */
 		const withdrawTool = (name: string) => {
 			const definition = definitions.get(name);
-			if (definition) pi.registerTool({ ...definition, exposure: "hidden" });
+			if (definition) atomic.registerTool({ ...definition, exposure: "hidden" });
 			listedTools.delete(name);
 			recordedOnly.delete(name);
 		};
@@ -770,7 +770,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				definitions.set(definition.name, definition);
 				listedTools.set(name, { server, tool });
 				recordedOnly.delete(name);
-				pi.registerTool(definition);
+				atomic.registerTool(definition);
 			}
 			serverTools.set(server, current);
 			// Tools cannot be unregistered, so tools the server dropped are re-registered as hidden. When
@@ -831,7 +831,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			};
 			// The records count once they are stored; a failed write is tried again with the next change.
 			try {
-				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
+				await atomic.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
 					tools,
 					...(resourceServers ? { resourceServers } : {}),
 				});
@@ -884,7 +884,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				const names = serverTools.get(record.server) ?? new Set<string>();
 				names.add(name);
 				serverTools.set(record.server, names);
-				pi.registerTool(definition);
+				atomic.registerTool(definition);
 			}
 			// The resource tools stay declared while a server that had resources reconnects.
 			if ([...RESOURCE_TOOL_NAMES].some((name) => declaredNames.has(name))) {
@@ -951,7 +951,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		const recordSummaries = async (summaries: McpServerSummaryRecord[]): Promise<void> => {
 			const records = toolRecords;
 			try {
-				await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, { tools: [], summaries });
+				await atomic.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, { tools: [], summaries });
 				if (toolRecords === records) {
 					for (const record of summaries) {
 						if (record.summary) records.summaries.set(record.server, record);
@@ -999,11 +999,11 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const wasDirect = resourceToolsExposure === "direct";
 			resourceToolsExposure = next;
 			const resourceDefinitions = createMcpResourceToolDefinitions({ exposure: next, servers: resourceServers });
-			for (const definition of resourceDefinitions) pi.registerTool(definition);
+			for (const definition of resourceDefinitions) atomic.registerTool(definition);
 			// Hidden tools leave the declared tools when they are registered; only other exposures need this.
 			if (wasDirect && next !== "hidden") {
 				const names = new Set(resourceDefinitions.map((definition) => definition.name));
-				pi.setActiveTools(pi.getActiveTools().filter((name) => !names.has(name)));
+				atomic.setActiveTools(atomic.getActiveTools().filter((name) => !names.has(name)));
 			}
 		};
 
@@ -1024,11 +1024,11 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const needsToolSearch = exposures.has("deferred");
 			if (!needsCodemode && !needsToolSearch) return;
 			// Other extensions' tools of the same names cannot reach MCP tools, so never activate them.
-			const tools = pi.getAllTools();
+			const tools = atomic.getAllTools();
 			const codemode = tools.find(isCodemodeDiscoveryTool);
 			const hasCodemode = codemode !== undefined;
 			const hasToolSearch = tools.some(isToolSearchDiscoveryTool);
-			const active = pi.getActiveTools();
+			const active = atomic.getActiveTools();
 			const activate: string[] = [];
 			if (
 				needsCodemode &&
@@ -1042,7 +1042,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (needsToolSearch && hasToolSearch && !active.includes(TOOL_SEARCH_TOOL_NAME)) {
 				activate.push(TOOL_SEARCH_TOOL_NAME);
 			}
-			if (activate.length > 0) pi.setActiveTools([...active, ...activate]);
+			if (activate.length > 0) atomic.setActiveTools([...active, ...activate]);
 			const reachable = [...active, ...activate];
 			if (hasCodemode && reachable.includes(CODEMODE_TOOL_NAME)) return;
 			if (hasToolSearch && reachable.includes(TOOL_SEARCH_TOOL_NAME)) return;
@@ -1318,13 +1318,13 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			syncResourceTools();
 			// Tools no longer exposed directly leave the declared set; direct tools are activated on registration.
 			const indirect = new Set(
-				pi
+				atomic
 					.getAllTools()
 					.filter((tool) => tool.exposure !== "direct")
 					.map((tool) => tool.name),
 			);
 			const tools = serverTools.get(server.entry.name) ?? new Set<string>();
-			pi.setActiveTools(pi.getActiveTools().filter((name) => !tools.has(name) || !indirect.has(name)));
+			atomic.setActiveTools(atomic.getActiveTools().filter((name) => !tools.has(name) || !indirect.has(name)));
 			emitChange();
 			return undefined;
 		};
@@ -1657,7 +1657,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			ctx.ui.notify(`Signed in to MCP server "${name}" (${server.connection?.tools.length ?? 0} tools).`, "info");
 		};
 
-		pi.on("session_start", async (_event, ctx) => {
+		atomic.on("session_start", async (_event, ctx) => {
 			const loaded = await (options.loadConfig ?? defaultLoadConfig)(ctx);
 			latestContext = ctx;
 			subagentMcpDirectTools = ctx.subagentPolicy?.mcpDirectTools;
@@ -1728,7 +1728,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 
 		// Every prompt lists the servers in the `mcp_servers` section as they are when it starts. Pi
 		// appends the section to the conversation when it changed, for example after a server connected.
-		pi.on("before_agent_start", async (event, ctx) => {
+		atomic.on("before_agent_start", async (event, ctx) => {
 			await waitForDirectServers(ctx);
 			const { sections } = event.systemPromptOptions;
 			const section = layOutServersSection(
@@ -1766,8 +1766,8 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		// A codemode script waits for the servers it names, or for every server when it searches or
 		// enumerates tools, so their tools are registered before the script runs. tool_search and the
 		// resource tools reach every server, so they wait for all of them.
-		pi.on("tool_call", async (event, ctx) => {
-			const tool = pi.getAllTools().find((candidate) => candidate.name === event.toolName);
+		atomic.on("tool_call", async (event, ctx) => {
+			const tool = atomic.getAllTools().find((candidate) => candidate.name === event.toolName);
 			if (!tool) return;
 			const readyServers = servers.filter((server) => isEnabled(server) && server.ready);
 			if (readyServers.length === 0) return;
@@ -1790,7 +1790,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		// the prompt itself when the section did not change), so the records say what the conversation shows. When a
 		// later handler replaced the section or the prompt, the conversation shows no summary. A reply first means the
 		// prompt sent nothing, so nothing changed.
-		pi.on("message_end", async (event) => {
+		atomic.on("message_end", async (event) => {
 			const { message } = event;
 			if (promptSection) {
 				const { options, text, shown, kept, sharedLines } = promptSection;
@@ -1812,7 +1812,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (message.role !== "assistant" && message.role !== "toolResult") sharedLinesRecorded = false;
 			else if (message.role === "assistant" && sentSharedLines.length > 0 && !sharedLinesRecorded) {
 				try {
-					await pi.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
+					await atomic.appendEntry<McpToolRecordData>(MCP_TOOL_RECORD_ENTRY_TYPE, {
 						tools: [],
 						serverLines: sentSharedLines,
 					});
@@ -1829,7 +1829,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		});
 
 		// Another branch declares other tools and carries other records.
-		pi.on("session_tree", (_event, ctx) => {
+		atomic.on("session_tree", (_event, ctx) => {
 			const branch = ctx.sessionManager.getBranch();
 			toolRecords = readToolRecords(branch);
 			readShownRecords(branch);
@@ -1838,12 +1838,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		});
 
 		// Pick up sign-ins done outside the session, such as `pi mcp login` run by the agent.
-		pi.on("turn_start", async (_event, ctx) => {
+		atomic.on("turn_start", async (_event, ctx) => {
 			if (tokensAtSignIn.size > 0) await reconnectSignedIn(ctx);
 		});
 
 		// Servers registered or unregistered during the session connect or disconnect right away.
-		pi.onMcpServerContributionsChanged?.(() => {
+		atomic.onMcpServerContributionsChanged?.(() => {
 			const { signal } = session;
 			if (signal.aborted) return;
 			const registered = registeredServers();
@@ -1872,7 +1872,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			});
 		});
 
-		pi.on("session_shutdown", async () => {
+		atomic.on("session_shutdown", async () => {
 			session.abort();
 			const closing = connections();
 			// The retiring registry is discarded. Do not register hidden tools or call a
@@ -1907,7 +1907,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			await serverLog?.flush();
 		});
 
-		pi.registerCommand("mcp", {
+		atomic.registerCommand("mcp", {
 			description: "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure",
 			getArgumentCompletions: (prefix) => {
 				const [action, server, ...rest] = prefix.trimStart().split(/\s+/);

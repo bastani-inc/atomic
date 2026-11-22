@@ -18,7 +18,7 @@ This page covers writing your first component and common interaction patterns. T
 Use `ctx.ui.custom()` with a component factory. The factory receives `done(result)`, and `ctx.ui.custom()` resolves with that result when the component finishes:
 
 ```typescript
-pi.on("session_start", async (_event, ctx) => {
+atomic.on("session_start", async (_event, ctx) => {
   const result = await ctx.ui.custom((tui, theme, keybindings, done) => {
     return new MyComponent(done);
   });
@@ -271,7 +271,7 @@ class MySelector {
 Usage in an extension:
 
 ```typescript
-pi.registerCommand("pick", {
+atomic.registerCommand("pick", {
   description: "Pick an item",
   handler: async (args, ctx) => {
     const items = ["Option A", "Option B", "Option C"];
@@ -426,7 +426,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { DynamicBorder } from "@bastani/atomic";
 import { Container, type SelectItem, SelectList, Text } from "@bastani/atomic-tui";
 
-pi.registerCommand("pick", {
+atomic.registerCommand("pick", {
   handler: async (_args, ctx) => {
     const items: SelectItem[] = [
       { value: "opt1", label: "Option 1", description: "First option" },
@@ -488,7 +488,7 @@ For operations that take time and should be cancellable. `BorderedLoader` shows 
 ```typescript
 import { BorderedLoader } from "@bastani/atomic";
 
-pi.registerCommand("fetch", {
+atomic.registerCommand("fetch", {
   handler: async (_args, ctx) => {
     const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
       const loader = new BorderedLoader(tui, theme, "Fetching data...");
@@ -521,7 +521,7 @@ For toggling multiple settings. Use `SettingsList` from `@bastani/atomic-tui` wi
 import { getSettingsListTheme } from "@bastani/atomic";
 import { Container, type SettingItem, SettingsList, Text } from "@bastani/atomic-tui";
 
-pi.registerCommand("settings", {
+atomic.registerCommand("settings", {
   handler: async (_args, ctx) => {
     const items: SettingItem[] = [
       { id: "verbose", label: "Verbose mode", currentValue: "off", values: ["on", "off"] },
@@ -773,8 +773,8 @@ class VimEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+  atomic.on("session_start", (_event, ctx) => {
     // Factory receives the TUI, theme, and keybindings from the app
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new VimEditor(tui, theme, keybindings)
@@ -820,8 +820,8 @@ class ReviewerEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+  atomic.on("session_start", (_event, ctx) => {
     ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
       const editor = new ReviewerEditor(tui, editorTheme, keybindings);
       editor.appTheme = ctx.ui.theme;

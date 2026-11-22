@@ -45,8 +45,8 @@ describe("slash commands split their name at the first whitespace (#5192)", () =
 			const runs: string[] = [];
 			const harness = await createHarness({
 				extensionFactories: [
-					(pi) => {
-						pi.registerCommand("testcmd", {
+					(atomic) => {
+						atomic.registerCommand("testcmd", {
 							description: "Test command",
 							handler: async (args) => runs.push(args),
 						});
@@ -85,8 +85,8 @@ describe("slash commands split their name at the first whitespace (#5192)", () =
 		test(`refuses to queue an extension command whose arguments follow a ${label} (#5192)`, async () => {
 			const harness = await createHarness({
 				extensionFactories: [
-					(pi) => {
-						pi.registerCommand("testcmd", { description: "Test command", handler: async () => {} });
+					(atomic) => {
+						atomic.registerCommand("testcmd", { description: "Test command", handler: async () => {} });
 					},
 				],
 			});
