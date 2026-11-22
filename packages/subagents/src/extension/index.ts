@@ -473,9 +473,11 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 		let unbindChildOwner: (() => void) | undefined;
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
+		let restoredSessionChildren = false;
 		atomic.on("agent_start", () => taskResumer?.ensure());
 		atomic.on("session_start", async (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
+			restoredSessionChildren = false;
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
 				releaseStartupCleanup = claimStartupCleanup(maintenance);
 			resetSessionState(ctx);
@@ -514,7 +516,7 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 				});
 				await Promise.all([committed, started]);
 				if (opened) void holdRunningSubagentChildren(atomic.events, ctx).catch(() => undefined);
-				if (opened)
+				if (opened && !event.engineRestart)
 					void resumeAwaitingSubagentChildren(
 						executorDeps,
 						ctx,
@@ -524,10 +526,14 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 			}
 		});
 		atomic.on("session_recovery_restore", async (_event, ctx) => {
-			// Subagent children never own children.
-			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
+			// Subagent children never own children, and each session restores its children at most once.
+			const signal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx) || restoredSessionChildren || signal?.aborted)
+				return undefined;
+			restoredSessionChildren = true;
 			const writer = subagentChildOwnerWriter(atomic, ctx.sessionManager);
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
+			if (signal?.aborted || !lifecycle.isCurrent()) return undefined;
 			const notices = subagentChildRestoreNotices(outcomes);
 			// Report once: record the children the notices call gone, so later restarts neither retry nor repeat them.
 			await recordReportedGoneSubagentChildren(writer, outcomes);

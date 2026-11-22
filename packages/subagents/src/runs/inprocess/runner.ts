@@ -2776,38 +2776,77 @@ export class SubagentControlRuntime {
 						: { parentSessionId, parentHiddenTools: inherited.parentHiddenTools },
 				);
 				startBudget.enter("creating-session");
-				created = await beforeStartDeadline(
-					createAgentSession({
-						...inherited,
-						...(forked ? { tools: forked.tools } : {}),
-						...explicitEffort,
-						extensionBindings,
-						customTools: admitted.policy.customTools ?? inherited.customTools,
-						resourceLoader,
-						resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startBudget.signal]),
-						onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
-						subagentPolicy: {
-							...admitted.policy,
-							...(forked?.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
-							executionEnded: executionEnded.signal,
-							onTurnDrained: () => {
-								for (const listener of turnDrainedListeners) listener();
-							},
-							taskPending: () => taskPending,
-							// Intercom acknowledges a message to a paused child as held; a restored one is from its start.
-							turnPaused: () => restoringPaused || session?.turnPaused === true,
-							// Intercom registers the child before its first turn, inside this start's budget.
-							startup: {
-								signal: startBudget.signal,
-								enterStep: (step) => startBudget.enter(step),
-								firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
-							},
-							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
+				const creatingSession = createAgentSession({
+					...inherited,
+					...(forked ? { tools: forked.tools } : {}),
+					...explicitEffort,
+					extensionBindings,
+					customTools: admitted.policy.customTools ?? inherited.customTools,
+					resourceLoader,
+					resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startBudget.signal]),
+					onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
+					subagentPolicy: {
+						...admitted.policy,
+						...(forked?.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
+						executionEnded: executionEnded.signal,
+						onTurnDrained: () => {
+							for (const listener of turnDrainedListeners) listener();
 						},
-						settingsManager,
-						sessionManager,
-						...promptBehavior,
-					}),
+						taskPending: () => taskPending,
+						// Intercom acknowledges a message to a paused child as held; a restored one is from its start.
+						turnPaused: () => restoringPaused || session?.turnPaused === true,
+						// Intercom registers the child before its first turn, inside this start's budget.
+						// Keep child-local startBudget.signal (never AbortSignal.any over parent signals) so a finished
+						// child's session and timers are never retained by long-lived owner signals (#5186).
+						startup: {
+							signal: startBudget.signal,
+							enterStep: (step) => startBudget.enter(step),
+							firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
+						},
+						...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
+					},
+					settingsManager,
+					sessionManager,
+					...promptBehavior,
+				});
+				// Observe abort/interrupt only while createAgentSession is in flight and remove both listeners on settle
+				// so closing the owning session during child startup never stalls shutdown and leaves zero retained listeners.
+				const createSessionWithAbort = new Promise<{ session: AgentSession }>((resolve, reject) => {
+					const cleanup = () => {
+						signals.abort.removeEventListener("abort", onAbort);
+						signals.interrupt.removeEventListener("abort", onAbort);
+					};
+					const onAbort = () => {
+						cleanup();
+						if (signals.abort.aborted) termination ??= "abort";
+						else if (signals.interrupt.aborted) termination ??= "interrupt";
+						abandoned.push(
+							creatingSession.then(
+								(late) => late.session.dispose().catch(() => undefined),
+								() => undefined,
+							),
+						);
+						reject(new DOMException("Aborted", "AbortError"));
+					};
+					if (signals.abort.aborted || signals.interrupt.aborted) {
+						onAbort();
+						return;
+					}
+					signals.abort.addEventListener("abort", onAbort, { once: true });
+					signals.interrupt.addEventListener("abort", onAbort, { once: true });
+					creatingSession.then(
+						(value) => {
+							cleanup();
+							resolve(value);
+						},
+						(error: unknown) => {
+							cleanup();
+							reject(error);
+						},
+					);
+				});
+				created = await beforeStartDeadline(
+					createSessionWithAbort,
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),
 				);

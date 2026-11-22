@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { raceWithAbortSignal } from "../../utils/abort.js";
+import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import type {
 	CacheWarmingAction,
 	CacheWarmingDecisionEvent,
@@ -1084,7 +1085,11 @@ export class ExtensionRunner {
 					runGenericHandlers(
 						this.extensions.filter((extension) => newcomers.includes(extension)),
 						this.createContext(),
-						{ type: "session_start", reason: "startup" },
+						{
+							type: "session_start",
+							reason: "startup",
+							...(interactiveEngineStartupEnv().restarted ? { engineRestart: true as const } : {}),
+						},
 						onError,
 					),
 				);
