@@ -277,11 +277,7 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		await modelRuntime.whenRegistrationRefreshesSettled();
 		return settledHandles();
 	};
-	/** Catalog refreshes still running in the background: while one runs, it can hold the session it came from. */
-	const pendingRefreshes = () =>
-		(modelRuntime as unknown as { readonly registrationRefreshes: ReadonlySet<Promise<unknown>> })
-			.registrationRefreshes.size;
-	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions, pendingRefreshes };
+	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions };
 }
 
 /**
@@ -291,6 +287,29 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
  */
 function asyncContextStores(): number {
 	return queryObjects(AsyncLocalStorage, { format: "count" }) as number;
+}
+
+/** Store counts a settled sample may take, a settle apart, before two agree. */
+const STORE_COUNT_SAMPLES = 5;
+/** A macrotask's wait between two store counts, for work a settle cannot see, which holds no handle. */
+const STORE_COUNT_GAP_MS = 100;
+
+/**
+ * Async context stores once their count holds still, and the counts it took. Under load, work still finishing after a
+ * wave was seen holding one store more for one count, gone once the wave had settled: counted at once, that read as a
+ * store the released agents keep. A store an agent keeps stays in every count, so it still fails the comparison.
+ */
+async function asyncContextStoresOnceSettled(
+	settle: () => Promise<unknown>,
+): Promise<{ stores: number; counts: number[] }> {
+	await settle();
+	const counts = [asyncContextStores()];
+	while (counts.length < STORE_COUNT_SAMPLES && (counts.length < 2 || counts.at(-1) !== counts.at(-2))) {
+		await new Promise((resolve) => setTimeout(resolve, STORE_COUNT_GAP_MS));
+		await settle();
+		counts.push(asyncContextStores());
+	}
+	return { stores: counts.at(-1) as number, counts };
 }
 
 describe("idle agents hold nothing per agent (#4326)", () => {
@@ -310,26 +329,19 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 		const afterFirst = {
 			handles: await settledHandles(),
 			listeners: h.subscriptions(),
-			stores: asyncContextStores(),
-			pendingRefreshes: h.pendingRefreshes(),
+			stores: await asyncContextStoresOnceSettled(h.settled),
 		};
-		// Only for the failure message: the stores once those refreshes have settled.
-		await h.settled();
-		const firstStoresSettled = asyncContextStores();
 		await wave(AGENTS_PER_WAVE);
 		await wave(AGENTS_PER_WAVE * 2);
 
 		assert.equal(released.length, AGENTS_PER_WAVE * 3);
 		assert.deepEqual(await settledHandles(), afterFirst.handles);
 		assert.equal(h.subscriptions(), afterFirst.listeners);
-		const stores = asyncContextStores();
-		const pendingRefreshes = h.pendingRefreshes();
-		if (stores !== afterFirst.stores) await h.settled();
-		const storesSettled = stores === afterFirst.stores ? stores : asyncContextStores();
+		const stores = await asyncContextStoresOnceSettled(h.settled);
 		assert.equal(
-			stores,
-			afterFirst.stores,
-			`async context stores: ${stores} now, ${afterFirst.stores} after the first wave; catalog refreshes pending: ${pendingRefreshes} now, ${afterFirst.pendingRefreshes} after the first wave; once they settled: ${storesSettled} now, ${firstStoresSettled} after the first wave`,
+			stores.stores,
+			afterFirst.stores.stores,
+			`async context stores once settled: ${stores.stores} after three waves (counts ${stores.counts.join(", ")}), ${afterFirst.stores.stores} after the first wave (counts ${afterFirst.stores.counts.join(", ")})`,
 		);
 		assert.equal(h.runtime.rehydratedSessionCount, 0);
 		assert.equal(armedIdleSessionCount(), 0);
