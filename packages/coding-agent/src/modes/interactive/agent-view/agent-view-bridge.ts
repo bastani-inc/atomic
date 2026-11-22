@@ -1,5 +1,5 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { getOwnerTaskStore, type OwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import { getOwnerTaskSession, getOwnerTaskStore, type OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 
 /**
  * How the agent panel and `/tasks` read and change what the screen shows, wherever they are drawn: in this process,
@@ -28,7 +28,15 @@ export interface AgentViewRequestOptions {
 }
 
 const bridges = new WeakMap<object, AgentViewBridge>();
-const bridgeOwners = new WeakMap<AgentViewBridge, WeakRef<OwnerTaskStore>>();
+const bridgeSessions = new WeakMap<AgentViewBridge, WeakRef<object>>();
+
+function asOwnerTaskStore(candidate: object): OwnerTaskStore | undefined {
+	const maybe = candidate as Partial<OwnerTaskStore>;
+	if (Array.isArray(maybe.backgroundTasks) && typeof maybe.taskRecord === "function") {
+		return candidate as OwnerTaskStore;
+	}
+	return undefined;
+}
 
 /** Attach `bridge` to `session` and its owner task store, or detach it with undefined. */
 export function setAgentViewBridge(session: object, bridge: AgentViewBridge | undefined): void {
@@ -38,21 +46,22 @@ export function setAgentViewBridge(session: object, bridge: AgentViewBridge | un
 		if (bridge === undefined) bridges.delete(key);
 		else bridges.set(key, bridge);
 	}
-	if (
-		previous !== undefined &&
-		previous !== bridge &&
-		(store === undefined || bridgeOwners.get(previous)?.deref() === store)
-	) {
-		bridgeOwners.delete(previous);
+	if (previous !== undefined && previous !== bridge && bridgeSessions.get(previous)?.deref() === session) {
+		bridgeSessions.delete(previous);
 	}
-	if (bridge !== undefined && store !== undefined) {
-		bridgeOwners.set(bridge, new WeakRef(store));
+	if (bridge !== undefined) {
+		bridgeSessions.set(bridge, new WeakRef(session));
 	}
 }
 
-/** The owner task store weakly associated with `bridge`, if still alive. */
+/**
+ * The owner task store weakly associated with `bridge`, resolved lazily from the attached session so bridge
+ * attachment may run before the session's `OwnerTaskStore` is created.
+ */
 export function ownerTaskStoreForBridge(bridge: AgentViewBridge): OwnerTaskStore | undefined {
-	return bridgeOwners.get(bridge)?.deref();
+	const target = bridgeSessions.get(bridge)?.deref();
+	if (target === undefined) return undefined;
+	return getOwnerTaskStore(target) ?? asOwnerTaskStore(target);
 }
 
 /** The bridge of `session`, found through the session itself or its owner task store. */
@@ -60,5 +69,10 @@ export function agentViewBridge(session: object): AgentViewBridge | undefined {
 	const direct = bridges.get(session);
 	if (direct !== undefined) return direct;
 	const store = getOwnerTaskStore(session);
-	return store === undefined ? undefined : bridges.get(store);
+	if (store !== undefined) {
+		const byStore = bridges.get(store);
+		if (byStore !== undefined) return byStore;
+	}
+	const ownerSession = getOwnerTaskSession(session);
+	return ownerSession === undefined ? undefined : bridges.get(ownerSession);
 }

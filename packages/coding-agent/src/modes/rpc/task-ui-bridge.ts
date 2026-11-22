@@ -359,7 +359,7 @@ export async function showTaskInspector(
 			} else if (inspector.closeReason === "navigated-item" && inspector.returnAnchor !== undefined) {
 				saveTasksReturnAnchor(store, inspector.returnAnchor);
 			} else if (bridge?.viewedTaskId() === undefined) {
-				clearTasksReturnAnchor(store);
+				clearTasksReturnAnchor(store, { keepPending: true });
 			}
 		}
 		inspector?.dispose();

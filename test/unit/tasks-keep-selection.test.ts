@@ -1328,7 +1328,7 @@ test("R3-1/R3-2/R3-3/R3-4/N4 (AgentViewSwitcher): zero listeners outlive /tasks,
 	switcher.dispose();
 });
 
-test("isolated engine: W5 evicted-before-ack, R3-3/N4 failed switch, R3-4 external switch, and V4 Esc-before-ack limit", async () => {
+test("isolated engine: W5 evicted-before-ack, R3-3/N4 failed switch, R3-4 external switch, and V4/R4-2 Esc-before-ack", async () => {
 	const a1 = agent("a1", "first alpha", 1, "op-1");
 	const a2 = agent("a2", "second beta", 2, "op-2");
 	const a3 = agent("a3", "third gamma", 3, "op-3");
@@ -1402,8 +1402,8 @@ test("isolated engine: W5 evicted-before-ack, R3-3/N4 failed switch, R3-4 extern
 		"isolated engine failed switch preserves a1's anchor on return to main",
 	);
 
-	// V4 documented limit: Esc on /tasks before set_viewed_agent(a2) arrives clears anchor cleanly (no stale promotion),
-	// while opening /tasks while viewing a2 still selects a2.
+	// V4 / R4-2: Esc on /tasks before set_viewed_agent(a2) arrives preserves pending (zero listeners!),
+	// so ack promotes a2 and returning to main restores a2 (while a settled Esc on main still resets to top).
 	await openTasks(
 		session,
 		store,
@@ -1423,16 +1423,6 @@ test("isolated engine: W5 evicted-before-ack, R3-3/N4 failed switch, R3-4 extern
 	);
 	assert.match(beforeAck, /second beta/);
 	await handleSetViewedAgent({ id: "v4-1", type: "set_viewed_agent", taskId: "a2" }, context);
-	let whileViewing = "";
-	await openTasks(
-		session,
-		store,
-		mountUi((component, rows) => {
-			whileViewing = selectedLine(rows());
-			component.handleInput(ESC);
-		}).ui,
-	);
-	assert.match(whileViewing, /second beta/, "opening /tasks while viewing a2 still selects a2");
 	await handleSetViewedAgent({ id: "v4-2", type: "set_viewed_agent" }, context);
 	let afterV4Back = "";
 	await openTasks(
@@ -1443,7 +1433,218 @@ test("isolated engine: W5 evicted-before-ack, R3-3/N4 failed switch, R3-4 extern
 			component.handleInput(ESC);
 		}).ui,
 	);
-	assert.match(afterV4Back, /third gamma/, "no stale promotion after Esc before ack");
+	assert.match(afterV4Back, /second beta/, "R4-2/V4: Esc before ack preserves pending so return to main restores a2");
+	let freshAfterSettledEsc = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			freshAfterSettledEsc = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(freshAfterSettledEsc, /third gamma/, "Esc on settled main still clears anchor to top");
+
+	// W5 + R4-2: Esc before ack AND eviction before ack still promotes by targetId and selects neighbour a1!
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /second beta/);
+			component.handleInput(ESC);
+		}).ui,
+	);
+	store.set([a1, a3]);
+	await handleSetViewedAgent({ id: "w5-esc-1", type: "set_viewed_agent", taskId: "a2" }, context);
+	await handleSetViewedAgent({ id: "w5-esc-2", type: "set_viewed_agent" }, context);
+	let afterW5Esc = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterW5Esc = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterW5Esc, /first alpha/, "W5 + R4-2: Esc + eviction before ack selects neighbour a1");
+});
+
+test("R4-1/R4-2 (real in-process startup order): bridge attached before lazy OwnerTaskStore settles failed opens, failed switches, external switches, and Esc-while-pending", async () => {
+	const a1 = agent("a1", "first alpha", 1, "op-1");
+	const a2 = agent("a2", "second beta", 2, "op-2");
+	const a3 = agent("a3", "third gamma", 3, "op-3");
+	const session = { extensionRunner: {} };
+	const failing = new Set<string>(["a2", "a3"]);
+	const switcher = new AgentViewSwitcher(
+		async (taskId) => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			return failing.has(taskId) ? undefined : fakePort(taskId);
+		},
+		() => {},
+	);
+
+	// REAL in-process startup order (interactive-agent-events.ts:243 -> interactive-input-handling.ts:467):
+	// attach AgentViewBridge to `session` BEFORE `OwnerTaskStore` exists, then bind `OwnerTaskStore` lazily!
+	setAgentViewBridge(session, switcher);
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
+	bindOwnerTaskStore(session, store);
+
+	// R4-1B: Failed open on main settles cleanly (does not stick pending a2).
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	let afterMainFail = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterMainFail = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterMainFail, /third gamma/, "R4-1B: failed open on main under lazy store order resets to top");
+
+	// R4-1A: Enter a1 -> failed switch to a3 -> return from a1 to main restores a1 (not failed a3!).
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(DOWN); // a1
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.equal(switcher.viewedTaskId(), "a1");
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(HOME); // a3 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.equal(switcher.viewedTaskId(), "a1");
+	await switcher.view(undefined);
+	let afterFailSwitchBack = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterFailSwitchBack = selectedLine(rows());
+			component.handleInput(ENTER); // re-enter a1 for R4-1C
+		}).ui,
+	);
+	assert.match(
+		afterFailSwitchBack,
+		/first alpha/,
+		"R4-1A: failed switch under lazy store order preserves a1 on return to main",
+	);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	// R4-1C: Viewing a1 -> external switcher.view(a3) -> main -> fresh /tasks at top (never stale a1!).
+	failing.delete("a3");
+	await switcher.view("a3" as TaskId);
+	await switcher.view(undefined);
+	let afterExternal = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterExternal = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterExternal, /third gamma/, "R4-1C: external switch under lazy store order clears stale a1 anchor");
+
+	// R4-2 (local Esc while slow openPort(a2) is in flight -> succeeds -> back to main -> restores a2!):
+	failing.delete("a2");
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2 (10ms async open)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /second beta/);
+			component.handleInput(ESC); // Esc while openPort(a2) is still in flight!
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.equal(switcher.viewedTaskId(), "a2");
+	await switcher.view(undefined);
+	let afterLocalPendingEsc = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterLocalPendingEsc = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(
+		afterLocalPendingEsc,
+		/second beta/,
+		"R4-2: local Esc while openPort(a2) is in flight still restores a2 on return to main",
+	);
+
+	// R3-2 + R4-2 (Esc while failing openPort(a2) is in flight -> fails -> later view(a2) -> main -> top a3!):
+	failing.add("a2");
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2 (will fail in 10ms)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /second beta/);
+			component.handleInput(ESC);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	failing.delete("a2");
+	await switcher.view("a2" as TaskId);
+	await switcher.view(undefined);
+	let afterFailedPendingEsc = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterFailedPendingEsc = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(
+		afterFailedPendingEsc,
+		/third gamma/,
+		"R3-2 + R4-2: failed pending open clears on failure so a later view never resurrects",
+	);
+	switcher.dispose();
 });
 
 test("clicking a nested shell on the 4th row of a >4-row idle agent panel returns to the next full-panel neighbour when it finishes", async () => {

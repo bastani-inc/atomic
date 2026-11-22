@@ -216,6 +216,13 @@ export function tasksReturnAnchor(owner: object): ListSelectionAnchor | undefine
 	return record?.pending?.anchor ?? record?.anchor;
 }
 
-export function clearTasksReturnAnchor(owner: object): void {
+export function clearTasksReturnAnchor(owner: object, options: { readonly keepPending?: boolean } = {}): void {
+	if (options.keepPending === true) {
+		const record = tasksReturnRecords.get(owner);
+		if (record?.pending !== undefined) {
+			tasksReturnRecords.set(owner, { pending: record.pending });
+			return;
+		}
+	}
 	tasksReturnRecords.delete(owner);
 }
