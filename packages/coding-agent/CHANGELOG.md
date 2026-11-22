@@ -48,6 +48,7 @@
 - Bundled slash command lists (`BUNDLED_COMMAND_NAMES` and `BUNDLED_EXTENSION_SLASH_COMMANDS`) now match the commands bundled extensions actually register: removed the unregistered `/mcp-auth` entry, added `/llama`, and aligned `/mcp`'s description.
 - `atomic auth login --help`, `logout --help`, `print-api-key --help`, and `print-bearer-token --help` (and `-h`) now print `atomic auth` help to stderr and exit `0` with empty stdout, matching `atomic auth --help` and `atomic auth check --help`. `--help` / `-h` passed after `--` or as the value of `--model`, `--provider`, or `--min-expiry` is not treated as a help request. `atomic mcp add` also passes `--help` / `-h` through after `--` or as an option value instead of printing MCP help.
 - Built-in lazy tool registrations for Intercom and Web Access now expose the same parameter schemas, descriptions, commands, and shortcuts as the loaded extensions (including Intercom's `delivery` parameter, `groups` action, and `contact_supervisor` schema).
+- On Windows, closing an MCP server no longer briefly keeps your project folder in use. Atomic ended the server with a command that ran in the folder Atomic runs in and could still be running after the close finished, so for a moment that folder could not be deleted or renamed. The commands Atomic runs to end processes now run in the Windows folder, and closing an MCP server waits for its command to finish.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
