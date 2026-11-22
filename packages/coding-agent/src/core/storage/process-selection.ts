@@ -22,6 +22,7 @@ import {
 	environmentTeamProfile,
 	environmentTeamProfileAsync,
 	environmentTeamProfileSelection,
+	selectStorage,
 	selectStorageSteps,
 	TEAM_PROFILE_ENV,
 } from "./selection.js";
@@ -56,8 +57,8 @@ const registry: typeof globalThis & {
 	[CLI_SELECTION]?: { readonly field: StorageFlag; readonly value: SharedSelection };
 } = globalThis;
 
-function environmentValue(name: string): string | undefined {
-	const value = process.env[name];
+function environmentValue(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env[name];
 	return value === undefined || value.length === 0 ? undefined : value;
 }
 
@@ -70,6 +71,18 @@ function parseSelection<T extends TSchema>(text: string, schema: T, source: "cli
 	}
 	if (!Value.Check(schema, value)) throw new StorageConfigError(source, field, "invalid-selection");
 	return value;
+}
+
+function parseCliStorageArgument(argument: StorageFlagArgument, cwd: string): SharedSelection {
+	let text = argument.value;
+	if (argument.flag === "--storage-file") {
+		try {
+			text = readFileSync(resolvePath(argument.value, cwd), "utf8");
+		} catch {
+			throw new StorageConfigError("cli", argument.flag, "unreadable-file");
+		}
+	}
+	return parseSelection(text, StorageSelectionSchema, "cli", argument.flag);
 }
 
 function chooseAt(value: DomainSelection, source: "cli" | "env", field: string, path: string): ProcessStorageChoice {
@@ -117,38 +130,94 @@ function* chooseSteps(
 export function setCliStorageSelection(argument: StorageFlagArgument | undefined, cwd = process.cwd()): void {
 	delete registry[CLI_SELECTION];
 	if (argument === undefined) return;
-	let text = argument.value;
-	if (argument.flag === "--storage-file") {
-		try {
-			text = readFileSync(resolvePath(argument.value, cwd), "utf8");
-		} catch {
-			throw new StorageConfigError("cli", argument.flag, "unreadable-file");
-		}
-	}
 	registry[CLI_SELECTION] = {
 		field: argument.flag,
-		value: parseSelection(text, StorageSelectionSchema, "cli", argument.flag),
+		value: parseCliStorageArgument(argument, cwd),
 	};
 }
 
 /** Every set storage variable, parsed and checked even when another selection outranks it. */
-function environmentChoices(agentDir: string) {
+function environmentChoices(agentDir: string, env: NodeJS.ProcessEnv = process.env) {
 	const read = (
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
 	): ProcessStorageChoice | undefined => {
-		const text = environmentValue(field);
+		const text = environmentValue(field, env);
 		if (text === undefined) return undefined;
 		const value = parseSelection(text, schema, "env", field);
 		return chooseAt(value, "env", field, agentDir);
 	};
-	const team = environmentTeamProfileSelection();
+	const team = environmentTeamProfileSelection(env);
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema),
 		shared: read(STORAGE_ENV, StorageSelectionSchema),
 		team: team === undefined ? undefined : chooseAt(team, "env", TEAM_PROFILE_ENV, agentDir),
 		teamValue: team,
 	};
+}
+
+/**
+ * Resolve the process-level storage selection for `domain` from an explicit CLI
+ * flag argument and `env` without mutating process-wide CLI selection state.
+ * Uses the same validation and precedence rules as `setCliStorageSelection`
+ * plus `selectProcessStorage`, throwing on invalid or conflicting inputs.
+ */
+export function previewProcessStorageSelection(
+	domain: StorageDomain,
+	options: {
+		readonly cliStorage?: StorageFlagArgument;
+		readonly env?: NodeJS.ProcessEnv;
+		readonly cwd?: string;
+		readonly agentDir?: string;
+	} = {},
+): StorageSelection | undefined {
+	const env = options.env ?? process.env;
+	const cwd = options.cwd ?? process.cwd();
+	const agentDir = options.agentDir ?? cwd;
+	const cliValue = options.cliStorage ? parseCliStorageArgument(options.cliStorage, cwd) : undefined;
+	const legacyField = ENV_SESSION_DIR;
+	const legacy = domain === "sessions" ? environmentValue(legacyField, env) : undefined;
+	const validated = environmentChoices(agentDir, env);
+
+	if (cliValue !== undefined) {
+		if (legacy !== undefined) {
+			throw new StorageConfigError("cli", `${options.cliStorage!.flag}, ${legacyField}`, "conflicting-overrides");
+		}
+		return chooseAt(cliValue, "cli", options.cliStorage!.flag, agentDir).selection;
+	}
+	if (domain === "sessions" && validated.sessions !== undefined) {
+		if (legacy !== undefined) {
+			throw new StorageConfigError("env", `${SESSIONS_STORAGE_ENV}, ${legacyField}`, "conflicting-overrides");
+		}
+		return validated.sessions.selection;
+	}
+	if (legacy !== undefined) {
+		try {
+			return { kind: "jsonl", dir: resolvePath(legacy, cwd) };
+		} catch {
+			throw new StorageConfigError("env", legacyField, "invalid-path");
+		}
+	}
+	if (validated.shared !== undefined) {
+		return validated.shared.selection;
+	}
+	return validated.team?.selection;
+}
+
+/**
+ * Classify a `settings.json` session-storage value (`sessions.storage` or `storage`)
+ * using the same schemas and storage selection rules as `selectSessionSetting`.
+ */
+export function previewSessionSettingSelection(
+	value: unknown,
+	field: "sessions.storage" | "storage",
+	agentDir: string,
+): StorageSelection {
+	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
+		throw new StorageConfigError("settings", field, "invalid-selection");
+	}
+	if ("dir" in value) return { kind: "jsonl", dir: resolvePath(value.dir, agentDir) };
+	return selectStorage(value, "settings", field, agentDir);
 }
 
 /** Check every set storage variable, whether or not any selection uses it. */

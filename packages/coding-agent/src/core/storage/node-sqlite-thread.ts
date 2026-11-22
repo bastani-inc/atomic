@@ -539,4 +539,19 @@ export class ThreadConnection {
 	onExit(listener: () => void): void {
 		this.worker.once("exit", listener);
 	}
+
+	/**
+	 * Starts a spare worker for a non-interactive or storage-overridden CLI
+	 * invocation only when the real CLI/storage resolvers select a SQLite store.
+	 */
+	static async startSpareIfSqlNeeded(
+		args: readonly string[],
+		terminal: { readonly stdinIsTTY: boolean; readonly stdoutIsTTY: boolean },
+		stillBeforeMain: () => boolean,
+	): Promise<void> {
+		const { shouldStartSpareDatabaseThread } = await import("../../utils/startup-database-spare.ts");
+		if (stillBeforeMain() && shouldStartSpareDatabaseThread(args, false, terminal)) {
+			ThreadConnection.startSpare();
+		}
+	}
 }
