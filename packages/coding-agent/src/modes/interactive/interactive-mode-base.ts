@@ -17,6 +17,7 @@ import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/sett
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AgentViewSwitcher } from "./agent-view/agent-view-switcher.ts";
@@ -251,6 +252,7 @@ export class InteractiveModeBase {
 	readonly programStatus = new ProgramStatusReporter(
 		() => this.ui.terminal,
 		() => this.sessionManager.getSessionName(),
+		() => !this.isShuttingDown && !this.terminalStopped,
 	);
 
 	resetTranscriptSelection(): void {
@@ -366,6 +368,12 @@ export class InteractiveModeBase {
 	version: string;
 
 	isInitialized = false;
+	/** Set while the TUI has started drawing and has not yet been stopped. */
+	tuiStarted = false;
+	/** Set once {@link stopInteractiveTui} has stopped the terminal, until a later start re-opens it. */
+	terminalStopped = false;
+	/** Set when an extension replaced the terminal title via `ctx.ui.setTitle`, until the default title is restored. */
+	extensionTitleActive = false;
 
 	onInputCallback?: (submission: InteractiveSubmission) => void;
 
@@ -741,6 +749,8 @@ export class InteractiveModeBase {
 			preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint",
 			writeInSlices: this.writeExitOutputInSlices,
 		});
+		this.tuiStarted = false;
+		this.terminalStopped = true;
 		if (this.writeExitOutputInSlices) this.exitOutputWritten = this.ui.whenStopped();
 		this.disposeMarkitDiagnosticSink();
 		this.disposeDeprecationWarningSink();
@@ -892,7 +902,25 @@ export class InteractiveModeBase {
 		// Declared by the queueing mixin, which a host that never queues may not load.
 		const disposeSteeringRecovery =
 			typeof this.attachSteeringEngineRecovery === "function" ? this.attachSteeringEngineRecovery() : () => {};
+		// Restore interrupted running subagents in the replacement engine without replaying deliveries or prompting.
+		const disposePostCrashRecovery =
+			runtimeHost instanceof IsolatedInteractiveRuntime
+				? runtimeHost.onEngineRecovered((replaced) => {
+						if (!replaced || this.isShuttingDown) return;
+						const session = this.session;
+						const generation = runtimeHost.getEngineGeneration();
+						void runtimeHost.startPendingRecoveryRestore("resume").catch(() => {
+							if (
+								this.session !== session ||
+								this.isShuttingDown ||
+								runtimeHost.getEngineGeneration() !== generation
+							)
+								return;
+						});
+					})
+				: () => {};
 		this.disposeInteractiveEngineHost = () => {
+			disposePostCrashRecovery();
 			disposeSteeringRecovery();
 			disposeEngineHost();
 		};

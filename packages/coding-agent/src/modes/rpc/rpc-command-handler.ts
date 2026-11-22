@@ -250,6 +250,7 @@ export function createRpcCommandHandler({
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
 						...(typeof command.queuedMessageId === "string" ? { queuedMessageId: command.queuedMessageId } : {}),
+						...(typeof command.originSendId === "string" ? { originSendId: command.originSendId } : {}),
 						source: "rpc",
 						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {
@@ -903,6 +904,14 @@ export function createRpcCommandHandler({
 					id,
 					"start_pending_recovery",
 					await session.startPendingRecovery(command.reason),
+				);
+			}
+
+			case "start_pending_recovery_restore": {
+				return createRpcSuccessResponse(
+					id,
+					"start_pending_recovery_restore",
+					await session.startPendingRecoveryRestore(command.reason),
 				);
 			}
 

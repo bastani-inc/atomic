@@ -12,6 +12,8 @@ export const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 export const SEND_RESPONSE_TIMEOUT_MS = 10_000;
 /** How long `IntercomClient.disconnect()` waits for a graceful broker close before destroying the socket. */
 export const BROKER_DISCONNECT_TIMEOUT_MS = 2_000;
+/** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
+export const HELD_SEND_GRACE_MS = 5_000;
 /** The broker answers an unconfirmed save before the sender's own wait ends, so the sender learns the outcome is uncertain. */
 export const RECIPIENT_RECEIPT_TIMEOUT_MS = 8_000;
 /**

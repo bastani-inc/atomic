@@ -9,9 +9,11 @@ import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { pathExists } from "../../utils/path-exists.ts";
+import { DEFAULT_WINDOWS_CWD_TIMEOUT_MS, resolveSafeWindowsWorkingDirectoryAsync } from "../../utils/windows-cwd.js";
 import { asyncScope } from "../async-scope.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
-import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
+import type { ProcessTreeContainment } from "../process-tree-containment.ts";
+import * as processTreeContainment from "../process-tree-containment.ts";
 import {
 	GitUnavailableError,
 	gitInstallCommand,
@@ -206,15 +208,22 @@ function treeRunning(tree: ProcessTreeContainment | undefined): boolean {
 	}
 }
 
-function taskkillTree(pid: number, deadline: number): Promise<number[]> {
+async function taskkillTree(pid: number, deadline: number): Promise<number[]> {
+	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+	const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+	const budgetMs = Math.min(DEFAULT_WINDOWS_CWD_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
+	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({
+		commandPath: taskkillPath,
+		preferCommandDir: true,
+		timeoutMs: budgetMs,
+	});
 	return new Promise((resolve) => {
 		let output = "";
 		let taskkill: ChildProcess;
-		const systemRoot = process.env.SystemRoot || "C:\\Windows";
 		try {
-			// In the system directory: a kill never keeps the folder Atomic runs in in use.
-			taskkill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], {
-				cwd: systemRoot,
+			// In a verified safe directory outside the project: a kill never keeps the folder Atomic runs in in use.
+			taskkill = spawn(taskkillPath, ["/F", "/T", "/PID", String(pid)], {
+				...(cwd === undefined ? {} : { cwd }),
 				stdio: ["ignore", "pipe", "ignore"],
 				windowsHide: true,
 				env: createChildProcessEnvironment(),
@@ -237,6 +246,14 @@ function taskkillTree(pid: number, deadline: number): Promise<number[]> {
 	});
 }
 
+function holdDescendantsStatus(pid: number): processTreeContainment.ProcessDescendantsHold {
+	if (processTreeContainment.holdProcessDescendantsResult !== undefined) {
+		return processTreeContainment.holdProcessDescendantsResult(pid);
+	}
+	const held = processTreeContainment.holdProcessDescendants?.(pid);
+	return held === undefined ? { kind: "unavailable" } : { kind: "held", held };
+}
+
 async function stopCommand(
 	child: HostChildProcess,
 	detached: boolean,
@@ -250,9 +267,32 @@ async function stopCommand(
 	child.once("close", close);
 	child.once("error", close);
 	let killed: number[] = [];
-	if (tree?.terminate() !== true) {
-		if (process.platform === "win32" && child.pid !== undefined) killed = await taskkillTree(child.pid, deadline);
-		else killChild(child, detached);
+	let hold: processTreeContainment.ProcessDescendantsHold = { kind: "unavailable" };
+	let holdEnded = false;
+	if (
+		process.platform === "win32" &&
+		child.pid !== undefined &&
+		child.exitCode === null &&
+		child.signalCode === null
+	) {
+		// End the live root and any descendants started before the Job object attached, through open handles.
+		hold = holdDescendantsStatus(child.pid);
+		holdEnded = hold.kind === "held" && hold.held.endAll();
+	}
+	const treeEnded = tree?.terminate() === true;
+	if (!treeEnded) {
+		if (process.platform === "win32") {
+			if (!holdEnded && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+				if (hold.kind === "unavailable") {
+					killed = await taskkillTree(child.pid, deadline);
+					if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+				} else {
+					child.kill("SIGKILL");
+				}
+			}
+		} else {
+			killChild(child, detached);
+		}
 	}
 	while (Date.now() < deadline && !(closed && !treeRunning(tree) && !killed.some(running))) {
 		await sleep(PROCESS_TREE_POLL_MS);
@@ -368,7 +408,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			void spawnFailure(error as NodeJS.ErrnoException).then(reject, reject);
 			return;
 		}
-		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
+		const tree = child.pid === undefined ? undefined : processTreeContainment.containProcessTree(child.pid);
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
 		let settled = false;

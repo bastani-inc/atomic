@@ -317,6 +317,52 @@ export function readTaskDetailForView(source: TaskViewSource, id: TaskId, signal
 }
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 const sources = new WeakMap<OwnerTaskStore, TaskViewSource>();
+
+/** Actions taken through {@link ownerTaskViewSource} on an agent task. */
+export interface OwnerTaskActionEvent {
+	readonly taskId: TaskId;
+	readonly sessionId?: string;
+	readonly sessionFile?: string;
+	readonly action: "stopped" | "cleared" | "sent";
+}
+
+const ownerTaskActionListeners = new WeakMap<OwnerTaskStore, Set<(event: OwnerTaskActionEvent) => void>>();
+
+/** Observe stop/clear/send actions performed on agent tasks of `store`. Answers the unsubscribe. */
+export function onOwnerTaskAction(store: OwnerTaskStore, listener: (event: OwnerTaskActionEvent) => void): () => void {
+	let listeners = ownerTaskActionListeners.get(store);
+	if (listeners === undefined) {
+		listeners = new Set();
+		ownerTaskActionListeners.set(store, listeners);
+	}
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+
+function emitOwnerTaskAction(store: OwnerTaskStore, id: TaskId, action: OwnerTaskActionEvent["action"]): void {
+	const listeners = ownerTaskActionListeners.get(store);
+	if (listeners === undefined || listeners.size === 0) return;
+	const task = store.resolveTask(id);
+	const bound = task.ok ? taskTranscriptSource(task.value) : undefined;
+	const session = bound?.ok ? bound.value.session : undefined;
+	const sessionId = session?.getSessionId?.();
+	const sessionFile = session?.getSessionFile?.();
+	const event: OwnerTaskActionEvent = {
+		taskId: id,
+		...(sessionId === undefined ? {} : { sessionId }),
+		...(sessionFile === undefined ? {} : { sessionFile }),
+		action,
+	};
+	for (const listener of [...listeners]) {
+		try {
+			listener(event);
+		} catch {
+			// A listener failure must not affect the task action.
+		}
+	}
+}
 /** Each launched-task view by the task that launched them, under the view of every task. */
 const launchedViews = new WeakMap<TaskViewSource, Map<TaskId, TaskViewSource>>();
 /** The view of every task a launched-task view reads from. */
@@ -440,11 +486,13 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const resumable = taskResumer(store.supervisor)?.stop?.(id);
 			if (resumable !== undefined) {
 				const stopped = await resumable;
+				if (stopped.ok) emitOwnerTaskAction(store, id, "stopped");
 				return stopped.ok ? { ok: true, value: undefined } : { ok: false, error: { message: stopped.reason } };
 			}
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
 			const result = await store.supervisor.cancelTask(task.value, "user");
+			if (result.ok) emitOwnerTaskAction(store, id, "stopped");
 			return result.ok ? { ok: true, value: undefined } : { ok: false, error: { message: result.error.message } };
 		},
 		stdinAvailable(id) {
@@ -614,6 +662,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				if (bound.value.session.isRunning?.() !== true) {
 					store.setTurnInterrupted(id, true);
 				}
+				emitOwnerTaskAction(store, id, "stopped");
 				return { ok: true, value: undefined };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
@@ -646,6 +695,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 						store.setTurnInterrupted(id, false);
 					});
 				}
+				emitOwnerTaskAction(store, id, "stopped");
 				return { ok: true, value: taken };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
@@ -690,6 +740,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
 					const resumed = await resumer.resume(id, text);
 					if (!resumed.ok) throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
+					emitOwnerTaskAction(store, id, "sent");
 					return;
 				}
 				const task = lease(id);
@@ -717,6 +768,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				if (delivery.delivered) {
 					// Only a message that started its turn ends an interrupted or paused one; queued, it waits in its hold.
 					if (delivery.startedTurn !== false) store.setTurnInterrupted(id, false);
+					emitOwnerTaskAction(store, id, "sent");
 					return;
 				}
 				if (
@@ -745,9 +797,14 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const bound = taskTranscriptSource(task.value);
 			const clear = bound.ok ? bound.value.session.clearQueue : undefined;
 			// A session that keeps no queue, as a finished task's, has nothing queued.
-			if (!bound.ok || clear === undefined) return { ok: true, value: { steering: [], followUp: [] } };
+			if (!bound.ok || clear === undefined) {
+				emitOwnerTaskAction(store, id, "cleared");
+				return { ok: true, value: { steering: [], followUp: [] } };
+			}
 			try {
-				return { ok: true, value: await clear.call(bound.value.session) };
+				const value = await clear.call(bound.value.session);
+				emitOwnerTaskAction(store, id, "cleared");
+				return { ok: true, value };
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}

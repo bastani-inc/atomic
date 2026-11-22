@@ -47,6 +47,7 @@ export function createSessionCwdMatcherAsync(cwd: string): (candidate: string | 
 	};
 	return async (candidate) => {
 		if (candidate === undefined) return false;
+		if (candidate === cwd) return true;
 		const [expected, path] = await Promise.all([resolveCached(cwd), resolveCached(candidate)]);
 		return path === expected;
 	};

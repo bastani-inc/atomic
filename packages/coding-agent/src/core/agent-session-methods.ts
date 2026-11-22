@@ -286,6 +286,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		typed?: string,
 		rawText?: string,
 		receiptId?: string,
+		originSendId?: string,
 	): Promise<void>;
 	_queueFollowUp(
 		text: string,
@@ -293,6 +294,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		typed?: string,
 		rawText?: string,
 		receiptId?: string,
+		originSendId?: string,
 	): Promise<void>;
 	_throwIfExtensionCommand(text: string): void;
 	sendCustomMessage<T = unknown>(
@@ -395,6 +397,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
 	startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
+	startPendingRecoveryRestore(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
 	/** Keep only the stored history and let go of everything live; rehydrate with `AgentSessionRuntime.rehydrate`. */
 	release(): Promise<import("./agent-session-release.ts").ReleasedAgentSession>;
 	/** Let calls of `detachable` tools that run longer than `policy.afterMs` go on without the run; `undefined` runs them inline. */
@@ -574,6 +577,7 @@ export interface AgentSessionPublicSurface
 		| "setAutoCompactionEnabled"
 		| "bindExtensions"
 		| "startPendingRecovery"
+		| "startPendingRecoveryRestore"
 		| "release"
 		| "setToolDetachment"
 		| "takeDetachedToolCalls"

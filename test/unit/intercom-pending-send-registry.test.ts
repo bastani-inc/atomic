@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { buildSendSignature, PendingSendRegistry } from "../../packages/intercom/broker/pending-send-registry.js";
 import { readChildOrchestratorMetadata } from "../../packages/intercom/intercom-utils.js";
@@ -212,6 +212,29 @@ describe("PendingSendRegistry", () => {
 			true,
 		);
 		await replacement.attempt.promise;
+	});
+
+	test("extend never shrinks an existing later deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			const registry = new PendingSendRegistry();
+			const { attempt } = registry.acquire("held-id", signature(), 10_000);
+			assert.equal(registry.extend("held-id", attempt.attemptId, 25_000), true);
+			await vi.advanceTimersByTimeAsync(2_000);
+			// A shorter 13 s extension (2 s + 13 s = 15 s < 25 s) must not shrink the 25 s deadline.
+			assert.equal(registry.extend("held-id", attempt.attemptId, 13_000), true);
+			let timedOut = false;
+			const settled = attempt.promise.catch(() => {
+				timedOut = true;
+			});
+			await vi.advanceTimersByTimeAsync(22_000);
+			assert.equal(timedOut, false, "attempt must stay alive past 15 s up to its 25 s hold");
+			assert.equal(registry.resolve("held-id", attempt.attemptId, { id: "held-id", delivered: true }), true);
+			await settled;
+			assert.equal(timedOut, false);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 function makeConnectedClient(): {

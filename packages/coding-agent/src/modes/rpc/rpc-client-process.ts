@@ -14,8 +14,9 @@ import {
 	writeInteractiveEngineBootstrapAsync,
 } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
-import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
+import * as shellUtils from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
+import * as enginePrewarm from "../interactive-engine/engine-prewarm.ts";
 import { adoptPrewarmedEngine, engineLaunch, type PrewarmLaunchBasis } from "../interactive-engine/engine-prewarm.ts";
 
 export interface PreparedRpcClientBootstrap {
@@ -44,18 +45,25 @@ export async function prepareRpcClientBootstrap(
 	trustDecisions?: SessionTrustDecisions,
 	startedSessionId?: string,
 	startupExtensionCheck?: StartupExtensionCheck,
+	restarted?: boolean,
 ): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
-	const bootstrap = await writeInteractiveEngineBootstrapAsync({
-		hostPid: process.pid,
-		guardFile: guardianFile,
-		projectResourceWithdrawals: true,
-		queuedDeliveries: true,
-		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
-		...(trustDecisions ? { trustDecisions } : {}),
-		...(startedSessionId !== undefined ? { startedSessionId } : {}),
-		...(startupExtensionCheck ? { startupExtensionCheck } : {}),
-	});
+	const waitForPrewarm = (enginePrewarm as { waitForPrewarmedEngineReady?: () => Promise<void> })
+		.waitForPrewarmedEngineReady;
+	const [bootstrap] = await Promise.all([
+		writeInteractiveEngineBootstrapAsync({
+			hostPid: process.pid,
+			guardFile: guardianFile,
+			projectResourceWithdrawals: true,
+			queuedDeliveries: true,
+			...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
+			...(trustDecisions ? { trustDecisions } : {}),
+			...(startedSessionId !== undefined ? { startedSessionId } : {}),
+			...(startupExtensionCheck ? { startupExtensionCheck } : {}),
+			...(restarted === true ? { restarted: true as const } : {}),
+		}),
+		typeof waitForPrewarm === "function" ? waitForPrewarm() : Promise.resolve(),
+	]);
 	return { guardianFile, bootstrap };
 }
 
@@ -120,8 +128,9 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 		child.once("exit", () => void removeOwnedInteractiveEngineBootstrapAsync(bootstrap));
 	}
 	if (options.interactiveEngine && child.pid) {
-		trackDetachedChildPid(child.pid);
-		child.once("exit", () => untrackDetachedChildPid(child.pid!));
+		if (shellUtils.trackDetachedChildProcess !== undefined) shellUtils.trackDetachedChildProcess(child);
+		else shellUtils.trackDetachedChildPid(child.pid);
+		child.once("exit", () => shellUtils.untrackDetachedChildPid(child.pid!));
 	}
 	return child;
 }
@@ -249,11 +258,12 @@ export async function terminateRpcClientProcess(
 			stopFile.write();
 			if (await settlesWithin(exited, ENGINE_KILL_STEP_MS)) return;
 		}
-		if (processTree && child.pid) killProcessTree(child.pid);
+		if (child.exitCode !== null || child.signalCode !== null) return;
+		if (processTree && child.pid) shellUtils.killChildProcessTree(child, false);
 		else child.kill("SIGKILL");
 		let reportMs = KILLED_CHILD_EXIT_REPORT_MS;
-		// The tree kill runs taskkill on Windows, which can fail or take long; then the handle ends the engine, within
-		// the same overall bound.
+		// Without the native module on Windows the tree kill falls back to taskkill, which can fail or take long; then
+		// the handle ends the engine, within the same overall bound.
 		if (inputClosed && !(await settlesWithin(exited, ENGINE_KILL_STEP_MS))) {
 			reportMs -= ENGINE_KILL_STEP_MS;
 			child.kill("SIGKILL");

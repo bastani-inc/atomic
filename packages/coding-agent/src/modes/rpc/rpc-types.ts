@@ -136,6 +136,8 @@ export type RpcCommand =
 			streamingBehavior?: "steer" | "followUp";
 			/** When the message is queued, the id it is queued with, which the client names it by (see `PromptOptions`). */
 			queuedMessageId?: string;
+			/** Ephemeral host send id echoed back on user `message_start` for exact echo matching (see `PromptOptions`). */
+			originSendId?: string;
 	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
@@ -270,6 +272,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_label"; entryId: string; label?: string }
 	| { id?: string; type: "reload" }
 	| { id?: string; type: "start_pending_recovery"; reason?: SessionRecoveryReason }
+	| { id?: string; type: "start_pending_recovery_restore"; reason?: SessionRecoveryReason }
 	| { id?: string; type: "get_shortcuts" }
 	| { id?: string; type: "invoke_shortcut"; key: string }
 
@@ -623,6 +626,13 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_label"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "reload"; success: true }
 	| { id?: string; type: "response"; command: "start_pending_recovery"; success: true; data: SessionRecoveryReport }
+	| {
+			id?: string;
+			type: "response";
+			command: "start_pending_recovery_restore";
+			success: true;
+			data: SessionRecoveryReport;
+	  }
 	| {
 			id?: string;
 			type: "response";

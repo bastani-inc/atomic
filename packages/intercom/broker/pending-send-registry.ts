@@ -35,6 +35,7 @@ interface OwnedPendingSend extends PendingSendAttempt {
   resolve(result: SendResultLike): void;
   reject(error: Error): void;
   timer?: ReturnType<typeof setTimeout>;
+  expiresAt?: number;
   timedOut?: boolean;
 }
 
@@ -112,6 +113,7 @@ export class PendingSendRegistry {
       legacyEligible: generation === 1,
       generation,
     };
+    attempt.expiresAt = performance.now() + timeoutMs;
     attempt.timer = setTimeout(() => {
       this.expire(attempt);
     }, timeoutMs);
@@ -136,6 +138,9 @@ export class PendingSendRegistry {
   extend(messageId: string, attemptId: string | undefined, timeoutMs: number): boolean {
     const attempt = this.attempts.get(messageId);
     if (!attempt || attempt.timedOut || (attemptId === undefined ? !attempt.legacyEligible : attempt.attemptId !== attemptId)) return false;
+    const nextExpiresAt = performance.now() + timeoutMs;
+    if (attempt.expiresAt !== undefined && nextExpiresAt <= attempt.expiresAt) return true;
+    attempt.expiresAt = nextExpiresAt;
     if (attempt.timer) clearTimeout(attempt.timer);
     attempt.timer = setTimeout(() => {
       this.expire(attempt);

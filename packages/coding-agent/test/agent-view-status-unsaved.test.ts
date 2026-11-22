@@ -55,3 +55,43 @@ test("a subagent view's status carries the receipts of what it took, and receipt
 		status: { ...status, unsaved: ["shown"] },
 	});
 });
+
+test("a subagent view's status carries its session identity across the protocol, and malformed identity fields are stripped", () => {
+	assert.deepEqual(parsed({ ...status, sessionId: "child-1", sessionFile: "/tmp/child-1.jsonl" }), {
+		type: "engine_agent_view_status",
+		viewId: "v1",
+		status: { ...status, sessionId: "child-1", sessionFile: "/tmp/child-1.jsonl" },
+	});
+	// Malformed identity fields fall back safely to notice-only without rejecting the status update.
+	assert.deepEqual(parsed({ ...status, sessionId: 42, sessionFile: "/tmp/child-1.jsonl" }), {
+		type: "engine_agent_view_status",
+		viewId: "v1",
+		status,
+	});
+	assert.deepEqual(parsed({ ...status, sessionId: "child-1", sessionFile: 99 }), {
+		type: "engine_agent_view_status",
+		viewId: "v1",
+		status,
+	});
+});
+
+test("engine_agent_queue_invalidated parses valid child invalidation reasons and rejects malformed frames", () => {
+	const raw = serializeInteractiveEngineMessage({
+		type: "engine_agent_queue_invalidated",
+		sessionId: "child-1",
+		sessionFile: "/tmp/child-1.jsonl",
+		reason: "sent-elsewhere",
+	} as never).trim();
+	assert.deepEqual(parseInteractiveEngineMessage(raw), {
+		type: "engine_agent_queue_invalidated",
+		sessionId: "child-1",
+		sessionFile: "/tmp/child-1.jsonl",
+		reason: "sent-elsewhere",
+	});
+	assert.equal(
+		parseInteractiveEngineMessage(
+			JSON.stringify({ type: "engine_agent_queue_invalidated", sessionId: "child-1", reason: "unknown" }),
+		),
+		undefined,
+	);
+});

@@ -24,15 +24,26 @@ export function processStartToken(pid: number): string | undefined {
 	return windowsStartToken(known?.created);
 }
 
-export async function readProcessStartToken(pid: number): Promise<string | undefined> {
+export interface ReadProcessStartTokenOptions {
+	/** When true, bypasses any cached or earlier in-flight Windows fallback answer for `pid`. */
+	readonly fresh?: boolean;
+}
+
+export async function readProcessStartToken(
+	pid: number,
+	options?: ReadProcessStartTokenOptions,
+): Promise<string | undefined> {
 	if (process.platform !== "win32") return procStartTokenAsync(pid);
 	const native = nativeCreationTime();
 	if (native !== null) return windowsStartToken(nativeCreation(native, pid));
-	return windowsStartToken(await readFallbackCreation(pid));
+	return windowsStartToken(await readFallbackCreation(pid, options?.fresh === true));
 }
 
-export async function processStartTokenAsync(pid: number): Promise<string | undefined> {
-	return readProcessStartToken(pid);
+export async function processStartTokenAsync(
+	pid: number,
+	options?: ReadProcessStartTokenOptions,
+): Promise<string | undefined> {
+	return readProcessStartToken(pid, options);
 }
 
 /**
@@ -125,9 +136,17 @@ function windowsStartToken(created: string | undefined): string | undefined {
 	return created === undefined ? undefined : sha12(`windows\n${created}`);
 }
 
+/** Start token matching {@link processStartToken} for a Windows FILETIME creation timestamp string. */
+export function windowsStartTokenForCreationTime(created: string): string {
+	return sha12(`windows\n${created}`);
+}
+
 function sha12(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
+
+/** Whether the loaded native addon was built for Windows (its Windows termination binding exists only there). */
+const NATIVE_WINDOWS_HOST = process.platform === "win32";
 
 /**
  * Ends Windows process `pid` if it was created at `started`, and with `descendants` every process it started that still
@@ -153,6 +172,7 @@ let terminator: CreatedProcessTerminator | null | undefined;
 
 /** The native module's `terminateProcessCreatedAt`, or null where the module or that binding is missing. */
 function nativeTerminator(): CreatedProcessTerminator | null {
+	if (!NATIVE_WINDOWS_HOST) return null;
 	if (terminator === undefined) {
 		try {
 			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
@@ -173,6 +193,10 @@ let nativeReader: CreationTimeReader | null | undefined;
 /** The native module's `processCreationTime`, or null where the module or that binding (added in #5141) is missing. */
 function nativeCreationTime(): CreationTimeReader | null {
 	if (nativeReader === undefined) {
+		if (!NATIVE_WINDOWS_HOST) {
+			nativeReader = null;
+			return null;
+		}
 		try {
 			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
 				processCreationTime?: CreationTimeReader;
@@ -240,18 +264,29 @@ function knownFallbackCreation(pid: number): { readonly created: string | undefi
 	return cached !== undefined && Date.now() - cached.at < FALLBACK_CACHE_MS ? cached : undefined;
 }
 
-function readFallbackCreation(pid: number): Promise<string | undefined> {
-	const known = knownFallbackCreation(pid);
-	if (known !== undefined) return Promise.resolve(known.created);
-	const pending = pendingReads.get(pid);
-	if (pending !== undefined) return pending.reading;
+function readFallbackCreation(pid: number, fresh = false): Promise<string | undefined> {
+	if (pid === process.pid && ownCreation !== undefined) return Promise.resolve(ownCreation);
+	if (fallbackBroken) return Promise.resolve(undefined);
+	if (!fresh) {
+		const known = knownFallbackCreation(pid);
+		if (known !== undefined) return Promise.resolve(known.created);
+		const pending = pendingReads.get(pid);
+		if (pending !== undefined) return pending.reading;
+	} else {
+		fallbackReads.delete(pid);
+		const pending = pendingReads.get(pid);
+		if (pending !== undefined) {
+			if (pid === process.pid) return pending.reading;
+			pending.superseded = true;
+		}
+	}
 	const generation = fallbackGeneration;
 	const current = {
 		superseded: false,
 		reading: queryCreationTime(pid).then((answer) => {
 			if (generation !== fallbackGeneration) return undefined;
-			pendingReads.delete(pid);
-			if (current.superseded) return knownFallbackCreation(pid)?.created;
+			if (pendingReads.get(pid) === current) pendingReads.delete(pid);
+			if (current.superseded) return pendingReads.get(pid)?.reading ?? knownFallbackCreation(pid)?.created;
 			rememberFallbackCreation(pid, answer);
 			return answer.created;
 		}),

@@ -32,6 +32,8 @@ export interface InteractiveEngineStartupEnv {
 	readonly queuedDeliveries?: true;
 	/** The session the host started for this engine to open, as a new session or a fork. */
 	readonly startedSessionId?: string;
+	/** This engine replaced one that stopped unexpectedly; suppress user-facing startup resume prompts. */
+	readonly restarted?: true;
 }
 
 let snapshot: InteractiveEngineStartupEnv | undefined;
@@ -74,6 +76,7 @@ export function captureInteractiveEngineStartupEnv(
 					...(bootstrap.startupExtensionCheck ? { startupExtensionCheck: bootstrap.startupExtensionCheck } : {}),
 					...(bootstrap.queuedDeliveries ? { queuedDeliveries: true as const } : {}),
 					...(bootstrap.startedSessionId !== undefined ? { startedSessionId: bootstrap.startedSessionId } : {}),
+					...(bootstrap.restarted ? { restarted: true as const } : {}),
 				}
 			: {
 					child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,

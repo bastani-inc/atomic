@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PromptDisposition, UserMessageWithRawText } from "../../core/agent-session-types.js";
 import {
 	NO_QUEUED_MESSAGES,
@@ -21,7 +21,11 @@ import { QueuedMessagesView, queuedMessageRows } from "./components/queued-messa
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
-import { awaitsStartedRunMessage } from "./interactive-render-chat.ts";
+import {
+	awaitsStartedRunMessage,
+	noteDeferredEchoOrigin,
+	taggedUserMessagesShownCount,
+} from "./interactive-render-chat.ts";
 import {
 	restoredQueue,
 	type SteeringEditorQueue,
@@ -265,7 +269,7 @@ async function sendCompactionQueue(mode: InteractiveModeBase, willRetry: boolean
 	const queueOnly = !willRetry && (mode.session.isStreaming || mode.session.queuedMessagesPaused);
 	if (queueOnly) {
 		await drainCompactionQueue(mode, (message) =>
-			mode.session.prompt(message.text, { streamingBehavior: message.mode }),
+			mode.session.prompt(message.text, { streamingBehavior: message.mode, originSendId: randomUUID() }),
 		);
 		return;
 	}
@@ -368,6 +372,7 @@ export function handOffCompactionQueue(mode: InteractiveModeBase): void {
 		void mode.session
 			.prompt(message.text, {
 				streamingBehavior: message.mode,
+				originSendId: randomUUID(),
 				preflightResult: (success) => {
 					accepted = success;
 					if (success) confirmHandOff(mode, message);
@@ -425,7 +430,7 @@ async function startCompactionQueuePrompt(mode: InteractiveModeBase): Promise<bo
 	if (!ranCommands) return false;
 	const first = takeNextCompactionMessage(mode);
 	if (!first) return false;
-	const refused = await promptUntilAccepted(mode, first);
+	const refused = await promptUntilAccepted(mode, first, undefined, randomUUID());
 	if (refused === undefined) return true;
 	returnCompactionMessage(mode, first, refused.error);
 	return false;
@@ -435,6 +440,7 @@ async function promptUntilAccepted(
 	mode: InteractiveModeBase,
 	message: CompactionQueuedMessage,
 	onAccepted?: (disposition: PromptDisposition | undefined) => void,
+	originSendId?: string,
 ): Promise<{ error: unknown } | undefined> {
 	let accept!: (accepted: boolean) => void;
 	const accepted = new Promise<boolean>((resolve) => {
@@ -442,6 +448,7 @@ async function promptUntilAccepted(
 	});
 	const prompt = mode.session.prompt(message.text, {
 		streamingBehavior: message.mode,
+		...(originSendId === undefined ? {} : { originSendId }),
 		preflightResult: (success, disposition) => {
 			if (success) onAccepted?.(disposition);
 			accept(success);
@@ -468,9 +475,12 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 		const message = takeNextCompactionMessage(mode);
 		if (!message) return;
 		// The echo is this message's own: a discard of it never takes an earlier message's echo of the same text.
+		const originSendId = randomUUID();
 		const echoed = !message.text.startsWith("/");
 		const echo = echoed ? mode.renderDeferredUserInput(message.text) : undefined;
 		const shownBefore = mode.userMessagesShownBySession;
+		if (echo !== undefined)
+			noteDeferredEchoOrigin(mode, message.text, echo, originSendId, taggedUserMessagesShownCount(mode));
 		const refused = await promptUntilAccepted(
 			mode,
 			message,
@@ -481,6 +491,7 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 						if (disposition === "started") mode.expectStartedUserInput(message.text, shownBefore, echo);
 					}
 				: undefined,
+			originSendId,
 		);
 		if (refused !== undefined) {
 			if (echoed) mode.discardDeferredRenderedUserInput(message.text, echo);
@@ -604,6 +615,16 @@ export function engineLossSubagentNotice(queue: LostSubagentQueue): string | und
 		`Engine restarted; ${queuedMessagesPhrase(messages.length)} to ${queue.agent} ${verb} sent:`,
 		...messages,
 	].join("\n");
+}
+
+/** The notice when a lost engine's subagent messages came back to that subagent's own editor. */
+export function engineLossSubagentRestoredNotice(agent: string, count: number): string {
+	return `Engine restarted; ${queuedMessagesPhrase(count)} to ${agent} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
+}
+
+/** The notice on main when a lost engine's subagent messages wait for that subagent's chat to open. */
+export function engineLossSubagentPendingNotice(agent: string, count: number): string {
+	return `Engine restarted; ${queuedMessagesPhrase(count)} to ${agent} ${count === 1 ? "wasn't" : "weren't"} sent; ${count === 1 ? "it's" : "they're"} back in its editor when you open it`;
 }
 
 function textOfUserMessage(content: unknown): string | undefined {
