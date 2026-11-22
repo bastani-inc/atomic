@@ -6,7 +6,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ### Fixed
 
-- With multi-node routing, an Intercom ID that a reconnecting session asked for back is no longer left held for up to 30 s when the shared database wrote the claim only after the session had already been given a fresh ID. That late write is now given back, so the ID can be claimed again at once.
+- With multi-node routing, an Intercom ID that a reconnecting session asked for back is no longer left held for up to 30 s when the shared database wrote the claim only after the session had already been given a fresh ID. That late write is now given back, so the ID can be claimed again at once. A session waiting to take its ID back after a move now gets it as soon as the hold on that ID ends, rather than up to 30 s later.
 
 ## [0.10.4] - 2026-11-22
 

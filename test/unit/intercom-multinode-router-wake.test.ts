@@ -1894,9 +1894,72 @@ describe("released child sends queued across faults (#4401)", () => {
 	});
 });
 
-describe("an Intercom id bound to the return address that registered it", () => {
-	const granted = (claim: SessionIdClaim): boolean => claim.status === "granted";
+const granted = (claim: SessionIdClaim): boolean => claim.status === "granted";
 
+/**
+ * Registers the returning session as the broker does for an unanswered claim: under a fresh id, not yet shown on this
+ * broker, until the binding write settles it once under the claimed id or the fresh one.
+ */
+function registerUnanswered(node: Node, claim: UnansweredSessionIdClaim, returnAddress: string, answered = false) {
+	const freshId = randomUUID();
+	const base = session("returning");
+	const target: BrokerConnectedSession = {
+		...base,
+		info: { ...base.info, id: freshId },
+		registrationReturnAddress: returnAddress,
+	};
+	const settles: boolean[] = [];
+	let settled = answered;
+	if (answered) node.sessions.set(freshId, target);
+	const registered = node.router.sessionRegistered(target, undefined, {
+		...claim,
+		settle: (keep) => {
+			if (settled) return false;
+			settled = true;
+			settles.push(keep);
+			const kept = keep && !node.sessions.has(claim.sessionId);
+			if (kept) target.info.id = claim.sessionId;
+			node.sessions.set(target.info.id, target);
+			return kept;
+		},
+		unsettled: () => !settled,
+	});
+	return { target, freshId, settles, registered };
+}
+
+/**
+ * A claim of `id` that gives up before the database has run its binding write: the write runs once `land` is called,
+ * as a pooled database's connection runs a statement it got late. `identity` and `handoff`: a hand-over it presents.
+ */
+async function claimLandingLate(node: Node, id: string, returnAddress: string, identity?: string, handoff?: string) {
+	const knownSessions = node.state.knownSessions;
+	const bind = knownSessions.bind.bind(knownSessions);
+	const landing = Promise.withResolvers<void>();
+	const written = Promise.withResolvers<void>();
+	vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+		await landing.promise;
+		try {
+			return await bind(...args);
+		} finally {
+			written.resolve();
+		}
+	});
+	const pending = node.router.claimSessionId(id, returnAddress, identity, handoff);
+	await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+	const claim = await pending;
+	assert.equal(claim.status, "unanswered", JSON.stringify(claim));
+	vi.mocked(knownSessions.bind).mockRestore();
+	return {
+		claim: (claim as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered,
+		async land() {
+			landing.resolve();
+			await written.promise;
+			await vi.advanceTimersByTimeAsync(0);
+		},
+	};
+}
+
+describe("an Intercom id bound to the return address that registered it", () => {
 	/** A claim of `id` granted to `returnAddress`, whose registration then left again, giving the id up (#5607). */
 	async function claimedAndLeft(node: Node, id: string, returnAddress: string): Promise<void> {
 		const claimed = await node.router.claimSessionId(id, returnAddress);
@@ -2230,37 +2293,6 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		return (claim as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered;
 	}
 
-	/**
-	 * Registers the returning session as the broker does for an unanswered claim: under a fresh id, not yet shown on this
-	 * broker, until the binding write settles it once under the claimed id or the fresh one.
-	 */
-	function registerUnanswered(node: Node, claim: UnansweredSessionIdClaim, returnAddress: string, answered = false) {
-		const freshId = randomUUID();
-		const base = session("returning");
-		const target: BrokerConnectedSession = {
-			...base,
-			info: { ...base.info, id: freshId },
-			registrationReturnAddress: returnAddress,
-		};
-		const settles: boolean[] = [];
-		let settled = answered;
-		if (answered) node.sessions.set(freshId, target);
-		const registered = node.router.sessionRegistered(target, undefined, {
-			...claim,
-			settle: (keep) => {
-				if (settled) return false;
-				settled = true;
-				settles.push(keep);
-				const kept = keep && !node.sessions.has(claim.sessionId);
-				if (kept) target.info.id = claim.sessionId;
-				node.sessions.set(target.info.id, target);
-				return kept;
-			},
-			unsettled: () => !settled,
-		});
-		return { target, freshId, settles, registered };
-	}
-
 	test("an id an unanswered claim took is given back when its registration does not keep it (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
@@ -2276,38 +2308,6 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
 		assert.equal(granted(await again), true, "nothing still owns it");
 	});
-
-	/**
-	 * A claim of `id` that gives up before the database has run its binding write: the write runs once `land` is called,
-	 * as a pooled database's connection runs a statement it got late. `landed` settles with its answer.
-	 */
-	async function claimLandingLate(node: Node, id: string, returnAddress: string) {
-		const knownSessions = node.state.knownSessions;
-		const bind = knownSessions.bind.bind(knownSessions);
-		const landing = Promise.withResolvers<void>();
-		const written = Promise.withResolvers<void>();
-		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
-			await landing.promise;
-			try {
-				return await bind(...args);
-			} finally {
-				written.resolve();
-			}
-		});
-		const pending = node.router.claimSessionId(id, returnAddress);
-		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
-		const claim = await pending;
-		assert.equal(claim.status, "unanswered");
-		vi.mocked(knownSessions.bind).mockRestore();
-		return {
-			claim: (claim as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered,
-			async land() {
-				landing.resolve();
-				await written.promise;
-				await vi.advanceTimersByTimeAsync(0);
-			},
-		};
-	}
 
 	test("an id an unanswered claim's binding write takes after its registration settled on a fresh id is given back (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
@@ -2337,6 +2337,30 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		await back.registered;
 		assert.deepEqual(back.settles, [false]);
 		await late.land();
+
+		const again = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await again), true, "nothing still owns it");
+	});
+
+	test("an id an unanswered claim's binding write takes just after its registration's own write chose the fresh id, answered first, is given back (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const late = await claimLandingLate(node, id, "return-1");
+		const knownSessions = node.state.knownSessions;
+		const reclaim = knownSessions.reclaim!.bind(knownSessions);
+		// The registration's write finds the id not bound yet; the claim's write binds it next, and its answer arrives first.
+		vi.spyOn(knownSessions, "reclaim").mockImplementationOnce(async (request) => {
+			const reclaimed = await reclaim(request);
+			await late.land();
+			return reclaimed;
+		});
+
+		const back = registerUnanswered(node, late.claim, "return-1");
+		await back.registered;
+		assert.deepEqual(back.settles, [false]);
+		await vi.advanceTimersByTimeAsync(0);
 
 		const again = node.router.claimSessionId(id, "return-1");
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
@@ -3067,6 +3091,84 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await again;
 		assert.equal(here.router.aliasTarget(fresh.info.id), back, "the id its asks were sent to still reaches it");
+	});
+
+	test("an id a hand-over's unanswered claim binds after its client left and its hold lapsed is given back (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const id = live.info.id;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const late = await claimLandingLate(
+			here,
+			id,
+			returnAddress,
+			deliveryTargetIdentity(fresh),
+			here.handoffs[0]!.handoff,
+		);
+		// The session's connection closed before its registration completed: its broker gives the id back.
+		await here.router.releaseOwner({ intercomSessionId: id, token: late.claim.token }, late.claim.claim);
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+		await late.land();
+
+		const again = here.router.claimSessionId(id, returnAddress);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await again), true, "nothing still owns it");
+	});
+
+	test("a session that took its id with its hand-over keeps it when an earlier registration's claim write lands late (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const id = live.info.id;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const identity = deliveryTargetIdentity(fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		const late = await claimLandingLate(here, id, returnAddress, identity, handoff);
+		const first = registerUnanswered(here, late.claim, returnAddress, true);
+		await first.registered;
+		// The session presents the hand-over again, still held for it, and takes the id with the hold's token, before the
+		// first claim's write lands.
+		const claim = await here.router.claimSessionId(id, returnAddress, identity, handoff);
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.token, late.claim.token);
+		const back: BrokerConnectedSession = {
+			...first.target,
+			socket: fakeSocket(),
+			info: { ...first.target.info, id },
+		};
+		const again = registeredOn(here, back, claim.grant);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await again;
+		await late.land();
+
+		await vi.advanceTimersByTimeAsync(2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		assert.ok(!here.fenced.includes(back), "it keeps the id");
+		assert.equal((await here.state.knownSessions.owners!.ownerOf(id))?.token, claim.grant.token);
+	});
+
+	test("a session handed its id again gets it back once the hold ends, though its unanswered claim's late write bound it with the hold's token (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const id = live.info.id;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const identity = deliveryTargetIdentity(fresh);
+		/** The session presents its hand-over; its claim's write lands only after its registration took a fresh id. */
+		const presentLate = async (handoff: string) => {
+			const late = await claimLandingLate(here, id, returnAddress, identity, handoff);
+			const back = registerUnanswered(here, late.claim, returnAddress, true);
+			await back.registered;
+			assert.equal(back.target.info.id, back.freshId);
+			await late.land();
+			return back;
+		};
+		// Handed the id again once, it presents the hand-over a second time, with the same outcome; it is not handed the id
+		// again, and awaits it with the fresh id its registration owns with the hold's token.
+		const first = await presentLate(here.handoffs[0]!.handoff);
+		await untilMovedBack(here, first.target);
+		const second = await presentLate(here.handoffs.at(-1)!.handoff);
+
+		// Its hold ends within a renewal of the hand-over; the id is then free for the session to take back at once.
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + 2 * BROKER_LEASE_RENEW_INTERVAL_MS);
+		assert.ok(here.fenced.includes(second.target), "it is moved back to its id");
 	});
 
 	test("a hand-over presented after its hold lapsed while the database fails leaves the session awaiting its id, and the move back keeps the fresh id as its alias (#5607)", async () => {
