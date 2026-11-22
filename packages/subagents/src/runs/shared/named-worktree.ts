@@ -64,6 +64,11 @@ const INITIALIZING_LOCK_REASONS = new Set([
 	"正在初始化",
 ]);
 const SIBLING_REGISTRATION_ATTEMPTS = 5;
+/**
+ * How long an add waits, in all, between its attempts for another worktree's registration to finish. Only the waits
+ * count: the add's own Git commands between attempts take seconds on a loaded machine, and counting them too used up
+ * the whole wait before the first retry.
+ */
 const SIBLING_REGISTRATION_WAIT_MS = 1_000;
 const CONCURRENT_ADD_FAILURE = /already exists|already checked out|already used by worktree|is a missing but/i;
 
@@ -510,7 +515,7 @@ export async function ensureNamedWorktree(
 				| undefined;
 			let startPoint: string | undefined;
 			let siblingFailures = 0;
-			let siblingDeadline = Number.POSITIVE_INFINITY;
+			let siblingWaitedMs = 0;
 			for (;;) {
 				options.signal?.throwIfAborted();
 				const previous = await targetCheckoutState(commonDir, worktreePath, branch);
@@ -522,11 +527,7 @@ export async function ensureNamedWorktree(
 						]);
 					await fs.rm(path.join(previous.gitDir, "locked"));
 				}
-				if (
-					addFailure?.retrySibling === false ||
-					(addFailure?.retrySibling === true && performance.now() >= siblingDeadline)
-				)
-					throw failed(checkingOut, new GitFailure(addFailure.message));
+				if (addFailure?.retrySibling === false) throw failed(checkingOut, new GitFailure(addFailure.message));
 				let decision: WorktreeDecision;
 				try {
 					decision = await retried(checkingOut, () => decideWorktree(repo, commonDir, branch, worktreePath));
@@ -540,11 +541,14 @@ export async function ensureNamedWorktree(
 							: undefined;
 					if (siblingEntry === undefined || !(await addWasCleanedUp(commonDir, worktreePath, siblingEntry)))
 						throw error;
-					if (siblingFailures === 0) siblingDeadline = performance.now() + SIBLING_REGISTRATION_WAIT_MS;
 					siblingFailures++;
 					const backoff = Math.min(20 * 2 ** (siblingFailures - 1), 200);
-					if (siblingFailures >= SIBLING_REGISTRATION_ATTEMPTS || performance.now() + backoff >= siblingDeadline)
+					if (
+						siblingFailures >= SIBLING_REGISTRATION_ATTEMPTS ||
+						siblingWaitedMs + backoff > SIBLING_REGISTRATION_WAIT_MS
+					)
 						throw error;
+					siblingWaitedMs += backoff;
 					await sleep(backoff, options.signal);
 					continue;
 				}
@@ -575,8 +579,7 @@ export async function ensureNamedWorktree(
 				if (defaultPath) await retried(checkingOut, () => ensureWorktreeIgnore(repo));
 				if (
 					addFailure?.retrySibling === true &&
-					(performance.now() >= siblingDeadline ||
-						!(await addWasCleanedUp(commonDir, worktreePath, addFailure.siblingEntry ?? "")))
+					!(await addWasCleanedUp(commonDir, worktreePath, addFailure.siblingEntry ?? ""))
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
 				const lockReason = `${OWNED_ADD_LOCK_PREFIX}${process.pid}`;
@@ -600,15 +603,17 @@ export async function ensureNamedWorktree(
 				);
 				const siblingEntry = await siblingRegistrationEntry(repo, commonDir, worktreePath, message);
 				if (siblingEntry !== undefined) {
-					if (siblingFailures === 0) siblingDeadline = performance.now() + SIBLING_REGISTRATION_WAIT_MS;
 					siblingFailures++;
 					const backoff = Math.min(20 * 2 ** (siblingFailures - 1), 200);
 					const retrySibling =
 						siblingFailures < SIBLING_REGISTRATION_ATTEMPTS &&
-						performance.now() + backoff < siblingDeadline &&
+						siblingWaitedMs + backoff <= SIBLING_REGISTRATION_WAIT_MS &&
 						(await addWasCleanedUp(commonDir, worktreePath, siblingEntry));
 					addFailure = { message, diagnostic, branchExisted: branchExists, retrySibling, siblingEntry };
-					if (retrySibling) await sleep(backoff, options.signal);
+					if (retrySibling) {
+						siblingWaitedMs += backoff;
+						await sleep(backoff, options.signal);
+					}
 				} else {
 					addFailure = { message, diagnostic, branchExisted: branchExists };
 					if (CONCURRENT_GIT_FAILURE.test(diagnostic) || CONCURRENT_ADD_FAILURE.test(diagnostic))
