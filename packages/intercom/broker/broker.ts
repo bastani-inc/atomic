@@ -2370,8 +2370,8 @@ class IntercomBroker {
   }
 
   private queueForEndedChildWake(held: HeldSend, target: string, sender: WakeSender): boolean {
-    // Durable wake queue: while targets are still being identified, or if this target is in the restored set, defer in
-    // the unified FIFO queue (bounded by ENDED_QUEUE_LOAD_WAIT_MS) without mutating pending.
+    // Durable wake queue: while restoration is still running, defer wake sends in the unified FIFO queue under the
+    // shared ENDED_QUEUE_LOAD_WAIT_MS bound without mutating pending.
     if (this.endedQueue.deferForTarget(target, () => this.dispatchSend(held.socket, held.clientMessage, held.senderId))) {
       return true;
     }

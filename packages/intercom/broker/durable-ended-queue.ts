@@ -462,14 +462,14 @@ export class DurableEndedQueue {
 	}
 
 	/**
-	 * Defers `send` in the unified FIFO restoration queue while targets are still being decided/identified, or during
-	 * `loading` only when `target` is already in the immutable restored target set. Never mutates `pending`. Returns
-	 * `false` when the send should proceed immediately without waiting.
+	 * Defers `send` in the unified FIFO restoration queue while restoration is still in progress (`deciding`,
+	 * `identifying_targets`, or `loading`), under the shared `ENDED_QUEUE_LOAD_WAIT_MS` bound. Never mutates `pending`,
+	 * so live sends to non-pending targets still proceed immediately during `loading`. Returns `false` once restoration
+	 * is complete (`idle` / `ready`), without calling `send`.
 	 */
-	deferForTarget(target: string, send: () => void): boolean {
+	deferForTarget(_target: string, send: () => void): boolean {
 		const state = this.restoreState;
 		if (state.phase === "idle" || state.phase === "ready") return false;
-		if (state.phase === "loading" && !state.pending.has(target.trim().toLowerCase())) return false;
 		state.deferred.push(send);
 		return true;
 	}

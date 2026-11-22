@@ -683,10 +683,11 @@ test("during loading, clean subagents never mutate pending or stall live sends e
 	await queue.decide(() => {});
 	await vi.waitFor(() => assert.equal(queue.restorePhase, "loading"));
 
-	// A wake send to a clean subagent during loading must NOT mutate pending or defer behind a hung store.load().
+	// A wake send to a clean subagent during loading defers under the shared 5 s restore bound WITHOUT mutating pending,
+	// so live sends to the clean subagent still never stall on store.load().
 	const ran: string[] = [];
 	const deferredWake = queue.deferForTarget(cleanName, () => ran.push("deferred"));
-	assert.equal(deferredWake, false, "non-pending clean subagent must not wait on store.load()");
+	assert.equal(deferredWake, true, "wake send during loading waits under the shared restore bound");
 	assert.equal(queue.holds(cleanName), false, "deferForTarget must never mutate pending");
 	const sender = connectedSession({ id: "sender-1", name: "sender" });
 	const cleanChild = connectedSession({
@@ -703,6 +704,58 @@ test("during loading, clean subagents never mutate pending or stall live sends e
 	assert.equal(shouldHoldSendForEndedQueueRestore(queue, cleanChild.info.id, sender, sessions), false);
 	assert.equal(shouldHoldSendForEndedQueueRestore(queue, cleanName, sender, sessions), false);
 	assert.equal(shouldHoldSendForEndedQueueRestore(queue, "host-clean-1", sender, sessions), false);
+	loadGate.resolve();
+	await queue.untilLoaded();
+	assert.deepEqual(ran, ["deferred"]);
+});
+
+test("a wake send to a clean ended subagent during a 3.5 s store.load() waits under the 5 s restore bound instead of failing at the 2 s count wait", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	cleanups.push(() => {
+		vi.useRealTimers();
+	});
+	const keptName = "subagent-worker-kept-1";
+	const cleanName = "subagent-worker-clean-1";
+	const loadGate = deferred<void>();
+	cleanups.unshift(() => loadGate.resolve());
+	let counted = false;
+	const { queue } = createQueue(async () =>
+		stubStore({
+			targets: async () => [keptName],
+			load: async () => {
+				await loadGate.promise;
+				counted = true;
+			},
+		}),
+	);
+	await queue.decide(() => {});
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(queue.restorePhase, "loading");
+
+	// Simulates broker.queueForEndedChildWake -> DepartedChildren.admitWake: while store.load() is still running
+	// (3.5 s > ENDED_QUEUE_OPEN_WAIT_MS=2 s, < ENDED_QUEUE_LOAD_WAIT_MS=5 s), deferForTarget defers under the 5 s
+	// restore bound rather than entering admitWake while uncounted and failing at 2 s.
+	let outcome: "queued" | "failed_still_counting" | undefined;
+	const dispatchWake = (): void => {
+		if (queue.deferForTarget(cleanName, dispatchWake)) return;
+		if (counted) {
+			outcome = "queued";
+			return;
+		}
+		setTimeout(() => {
+			outcome = counted ? "queued" : "failed_still_counting";
+		}, ENDED_QUEUE_OPEN_WAIT_MS);
+	};
+
+	dispatchWake();
+	await vi.advanceTimersByTimeAsync(ENDED_QUEUE_OPEN_WAIT_MS + 1_500);
+	assert.equal(outcome, undefined, "must still wait under the 5 s restore bound past the 2 s open wait");
+	assert.equal(queue.holds(cleanName), false, "pending remains immutable while wake waits");
+
+	loadGate.resolve();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(queue.restorePhase, "ready");
+	assert.equal(outcome, "queued");
 });
 
 test("resolves host-ID / alias targets canonically so a later live send to a new session ID never overtakes an earlier wake send", async () => {
