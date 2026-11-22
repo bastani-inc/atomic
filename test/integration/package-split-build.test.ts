@@ -256,7 +256,7 @@ test(
 		assert.equal(probe.status, 0, probe.stderr);
 		const loaded = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
 		// A dependency that stays external still loads from node_modules, as the probe sees.
-		assert.ok(loaded.includes("undici"), loaded.join(", "));
+		assert.ok(loaded.includes("chalk"), loaded.join(", "));
 		assert.deepEqual(
 			loaded.filter((name) => inlined.includes(name)),
 			[],
