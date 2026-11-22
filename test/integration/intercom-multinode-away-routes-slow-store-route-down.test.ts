@@ -9,6 +9,7 @@ import {
 	outcomeLog,
 	REAL_BROKERS_TEST_TIMEOUT_MS,
 	reply,
+	retireCrashedOwners,
 	settle,
 	unique,
 	useSlowStoreBrokers,
@@ -33,6 +34,7 @@ test(
 		await leaveResumably(asker);
 		// Crashes before the move drops the copy here (the database answers every call 250 ms late).
 		await harness.stopBroker("b", "SIGKILL");
+		await retireCrashedOwners(ids.asker, ids.recipient);
 		const shared = await harness.openSharedStorage("a");
 		if ((await shared.all("SELECT 1 FROM mn_intercom_pending_asks WHERE message_id = ?", askId)).length === 0) {
 			// The move's shared write committed before the crash.
@@ -78,6 +80,7 @@ test(
 		const { asker, recipient } = await askOnOneBroker(log, askId);
 		const ids = { asker: asker.sessionId, recipient: recipient.sessionId };
 		await harness.stopBroker("b", "SIGKILL");
+		await retireCrashedOwners(ids.asker, ids.recipient);
 		const onA = (session: TwoBrokerClient, sessionId: string, watch: boolean) =>
 			harness.connect("a", session.name, {
 				group: session.group,
@@ -125,6 +128,7 @@ test(
 		const { asker, recipient } = await askOnOneBroker(log, askId);
 		const ids = { asker: asker.sessionId, recipient: recipient.sessionId };
 		await harness.stopBroker("b", "SIGKILL");
+		await retireCrashedOwners(ids.asker, ids.recipient);
 		const onA = (session: TwoBrokerClient, sessionId: string, watch: boolean) =>
 			harness.connect("a", session.name, {
 				group: session.group,

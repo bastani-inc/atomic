@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, vi } from "vitest";
 import {
+	TWO_BROKER_STORAGE_PREFIX,
 	type TwoBrokerClient,
 	TwoBrokerHarness,
 	type TwoBrokerHarnessOptions,
@@ -69,6 +70,22 @@ export async function askOnOneBroker(log: ReturnType<typeof outcomeLog>, askId: 
 	assert.equal(sent.delivered, true, sent.reason);
 	await vi.waitFor(() => assert.equal(recipient.messagesWithId(askId).length, 1), WAIT);
 	return { asker, recipient };
+}
+
+/**
+ * Gives back the ids that crashed broker b still owns, as broker a does when a claim finds one held by a broker that
+ * exited on its host. On this database that retirement and the claim around it take four round trips: a claim that
+ * finds the id held waits about 2.5 s here, past its bound on a loaded machine, and the session then comes back under
+ * a fresh id. Given back first, a claim binds the id in one.
+ */
+export async function retireCrashedOwners(...sessionIds: readonly string[]): Promise<void> {
+	const shared = await harness.openSharedStorage("a");
+	await shared.run(
+		`UPDATE ${TWO_BROKER_STORAGE_PREFIX}intercom_session_bindings
+		 SET owner_token = NULL, owner_broker = NULL, owner_renewed_at = NULL
+		 WHERE intercom_session_id IN (${sessionIds.map(() => "?").join(", ")})`,
+		...sessionIds,
+	);
 }
 
 /** The session leaves without ending, so it may resume. */
