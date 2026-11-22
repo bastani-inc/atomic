@@ -8,6 +8,11 @@ import {
 } from "../../packages/coding-agent/src/core/event-loop-monitor.js";
 
 const [longBlockMs = "0", shortBlockMs = "0", settleMs = "0", mode = "blocks"] = process.argv.slice(2).map(String);
+const probeLog = process.env.ATOMIC_ELBM_PROBE_LOG;
+const probeNote = (step: string) => {
+	if (probeLog) appendFileSync(probeLog, `${process.pid} ${step} ${Math.round(performance.now())}\n`);
+};
+probeNote("fixture-loaded");
 
 function holdTheEventLoopForLong(ms: number): number {
 	const until = performance.now() + ms;
@@ -90,8 +95,11 @@ function startSession(): void {
 	markEventLoopStartupComplete();
 }
 
+probeNote("monitor-started");
 await settle(Number(settleMs));
+probeNote("block-start");
 holdTheEventLoopForLong(Number(longBlockMs));
+probeNote("block-end");
 if (mode === "exit-inside-block") {
 	const probe = process.env.ATOMIC_ELBM_PROBE_LOG;
 	const note = (step: string) => {
