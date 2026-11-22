@@ -9,9 +9,10 @@ import { NODE_TS_SOURCE_HOOK } from "../../../test/helpers/node-ts-sources.js";
 import {
 	type CompileCacheStartInput,
 	compileCacheHelperRuntime,
-	compileCacheSharedHeapFlag,
 	compileCacheStartMode,
 	compileCacheWarmMarker,
+	engineCompileCacheResetHeapMb,
+	hostAutoSizedEngineHeap,
 	isCiValue,
 	startsCompileCacheHelper,
 } from "../src/utils/compile-cache.ts";
@@ -127,72 +128,96 @@ describe("the runtime a compile-cache helper repeats", () => {
 			assert.equal(compileCacheHelperRuntime(execArgv, env), undefined, JSON.stringify({ execArgv, env }));
 		}
 	});
-	test("includes an adopted engine heap flag so host and warmup helper share one runtime (#6222)", () => {
-		const runtime = compileCacheHelperRuntime([], {}, ["--max-old-space-size=8192"]);
-		assert.deepEqual(runtime, { execArgv: ["--max-old-space-size=8192"], nodeOptions: "" });
-		assert.deepEqual(compileCacheWarmupRuntimes(runtime!, ["--max-old-space-size=8192"]), [runtime]);
-		// Preloads are still dropped while keeping the adopted heap flag.
-		assert.deepEqual(compileCacheHelperRuntime(["--require", "./hook.cjs"], {}, ["--max-old-space-size=8192"]), {
-			execArgv: ["--max-old-space-size=8192"],
-			nodeOptions: "",
-		});
-		// Unrepeatable host flags or non-V8 adopted flags still refuse helper deferral.
-		assert.equal(compileCacheHelperRuntime(["--inspect"], {}, ["--max-old-space-size=8192"]), undefined);
-		assert.equal(compileCacheHelperRuntime([], {}, ["--max-old-space-size-percentage=50"]), undefined);
+
+	test("deduplicates warmup helpers when the engine only adds an auto-sized heap flag (#6222)", () => {
+		const own = { execArgv: [], nodeOptions: "" };
+		assert.deepEqual(compileCacheWarmupRuntimes(own, ["--max-old-space-size=16384"]), [own]);
+		assert.deepEqual(compileCacheWarmupRuntimes(own, []), [own]);
+		const explicit = { execArgv: ["--max-old-space-size=4096"], nodeOptions: "" };
+		assert.deepEqual(compileCacheWarmupRuntimes(explicit, ["--max-old-space-size=4096"]), [explicit]);
+		// Non-auto-heap differences still warm engine first, then host.
+		assert.deepEqual(compileCacheWarmupRuntimes(explicit, ["--max-old-space-size=8192"]), [
+			{ execArgv: ["--max-old-space-size=8192"], nodeOptions: "" },
+			explicit,
+		]);
 	});
 });
 
-describe("aligning the host compile-cache heap flag with the engine (#6222)", () => {
+describe("aligning an auto-sized engine compile-cache tag with the untouched host (#6222)", () => {
 	const baseInput = {
 		runtimeIsBun: false,
 		unsupported: false,
 		alreadyEnabled: false,
 		disabled: false,
-		execArgv: [] as readonly string[],
-		targetEngineHeapArgs: ["--max-old-space-size=16384"] as readonly string[],
+		matchHostTag: true,
+		execArgv: ["--max-old-space-size=16384"] as readonly string[],
+		nodeOptions: undefined as string | undefined,
 	};
 
-	test("adopts the single added --max-old-space-size flag when the cache is not pre-enabled", () => {
-		assert.equal(compileCacheSharedHeapFlag(baseInput), "--max-old-space-size=16384");
+	test("detects when the host auto-sized the engine heap without an explicit host heap flag", () => {
+		assert.equal(hostAutoSizedEngineHeap([], undefined, ["--max-old-space-size=16384"]), true);
 		assert.equal(
-			compileCacheSharedHeapFlag({
-				...baseInput,
-				execArgv: ["--max-semi-space-size=16"],
-				targetEngineHeapArgs: ["--max-semi-space-size=16", "--max-old-space-size=16384"],
-			}),
-			"--max-old-space-size=16384",
+			hostAutoSizedEngineHeap(["--max-semi-space-size=16"], "", [
+				"--max-semi-space-size=16",
+				"--max-old-space-size=16384",
+			]),
+			true,
 		);
+		for (const [hostArgv, nodeOptions, engineArgs] of [
+			[[], undefined, []],
+			[["--max-old-space-size=4096"], undefined, ["--max-old-space-size=4096"]],
+			[["--max-old-space-size", "4096"], undefined, ["--max-old-space-size=16384"]],
+			[["--max-heap-size=4096"], undefined, ["--max-old-space-size=16384"]],
+			[["--max-old-space-size-percentage=50"], undefined, ["--max-old-space-size=16384"]],
+			[[], "--max-old-space-size=4096", ["--max-old-space-size=16384"]],
+			[[], undefined, ["--max-old-space-size-percentage=50"]],
+		] as const) {
+			assert.equal(
+				hostAutoSizedEngineHeap(hostArgv, nodeOptions, engineArgs),
+				false,
+				JSON.stringify({ hostArgv, nodeOptions, engineArgs }),
+			);
+		}
 	});
 
-	test("leaves V8 flags untouched when cache is pre-enabled, disabled, unsupported, on Bun, or already sized", () => {
+	test("resets the engine heap flag only when matchHostTag is set and cache is neither pre-enabled nor disabled", () => {
+		assert.equal(engineCompileCacheResetHeapMb(baseInput), 16384);
 		const skipped = [
 			{ runtimeIsBun: true },
 			{ unsupported: true },
 			{ alreadyEnabled: true },
 			{ disabled: true },
-			{ targetEngineHeapArgs: [] },
-			{ targetEngineHeapArgs: ["--max-old-space-size-percentage=50"] },
-			{ execArgv: ["--max-old-space-size=4096"], targetEngineHeapArgs: ["--max-old-space-size=4096"] },
-			{ execArgv: ["--max-old-space-size", "4096"], targetEngineHeapArgs: ["--max-old-space-size=16384"] },
-			{ execArgv: ["--max_old_space_size=4096"], targetEngineHeapArgs: ["--max-old-space-size=16384"] },
-			{ execArgv: ["--max-heap-size=4096"], targetEngineHeapArgs: ["--max-old-space-size=16384"] },
-			{ execArgv: ["--max-old-space-size-percentage=50"], targetEngineHeapArgs: ["--max-old-space-size=16384"] },
+			{ matchHostTag: false },
+			{ execArgv: [] },
+			{ execArgv: ["--max-old-space-size=0"] },
+			{ nodeOptions: "--max-old-space-size=4096" },
+			{ nodeOptions: '"--unterminated' },
 		];
 		for (const change of skipped) {
-			assert.equal(compileCacheSharedHeapFlag({ ...baseInput, ...change }), undefined, JSON.stringify(change));
+			assert.equal(engineCompileCacheResetHeapMb({ ...baseInput, ...change }), undefined, JSON.stringify(change));
 		}
 	});
 });
 
 // It starts this runtime as Node; under Bun there is no Node directory to compare with.
 describe.skipIf("bun" in process.versions)("the compile cache's warm marker", () => {
-	test("host and engine share one compile-cache directory and accept each other's bytecode (#6222)", () => {
+	test("untouched host and auto-sized engine share one compile-cache directory, accept bytecode, and preserve main and worker heap limits (#6222)", () => {
 		const base = mkdtempSync(join(tmpdir(), "atomic-shared-cache-"));
 		tempDirs.push(base);
 		const compileCacheUrl = new URL("../src/utils/compile-cache.ts", import.meta.url).href;
+		const workerThreadsUrl = new URL("../src/utils/worker-threads.ts", import.meta.url).href;
 		const samplePath = join(base, "sample-cached-module.mjs");
 		writeFileSync(samplePath, "export const value = 42;\n");
+		const workerPath = join(base, "worker-heap-probe.mjs");
+		writeFileSync(
+			workerPath,
+			`import { getHeapStatistics } from "node:v8";
+import { parentPort } from "node:worker_threads";
+parentPort?.postMessage(Math.round(getHeapStatistics().heap_size_limit / 1048576));
+`,
+		);
 		const sampleModuleUrl = pathToFileURL(samplePath).href;
+		const workerModuleUrl = pathToFileURL(workerPath).href;
 		const sharedEnv = {
 			...process.env,
 			TMPDIR: base,
@@ -204,26 +229,35 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 		const hostScript = [
 			NODE_TS_SOURCE_HOOK,
 			`import nodeModule from "node:module";`,
-			`import { cachedDataVersionTag, getHeapStatistics } from "node:v8";`,
+			`import { cachedDataVersionTag } from "node:v8";`,
 			`const { enablePersistentCompileCache, flushPersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
-			`enablePersistentCompileCache({ interactive: false, build: "test", sharedHeapFlags: ["--max-old-space-size=8192"] });`,
+			`const tagBefore = cachedDataVersionTag();`,
+			`enablePersistentCompileCache({ interactive: false, build: "test", matchHostTag: false });`,
+			`const tagAfter = cachedDataVersionTag();`,
 			`await import(${JSON.stringify(sampleModuleUrl)});`,
 			`flushPersistentCompileCache();`,
-			`console.log(JSON.stringify({ dir: nodeModule.getCompileCacheDir(), tag: cachedDataVersionTag(), heapMb: Math.round(getHeapStatistics().heap_size_limit / 1048576) }));`,
+			`console.log(JSON.stringify({ dir: nodeModule.getCompileCacheDir(), tagBefore, tagAfter }));`,
 		].join("\n");
 		const host = spawnSync(process.execPath, ["--input-type=module", "-e", hostScript], {
 			env: sharedEnv,
 			encoding: "utf8",
 		});
 		assert.equal(host.status, 0, host.stderr);
-		const hostInfo = JSON.parse(host.stdout) as { dir: string; tag: number; heapMb: number };
+		const hostInfo = JSON.parse(host.stdout) as { dir: string; tagBefore: number; tagAfter: number };
+		assert.equal(hostInfo.tagAfter, hostInfo.tagBefore, "host must never mutate its V8 flag tag");
 
 		const engineScript = [
+			NODE_TS_SOURCE_HOOK,
 			`import nodeModule from "node:module";`,
 			`import { cachedDataVersionTag, getHeapStatistics } from "node:v8";`,
-			`nodeModule.enableCompileCache();`,
+			`const { enablePersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
+			`const { startModuleWorker } = await import(${JSON.stringify(workerThreadsUrl)});`,
+			`enablePersistentCompileCache({ interactive: false, build: "test", matchHostTag: true });`,
 			`await import(${JSON.stringify(sampleModuleUrl)});`,
-			`console.log(JSON.stringify({ dir: nodeModule.getCompileCacheDir(), tag: cachedDataVersionTag(), heapMb: Math.round(getHeapStatistics().heap_size_limit / 1048576) }));`,
+			`const worker = startModuleWorker(new URL(${JSON.stringify(workerModuleUrl)}));`,
+			`const workerHeapMb = await new Promise((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); });`,
+			`await worker.terminate();`,
+			`console.log(JSON.stringify({ dir: nodeModule.getCompileCacheDir(), tag: cachedDataVersionTag(), heapMb: Math.round(getHeapStatistics().heap_size_limit / 1048576), workerHeapMb }));`,
 		].join("\n");
 		const engine = spawnSync(
 			process.execPath,
@@ -234,10 +268,19 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 			},
 		);
 		assert.equal(engine.status, 0, engine.stderr);
-		const engineInfo = JSON.parse(engine.stdout) as { dir: string; tag: number; heapMb: number };
-		assert.equal(hostInfo.tag, engineInfo.tag);
-		assert.equal(hostInfo.dir, engineInfo.dir);
-		assert.ok(engineInfo.heapMb >= 8000, `engine heap limit must stay raised: ${engineInfo.heapMb}`);
+		const engineInfo = JSON.parse(engine.stdout) as {
+			dir: string;
+			tag: number;
+			heapMb: number;
+			workerHeapMb: number;
+		};
+		assert.equal(engineInfo.tag, hostInfo.tagAfter);
+		assert.equal(engineInfo.dir, hostInfo.dir);
+		assert.ok(engineInfo.heapMb >= 8000, `engine main heap limit must stay raised: ${engineInfo.heapMb}`);
+		assert.ok(
+			engineInfo.workerHeapMb >= 8000,
+			`engine worker heap limit must stay raised: ${engineInfo.workerHeapMb}`,
+		);
 		assert.match(engine.stderr, /sample-cached-module\.mjs was accepted/);
 		assert.doesNotMatch(engine.stderr, /sample-cached-module\.mjs was rejected/);
 	});
@@ -251,11 +294,11 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 			`import { cachedDataVersionTag } from "node:v8";`,
 			`const { enablePersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
 			`const before = cachedDataVersionTag();`,
-			`enablePersistentCompileCache({ interactive: false, build: "test", sharedHeapFlags: ["--max-old-space-size=8192"] });`,
+			`enablePersistentCompileCache({ interactive: false, build: "test", matchHostTag: true });`,
 			`const after = cachedDataVersionTag();`,
 			`console.log(JSON.stringify({ before, after }));`,
 		].join("\n");
-		const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+		const result = spawnSync(process.execPath, ["--max-old-space-size=8192", "--input-type=module", "-e", script], {
 			env: { ...process.env, NODE_COMPILE_CACHE: base, NODE_OPTIONS: "" },
 			encoding: "utf8",
 		});
@@ -263,6 +306,7 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 		const { before, after } = JSON.parse(result.stdout) as { before: number; after: number };
 		assert.equal(after, before);
 	});
+
 	test("lies in the directory Node itself caches into for the same runtime flags (#6132)", () => {
 		const probe = [
 			"const m = require('node:module');",
