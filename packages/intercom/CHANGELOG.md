@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- On Windows, the Intercom broker now starts as a hidden detached process without `wscript.exe`, `cmd.exe`, or `broker-launch.vbs`, staying outside the launching engine's process tree and breaking away from breakaway-allowing parent job objects. Broker startup now works when Windows Script Host is disabled, preserves startup error logs and exit codes even when paths or arguments contain `%`, and keeps `broker.log` appending and capped at 8 KiB.
+
 ### Fixed
 
 - With multi-node routing, a session that reconnects to the same broker while that broker is still recording the departure of its earlier connection keeps its Intercom ID. Before, when the shared database also answered the ID claim late, the broker waited for that departure to finish before it checked the claim, and the session could get a fresh ID instead.
@@ -12,6 +16,8 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 - With multi-node routing, an Intercom ID that a reconnecting session asked for back is no longer left held for up to 30 s when the shared database wrote the claim only after the session had already been given a fresh ID. That late write is now given back, so the ID can be claimed again at once. A session waiting to take its ID back after a move now gets it as soon as the hold on that ID ends, rather than up to 30 s later.
 - With multi-node routing on a shared or pooled database, messages from one sender to the same recipient now stay in send order across local deliveries, cross-node deliveries, mixed replies and plain sends, reconnects, and broker startup, without serializing independent database lookups or blocking sends to other recipients.
 - On Windows, Intercom's host-identity and broker-stop commands now resolve junctions, symlinks, short names, `subst` drives, and extended-length (`\\?\`, `\\.\`, `\\?\UNC\`) path aliases when checking whether a working directory is inside the project folder, reject raw volume devices and incomplete UNC roots, fall back to the working directory's drive root when needed, and prefer `SystemRoot` when running from a genuine drive root.
+- Sessions starting at the same time against an older or retiring Intercom broker no longer warn that the broker cannot verify how it routes (or fail to join with `broker-routing-unavailable` when multi-node storage is configured or during verified registration) if their status check or registration closes while another session replaces or stops the broker. They treat that closed connection as a retiring broker and connect verified to the replacement.
+- With multi-node routing, sends and replies over a slow shared database no longer fail with `Send timeout` while the broker is still making progress routing or confirming delivery. The broker now extends the sender within its save cap while store progress continues, emits no extra frames on fast stores, and leaves a permanently hung database at its 10 s timeout.
 
 ## [0.10.4] - 2026-11-22
 

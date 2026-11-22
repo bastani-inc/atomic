@@ -111,10 +111,14 @@ if (heapArgs.length > 0) {
 	const prewarmed = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
-	// An interactive session shows its editor and takes typing before the rest of Atomic has loaded, where nothing it
-	// shows before its editor would come first (startup-shell.ts). Its modules load before the rest.
-	const started =
-		interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
+	const mainArgs = prewarmedEngine
+		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
+		: Promise.resolve(args);
+	// A prewarmed child lets `engine-prewarm` load and announce readiness on stdout before starting the main graph import,
+	// so the host receives the verified build identity well before engine handover.
+	const started = prewarmedEngine
+		? prewarm!.catch(() => {})
+		: interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
 			? prewarmed
 					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
 					.then(async ({ planStartupShell }) => {
@@ -129,9 +133,6 @@ if (heapArgs.length > 0) {
 					})
 					.catch(() => {})
 			: prewarmed;
-	const mainArgs = prewarmedEngine
-		? prewarm!.then(({ readPrewarmedEngineArgs }) => readPrewarmedEngineArgs())
-		: Promise.resolve(args);
 	let adopted = false;
 	void mainArgs.then(() => {
 		adopted = true;

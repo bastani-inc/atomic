@@ -135,6 +135,7 @@ export interface SubagentAwaitIntercomPeerRequest {
 	readonly name: string;
 	readonly group?: string;
 	readonly timeoutMs: number;
+	readonly signal?: AbortSignal;
 	completion?: Promise<boolean>;
 }
 
@@ -243,15 +244,59 @@ const goneChildren = new Map<
 	}
 >();
 
+class RestoreAbortedError extends Error {
+	constructor() {
+		super("Session closed during subagent restoration");
+		this.name = "AbortError";
+	}
+}
+
+function sessionAbortSignal(ctx: ExtensionContext): AbortSignal | undefined {
+	return ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+}
+
+function isRestoreAborted(error: unknown, signal: AbortSignal | undefined): boolean {
+	if (signal?.aborted) return true;
+	if (error instanceof RestoreAbortedError) return true;
+	if (isStaleExtensionContextError(error)) return true;
+	return error instanceof Error && error.name === "AbortError";
+}
+
+function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbort: () => T): Promise<T> {
+	if (signal === undefined) return promise;
+	if (signal.aborted) {
+		void promise.catch(() => undefined);
+		return Promise.resolve(onAbort());
+	}
+	return new Promise<T>((resolve, reject) => {
+		const handleAbort = () => resolve(onAbort());
+		signal.addEventListener("abort", handleAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", handleAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", handleAbort);
+				if (signal.aborted) resolve(onAbort());
+				else reject(error);
+			},
+		);
+	});
+}
+
 async function awaitIntercomPeer(
 	events: IntercomEventBus,
 	name: string,
 	group: string | undefined,
+	signal?: AbortSignal,
 ): Promise<boolean | undefined> {
+	if (signal?.aborted) return false;
 	const request: SubagentAwaitIntercomPeerRequest = {
 		name,
 		...(group ? { group } : {}),
 		timeoutMs: SUBAGENT_INTERCOM_PEER_TIMEOUT_MS,
+		...(signal === undefined ? {} : { signal }),
 	};
 	try {
 		events.emit(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, request);
@@ -259,7 +304,12 @@ async function awaitIntercomPeer(
 		if (!isStaleExtensionContextError(error)) throw error;
 		return undefined;
 	}
-	return request.completion ? await request.completion.catch(() => false) : undefined;
+	if (!request.completion) return undefined;
+	return raceWithSignal(
+		request.completion.catch(() => false),
+		signal,
+		() => false,
+	);
 }
 
 /**
@@ -1202,6 +1252,8 @@ async function relaunchChild(
 		runSchedule && resume?.outsideWakeSlot
 			? waitingOutsideWakeSlot(runSchedule, resume.outsideWakeSlot)
 			: runSchedule;
+	const sessionSignal = sessionAbortSignal(ctx);
+	if (sessionSignal?.aborted) throw new RestoreAbortedError();
 	if (!host) {
 		// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
 		// context throws on every read. The working directory is fixed at launch.
@@ -1228,6 +1280,7 @@ async function relaunchChild(
 			hold,
 			supervisorAuthorization,
 			intercomGroup,
+			sessionSignal,
 		);
 		return fresh ? startedFresh(outcome) : outcome;
 	}
@@ -1270,6 +1323,7 @@ async function relaunchChild(
 		release,
 		supervisorAuthorization,
 		intercomGroup,
+		sessionSignal,
 	);
 	return fresh ? startedFresh(outcome) : outcome;
 }
@@ -1310,6 +1364,8 @@ async function startQueuedChild(
 	release: () => void,
 	resume: SubagentChildResumeRequest | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
+	const sessionSignal = sessionAbortSignal(ctx);
+	if (sessionSignal?.aborted) throw new RestoreAbortedError();
 	const supervisorAuthorization = queued.usesIntercom ? hold?.authorization : undefined;
 	if (!supervisorAuthorization) await hold?.release();
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
@@ -1325,7 +1381,16 @@ async function startQueuedChild(
 		},
 		onEnded: release,
 	});
-	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
+	return relaunched(
+		deps,
+		record,
+		response,
+		recordChild,
+		release,
+		supervisorAuthorization,
+		intercomGroup,
+		sessionSignal,
+	);
 }
 
 /**
@@ -1341,6 +1406,7 @@ async function ownerlessRelaunched(
 	hold: ChildTargetHold | undefined,
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
 	intercomGroup: string | undefined,
+	sessionSignal?: AbortSignal,
 ): Promise<SubagentChildRestoreOutcome> {
 	void launched.result
 		.then(
@@ -1373,11 +1439,19 @@ async function ownerlessRelaunched(
 		),
 	]).then(release);
 	// Pause or quit right after this returns must find the child under its new launch id.
-	await recordChild.flushed?.();
+	await raceWithSignal(recordChild.flushed?.() ?? Promise.resolve(), sessionSignal, () => undefined);
+	if (sessionSignal?.aborted) {
+		release();
+		throw new RestoreAbortedError();
+	}
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
-			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
+			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup, sessionSignal)
 			: undefined;
+	if (sessionSignal?.aborted) {
+		release();
+		throw new RestoreAbortedError();
+	}
 	return { kind: "restored", record, taskId: launched.launchId, intercomLive };
 }
 
@@ -1389,7 +1463,12 @@ async function relaunched(
 	release: () => void,
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
 	intercomGroup: string | undefined,
+	sessionSignal?: AbortSignal,
 ): Promise<SubagentChildRestoreOutcome> {
+	if (sessionSignal?.aborted) {
+		release();
+		throw new RestoreAbortedError();
+	}
 	if (response.kind === "unstarted") {
 		release();
 		return {
@@ -1400,11 +1479,19 @@ async function relaunched(
 		};
 	}
 	// Pause or quit right after this returns must find the child under its new task id.
-	await recordChild.flushed?.();
+	await raceWithSignal(recordChild.flushed?.() ?? Promise.resolve(), sessionSignal, () => undefined);
+	if (sessionSignal?.aborted) {
+		release();
+		throw new RestoreAbortedError();
+	}
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
-			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
+			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup, sessionSignal)
 			: undefined;
+	if (sessionSignal?.aborted) {
+		release();
+		throw new RestoreAbortedError();
+	}
 	return { kind: "restored", record, taskId: response.observation.taskId, intercomLive };
 }
 
@@ -1429,6 +1516,8 @@ export async function restoreSubagentChild(
 	const owner = subagentChildOwnerOperations(deps.pi, ctx);
 	deps = { ...deps, pi: owner.pi };
 	ctx = owner.ctx;
+	const signal = sessionAbortSignal(ctx);
+	if (signal?.aborted) throw new RestoreAbortedError();
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
 	// The owner's own session when the index's latest record is in a copy of it that is no longer open. A child whose
@@ -1485,11 +1574,12 @@ export async function restoreSubagentChild(
 	let releaseWorktree: ((failed?: boolean) => Promise<void>) | undefined;
 	// The resume reports only once its run's worktrees are swept, so nothing of Atomic still runs in the child's worktree
 	// when it does (#5589). A sweep that fails leaves the worktree to the next one; it never changes how the resume ends.
-	const worktreeReleased = (failed: boolean) => boundedWorktreeReply(record.runId, releaseWorktree?.(failed));
+	const worktreeReleased = (failed: boolean) =>
+		boundedWorktreeReply(record.runId, releaseWorktree?.(failed), undefined, signal);
 	const failedRestore = async (reason: string, deadline: number) => {
 		await markGone(reason);
 		// The broker acknowledgement yields: the last sibling may have begun sweeping this worktree meanwhile.
-		const note = await boundedWorktreeReply(record.runId, undefined, deadline);
+		const note = await boundedWorktreeReply(record.runId, undefined, deadline, signal);
 		return {
 			kind: "unrestorable" as const,
 			childId: record.childId,
@@ -1499,18 +1589,29 @@ export async function restoreSubagentChild(
 	};
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
 		releaseWorktree = await worktreeResume;
+		if (signal?.aborted) throw new RestoreAbortedError();
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
 		// When the session already holds them since it started, that hold carries on under the same capability:
 		// what it holds stays held, and no moment passes without a hold.
-		const earlier = await takeEarlyChildHold(key);
+		const earlier = await raceWithSignal(
+			takeEarlyChildHold(key) ?? Promise.resolve(undefined),
+			signal,
+			() => undefined,
+		);
+		if (signal?.aborted) throw new RestoreAbortedError();
 		// Sends to the relaunched child wait through its start, until it registers, instead of a brief hold.
 		const holdMs = subagentStartHoldMs(deps.config.sessionStartTimeoutMs);
 		if (earlier) {
 			hold = earlier;
-			await hold.holdWhileStarting(holdMs);
+			await raceWithSignal(hold.holdWhileStarting(holdMs), signal, () => undefined);
 		} else {
-			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx), { holdMs });
+			hold = await raceWithSignal(
+				holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx), { holdMs }),
+				signal,
+				() => undefined,
+			);
 		}
+		if (signal?.aborted) throw new RestoreAbortedError();
 		// The child follows the restores of the session that owns it, after those it was launched in: a wake comes from
 		// outside any work, so neither is in scope here.
 		return withWorktreeRootMappings(
@@ -1521,6 +1622,12 @@ export async function restoreSubagentChild(
 	})().then(
 		async (outcome) => {
 			previousIntercomId.resolve(undefined);
+			if (signal?.aborted) {
+				release();
+				void hold?.release();
+				await worktreeReleased(false);
+				throw new RestoreAbortedError();
+			}
 			const registered = activeRestorations.get(key);
 			if (registered?.outcome === restoration) {
 				registered.settled = outcome;
@@ -1534,10 +1641,16 @@ export async function restoreSubagentChild(
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
+			const aborted = isRestoreAborted(error, signal);
 			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
-			await worktreeReleased(true);
-			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
-			// child as it was, for a later wake or resume; only a lasting one makes it gone.
+			await worktreeReleased(!aborted);
+			// A shutdown abort or transient storage failure leaves the child as it was for a later wake or resume;
+			// never mark a healthy child permanently gone because the session closed mid-restore.
+			if (aborted) {
+				release();
+				void hold?.release();
+				throw error;
+			}
 			if (isRetryableStorageError(error)) {
 				release();
 				await hold?.release();
@@ -1625,17 +1738,21 @@ export async function restoreSubagentChildren(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 ): Promise<SubagentChildRestoreOutcome[]> {
+	const signal = sessionAbortSignal(ctx);
+	if (signal?.aborted) return [];
 	const owned = readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
 	const restorable = [...owned.values()].filter(isRestorableSubagentChild);
 	const settled = await Promise.allSettled(
 		restorable.map((record) => restoreSubagentChild(deps, ctx, record.childId)),
 	);
-	// One child's failure never takes the others' outcomes with it (#4660). A failure that passes leaves its child as it
-	// was, to be resumed; any other is reported for that child alone, and the child is not recorded as gone.
+	if (signal?.aborted) return [];
+	// One child's failure never takes the others' outcomes with it (#4660). A failure that passes (or a session
+	// shutdown abort) leaves its child as it was, to be resumed; any other is reported for that child alone, and
+	// the child is not recorded as gone.
 	const outcomes = settled.map((result, index): SubagentChildRestoreOutcome | undefined => {
 		if (result.status === "fulfilled") return result.value;
 		const error: unknown = result.reason;
-		if (isRetryableStorageError(error)) return undefined;
+		if (isRetryableStorageError(error) || isRestoreAborted(error, signal)) return undefined;
 		return {
 			kind: "unrestorable",
 			childId: restorable[index]!.childId,

@@ -235,6 +235,7 @@ export class RpcClient extends RpcClientApi {
 						// Only the first engine: a later one continues the session as a resume does.
 						this.generation === 0 ? this.options.interactiveEngine.startedSessionId : undefined,
 						this.options.interactiveEngine.startupExtensionCheck,
+						this.generation > 0,
 					)
 				: undefined;
 			if (this.stopPromise) {

@@ -1,4 +1,5 @@
 import type { KeyId } from "@bastani/atomic-tui";
+import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import type { BuiltinPackageDirName } from "../builtin-install-layout.ts";
 import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.js";
 import type { AgentPanelSource } from "../tasks/agent-panel-source.ts";
@@ -765,7 +766,11 @@ export function createLazyBuiltinFactory(
 					if (!sessionSnapshot && ctx) {
 						sessionSnapshot = {
 							eventName: "session_start",
-							event: { type: "session_start", reason: "startup" } satisfies SessionStartEvent,
+							event: {
+								type: "session_start",
+								reason: "startup",
+								...(interactiveEngineStartupEnv().restarted ? { engineRestart: true as const } : {}),
+							} satisfies SessionStartEvent,
 							ctx,
 							generation: ++lifecycleGeneration,
 							lease,
@@ -831,7 +836,11 @@ export function createLazyBuiltinFactory(
 					if (!sessionSnapshot && ctx) {
 						sessionSnapshot = {
 							eventName: "session_start",
-							event: { type: "session_start", reason: "startup" } satisfies SessionStartEvent,
+							event: {
+								type: "session_start",
+								reason: "startup",
+								...(interactiveEngineStartupEnv().restarted ? { engineRestart: true as const } : {}),
+							} satisfies SessionStartEvent,
 							ctx,
 							generation: ++lifecycleGeneration,
 							lease,

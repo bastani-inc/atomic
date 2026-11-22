@@ -318,7 +318,7 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 		);
 	});
 
-	unixOnly("(#3505) a first broker that dies while starting does not block the next spawn", async () => {
+	test("(#3505) a first broker that dies while starting does not block the next spawn", async () => {
 		const brokerArgs = [
 			"--import",
 			brokerControl.preloadUrl,
@@ -370,7 +370,7 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 		}
 	});
 
-	unixOnly("(#3505) a spawn succeeds when its broker exits cleanly because a live broker answers", async () => {
+	test("(#3505) a spawn succeeds when its broker exits cleanly because a live broker answers", async () => {
 		const handoffGate = join(gateDir, "handoff");
 		const childRunning = join(gateDir, "running");
 		const exitsOnGate = `const fs = require("fs"); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => { if (fs.existsSync(process.argv[2])) process.exit(0); }, 2);`;
