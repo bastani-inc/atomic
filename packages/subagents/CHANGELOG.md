@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows with Python 3.13 or 3.14, the `liteparse` skill's `search.py` no longer fails when its output goes to a pipe, as it does when Atomic runs it, on finding two or more matches or a match with text outside the system's code page: it now writes its output and errors as UTF-8, as it already did on Python 3.15. On every system it no longer fails on a document over 64 KiB with a character split between two 64 KiB blocks, or when the document, or a 64 KiB part of it, has fewer lines than the matches asked for (`-k`, 10 by default). A match after the first 64 KiB now shows its line numbers in the whole document, instead of counting from the start of its block, and a line that crossed a block boundary is no longer split in two.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Fixed
@@ -30,7 +34,6 @@
 - `skill-creator`'s `package_skill.py` gives the `.skill` file its name only once it is complete: a failure or Ctrl+C leaves an earlier `.skill` file as it was and no partial file, a replaced file keeps its permissions, and a `.skill` file written inside the skill folder no longer contains itself.
 - A user agent in `~/.atomic/agent/agents/` now wins over an agent of the same name in `~/.agents/` or legacy `~/.pi/agent/agents/`, as `.atomic/agents/` already does in a project. Before, the agent in `~/.agents/` or `~/.pi/agent/agents/` ran instead.
 - The `subagent` tool's `share` parameter no longer tells the model that it uploads the session to a GitHub Gist: it has no effect, and nothing is uploaded. Sibling `subagent` calls in one message no longer have to agree on it: one that sets `share: true` next to one that leaves it out no longer rejects both with "incompatible top-level field 'share'", and both launch. The `sessionDir` parameter's description no longer says that `share` decides whether sessions are kept; it now says that `sessionDir` keeps fresh (not forked) subagents' sessions as JSONL files under that directory instead of the launching session's store.
-- On Windows with Python 3.13 or 3.14, the `liteparse` skill's `search.py` no longer fails when its output goes to a pipe, as it does when Atomic runs it, on finding two or more matches or a match with text outside the system's code page: it now writes its output and errors as UTF-8, as it already did on Python 3.15. On every system it no longer fails on a document over 64 KiB with a character split between two 64 KiB blocks, or when the document, or a 64 KiB part of it, has fewer lines than the matches asked for (`-k`, 10 by default). A match after the first 64 KiB now shows its line numbers in the whole document, instead of counting from the start of its block, and a line that crossed a block boundary is no longer split in two.
 
 ## [0.10.3] - 2026-11-21
 
