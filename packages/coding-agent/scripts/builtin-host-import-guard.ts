@@ -1,4 +1,5 @@
 import { type ImportDeclaration, parse } from "acorn";
+import { codeStringArrayLiteral, codeStringLiteral } from "./code-string-literal.mjs";
 
 /**
  * A builtin extension's bundle imports Atomic's own modules (`@bastani/atomic`, `@bastani/atomic-ai`, ...) from the
@@ -40,15 +41,15 @@ export function withHostImportGuard(source: string, guard: HostImportGuard): str
 	// The host package itself says which version and application name the process runs.
 	const specifiers = ["@bastani/atomic", ...[...named.keys()].filter((specifier) => specifier !== "@bastani/atomic")];
 	const imports = specifiers.map(
-		(specifier, index) => `import * as __atomicHostImport${index} from ${JSON.stringify(specifier)};`,
+		(specifier, index) => `import * as __atomicHostImport${index} from ${codeStringLiteral(specifier)};`,
 	);
 	const checks = specifiers
 		.filter((specifier) => named.has(specifier))
 		.map(
 			(specifier) =>
-				`[__atomicHostImport${specifiers.indexOf(specifier)}, ${JSON.stringify(specifier)}, ${JSON.stringify([...named.get(specifier)!].sort())}]`,
+				`[__atomicHostImport${specifiers.indexOf(specifier)}, ${codeStringLiteral(specifier)}, ${codeStringArrayLiteral([...named.get(specifier)!].sort())}]`,
 		);
-	const restart = JSON.stringify(
+	const restart = codeStringLiteral(
 		` was updated to ${guard.version} while this session was running; restart it to keep using the ${guard.label} extension.`,
 	);
 	return [
@@ -60,7 +61,7 @@ export function withHostImportGuard(source: string, guard: HostImportGuard): str
 		"\t\t\tif (!(name in namespace)) missing.push(`The requested module '${specifier}' does not provide an export named '${name}'`);",
 		"\tif (missing.length > 0) {",
 		'\t\tconst application = typeof __atomicHostImport0.APP_NAME === "string" ? __atomicHostImport0.APP_NAME : "atomic";',
-		`\t\tif (__atomicHostImport0.VERSION !== ${JSON.stringify(guard.version)}) missing.unshift(application + ${restart});`,
+		`\t\tif (__atomicHostImport0.VERSION !== ${codeStringLiteral(guard.version)}) missing.unshift(application + ${restart});`,
 		'\t\tthrow new Error(missing.join("\\n"));',
 		"\t}",
 		"}",
