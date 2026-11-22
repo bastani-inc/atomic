@@ -38,6 +38,11 @@ export declare class HeldProcessDescendants {
 export declare class HostProcess {
   get pid(): number
   /**
+   * When this process was created on Windows (decimal 100-ns ticks since 1601-01-01 UTC), read from its process
+   * handle at start; `null` elsewhere or where unreadable.
+   */
+  get creationTime(): string | null
+  /**
    * Queues `chunk` for the process's standard input. False once input can no longer be written: it was ended, or
    * the process's output thread finished. On Windows always false: standard input is the host's connection.
    */
@@ -594,7 +599,11 @@ export interface HostProcessOptions {
   pipeStdin: boolean
   pipeStdout: boolean
   pipeStderr: boolean
-  /** Starts the process in a session of its own, as Node's `detached` does. Refused on Windows. */
+  /**
+   * Starts the process detached from its parent. On Linux, starts a new session as Node's `detached` does. On Windows,
+   * starts hidden with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (and `CREATE_BREAKAWAY_FROM_JOB` when the parent
+   * job allows it), with no pipes and an optional append-only `stderr_log_path`.
+   */
   detached: boolean
   /**
    * Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
@@ -611,6 +620,26 @@ export interface HostProcessOptions {
    * input, 1 output, 2 error), so the host knows its connections and which stream each is.
    */
   pipePrefix?: Buffer
+  /**
+   * On Windows with `detached`, a log file opened append-only (`FILE_APPEND_DATA`) and inherited as standard error.
+   * Ignored elsewhere.
+   */
+  stderrLogPath?: string
+  /** On Windows, join `args` verbatim without re-quoting, matching Node's `windowsVerbatimArguments`. */
+  verbatimArguments?: boolean
+  /**
+   * On Windows with `detached`, use `CREATE_NO_WINDOW` instead of `DETACHED_PROCESS` so the process starts with a
+   * windowless console inherited by its console descendants (prevents custom `.cmd`/`.bat` or wrapper children from
+   * allocating a visible console window).
+   */
+  noWindow?: boolean
+  /**
+   * On Windows with `detached`, attach to an existing process ID instead of spawning a new process (requires
+   * `watch_creation_time` matching its kernel creation time).
+   */
+  watchPid?: number
+  /** Expected Windows kernel creation time (decimal 100-ns ticks since 1601-01-01 UTC) for `watch_pid`. */
+  watchCreationTime?: string
 }
 
 export type InputData =
@@ -923,7 +952,9 @@ export declare function signalIgnored(signal: number): boolean | null
  * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. On Windows the
  * process starts suspended in a job of its own, its piped streams are connections to the host's pipe server
  * `options.pipe`, and `on_event` gets only its exit; a start that cannot put it in the job or connect its streams
- * throws `ENOTSUP` before the program ran. Off Linux and Windows it always refuses with `ENOSYS`.
+ * throws `ENOTSUP` before the program ran. With `detached: true` on Windows, starts a hidden detached process with
+ * optional `stderr_log_path` and `CREATE_BREAKAWAY_FROM_JOB`, or (with `watch_pid` and `watch_creation_time`) attaches
+ * a verified exit watcher to an existing process. Off Linux and Windows it always refuses with `ENOSYS`.
  */
 export declare function startHostProcess(options: HostProcessOptions, onEvent: (event: HostProcessEvent) => void): HostProcess
 

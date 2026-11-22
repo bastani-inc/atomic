@@ -5,13 +5,22 @@
  * as `engine_agent_view_status`, once per microtask.
  */
 import type { TUI } from "@bastani/atomic-tui";
+import { getExtensionRuntimeEventBus } from "../../core/extensions/loader-core.js";
+import type { ExtensionRuntime } from "../../core/extensions/types.ts";
 import { dismissedAgentPanelItems, subscribeAgentPanel } from "../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
-import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
+import {
+	getOwnerTaskStore,
+	isTaskTurnInterrupted,
+	type OwnerTaskStore,
+	watchOwnerTaskStoreBinding,
+} from "../../core/tasks/owner-store.js";
+import { type TaskTranscriptSource, watchTaskTranscriptBindings } from "../../core/tasks/supervisor.js";
+import { onOwnerTaskAction, ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import type { AgentViewPort, AgentViewStatus } from "../interactive/agent-view/contracts.ts";
 import { openLocalAgentViewPort } from "../interactive/agent-view/local-port.ts";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
+import { onTaskDismissed } from "../interactive/components/task-dismissal.ts";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import type { SteeringQueueLists } from "../interactive/steering-queue-controller.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
@@ -52,17 +61,284 @@ interface EngineView {
 	close(): void;
 }
 
+interface TrackedChildTask {
+	sessionId?: string;
+	sessionFile?: string;
+	interrupted: boolean;
+	readOnly: boolean;
+	settled: boolean;
+	dismissed: boolean;
+	resumeInvalidationPending: boolean;
+	followedSession?: TaskTranscriptSource;
+	unsubscribeSession?: () => void;
+}
+
+const AUTO_RESTART_CONTINUATION_PREFIX = "Atomic restarted while you were working";
+const SUBAGENT_CHILD_STOPPED_EVENT = "subagent:child-stopped";
+
+function userMessagePlainText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
+			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("\n");
+}
+
 class EngineAgentViewRegistry implements EngineAgentViews {
 	private readonly views = new Map<string, EngineView>();
 	private nextView = 0;
 	private readonly context: EngineAgentViewContext;
+	private readonly stopInvalidationWatch: () => void;
 
 	constructor(context: EngineAgentViewContext) {
 		this.context = context;
+		this.stopInvalidationWatch = this.watchChildInvalidations();
 	}
 
 	port(viewId: string): AgentViewPort | undefined {
 		return this.views.get(viewId)?.port;
+	}
+
+	private hasOpenViewForSession(sessionId: string): boolean {
+		for (const view of this.views.values()) {
+			if (view.port.status().sessionId === sessionId) return true;
+		}
+		return false;
+	}
+
+	private emitInvalidation(
+		sessionId: string | undefined,
+		sessionFile: string | undefined,
+		reason: "stopped" | "cleared" | "session-ended" | "sent-elsewhere",
+	): void {
+		if (sessionId === undefined || sessionId.length === 0) return;
+		this.context.send({
+			type: "engine_agent_queue_invalidated",
+			sessionId,
+			...(sessionFile === undefined ? {} : { sessionFile }),
+			reason,
+		});
+	}
+
+	/**
+	 * Watch child subagent lifecycle in this engine so the host drops any pending lost-queue restore when a child is
+	 * stopped, cleared, ended non-resumably, or sent input by another path before the user reopens it.
+	 */
+	private watchChildInvalidations(): () => void {
+		const { session } = this.context;
+		let boundStore: OwnerTaskStore | undefined;
+		let stopStore: (() => void) | undefined;
+		let stopActions: (() => void) | undefined;
+		let stopDismiss: (() => void) | undefined;
+		let stopTranscriptBind: (() => void) | undefined;
+		const tracked = new Map<TaskId, TrackedChildTask>();
+		let initialScanComplete = false;
+
+		const cleanupTracked = (taskId: TaskId) => {
+			const entry = tracked.get(taskId);
+			entry?.unsubscribeSession?.();
+			tracked.delete(taskId);
+		};
+
+		const cleanupAllTracked = () => {
+			for (const taskId of [...tracked.keys()]) cleanupTracked(taskId);
+		};
+
+		const attachSessionSubscription = (entry: TrackedChildTask, transcript: TaskTranscriptSource | undefined) => {
+			if (entry.followedSession === transcript) return;
+			entry.unsubscribeSession?.();
+			entry.unsubscribeSession = undefined;
+			entry.followedSession = transcript;
+			if (transcript?.subscribe === undefined) return;
+			let seenUserMessage = transcript
+				.getEntries()
+				.some((row) => row.type === "message" && row.message.role === "user");
+			entry.unsubscribeSession = transcript.subscribe((event) => {
+				if (event.type !== "message_start") return;
+				const sid = entry.sessionId ?? transcript.getSessionId();
+				const sfile = entry.sessionFile ?? transcript.getSessionFile?.();
+				if (event.message.role === "custom") {
+					const customType = (event.message as { readonly customType?: unknown }).customType;
+					if (customType === "intercom_message" && !this.hasOpenViewForSession(sid)) {
+						this.emitInvalidation(sid, sfile, "sent-elsewhere");
+					}
+					return;
+				}
+				if (event.message.role === "user") {
+					const text = userMessagePlainText(event.message.content).trim();
+					if (text.length === 0 || text.startsWith(AUTO_RESTART_CONTINUATION_PREFIX)) return;
+					if (seenUserMessage && !this.hasOpenViewForSession(sid)) {
+						this.emitInvalidation(sid, sfile, "sent-elsewhere");
+					}
+					seenUserMessage = true;
+				}
+			});
+		};
+
+		const syncStore = () => {
+			const store = boundStore;
+			if (store === undefined) return;
+			const source = ownerTaskViewSource(store);
+			const dismissedPanel = dismissedAgentPanelItems(session);
+			const present = new Set<TaskId>();
+			const liveSessions = new Set<string>();
+			for (const task of store.tasks) {
+				if (task.kind !== "agent") continue;
+				const taskId = task.ref.taskId;
+				present.add(taskId);
+				const follow = source.followTaskTranscript(taskId)?.session;
+				const sid = follow?.getSessionId?.();
+				const sfile = follow?.getSessionFile?.();
+				if (sid !== undefined) liveSessions.add(sid);
+				const interrupted = isTaskTurnInterrupted(task);
+				const readOnly = source.taskReadOnlyReason?.(taskId) !== undefined;
+				const settled = task.execution.kind === "settled";
+				const dismissed = dismissedPanel.has(`task:${taskId}`);
+				const existing = tracked.get(taskId);
+				if (existing === undefined) {
+					const isResumedAfterStartup =
+						initialScanComplete && String(task.launchOperationId ?? "").includes(":resume:");
+					const created: TrackedChildTask = {
+						...(sid === undefined ? {} : { sessionId: sid }),
+						...(sfile === undefined ? {} : { sessionFile: sfile }),
+						interrupted,
+						readOnly,
+						settled,
+						dismissed,
+						resumeInvalidationPending: isResumedAfterStartup && sid === undefined,
+					};
+					tracked.set(taskId, created);
+					attachSessionSubscription(created, follow);
+					// A resumed attempt launched after startup (subagent resume / intercom wake) sent input by another path.
+					if (isResumedAfterStartup && sid !== undefined && !this.hasOpenViewForSession(sid)) {
+						this.emitInvalidation(sid, sfile, "sent-elsewhere");
+					}
+					continue;
+				}
+				if (sid !== undefined) existing.sessionId = sid;
+				if (sfile !== undefined) existing.sessionFile = sfile;
+				attachSessionSubscription(existing, follow);
+				if (existing.resumeInvalidationPending && existing.sessionId !== undefined) {
+					existing.resumeInvalidationPending = false;
+					if (!this.hasOpenViewForSession(existing.sessionId)) {
+						this.emitInvalidation(existing.sessionId, existing.sessionFile, "sent-elsewhere");
+					}
+				}
+
+				if (!existing.interrupted && interrupted) {
+					this.emitInvalidation(existing.sessionId, existing.sessionFile, "stopped");
+				}
+				if (
+					!existing.settled &&
+					settled &&
+					task.execution.kind === "settled" &&
+					task.execution.result.kind === "cancelled" &&
+					task.execution.result.released === undefined
+				) {
+					this.emitInvalidation(existing.sessionId, existing.sessionFile, "stopped");
+				}
+				if (!existing.readOnly && readOnly) {
+					this.emitInvalidation(existing.sessionId, existing.sessionFile, "session-ended");
+				}
+				if (!existing.dismissed && dismissed) {
+					this.emitInvalidation(existing.sessionId, existing.sessionFile, "cleared");
+				}
+				existing.interrupted = interrupted;
+				existing.readOnly = readOnly;
+				existing.settled = settled;
+				existing.dismissed = dismissed;
+			}
+			for (const [taskId, entry] of [...tracked]) {
+				if (present.has(taskId)) continue;
+				if (entry.sessionId !== undefined && !liveSessions.has(entry.sessionId)) {
+					this.emitInvalidation(entry.sessionId, entry.sessionFile, "cleared");
+				}
+				cleanupTracked(taskId);
+			}
+			initialScanComplete = true;
+		};
+
+		const bindStore = (store: OwnerTaskStore | undefined) => {
+			if (store === boundStore) return;
+			stopStore?.();
+			stopActions?.();
+			stopDismiss?.();
+			stopTranscriptBind?.();
+			cleanupAllTracked();
+			boundStore = store;
+			initialScanComplete = false;
+			if (
+				store === undefined ||
+				store.supervisor == null ||
+				typeof store.supervisor !== "object" ||
+				typeof store.resolveTask !== "function"
+			)
+				return;
+			const source = ownerTaskViewSource(store);
+			stopStore = store.subscribe(syncStore);
+			stopTranscriptBind = watchTaskTranscriptBindings(store.supervisor, () => syncStore());
+			stopActions = onOwnerTaskAction(store, (event) => {
+				const entry = tracked.get(event.taskId);
+				const sid = event.sessionId ?? entry?.sessionId;
+				const sfile = event.sessionFile ?? entry?.sessionFile;
+				if (event.action === "sent") {
+					if (sid !== undefined && !this.hasOpenViewForSession(sid)) {
+						this.emitInvalidation(sid, sfile, "sent-elsewhere");
+					}
+					return;
+				}
+				this.emitInvalidation(sid, sfile, event.action);
+			});
+			stopDismiss = onTaskDismissed(source, (taskId) => {
+				const entry = tracked.get(taskId);
+				const follow = source.followTaskTranscript(taskId)?.session;
+				const sid = entry?.sessionId ?? follow?.getSessionId?.();
+				const sfile = entry?.sessionFile ?? follow?.getSessionFile?.();
+				this.emitInvalidation(sid, sfile, "cleared");
+			});
+			syncStore();
+		};
+
+		const runtime = (
+			session as { readonly resourceLoader?: { getExtensions?: () => { readonly runtime?: ExtensionRuntime } } }
+		).resourceLoader?.getExtensions?.()?.runtime;
+		const stopIdleChildStopped = runtime
+			? getExtensionRuntimeEventBus(runtime).on(SUBAGENT_CHILD_STOPPED_EVENT, (payload) => {
+					if (payload == null || typeof payload !== "object") return;
+					const record = payload as {
+						readonly taskId?: unknown;
+						readonly sessionId?: unknown;
+						readonly sessionFile?: unknown;
+					};
+					const taskId = typeof record.taskId === "string" ? (record.taskId as TaskId) : undefined;
+					const entry = taskId === undefined ? undefined : tracked.get(taskId);
+					const sid =
+						typeof record.sessionId === "string" && record.sessionId.length > 0
+							? record.sessionId
+							: entry?.sessionId;
+					const sfile =
+						typeof record.sessionFile === "string" && record.sessionFile.length > 0
+							? record.sessionFile
+							: entry?.sessionFile;
+					this.emitInvalidation(sid, sfile, "stopped");
+				})
+			: undefined;
+
+		const stopBinding = watchOwnerTaskStoreBinding(session, () => bindStore(getOwnerTaskStore(session)));
+		const stopPanel = subscribeAgentPanel(session, () => syncStore());
+		bindStore(getOwnerTaskStore(session));
+		return () => {
+			stopIdleChildStopped?.();
+			stopPanel();
+			stopBinding();
+			stopStore?.();
+			stopActions?.();
+			stopDismiss?.();
+			stopTranscriptBind?.();
+			cleanupAllTracked();
+		};
 	}
 
 	/** Where the view's transcript is drawn: the engine's chat settings, with the host chat's own display toggles. */
@@ -161,6 +437,7 @@ class EngineAgentViewRegistry implements EngineAgentViews {
 	}
 
 	dispose(): void {
+		this.stopInvalidationWatch();
 		for (const viewId of [...this.views.keys()]) this.close(viewId);
 	}
 }

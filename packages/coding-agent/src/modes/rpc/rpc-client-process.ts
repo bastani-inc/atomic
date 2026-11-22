@@ -44,6 +44,7 @@ export async function prepareRpcClientBootstrap(
 	trustDecisions?: SessionTrustDecisions,
 	startedSessionId?: string,
 	startupExtensionCheck?: StartupExtensionCheck,
+	restarted?: boolean,
 ): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
 	const bootstrap = await writeInteractiveEngineBootstrapAsync({
@@ -55,6 +56,7 @@ export async function prepareRpcClientBootstrap(
 		...(trustDecisions ? { trustDecisions } : {}),
 		...(startedSessionId !== undefined ? { startedSessionId } : {}),
 		...(startupExtensionCheck ? { startupExtensionCheck } : {}),
+		...(restarted === true ? { restarted: true as const } : {}),
 	});
 	return { guardianFile, bootstrap };
 }
