@@ -520,22 +520,51 @@ function forgetOriginEcho(mode: InteractiveModeBase, echo: DeferredUserInputEcho
 	if (byOrigin.size === 0) originEchoes.delete(mode);
 }
 
-/** Earliest attached component of any currently pending deferred echo in `mode.chatContainer`. */
-function firstAttachedDeferredEchoComponent(mode: InteractiveModeBase): Component | undefined {
-	const children = mode.chatContainer.children;
-	if (children.length === 0 || mode.deferredRenderedUserInputs.length === 0) return undefined;
-	const firstComponents = new Set<Component>();
+function pendingEchoComponentSet(mode: InteractiveModeBase): Set<Component> {
+	const pending = new Set<Component>();
 	for (const echoes of mode.deferredRenderedUserInputComponents.values()) {
 		for (const echo of echoes) {
-			const first = echo[0];
-			if (first !== undefined) firstComponents.add(first);
+			for (const component of echo) pending.add(component);
 		}
 	}
-	if (firstComponents.size === 0) return undefined;
-	for (const child of children) {
-		if (firstComponents.has(child)) return child;
+	return pending;
+}
+
+/**
+ * Whether any non-echo row appears after `echo` in `mode.chatContainer` (for example an assistant reply, tool block,
+ * earlier user message, or compaction boundary). Returns false when `echo` has no rendered components (such as minimal
+ * test doubles whose `addMessageToChat` does not attach children), and true when rendered components are no longer
+ * attached.
+ */
+function hasNonEchoRowsAfter(mode: InteractiveModeBase, echo: DeferredUserInputEcho): boolean {
+	if (echo.length === 0) return false;
+	const children = mode.chatContainer.children;
+	let lastEchoIndex = -1;
+	for (const component of echo) {
+		const index = children.indexOf(component);
+		if (index > lastEchoIndex) lastEchoIndex = index;
 	}
-	return undefined;
+	if (lastEchoIndex === -1) return true;
+	if (lastEchoIndex === children.length - 1) return false;
+	const pending = pendingEchoComponentSet(mode);
+	for (let index = lastEchoIndex + 1; index < children.length; index++) {
+		if (!pending.has(children[index]!)) return true;
+	}
+	return false;
+}
+
+/**
+ * Earliest component in the contiguous trailing suffix of pending deferred echoes at the end of `mode.chatContainer`,
+ * or undefined if the tail ends with a non-echo row (such as an assistant reply, tool block, or compaction boundary).
+ */
+function trailingDeferredEchoAnchor(mode: InteractiveModeBase): Component | undefined {
+	const children = mode.chatContainer.children;
+	if (children.length === 0 || mode.deferredRenderedUserInputs.length === 0) return undefined;
+	const pending = pendingEchoComponentSet(mode);
+	if (pending.size === 0) return undefined;
+	let start = children.length;
+	while (start > 0 && pending.has(children[start - 1]!)) start--;
+	return start < children.length ? children[start] : undefined;
 }
 
 /**
@@ -684,7 +713,8 @@ InteractiveModeBase.prototype.expectStartedUserInput = function (
 		taggedBefore === undefined
 			? this.userMessagesShownBySession - shownBefore
 			: untaggedUserMessagesShownSince(this, shownBefore, taggedBefore);
-	if (untaggedDelta !== 0) this.discardDeferredRenderedUserInput(text, echo);
+	const stalePosition = echo !== undefined && this.chatContainer !== undefined && hasNonEchoRowsAfter(this, echo);
+	if (untaggedDelta !== 0 || stalePosition) this.discardDeferredRenderedUserInput(text, echo);
 	// Runs show their messages in the order they started.
 	else startedEchoesOf(this).push({ text, echo });
 };
@@ -871,6 +901,15 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 	if (origin !== undefined) {
 		const matched = originEchoes.get(this)?.get(origin);
 		if (matched !== undefined) {
+			if (hasNonEchoRowsAfter(this, matched.echo)) {
+				// Non-echo rows (assistant reply, tool output, compaction boundary, or another turn) already sit below
+				// this echo, so keeping or replacing it in place would reorder conversation history. Discard the stale
+				// echo and append the message at the tail instead.
+				echoFollowers.get(this)?.echoes.set(message, matched.text);
+				this.discardDeferredRenderedUserInput(matched.text, matched.echo);
+				this.addMessageToChat(message);
+				return;
+			}
 			if (matched.text === text) {
 				const kept = forgetDeferredEcho(this, matched.text, matched.echo);
 				echoFollowers.get(this)?.echoes.set(message, matched.text);
@@ -886,7 +925,7 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 		echoFollowers.get(this)?.echoes.set(message, null);
 		this.userMessagesShownBySession += 1;
 		taggedUserMessagesShown.set(this, taggedUserMessagesShownCount(this) + 1);
-		appendNewChildrenBeforeAttachedChild(this.chatContainer, firstAttachedDeferredEchoComponent(this), () =>
+		appendNewChildrenBeforeAttachedChild(this.chatContainer, trailingDeferredEchoAnchor(this), () =>
 			this.addMessageToChat(message),
 		);
 		return;
