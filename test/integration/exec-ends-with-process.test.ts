@@ -47,10 +47,16 @@ async function recordedFrom(file: string): Promise<RecordedProcess> {
 	return recorded;
 }
 
-/** A command that records its pid in `file` and runs until it is ended. */
-function command(file: string): string {
-	return `require("node:fs").writeFileSync(${JSON.stringify(file)}, String(process.pid)); setInterval(() => {}, 1000);`;
-}
+/** A command that records its pid in the file its first argument names, then runs until it is ended. */
+const RECORDS_ITS_PID =
+	'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/**
+ * Starts two commands through the `exec.ts` module its first argument names, each running the program its fourth
+ * argument holds: one that records its pid in its second argument and has a quit stop, and one that records its pid
+ * in its third argument without one.
+ */
+const START_TWO_COMMANDS =
+	'const [execModule, stopped, kept, child] = process.argv.slice(1); import(execModule).then(({ execCommand }) => { void execCommand(process.execPath, ["-e", child, "--", stopped], process.cwd(), undefined, () => () => {}); void execCommand(process.execPath, ["-e", child, "--", kept], process.cwd()); setInterval(() => {}, 1000); });';
 
 // Where Atomic starts its commands through its native module, the kernel ends such a command with the process that
 // started it. Windows ends it with that process too; on macOS it keeps running.
@@ -60,16 +66,24 @@ describe.runIf(process.platform === "linux")("a process running extensions' pi.e
 		roots.push(root);
 		const stopped = join(root, "stopped.pid");
 		const kept = join(root, "kept.pid");
-		const script = `import(${JSON.stringify(EXEC_MODULE)}).then(({ execCommand }) => {
-	void execCommand(process.execPath, ["-e", ${JSON.stringify(command(stopped))}], process.cwd(), undefined, () => () => {});
-	void execCommand(process.execPath, ["-e", ${JSON.stringify(command(kept))}], process.cwd());
-	setInterval(() => {}, 1000);
-});`;
-		const host = spawnProcess([process.execPath, ...NODE_TS_SOURCE_ARGS, "-e", script], {
-			stdin: "ignore",
-			stdout: "ignore",
-			stderr: "inherit",
-		});
+		const host = spawnProcess(
+			[
+				process.execPath,
+				...NODE_TS_SOURCE_ARGS,
+				"-e",
+				START_TWO_COMMANDS,
+				"--",
+				EXEC_MODULE,
+				stopped,
+				kept,
+				RECORDS_ITS_PID,
+			],
+			{
+				stdin: "ignore",
+				stdout: "ignore",
+				stderr: "inherit",
+			},
+		);
 		const hostProcess = await recordProcess(host.pid!);
 		processes.push(hostProcess);
 		const stoppedCommand = await recordedFrom(stopped);

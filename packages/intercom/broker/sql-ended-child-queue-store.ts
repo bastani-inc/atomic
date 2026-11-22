@@ -1321,7 +1321,8 @@ export async function openSqlEndedChildQueueStore(
 /**
  * #5999: the queue in the local file `path` (the Intercom directory's `ended-child-queue.sqlite`), owner-only, through
  * the storage layer's node:sqlite database: its transactions wait for another process's write lock on a timer, never
- * on the event loop, and a busy queue of writes commits together.
+ * on the event loop, and a busy queue of writes commits together. With `directoryHeld`, the directory is its caller's:
+ * it is not created, and the file is created only while `directoryHeld` says it is still there.
  */
 export async function openLocalEndedChildQueueStore(
 	path: string,
@@ -1331,9 +1332,11 @@ export async function openLocalEndedChildQueueStore(
 		readonly servedSinceLastHolder?: (storeId: string) => boolean;
 		readonly pid?: string;
 	} = {},
+	directoryHeld?: () => boolean,
 ): Promise<EndedChildQueueStore> {
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const { openNodeSqliteDatabase } = await import("@bastani/atomic/storage");
+	if (directoryHeld === undefined) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const [{ openNodeSqliteDatabase }] = await Promise.all([import("@bastani/atomic/storage"), import("node:sqlite")]);
+	if (directoryHeld?.() === false) throw new Error("its Intercom directory was removed");
 	const database = await openNodeSqliteDatabase(path, {
 		busyTimeoutMs: ENDED_QUEUE_LOCK_WAIT_MS,
 		lockWaitMs: ENDED_QUEUE_LOCK_WAIT_MS,
