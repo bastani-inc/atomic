@@ -233,6 +233,32 @@ describe("a capture of an unchanged checkout whose unpushed history was left out
 		assert.equal(denyChecks(trace), 1, "the commits are checked once");
 	});
 
+	test("takes the denied commits another capture in the process found for the same unpushed commits", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const initial = await sandbox.git(clone, "rev-parse", "HEAD");
+		sandbox.write(join(clone, "secrets", "prod.pem"), "PRIVATE\n");
+		const pushed = await sandbox.commitAll(clone, "add prod pem");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		sandbox.write(join(clone, "secrets", "dev.pem"), "PRIVATE\n");
+		const unpushed = await sandbox.commitAll(clone, "add dev pem");
+		const first = recorded(await captureWorktreeSnapshot(clone));
+		await sandbox.git(clone, "push", "-q", "-f", "origin", `${initial}:main`);
+		// Another session's first capture of the checkout finds both denied commits.
+		const other = recorded(await captureWorktreeSnapshot(clone));
+		const both = {
+			reason: "unpushed-history-denied",
+			commits: [unpushed, pushed],
+			paths: ["secrets/dev.pem", "secrets/prod.pem"],
+		};
+		assert.deepEqual(historyOmissions(other.snapshot), [both]);
+
+		const trace = sandbox.traceGitProcesses();
+		const second = recorded(await captureWorktreeSnapshot(clone, { previous: first.snapshot }));
+		assert.equal(second.status, "captured");
+		assert.deepEqual(historyOmissions(second.snapshot), [both]);
+		assert.equal(denyChecks(trace), 0, "the commits are not checked again");
+	});
+
 	test("stays unchanged after a new process confirms the denied commits once", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "secrets", "prod.pem"), "PRIVATE\n");
