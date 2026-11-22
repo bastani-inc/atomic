@@ -81,6 +81,20 @@ describe("a user agent in ~/.atomic/agent/agents wins over legacy user locations
 		assert.equal(await describeAgent(project, "user", "helper"), "Configured helper");
 	});
 
+	for (const variable of ["ATOMIC_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"] as const)
+		test(`with ${variable} set, agents come from its agents folder and ~/.pi/agent/agents is not read`, async () => {
+			const { home, project } = makeHome();
+			const configured = join(home, "configured-agent-dir");
+			process.env[variable] = configured;
+			writeAgent(join(configured, "agents"), "configured", "Configured agent");
+			writeAgent(join(home, ".pi", "agent", "agents"), "legacy", "Legacy agent");
+			writeAgent(join(home, ".atomic", "agent", "agents"), "default-dir", "Default-dir agent");
+
+			assert.equal(await describeAgent(project, "user", "configured"), "Configured agent");
+			assert.equal(await describeAgent(project, "user", "legacy"), undefined);
+			assert.equal(await describeAgent(project, "user", "default-dir"), undefined);
+		});
+
 	test("between the legacy locations ~/.agents keeps winning over ~/.pi/agent/agents", async () => {
 		const { home, project } = makeHome();
 		writeAgent(join(home, ".pi", "agent", "agents"), "helper", "Pi helper");
