@@ -115,7 +115,8 @@
     "generate:references": "bun run scripts/generate-references.ts",
     "test": "vitest --run",
     "prepublishOnly": "bun run clean && bun run build",
-    "prepack": "node -e \"require('node:fs').existsSync('scripts/split-dist.mjs') && import('./scripts/split-dist.mjs').then(() => import('./scripts/write-startup-files.mjs')).then(() => import('./scripts/write-startup-stages.mjs'))\""
+    "prepack": "node -e \"require('node:fs').existsSync('scripts/split-dist.mjs') && import('./scripts/split-dist.mjs').then(() => import('./scripts/write-startup-files.mjs')).then(() => import('./scripts/write-startup-stages.mjs'))\"",
+    "postpack": "node -e \"require('node:fs').existsSync('scripts/undici-tombstone.mjs') && import('./scripts/undici-tombstone.mjs').then((m) => m.appendUndiciTombstonePostpack())\""
   },
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",

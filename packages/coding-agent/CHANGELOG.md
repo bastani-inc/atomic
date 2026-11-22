@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- `@bastani/atomic` no longer declares or installs 14 third-party packages whose code is already bundled into Atomic's own files: `brace-expansion`, `cross-spawn`, `diff`, `fast-sha256`, `hosted-git-info`, `ignore`, `lovely-mermaid`, `lru-cache`, `minimatch`, `semver`, `stream-json`, `turndown`, `undici`, and `yaml`. Any SDK application or extension that imports one of these packages directly must add it to its own `package.json` `dependencies`. A session that was already running on an older Atomic release (such as 0.10.3) while an in-place update replaces the installation may need to restart for features whose code loads one of those packages on demand. Removing these dependencies cuts a global npm install by about 2,160 files and 12.9 MiB on Linux and Windows.
+- `@bastani/atomic` no longer declares or installs 14 third-party packages whose code is already bundled into Atomic's own files: `brace-expansion`, `cross-spawn`, `diff`, `fast-sha256`, `hosted-git-info`, `ignore`, `lovely-mermaid`, `lru-cache`, `minimatch`, `semver`, `stream-json`, `turndown`, `undici`, and `yaml`. Any SDK application or extension that imports one of these packages directly must add it to its own `package.json` `dependencies`. A session that was already running on an older Atomic release (such as 0.10.3 or 0.10.4-alpha.1) while an in-place global update replaces the installation needs a restart to make new model requests if it had not made one before the update (Atomic shows a restart message immediately instead of a missing-module error), or for other features whose code loads one of those packages on demand. Removing these dependencies cuts a global npm install by about 2,150 files and 12.9 MiB on Linux and Windows.
 
 ## [0.10.4] - 2026-11-22
 

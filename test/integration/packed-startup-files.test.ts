@@ -7,8 +7,9 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { join, posix, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import { afterAll, test } from "vitest";
+import { undiciTombstoneEntries } from "../../packages/coding-agent/scripts/undici-tombstone.mjs";
 import { moduleDir, npmSpawnPrefix, spawnSyncCollect } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -99,6 +100,8 @@ function cliImports(dist: string): string[] {
 interface Packed {
 	/** The copied package, as `npm pack` left it once it had packed it. */
 	readonly copy: string;
+	/** The packed tarball path. */
+	readonly tarball: string;
 	/** The paths of the packed files. */
 	readonly paths: Set<string>;
 }
@@ -132,8 +135,10 @@ function packedPackage(): Packed {
 	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	const stdout = result.stdout.toString();
-	const [{ files }] = JSON.parse(stdout.slice(stdout.indexOf("[\n"))) as [{ files: { path: string }[] }];
-	packed = { copy, paths: new Set(files.map((file) => file.path)) };
+	const [{ filename, files }] = JSON.parse(stdout.slice(stdout.indexOf("[\n"))) as [
+		{ filename: string; files: { path: string }[] },
+	];
+	packed = { copy, tarball: join(out, filename), paths: new Set(files.map((file) => file.path)) };
 	return packed;
 }
 
@@ -191,6 +196,39 @@ test(
 			[],
 			"every file a stage imports is one the CLI's imports load",
 		);
+	},
+	PACK_TIMEOUT_MS,
+);
+
+test(
+	"the packed tarball carries only the 8 undici restart-notice shims without bundleDependencies or workspace mutations",
+	() => {
+		const { copy, tarball } = packedPackage();
+		const list = spawnSyncCollect(["tar", "-tzf", basename(tarball)], {
+			cwd: dirname(tarball),
+			timeout: PACK_TIMEOUT_MS,
+		});
+		assert.equal(list.exitCode, 0, list.stderr.toString());
+		const tarEntries = list.stdout.toString().trim().split(/\r?\n/);
+		const bundledUndici = tarEntries.filter((entry) => entry.startsWith("package/node_modules/")).sort();
+		assert.deepEqual(
+			bundledUndici,
+			undiciTombstoneEntries()
+				.map((entry) => `package/${entry.path}`)
+				.sort(),
+		);
+		const packedManifestRaw = spawnSyncCollect(["tar", "-xOf", basename(tarball), "package/package.json"], {
+			cwd: dirname(tarball),
+			timeout: PACK_TIMEOUT_MS,
+		});
+		assert.equal(packedManifestRaw.exitCode, 0, packedManifestRaw.stderr.toString());
+		const packedManifest = JSON.parse(packedManifestRaw.stdout.toString()) as {
+			optionalDependencies?: Record<string, string>;
+			bundleDependencies?: string[];
+		};
+		assert.equal(packedManifest.optionalDependencies?.undici, undefined);
+		assert.equal(packedManifest.bundleDependencies, undefined);
+		assert.equal(fs.existsSync(join(copy, "node_modules", "undici")), false);
 	},
 	PACK_TIMEOUT_MS,
 );
