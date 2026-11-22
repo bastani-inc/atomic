@@ -280,6 +280,11 @@ export interface ChildSpec {
 	 */
 	readonly resumeLateToolResults?: readonly DetachedToolResult[];
 	/**
+	 * By call id, the entry that issued each late result's call, as a restore reading the child's history back found it.
+	 * Without it, the history is read back to those calls before their notice is saved.
+	 */
+	readonly resumeLateToolResultCalls?: ReadonlyMap<string, string>;
+	/**
 	 * Notices of finished background tasks the child launched, held for it while it could not take them: each is
 	 * delivered with its next turn as the notice a running child gets, never as a message from the user.
 	 */
@@ -3177,10 +3182,11 @@ export class SubagentControlRuntime {
 						persistWhenStreaming: true,
 						stageAdmissionKey: lateToolResultNoticeKey(
 							lateResults,
-							await issuingCallEntries(
-								sessionManager,
-								lateResults.map((result) => result.toolCallId),
-							),
+							admitted.spec.resumeLateToolResultCalls ??
+								(await issuingCallEntries(
+									sessionManager,
+									lateResults.map((result) => result.toolCallId),
+								)),
 						),
 					},
 				);

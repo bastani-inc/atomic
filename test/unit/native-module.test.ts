@@ -15,13 +15,15 @@ vi.mock("../../packages/coding-agent/src/utils/module-require.js", () => ({
 	},
 }));
 
-const { assertNativeModuleAvailable, NativeModuleUnavailableError } = await import(
+const { nativeModuleProblem, nativeModuleUnavailable, NativeModuleUnavailableError } = await import(
 	"../../packages/coding-agent/src/utils/native-module.js"
 );
 
-test("a native module that cannot load stops with the loader's message, and loads once it is installed", () => {
-	assert.throws(
-		() => assertNativeModuleAvailable(),
+test("a native module that cannot load stops with the loader's message, and loads once it is installed", async () => {
+	const problem = nativeModuleProblem();
+	assert.ok(problem !== undefined, "the missing module was not reported");
+	await assert.rejects(
+		nativeModuleUnavailable(problem),
 		(error: unknown) =>
 			error instanceof NativeModuleUnavailableError &&
 			error.code === "NativeModuleUnavailable" &&
@@ -30,7 +32,7 @@ test("a native module that cannot load stops with the loader's message, and load
 	);
 
 	natives.missing = false;
-	assertNativeModuleAvailable();
-	assertNativeModuleAvailable();
+	assert.equal(nativeModuleProblem(), undefined);
+	assert.equal(nativeModuleProblem(), undefined);
 	assert.equal(natives.loads, 2, "a failed load is tried again; a module that loaded is not loaded again");
 });

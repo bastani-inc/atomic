@@ -218,7 +218,8 @@ test("a package that ships bundled is bundled before its files move, so its dist
 	assert.deepEqual(fileStates(dist), before);
 });
 
-test("a refresh removes the shared files an earlier bundle wrote that this one does not", (t) => {
+/** A bundled package whose index imports a helper, refreshed once; returns its dist and its shared files then. */
+function refreshedBundledPackage(t) {
 	const directory = workspace(t);
 	writePackage(directory, 'import { helper } from "./helper.js";\nexport const answer: number = helper();\n');
 	writeFileSync(join(directory, "src", "helper.ts"), "export function helper(): number {\n\treturn 42;\n}\n");
@@ -239,13 +240,32 @@ test("a refresh removes the shared files an earlier bundle wrote that this one d
 			.sort();
 	const earlier = sharedFiles();
 	assert.equal(earlier.length, 2, earlier.join(", "));
-	// A shared file is named by its first module, so a module renamed in the source moves its code to a new one.
+	return { directory, dist, sharedFiles, earlier };
+}
+
+/** What `file` of `dist` evaluates `answer` to, or the error importing it fails with. */
+function answerOf(dist, file) {
+	const imported = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const m = await import(${JSON.stringify(pathToFileURL(join(dist, file)).href)}); process.stdout.write(String(m.answer ?? m.helper()));`,
+		],
+		{ encoding: "utf8" },
+	);
+	return imported.status === 0 ? imported.stdout : imported.stderr;
+}
+
+test("a refresh removes the shared files an earlier bundle wrote that no file of the dist imports any more", (t) => {
+	const { directory, dist, sharedFiles, earlier } = refreshedBundledPackage(t);
+	// A shared file is named by its first module, so a module that sorts first joining the group moves the group's
+	// code to a new shared file, and the package's files all import that one.
 	writeFileSync(
 		join(directory, "src", "index.ts"),
-		'import { helper } from "./aid.js";\nexport const answer: number = helper();\n',
+		'import { first } from "./a-first.js";\nimport { helper } from "./helper.js";\nexport const answer: number = helper() + first;\n',
 	);
-	rmSync(join(directory, "src", "helper.ts"));
-	writeFileSync(join(directory, "src", "aid.ts"), "export function helper(): number {\n\treturn 43;\n}\n");
+	writeFileSync(join(directory, "src", "a-first.ts"), "export const first = 1;\n");
 	writeFileSync(join(dist, "notes.js"), "export {};\n");
 	assert.match(refresh(directory), /, 2 removed/);
 	const now = sharedFiles();
@@ -254,16 +274,26 @@ test("a refresh removes the shared files an earlier bundle wrote that this one d
 		now.filter((name) => earlier.includes(name)),
 		[],
 	);
-	assert.match(readFileSync(join(dist, "index.js"), "utf8"), new RegExp(`from "\\./${now[0]}"`));
 	assert.ok(existsSync(join(dist, "notes.js")), "a file the bundle did not write stays");
-	const imported = spawnSync(
-		process.execPath,
-		[
-			"--input-type=module",
-			"-e",
-			`const m = await import(${JSON.stringify(pathToFileURL(join(dist, "index.js")).href)}); process.stdout.write(String(m.answer));`,
-		],
-		{ encoding: "utf8" },
+	assert.equal(answerOf(dist, "index.js"), "43");
+	assert.equal(answerOf(dist, "helper.js"), "42");
+});
+
+test("a refresh keeps the shared file a module's file left in dist imports, after the module's source is gone", (t) => {
+	const { directory, dist, sharedFiles, earlier } = refreshedBundledPackage(t);
+	writeFileSync(
+		join(directory, "src", "index.ts"),
+		'import { helper } from "./aid.js";\nexport const answer: number = helper();\n',
 	);
-	assert.equal(imported.stdout, "43", imported.stderr);
+	rmSync(join(directory, "src", "helper.ts"));
+	writeFileSync(join(directory, "src", "aid.ts"), "export function helper(): number {\n\treturn 43;\n}\n");
+	assert.doesNotMatch(refresh(directory), /removed/);
+	assert.deepEqual(
+		earlier.filter((name) => !sharedFiles().includes(name)),
+		[],
+		"the shared files dist/helper.js, left from the earlier build, imports",
+	);
+	assert.equal(answerOf(dist, "index.js"), "43");
+	// As the package build leaves the file of a module whose source is gone, the file still loads.
+	assert.equal(answerOf(dist, "helper.js"), "42");
 });
