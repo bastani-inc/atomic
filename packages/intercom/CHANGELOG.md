@@ -10,6 +10,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 - After an Intercom broker restarts, queued messages for a resumed subagent are now routed to that subagent's registered session ID instead of its display name, so renaming the subagent before queue restoration completes no longer drops its queued messages or misdelivers them to another session using the old name.
 - Supervisor replies sent across group isolation on the supervisor channel while the restarted broker is still restoring queued messages now wait behind the subagent's queued messages across every addressing form (session ID, prefix, name, or host session ID), without delaying sends to non-subagent peers.
 - With multi-node routing, an Intercom ID that a reconnecting session asked for back is no longer left held for up to 30 s when the shared database wrote the claim only after the session had already been given a fresh ID. That late write is now given back, so the ID can be claimed again at once. A session waiting to take its ID back after a move now gets it as soon as the hold on that ID ends, rather than up to 30 s later.
+- Sessions starting at the same time against an older or retiring Intercom broker no longer warn that the broker cannot verify how it routes (or fail to join with `broker-routing-unavailable` when multi-node storage is configured) if their status check closes while another session replaces or stops the broker. They treat that closed check as a retiring broker and connect verified to the replacement.
 
 ## [0.10.4] - 2026-11-22
 
