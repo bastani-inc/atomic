@@ -19,6 +19,7 @@ import {
 	materializePanelItem,
 	notifyAgentPanelChanged,
 	openAgentPanelItem,
+	panelItemStableKey,
 	sampleAgentPanelSources,
 	sourceError,
 	stopAgentPanelItem,
@@ -60,6 +61,7 @@ import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
+import { clearTasksReturnAnchor, type ListSelectionAnchor } from "../interactive/components/task-selection-state.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getGlobalTheme } from "../interactive/theme/global-theme.ts";
 import { theme } from "../interactive/theme/theme.js";
@@ -724,7 +726,24 @@ export function bindAgentPanel(
 						}
 						const row = painted.rows.find((candidate) => candidate.id === id);
 						if (row === undefined) return undefined;
-						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
+						// Native subagent clicks switch the screen directly and never reopen the focused panel, so skip anchor work.
+						const isNativeSubagent = panelTaskId(row) !== undefined && row.kind === "agent";
+						let anchor: ListSelectionAnchor | undefined;
+						if (!isNativeSubagent) {
+							let orderRows = painted.rows;
+							if (painted.hiddenBelow > 0) {
+								try {
+									const fullRows = rankPanelSession(session, { start: 0, limit: 1 }).rows;
+									if (fullRows.some((candidate) => candidate.id === row.id)) orderRows = fullRows;
+								} catch {}
+							}
+							anchor = {
+								selectedKey: panelItemStableKey(row),
+								orderKeys: orderRows.map((candidate) => panelItemStableKey(candidate)),
+								scroll: 0,
+							};
+						}
+						openPanelRow(session, inspector, materializePanelItem(row), report, anchor).catch(report);
 						return { handled: true };
 					},
 					render(width: number) {
@@ -900,11 +919,14 @@ async function openPanelRow(
 	ui: TaskInspectorUi,
 	item: AgentPanelItem,
 	report: (error: unknown) => void,
+	returnAnchor?: ListSelectionAnchor,
 ): Promise<void> {
 	const store = getOwnerTaskStore(session);
 	const taskId = panelTaskId(item);
 	const bridge = agentViewBridge(session);
 	if (taskId !== undefined && item.kind === "agent") {
+		// Opening a subagent directly from the panel leaves any prior `/tasks` return target behind.
+		if (store !== undefined) clearTasksReturnAnchor(store);
 		// The screen shows the subagent where the main chat was; the prompt below now writes to it. Every interactive
 		// session has a bridge: without one there is no screen to show it on.
 		if (bridge !== undefined) bridge.requestView(taskId);
@@ -913,18 +935,18 @@ async function openPanelRow(
 	}
 	const shell = bridge === undefined || taskId === undefined ? undefined : store?.taskRecord(taskId);
 	if (store !== undefined && shell?.kind === "command" && shell.parentTaskId !== undefined) {
-		// A subagent's own shell opens its output in that subagent's task list; back returns to its row.
+		// A subagent's own shell opens its output in that subagent's task list; back returns to its row (or neighbour).
 		const source = launchedTaskViewSource(ownerTaskViewSource(store), shell.parentTaskId);
 		if (
 			(await showTaskInspector(ui, store, shell.ref.taskId, { chat: true, backLabel: "agents", source })) === "back"
 		)
-			await showAgentPanel(session, ui, item.id);
+			await showAgentPanel(session, ui, item.id, returnAnchor);
 		return;
 	}
-	// An extension's row opens its own view; leaving it returns to the panel with the row selected.
+	// An extension's row opens its own view; leaving it returns to the panel with the row selected (or its neighbour).
 	const opened = openAgentPanelItem(session, item.id, {
 		onReturn: () => {
-			showAgentPanel(session, ui, item.id).catch(report);
+			showAgentPanel(session, ui, item.id, returnAnchor).catch(report);
 		},
 	});
 	if (!opened) ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
@@ -934,6 +956,7 @@ export async function showAgentPanel(
 	session: AgentPanelSession & object,
 	ui: TaskInspectorUi,
 	selectId?: string,
+	returnAnchor?: ListSelectionAnchor,
 ): Promise<void> {
 	const state = panelState(session);
 	if (state.open) return;
@@ -1006,7 +1029,8 @@ export async function showAgentPanel(
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const item = materializePanelItem(row);
-						next = () => openPanelRow(session, ui, item, report);
+						const anchor = focus.captureAnchor(row.id);
+						next = () => openPanelRow(session, ui, item, report, anchor);
 						finish();
 					},
 					openMain() {
@@ -1057,7 +1081,7 @@ export async function showAgentPanel(
 					close: finish,
 				});
 				focus.update(currentRows);
-				focus.enter(selectId);
+				focus.enter(selectId, returnAnchor);
 				const refreshRows = () => {
 					materializedScroll = focus.scroll;
 					currentRows = focusedRows(materializedScroll);
