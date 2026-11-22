@@ -108,7 +108,7 @@ export async function claimPaneReporting(
 		// The same Herdr serves every session in a pane, so a rejection stays true for the successor.
 		resumeUnsupported: previous?.resumeUnsupported ?? false,
 		async flush() {
-			await this.flight;
+			while (this.flight) await this.flight;
 		},
 	};
 	owners.set(environment.paneId, owner);
@@ -133,32 +133,42 @@ export function reportPaneActivity(owner: PaneOwner, activity: SessionActivity, 
 		owner.pending?.skipUnchanged === false && matchesActivity(owner.pending.activity, activity);
 	owner.pending = { activity, skipUnchanged: skipUnchanged && !pendingExplicitRefresh };
 	if (owner.flight) return;
-	owner.flight = (async () => {
-		while (owner.pending && owner.status === "active") {
-			const { activity: next, skipUnchanged } = owner.pending;
-			owner.pending = undefined;
-			if (skipUnchanged && matchesActivity(owner.lastDeliveredActivity, next)) continue;
-			allocateSequence(owner);
-			const resume =
-				owner.identitySent || owner.resumeUnsupported ? undefined : acceptedResume(owner.identity.resume);
-			let failure = await executeHerdr(owner.environment, reportArgv(owner, next, resume), owner.options.timeoutMs);
-			if (resume && failure?.kind === "protocol_rejected") {
-				// Herdr older than 0.9.2 may refuse the trailing argv; keep the status and identity it would accept.
+	let finished = false;
+	let flight: Promise<void> | undefined;
+	flight = (async () => {
+		try {
+			while (owner.pending && owner.status === "active") {
+				const { activity: next, skipUnchanged } = owner.pending;
+				owner.pending = undefined;
+				if (skipUnchanged && matchesActivity(owner.lastDeliveredActivity, next)) continue;
 				allocateSequence(owner);
-				failure = await executeHerdr(owner.environment, reportArgv(owner, next), owner.options.timeoutMs);
-				if (!failure) owner.resumeUnsupported = true;
+				const resume =
+					owner.identitySent || owner.resumeUnsupported ? undefined : acceptedResume(owner.identity.resume);
+				let failure = await executeHerdr(
+					owner.environment,
+					reportArgv(owner, next, resume),
+					owner.options.timeoutMs,
+				);
+				if (resume && failure?.kind === "protocol_rejected") {
+					// Herdr older than 0.9.2 may refuse the trailing argv; keep the status and identity it would accept.
+					allocateSequence(owner);
+					failure = await executeHerdr(owner.environment, reportArgv(owner, next), owner.options.timeoutMs);
+					if (!failure) owner.resumeUnsupported = true;
+				}
+				if (failure) {
+					diagnostic(owner, failure);
+					owner.lastDeliveredActivity = undefined;
+				} else {
+					owner.identitySent = true;
+					owner.lastDeliveredActivity = next;
+				}
 			}
-			if (failure) {
-				diagnostic(owner, failure);
-				owner.lastDeliveredActivity = undefined;
-			} else {
-				owner.identitySent = true;
-				owner.lastDeliveredActivity = next;
-			}
+		} finally {
+			finished = true;
+			if (flight && owner.flight === flight) owner.flight = undefined;
 		}
-	})().finally(() => {
-		owner.flight = undefined;
-	});
+	})();
+	if (!finished) owner.flight = flight;
 }
 
 /** Fence and drain a local reporter without unregistering the still-running agent. */

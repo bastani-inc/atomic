@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Inside a Herdr pane, a session status update that arrives just as the previous Herdr report finishes is now sent right away instead of leaving Herdr showing the older status until the next activity event.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.
