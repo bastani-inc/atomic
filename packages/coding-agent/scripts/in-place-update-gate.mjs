@@ -22,12 +22,105 @@
 /** The first line of each gate and stub, by which a later split knows it as a split's output, not compiled code. */
 export const GATE_FILE_MARK = "// Written by the build (scripts/in-place-update-gate.mjs)";
 
-/** The file next to a gated module's path that holds its code. */
-export const gatedImplementation = (path) => path.replace(/\.js$/, ".impl.js");
+/**
+ * Where this build writes the code of a gated module `path`: a path of its own, which no earlier release imports and so
+ * never needs a gate. This build's own code imports it there, and so do the releases after it, each with a call-site
+ * guard ({@link callSiteGuardSource}); a later release keeps the file at that path.
+ */
+export const codePath = (path) => {
+	if (!path.endsWith(".js")) throw new Error(`in-place update gates: ${path} is not a module's path`);
+	return `${path.slice(0, -".js".length)}.code.js`;
+};
 
-/** The module path whose gate puts its code at `path`, or `undefined` when `path` is not one. */
-export const gatedModuleOf = (path) =>
-	path.endsWith(".impl.js") ? `${path.slice(0, -".impl.js".length)}.js` : undefined;
+/** The module a recorded on-demand path names: an earlier release's path of a gated module's code, or the module. */
+export const moduleOfPath = (path) => {
+	for (const suffix of [".impl.js", ".code.js"])
+		if (path.endsWith(suffix)) return `${path.slice(0, -suffix.length)}.js`;
+	return path;
+};
+
+/**
+ * The first release whose own code guards each module it imports on demand at the call site: a process of it, or of a
+ * later one, tells itself to restart when an update's code cannot load, so the modules its record names need no gate.
+ */
+export const GUARDED_SINCE = "0.10.5-alpha.1";
+
+/** The probes of the release a process runs, as the gates and the call-site guards share them (see the gates above). */
+function runningReleaseSource(indent, probes, version) {
+	return [
+		'const releases = (globalThis[Symbol.for("atomic.in-place-update-release.v1")] ??= new Map());',
+		`const key = \`\${root.href}#${version}\`;`,
+		"let release = releases.get(key);",
+		"if (release === undefined) {",
+		"\trelease = (async () => {",
+		`\t\tfor (const path of ${JSON.stringify(probes)}) {`,
+		"\t\t\ttry {",
+		"\t\t\t\tconst held = await import(new URL(path, root).href);",
+		'\t\t\t\tif (typeof held.VERSION === "string") return { version: held.VERSION, name: held.APP_NAME };',
+		"\t\t\t} catch {",
+		"\t\t\t\t// Not a file this process can load: the next.",
+		"\t\t\t}",
+		"\t\t}",
+		"\t\treturn undefined;",
+		"\t})();",
+		"\treleases.set(key, release);",
+		"}",
+		"const running = await release;",
+	].map((line) => `${indent}${line}`);
+}
+
+/** The name of the function {@link callSiteGuardSource} defines. */
+export const CALL_SITE_GUARD = "__atomicOnDemandFailed";
+
+/**
+ * The key (`Symbol.for`) of what a call-site guard's restart error carries: the application, the release the update
+ * installed and the feature, so that a caller loading a feature on demand (`src/utils/updated-install.ts`) can name its
+ * own feature in the message.
+ */
+export const CALL_SITE_RESTART_KEY = "atomic.on-demand-restart.v1";
+
+/**
+ * The function this build appends to each of its files that imports a module on demand, and which each such import
+ * calls when it rejects (`import("./x.code.js").catch((error) => __atomicOnDemandFailed(error, "<feature>"))`): when
+ * the process runs an earlier release than this file's (a process of an earlier release that loaded it after an update),
+ * or the installation on disk is no longer this file's release (an update replaced it under this process), it rejects
+ * with the restart message and the failure as its cause; otherwise with the failure. An import that succeeds never calls
+ * it. `root` is the path from the file to `dist`.
+ *
+ * @param {{ root: string, probes: readonly string[], version: string, application: string }} guard
+ */
+export function callSiteGuardSource({ root, probes, version, application }) {
+	return [
+		`// ${CALL_SITE_GUARD}: written by the build (scripts/in-place-update-gate.mjs). An import of this release's code on`,
+		"// demand that fails in a process an in-place update left running says to restart.",
+		`function ${CALL_SITE_GUARD}(error, feature) {`,
+		"\treturn (async () => {",
+		`\t\tconst root = new URL(${JSON.stringify(root)}, import.meta.url);`,
+		...runningReleaseSource("\t\t", probes, version),
+		"\t\tlet installed;",
+		"\t\ttry {",
+		// Not an import of `node:fs/promises`: tools that read this file's imports take one for a module it loads.
+		'\t\t\tconst { readFile } = process.getBuiltinModule("node:fs/promises");',
+		'\t\t\tinstalled = JSON.parse(await readFile(new URL("../package.json", root), "utf8")).version;',
+		"\t\t} catch {",
+		"\t\t\t// No installation to read, as in a bundle of the package: the release the process runs decides.",
+		"\t\t}",
+		`\t\tconst updatedTo = typeof installed === "string" && installed !== ${JSON.stringify(version)} ? installed : running !== undefined && running.version !== ${JSON.stringify(version)} ? ${JSON.stringify(version)} : undefined;`,
+		"\t\tif (updatedTo === undefined) throw error;",
+		`\t\tconst application = typeof running?.name === "string" ? running.name : ${JSON.stringify(application)};`,
+		"\t\tconst restart = new Error(`${application} was updated to ${updatedTo} while this session was running; restart it to keep using ${feature}.`, {",
+		"\t\t\tcause: error,",
+		"\t\t});",
+		// What a caller that loads the feature on demand (`loadOnDemand`) needs to name it in the message itself.
+		'\t\trestart.name = "UpdatedInstallError";',
+		`\t\trestart[Symbol.for(${JSON.stringify(CALL_SITE_RESTART_KEY)})] = { application, updatedTo, feature };`,
+		"\t\tthrow restart;",
+		"\t})();",
+		"}",
+		"",
+	].join("\n");
+}
+
 
 /**
  * The module of each recorded release that tells which release a process runs: a file every process of that release
@@ -91,53 +184,50 @@ export function gatedFeature(path) {
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 
 /**
- * The gate written at `path` (in `dist`) for the module whose code is at {@link gatedImplementation}`(path)`, with the
- * module's `exports`: when that code cannot load in a process whose release (asked of the files `probes`, in `dist`)
- * is not `version`, it says to restart.
+ * The gate written at `path` (in `dist`), an earlier release's path of a module whose code this build has at `code`
+ * (relative to `path`), with the module's `exports`: when that code cannot load in a process whose release (asked of
+ * the files `probes`, in `dist`) is not `version`, it says to restart.
  *
- * @param {{ path: string, exports: readonly string[], probes: readonly string[], version: string }} gate
+ * @param {{ path: string, code: string, exports: readonly string[], probes: readonly string[], version: string }} gate
  */
-export function gateSource({ path, exports, probes, version }) {
+export function gateSource({ path, code, exports, probes, version }) {
 	const depth = path.split("/").length - 1;
 	const root = depth === 0 ? "./" : "../".repeat(depth);
-	const implementation = `./${gatedImplementation(path.slice(path.lastIndexOf("/") + 1))}`;
 	const named = exports.filter((name) => name !== "default");
 	const unbindable = named.filter((name) => !IDENTIFIER.test(name));
 	if (unbindable.length > 0) throw new Error(`in-place update gates: ${path} exports names a gate cannot bind: ${unbindable.join(", ")}`);
-	const restart = ` was updated to ${version} while this session was running; restart it to keep using ${gatedFeature(path)}.`;
+	const restart = ` was updated to ${version} while this session was running; restart it to keep using ${gatedFeature(moduleOfPath(path))}.`;
 	return [
 		`${GATE_FILE_MARK}: when this module's code cannot load in a process of an earlier release`,
 		"// that an in-place update left running, the process is told to restart.",
 		"let module;",
 		"try {",
-		`	module = await import(${JSON.stringify(implementation)});`,
+		`	module = await import(${JSON.stringify(code)});`,
 		"} catch (error) {",
 		`	const root = new URL(${JSON.stringify(root)}, import.meta.url);`,
-		'	const releases = (globalThis[Symbol.for("atomic.in-place-update-release.v1")] ??= new Map());',
-		`	const key = \`\${root.href}#${version}\`;`,
-		"	let release = releases.get(key);",
-		"	if (release === undefined) {",
-		"		release = (async () => {",
-		`			for (const path of ${JSON.stringify(probes)}) {`,
-		"				try {",
-		"					const held = await import(new URL(path, root).href);",
-		'					if (typeof held.VERSION === "string") return { version: held.VERSION, name: held.APP_NAME };',
-		"				} catch {",
-		"					// Not a file this process can load: the next.",
-		"				}",
-		"			}",
-		"			return undefined;",
-		"		})();",
-		"		releases.set(key, release);",
-		"	}",
-		"	const running = await release;",
+		...runningReleaseSource("\t", probes, version),
 		`	if (running === undefined || running.version === ${JSON.stringify(version)}) throw error;`,
 		`	throw new Error((typeof running.name === "string" ? running.name : "atomic") + ${JSON.stringify(restart)}, {`,
-		"		cause: error,",
-		"	});",
+		"\t\tcause: error,",
+		"\t});",
 		"}",
 		...(named.length > 0 ? [`export const { ${named.join(", ")} } = module;`] : []),
 		...(exports.includes("default") ? ["export default module.default;"] : []),
+		"",
+	].join("\n");
+}
+
+/**
+ * The file this build writes at `path` (in `dist`), a later release's path of a module whose code this build has at
+ * `code` (relative to `path`): it gives the module's `exports`. A process of that release guards its own import of it.
+ *
+ * @param {{ code: string, exports: readonly string[] }} alias
+ */
+export function aliasSource({ code, exports }) {
+	return [
+		`${GATE_FILE_MARK}: a later release's path of this module.`,
+		...(exports.some((name) => name !== "default") ? [`export * from ${JSON.stringify(code)};`] : []),
+		...(exports.includes("default") ? [`export { default } from ${JSON.stringify(code)};`] : []),
 		"",
 	].join("\n");
 }
