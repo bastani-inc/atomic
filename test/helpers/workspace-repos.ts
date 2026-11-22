@@ -136,7 +136,8 @@ export async function gitTranscript<T>(
  * `FAKE_GIT_MARKER` if it was not killed meanwhile. `FAKE_GIT_HOLD` (same form) holds that command while the file
  * `FAKE_GIT_ARMED` exists when it starts: it touches `FAKE_GIT_HELD`, then waits for the file `FAKE_GIT_RELEASE`.
  * `list-fails-once` fails the first `worktree list` and creates `FAKE_GIT_MARKER`, as git does when another process
- * removes the last worktree while it lists them.
+ * removes the last worktree while it lists them. `add-outlives-stop` finishes a `worktree add` before a stop reaches it,
+ * as a git on a loaded machine can before Atomic gets to stop it.
  */
 function fakeGit(root: string): string {
 	const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
@@ -184,6 +185,13 @@ case "$FAKE_GIT_MODE:$5 $6" in
 	for admin in "$PWD"/.git/worktrees/*/; do [ -e "$admin/locked" ] && : > "$admin/index.lock"; done
 	echo "injected death after the checkout" >&2
 	exit 1 ;;
+"add-outlives-stop:worktree add")
+	# Its own process group, which a stop of this one does not reach; this one waits for it and ignores the stop.
+	trap '' TERM
+	set -m
+	"$real" "$@" &
+	wait $!
+	exit $? ;;
 "slow-worktree-add:worktree add")
 	if [ "$7" = "-b" ]; then target="$9"; else target="$7"; fi
 	mkdir -p "$target"

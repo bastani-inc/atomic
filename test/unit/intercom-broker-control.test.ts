@@ -232,12 +232,21 @@ describe("brokers sharing a SQLite selection", () => {
 	test(
 		"status reports the selection's digest, the multi-node state and the live peer broker (#3857)",
 		async () => {
-			const query = await queryIntercomBroker(first.agentDir);
-			assert.ok(query.state === "running");
+			// The broker reads its live peers from the shared database within a 2 s bound, and a peer counts as live while it
+			// renewed its lease within 30 s. On a loaded machine either can miss, and the report then names no peers for that
+			// query. The broker is asked again until a report has them.
+			const query = await vi.waitFor(
+				async () => {
+					const answered = await queryIntercomBroker(first.agentDir);
+					assert.ok(answered.state === "running");
+					assert.equal(answered.report.multiNode.peers?.length, 1);
+					return answered;
+				},
+				{ timeout: BROKER_WAIT_MS, interval: STATUS_RETRY_INTERVAL_MS },
+			);
 			assert.equal(query.report.multiNode.status, "on");
 			assert.equal(query.report.multiNode.adapter, "sqlite");
 			assert.equal(query.report.multiNode.prefix, "t_");
-			assert.equal(query.report.multiNode.peers?.length, 1);
 			assert.equal(query.report.storage?.source, "settings");
 			assert.equal(query.report.storage?.digest, expectedBrokerStorage(first.agentDir, {})?.digest);
 
