@@ -13,7 +13,7 @@ import { type Args, parseArgs } from "../cli/args.ts";
 import { getAgentDir } from "../config.js";
 import { prewarmModelApi } from "./model-api-prewarm.ts";
 import { ModelConfig } from "./model-config.ts";
-import { extensionsCanDecideProjectTrust } from "./project-trust-electorate.ts";
+import { extensionsCanDecideProjectTrust } from "./project-trust-electorate.js";
 import { projectTrustedBeforeExtensions } from "./project-trust-state.ts";
 import { applyModelsJson } from "./provider-composer-internal.ts";
 import { SettingsManager } from "./settings-manager.ts";
