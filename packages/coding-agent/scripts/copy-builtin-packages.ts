@@ -17,7 +17,7 @@ import {
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
 import { matchesSpecifierPattern, withHostImportGuard } from "./builtin-host-import-guard.js";
-import { codeStringLiteral } from "./code-string-literal.js";
+import { codeStringLiteral } from "./code-string-literal.mjs";
 import {
 	deriveImportClosure,
 	INSTALLED_IMPORT_CLOSURE_ROOTS,
