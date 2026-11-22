@@ -98,7 +98,16 @@ export const systemSources = (
 			const child = execFile(
 				hostCommandPath(command),
 				[...args],
-				{ encoding: "utf8", env: hostCommandEnvironment(), timeout: HOST_COMMAND_TIMEOUT_MS, windowsHide: true },
+				{
+					encoding: "utf8",
+					env: hostCommandEnvironment(),
+					timeout: HOST_COMMAND_TIMEOUT_MS,
+					windowsHide: true,
+					// On Windows, in the system directory: a host command never keeps the folder Atomic runs in in use.
+					...(process.platform === "win32"
+						? { cwd: process.env.SystemRoot || process.env.windir || "C:\\Windows" }
+						: {}),
+				},
 				(error, stdout) => (error ? reject(error) : resolve(stdout)),
 			);
 			child.stdin?.end();

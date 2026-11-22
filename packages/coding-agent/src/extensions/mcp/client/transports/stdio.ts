@@ -25,24 +25,33 @@ const USE_PROCESS_GROUPS = process.platform !== "win32";
 const liveProcessGroups = new Set<number>();
 let exitHookInstalled = false;
 
-function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+/**
+ * Ends `child` and the processes it started. Resolves once the kill command that does it on Windows has finished, or
+ * failed to start; at once elsewhere.
+ */
+function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
 	const pid = child.pid;
 	if (process.platform === "win32" && pid !== undefined) {
-		if (child.exitCode !== null) return;
+		if (child.exitCode !== null) return Promise.resolve();
 		// Windows has no graceful signals, and cross-spawn runs `.cmd` shims through cmd.exe; killing only
-		// that would leave the server running.
+		// that would leave the server running. The kill command runs in the system directory, so it never keeps the
+		// folder Atomic runs in, the project's, in use.
 		const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
-		spawn(join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
-			stdio: "ignore",
-			windowsHide: true,
-		}).on("error", () => {});
-		return;
+		return new Promise((resolve) => {
+			const kill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
+				cwd: systemRoot,
+				stdio: "ignore",
+				windowsHide: true,
+			});
+			kill.once("error", () => resolve());
+			kill.once("exit", () => resolve());
+		});
 	}
 	if (USE_PROCESS_GROUPS && pid !== undefined) {
 		try {
 			// Negative pid: the whole group, so wrappers like `npx` or `uvx` do not leave the server behind.
 			process.kill(-pid, signal);
-			return;
+			return Promise.resolve();
 		} catch {
 			// The group is gone or was never created; fall back to the direct child.
 		}
@@ -50,6 +59,7 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
 	try {
 		child.kill(signal);
 	} catch {}
+	return Promise.resolve();
 }
 
 function installExitHook(): void {
@@ -346,17 +356,26 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		}
 		// Shutdown per the spec: close stdin and let the server exit, then SIGTERM, then SIGKILL.
 		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+		/** The kill commands this close started, which it waits for once the server has closed. */
+		const kills: Promise<void>[] = [];
+		const kill = (signal: NodeJS.Signals) => kills.push(killProcessTree(child, signal));
 		await new Promise<void>((resolve) => {
 			const timers: ReturnType<typeof setTimeout>[] = [];
 			child.once("close", () => {
 				for (const timer of timers) clearTimeout(timer);
 				// Children of the server that ignored stdin closing would otherwise outlive it.
-				killProcessTree(child, "SIGTERM");
-				resolve();
+				kill("SIGTERM");
+				// A kill command still finishing ends the rest of the server's processes: wait for it, as long as the
+				// server itself was given after SIGTERM, and no longer.
+				const bound = setTimeout(resolve, closeTimeoutMs);
+				void Promise.all(kills).then(() => {
+					clearTimeout(bound);
+					resolve();
+				});
 			});
 			const grace = Math.min(STDIN_CLOSE_GRACE_MS, closeTimeoutMs);
-			timers.push(setTimeout(() => killProcessTree(child, "SIGTERM"), grace));
-			timers.push(setTimeout(() => killProcessTree(child, "SIGKILL"), grace + closeTimeoutMs));
+			timers.push(setTimeout(() => kill("SIGTERM"), grace));
+			timers.push(setTimeout(() => kill("SIGKILL"), grace + closeTimeoutMs));
 			// A process that left the server's group can keep the pipes open after the kill; stop waiting for it.
 			timers.push(
 				setTimeout(
