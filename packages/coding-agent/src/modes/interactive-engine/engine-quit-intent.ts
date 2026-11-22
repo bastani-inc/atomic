@@ -1,4 +1,4 @@
-import { writeSync } from "node:fs";
+import { appendFileSync, writeSync } from "node:fs";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { flushLifecycleTraceAtQuit } from "../../core/lifecycle-timings.ts";
 import { parseEngineExplicitQuitCommand, serializeInteractiveEngineMessage } from "./protocol.ts";
@@ -27,6 +27,9 @@ export class EngineQuitIntent {
 	handleLine(line: string): boolean {
 		if (!parseEngineExplicitQuitCommand(line)) return false;
 		this.explicit = true;
+		try {
+			appendFileSync(process.env.ATOMIC_QUIT_PROBE_LOG ?? "", "PROBE engine explicit-quit parsed\n");
+		} catch {}
 		// The host may end this process as soon as it has the acknowledgement: write the diagnostics first.
 		markEventLoopShutdown();
 		flushLifecycleTraceAtQuit();

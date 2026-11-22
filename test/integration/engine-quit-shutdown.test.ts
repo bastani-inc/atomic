@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
@@ -241,6 +241,7 @@ async function endSession(
 				ATOMIC_EVENT_LOOP_BLOCK_MS: "1000",
 				ATOMIC_EVENT_LOOP_BLOCK_STACKS: "0",
 				ATOMIC_EVENT_LOOP_BLOCK_LOG: eventLoopLog,
+				ATOMIC_QUIT_PROBE_LOG: join(root, "quit-probe.log"),
 				TERM: "xterm-256color",
 			},
 			timeoutMs: CLI_TIMEOUT_MS,
@@ -294,6 +295,12 @@ async function endSession(
 		});
 		const exit = await program.exited;
 		const exitedAt = performance.now();
+		try {
+			const probe = fileExistsSync(join(root, "quit-probe.log"))
+				? readTextSync(join(root, "quit-probe.log"), "utf8")
+				: "";
+			appendFileSync(join(process.cwd(), ".probe-quit.log"), `=== ${new Date().toISOString()}\n${probe}`);
+		} catch {}
 
 		const calls = fileExistsSync(shutdown)
 			? readTextSync(shutdown, "utf8")

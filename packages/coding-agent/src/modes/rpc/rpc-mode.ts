@@ -256,6 +256,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		try {
+			(await import("node:fs")).appendFileSync(
+				process.env.ATOMIC_QUIT_PROBE_LOG ?? "",
+				`PROBE engine shutdown cause=${cause} signal=${signal ?? ""} explicit=${quitIntent?.explicitQuitRequested} inputEnded=${inputEnded}\n`,
+			);
+		} catch {}
 		// An engine stopped by a signal or the end of its input, as when its host was signalled or, on Windows, its
 		// console was closed, records its shutdown as an explicit quit does.
 		if (interactiveEngineChild && cause !== "request") markEventLoopShutdown();

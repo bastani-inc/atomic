@@ -356,12 +356,22 @@ export class RpcClient extends RpcClientApi {
 			if (event.generation === generation) done.resolve(false);
 		});
 		const timer = setTimeout(() => done.resolve(false), timeoutMs);
+		const probeStart = performance.now();
+		const probePending = writer.pendingBytes;
+		let probeWritten = false;
 		try {
 			this.bestEffort(
-				writer.write(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
+				writer.write(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })).then(() => {
+					probeWritten = true;
+				}),
 				"explicit quit",
 			);
-			return await done.promise;
+			const acked = await done.promise;
+			const probeLine = `PROBE host announce acked=${acked} ms=${Math.round(performance.now() - probeStart)} pendingBefore=${probePending} frameWritten=${probeWritten} pendingNow=${writer.pendingBytes}\n`;
+			try {
+				(await import("node:fs")).appendFileSync(process.env.ATOMIC_QUIT_PROBE_LOG ?? "", probeLine);
+			} catch {}
+			return acked;
 		} finally {
 			clearTimeout(timer);
 			stopListening();
