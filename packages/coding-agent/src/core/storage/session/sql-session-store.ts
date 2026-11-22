@@ -3,7 +3,7 @@ import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapsh
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
-import { applyStorageMigrations } from "../migrations.js";
+import { applyStorageMigrationsTogether, schemaBatch } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
@@ -558,15 +558,15 @@ export class SqlSessionStore implements SessionStore {
 			const { int, text, blob } = dialect.types;
 			const strict = dialect.tableOptions;
 			const json = (column: string) => dialect.jsonValid(column);
-			const columnExists = async (table: string, column: string) => {
+			const columnExists = (table: string, column: string) => {
 				const probe = dialect.columnExists(table, column);
-				return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+				return async () => (await tx.get(probe.sql, ...probe.params)) !== undefined;
 			};
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version ${int} NOT NULL)${strict}`);
-			const versions = await tx.all(`SELECT schema_version FROM ${tables.meta}`);
-			if (versions.length === 0) {
-				await tx.run(`INSERT INTO ${tables.meta} VALUES (?)`, SESSION_SCHEMA_VERSION_UNCHUNKED);
-			}
+			const [versions] = await schemaBatch(
+				tx,
+				[`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version ${int} NOT NULL)${strict}`],
+				[() => tx.all(`SELECT schema_version FROM ${tables.meta}`)],
+			);
 			for (const version of versions) {
 				assertStorageSchemaVersion(
 					"sessions",
@@ -576,7 +576,7 @@ export class SqlSessionStore implements SessionStore {
 				);
 			}
 			// The sessions table is ordered by insertion to notice changes, and entries for the snapshot reference index.
-			await tx.exec(`
+			const tablesScript = `
 				CREATE TABLE IF NOT EXISTS ${tables.sessions} (
 					id ${text} PRIMARY KEY, cwd ${text} NOT NULL, created_at ${text} NOT NULL,
 					header_json ${text} NOT NULL CHECK(${json("header_json")}), internal ${int} NOT NULL,
@@ -602,15 +602,29 @@ export class SqlSessionStore implements SessionStore {
 					session_id ${text} NOT NULL, hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
 					PRIMARY KEY(session_id, hash, idx)
 				)${strict};
-			`);
-			// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
-			if (!(await columnExists(tables.sessions, "revision"))) {
-				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision ${text} NOT NULL DEFAULT ''`);
-			}
-			legacyBlobData = await columnExists(tables.blobs, "data");
-			if (legacyBlobData && !(await columnExists(tables.blobs, "chunks"))) {
-				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`);
-			}
+			`;
+			const [revision, data] = await schemaBatch(
+				tx,
+				[
+					versions.length === 0 && {
+						sql: `INSERT INTO ${tables.meta} VALUES (?)`,
+						params: [SESSION_SCHEMA_VERSION_UNCHUNKED],
+					},
+					tablesScript,
+				],
+				[columnExists(tables.sessions, "revision"), columnExists(tables.blobs, "data")],
+			);
+			legacyBlobData = data;
+			const [chunks] = legacyBlobData ? await schemaBatch(tx, [], [columnExists(tables.blobs, "chunks")]) : [true];
+			await schemaBatch(
+				tx,
+				[
+					// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
+					!revision && `ALTER TABLE ${tables.sessions} ADD COLUMN revision ${text} NOT NULL DEFAULT ''`,
+					!chunks && `ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`,
+				],
+				[],
+			);
 		};
 		const orphanedEntryKeys = `SELECT k.session_id, k.seq
 			FROM (SELECT DISTINCT session_id, seq FROM ${tables.entryChunks}) AS k
@@ -618,8 +632,9 @@ export class SqlSessionStore implements SessionStore {
 				SELECT 1 FROM ${tables.entries} AS e
 				WHERE e.session_id = k.session_id AND e.seq = k.seq AND e.chunks > 0
 			)`;
-		const removeOrphanedEntryChunks = async (tx: SqliteExecutor): Promise<void> => {
-			await tx.run(`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (${orphanedEntryKeys})`);
+		const removeOrphanedEntryChunks = {
+			sql: `DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (${orphanedEntryKeys})`,
+			params: [],
 		};
 		/**
 		 * Long entries in chunks (#4954): the entry chunks table and the entries table's `chunks` column, 0 for an entry
@@ -629,17 +644,27 @@ export class SqlSessionStore implements SessionStore {
 		 */
 		const addEntryChunks = async (tx: SqliteExecutor, dialect: StorageDialect) => {
 			const { int, text, blob } = dialect.types;
-			await tx.exec(`
+			const probe = dialect.columnExists(tables.entries, "chunks");
+			const [chunks] = await schemaBatch(
+				tx,
+				[
+					`
 				CREATE TABLE IF NOT EXISTS ${tables.entryChunks} (
 					session_id ${text} NOT NULL, seq ${int} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
 					PRIMARY KEY(session_id, seq, idx)
 				)${dialect.tableOptions};
-			`);
-			const probe = dialect.columnExists(tables.entries, "chunks");
-			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
-				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
-			}
-			if (database.readOnly !== true) await removeOrphanedEntryChunks(tx);
+			`,
+				],
+				[() => tx.get(probe.sql, ...probe.params)],
+			);
+			await schemaBatch(
+				tx,
+				[
+					chunks === undefined && `ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`,
+					database.readOnly !== true && removeOrphanedEntryChunks,
+				],
+				[],
+			);
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open. A
@@ -648,13 +673,15 @@ export class SqlSessionStore implements SessionStore {
 		// an older process left behind, which it removes in one transaction that checks the schema version first (#5065).
 		// The removal is housekeeping, since no read reaches those rows and a chunked write first deletes its key's rows,
 		// so a connection that refuses writes still opens; a newer schema is still refused.
-		const current = await SqlSessionStore.currentSchema(database, tables, presence.open);
+		const current = await SqlSessionStore.currentSchema(
+			database,
+			tables,
+			presence.open,
+			database.readOnly === true ? undefined : orphanedEntryKeys,
+		);
 		if (current !== undefined) {
 			legacyBlobData = current.legacyBlobData;
-			if (
-				database.readOnly !== true &&
-				(await database.get(`SELECT 1 FROM (${orphanedEntryKeys}) AS orphaned LIMIT 1`)) !== undefined
-			)
+			if (current.orphaned)
 				await database
 					.transaction(async (tx) => {
 						await assertStoredSchemaVersion(
@@ -665,33 +692,36 @@ export class SqlSessionStore implements SessionStore {
 							"schema_version",
 							SESSION_SCHEMA_VERSION_UNCHUNKED,
 						);
-						await removeOrphanedEntryChunks(tx);
+						await tx.run(removeOrphanedEntryChunks.sql);
 					})
 					.catch((error: Error) => {
 						if (error instanceof StorageSchemaVersionError) throw error;
 					});
 		} else {
-			await applyStorageMigrations(
-				database,
-				SESSION_DOMAIN,
-				[
-					{ version: 1, up: createTables },
-					{ version: 2, up: addEntryChunks },
-				],
-				{ table: storageMigrationTable(options.prefix) },
-			);
-			// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
-			// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
-			// (#5065).
-			await applyStorageMigrations(
-				database,
-				SESSION_PRESENCE_DOMAIN,
-				[
-					{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
-					{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
-				],
-				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
-			);
+			await applyStorageMigrationsTogether(database, [
+				{
+					domain: SESSION_DOMAIN,
+					steps: [
+						{ version: 1, up: createTables },
+						{ version: 2, up: addEntryChunks },
+					],
+					options: { table: storageMigrationTable(options.prefix) },
+				},
+				// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
+				// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
+				// (#5065).
+				{
+					domain: SESSION_PRESENCE_DOMAIN,
+					steps: [
+						{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
+						{
+							version: 2,
+							up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open),
+						},
+					],
+					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
+				},
+			]);
 		}
 		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
@@ -703,8 +733,16 @@ export class SqlSessionStore implements SessionStore {
 						(row) => row !== undefined,
 						() => false,
 					);
-		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
+		// Neither the snapshot tables nor the search index depend on the other. Where the sessions schema was current,
+		// theirs most likely is too and opening them only reads, so those reads go together. Otherwise the snapshot
+		// tables are set up first, in a transaction of their own as before: set up together, the two transactions would
+		// share one group commit and pay a savepoint each.
+		const opening = current === undefined ? await SqlSnapshotBlobStore.open(database, options.prefix) : undefined;
+		const [blobs, searchIndex, entryByteLength] = await Promise.all([
+			opening ?? SqlSnapshotBlobStore.open(database, options.prefix),
+			SqlSessionSearchIndex.open(database, tables, options.prefix),
+			entryByteLengthOf(database),
+		]);
 		const store = new SqlSessionStore(
 			database,
 			tables,
@@ -713,7 +751,7 @@ export class SqlSessionStore implements SessionStore {
 			blobs,
 			legacyBlobData,
 			searchIndex,
-			await entryByteLengthOf(database),
+			entryByteLength,
 		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		if (await staged) await store.cleanupForkStaging();
@@ -734,13 +772,16 @@ export class SqlSessionStore implements SessionStore {
 	 * What the open's setup would find, read without the write lock, when its schema steps would change nothing: every
 	 * table and column of both domains exists and the sessions meta holds only versions this build supports. Undefined
 	 * otherwise, and always on a database with versioned migrations, whose ledger the setup checks. Leftover entry
-	 * chunks are not part of the schema: the open removes them separately.
+	 * chunks are not part of the schema: `orphaned` tells whether the query `orphans` finds any, for the open to remove
+	 * them separately, and is false when it is not asked. The probes are read together, then the versions with that
+	 * query, so a current schema waits for two answers.
 	 */
 	private static async currentSchema(
 		database: SqliteDatabase,
 		tables: Tables,
 		open: string,
-	): Promise<{ readonly legacyBlobData: boolean } | undefined> {
+		orphans: string | undefined,
+	): Promise<{ readonly legacyBlobData: boolean; readonly orphaned: boolean } | undefined> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return undefined;
 		const probes = [
@@ -750,8 +791,15 @@ export class SqlSessionStore implements SessionStore {
 			dialect.columnExists(tables.blobs, "chunks"),
 			dialect.columnExists(open, "schema_version"),
 		];
-		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		const legacy = dialect.columnExists(tables.blobs, "data");
+		const [legacyFound, ...found] = await Promise.all(
+			[legacy, ...probes].map((probe) => database.get(probe.sql, ...probe.params)),
+		);
 		if (!found.every((row) => row !== undefined)) return undefined;
+		// Asked beside the versions; its answer, or its failure, counts only for a schema this build supports.
+		const orphaned =
+			orphans === undefined ? undefined : database.get(`SELECT 1 FROM (${orphans}) AS orphaned LIMIT 1`);
+		orphaned?.catch(() => {});
 		const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
 		if (
 			versions.length === 0 ||
@@ -761,8 +809,7 @@ export class SqlSessionStore implements SessionStore {
 			)
 		)
 			return undefined;
-		const legacy = dialect.columnExists(tables.blobs, "data");
-		return { legacyBlobData: (await database.get(legacy.sql, ...legacy.params)) !== undefined };
+		return { legacyBlobData: legacyFound !== undefined, orphaned: (await orphaned) !== undefined };
 	}
 
 	/**
