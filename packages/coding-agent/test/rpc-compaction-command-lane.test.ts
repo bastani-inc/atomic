@@ -27,8 +27,8 @@ afterEach(async () => {
 async function createEngine(invocations: string[]): Promise<Harness> {
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.registerCommand("workflow", {
+			(atomic) => {
+				atomic.registerCommand("workflow", {
 					description: "Manage workflow runs",
 					handler: async (args) => {
 						invocations.push(args);

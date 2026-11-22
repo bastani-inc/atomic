@@ -114,9 +114,9 @@ async function endpoint(name: string, child = false, tools: AgentTool[] = [], op
 				}
 			: {}),
 		extensionFactories: [
-			(pi) => {
-				intercomHeavy(pi);
-				pi.on("session_start", (_event, ctx) => {
+			(atomic) => {
+				intercomHeavy(atomic);
+				atomic.on("session_start", (_event, ctx) => {
 					context = ctx;
 				});
 			},
@@ -386,9 +386,9 @@ async function observingParent(
 	};
 	const parent = await endpoint(name, false, [tool], {
 		...options,
-		extensionFactory: (pi) => {
-			intercomEvents = pi.events;
-			return options.extensionFactory?.(pi);
+		extensionFactory: (atomic) => {
+			intercomEvents = atomic.events;
+			return options.extensionFactory?.(atomic);
 		},
 	});
 	host = parent.session.getAgentTaskHost();
@@ -530,8 +530,8 @@ test("a child's send to its parent waiting on it is admitted after the parent's 
 	const releaseHook = Promise.withResolvers<void>();
 	const parent = await observingParent("handshake-parent", "wait", {
 		ui: true,
-		extensionFactory: (pi) => {
-			pi.on("tool_execution_start", () => releaseHook.promise);
+		extensionFactory: (atomic) => {
+			atomic.on("tool_execution_start", () => releaseHook.promise);
 		},
 	});
 	// Represent the held runSync child's registered Intercom identity at the real broker.
@@ -574,11 +574,11 @@ test("public parent input waits for its event writer, then yields only that owne
 	let hookDone = false;
 	const parent = await observingParent("writer-parent", "wait", {
 		ui: true,
-		extensionFactory: (pi) => {
-			pi.on("tool_execution_start", async () => {
+		extensionFactory: (atomic) => {
+			atomic.on("tool_execution_start", async () => {
 				hookEntered.resolve();
 				await releaseHook.promise;
-				await pi.sendMessage(
+				await atomic.sendMessage(
 					{ customType: "writer-note", content: "local hook write", display: true },
 					{ triggerTurn: false },
 				);
@@ -636,8 +636,8 @@ for (const winner of ["admission", "completion"] as const) {
 		const releaseWriter = Promise.withResolvers<void>();
 		const parent = await observingParent(`race-${winner}`, "wait", {
 			ui: true,
-			extensionFactory: (pi) => {
-				pi.on("tool_execution_start", () => releaseWriter.promise);
+			extensionFactory: (atomic) => {
+				atomic.on("tool_execution_start", () => releaseWriter.promise);
 			},
 		});
 		const peer = await endpoint(`race-peer-${winner}`);
@@ -731,12 +731,12 @@ for (const ui of [true, false]) {
 			let busy = true;
 			const parent = await observingParent(`background-${ui}-${action}`, "background", {
 				ui,
-				extensionFactory: (pi) => {
+				extensionFactory: (atomic) => {
 					// Synchronize on the real broker handler's busy-parent probe, not a
 					// sleep or a send receipt that could precede recipient processing.
-					const off = pi.events.on(INTERCOM_DETACH_REQUEST_EVENT, () => inboundProbe.resolve());
-					pi.on("session_shutdown", off);
-					pi.registerTool({
+					const off = atomic.events.on(INTERCOM_DETACH_REQUEST_EVENT, () => inboundProbe.resolve());
+					atomic.on("session_shutdown", off);
+					atomic.registerTool({
 						name: "working",
 						label: "Working",
 						description: "Unrelated parent work",

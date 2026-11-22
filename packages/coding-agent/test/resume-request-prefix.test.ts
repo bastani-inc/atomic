@@ -131,10 +131,10 @@ async function openStore(cwd: string, agentDir: string, dir: string): Promise<Se
 
 /** An extension registering tools named by `names()` when a session starts, in that order. */
 function extensionTools(names: () => readonly string[]): ExtensionFactory {
-	return (pi) => {
-		pi.on("session_start", () => {
+	return (atomic) => {
+		atomic.on("session_start", () => {
 			for (const name of names())
-				pi.registerTool({
+				atomic.registerTool({
 					name,
 					label: name,
 					description: `The ${name} tool`,
@@ -348,12 +348,12 @@ describe("a resume after an upgrade changes only what follows the cached prefix"
 	test("a tool that registers before or after a built-in tool is activated ends up in the same place", async () => {
 		let release: () => void = () => {};
 		// Registers its tool when the test releases it, after the session started, as an MCP server that connects late.
-		const lateTool: ExtensionFactory = (pi) => {
-			pi.on("session_start", () => {
+		const lateTool: ExtensionFactory = (atomic) => {
+			atomic.on("session_start", () => {
 				void new Promise<void>((resolve) => {
 					release = resolve;
 				}).then(() =>
-					pi.registerTool({
+					atomic.registerTool({
 						name: "mcp_lookup",
 						label: "mcp_lookup",
 						description: "Look something up",
@@ -567,10 +567,10 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	test("what an extension added on resume is still sent after the clear", async () => {
 		let resuming = false;
-		const note: ExtensionFactory = (pi) => {
-			pi.on("session_start", () => {
+		const note: ExtensionFactory = (atomic) => {
+			atomic.on("session_start", () => {
 				if (resuming)
-					pi.sendMessage(
+					atomic.sendMessage(
 						{ customType: "resume-note", content: "The build cache was restored.", display: true },
 						{ triggerTurn: false },
 					);
@@ -592,8 +592,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	});
 
 	test("instructions an extension leaves out of every request do not clear the context", async () => {
-		const withoutProjectContext: ExtensionFactory = (pi) => {
-			pi.on("before_agent_start", (event) => {
+		const withoutProjectContext: ExtensionFactory = (atomic) => {
+			atomic.on("before_agent_start", (event) => {
 				event.systemPromptOptions.contextFiles = [];
 			});
 		};
@@ -611,11 +611,12 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	for (const [name, handler] of [
 		[
 			"a forced system prompt, which leaves prompt updates out",
-			(pi) => pi.on("before_agent_start", () => ({ systemPrompt: "You are a careful assistant." })),
+			(atomic) => atomic.on("before_agent_start", () => ({ systemPrompt: "You are a careful assistant." })),
 		],
 		[
 			"a forced system prompt built from the session's",
-			(pi) => pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\nAlways be brief.` })),
+			(atomic) =>
+				atomic.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\nAlways be brief.` })),
 		],
 	] as Array<[string, ExtensionFactory]>) {
 		test(`with ${name}, the context is not cleared`, async () => {
@@ -635,15 +636,15 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	for (const event of ["context", "context_with_system"] as const)
 		test(`with a ${event} handler that leaves a long resume note out of every request, the context is not cleared`, async () => {
 			let resuming = false;
-			const note: ExtensionFactory = (pi) => {
-				pi.on("session_start", () => {
+			const note: ExtensionFactory = (atomic) => {
+				atomic.on("session_start", () => {
 					if (resuming)
-						pi.sendMessage(
+						atomic.sendMessage(
 							{ customType: "resume-note", content: `Restored. ${"Cache notes. ".repeat(1500)}`, display: true },
 							{ triggerTurn: false },
 						);
 				});
-				pi.on(event, (context) => ({
+				atomic.on(event, (context) => ({
 					messages: context.messages.filter(
 						(message) => !(message.role === "custom" && message.customType === "resume-note"),
 					),
@@ -694,9 +695,9 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	test("a run an extension starts first after the resume clears first too", async () => {
 		let kick = (): void => {};
-		const starter: ExtensionFactory = (pi) => {
+		const starter: ExtensionFactory = (atomic) => {
 			kick = () => {
-				void pi.sendMessage({ customType: "kick", content: "Carry on.", display: true }, { triggerTurn: true });
+				void atomic.sendMessage({ customType: "kick", content: "Carry on.", display: true }, { triggerTurn: true });
 			};
 		};
 		const { installation, sessionId } = await nearWindowSession({}, [starter]);
@@ -722,8 +723,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	for (const queue of ["steer", "followUp"] as const)
 		test(`a ${queue} message that continues the resumed session clears first when the recovery notice would lower the budget`, async () => {
-			const recovering: ExtensionFactory = (pi) => {
-				pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+			const recovering: ExtensionFactory = (atomic) => {
+				atomic.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
 			};
 			const { installation, sessionId, lastBeforeExit } = await nearWindowSession(
 				{ defaultThinkingLevel: "high" },
@@ -749,9 +750,9 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	test("what an extension adds after the session opened counts as the conversation's, so it does not clear", async () => {
 		let addTask = (): void => {};
-		const tasks: ExtensionFactory = (pi) => {
+		const tasks: ExtensionFactory = (atomic) => {
 			addTask = () => {
-				void pi.sendMessage(
+				void atomic.sendMessage(
 					{ customType: "task", content: `Task: ${"Keep each change reviewed. ".repeat(520)}`, display: true },
 					{ triggerTurn: false },
 				);
@@ -799,8 +800,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	});
 
 	test("a request whose provider setup fails leaves the clear to the request that follows", async () => {
-		const recovering: ExtensionFactory = (pi) => {
-			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		const recovering: ExtensionFactory = (atomic) => {
+			atomic.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
 		};
 		const { installation, sessionId } = await nearWindowSession(
 			{ defaultThinkingLevel: "high" },
@@ -839,9 +840,9 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	test("an interrupt sent first after the resume leaves the clear to the prompt that sends the new instructions", async () => {
 		let interrupt = (): Promise<void> => Promise.resolve();
-		const interrupting: ExtensionFactory = (pi) => {
+		const interrupting: ExtensionFactory = (atomic) => {
 			interrupt = () =>
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ customType: "ping", content: "Interrupting.", display: true },
 					{ deliverAs: "interrupt", triggerTurn: true },
 				);
@@ -872,9 +873,9 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	const HELPER_SNIPPET = "Ask helper_tool for help.";
 
 	/** `helper_tool`, off at first, and `enable_helper`, which turns it on when called. */
-	const helperTools: ExtensionFactory = (pi) => {
-		pi.on("session_start", () => {
-			pi.registerTool({
+	const helperTools: ExtensionFactory = (atomic) => {
+		atomic.on("session_start", () => {
+			atomic.registerTool({
 				name: "helper_tool",
 				label: "helper_tool",
 				description: "The helper tool",
@@ -882,26 +883,26 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 				parameters: Type.Object({}),
 				execute: async () => ({ content: [{ type: "text", text: "helped" }], details: {} }),
 			});
-			pi.registerTool({
+			atomic.registerTool({
 				name: "enable_helper",
 				label: "enable_helper",
 				description: "Turns the helper tool on",
 				parameters: Type.Object({}),
 				execute: async () => {
-					pi.setActiveTools([...pi.getActiveTools(), "helper_tool"]);
+					atomic.setActiveTools([...atomic.getActiveTools(), "helper_tool"]);
 					return { content: [{ type: "text", text: "enabled" }], details: {} };
 				},
 			});
-			pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "helper_tool"));
+			atomic.setActiveTools(atomic.getActiveTools().filter((name) => name !== "helper_tool"));
 		});
 	};
 
 	/** An extension that sends an interrupt when `interrupt()` is called. */
 	function interrupter() {
 		const hooks = { interrupt: (): Promise<void> => Promise.resolve() };
-		const factory: ExtensionFactory = (pi) => {
+		const factory: ExtensionFactory = (atomic) => {
 			hooks.interrupt = () =>
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ customType: "ping", content: "Interrupting.", display: true },
 					{ deliverAs: "interrupt", triggerTurn: true },
 				);
@@ -923,8 +924,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	test("the turn after an interrupt's tool call holds back the new instructions, and the next prompt sends them after the clear", async () => {
 		const { hooks, factory } = interrupter();
 		// A section of the prompt that only a prompt's start sets, as the MCP servers' section is.
-		const sectioning: ExtensionFactory = (pi) => {
-			pi.on("before_agent_start", (event) => {
+		const sectioning: ExtensionFactory = (atomic) => {
+			atomic.on("before_agent_start", (event) => {
 				event.systemPromptOptions.sections.probe = "Probe section.";
 			});
 		};
@@ -1015,8 +1016,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	test("with no prompt update pending, an interrupt sent first after the resume ends the check, as a prompt would", async () => {
 		const { hooks, factory } = interrupter();
-		const recovering: ExtensionFactory = (pi) => {
-			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		const recovering: ExtensionFactory = (atomic) => {
+			atomic.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
 		};
 		const { installation, sessionId } = await nearWindowSession(
 			{ defaultThinkingLevel: "high" },
@@ -1037,13 +1038,13 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 
 	test("with only a section a prompt's start sets differing, an interrupt sent first still ends the check", async () => {
 		const { hooks, factory } = interrupter();
-		const sectioning: ExtensionFactory = (pi) => {
-			pi.on("before_agent_start", (event) => {
+		const sectioning: ExtensionFactory = (atomic) => {
+			atomic.on("before_agent_start", (event) => {
 				event.systemPromptOptions.sections.probe = "Probe section.";
 			});
 		};
-		const recovering: ExtensionFactory = (pi) => {
-			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		const recovering: ExtensionFactory = (atomic) => {
+			atomic.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
 		};
 		const { installation, sessionId } = await nearWindowSession(
 			{ defaultThinkingLevel: "high" },
@@ -1093,8 +1094,8 @@ describe("a resume near the context window keeps the thinking budget (#6117)", (
 	});
 
 	test("a recovery notice added after the first prompt does not clear the context for the next one", async () => {
-		const recovering: ExtensionFactory = (pi) => {
-			pi.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
+		const recovering: ExtensionFactory = (atomic) => {
+			atomic.on("session_recovery_restore", () => ({ notices: [RECOVERY_NOTICE] }));
 		};
 		const { installation, sessionId } = await nearWindowSession(
 			{ defaultThinkingLevel: "high" },

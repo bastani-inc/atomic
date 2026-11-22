@@ -40,15 +40,15 @@ export const CLOSED_ASKS_LISTED = 20;
  * was not saved stays pending.
  */
 export async function recordClosedInboundAsks(
-  pi: Pick<ExtensionAPI, "appendEntry">,
+  atomic: Pick<ExtensionAPI, "appendEntry">,
   messageIds: readonly string[],
   reason: ClosedInboundAsk["reason"],
 ): Promise<string[]> {
   const recorded: string[] = [];
   for (const batch of closedAskBatches(messageIds)) {
     try {
-      if (batch.length === 1) await recordClosedInboundAsk(pi, batch[0]!, reason);
-      else await pi.appendEntry(INTERCOM_ASK_CLOSED_ENTRY, { messageIds: batch, reason } satisfies ClosedInboundAsks);
+      if (batch.length === 1) await recordClosedInboundAsk(atomic, batch[0]!, reason);
+      else await atomic.appendEntry(INTERCOM_ASK_CLOSED_ENTRY, { messageIds: batch, reason } satisfies ClosedInboundAsks);
       recorded.push(...batch);
     } catch {
       // Unsaved, these asks stay pending; the next resume decides about them again.
@@ -86,11 +86,11 @@ function closedAskLines(closed: readonly IntercomContext[]): string {
 
 /** Record that this session closed `messageId` without a reply; the ask then stays closed across restarts (#6168). */
 export async function recordClosedInboundAsk(
-  pi: Pick<ExtensionAPI, "appendEntry">,
+  atomic: Pick<ExtensionAPI, "appendEntry">,
   messageId: string,
   reason: ClosedInboundAsk["reason"],
 ): Promise<void> {
-  await pi.appendEntry(INTERCOM_ASK_CLOSED_ENTRY, { messageId, reason } satisfies ClosedInboundAsk);
+  await atomic.appendEntry(INTERCOM_ASK_CLOSED_ENTRY, { messageId, reason } satisfies ClosedInboundAsk);
 }
 
 /**
@@ -99,13 +99,13 @@ export async function recordClosedInboundAsk(
  * ask pending, so it can be closed again. Returns whether it was closed.
  */
 export async function closeInboundAsk(
-  pi: Pick<ExtensionAPI, "appendEntry">,
+  atomic: Pick<ExtensionAPI, "appendEntry">,
   tracker: ReplyTracker,
   messageId: string,
   reason: ClosedInboundAsk["reason"],
 ): Promise<boolean> {
   try {
-    await recordClosedInboundAsk(pi, messageId, reason);
+    await recordClosedInboundAsk(atomic, messageId, reason);
   } catch {
     return false;
   }
@@ -124,7 +124,7 @@ function preview(context: IntercomContext): string {
  * them, if any were closed. An ask whose close is not saved stays pending, and the next resume decides about it again.
  */
 export async function closeFinishedChildAsks(
-  pi: AskCloser,
+  atomic: AskCloser,
   ctx: Pick<ExtensionContext, "sessionManager">,
 ): Promise<string[]> {
   const pending = new ReplyTracker();
@@ -140,10 +140,10 @@ export async function closeFinishedChildAsks(
     return [];
   }
   const asks = pending.listPending();
-  const finished = await finishedChildAsks(pi.events, sessionId, asks);
+  const finished = await finishedChildAsks(atomic.events, sessionId, asks);
   const recorded = new Set(
     await recordClosedInboundAsks(
-      pi,
+      atomic,
       asks.filter((context) => finished.has(context.message.id)).map((context) => context.message.id),
       "sender-ended",
     ),
@@ -168,7 +168,7 @@ export interface RefusedReply {
  * Returns the sentence that tells the caller the ask is closed, or `undefined` when it stays pending.
  */
 export async function closeRefusedAsk(
-  pi: AskCloser,
+  atomic: AskCloser,
   tracker: ReplyTracker,
   sessionId: string,
   messageId: string,
@@ -178,11 +178,11 @@ export async function closeRefusedAsk(
   if (refused.reasonCode === undefined && refused.reason === UNAUTHORIZED_REPLY_REASON) reason = "route-expired";
   else if (refused.reasonCode !== undefined && SENDER_GONE_CODES.has(refused.reasonCode)) {
     const context = tracker.listPending().find((pending) => pending.message.id === messageId);
-    if (context !== undefined && (await finishedChildAsks(pi.events, sessionId, [context])).has(messageId))
+    if (context !== undefined && (await finishedChildAsks(atomic.events, sessionId, [context])).has(messageId))
       reason = "sender-ended";
   }
   // A close that could not be saved leaves the ask pending: the next refused reply closes it.
-  if (reason === undefined || !(await closeInboundAsk(pi, tracker, messageId, reason))) return undefined;
+  if (reason === undefined || !(await closeInboundAsk(atomic, tracker, messageId, reason))) return undefined;
   return reason === "route-expired"
     ? `Ask ${messageId} is closed: Intercom refuses every reply to it, so it no longer shows as pending. Send a plain message if its sender still needs the answer.`
     : `Ask ${messageId} is closed: the subagent that asked it has ended, so no reply can reach it and it no longer shows as pending. Send a plain message if the subagent still needs the answer.`;

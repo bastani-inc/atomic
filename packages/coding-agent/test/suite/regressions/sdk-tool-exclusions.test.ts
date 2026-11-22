@@ -49,9 +49,9 @@ describe("SDK tool exclusions", () => {
 			settingsManager,
 			extensionFactories: options.extensionToolName
 				? [
-						(pi) => {
+						(atomic) => {
 							const registerTool = () => {
-								pi.registerTool({
+								atomic.registerTool({
 									name: options.extensionToolName!,
 									label: "Dynamic Tool",
 									description: "Tool registered by an extension",
@@ -64,7 +64,7 @@ describe("SDK tool exclusions", () => {
 								});
 							};
 							if (options.extensionToolName === "intercom") registerTool();
-							else pi.on("session_start", registerTool);
+							else atomic.on("session_start", registerTool);
 						},
 					]
 				: undefined,

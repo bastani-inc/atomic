@@ -124,6 +124,8 @@ describe("lazy builtin intercom", () => {
 		assert.equal(lazyExt.shortcuts.get("alt+m")?.description, heavyExt.shortcuts.get("alt+m")?.description);
 		assert.equal(eagerExt.shortcuts.get("alt+m")?.description, heavyExt.shortcuts.get("alt+m")?.description);
 		assert.equal(lazyExt.messageRenderers.has("intercom_message"), true);
+		assert.equal(lazyExt.messageRenderers.has("intercom_subagent_wake"), true);
+		assert.deepEqual([...lazyExt.messageRenderers.keys()], [...eagerExt.messageRenderers.keys()]);
 	});
 
 	test("registers byte-identical contact_supervisor tool across lazy, light, and heavy when subagent orchestrator env is present", async () => {
@@ -346,8 +348,8 @@ describe("lazy builtin intercom", () => {
 			let implLoadCount = 0;
 			const factory = createLazyBuiltinFactory(intercomLazyBuiltinSpec, async () => {
 				implLoadCount += 1;
-				return (pi) => {
-					pi.events.on("intercom:startup-join", (payload) => {
+				return (atomic) => {
+					atomic.events.on("intercom:startup-join", (payload) => {
 						implJoinCalls += 1;
 						(payload as { completion?: Promise<void> }).completion = Promise.resolve();
 					});

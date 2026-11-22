@@ -128,8 +128,8 @@ function isInteractiveCommand(command: string): boolean {
 	return false;
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("user_bash", async (event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+	atomic.on("user_bash", async (event, ctx) => {
 		let command = event.command;
 		let forceInteractive = false;
 

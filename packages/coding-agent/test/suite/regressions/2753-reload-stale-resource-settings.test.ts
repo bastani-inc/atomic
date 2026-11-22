@@ -46,8 +46,8 @@ describe("issue #2753 reload stale resource settings", () => {
 				resourceLoaderOptions: {
 					builtinPackagePaths: [],
 					extensionFactories: [
-						(pi) => {
-							pi.registerProvider(faux.getModel().provider, {
+						(atomic) => {
+							atomic.registerProvider(faux.getModel().provider, {
 								baseUrl: faux.getModel().baseUrl,
 								apiKey: "faux-key",
 								api: faux.api,

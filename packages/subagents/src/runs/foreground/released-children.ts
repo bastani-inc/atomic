@@ -136,7 +136,7 @@ export function interruptedStillRunningResult(call: Pick<SubagentChildStillRunni
  * it once, so a child that ended is woken only when one of those calls was not a question.
  */
 export function reportInterruptedStillRunningCalls(
-	pi: Parameters<typeof holdInterruptedStillRunningCalls>[0],
+	atomic: Parameters<typeof holdInterruptedStillRunningCalls>[0],
 	dispatcher: AgentWakeDispatcher,
 	ownerSessionId: string,
 	records: readonly SubagentChildRecord[],
@@ -145,10 +145,16 @@ export function reportInterruptedStillRunningCalls(
 		if (!record.stillRunning?.length) continue;
 		// Read from the calls the hold actually reports, in its own read of the child's latest record.
 		let reportsOtherThanQuestions = false;
-		void holdInterruptedStillRunningCalls(pi, ownerSessionId, record.childId, SUBAGENT_OWNER_GENERATION, (call) => {
-			if (!SUBAGENT_QUESTION_TOOLS.has(call.toolName)) reportsOtherThanQuestions = true;
-			return interruptedStillRunningResult(call);
-		})
+		void holdInterruptedStillRunningCalls(
+			atomic,
+			ownerSessionId,
+			record.childId,
+			SUBAGENT_OWNER_GENERATION,
+			(call) => {
+				if (!SUBAGENT_QUESTION_TOOLS.has(call.toolName)) reportsOtherThanQuestions = true;
+				return interruptedStillRunningResult(call);
+			},
+		)
 			.then((held) => {
 				// A child released by an earlier process is woken as it always is, which hands these over too.
 				if (held === undefined || releasedByEarlierProcess(held)) return;
@@ -634,10 +640,10 @@ export function handleReleasedChildWakes(
 
 /** Keep new results for a child that cannot take them now, durably, beside those it holds, for its next wake or resume. */
 export function holdToolResultsInRecord(
-	pi: Parameters<typeof recordSubagentChildHeldToolResults>[0],
+	atomic: Parameters<typeof recordSubagentChildHeldToolResults>[0],
 ): (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void> {
 	return async (record, toolResults) => {
-		await recordSubagentChildHeldToolResults(pi, record.owner.sessionId, record.childId, toolResults);
+		await recordSubagentChildHeldToolResults(atomic, record.owner.sessionId, record.childId, toolResults);
 	};
 }
 

@@ -586,7 +586,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 	label: "subagents",
 	managedEvents: MANAGED_EVENTS,
 	interceptedBusEvents: INTERCEPTED_BUS_EVENTS,
-	register(pi, controller) {
+	register(atomic, controller) {
 		// Buffer this session's Intercom id while Subagents is dormant so children launched after
 		// activation still know their supervisor's Intercom session id.
 		let bufferedIntercomConnected: unknown;
@@ -625,7 +625,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			}
 		});
 
-		pi.on("session_recovery_restore", async (event, ctx) => {
+		atomic.on("session_recovery_restore", async (event, ctx) => {
 			if (ctx.subagentPolicy !== undefined) return undefined;
 			let hasRecords = sessionHadChildRecords;
 			if (!hasRecords) {
@@ -643,7 +643,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 				| undefined;
 		});
 
-		pi.events.on(INTERCOM_CONNECTED_EVENT, (payload) => {
+		atomic.events.on(INTERCOM_CONNECTED_EVENT, (payload) => {
 			bufferedIntercomConnected = payload;
 			if (controller.active) {
 				void controller.dispatchBusEvent(INTERCOM_CONNECTED_EVENT, payload);
@@ -657,7 +657,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			SUBAGENT_FINISHED_ASKS_EVENT,
 			SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT,
 		] as const) {
-			pi.events.on(channel, (payload) => {
+			atomic.events.on(channel, (payload) => {
 				if (!isObjectRecord(payload) || payload.completion) return;
 				if (controller.active) {
 					void controller.dispatchBusEvent(channel, payload);
@@ -667,7 +667,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			});
 		}
 
-		pi.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
+		atomic.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
 			if (!isObjectRecord(payload) || payload.completion) return;
 			if (typeof payload.ownerSessionId !== "string" || typeof payload.target !== "string") return;
 			if (controller.active) {
@@ -686,7 +686,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
 			PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
 		] as const) {
-			pi.events.on(channel, (payload) => {
+			atomic.events.on(channel, (payload) => {
 				if (controller.active) {
 					void controller.dispatchBusEvent(channel, payload);
 					return;
@@ -708,7 +708,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			SUBAGENT_RESUME_NOTE_TYPE,
 			SUBAGENT_CONTROL_MESSAGE_TYPE,
 		] as const) {
-			pi.registerMessageRenderer(customType, (message, options, theme) => {
+			atomic.registerMessageRenderer(customType, (message, options, theme) => {
 				const loaded = controller.active?.captured.messageRenderers.get(customType);
 				if (loaded) return loaded(message, options, theme);
 				const content = typeof message.content === "string" ? message.content : "";
@@ -716,7 +716,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			});
 		}
 
-		pi.registerTool({
+		atomic.registerTool({
 			name: "subagent",
 			exposure: "model-only",
 			scriptAccess: subagentScriptAccess,
@@ -730,7 +730,7 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			renderResult: (...args) => renderSubagentResultFallback(controller, args),
 		});
 
-		pi.registerCommand("agents", {
+		atomic.registerCommand("agents", {
 			description: "Browse available subagents and inspect their configuration",
 			handler: (args, ctx) => controller.runCommand("agents", args, ctx),
 		});

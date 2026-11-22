@@ -38,8 +38,8 @@ try {
   let fail = false;
   const shutdowns = [];
   const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [
-   pi => { const id = ++serial; active.add(id); pi.on("session_shutdown", () => { active.delete(id); shutdowns.push(id); if (id === 2 && mode === "prepare-cleanup") throw new Error("earlier cleanup failed"); }); },
-   pi => { if (fail && mode === "prepare-cleanup") { pi.on("session_shutdown", () => { throw new Error("later cleanup failed"); }); throw new Error("later factory failed"); } },
+   atomic => { const id = ++serial; active.add(id); atomic.on("session_shutdown", () => { active.delete(id); shutdowns.push(id); if (id === 2 && mode === "prepare-cleanup") throw new Error("earlier cleanup failed"); }); },
+   atomic => { if (fail && mode === "prepare-cleanup") { atomic.on("session_shutdown", () => { throw new Error("later cleanup failed"); }); throw new Error("later factory failed"); } },
   ], extensionsOverride: base => { if (fail && mode === "prepare") throw new Error("override failed"); return base; } });
   ({ session } = await createAgentSession({ ...options, resourceLoader: loader }));
   fail = true;
@@ -56,10 +56,10 @@ try {
   assert.deepEqual(shutdowns, [2, 1]);
  } else if (mode === "persist") {
   const events = [];
-  const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [pi => {
+  const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [atomic => {
    // Provider requests wait for queued session events, so the gate holds the run open after the conversation events completed.
-   pi.on("agent_end", async () => { entered.resolve(); await release.promise; });
-   pi.on("message_end", event => { events.push(event.message.role); });
+   atomic.on("agent_end", async () => { entered.resolve(); await release.promise; });
+   atomic.on("message_end", event => { events.push(event.message.role); });
   }] });
   ({ session } = await createAgentSession({ ...options, resourceLoader: loader }));
   const turn = session.prompt("preserve  raw\n"); await entered.promise; await completed.promise; await tick();

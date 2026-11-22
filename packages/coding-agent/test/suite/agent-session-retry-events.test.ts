@@ -164,8 +164,8 @@ describe("AgentSession retry and event characterization", () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", async (event) => {
+				(atomic) => {
+					atomic.on("message_end", async (event) => {
 						if (event.message.role === "assistant") {
 							await new Promise((resolve) => setTimeout(resolve, 40));
 						}
@@ -279,9 +279,9 @@ describe("AgentSession retry and event characterization", () => {
 			const harness = await createHarness({
 				settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						// Holds the failed attempt's `agent_end` where the session has not yet decided to retry it.
-						pi.on("agent_end", async () => {
+						atomic.on("agent_end", async () => {
 							if (++failures !== failure) return;
 							endHandled.resolve();
 							await release.promise;
@@ -431,11 +431,11 @@ describe("AgentSession retry and event characterization", () => {
 		const order: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_start", async (event) => {
+				(atomic) => {
+					atomic.on("message_start", async (event) => {
 						order.push(`extension:${event.type}:${event.message.role}`);
 					});
-					pi.on("message_end", async (event) => {
+					atomic.on("message_end", async (event) => {
 						order.push(`extension:${event.type}:${event.message.role}`);
 					});
 				},

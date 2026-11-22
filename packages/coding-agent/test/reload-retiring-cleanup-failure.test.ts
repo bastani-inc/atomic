@@ -31,23 +31,23 @@ test.each(reloadModes)(
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		let next = 0;
 		let successor: number | undefined;
-		const factory: ExtensionFactory = (pi) => {
+		const factory: ExtensionFactory = (atomic) => {
 			const generation = ++next;
 			let startReason: string | undefined;
-			pi.registerTool({
+			atomic.registerTool({
 				name: "generation_probe",
 				label: "generation probe",
 				description: "Report the extension generation that owns this tool.",
 				parameters: Type.Object({}),
 				execute: async () => ({ content: [{ type: "text", text: `generation ${generation}` }], details: {} }),
 			});
-			pi.on("session_start", (event) => {
+			atomic.on("session_start", (event) => {
 				startReason = event.reason;
 				if (event.reason !== "reload") return;
 				successor = generation;
-				pi.appendEntry("reload-successor-started", { generation });
+				atomic.appendEntry("reload-successor-started", { generation });
 			});
-			pi.on("session_shutdown", (event) => {
+			atomic.on("session_shutdown", (event) => {
 				if (event.reason === "reload" && startReason === "startup")
 					throw new Error(`forced cleanup failure in generation ${generation}`);
 			});
@@ -116,8 +116,8 @@ test.each(reloadModes)(
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 		const settingsManager = SettingsManager.create(cwd, agentDir);
-		const factory: ExtensionFactory = (pi) => {
-			pi.on("session_shutdown", (event) => {
+		const factory: ExtensionFactory = (atomic) => {
+			atomic.on("session_shutdown", (event) => {
 				if (event.reason === "reload")
 					throw new AggregateError(
 						[new Error("nested-a"), new AggregateError([new Error("nested-b"), " raw cause  "], "hidden")],

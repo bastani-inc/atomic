@@ -14,7 +14,7 @@ const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, interco
 const CAUSE = "Cannot read properties of undefined (reading 'fg')";
 
 async function startupFailureOf(
-	extensionFactories: ((pi: ExtensionFactoryApi) => void)[],
+	extensionFactories: ((atomic: ExtensionFactoryApi) => void)[],
 ): Promise<ExtensionStartupError> {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-startup-failure-message-"));
 	try {
@@ -54,8 +54,8 @@ type ExtensionFactoryApi = Parameters<
 
 test("a session_start failure names the failing extension and its cause on every string surface (#3807)", async () => {
 	const error = await startupFailureOf([
-		(pi) => {
-			pi.on("session_start", () => {
+		(atomic) => {
+			atomic.on("session_start", () => {
 				throw new TypeError(CAUSE);
 			});
 		},
@@ -76,13 +76,13 @@ test("a session_start failure names the failing extension and its cause on every
 
 test("every failing extension is named in one startup error, in load order (#3807)", async () => {
 	const error = await startupFailureOf([
-		(pi) => {
-			pi.on("session_start", () => {
+		(atomic) => {
+			atomic.on("session_start", () => {
 				throw new TypeError(CAUSE);
 			});
 		},
-		(pi) => {
-			pi.on("session_start", () => {
+		(atomic) => {
+			atomic.on("session_start", () => {
 				throw new Error("second extension failed");
 			});
 		},

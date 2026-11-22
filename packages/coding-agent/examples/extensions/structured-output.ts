@@ -34,7 +34,7 @@ const structuredOutputTool = createStructuredOutputTool({
 	schema: SummarySchema,
 });
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	// Register structured_output for sessions that load this extension.
-	pi.registerTool(structuredOutputTool);
+	atomic.registerTool(structuredOutputTool);
 }

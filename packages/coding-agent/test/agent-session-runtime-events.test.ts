@@ -258,9 +258,9 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	it("retains runtime ownership and host input across replacement without sharing sibling ownership", async () => {
 		const scopes: object[] = [];
 		const answers: string[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			if (pi.lifecycleScope) scopes.push(pi.lifecycleScope);
-			pi.on("session_start", async (event, ctx) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			if (atomic.lifecycleScope) scopes.push(atomic.lifecycleScope);
+			atomic.on("session_start", async (event, ctx) => {
 				if (event.reason !== "startup") answers.push((await ctx.ui.input("replacement"))!);
 			});
 		});
@@ -281,8 +281,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		expect(scopes[1]).toBe(scopes[0]);
 		await expect(old.prompt("closed")).rejects.toMatchObject({ code: "SessionClosed" });
 		let siblingScope: object | undefined;
-		await createRuntimeHost((pi) => {
-			siblingScope = pi.lifecycleScope;
+		await createRuntimeHost((atomic) => {
+			siblingScope = atomic.lifecycleScope;
 		});
 		expect(siblingScope).not.toBe(scopes[0]);
 	});
@@ -294,12 +294,12 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			const events: string[] = [];
 			const failure = new Error("replacement factory rejected");
 			const { runtimeHost } = await createRuntimeHost(
-				(pi) => {
-					pi.on("session_shutdown", (event) => {
+				(atomic) => {
+					atomic.on("session_shutdown", (event) => {
 						events.push(`first:${event.reason}`);
 						if (event.reason === "quit") throw new Error("first cleanup failed");
 					});
-					pi.on("session_shutdown", (event) => {
+					atomic.on("session_shutdown", (event) => {
 						events.push(`second:${event.reason}`);
 						if (event.reason === "quit") throw new Error("second cleanup failed");
 					});
@@ -343,8 +343,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("prepares resume with a live outgoing context and preserves it on preflight failure", async () => {
 		let shutdowns = 0;
-		const { runtimeHost, createRuntime } = await createRuntimeHost((pi) => {
-			pi.on("session_shutdown", () => {
+		const { runtimeHost, createRuntime } = await createRuntimeHost((atomic) => {
+			atomic.on("session_shutdown", () => {
 				shutdowns++;
 			});
 		});
@@ -404,8 +404,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			started = resolve;
 		});
 		const events: string[] = [];
-		const { runtimeHost, createRuntime } = await createRuntimeHost((pi) => {
-			pi.on("ui_prompt_start", async (event, ctx) => {
+		const { runtimeHost, createRuntime } = await createRuntimeHost((atomic) => {
+			atomic.on("ui_prompt_start", async (event, ctx) => {
 				expect(event.reason).toBe("project_trust");
 				expect(ctx.sessionManager.getCwd()).toBe(ctx.cwd);
 				events.push("start");
@@ -414,10 +414,10 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				expect(ctx.sessionManager.getCwd()).toBe(ctx.cwd);
 				events.push("settled");
 			});
-			pi.on("ui_prompt_end", () => {
+			atomic.on("ui_prompt_end", () => {
 				events.push("end");
 			});
-			pi.on("session_shutdown", () => {
+			atomic.on("session_shutdown", () => {
 				events.push("shutdown");
 			});
 		});
@@ -440,14 +440,14 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_before_switch", (event) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_before_switch", (event) => {
 				events.push(event);
 			});
-			pi.on("session_shutdown", (event) => {
+			atomic.on("session_shutdown", (event) => {
 				events.push(event);
 			});
-			pi.on("session_start", (event) => {
+			atomic.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -484,8 +484,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("marks shutdown handlers when disposal was caused by a host signal (#3492)", async () => {
 		const events: SessionShutdownEvent[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_shutdown", (event) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_shutdown", (event) => {
 				events.push(event);
 			});
 		});
@@ -497,8 +497,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("does not mark an ordinary disposal as host-signal driven (#3492)", async () => {
 		const events: SessionShutdownEvent[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_shutdown", (event) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_shutdown", (event) => {
 				events.push(event);
 			});
 		});
@@ -510,12 +510,12 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("honors session_before_switch cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_before_switch", (event) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_before_switch", (event) => {
 				events.push(event);
 				return { cancel: true };
 			});
-			pi.on("session_start", (event) => {
+			atomic.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -534,8 +534,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	it("runs beforeSessionInvalidate after session_shutdown and before rebindSession", async () => {
 		const phases: string[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_shutdown", () => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_shutdown", () => {
 				phases.push("session_shutdown");
 			});
 		});
@@ -552,7 +552,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		expect(phases).toEqual(["session_shutdown", "beforeSessionInvalidate", "rebindSession"]);
 		expect(() => oldSession.extensionRunner.createContext().cwd).toThrow(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			"This extension ctx is stale after session replacement or reload. Do not use a captured atomic or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
 		runtimeHost.setBeforeSessionInvalidate(undefined);
 		runtimeHost.setRebindSession(undefined);
@@ -568,8 +568,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			const releaseCommand = Promise.withResolvers<void>();
 			const asyncWidgetSet = Promise.withResolvers<void>();
 			let replace!: (ctx: ExtensionCommandContext) => Promise<unknown>;
-			const { runtimeHost } = await createRuntimeHost((pi) => {
-				pi.on("session_start", (event, ctx) => {
+			const { runtimeHost } = await createRuntimeHost((atomic) => {
+				atomic.on("session_start", (event, ctx) => {
 					if (event.reason === "startup") return;
 					phases.push("session_start");
 					const sessionId = ctx.sessionManager.getSessionId();
@@ -579,7 +579,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 						asyncWidgetSet.resolve();
 					});
 				});
-				pi.registerCommand("replace", {
+				atomic.registerCommand("replace", {
 					description: "replaces the session from inside tracked command work",
 					handler: async (_args, ctx) => {
 						await replace(ctx);
@@ -653,14 +653,14 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			const switched = Promise.withResolvers<void>();
 			const releaseCommand = Promise.withResolvers<void>();
 			let replace!: (ctx: ExtensionCommandContext) => Promise<unknown>;
-			const { runtimeHost } = await createRuntimeHost((pi) => {
-				pi.on("session_start", (_event, ctx) => {
+			const { runtimeHost } = await createRuntimeHost((atomic) => {
+				atomic.on("session_start", (_event, ctx) => {
 					ctx.ui.setWidget("status", [ctx.sessionManager.getSessionId()]);
 				});
-				pi.on("session_shutdown", (_event, ctx) => {
+				atomic.on("session_shutdown", (_event, ctx) => {
 					ctx.ui.setWidget("status", undefined);
 				});
-				pi.registerCommand("replace", {
+				atomic.registerCommand("replace", {
 					description: "replaces the session from inside tracked command work",
 					handler: async (_args, ctx) => {
 						await replace(ctx);
@@ -713,11 +713,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	it("resets the retiring session's UI once before the new session binds without calling-session work (#3561)", async () => {
 		const widgets = new Map<string, string>();
 		const phases: string[] = [];
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_shutdown", (event) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_shutdown", (event) => {
 				phases.push(`session_shutdown:${event.reason}`);
 			});
-			pi.on("session_start", (event, ctx) => {
+			atomic.on("session_start", (event, ctx) => {
 				if (event.reason === "startup") return;
 				phases.push("session_start");
 				widgets.set("sync", ctx.sessionManager.getSessionId());
@@ -757,18 +757,18 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	it("emits session_before_fork and session_start and honors cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
 		let cancelNextFork = false;
-		const { runtimeHost } = await createRuntimeHost((pi) => {
-			pi.on("session_before_fork", (event) => {
+		const { runtimeHost } = await createRuntimeHost((atomic) => {
+			atomic.on("session_before_fork", (event) => {
 				events.push(event);
 				if (cancelNextFork) {
 					cancelNextFork = false;
 					return { cancel: true };
 				}
 			});
-			pi.on("session_shutdown", (event) => {
+			atomic.on("session_shutdown", (event) => {
 				events.push(event);
 			});
-			pi.on("session_start", (event) => {
+			atomic.on("session_start", (event) => {
 				events.push(event);
 			});
 		});
@@ -813,13 +813,13 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			hostCalls += 1;
 		});
 		const { runtimeHost } = await createRuntimeHost(
-			(pi) => {
+			(atomic) => {
 				const load = ++loads;
-				firstApi ??= pi;
-				pi.events.on("markdown-transformer-reload", () => {
+				firstApi ??= atomic;
+				atomic.events.on("markdown-transformer-reload", () => {
 					extensionCalls += 1;
 				});
-				pi.registerMarkdownTransformer((markdown) => `${load}:${markdown}`);
+				atomic.registerMarkdownTransformer((markdown) => `${load}:${markdown}`);
 			},
 			{ eventBus },
 		);

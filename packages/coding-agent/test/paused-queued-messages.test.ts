@@ -425,8 +425,8 @@ describe("regular chat paused queued messages", () => {
 		const commandArgs: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("stay-paused", {
+				(atomic) => {
+					atomic.registerCommand("stay-paused", {
 						description: "Handle without releasing paused work",
 						handler: async (args) => {
 							commandArgs.push(args);
@@ -508,8 +508,8 @@ describe("regular chat paused queued messages", () => {
 		const commandArgs: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("hold-queued", {
+				(atomic) => {
+					atomic.registerCommand("hold-queued", {
 						description: "Handle without releasing exact queued content",
 						handler: async (args) => {
 							commandArgs.push(args);

@@ -14,12 +14,12 @@ test("removed slash commands are not registered", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-slash-removed-"));
 	try {
 		const commands = new Map<string, CommandOptions>();
-		const pi = {
+		const atomic = {
 			registerCommand: (name: string, options: CommandOptions) => {
 				commands.set(name, options);
 			},
 		} as Pick<ExtensionAPI, "registerCommand"> as ExtensionAPI;
-		registerSlashCommands(pi, { baseCwd: cwd } as SubagentState);
+		registerSlashCommands(atomic, { baseCwd: cwd } as SubagentState);
 		const removed = ["run", "parallel", "chain", "run-chain"];
 		assert.deepEqual(
 			[...commands.keys()].filter((command) => removed.includes(command)),

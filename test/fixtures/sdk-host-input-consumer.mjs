@@ -23,7 +23,7 @@ const host = {
 	},
 };
 const loader = new DefaultResourceLoader({ cwd, agentDir: join(cwd, "agent"), settingsManager, noExtensions: true, noContextFiles: true,
-	extensionFactories: [(pi) => { pi.on("session_start", (_event, ctx) => { context = ctx; }); }],
+	extensionFactories: [(atomic) => { atomic.on("session_start", (_event, ctx) => { context = ctx; }); }],
 });
 let session;
 try {

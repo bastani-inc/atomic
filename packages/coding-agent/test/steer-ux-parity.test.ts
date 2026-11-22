@@ -105,8 +105,8 @@ describe.each(steeringChats)("steering from the %s chat", (_kind, open) => {
 
 	test("an extension command typed while the agent works runs at once in the agent's session and is never queued", async () => {
 		const runs: string[] = [];
-		const ping: ExtensionFactory = (pi) => {
-			pi.registerCommand("ping", {
+		const ping: ExtensionFactory = (atomic) => {
+			atomic.registerCommand("ping", {
 				description: "Record a ping",
 				handler: async (args) => {
 					runs.push(args);

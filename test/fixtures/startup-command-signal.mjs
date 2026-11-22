@@ -39,7 +39,7 @@ try {
 				noExtensions: true,
 				additionalExtensionPaths: [...names, "llama.cpp"].map((name) => `builtin:${name}`),
 				extensionFactories: [
-					(pi) => pi.registerCommand("inspect", {
+					(atomic) => atomic.registerCommand("inspect", {
 						description: "inspect",
 						handler: async () => { completed = true; },
 					}),

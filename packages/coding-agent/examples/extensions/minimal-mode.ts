@@ -52,13 +52,13 @@ function createBuiltInTools(cwd: string) {
 	};
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	const tools = createBuiltInTools(process.cwd());
 
 	// =========================================================================
 	// Read Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.read,
 
 		renderCall(args, theme, _context) {
@@ -89,7 +89,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Bash Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.bash,
 
 		renderCall(args, theme, _context) {
@@ -129,7 +129,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Write Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.write,
 
 		renderCall(args, theme, _context) {
@@ -162,7 +162,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Edit Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.edit,
 		renderShell: "default",
 
@@ -199,7 +199,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Find Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.find,
 
 		renderCall(args, theme, _context) {
@@ -248,7 +248,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Search Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.search,
 
 		renderCall(args, theme, _context) {
@@ -293,7 +293,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Ls Tool
 	// =========================================================================
-	pi.registerTool({
+	atomic.registerTool({
 		...tools.ls,
 
 		renderCall(args, theme, _context) {

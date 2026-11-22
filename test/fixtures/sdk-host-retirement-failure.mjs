@@ -17,9 +17,9 @@ const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"
 const shutdowns = [];
 let keepAlive;
 const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true,
- extensionFactories: [pi => {
-  pi.on("session_start", () => { keepAlive = setInterval(() => {}, 60_000); });
-  pi.on("session_shutdown", event => {
+ extensionFactories: [atomic => {
+  atomic.on("session_start", () => { keepAlive = setInterval(() => {}, 60_000); });
+  atomic.on("session_shutdown", event => {
    shutdowns.push(event.reason);
    if (event.reason !== "quit") throw new Error("retirement failed");
    clearInterval(keepAlive);

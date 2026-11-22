@@ -159,8 +159,8 @@ async function openThenCompact(host: string, notices: boolean) {
 		hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
 		settings: { showCacheMissNotices: notices },
 		engineExtensions: [
-			(pi) => {
-				pi.on("session_before_compact", () => ({ compactedText: "retained" }));
+			(atomic) => {
+				atomic.on("session_before_compact", () => ({ compactedText: "retained" }));
 			},
 		],
 	});

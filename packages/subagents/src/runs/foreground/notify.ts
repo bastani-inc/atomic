@@ -82,12 +82,12 @@ function getNotifySeenRegistry(): WeakMap<ExtensionAPI, Map<string, number>> {
 	return registry;
 }
 
-function getNotifySeen(pi: ExtensionAPI): Map<string, number> {
+function getNotifySeen(atomic: ExtensionAPI): Map<string, number> {
 	const registry = getNotifySeenRegistry();
-	const existing = registry.get(pi);
+	const existing = registry.get(atomic);
 	if (existing) return existing;
 	const seen = new Map<string, number>();
-	registry.set(pi, seen);
+	registry.set(atomic, seen);
 	return seen;
 }
 
@@ -114,7 +114,7 @@ function isPromiseLike(value: unknown): value is PromiseLike<void> {
 }
 
 async function dispatchFallback(
-	pi: ExtensionAPI,
+	atomic: ExtensionAPI,
 	prefix: TerminalPreludeMessage[],
 	terminalMessage: TerminalPreludeMessage,
 	deliveryOptions: Parameters<ExtensionAPI["sendMessage"]>[1],
@@ -122,10 +122,10 @@ async function dispatchFallback(
 	let delivered = 0;
 	try {
 		for (const message of prefix) {
-			await pi.sendMessage(message, { deliverAs: "steer" });
+			await atomic.sendMessage(message, { deliverAs: "steer" });
 			delivered += 1;
 		}
-		await pi.sendMessage(terminalMessage, deliveryOptions);
+		await atomic.sendMessage(terminalMessage, deliveryOptions);
 	} catch (error) {
 		const failure = new Error(error instanceof Error ? error.message : String(error), { cause: error });
 		Object.assign(failure, { terminalPreludeDelivered: delivered });
@@ -133,10 +133,10 @@ async function dispatchFallback(
 	}
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
+export default function registerSubagentNotify(atomic: ExtensionAPI): () => void {
 	const registry = getNotifyRegistry();
-	const previous = registry.get(pi);
-	const seen = getNotifySeen(pi);
+	const previous = registry.get(atomic);
+	const seen = getNotifySeen(atomic);
 	const ttlMs = 10 * 60 * 1000;
 
 	const emitTerminalOrderingBarrier = (
@@ -176,9 +176,9 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			sourceSessionTargets,
 			...(barrierDispatch ? { dispatch: barrierDispatch } : {}),
 		};
-		Object.defineProperty(payload, "terminalOwner", { value: pi });
+		Object.defineProperty(payload, "terminalOwner", { value: atomic });
 		try {
-			pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+			atomic.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
 		} catch (error) {
 			if (!isStaleExtensionContextError(error) || dispatchStarted) throw error;
 		}
@@ -189,7 +189,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const inFlight = new Map<string, Promise<void>>();
 	let registration: NotifyRegistration | undefined;
 	const handleComplete = (data: unknown): void => {
-		if (!registration || registry.get(pi) !== registration) return;
+		if (!registration || registry.get(atomic) !== registration) return;
 		const result = data as SubagentResult & Partial<CompletionNotificationEnvelope>;
 		const now = Date.now();
 		const key = result.notificationId
@@ -297,17 +297,17 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			let dispatched = false;
 			const barrierCompletion = emitTerminalOrderingBarrier(result, (prefix) => {
 				dispatched = true;
-				if (typeof pi.sendMessages === "function") {
-					return pi.sendMessages([...prefix, terminalMessage], deliveryOptions);
+				if (typeof atomic.sendMessages === "function") {
+					return atomic.sendMessages([...prefix, terminalMessage], deliveryOptions);
 				}
-				return dispatchFallback(pi, prefix, terminalMessage, deliveryOptions);
+				return dispatchFallback(atomic, prefix, terminalMessage, deliveryOptions);
 			});
 			if (barrierCompletion) {
 				observe(barrierCompletion);
 				return;
 			}
 			if (!dispatched) {
-				const delivery = pi.sendMessage(terminalMessage, deliveryOptions);
+				const delivery = atomic.sendMessage(terminalMessage, deliveryOptions);
 				if (isPromiseLike(delivery)) {
 					observe(delivery);
 					return;
@@ -320,14 +320,14 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	};
 	let unsubscribe: () => void;
 	try {
-		unsubscribe = pi.events.on(SUBAGENT_COMPLETE_EVENT, handleComplete);
+		unsubscribe = atomic.events.on(SUBAGENT_COMPLETE_EVENT, handleComplete);
 	} catch (error) {
 		if (!isStaleExtensionContextError(error)) throw error;
 		// A stale API cannot accept a new subscription; keep the prior one usable.
 		return () => {};
 	}
 	registration = { unsubscribe };
-	registry.set(pi, registration);
+	registry.set(atomic, registration);
 	if (previous) {
 		try {
 			previous.unsubscribe();
@@ -336,7 +336,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 				// The old handler is inert because the registry now belongs to this registration.
 			} else {
 				// A failed replacement cleanup aborts activation; remove the new entry before rethrowing.
-				if (registry.get(pi) === registration) registry.delete(pi);
+				if (registry.get(atomic) === registration) registry.delete(atomic);
 				try {
 					unsubscribe();
 				} catch (rollbackError) {
@@ -350,8 +350,8 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		}
 	}
 	return () => {
-		if (!registration || registry.get(pi) !== registration) return;
-		registry.delete(pi);
+		if (!registration || registry.get(atomic) !== registration) return;
+		registry.delete(atomic);
 		try {
 			unsubscribe();
 		} catch (error) {

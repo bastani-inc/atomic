@@ -194,9 +194,9 @@ it.each(["preset", "fallback"] as const)(
 			extensionFactories:
 				choice === "preset"
 					? [
-							(pi) =>
-								pi.on("session_start", async () => {
-									await pi.setModel(local);
+							(atomic) =>
+								atomic.on("session_start", async () => {
+									await atomic.setModel(local);
 								}),
 						]
 					: [],

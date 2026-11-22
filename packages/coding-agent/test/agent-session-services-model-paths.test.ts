@@ -150,9 +150,9 @@ describe("agent session service model paths", () => {
 				noPromptTemplates: true,
 				noThemes: true,
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						if (!registerProvider) return;
-						pi.registerProvider(providerId, {
+						atomic.registerProvider(providerId, {
 							api: "openai-completions",
 							baseUrl: "http://localhost:8080/eager-provider/v1",
 							models: [{ id: "eager-model", name: "Eager model" }],

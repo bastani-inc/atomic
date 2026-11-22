@@ -32,16 +32,16 @@ describe("native MCP discovery reachability", () => {
 				extensionFactories: [
 					{
 						path: "builtin:codemode",
-						factory: (pi) => {
+						factory: (atomic) => {
 							const definition = createCodemodeToolDefinition();
-							pi.registerTool({ ...definition, parameters: structuredClone(definition.parameters) });
+							atomic.registerTool({ ...definition, parameters: structuredClone(definition.parameters) });
 						},
 					},
 					{
 						path: "builtin:tool-search",
-						factory: (pi) => {
-							const definition = createToolSearchToolDefinition({ tools: pi });
-							pi.registerTool({ ...definition, parameters: structuredClone(definition.parameters) });
+						factory: (atomic) => {
+							const definition = createToolSearchToolDefinition({ tools: atomic });
+							atomic.registerTool({ ...definition, parameters: structuredClone(definition.parameters) });
 						},
 					},
 					createMcpExtension({
@@ -75,7 +75,7 @@ describe("native MCP discovery reachability", () => {
 		const harness = await createHarness({
 			initialActiveToolNames: [],
 			extensionFactories: [
-				(pi) => pi.registerTool(createToolSearchToolDefinition({ tools: pi })),
+				(atomic) => atomic.registerTool(createToolSearchToolDefinition({ tools: atomic })),
 				createMcpExtension({
 					loadConfig: () => ({ servers: [deferredEntry], errors: [] }),
 					credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),

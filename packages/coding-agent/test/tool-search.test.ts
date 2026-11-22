@@ -16,8 +16,8 @@ test("tool search activates matching deferred tools for the next model call", as
 	const harness = await createHarness({
 		extensionFactories: [
 			createToolSearchExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "github_issues",
 					label: "Issues",
 					description: "Search repository issues",
@@ -25,7 +25,7 @@ test("tool search activates matching deferred tools for the next model call", as
 					parameters: Type.Object({}),
 					execute: async () => ({ content: [{ type: "text", text: "issue 42" }], details: {} }),
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "hidden_issues",
 					label: "Hidden",
 					description: "Search repository issues",
@@ -395,8 +395,8 @@ test("tool_search loads a tool by a parameter description behind a local referen
 	const harness = await createHarness({
 		extensionFactories: [
 			createToolSearchExtension(),
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "ledger_inspect",
 					label: "Inspect",
 					description: "Inspect records",

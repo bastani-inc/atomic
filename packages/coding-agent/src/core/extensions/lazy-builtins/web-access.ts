@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@bastani/atomic-ai";
 import { type KeyId, Text } from "@bastani/atomic-tui";
+import { DORMANT_WEB_ACCESS_MESSAGE_RENDERERS } from "../../../modes/interactive/components/dormant-builtin-messages.js";
 import type { SessionEntry } from "../../session-manager.ts";
 import type { LazyBuiltinController, LazyBuiltinSpec } from "../lazy-builtin.js";
 import type { ToolDefinition } from "../types.ts";
@@ -58,8 +59,8 @@ function renderResultFallback(controller: LazyBuiltinController, name: string, a
 export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 	label: "web-access",
 	managedEvents: ["tool_result"],
-	async register(pi, controller) {
-		pi.on("tool_result", (event) => {
+	async register(atomic, controller) {
+		atomic.on("tool_result", (event) => {
 			if (isAllFailedWebResult(event.toolName, event.details)) return { isError: true };
 		});
 
@@ -80,13 +81,13 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			[shortcuts.curate, "curate"],
 			[shortcuts.activity, "activity"],
 		] as const) {
-			pi.registerShortcut(shortcut as KeyId, {
+			atomic.registerShortcut(shortcut as KeyId, {
 				description: name === "curate" ? "Review search results" : "Toggle web search activity",
 				handler: (ctx) => controller.runShortcut(shortcut, ctx),
 			});
 		}
 
-		pi.registerTool({
+		atomic.registerTool({
 			name: "web_search",
 			label: "Web Search",
 			description:
@@ -135,7 +136,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			},
 		});
 
-		pi.registerTool({
+		atomic.registerTool({
 			name: "code_search",
 			label: "Code Search",
 			description:
@@ -170,7 +171,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			},
 		});
 
-		pi.registerTool({
+		atomic.registerTool({
 			name: "fetch_content",
 			label: "Fetch Content",
 			description:
@@ -236,7 +237,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			},
 		});
 
-		pi.registerTool({
+		atomic.registerTool({
 			name: "get_search_content",
 			label: "Get Search Content",
 			description: "Retrieve full content from a previous web_search or fetch_content call.",
@@ -259,9 +260,17 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			["google-account", "Show the active Google account for Gemini Web"],
 			["search", "Browse stored web search results"],
 		] as const) {
-			pi.registerCommand(name, {
+			atomic.registerCommand(name, {
 				description,
 				handler: (args, ctx) => controller.runCommand(name, args, ctx),
+			});
+		}
+
+		for (const [customType, dormantRenderer] of Object.entries(DORMANT_WEB_ACCESS_MESSAGE_RENDERERS)) {
+			atomic.registerMessageRenderer(customType, (message, options, theme) => {
+				const loaded = controller.active?.captured.messageRenderers.get(customType);
+				if (loaded) return loaded(message, options, theme);
+				return dormantRenderer(message, options, theme);
 			});
 		}
 	},

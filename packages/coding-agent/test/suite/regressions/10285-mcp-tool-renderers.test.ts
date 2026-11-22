@@ -32,12 +32,12 @@ describe("MCP tool renderers", () => {
 	it("binds copied tool renderer registrations to each session runtime after reload (#10285)", async () => {
 		let registerLateRenderer = () => {};
 		const discovered = await createTestExtensionsResult([
-			(pi) => {
+			(atomic) => {
 				registerLateRenderer = () =>
-					pi.registerToolRenderer(() => ({
+					atomic.registerToolRenderer(() => ({
 						renderShell: "default",
 						renderCall: () => {
-							const value = String(pi.getSettings().quietStartup);
+							const value = String(atomic.getSettings().quietStartup);
 							return { render: () => [value], invalidate: () => {} };
 						},
 					}));
@@ -98,8 +98,8 @@ describe("MCP tool renderers", () => {
 		const renderCall = () => ({ render: () => [], invalidate: () => {} });
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => pi.registerToolRenderer((name, next) => (name === "a" ? { renderCall } : next())),
-				(pi) => pi.registerToolRenderer((_name, next) => next() ?? { renderShell: "self" }),
+				(atomic) => atomic.registerToolRenderer((name, next) => (name === "a" ? { renderCall } : next())),
+				(atomic) => atomic.registerToolRenderer((_name, next) => next() ?? { renderShell: "self" }),
 			],
 		});
 		try {

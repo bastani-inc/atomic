@@ -63,8 +63,8 @@ describe("AgentSessionRuntime characterization", () => {
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.registerProvider(faux.getModel().provider, {
+					(atomic: ExtensionAPI) => {
+						atomic.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
 							api: faux.api,
@@ -79,7 +79,7 @@ describe("AgentSessionRuntime characterization", () => {
 								maxTokens: registeredModel.maxTokens,
 							})),
 						});
-						extensionFactory(pi);
+						extensionFactory(atomic);
 					},
 				],
 				noSkills: true,
@@ -136,8 +136,8 @@ describe("AgentSessionRuntime characterization", () => {
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.registerProvider(faux.getModel().provider, {
+					(atomic: ExtensionAPI) => {
+						atomic.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
 							api: faux.api,
@@ -211,8 +211,8 @@ describe("AgentSessionRuntime characterization", () => {
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.registerProvider(faux.getModel().provider, {
+					(atomic: ExtensionAPI) => {
+						atomic.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
 							api: faux.api,
