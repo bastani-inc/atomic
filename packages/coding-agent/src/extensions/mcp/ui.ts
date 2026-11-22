@@ -22,6 +22,7 @@ import { DynamicBorder } from "../../modes/interactive/components/dynamic-border
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { FramedSelector, type SelectorItem } from "../../modes/interactive/components/selector.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
+import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 
 export interface McpMenu {
 	title: string;
@@ -266,7 +267,7 @@ export async function showMcpManager(
 		void manage(view).then(
 			() => done(),
 			(error: unknown) => {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				ctx.ui.notify(redactCredentialShapes(error instanceof Error ? error.message : String(error)), "error");
 				done();
 			},
 		);

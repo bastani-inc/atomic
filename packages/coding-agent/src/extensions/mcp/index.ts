@@ -35,6 +35,7 @@ import { join, resolve } from "node:path";
 import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { SelectItem } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
+import { redactUrlCredentials } from "../../core/error-contract.ts";
 import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
@@ -49,6 +50,7 @@ import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import { sliceHead } from "../../core/tools/truncate.ts";
+import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
@@ -148,7 +150,7 @@ const EXPOSURE_DESCRIPTIONS: Record<Exclude<McpExposure, "hidden">, string> = {
 };
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return redactCredentialShapes(error instanceof Error ? error.message : String(error));
 }
 
 function firstLine(text: string): string {
@@ -430,8 +432,8 @@ function attentionRank(server: McpServer): number {
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
-	if ("url" in config) return config.url;
-	return [config.command, ...(config.args ?? [])].join(" ");
+	if ("url" in config) return redactUrlCredentials(config.url, "server-url");
+	return redactCredentialShapes([config.command, ...(config.args ?? [])].join(" "));
 }
 
 const MCP_USAGE = "Usage: /mcp, /mcp login [server], /mcp logout [server], /mcp reconnect [server]";
@@ -1636,7 +1638,10 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			} else {
 				failure = await signIn(server, {
 					showAuthorizationUrl: (url) => {
-						ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${url.href}`, "info");
+						ctx.ui.notify(
+							`Sign in to MCP server "${name}" in your browser:\n${redactUrlCredentials(url.href, "server-url")}`,
+							"info",
+						);
 						openUrl(url.href);
 					},
 					promptForRedirectUrl: (signal) =>

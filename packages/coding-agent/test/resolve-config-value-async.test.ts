@@ -6,6 +6,8 @@ import {
 	clearConfigValueCache,
 	resolveConfigValue,
 	resolveConfigValueAsync,
+	resolveConfigValueOrThrow,
+	resolveConfigValueOrThrowAsync,
 	resolveConfigValueUncachedAsync,
 } from "../src/core/resolve-config-value.js";
 import { killTrackedDetachedChildren } from "../src/utils/shell.js";
@@ -53,6 +55,38 @@ describe("resolveConfigValueAsync", () => {
 			expect(await resolveConfigValueAsync(command)).toBeUndefined();
 		},
 	);
+
+	test("resolveConfigValueOrThrow and resolveConfigValueOrThrowAsync omit raw commands and unset template fragments from errors", async () => {
+		const bangSecret = "opaqueBangSecret991122";
+		const dollarSuffix = "UnsetSecretSegment778899";
+
+		expect(() => resolveConfigValueOrThrow(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret')).toThrow(
+			'Failed to resolve MCP server "s" oauth.clientSecret from shell command',
+		);
+		try {
+			resolveConfigValueOrThrow(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret');
+		} catch (error) {
+			expect((error as Error).message).not.toContain(bangSecret);
+		}
+
+		await expect(
+			resolveConfigValueOrThrowAsync(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret'),
+		).rejects.toThrow('Failed to resolve MCP server "s" oauth.clientSecret from shell command');
+		try {
+			await resolveConfigValueOrThrowAsync(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret');
+		} catch (error) {
+			expect((error as Error).message).not.toContain(bangSecret);
+		}
+
+		await expect(
+			resolveConfigValueOrThrowAsync(`prefix$${dollarSuffix}`, 'MCP server "s" oauth.clientSecret', {}),
+		).rejects.toThrow('Failed to resolve MCP server "s" oauth.clientSecret from environment variable');
+		try {
+			await resolveConfigValueOrThrowAsync(`prefix$${dollarSuffix}`, 'MCP server "s" oauth.clientSecret', {});
+		} catch (error) {
+			expect((error as Error).message).not.toContain(dollarSuffix);
+		}
+	});
 
 	/** How long a stopped command may take to settle, far below the 10 s command timeout and the grandchild's 30 s. */
 	const SETTLE_WITHIN_MS = 1_500;

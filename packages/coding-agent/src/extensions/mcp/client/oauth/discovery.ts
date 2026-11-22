@@ -7,6 +7,7 @@
 import type { McpFetch } from "../auth-provider.js";
 import { LATEST_PROTOCOL_VERSION } from "../protocol/types.js";
 import { OAuthIssuerMismatchError } from "./errors.js";
+import { redactUrlCredentials } from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	type OAuthChallenge,
@@ -131,7 +132,9 @@ export async function discoverAuthorizationServerMetadata(
 		if (!response.ok) {
 			discard(response);
 			if (isDiscoveryMiss(response.status)) continue;
-			throw new Error(`HTTP ${response.status} loading authorization server metadata from ${url}`);
+			throw new Error(
+				`HTTP ${response.status} loading authorization server metadata from ${redactUrlCredentials(url.href, "server-url")}`,
+			);
 		}
 		const metadata = parseAuthorizationServerMetadata(await response.json());
 		if (!options.skipIssuerValidation) {
@@ -176,7 +179,9 @@ export async function discoverOAuthServerInfo(
 		);
 		if (!response.ok) {
 			discard(response);
-			throw new Error(`HTTP ${response.status} loading authorization server metadata from ${url}`);
+			throw new Error(
+				`HTTP ${response.status} loading authorization server metadata from ${redactUrlCredentials(url.href, "server-url")}`,
+			);
 		}
 		const metadata = parseAuthorizationServerMetadata(await response.json());
 		return { authorizationServerUrl: metadata.issuer, authorizationServerMetadata: metadata, resourceMetadata };
@@ -204,12 +209,16 @@ export function selectResource(serverUrl: string | URL, metadata?: OAuthProtecte
 	const requested = resourceUrlFromServerUrl(serverUrl);
 	const configured = new URL(metadata.resource);
 	if (requested.origin !== configured.origin) {
-		throw new Error(`Protected resource ${metadata.resource} does not match MCP server ${requested}`);
+		throw new Error(
+			`Protected resource ${redactUrlCredentials(metadata.resource, "server-url")} does not match MCP server ${redactUrlCredentials(requested.href, "server-url")}`,
+		);
 	}
 	const requestedPath = requested.pathname.endsWith("/") ? requested.pathname : `${requested.pathname}/`;
 	const configuredPath = configured.pathname.endsWith("/") ? configured.pathname : `${configured.pathname}/`;
 	if (!requestedPath.startsWith(configuredPath)) {
-		throw new Error(`Protected resource ${metadata.resource} does not match MCP server ${requested}`);
+		throw new Error(
+			`Protected resource ${redactUrlCredentials(metadata.resource, "server-url")} does not match MCP server ${redactUrlCredentials(requested.href, "server-url")}`,
+		);
 	}
 	return metadata.resource;
 }

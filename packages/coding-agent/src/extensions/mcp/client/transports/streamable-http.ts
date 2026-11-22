@@ -1,4 +1,5 @@
 import type { AuthProvider, McpFetch } from "../auth-provider.js";
+import { extractAuthorizationSecrets, redactOAuthErrorText } from "../oauth/redact.js";
 import {
 	isJsonRpcRequest,
 	isJsonRpcResponse,
@@ -256,6 +257,20 @@ async function readBodyText(response: Response, maxBytes: number): Promise<{ tex
 	}
 }
 
+function isSensitiveHeaderName(name: string): boolean {
+	const lower = name.toLowerCase();
+	return (
+		lower === "authorization" ||
+		lower === "proxy-authorization" ||
+		lower === "cookie" ||
+		lower.includes("token") ||
+		lower.includes("secret") ||
+		lower.includes("key") ||
+		lower.includes("auth") ||
+		lower.includes("password")
+	);
+}
+
 function describeHttpFailure(status: number, body: string): string {
 	const text = body.trim();
 	const snippet = text.length > ERROR_MESSAGE_BODY_CHARS ? `${text.slice(0, ERROR_MESSAGE_BODY_CHARS - 3)}...` : text;
@@ -415,10 +430,22 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		if (sessionId) this.sessionIdValue = sessionId;
 	}
 
+	private activeRequestSecrets(): string[] {
+		const secrets: string[] = [];
+		if (this.lastToken) secrets.push(this.lastToken);
+		if (this.options.headers) {
+			for (const [name, value] of Object.entries(this.options.headers)) {
+				if (isSensitiveHeaderName(name)) secrets.push(...extractAuthorizationSecrets(value));
+			}
+		}
+		return secrets;
+	}
+
 	private async checkResponse(response: Response): Promise<void> {
 		if (response.ok) return;
 		// Read only the excerpt the error keeps and cancel the rest.
-		const body = (await readBodyText(response, MAX_ERROR_BODY_BYTES).catch(() => ({ text: "" }))).text;
+		const rawBody = (await readBodyText(response, MAX_ERROR_BODY_BYTES).catch(() => ({ text: "" }))).text;
+		const body = redactOAuthErrorText(rawBody, this.activeRequestSecrets());
 		if (response.status === 401) throw new McpAuthRequiredError(response, body);
 		if (response.status === 404 && this.sessionIdValue) throw new McpSessionExpiredError(body);
 		throw new McpHttpError(response.status, describeHttpFailure(response.status, body), body);

@@ -20,6 +20,7 @@ import { type AsyncAuthStorageReads, asyncAuthStorageReads } from "../../core/au
 import { releaseLock } from "../../core/lock-release.ts";
 import { waitForLock } from "../../core/lock-wait.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
+import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import type { AuthProvider, McpFetch } from "./client/index.js";
 import {
 	authorizeMcp,
@@ -504,7 +505,7 @@ function responseFromRedirectUrl(input: string, state: string, redirectUrl: URL)
 		throw new Error("The redirect URL does not match this sign-in's redirect URI");
 	}
 	const error = url.searchParams.get("error");
-	if (error) throw new Error(url.searchParams.get("error_description") ?? error);
+	if (error) throw new Error(redactCredentialShapes(url.searchParams.get("error_description") ?? error));
 	if (url.searchParams.get("state") !== state) throw new Error("The redirect URL belongs to a different sign-in");
 	const code = url.searchParams.get("code");
 	if (!code) throw new Error("The redirect URL does not contain an authorization code");

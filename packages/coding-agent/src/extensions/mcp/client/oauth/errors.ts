@@ -1,3 +1,5 @@
+import { redactUrlCredentials } from "./redact.js";
+
 export class OAuthError extends Error {
 	readonly code: string;
 	readonly errorUri: string | undefined;
@@ -32,11 +34,12 @@ export class OAuthIssuerMismatchError extends Error {
 	readonly received: string | undefined;
 
 	constructor(expected: string | undefined, received: string | undefined) {
-		const format = (issuer: string | undefined) => (issuer === undefined ? "none" : JSON.stringify(issuer));
+		const format = (issuer: string | undefined) =>
+			issuer === undefined ? "none" : JSON.stringify(redactUrlCredentials(issuer, "server-url"));
 		super(`OAuth issuer mismatch: expected ${format(expected)}, received ${format(received)}`);
 		this.name = "OAuthIssuerMismatchError";
-		this.expected = expected;
-		this.received = received;
+		this.expected = expected === undefined ? undefined : redactUrlCredentials(expected, "server-url");
+		this.received = received === undefined ? undefined : redactUrlCredentials(received, "server-url");
 	}
 }
 
@@ -44,9 +47,10 @@ export class OAuthInsecureEndpointError extends Error {
 	readonly endpoint: string;
 
 	constructor(endpoint: string) {
-		super(`Refusing to send OAuth credentials to non-HTTPS endpoint ${endpoint}`);
+		const safeEndpoint = redactUrlCredentials(endpoint, "server-url");
+		super(`Refusing to send OAuth credentials to non-HTTPS endpoint ${safeEndpoint}`);
 		this.name = "OAuthInsecureEndpointError";
-		this.endpoint = endpoint;
+		this.endpoint = safeEndpoint;
 	}
 }
 

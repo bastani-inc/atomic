@@ -20,6 +20,7 @@ import {
 	OAuthRegistrationError,
 	OAuthTemporarilyUnavailableError,
 } from "./errors.js";
+import { extractAuthorizationSecrets, redactOAuthErrorText, redactUrlCredentials } from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	isHttpUrl,
@@ -181,7 +182,8 @@ export async function startAuthorization(
 	}
 	const url = new URL(metadata?.authorization_endpoint ?? new URL("/authorize", authorizationServerUrl));
 	// Callers open this URL with the platform URL handler, which also launches files and custom protocols.
-	if (!isHttpUrl(url)) throw new Error(`Invalid authorization endpoint ${url.href}`);
+	if (!isHttpUrl(url))
+		throw new Error(`Invalid authorization endpoint ${redactUrlCredentials(url.href, "server-url")}`);
 	const { verifier, challenge } = await pkce();
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("client_id", options.clientInformation.client_id);
@@ -193,6 +195,27 @@ export async function startAuthorization(
 	if (options.scope?.split(/\s+/).includes("offline_access")) url.searchParams.set("prompt", "consent");
 	if (options.resource) url.searchParams.set("resource", options.resource);
 	return { authorizationUrl: url, codeVerifier: verifier };
+}
+
+function tokenRequestSecrets(options: TokenRequestOptions, headers: Headers, params: URLSearchParams): string[] {
+	const secrets: (string | undefined)[] = [
+		options.clientInformation.client_secret,
+		params.get("client_secret") ?? undefined,
+		params.get("code_verifier") ?? undefined,
+		params.get("refresh_token") ?? undefined,
+		params.get("code") ?? undefined,
+		...extractAuthorizationSecrets(headers.get("Authorization")),
+	];
+	return secrets.filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function responseBodySecrets(value: Record<string, unknown>): string[] {
+	const secrets: string[] = [];
+	for (const field of ["access_token", "refresh_token", "id_token", "client_secret", "code_verifier"] as const) {
+		const candidate = value[field];
+		if (typeof candidate === "string" && candidate.length > 0) secrets.push(candidate);
+	}
+	return secrets;
 }
 
 async function tokenRequest(
@@ -216,6 +239,7 @@ async function tokenRequest(
 			params,
 		);
 	}
+	const requestSecrets = tokenRequestSecrets(options, headers, params);
 	const response = await (options.fetch ?? globalThis.fetch)(url, {
 		method: "POST",
 		headers,
@@ -229,15 +253,24 @@ async function tokenRequest(
 	} catch {}
 	// Servers may report OAuth errors with any status, so check the body before the status.
 	if (isObject(value) && typeof value.error === "string") {
+		const allSecrets = [...requestSecrets, ...responseBodySecrets(value)];
+		const rawDescription = typeof value.error_description === "string" ? value.error_description : value.error;
 		throw new OAuthError(
 			value.error,
-			typeof value.error_description === "string" ? value.error_description : value.error,
-			typeof value.error_uri === "string" ? value.error_uri : undefined,
+			redactOAuthErrorText(rawDescription, allSecrets),
+			typeof value.error_uri === "string" ? redactUrlCredentials(value.error_uri, "server-url") : undefined,
 			response.status,
 		);
 	}
-	if (!response.ok)
-		throw new OAuthError("server_error", `HTTP ${response.status}: ${text}`, undefined, response.status);
+	if (!response.ok) {
+		const allSecrets = isObject(value) ? [...requestSecrets, ...responseBodySecrets(value)] : requestSecrets;
+		throw new OAuthError(
+			"server_error",
+			`HTTP ${response.status}: ${redactOAuthErrorText(text, allSecrets)}`,
+			undefined,
+			response.status,
+		);
+	}
 	return parseOAuthTokens(value);
 }
 
@@ -268,7 +301,7 @@ export async function registerClient(
 			signal: options.signal,
 		},
 	);
-	if (!response.ok) throw new OAuthRegistrationError(response.status, await response.text());
+	if (!response.ok) throw new OAuthRegistrationError(response.status, redactOAuthErrorText(await response.text()));
 	return parseClientInformation(await response.json());
 }
 

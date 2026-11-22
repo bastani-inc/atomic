@@ -480,16 +480,16 @@ export async function resolveConfigValueOrThrowAsync(
 function unresolvedConfigValueError(config: string, description: string, env?: Record<string, string>): Error {
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
-		return new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
+		return new Error(`Failed to resolve ${description} from shell command`);
 	}
 
 	if (reference.type === "template") {
-		const missingEnvVars = getMissingConfigValueEnvVarNames(config, env);
-		if (missingEnvVars.length === 1) {
-			return new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
+		const missingCount = getMissingConfigValueEnvVarNames(config, env).length;
+		if (missingCount === 1) {
+			return new Error(`Failed to resolve ${description} from environment variable`);
 		}
-		if (missingEnvVars.length > 1) {
-			return new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
+		if (missingCount > 1) {
+			return new Error(`Failed to resolve ${description} from environment variables`);
 		}
 	}
 

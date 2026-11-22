@@ -12,6 +12,7 @@ import { VERSION } from "../../config.js";
 import { resolveMcpServerUrl } from "../../core/mcp-servers.ts";
 import { resolveConfigValueOrThrowAsync, resolveHeadersOrThrowAsync } from "../../core/resolve-config-value.ts";
 import { sliceTail } from "../../core/tools/truncate.ts";
+import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import {
 	type AuthProvider,
 	type CallToolResult,
@@ -85,7 +86,7 @@ export type McpTransportFactory = (
 ) => McpTransport | Promise<McpTransport>;
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return redactCredentialShapes(error instanceof Error ? error.message : String(error));
 }
 
 /**
@@ -552,7 +553,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			return new Error(signInRequiredMessage(this.entry));
 		}
 		this.state = this.closed ? "closed" : "failed";
-		this.error = this.stderrTail ? `${errorMessage(error)}\n${this.stderrTail}` : errorMessage(error);
+		const stderr = this.stderrTail ? redactCredentialShapes(this.stderrTail) : undefined;
+		this.error = stderr ? `${errorMessage(error)}\n${stderr}` : errorMessage(error);
 		this.changed();
 		return new Error(`MCP server "${this.entry.name}" failed to connect: ${this.error}`);
 	}
@@ -563,7 +565,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.client = undefined;
 		this.state = "disconnected";
 		const stderr = stdio ? sliceTail(stdio.stderr.trim(), STDERR_TAIL_CHARS) : undefined;
-		this.error = stderr ? `Connection closed\n${stderr}` : "Connection closed";
+		this.error = stderr ? `Connection closed\n${redactCredentialShapes(stderr)}` : "Connection closed";
 		this.changed();
 	}
 
