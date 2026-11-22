@@ -489,87 +489,96 @@ describe("intercom systemSources().run() Windows cwd selection", () => {
 		assert.equal(call.options.cwd, "C:\\Windows");
 	});
 
-	test("preserves \\\\?\\ and \\\\?\\UNC\\ extended prefixes for >248-char outside directories while still rejecting long in-project paths", async () => {
+	test("prefers a short (<248-char) verified outside directory over >=248-char \\\\?\\ paths (working with LongPathsEnabled=0) and preserves \\\\?\\ / \\\\?\\UNC\\ when only long outside paths exist", async () => {
 		const longTail = Array.from({ length: 12 }, (_, i) => `seg_${String(i).padStart(2, "0")}_1234567890123456`).join(
 			"\\",
 		);
-		const longPlain = `C:\\longroot\\${longTail}`;
+		const longPlain = `D:\\a\\_temp\\${longTail}`;
 		const longExt = `\\\\?\\${longPlain}`;
 		const longUncPlain = `\\\\fileserver\\share\\${longTail}`;
 		const longUncExt = `\\\\?\\UNC\\fileserver\\share\\${longTail}`;
-		const longInProjExt = `\\\\?\\C:\\repo\\project\\${longTail}`;
+		const longInProjExt = `\\\\?\\D:\\a\\project\\${longTail}`;
 
-		// 1. Raw \\?\ >248-char outside SystemRoot keeps \\?\ prefix for spawn.
+		// 1. On a D: checkout with LongPathsEnabled=0, CreateProcessW rejects >=248-char cwds even with \\?\.
+		// When C:\Windows (or C:\ / D:\) exists, prefer the short outside directory over >=248-char SystemRoot/junction/TMP.
 		setWindowsEnv({
-			cwd: "C:\\repo\\project",
+			cwd: "D:\\a\\project",
 			systemRoot: longExt,
 			windir: longExt,
-			dirs: ["C:\\repo\\project", longExt, "C:\\Windows"],
-			realpaths: { "C:\\repo\\project": "C:\\repo\\project", [longExt]: longExt, "C:\\Windows": "C:\\Windows" },
-		});
-		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longExt);
-
-		// 2. Plain >248-char outside SystemRoot gets \\?\ prefix for spawn.
-		hooks.execCalls.length = 0;
-		setWindowsEnv({
-			cwd: "C:\\repo\\project",
-			systemRoot: longPlain,
-			windir: longPlain,
-			dirs: ["C:\\repo\\project", longPlain, longExt, "C:\\Windows"],
+			dirs: ["D:\\a\\project", longExt, "C:\\Windows", "D:\\"],
 			realpaths: {
-				"C:\\repo\\project": "C:\\repo\\project",
-				[longPlain]: longPlain,
+				"D:\\a\\project": "D:\\a\\project",
 				[longExt]: longExt,
 				"C:\\Windows": "C:\\Windows",
+				"D:\\": "D:\\",
 			},
 		});
-		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longExt);
+		assert.equal((await runHostCommand("C:\\Windows\\System32\\cmd.exe")).options.cwd, "C:\\Windows");
 
-		// 3. Short junction pointing to a >248-char target gets \\?\ prefix for spawn.
+		// 2. Short junction targeting a >248-char directory prefers short C:\Windows when available.
 		hooks.execCalls.length = 0;
 		setWindowsEnv({
-			cwd: "C:\\repo\\project",
-			systemRoot: "C:\\temp\\j",
-			windir: "C:\\temp\\j",
-			dirs: ["C:\\repo\\project", "C:\\temp\\j", longExt, "C:\\Windows"],
-			symlinks: ["C:\\temp\\j"],
+			cwd: "D:\\a\\project",
+			systemRoot: "D:\\a\\_temp\\j-long",
+			windir: "D:\\a\\_temp\\j-long",
+			dirs: ["D:\\a\\project", "D:\\a\\_temp\\j-long", longExt, "C:\\Windows", "D:\\"],
+			symlinks: ["D:\\a\\_temp\\j-long"],
 			realpaths: {
-				"C:\\repo\\project": "C:\\repo\\project",
-				"C:\\temp\\j": longPlain,
+				"D:\\a\\project": "D:\\a\\project",
+				"D:\\a\\_temp\\j-long": longPlain,
 				"C:\\Windows": "C:\\Windows",
+				"D:\\": "D:\\",
 			},
 		});
-		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longExt);
+		assert.equal((await runHostCommand("C:\\Windows\\System32\\cmd.exe")).options.cwd, "C:\\Windows");
 
-		// 4. Long UNC outside path uses \\?\UNC\server\share\..., never \\?\\\server\share.
+		// 3. When cwd=C:\Windows and TMP is a >248-char \\?\ path on D:, prefer short C:\ (or D:\) over the long TMP.
 		hooks.execCalls.length = 0;
 		setWindowsEnv({
-			cwd: "C:\\repo\\project",
-			systemRoot: longUncExt,
-			windir: longUncExt,
-			dirs: ["C:\\repo\\project", longUncExt, "C:\\Windows"],
-			realpaths: {
-				"C:\\repo\\project": "C:\\repo\\project",
-				[longUncExt]: longUncPlain,
-				"C:\\Windows": "C:\\Windows",
-			},
+			cwd: "C:\\Windows",
+			systemRoot: "C:\\Windows",
+			windir: "C:\\Windows",
+			tmpdir: longExt,
+			dirs: ["C:\\Windows", longExt, "C:\\", "D:\\"],
+			realpaths: { "C:\\Windows": "C:\\Windows", [longExt]: longExt, "C:\\": "C:\\", "D:\\": "D:\\" },
 		});
-		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longUncExt);
+		assert.equal((await runHostCommand("C:\\Windows\\System32\\cmd.exe")).options.cwd, "C:\\");
 
-		// 5. Long \\?\ path INSIDE the project folder is still rejected in favor of C:\Windows.
+		// 4. Long \\?\ path INSIDE the project folder on D: is still rejected in favor of C:\Windows.
 		hooks.execCalls.length = 0;
 		setWindowsEnv({
-			cwd: "C:\\repo\\project",
+			cwd: "D:\\a\\project",
 			systemRoot: longInProjExt,
 			windir: longInProjExt,
-			dirs: ["C:\\repo\\project", longInProjExt, "C:\\Windows"],
+			dirs: ["D:\\a\\project", longInProjExt, "C:\\Windows"],
 			realpaths: {
-				"C:\\repo\\project": "C:\\repo\\project",
+				"D:\\a\\project": "D:\\a\\project",
 				[longInProjExt]: longInProjExt,
 				"C:\\Windows": "C:\\Windows",
 			},
 		});
 		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, "C:\\Windows");
+
+		// 5. When NO short outside directory exists at all, Tier 2 fallback still preserves \\?\ and \\?\UNC\
+		// (never stripping \\?\ from >=248-char paths).
+		for (const [label, sr, real, expected] of [
+			["raw-long-ext", longExt, longExt, longExt],
+			["plain-long", longPlain, longPlain, longExt],
+			["short-junc-to-long", "D:\\a\\_temp\\j-long", longPlain, longExt],
+			["long-unc", longUncExt, longUncPlain, longUncExt],
+		] as const) {
+			hooks.execCalls.length = 0;
+			setWindowsEnv({
+				cwd: "D:\\a\\project",
+				systemRoot: sr,
+				windir: sr,
+				tmpdir: "Z:\\NoSuchTemp",
+				dirs: ["D:\\a\\project", sr, ...(sr === longPlain ? [longExt] : [])],
+				symlinks: sr === "D:\\a\\_temp\\j-long" ? [sr] : [],
+				realpaths: { "D:\\a\\project": "D:\\a\\project", [sr]: real, [longExt]: longExt },
+			});
+			assert.equal((await runHostCommand("Z:\\NoSuch\\tool.exe")).options.cwd, expected, label);
+		}
 	});
 
 	test("bounds hung UNC process.cwd() realpath so local C:\\Windows is still selected promptly", async () => {

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { afterEach, test } from "vitest";
 import { systemSources } from "../../packages/intercom/broker/broker-instance.ts";
+import { resolveSafeWindowsWorkingDirectoryAsync } from "../../packages/intercom/broker/windows-cwd.js";
 
 const saved = process.env.PSModulePath;
 
@@ -119,6 +120,11 @@ test.skipIf(process.platform !== "win32")(
 				] as const) {
 					process.env.SystemRoot = sr;
 					process.env.windir = sr;
+					const chosen = await resolveSafeWindowsWorkingDirectoryAsync({ commandPath: cmdExe, timeoutMs: 150 });
+					assert.ok(
+						chosen !== undefined && chosen.length < 248 && !chosen.startsWith("\\\\?\\"),
+						`${label}: expected short cwd (<248 chars, works with LongPathsEnabled=0), got ${JSON.stringify(chosen)}`,
+					);
 					const out = (await systemSources().run(cmdExe, ["/d", "/c", "cd"])).trim();
 					assert.ok(win32.isAbsolute(out), `${label}: expected absolute cwd, got ${JSON.stringify(out)}`);
 					assert.ok(!isInside(project, out), `${label}: ran inside project (${out})`);
@@ -130,9 +136,47 @@ test.skipIf(process.platform !== "win32")(
 				else process.env.windir = originalWindir;
 				process.env.TMP = longExt;
 				process.env.TEMP = longExt;
+				const chosenFromLongTmp = await resolveSafeWindowsWorkingDirectoryAsync({
+					commandPath: cmdExe,
+					timeoutMs: 150,
+				});
+				assert.ok(
+					chosenFromLongTmp !== undefined &&
+						chosenFromLongTmp.length < 248 &&
+						!chosenFromLongTmp.startsWith("\\\\?\\"),
+					`long-ext-TMP: expected short cwd (<248 chars), got ${JSON.stringify(chosenFromLongTmp)}`,
+				);
 				const fromLongTmp = (await systemSources().run(cmdExe, ["/d", "/c", "cd"])).trim();
 				assert.ok(win32.isAbsolute(fromLongTmp), `long-ext-TMP: got ${JSON.stringify(fromLongTmp)}`);
 				assert.deepEqual(uncaught, [], "no uncaught ENOTCONN exceptions on long \\\\?\\ paths");
+
+				// Also exercise a non-C: project drive (via subst when needed) with a >260-char SystemRoot.
+				const substLetter = ["S:", "T:", "U:", "V:", "W:"].find(
+					(letter) => spawnSync("subst", [letter, root], { windowsHide: true }).status === 0,
+				);
+				if (substLetter !== undefined) {
+					try {
+						const nonCProject = `${substLetter}\\project`;
+						const nonCLong = `\\\\?\\${substLetter}\\${longDir.slice(root.length + 1)}`;
+						process.chdir(nonCProject);
+						process.env.SystemRoot = nonCLong;
+						process.env.windir = nonCLong;
+						const nonCChosen = await resolveSafeWindowsWorkingDirectoryAsync({
+							commandPath: cmdExe,
+							timeoutMs: 150,
+						});
+						assert.ok(
+							nonCChosen !== undefined && nonCChosen.length < 248 && !nonCChosen.startsWith("\\\\?\\"),
+							`non-C-long-SR: expected short cwd, got ${JSON.stringify(nonCChosen)}`,
+						);
+						const nonCOut = (await systemSources().run(cmdExe, ["/d", "/c", "cd"])).trim();
+						assert.ok(win32.isAbsolute(nonCOut), `non-C-long-SR: got ${JSON.stringify(nonCOut)}`);
+						assert.ok(!isInside(project, nonCOut), `non-C-long-SR: ran inside project (${nonCOut})`);
+					} finally {
+						process.chdir(originalCwd);
+						spawnSync("subst", [substLetter, "/D"], { windowsHide: true });
+					}
+				}
 			} finally {
 				process.off("uncaughtException", onUncaught);
 				if (origTmp === undefined) delete process.env.TMP;
