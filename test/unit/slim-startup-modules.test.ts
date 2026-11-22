@@ -135,6 +135,33 @@ builtTest(
 			};`,
 		);
 		assert.deepEqual(collideRes, { aliasUsesCustom: true, builtinPyStillWorks: true });
+
+		const { extra: redirectRes } = auditDistImport(
+			["index.js"],
+			`const { highlightCode, initTheme } = mods[0];
+			initTheme("dark");
+			const hljs = (await import("highlight.js/lib/core.js")).default;
+			hljs.registerAliases("hpp", { languageName: "c" });
+			hljs.registerAliases("cc", { languageName: "rust" });
+			const hppLines = highlightCode("int main() { return 0; }", "hpp");
+			const ccLines = highlightCode("fn main() {}", "cc");
+			const rustLines = highlightCode("fn main() {}", "rust");
+			const cppLines = highlightCode("fn main() {}", "cpp");
+			return {
+				hppLang: hljs.getLanguage("hpp")?.name ?? null,
+				hppColored: hppLines.join("\\n").includes("\\x1b["),
+				ccLang: hljs.getLanguage("cc")?.name ?? null,
+				ccMatchesRustOutput: ccLines.join("\\n") === rustLines.join("\\n"),
+				rustDiffersFromCpp: rustLines.join("\\n") !== cppLines.join("\\n"),
+			};`,
+		);
+		assert.deepEqual(redirectRes, {
+			hppLang: "C",
+			hppColored: true,
+			ccLang: "Rust",
+			ccMatchesRustOutput: true,
+			rustDiffersFromCpp: true,
+		});
 	},
 	CHILD_TIMEOUT_MS,
 );

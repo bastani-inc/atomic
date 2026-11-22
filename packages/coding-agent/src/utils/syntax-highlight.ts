@@ -46,20 +46,35 @@ function getHighlightCore(): HighlightCore {
 	// after importing @bastani/atomic (and before the first highlightCode call) always win over
 	// built-in eager grammars, while pre-registered overrides of an eager language name keep that
 	// language's unclaimed built-in aliases (e.g. overriding "python" keeps "py").
-	for (const [name, specifier] of EAGER_LANGUAGE_SPECIFIERS) {
+	// Register missing eager grammars in two passes so aliases redirected to a later eager grammar
+	// (e.g. "hpp" -> "c" registered before "cpp") resolve before any built-in alias is judged free.
+	const eagerBuilt = EAGER_LANGUAGE_SPECIFIERS.map(([name, specifier]) => {
 		const mod = req(specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
 		const factory = mod.default ?? mod;
-		const built = factory(core);
-		const freeAliases = (built.aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
-		if (core.getLanguage(name) !== undefined) {
-			if (freeAliases.length > 0) {
-				core.registerAliases(freeAliases, { languageName: name });
-			}
-			continue;
+		return { name, built: factory(core) };
+	});
+	const newlyRegistered = new Set<string>();
+	for (const { name, built } of eagerBuilt) {
+		if (core.getLanguage(name) === undefined) {
+			core.registerLanguage(name, () => ({ ...built, aliases: undefined }));
+			newlyRegistered.add(name);
 		}
-		const registerFactory: HighlightLanguageFactory =
-			freeAliases.length === (built.aliases?.length ?? 0) ? () => built : () => ({ ...built, aliases: freeAliases });
-		core.registerLanguage(name, registerFactory);
+	}
+	for (const { name, built } of eagerBuilt) {
+		const freeAliases = (built.aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
+		if (freeAliases.length > 0) {
+			core.registerAliases(freeAliases, { languageName: name });
+		}
+		if (newlyRegistered.has(name)) {
+			const registered = core.getLanguage(name);
+			if (registered !== undefined) {
+				if (built.aliases !== undefined) {
+					registered.aliases = built.aliases;
+				} else {
+					delete registered.aliases;
+				}
+			}
+		}
 	}
 	hljsCore = core;
 	return core;

@@ -9,7 +9,7 @@ interface HighlightJsOptions {
 
 interface HighlightJsLanguageDefinition {
 	readonly name?: string;
-	readonly aliases?: readonly string[];
+	aliases?: readonly string[];
 }
 
 type HighlightJsLanguageFactory = (hljs: HighlightJsApi) => HighlightJsLanguageDefinition;
