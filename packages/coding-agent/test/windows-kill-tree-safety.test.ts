@@ -155,7 +155,11 @@ vi.mock("../src/core/process-start-token.js", async (importOriginal) => {
 			if (!fakes.interceptStartToken) return actual.nativeTerminateProcess(pid, started, descendants);
 			fakes.nativeTerminateCalls.push({ pid, started, descendants });
 			if (fakes.nativeTerminateMode === "unavailable") return undefined;
-			if (fakes.nativeTerminateMode === "null") return null;
+			if (fakes.nativeTerminateMode === "null") {
+				// Simulate PID reuse by a different process with a newer creation time.
+				fakes.creationTimes.set(pid, "133500000000000999");
+				return null;
+			}
 			fakes.creationTimes.set(pid, null);
 			return 2;
 		},
@@ -393,7 +397,7 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 			fakes.holdMode = "held";
 			const dir = makeTempDir("atomic-killtree-git-");
 			const fakeGit = join(dir, "fake-git.sh");
-			writeFileSync(fakeGit, "#!/bin/sh\nsleep 30\n");
+			writeFileSync(fakeGit, "#!/bin/sh\nexec sleep 30\n");
 			chmodSync(fakeGit, 0o755);
 			const prevGit = setWorktreeSnapshotGit(async () => ({ path: fakeGit, env: {} }));
 			try {
