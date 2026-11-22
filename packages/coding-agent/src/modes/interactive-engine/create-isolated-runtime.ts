@@ -13,14 +13,27 @@ import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from 
 import { discardPrewarmedEngine, interactiveEngineClientOptions } from "./engine-prewarm.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 
-export async function createIsolatedInteractiveRuntime(options: {
-	localRuntime: AgentSessionRuntime;
+interface InteractiveEngineStartOptions {
 	createRuntime: CreateAgentSessionRuntimeFactory;
 	parsed: Args;
 	sessionManager: SessionManager;
 	resources: InteractiveEngineResourcePaths;
 	startupExtensionCheck?: StartupExtensionCheck;
-}): Promise<IsolatedInteractiveRuntime> {
+}
+
+/** An engine child started before the host's own runtime exists. */
+interface StartedInteractiveEngine {
+	/** The host's runtime exists: it takes the engine, and what the engine wrote meanwhile reaches it. */
+	attach(localRuntime: AgentSessionRuntime): IsolatedInteractiveRuntime;
+	/** The host's runtime will never exist: stop the engine. */
+	abandon(): Promise<void>;
+}
+
+/**
+ * Start the engine child. With `holdOutput`, what it writes waits until the runtime attaches, so that nothing it says
+ * reaches the client before the runtime's listeners do.
+ */
+function startInteractiveEngine(options: InteractiveEngineStartOptions, holdOutput: boolean): StartedInteractiveEngine {
 	let isolatedRuntime: IsolatedInteractiveRuntime | undefined;
 	const pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	let callbackActive = false;
@@ -44,16 +57,31 @@ export async function createIsolatedInteractiveRuntime(options: {
 			...(options.startupExtensionCheck ? { startupExtensionCheck: options.startupExtensionCheck } : {}),
 		},
 	});
-	// The host paints and takes input while the engine child loads: its readiness gates only what needs the engine.
-	isolatedRuntime = new IsolatedInteractiveRuntime(
-		options.localRuntime,
-		options.createRuntime,
-		client,
-		client.start(),
-	);
-	isolatedRuntime.setEngineCallbackActive(callbackActive);
-	for (const diagnostic of pendingDiagnostics) isolatedRuntime.emitDiagnostic(diagnostic);
-	return isolatedRuntime;
+	const releaseOutput = holdOutput ? client.holdChildOutput() : undefined;
+	const started = client.start();
+	// Observed from the start: the runtime handles how the start ends once it attaches.
+	started.catch(() => {});
+	return {
+		attach(localRuntime) {
+			// The host paints and takes input while the engine child loads: its readiness gates only what needs the engine.
+			isolatedRuntime = new IsolatedInteractiveRuntime(localRuntime, options.createRuntime, client, started);
+			isolatedRuntime.setEngineCallbackActive(callbackActive);
+			for (const diagnostic of pendingDiagnostics) isolatedRuntime.emitDiagnostic(diagnostic);
+			releaseOutput?.();
+			return isolatedRuntime;
+		},
+		async abandon() {
+			await client.stop().catch(() => {});
+			// A start still writing its bootstrap file removes it before it ends.
+			await started.catch(() => {});
+		},
+	};
+}
+
+export async function createIsolatedInteractiveRuntime(
+	options: InteractiveEngineStartOptions & { localRuntime: AgentSessionRuntime },
+): Promise<IsolatedInteractiveRuntime> {
+	return startInteractiveEngine(options, false).attach(options.localRuntime);
 }
 
 export async function createRuntimeForMode(
@@ -68,6 +96,12 @@ export async function createRuntimeForMode(
 	interactive: boolean,
 	/** What the host's startup found when it checked its extensions, once its own runtime exists (see main.ts). */
 	startupExtensionCheck?: () => Promise<StartupExtensionCheck | undefined>,
+	/**
+	 * Settles once the host's runtime creation has done everything that decides what its engine is started with and
+	 * finds in the session: the engine then starts while the host creates the rest of its own runtime. Until then, or
+	 * without it, the engine starts once the host's runtime exists.
+	 */
+	engineInputsFinal?: Promise<void>,
 ): Promise<AgentSessionRuntime> {
 	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 	if (isolateInteractiveHost && hasInlineExtensionFactories) {
@@ -76,15 +110,36 @@ export async function createRuntimeForMode(
 		);
 	}
 	// A host that starts no engine has no use for one started while it loaded.
-	if (!isolateInteractiveHost) discardPrewarmedEngine();
-	const localRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager, interactive });
-	if (!isolateInteractiveHost) return localRuntime;
-	return createIsolatedInteractiveRuntime({
-		localRuntime,
+	if (!isolateInteractiveHost) {
+		discardPrewarmedEngine();
+		return createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager, interactive });
+	}
+	const creating = createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager, interactive });
+	const startsEarly =
+		engineInputsFinal !== undefined &&
+		(await Promise.race([
+			engineInputsFinal.then(() => true),
+			creating.then(
+				() => false,
+				() => false,
+			),
+		]));
+	const engineOptions = async (): Promise<InteractiveEngineStartOptions> => ({
 		createRuntime,
 		parsed,
 		sessionManager,
 		resources,
 		startupExtensionCheck: await startupExtensionCheck?.(),
 	});
+	// Options that cannot be read now are read again, as before, once the host's runtime exists.
+	const earlyOptions = startsEarly ? await engineOptions().catch(() => undefined) : undefined;
+	const early = earlyOptions ? startInteractiveEngine(earlyOptions, true) : undefined;
+	let localRuntime: AgentSessionRuntime;
+	try {
+		localRuntime = await creating;
+	} catch (error) {
+		await early?.abandon();
+		throw error;
+	}
+	return (early ?? startInteractiveEngine(await engineOptions(), false)).attach(localRuntime);
 }

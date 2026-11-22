@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- On Windows with Python 3.13 or 3.14, the `liteparse` skill's `search.py` no longer fails when its output goes to a pipe, as it does when Atomic runs it, on finding two or more matches or a match with text outside the system's code page: it now writes its output and errors as UTF-8, as it already did on Python 3.15. On every system it no longer fails on a document over 64 KiB with a character split between two 64 KiB blocks, or when the document, or a 64 KiB part of it, has fewer lines than the matches asked for (`-k`, 10 by default). A match after the first 64 KiB now shows its line numbers in the whole document, instead of counting from the start of its block, and a line that crossed a block boundary is no longer split in two.
+
+## [0.10.4-alpha.1] - 2026-11-22
+
+### Fixed
+
 - A background subagent that finished while its question to you (`contact_supervisor` or an Intercom `ask`) was still open is no longer relaunched after a restart only to be told that the question was interrupted. The next time the subagent runs, it is told once ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
 - A subagent's launch card shows `Queued` with the queued mark (`○`) while it waits for its turn to run, and `Stopping` with the stopping mark (`◼`) while it is being stopped, as the agent panel shows it, instead of `Running`.
 - A subagent that finished without text output shows the done mark (`●`) in result rows and summaries instead of `!`. Its label still says `Done (no text output)`.
@@ -26,6 +32,8 @@
 - `skill-creator`'s review viewer no longer saves over feedback it did not show. A `feedback.json` it cannot read, or partly cannot, is kept as `feedback.json.corrupt-<time>` and the page says so before your next save replaces it; one it cannot read at all is never saved over. A tab opened before another tab or program saved feedback refuses to save over it and asks you to reload. One tab's saves are sent one at a time, in order; from Submit All Reviews until you close the done dialog every save keeps the review complete, and the dialog shows only once the review is saved; and a save that fails says so instead of showing "Saved".
 - `skill-creator`'s review viewer starts when the previous iteration's `feedback.json`, or a run's `eval_metadata.json` or `grading.json`, cannot be read, instead of failing: the page says which feedback it could not read. It also runs with its standard output captured in place, as by `runpy`.
 - `skill-creator`'s `package_skill.py` gives the `.skill` file its name only once it is complete: a failure or Ctrl+C leaves an earlier `.skill` file as it was and no partial file, a replaced file keeps its permissions, and a `.skill` file written inside the skill folder no longer contains itself.
+- A user agent in `~/.atomic/agent/agents/` now wins over an agent of the same name in `~/.agents/` or legacy `~/.pi/agent/agents/`, as `.atomic/agents/` already does in a project. Before, the agent in `~/.agents/` or `~/.pi/agent/agents/` ran instead.
+- The `subagent` tool's `share` parameter no longer tells the model that it uploads the session to a GitHub Gist: it has no effect, and nothing is uploaded. Sibling `subagent` calls in one message no longer have to agree on it: one that sets `share: true` next to one that leaves it out no longer rejects both with "incompatible top-level field 'share'", and both launch. The `sessionDir` parameter's description no longer says that `share` decides whether sessions are kept; it now says that `sessionDir` keeps fresh (not forked) subagents' sessions as JSONL files under that directory instead of the launching session's store.
 
 ## [0.10.3] - 2026-11-21
 
