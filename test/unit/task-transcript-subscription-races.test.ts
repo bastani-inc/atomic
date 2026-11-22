@@ -165,9 +165,9 @@ async function queuedRunner() {
 	let intercept: (event: MessageStartEvent | MessageUpdateEvent) => void | Promise<void> = () => {};
 	const extensionsResult = await createTestExtensionsResult(
 		[
-			(pi) => {
-				pi.on("message_start", (event) => intercept(event));
-				pi.on("message_update", (event) => intercept(event));
+			(atomic) => {
+				atomic.on("message_start", (event) => intercept(event));
+				atomic.on("message_update", (event) => intercept(event));
 			},
 		],
 		root,

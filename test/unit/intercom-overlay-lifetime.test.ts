@@ -47,8 +47,8 @@ for (const overlay of ["directory", "compose"] as const) {
 			},
 		} as ExtensionCommandContext;
 		const loaded = await createTestExtensionsResult([
-			(pi) =>
-				registerIntercomOverlay(pi, {
+			(atomic) =>
+				registerIntercomOverlay(atomic, {
 					runtimeGeneration: () => 1,
 					getLiveContext: () => ctx,
 					notifyIfLive() {},
@@ -127,8 +127,8 @@ test("intercom awaits an already started send and exactly one session record aft
 		},
 	} satisfies ExtensionCommandContext;
 	const loaded = await createTestExtensionsResult([
-		(pi) =>
-			registerIntercomOverlay(pi, {
+		(atomic) =>
+			registerIntercomOverlay(atomic, {
 				runtimeGeneration: () => 1,
 				getLiveContext: () => (lifetime.signal.aborted ? null : ctx),
 				notifyIfLive() {},

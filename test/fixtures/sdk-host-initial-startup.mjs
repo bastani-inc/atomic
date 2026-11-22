@@ -18,14 +18,14 @@ let shutdowns = 0;
 const resourceLoader = new DefaultResourceLoader({
 	cwd: root, agentDir: root, settingsManager, noExtensions: true, noSkills: true, noThemes: true,
 	noContextFiles: true, noPromptTemplates: true,
-	extensionFactories: [(pi) => {
-		pi.on("session_start", async () => {
+	extensionFactories: [(atomic) => {
+		atomic.on("session_start", async () => {
 			entered.resolve();
 			await release.promise;
 			active = true;
 			if (failure === "startup") throw new Error("initial startup failed");
 		});
-		pi.on("session_shutdown", () => {
+		atomic.on("session_shutdown", () => {
 			shutdowns++;
 			active = false;
 			if (failure === "cleanup") throw new Error("initial cleanup failed");

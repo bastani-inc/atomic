@@ -22,15 +22,15 @@ for (const [kind, ending] of scenarios) {
 		const dismissed = Promise.withResolvers<void>();
 		let mountedSignal: AbortSignal | undefined;
 		let shutdown = false;
-		const factory: ExtensionFactory = (pi) => {
-			if (kind === "agents") registerSlashCommands(pi, { baseCwd: process.cwd() } as SubagentState);
+		const factory: ExtensionFactory = (atomic) => {
+			if (kind === "agents") registerSlashCommands(atomic, { baseCwd: process.cwd() } as SubagentState);
 			else
-				pi.registerCommand("monitor", {
+				atomic.registerCommand("monitor", {
 					handler: async (_args, ctx) => {
 						await ctx.ui.custom(() => ({ render: () => [], invalidate() {} }), { signal: caller.signal });
 					},
 				});
-			pi.on("session_shutdown", () => {
+			atomic.on("session_shutdown", () => {
 				shutdown = true;
 			});
 		};

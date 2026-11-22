@@ -21,11 +21,11 @@ async function pause() { entered.resolve(); await release.promise; }
 async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
  const id = ++factories;
  if (id === 2 && phase === "factory") await pause();
- const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [pi => {
-  pi.on("session_before_switch", async () => { if (phase === "preflight") await pause(); });
-  pi.on("session_before_fork", async () => { if (phase === "preflight") await pause(); });
-  pi.on("session_start", async () => { active.add(id); if (id === 2 && phase === "startup") { await pause(); if (failure === "rollback") throw new Error("startup failed"); } });
-  pi.on("session_shutdown", () => { active.delete(id); if (id === 2 && failure !== "none") throw new Error("candidate cleanup failed"); });
+ const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [atomic => {
+  atomic.on("session_before_switch", async () => { if (phase === "preflight") await pause(); });
+  atomic.on("session_before_fork", async () => { if (phase === "preflight") await pause(); });
+  atomic.on("session_start", async () => { active.add(id); if (id === 2 && phase === "startup") { await pause(); if (failure === "rollback") throw new Error("startup failed"); } });
+  atomic.on("session_shutdown", () => { active.delete(id); if (id === 2 && failure !== "none") throw new Error("candidate cleanup failed"); });
  }] });
  await resourceLoader.reload();
  const result = await createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, resourceLoader, sessionManager, sessionStartEvent, builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } });

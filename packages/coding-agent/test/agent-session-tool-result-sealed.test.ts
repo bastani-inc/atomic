@@ -15,8 +15,8 @@ test("a call in flight when the extensions are sealed is finalized by their tool
 	const seen: string[] = [];
 	const tool = waitTool();
 	const harness = await pool.harnessWith([tool.definition], undefined, [
-		(pi) => {
-			pi.on("tool_result", (event) => {
+		(atomic) => {
+			atomic.on("tool_result", (event) => {
 				seen.push(event.toolCallId);
 				return { content: [{ type: "text", text: "[redacted]" }] };
 			});

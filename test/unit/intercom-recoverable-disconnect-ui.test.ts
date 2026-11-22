@@ -48,7 +48,7 @@ const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 const EXTENSION_PATH = "<intercom>";
 
-type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
+type HeavyModule = { default: (atomic: ExtensionAPI) => void | Promise<void> };
 type ImportResult = { error: unknown } | { module: HeavyModule } | { pending: Promise<HeavyModule> };
 type ConsoleErrorCall = [message?: unknown, ...optionalParams: unknown[]];
 type ExtensionEventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;

@@ -7,7 +7,7 @@ Sleep 500ms
 Enter
 Sleep 12s
 Set TypingSpeed 26ms
-Type "Create .atomic/extensions/my-extension.ts. It must import ExtensionAPI from @bastani/atomic and Type from typebox, default-export a function taking pi: ExtensionAPI, register a tool named greet with a name parameter that returns 'Hello, <name>!', and register a command hello that notifies. Write the file, nothing else."
+Type "Create .atomic/extensions/my-extension.ts. It must import ExtensionAPI from @bastani/atomic and Type from typebox, default-export a function taking atomic: ExtensionAPI, register a tool named greet with a name parameter that returns 'Hello, <name>!', and register a command hello that notifies. Write the file, nothing else."
 Sleep 1s
 Enter
 Sleep 55s

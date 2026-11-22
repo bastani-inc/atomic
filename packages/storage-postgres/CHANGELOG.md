@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Detecting SQLite `PRAGMA` statements to skip no longer backtracks quadratically on long whitespace-padded statements with multiple semicolons, returning the same result in linear time.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Fixed

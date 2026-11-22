@@ -190,11 +190,11 @@ describe("lazy builtin mcp", () => {
 		let trusted = false;
 		let beforeAgentStartRan = 0;
 		const richRenderer = { renderCall: () => ({ invalidate() {}, render: () => ["rich"] }) };
-		const factory = createLazyBuiltinFactory(mcpLazyBuiltinSpec, async () => (pi) => {
-			pi.on("before_agent_start", () => {
+		const factory = createLazyBuiltinFactory(mcpLazyBuiltinSpec, async () => (atomic) => {
+			atomic.on("before_agent_start", () => {
 				beforeAgentStartRan += 1;
 			});
-			pi.registerToolRenderer((toolName, next) => {
+			atomic.registerToolRenderer((toolName, next) => {
 				const registered = next();
 				if (registered) return registered;
 				return toolName.startsWith("mcp__") ? richRenderer : undefined;

@@ -215,8 +215,10 @@ describe("AgentSession MCP tools after resume and reload", () => {
 			const first = await setup();
 			await loadDocsSearch(first.harness);
 
-			const setLoadout: ExtensionFactory = (pi) => {
-				pi.on("session_start", () => pi.setActiveTools(loadout ? [...loadout] : [...pi.getActiveTools(), "read"]));
+			const setLoadout: ExtensionFactory = (atomic) => {
+				atomic.on("session_start", () =>
+					atomic.setActiveTools(loadout ? [...loadout] : [...atomic.getActiveTools(), "read"]),
+				);
 			};
 			const second = await setup(first.harness.sessionManager, [setLoadout]);
 			await untilServerSettled(() =>
@@ -229,15 +231,17 @@ describe("AgentSession MCP tools after resume and reload", () => {
 
 	// Like extensions that register a loader tool and hide it at session_start: the restore or reload
 	// activates the loader as a tool the branch never recorded, and the extension deactivates it again.
-	const dropLoader: ExtensionFactory = (pi) => {
-		pi.registerTool({
+	const dropLoader: ExtensionFactory = (atomic) => {
+		atomic.registerTool({
 			name: "loader",
 			label: "loader",
 			description: "Loads the extension's tools.",
 			parameters: Type.Object({}),
 			execute: async () => ({ content: [], details: undefined }),
 		});
-		pi.on("session_start", () => pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "loader")));
+		atomic.on("session_start", () =>
+			atomic.setActiveTools(atomic.getActiveTools().filter((name) => name !== "loader")),
+		);
 	};
 
 	it("keeps restored tools when an extension deactivates only its own tool before they register", async () => {

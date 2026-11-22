@@ -161,8 +161,133 @@ function extractRawText(result: BuiltinToolBlockResult | undefined): string {
 		.replace(/\r/g, "");
 }
 
+function isJsWhitespaceCode(code: number): boolean {
+	return (
+		code === 0x20 ||
+		(code >= 0x09 && code <= 0x0d) ||
+		code === 0xa0 ||
+		code === 0x1680 ||
+		(code >= 0x2000 && code <= 0x200a) ||
+		code === 0x2028 ||
+		code === 0x2029 ||
+		code === 0x202f ||
+		code === 0x205f ||
+		code === 0x3000 ||
+		code === 0xfeff
+	);
+}
+
 function trimTrailingNewlines(text: string): string {
-	return text.replace(/\n+$/, "");
+	let end = text.length;
+	while (end > 0 && text.charCodeAt(end - 1) === 0x0a) {
+		end--;
+	}
+	return end === text.length ? text : text.slice(0, end);
+}
+
+/**
+ * Linear-time stripper for trailing `\n\n[<body>]\s*$` footers.
+ * Preserves leftmost match semantics when no `]` precedes the closing `]`, and also matches
+ * balanced nested brackets (such as `app/[id]/missing.ts` in skipped-path notices or bash full-output paths).
+ */
+function stripTrailingBracketedFooter(
+	rawText: string,
+	matchesBody?: (rawText: string, bodyStart: number, closeIdx: number) => boolean,
+): string {
+	let end = rawText.length;
+	while (end > 0 && isJsWhitespaceCode(rawText.charCodeAt(end - 1))) {
+		end--;
+	}
+	if (end === 0 || rawText.charCodeAt(end - 1) !== 0x5d) return rawText;
+	const closeIdx = end - 1;
+	const prevClose = closeIdx > 0 ? rawText.lastIndexOf("]", closeIdx - 1) : -1;
+	let searchFrom = prevClose + 1;
+	while (searchFrom < closeIdx) {
+		const idx = rawText.indexOf("\n\n[", searchFrom);
+		if (idx === -1 || idx + 3 >= closeIdx) break;
+		const bodyStart = idx + 3;
+		if (!matchesBody || matchesBody(rawText, bodyStart, closeIdx)) {
+			return rawText.slice(0, idx);
+		}
+		searchFrom = bodyStart;
+	}
+	if (prevClose === -1) return rawText;
+	// Balanced-bracket fallback when the footer payload contains nested `[...]` (e.g. `app/[id]/missing.ts`).
+	let depth = 1;
+	for (let k = closeIdx - 1; k >= 0; k--) {
+		const code = rawText.charCodeAt(k);
+		if (code === 0x5d) {
+			depth++;
+		} else if (code === 0x5b) {
+			depth--;
+			if (depth === 0) {
+				if (
+					k >= 2 &&
+					rawText.charCodeAt(k - 2) === 0x0a &&
+					rawText.charCodeAt(k - 1) === 0x0a &&
+					k + 1 < closeIdx &&
+					(!matchesBody || matchesBody(rawText, k + 1, closeIdx))
+				) {
+					return rawText.slice(0, k - 2);
+				}
+				return rawText;
+			}
+		}
+	}
+	return rawText;
+}
+
+const SHOWING_LINES_PREFIX_STICKY = /Showing lines \d+-\d+ of \d+/y;
+const MORE_LINES_FOOTER_STICKY = /\d+ more lines in file\. Continue with path selector :\d+\./y;
+
+function matchesShowingLinesFooterBody(rawText: string, bodyStart: number, closeIdx: number): boolean {
+	SHOWING_LINES_PREFIX_STICKY.lastIndex = bodyStart;
+	const m = SHOWING_LINES_PREFIX_STICKY.exec(rawText);
+	if (!m) return false;
+	const afterDigits = SHOWING_LINES_PREFIX_STICKY.lastIndex;
+	if (afterDigits > closeIdx) return false;
+	if (afterDigits === closeIdx) return true;
+	const nextCode = rawText.charCodeAt(afterDigits);
+	return nextCode < 0x30 || nextCode > 0x39;
+}
+
+function matchesReadFooterBody(rawText: string, bodyStart: number, closeIdx: number): boolean {
+	if (matchesShowingLinesFooterBody(rawText, bodyStart, closeIdx)) return true;
+	MORE_LINES_FOOTER_STICKY.lastIndex = bodyStart;
+	const m = MORE_LINES_FOOTER_STICKY.exec(rawText);
+	return m !== null && MORE_LINES_FOOTER_STICKY.lastIndex === closeIdx;
+}
+
+function matchesBashTruncationFooterBody(rawText: string, bodyStart: number, closeIdx: number): boolean {
+	if (rawText.startsWith("Showing last ", bodyStart) && bodyStart + 13 < closeIdx) return true;
+	return matchesShowingLinesFooterBody(rawText, bodyStart, closeIdx);
+}
+
+function findStillRunningFooterIndex(rawText: string): number {
+	const marker = "Command is still running (task ";
+	let searchFrom = 0;
+	while (searchFrom < rawText.length) {
+		const pos = rawText.indexOf(marker, searchFrom);
+		if (pos === -1) return -1;
+		const footerStart =
+			pos === 0
+				? 0
+				: pos >= 2 && rawText.charCodeAt(pos - 2) === 0x0a && rawText.charCodeAt(pos - 1) === 0x0a
+					? pos - 2
+					: -1;
+		if (footerStart === -1) {
+			searchFrom = pos + 1;
+			continue;
+		}
+		const idStart = pos + marker.length;
+		const closeIdx = rawText.indexOf(")", idStart);
+		if (closeIdx === -1) return -1;
+		if (closeIdx > idStart && rawText.charCodeAt(closeIdx + 1) === 0x2e) {
+			return footerStart;
+		}
+		searchFrom = closeIdx + 1;
+	}
+	return -1;
 }
 
 function splitContentLines(text: string): string[] {
@@ -320,10 +445,7 @@ function parseReadLinesAndNumbers(
 	rawText: string,
 	fallbackStartLine: number,
 ): { lines: string[]; lineNumbers: number[] } {
-	const withoutFooter = rawText.replace(
-		/\n\n\[(?:Showing lines \d+-\d+ of \d+(?:[^\]\d][^\]]*)?|\d+ more lines in file\. Continue with path selector :\d+\.)\]\s*$/,
-		"",
-	);
+	const withoutFooter = stripTrailingBracketedFooter(rawText, matchesReadFooterBody);
 	const rawLines = splitContentLines(withoutFooter);
 	const lines: string[] = [];
 	const lineNumbers: number[] = [];
@@ -639,7 +761,7 @@ function presentFind(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 	const detailFiles = Array.isArray(details?.files)
 		? details.files.map((item) => terminalDisplayText(String(item ?? ""))).filter(Boolean)
 		: undefined;
-	const withoutNotices = rawText.replace(/\n\n\[[^\]]+\]\s*$/, "").trimEnd();
+	const withoutNotices = stripTrailingBracketedFooter(rawText).trimEnd();
 	const textRows =
 		!withoutNotices || withoutNotices === "No files found matching pattern" || withoutNotices === "No matches"
 			? []
@@ -713,7 +835,7 @@ function presentList(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 		};
 	}
 
-	const withoutNotices = rawText.replace(/\n\n\[[^\]]+\]\s*$/, "").trimEnd();
+	const withoutNotices = stripTrailingBracketedFooter(rawText).trimEnd();
 	const entryRows =
 		!withoutNotices || withoutNotices === "(empty directory)" || withoutNotices === "No matches"
 			? []
@@ -817,7 +939,7 @@ function presentWait(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			/\n\nTask \S+ (?:completed with exit code \d+|is still running[^\n]*|exited with code \d+|ended without an exit code|failed[^\n]*|was cancelled[^\n]*)\.?$/.exec(
 				trimmed,
 			);
-		const stripped = (statusFooter === null ? untailed : trimmed.slice(0, statusFooter.index)).replace(/\n+$/, "");
+		const stripped = trimTrailingNewlines(statusFooter === null ? untailed : trimmed.slice(0, statusFooter.index));
 		const hasOutput = stripped.trim() !== "" && stripped.trim() !== EMPTY_OUTPUT_TEXT;
 		const statusLine = formatWaitTaskStatusLine(observation, hasOutput);
 		const outputLines = hasOutput
@@ -879,9 +1001,12 @@ type SettledBashState =
 	| { readonly kind: "success"; readonly output: string };
 
 function stripBashTruncationFooter(rawText: string): string {
-	return rawText
-		.replace(/\n\n\[Showing (?:last [^\]]+|lines \d+-\d+ of \d+(?:[^\]\d][^\]]*)?)\]\s*$/, "")
-		.replace(/\n+$/, "");
+	return trimTrailingNewlines(stripTrailingBracketedFooter(rawText, matchesBashTruncationFooterBody));
+}
+
+function stripStillRunningFooter(rawText: string): string {
+	const index = findStillRunningFooterIndex(rawText);
+	return stripBashTruncationFooter(index === -1 ? rawText : rawText.slice(0, index));
 }
 
 function stripOwnedFooter(rawText: string, pattern: RegExp): { text: string; match: RegExpExecArray | null } {
@@ -901,8 +1026,7 @@ function classifySettledBashResult(input: BuiltinToolBlockInput, rawText: string
 		asNumber(details?.exitCode) ?? (settled && "exitCode" in settled ? asNumber(settled.exitCode) : undefined);
 
 	if (observation?.kind === "yielded") {
-		const { text } = stripOwnedFooter(rawText, /(?:\n\n|^)Command is still running \(task [^)]+\)\.[\s\S]*$/);
-		return { kind: "background", output: text };
+		return { kind: "background", output: stripStillRunningFooter(rawText) };
 	}
 
 	if (settled) {
@@ -1000,8 +1124,7 @@ function classifySettledBashResult(input: BuiltinToolBlockInput, rawText: string
 
 	if (!isError) {
 		if (waitPolicy?.kind === "background") {
-			const { text } = stripOwnedFooter(rawText, /(?:\n\n|^)Command is still running \(task [^)]+\)\.[\s\S]*$/);
-			return { kind: "background", output: text };
+			return { kind: "background", output: stripStillRunningFooter(rawText) };
 		}
 		return { kind: "success", output: stripBashTruncationFooter(rawText) };
 	}

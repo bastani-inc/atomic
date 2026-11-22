@@ -19,7 +19,7 @@ import { DEFAULT_SHORTCUTS, type WebSearchConfig } from "./web-search-config.js"
 import { registerWebSearchCommand } from "./web-search-command.js";
 import { registerWebSearchTool } from "./web-search-tool.js";
 
-export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearchConfig, storage: ResultStorage = createResultStorage()): void {
+export function registerWebSearchFeatures(atomic: ExtensionAPI, initConfig: WebSearchConfig, storage: ResultStorage = createResultStorage()): void {
 	const { clearResults, restoreFromSession, storeResult } = storage;
 	const pendingFetches = new Map<string, AbortController>();
 
@@ -78,13 +78,13 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 					urls: stripThumbnails(fetched),
 				};
 				try {
-					await pi.appendEntry("web-search-results", data);
+					await atomic.appendEntry("web-search-results", data);
 					if (!runtimeState.sessionActive || !pendingFetches.has(fetchId)) return;
 					storeResult(fetchId, data);
 					const ok = fetched.filter(f => !f.error).length;
 					// Keep the fetch pending until notification admission settles so session
 					// changes can still clear the entry and abort its controller while admission is in flight.
-					await pi.sendMessage(
+					await atomic.sendMessage(
 						{
 							customType: "web-search-content-ready",
 							content: `Content fetched for ${ok}/${fetched.length} URLs [${fetchId}]. Full page content now available.`,
@@ -103,7 +103,7 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 				const isAbort = (err instanceof Error && err.name === "AbortError") || message.toLowerCase().includes("abort");
 				if (!isAbort) {
 					try {
-						await pi.sendMessage(
+						await atomic.sendMessage(
 							{
 								customType: "web-search-error",
 								content: `Content fetch failed [${fetchId}]: ${message}`,
@@ -125,15 +125,15 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		return fetchId;
 	}
 
-	const buildReturn: SearchReturnBuilder = (opts) => buildSearchReturn(opts, { pi, startBackgroundFetch, storage });
+	const buildReturn: SearchReturnBuilder = (opts) => buildSearchReturn(opts, { pi: atomic, startBackgroundFetch, storage });
 	const openCuratorBrowser = (pc: PendingCurate, searchesComplete = true) => openCuratorBrowserForSearch(
-		{ pi, state: runtimeState, buildSearchReturn: buildReturn, closeCurator },
+		{ pi: atomic, state: runtimeState, buildSearchReturn: buildReturn, closeCurator },
 		pc,
 		searchesComplete,
 	);
 
 	// Keys from the user's web-search config, as configured: the host matches them like any other key id.
-	pi.registerShortcut(curateKey as KeyId, {
+	atomic.registerShortcut(curateKey as KeyId, {
 		description: "Review search results",
 		handler: async (ctx) => {
 			const pc = runtimeState.pendingCurate;
@@ -147,17 +147,17 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		},
 	});
 
-	pi.registerShortcut(activityKey as KeyId, {
+	atomic.registerShortcut(activityKey as KeyId, {
 		description: "Toggle web search activity",
 		handler: async (ctx) => {
 			toggleActivityWidget(activityState, ctx);
 		},
 	});
 
-	pi.on("session_start", async (_event, ctx) => handleSessionChange(ctx));
-	pi.on("session_tree", async (_event, ctx) => handleSessionChange(ctx));
+	atomic.on("session_start", async (_event, ctx) => handleSessionChange(ctx));
+	atomic.on("session_tree", async (_event, ctx) => handleSessionChange(ctx));
 
-	pi.on("session_shutdown", async () => {
+	atomic.on("session_shutdown", async () => {
 		runtimeState.sessionActive = false;
 		abortPendingFetches();
 		closeCurator();
@@ -167,21 +167,21 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		await clearing;
 	});
 
-	registerWebSearchTool(pi, {
+	registerWebSearchTool(atomic, {
 		state: runtimeState,
 		closeCurator,
 		openCuratorBrowser,
 		buildSearchReturn: buildReturn,
 	});
 
-	registerContentTools(pi, {
+	registerContentTools(atomic, {
 		maxInlineContent: MAX_INLINE_CONTENT,
 		storage,
 		stripThumbnails,
 		formatFullResults,
 	});
 
-	registerWebSearchCommand(pi, {
+	registerWebSearchCommand(atomic, {
 		state: runtimeState,
 		closeCurator,
 		buildSearchReturn: buildReturn,

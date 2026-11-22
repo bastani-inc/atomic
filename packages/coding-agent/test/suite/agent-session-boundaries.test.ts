@@ -110,8 +110,8 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("turn_end", (event) => {
+				(atomic) => {
+					atomic.on("turn_end", (event) => {
 						observedIds.push(event.messageEntryId);
 						if (handled) return;
 						handled = true;
@@ -156,15 +156,15 @@ describe("AgentSession actionable boundaries", () => {
 			const requests: string[] = [];
 			const harness = await createHarness({
 				extensionFactories: [
-					(pi) => {
-						pi.on("turn_end", () => {
+					(atomic) => {
+						atomic.on("turn_end", () => {
 							if (handled) return;
 							handled = true;
 							if (queueKind === "steering" || queueKind === "both") {
-								pi.sendUserMessage("queued steering", { deliverAs: "steer" });
+								atomic.sendUserMessage("queued steering", { deliverAs: "steer" });
 							}
 							if (queueKind === "follow-up" || queueKind === "both") {
-								pi.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
+								atomic.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
 							}
 							return {
 								entries: [{ type: "compaction", summary: "[User]: exact handoff", firstKeptEntryId: null }],
@@ -211,8 +211,8 @@ describe("AgentSession actionable boundaries", () => {
 		const snapshots: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("turn_end", () => {
+				(atomic) => {
+					atomic.on("turn_end", () => {
 						if (handled) return;
 						handled = true;
 						return {
@@ -249,11 +249,11 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_start", async () => {
+				(atomic) => {
+					atomic.on("agent_start", async () => {
 						await gate.promise;
 					});
-					pi.on("message_end", (event) => {
+					atomic.on("message_end", (event) => {
 						if (event.message.role !== "user") return;
 						return { message: { ...event.message, content: [{ type: "text", text: "rewritten prompt" }] } };
 					});
@@ -289,11 +289,11 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("turn_end", (event) => {
+				(atomic) => {
+					atomic.on("turn_end", (event) => {
 						if (handled) return;
 						handled = true;
-						pi.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
+						atomic.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
 						return {
 							entries: [
 								{
@@ -334,8 +334,8 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_before_settle", () => {
+				(atomic) => {
+					atomic.on("agent_before_settle", () => {
 						if (requested) return;
 						requested = true;
 						return {
@@ -377,11 +377,11 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_before_settle", () => {
+				(atomic) => {
+					atomic.on("agent_before_settle", () => {
 						if (handled) return;
 						handled = true;
-						pi.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
+						atomic.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
 						return {
 							entries: [
 								{
@@ -423,20 +423,20 @@ describe("AgentSession actionable boundaries", () => {
 		const lifecycle: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_start", () => {
+				(atomic) => {
+					atomic.on("agent_start", () => {
 						lifecycle.push("start");
 					});
-					pi.on("agent_settled", (_event, ctx) => {
+					atomic.on("agent_settled", (_event, ctx) => {
 						lifecycle.push(`settled-first:${ctx.isIdle()}`);
 						if (triggered) return;
 						triggered = true;
-						pi.sendMessage(
+						atomic.sendMessage(
 							{ customType: "settled-trigger", content: "start later", display: false },
 							{ triggerTurn: true },
 						);
 					});
-					pi.on("agent_settled", (_event, ctx) => {
+					atomic.on("agent_settled", (_event, ctx) => {
 						lifecycle.push(`settled-second:${ctx.isIdle()}`);
 					});
 				},
@@ -468,8 +468,8 @@ describe("AgentSession actionable boundaries", () => {
 		const harness = await createHarness({
 			tools: [tool],
 			extensionFactories: [
-				(pi) => {
-					pi.on("turn_end", (event, ctx) => {
+				(atomic) => {
+					atomic.on("turn_end", (event, ctx) => {
 						const user = [...ctx.sessionManager.getBranch()]
 							.reverse()
 							.find((entry) => entry.type === "message" && entry.message.role === "user");
@@ -501,8 +501,8 @@ describe("AgentSession actionable boundaries", () => {
 		let turnEnds = 0;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("turn_end", (event) => {
+				(atomic) => {
+					atomic.on("turn_end", (event) => {
 						turnEnds++;
 						expect(event.outcome).toBe("error");
 						return { entries: [{ type: "custom", customType: "failure-boundary", data: true }] };
@@ -527,7 +527,7 @@ describe("AgentSession actionable boundaries", () => {
 	it("stops a prompt whose message cannot be saved and names why, instead of an unresolved turn_end entry (#4226)", async () => {
 		const saved = await createSavedSession({
 			tools: [noopTool()],
-			extensionFactories: [(pi) => pi.on("turn_end", () => {})],
+			extensionFactories: [(atomic) => atomic.on("turn_end", () => {})],
 		});
 		try {
 			saved.harness.setResponses([
@@ -583,7 +583,7 @@ describe("AgentSession actionable boundaries", () => {
 					executed++;
 				}),
 			],
-			extensionFactories: [(pi) => pi.on("tool_call", () => {})],
+			extensionFactories: [(atomic) => atomic.on("tool_call", () => {})],
 		});
 		try {
 			saved.harness.setResponses([
@@ -803,15 +803,15 @@ describe("AgentSession actionable boundaries", () => {
 			};
 			const saved = await createSavedSession({
 				extensionFactories: [
-					(pi) => {
-						pi.on("turn_end", async () => {
+					(atomic) => {
+						atomic.on("turn_end", async () => {
 							if (writeAt === "turn_end") await writeOnce();
 							if (!continueAtBoundary || continued) return;
 							continued = true;
 							return { continue: true };
 						});
 						// Extensions see the hidden turn's message_end just before it is saved.
-						pi.on("message_end", async ({ message }) => {
+						atomic.on("message_end", async ({ message }) => {
 							if (message.role === "custom" && message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE) {
 								if (writeAt === "hidden turn") await writeOnce();
 							}
@@ -927,8 +927,8 @@ describe("AgentSession actionable boundaries", () => {
 			models: [{ id: "faux-1", contextWindow, maxTokens: 100 }],
 			settings: { compaction: { enabled: true, reserveTokens } },
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", (event) => {
+				(atomic) => {
+					atomic.on("message_end", (event) => {
 						if (event.message.role !== "assistant") return;
 						return {
 							message: {
@@ -942,7 +942,7 @@ describe("AgentSession actionable boundaries", () => {
 							},
 						};
 					});
-					pi.on("turn_end", (event) => {
+					atomic.on("turn_end", (event) => {
 						if (handled) return;
 						handled = true;
 						return {
@@ -968,8 +968,8 @@ describe("AgentSession actionable boundaries", () => {
 			models: [{ id: "faux-1", contextWindow: 50_000, maxTokens: 100 }],
 			settings: { compaction: { enabled: true, reserveTokens: 0 } },
 			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", (event) => {
+				(atomic) => {
+					atomic.on("message_end", (event) => {
 						if (event.message.role !== "assistant") return;
 						return {
 							message: {
@@ -978,7 +978,7 @@ describe("AgentSession actionable boundaries", () => {
 							},
 						};
 					});
-					pi.on("turn_end", (_event, ctx) => {
+					atomic.on("turn_end", (_event, ctx) => {
 						if (handled) return;
 						handled = true;
 						const user = [...ctx.sessionManager.getBranch()]
@@ -1055,11 +1055,11 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_before_settle", () => {
+				(atomic) => {
+					atomic.on("agent_before_settle", () => {
 						if (handled) return;
 						handled = true;
-						pi.sendMessage(
+						atomic.sendMessage(
 							{ customType: "pending-boundary", content: "persist before continue", display: false },
 							{ triggerTurn: false },
 						);
@@ -1090,11 +1090,11 @@ describe("AgentSession actionable boundaries", () => {
 		let handled = false;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_before_settle", (_event, ctx) => {
+				(atomic) => {
+					atomic.on("agent_before_settle", (_event, ctx) => {
 						if (handled) return;
 						handled = true;
-						pi.sendUserMessage("still queued", { deliverAs: "followUp" });
+						atomic.sendUserMessage("still queued", { deliverAs: "followUp" });
 						const targets = ctx.sessionManager
 							.getBranch()
 							.flatMap((entry) =>
@@ -1131,8 +1131,8 @@ describe("AgentSession actionable boundaries", () => {
 		const release = deferred();
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("agent_before_settle", async () => {
+				(atomic) => {
+					atomic.on("agent_before_settle", async () => {
 						started.resolve();
 						await release.promise;
 						return {
@@ -1227,11 +1227,11 @@ describe("durable recovery omissions", () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } },
 			extensionFactories: [
-				(pi) => {
-					pi.on("turn_end", (event) => {
+				(atomic) => {
+					atomic.on("turn_end", (event) => {
 						if (queued || event.outcome !== "error") return;
 						queued = true;
-						pi.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
+						atomic.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
 					});
 				},
 			],

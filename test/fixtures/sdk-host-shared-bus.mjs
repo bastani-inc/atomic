@@ -24,9 +24,9 @@ async function create(name) {
 	mkdirSync(cwd, { recursive: true });
 	let resourceLoader = borrowedLoader ?? new (kind === "subclass" ? HostLoader : DefaultResourceLoader)({
 		cwd, agentDir: join(cwd, "agent"), settingsManager, eventBus, noExtensions: true, noContextFiles: true,
-		extensionFactories: [(pi) => { pi.on("session_start", () => {
-			scopes.push(pi.lifecycleScope);
-			pi.events.on("sibling-check", () => { deliveries.push(pi.lifecycleScope); });
+		extensionFactories: [(atomic) => { atomic.on("session_start", () => {
+			scopes.push(atomic.lifecycleScope);
+			atomic.events.on("sibling-check", () => { deliveries.push(atomic.lifecycleScope); });
 		}); }],
 	});
 	if (!borrowedLoader) await resourceLoader.reload();

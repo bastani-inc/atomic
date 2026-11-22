@@ -254,8 +254,8 @@ describe("a call made from inside a tool (#4309)", () => {
 		let seenLength = 0;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerTool({
+				(atomic) => {
+					atomic.registerTool({
 						name: "child",
 						label: "Child",
 						description: "child",
@@ -263,7 +263,7 @@ describe("a call made from inside a tool (#4309)", () => {
 						parameters: Type.Object({}),
 						execute: async () => oversized(),
 					});
-					pi.registerTool({
+					atomic.registerTool({
 						name: "parent",
 						label: "Parent",
 						description: "parent",

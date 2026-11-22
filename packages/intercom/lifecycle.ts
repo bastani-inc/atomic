@@ -43,7 +43,7 @@ interface LifecycleDeps {
   restoreIntercomSessionIdEnv?(): void;
 }
 
-export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps): void {
+export function registerIntercomLifecycle(atomic: ExtensionAPI, deps: LifecycleDeps): void {
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   let hasActiveSession = false;
@@ -79,7 +79,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setSessionStartedAt(null);
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  atomic.on("session_start", async (_event, ctx) => {
     if (hasActiveSession) await cleanupRuntime("Session replaced");
     hasActiveSession = true;
     deps.setShuttingDown(false);
@@ -97,13 +97,13 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.bindReplyTracker?.(ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  atomic.on("session_shutdown", async () => {
     if (!hasActiveSession) return;
     hasActiveSession = false;
     await cleanupRuntime("Session shutting down");
   });
 
-  pi.on("turn_end", (event) => {
+  atomic.on("turn_end", (event) => {
     if (!deps.getLiveContext()) return;
     const message = (event as { message?: { role?: string; stopReason?: string; content?: unknown[] } }).message;
     const cancelledBeforeReply = message?.role === "assistant" && message.stopReason === "aborted" && message.content?.length === 0;
@@ -113,30 +113,30 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     // claim accepted child messages before idle delivery releases ownership.
     deps.scheduleInboundFlush();
   });
-  pi.on("agent_start", () => {
+  atomic.on("agent_start", () => {
     if (!deps.getLiveContext()) return;
     deps.setAgentRunning(true);
     deps.activeTools.clear();
     deps.syncPresenceStatus();
   });
-  pi.on("tool_execution_start", (event) => {
+  atomic.on("tool_execution_start", (event) => {
     if (!deps.getLiveContext()) return;
     deps.activeTools.set(event.toolCallId, event.toolName);
     deps.syncPresenceStatus();
   });
-  pi.on("tool_execution_end", (event) => {
+  atomic.on("tool_execution_end", (event) => {
     if (!deps.getLiveContext()) return;
     deps.activeTools.delete(event.toolCallId);
     deps.syncPresenceStatus();
   });
-  pi.on("agent_end", () => {
+  atomic.on("agent_end", () => {
     if (!deps.getLiveContext()) return;
     deps.setAgentRunning(false);
     deps.activeTools.clear();
     deps.syncPresenceStatus();
     deps.scheduleInboundFlush();
   });
-  pi.on("turn_start", (_event, ctx) => {
+  atomic.on("turn_start", (_event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;
     deps.bindReplyTracker?.(ctx);
     deps.setCurrentSessionId(ctx.sessionManager.getSessionId());
@@ -147,18 +147,18 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
   // arrived: steer, followUp, and interrupt deliveries reach turns out of arrival order (#3921).
   // While the agent streams, the host shows the intercom card at admission and feeds the model
   // a hidden reconciliation that points back at that card's entry.
-  pi.on("message_start", (event, ctx) => {
+  atomic.on("message_start", (event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;
     const id = admittedIntercomMessageId(event.message, ctx);
     if (id !== undefined) activeReplyTracker().admitTurnMessage(id);
   });
-  pi.on("model_select", (event, ctx) => {
+  atomic.on("model_select", (event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;
     deps.setCurrentModel(event.model.id);
     const activeClient = deps.client();
     if (activeClient) {
       activeClient.updatePresence({
-        ...buildPresenceIdentity(pi, ctx.sessionManager.getSessionId()),
+        ...buildPresenceIdentity(atomic, ctx.sessionManager.getSessionId()),
         model: event.model.id,
         status: deps.currentStatus(),
       });

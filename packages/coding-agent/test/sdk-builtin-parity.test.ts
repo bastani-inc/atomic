@@ -148,8 +148,8 @@ test(
 			noContextFiles: true,
 			systemPrompt: "Caller-owned prompt",
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", async (event) => {
+				(atomic) => {
+					atomic.on("session_start", async (event) => {
 						await Promise.resolve();
 						starts++;
 						reasons.push(event.reason);
@@ -263,26 +263,26 @@ test("failed startup awaits rollback and never returns a partially started sessi
 		noExtensions: true,
 		noContextFiles: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", (_event, ctx) => {
+			(atomic) => {
+				atomic.on("session_start", (_event, ctx) => {
 					events.push(`start:${ctx.mode}`);
-					pi.registerProvider("startup-provider", {
+					atomic.registerProvider("startup-provider", {
 						apiKey: "fixture",
 						baseUrl: "https://example.invalid",
 						api: "openai-completions",
 						models: [],
 					});
 				});
-				pi.on("session_shutdown", async () => {
+				atomic.on("session_shutdown", async () => {
 					await Promise.resolve();
 					events.push("released");
 				});
 			},
-			(pi) => {
-				pi.on("session_start", () => {
+			(atomic) => {
+				atomic.on("session_start", () => {
 					throw new Error("injected startup failure");
 				});
-				pi.on("session_shutdown", async () => {
+				atomic.on("session_shutdown", async () => {
 					await Promise.resolve();
 					events.push("failed-extension-released");
 				});
@@ -362,13 +362,13 @@ for (const fail of [false, true]) {
 				agentDir: join(cwd, "agent"),
 				resourceLoaderOptions: {
 					extensionFactories: [
-						(pi) => {
-							pi.on("session_start", async (_event, ctx) => {
+						(atomic) => {
+							atomic.on("session_start", async (_event, ctx) => {
 								events.push(`${ctx.mode}:${ctx.hasUI}`);
 								assert.equal(await ctx.ui.confirm("startup", "mounted host"), true);
 								if (fail) throw new Error("deferred startup failure");
 							});
-							pi.on("session_shutdown", async () => {
+							atomic.on("session_shutdown", async () => {
 								await Promise.resolve();
 								events.push("released");
 							});
@@ -412,8 +412,8 @@ test("services factory forwards bindings before startup", async () => {
 			agentDir: join(cwd, "agent"),
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_start", (_event, ctx) => {
+					(atomic) => {
+						atomic.on("session_start", (_event, ctx) => {
 							modes.push(ctx.mode);
 						});
 					},
@@ -448,15 +448,15 @@ test.each([false, true])("prompt finalization failure rolls back once (deferred=
 		noExtensions: true,
 		noContextFiles: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", () => {
+			(atomic) => {
+				atomic.on("session_start", () => {
 					events.push("acquire");
 				});
-				pi.on("resources_discover", () => {
+				atomic.on("resources_discover", () => {
 					discovered = true;
 					return {};
 				});
-				pi.on("session_shutdown", async () => {
+				atomic.on("session_shutdown", async () => {
 					await Promise.resolve();
 					events.push("release");
 				});
@@ -509,10 +509,10 @@ test("constructor failure restores new and replaced providers without starting a
 		noExtensions: true,
 		noContextFiles: true,
 		extensionFactories: [
-			(pi) => {
-				pi.registerProvider("existing-provider", { ...original, apiKey: "replacement" });
-				pi.registerProvider("constructor-provider", original);
-				pi.on("session_start", () => {
+			(atomic) => {
+				atomic.registerProvider("existing-provider", { ...original, apiKey: "replacement" });
+				atomic.registerProvider("constructor-provider", original);
+				atomic.on("session_start", () => {
 					events.push("start");
 				});
 			},
@@ -903,11 +903,11 @@ async function hostSession(bindings: ExtensionBindings = {}, options: CreateAgen
 		noExtensions: true,
 		noContextFiles: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", (_event, context) => {
+			(atomic) => {
+				atomic.on("session_start", (_event, context) => {
 					contexts.push(context);
 				});
-				pi.registerCommand("diagnostic-test", {
+				atomic.registerCommand("diagnostic-test", {
 					description: "fixture",
 					handler: async () => {
 						throw new Error("secret prompt token");
@@ -1358,8 +1358,8 @@ test("SDK startup hooks can await human input without rendering", async () => {
 		noExtensions: true,
 		noContextFiles: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", async (_event, context) => {
+			(atomic) => {
+				atomic.on("session_start", async (_event, context) => {
 					assert.equal(context.hasUI, false);
 					assert.equal(context.hasHumanInput, true);
 					calls.push((await context.ui.input("Startup")) ?? "unanswered");
@@ -1733,8 +1733,8 @@ test("public disposal awaits shutdown once and seals admission synchronously", a
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_shutdown", async () => {
+			(atomic) => {
+				atomic.on("session_shutdown", async () => {
 					shutdowns++;
 					await gate;
 				});
@@ -1788,14 +1788,14 @@ test.each(["none", "diagnostic", "error"] as const)(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_shutdown", () => {
+				(atomic) => {
+					atomic.on("session_shutdown", () => {
 						attempts.push("first");
 						throw new Error("first cleanup failed");
 					});
 				},
-				(pi) => {
-					pi.on("session_shutdown", () => {
+				(atomic) => {
+					atomic.on("session_shutdown", () => {
 						attempts.push("second");
 						throw new Error("second cleanup failed");
 					});
@@ -2005,9 +2005,9 @@ test("independent loaders sharing an event bus retain distinct scopes across rel
 				eventBus,
 				noExtensions: true,
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_start", () => {
-							ownerScopes.push(pi.lifecycleScope!);
+					(atomic) => {
+						atomic.on("session_start", () => {
+							ownerScopes.push(atomic.lifecycleScope!);
 						});
 					},
 				],
@@ -2046,8 +2046,8 @@ test.each(["input", "before_agent_start"] as const)("disposal drains suspended %
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on(hook, async () => {
+			(atomic) => {
+				atomic.on(hook, async () => {
 					entered.resolve();
 					await release.promise;
 				});
@@ -2122,16 +2122,16 @@ test.each([
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++factories;
-				pi.on("session_start", async () => {
+				atomic.on("session_start", async () => {
 					active.add(id);
 					if (id === 2 && phase === "start") await suspend();
 				});
-				pi.on("resources_discover", async () => {
+				atomic.on("resources_discover", async () => {
 					if (id === 2 && phase === "discover") await suspend();
 				});
-				pi.on("session_shutdown", async () => {
+				atomic.on("session_shutdown", async () => {
 					active.delete(id);
 					stops.push(id);
 					if (id === 1 && phase === "old-shutdown") await suspend();
@@ -2206,11 +2206,11 @@ test("an admitted slash command can reload without waiting on its own prompt", a
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", () => {
+			(atomic) => {
+				atomic.on("session_start", () => {
 					starts++;
 				});
-				pi.registerCommand("reload-self", {
+				atomic.registerCommand("reload-self", {
 					description: "Reload this fixture",
 					handler: async () => {
 						await session.reload();
@@ -2251,9 +2251,9 @@ test("disposal retains a reload candidate cleanup failure after reload has rejec
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++factories;
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					stops.push(id);
 					if (id === 2) throw new Error("candidate resource cleanup failed");
 				});
@@ -2299,12 +2299,12 @@ test("reload publication cannot admit an overlapping reload", async () => {
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++factories;
-				pi.on("session_start", () => {
-					if (id === 2) pi.sendUserMessage("startup input");
+				atomic.on("session_start", () => {
+					if (id === 2) atomic.sendUserMessage("startup input");
 				});
-				pi.on("input", async () => {
+				atomic.on("input", async () => {
 					entered.resolve();
 					await release.promise;
 					return { action: "handled" };
@@ -2352,8 +2352,8 @@ test("compaction drains admitted hooks and refuses terminal admission", async ()
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_compact", async () => {
+			(atomic) => {
+				atomic.on("session_before_compact", async () => {
 					effects++;
 					entered.resolve();
 					await release.promise;
@@ -2418,8 +2418,8 @@ test("tree navigation drains preflight and refuses a retired generation", async 
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_tree", async () => {
+			(atomic) => {
+				atomic.on("session_before_tree", async () => {
 					entered.resolve();
 					await release.promise;
 				});
@@ -2479,12 +2479,12 @@ test.each(["subclass", "instance"])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const owner = {};
-					pi.on("session_start", () => {
+					atomic.on("session_start", () => {
 						active.add(owner);
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						active.delete(owner);
 					});
 				},
@@ -2546,14 +2546,14 @@ test.each([false, true])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", async () => {
+				(atomic) => {
+					atomic.on("session_start", async () => {
 						entered.resolve();
 						await release.promise;
 						active = true;
 						if (fail) throw new Error("startup failed");
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						active = false;
 						stops++;
 					});
@@ -2685,14 +2685,14 @@ test.each(["thinking", "name", "bus", "context", "forwarded context", "shortcut"
 					? (result) => ({ ...result, runtime: new Proxy(result.runtime, {}) })
 					: undefined,
 			extensionFactories: [
-				(pi) => {
-					pi.on("thinking_level_select", kind === "thinking" ? suspend : () => {});
-					pi.on("session_info_changed", kind === "name" ? suspend : () => {});
-					if (kind === "context" || kind === "forwarded context") pi.on("context", suspend);
-					pi.registerShortcut("ctrl+shift+j", { handler: suspend });
-					pi.events.on("drain", suspend);
-					emitBus = () => pi.events.emit("drain", {});
-					pi.on("session_shutdown", () => {
+				(atomic) => {
+					atomic.on("thinking_level_select", kind === "thinking" ? suspend : () => {});
+					atomic.on("session_info_changed", kind === "name" ? suspend : () => {});
+					if (kind === "context" || kind === "forwarded context") atomic.on("context", suspend);
+					atomic.registerShortcut("ctrl+shift+j", { handler: suspend });
+					atomic.events.on("drain", suspend);
+					emitBus = () => atomic.events.emit("drain", {});
+					atomic.on("session_shutdown", () => {
 						shutdowns++;
 						active = 0;
 					});
@@ -2757,8 +2757,8 @@ test.each(["path", "inline"] as const)("failed %s factory rejects with original 
 					agentDir,
 					settingsManager,
 					extensionFactories: [
-						(pi) => {
-							pi.on("session_shutdown", () => {
+						(atomic) => {
+							atomic.on("session_shutdown", () => {
 								throw new Error("cleanup rejected");
 							});
 							throw new Error("factory rejected");
@@ -2809,18 +2809,18 @@ test("closing preserves queued message persistence and completion hooks", async 
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				// Provider requests wait for queued session events to settle, so the gate
 				// holds the run open after the conversation events completed instead of
 				// blocking the first request.
-				pi.on("agent_end", async () => {
+				atomic.on("agent_end", async () => {
 					entered.resolve();
 					await release.promise;
 				});
-				pi.on("message_start", (event) => {
+				atomic.on("message_start", (event) => {
 					events.push(`start:${event.message.role}`);
 				});
-				pi.on("message_end", (event) => {
+				atomic.on("message_end", (event) => {
 					events.push(`end:${event.message.role}`);
 				});
 			},
@@ -2907,18 +2907,18 @@ test.each(["override", "cleanup"] as const)("failed reload preparation releases 
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
 				active.add(id);
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					shutdowns.push(id);
 					if (fail && id === 2 && failure === "cleanup") throw new Error("earlier cleanup failed");
 				});
 			},
-			(pi) => {
+			(atomic) => {
 				if (fail && failure === "cleanup") {
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						throw new Error("later cleanup failed");
 					});
 					throw new Error("later factory failed");
@@ -3122,8 +3122,8 @@ test("closing preserves admitted tool results", async () => {
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("tool_result", () => {
+			(atomic) => {
+				atomic.on("tool_result", () => {
 					hooks++;
 					return { content: [{ type: "text", text: "  completed\n" }] };
 				});
@@ -3195,10 +3195,10 @@ test.each([false, true])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const id = ++next;
 					active.add(id);
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						active.delete(id);
 						if (id === 3 && cleanupFailure) throw new Error("candidate cleanup failed");
 					});
@@ -3273,20 +3273,20 @@ test.each([1, 2])(
 					noExtensions: true,
 					eventBus,
 					extensionFactories: [
-						(pi) => {
-							pi.events.on("retired-replacement", () => {
+						(atomic) => {
+							atomic.events.on("retired-replacement", () => {
 								retiredDeliveries.push(id);
 							});
-							pi.on("thinking_level_select", async () => {
+							atomic.on("thinking_level_select", async () => {
 								peerEntered.resolve();
 								await peerRelease.promise;
 							});
-							pi.on("session_shutdown", () => {
+							atomic.on("session_shutdown", () => {
 								shutdowns.push(id);
 								if (id === 1) active = 0;
-								if (id === 1) pi.events.emit("retired-replacement");
+								if (id === 1) atomic.events.emit("retired-replacement");
 							});
-							pi.registerCommand("replace-me", {
+							atomic.registerCommand("replace-me", {
 								description: "fixture",
 								handler: async (_args, ctx) => {
 									entered++;
@@ -3405,12 +3405,12 @@ test.each(["activate", "commit", "settings", "activate-cleanup"])("reload public
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
-				pi.on("session_start", () => {
+				atomic.on("session_start", () => {
 					active.add(id);
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					if (mode === "activate-cleanup" && id === 4) throw new Error("candidate cleanup failed");
 				});
@@ -3469,11 +3469,15 @@ test.each(["error", "diagnostic"] as const)(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const id = ++next;
-					pi.on("session_start", async (_event, ctx) => {
+					atomic.on("session_start", async (_event, ctx) => {
 						active.add(id);
-						started.push({ id, context: ctx, write: async () => await pi.setSessionName(`generation-${id}`) });
+						started.push({
+							id,
+							context: ctx,
+							write: async () => await atomic.setSessionName(`generation-${id}`),
+						});
 						registerExtensionContextRetirementEffect(ctx, () => retired.push(id));
 						if (started.length === 2) {
 							await publishExtensionContextEffect(
@@ -3488,13 +3492,13 @@ test.each(["error", "diagnostic"] as const)(
 								ctx,
 								() => {
 									commits.push("remaining");
-									remainingWrite = pi.setSessionName(`generation-${id}`);
+									remainingWrite = atomic.setSessionName(`generation-${id}`);
 								},
 								"commit",
 							);
 						}
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						active.delete(id);
 						stopped.push(id);
 					});
@@ -3564,13 +3568,13 @@ test("public reload retains late commit and observer failures during retirement 
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
-				pi.on("session_start", (_event, ctx) => {
+				atomic.on("session_start", (_event, ctx) => {
 					predecessorId ??= id;
 					contexts.push(ctx);
 				});
-				pi.on("session_shutdown", async () => {
+				atomic.on("session_shutdown", async () => {
 					stopped.push(id);
 					if (id === predecessorId) {
 						retiring.resolve();
@@ -3644,9 +3648,9 @@ test.each(["shutdown"] as const)("public reload retains commit and %s failures (
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
-				pi.on("session_start", async (_event, ctx) => {
+				atomic.on("session_start", async (_event, ctx) => {
 					started.push(id);
 					registerExtensionContextRetirementEffect(ctx, () => retired.push(id));
 					if (started.length === 2) {
@@ -3657,10 +3661,10 @@ test.each(["shutdown"] as const)("public reload retains commit and %s failures (
 							},
 							"commit",
 						);
-						await pi.setSessionName("successor published");
+						await atomic.setSessionName("successor published");
 					}
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					stopped.push(id);
 					if (mode === "shutdown" && id === started[0]) throw shutdownError;
 				});
@@ -3736,9 +3740,9 @@ test.each(["failure", "shutdown", "invalidation", "observation", "control"])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const id = ++next;
-					pi.on("session_start", (_event, ctx) => {
+					atomic.on("session_start", (_event, ctx) => {
 						active.add(id);
 						if (id === 2 && mode === "observation") {
 							registerExtensionContextRetirementEffect(ctx, () => {
@@ -3746,7 +3750,7 @@ test.each(["failure", "shutdown", "invalidation", "observation", "control"])(
 							});
 						}
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						active.delete(id);
 						stopped.push(id);
 						if (id === 2 && mode === "shutdown") throw shutdownError;
@@ -3820,10 +3824,10 @@ test.each(["success", "failure", "cleanup"])("reload preparation transfers every
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
 				active.add(id);
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					if (mode === "cleanup" && id === 3) throw new Error("prepared cleanup failed");
 				});
@@ -3887,20 +3891,20 @@ test.each([false, true])("failed reload candidate drains callbacks before cleanu
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
-				pi.events.on("acquire", async () => {
+				atomic.events.on("acquire", async () => {
 					enter();
 					await gate;
 					active.add(id);
 				});
-				pi.on("session_start", () => {
+				atomic.on("session_start", () => {
 					if (candidate) {
-						pi.events.emit("acquire");
+						atomic.events.emit("acquire");
 						throw new Error("candidate failed");
 					}
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					shutdowns.push(id);
 					active.delete(id);
 					if (id === 2 && cleanupFails) throw new Error("candidate cleanup failed");
@@ -3973,18 +3977,18 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++next;
-				pi.on("session_start", async (_event, ctx) => {
+				atomic.on("session_start", async (_event, ctx) => {
 					capabilities.push({
-						write: async () => await pi.setSessionName(`generation-${id}`),
+						write: async () => await atomic.setSessionName(`generation-${id}`),
 						host: () => ctx.getAgentTaskHost(),
 					});
 				});
-				pi.events.on("retired-cleanup", () => {
+				atomic.events.on("retired-cleanup", () => {
 					retiredDeliveries.push(id);
 				});
-				pi.registerCommand("reload-acquire", {
+				atomic.registerCommand("reload-acquire", {
 					description: "reload then acquire",
 					handler: async () => {
 						await session.reload();
@@ -3993,16 +3997,16 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 						active.add(id);
 					},
 				});
-				pi.on("session_shutdown", async (_event, ctx) => {
+				atomic.on("session_shutdown", async (_event, ctx) => {
 					assert.equal(ctx.cwd, cwd, "shutdown retains scoped cleanup capabilities");
-					assert.equal(pi.getSessionName(), "generation-2");
+					assert.equal(atomic.getSessionName(), "generation-2");
 					if (id === 1) {
 						await assert.rejects(
-							async () => await pi.setSessionName("retired-cleanup-write"),
+							async () => await atomic.setSessionName("retired-cleanup-write"),
 							/stale|no longer active/i,
 						);
 						assert.throws(() => ctx.getAgentTaskHost(), /stale|no longer active/i);
-						pi.events.emit("retired-cleanup");
+						atomic.events.emit("retired-cleanup");
 					}
 					shutdowns.push(id);
 					active.delete(id);
@@ -4076,26 +4080,26 @@ test.each(["subset", "none", "all", "startup", "cleanup"])(
 			agentDir: cwd,
 			settingsManager,
 			noExtensions: true,
-			extensionFactories: ["keep", "omit"].map((name) => async (pi) => {
+			extensionFactories: ["keep", "omit"].map((name) => async (atomic) => {
 				active.add(name);
-				writes.set(name, async () => await pi.setSessionName("omitted-write"));
-				pi.events.on("selected-ping", () => {
+				writes.set(name, async () => await atomic.setSessionName("omitted-write"));
+				atomic.events.on("selected-ping", () => {
 					if (name === "keep") calls++;
 					else omittedCalls++;
 				});
-				pi.registerCommand(name, {
+				atomic.registerCommand(name, {
 					description: name,
 					handler: async (_args, ctx) => {
-						await pi.setSessionName("  selected\n");
+						await atomic.setSessionName("  selected\n");
 						assert.ok(ctx.getAgentTaskHost());
-						pi.events.emit("selected-ping");
+						atomic.events.emit("selected-ping");
 					},
 				});
-				pi.on("session_start", () => {
+				atomic.on("session_start", () => {
 					started.push(name);
 					if (mode === "startup") throw new Error("selected startup failed");
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					stopped.push(name);
 					active.delete(name);
 					if (mode === "cleanup" && name === "omit") throw new Error("omitted cleanup failed");
@@ -4168,28 +4172,28 @@ test.each(["subset", "none", "all", "rollback", "cleanup"])(
 			agentDir: cwd,
 			settingsManager,
 			noExtensions: true,
-			extensionFactories: ["keep", "omit"].map((name) => async (pi) => {
+			extensionFactories: ["keep", "omit"].map((name) => async (atomic) => {
 				if (name === "keep") generation++;
 				const record = {
 					name,
 					generation,
 					calls: 0,
 					stops: 0,
-					write: async () => await pi.setSessionName(`selected-${generation}`),
+					write: async () => await atomic.setSessionName(`selected-${generation}`),
 				};
 				records.push(record);
-				pi.events.on("selected-ping", () => {
+				atomic.events.on("selected-ping", () => {
 					record.calls++;
 				});
-				pi.registerCommand(name, {
+				atomic.registerCommand(name, {
 					description: name,
 					handler: async (_args, ctx) => {
 						await record.write();
 						assert.ok(ctx.getAgentTaskHost());
-						pi.events.emit("selected-ping");
+						atomic.events.emit("selected-ping");
 					},
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					record.stops++;
 					if (mode === "cleanup" && record.generation === 2 && name === "omit")
 						throw new Error("omitted reload cleanup failed");
@@ -4267,15 +4271,15 @@ test.each(["close", "reload", "rollback", "cancel"])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						api = pi;
+				(atomic) => {
+					atomic.on("session_start", () => {
+						api = atomic;
 					});
-					pi.on("session_shutdown", async () => {
+					atomic.on("session_shutdown", async () => {
 						if (mode === "close") {
 							enter();
 							await gate;
-							pi.appendEntry("cleanup", { complete: true });
+							atomic.appendEntry("cleanup", { complete: true });
 							completedCleanup = true;
 						}
 					});
@@ -4364,11 +4368,11 @@ test("direct extension execution drains before shutdown", async () => {
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", () => {
-					api = pi;
+			(atomic) => {
+				atomic.on("session_start", () => {
+					api = atomic;
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					shutdown = true;
 				});
 			},
@@ -4430,11 +4434,11 @@ test("retired replacement cleanup cannot deliver successor events", async () => 
 				eventBus,
 				noExtensions: true,
 				extensionFactories: [
-					(pi) => {
-						pi.events.on("retired", () => {
+					(atomic) => {
+						atomic.events.on("retired", () => {
 							deliveries.push(id);
 						});
-						pi.registerCommand("replace", {
+						atomic.registerCommand("replace", {
 							description: "replace",
 							handler: async (_args, ctx) => {
 								await ctx.newSession();
@@ -4442,9 +4446,9 @@ test("retired replacement cleanup cannot deliver successor events", async () => 
 								await gate.promise;
 							},
 						});
-						pi.on("session_shutdown", () => {
+						atomic.on("session_shutdown", () => {
 							if (id === 1) {
-								pi.events.emit("retired");
+								atomic.events.emit("retired");
 								cleaned.resolve();
 							}
 						});
@@ -4528,10 +4532,10 @@ test.each(["ordinary", "ordinary-cleanup", "transaction", "transaction-cleanup",
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const id = ++next;
 					active.add(id);
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						active.delete(id);
 						if (id > 1 && mode.endsWith("cleanup")) throw cleanup;
 					});
@@ -4614,12 +4618,12 @@ test.each(["close", "close-error", "candidate", "factory"])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const id = ++generation;
-					pi.on("session_shutdown", async () => {
+					atomic.on("session_shutdown", async () => {
 						if (mode === "candidate" && id === 1) return;
-						cleanupAPI = pi;
-						child = pi.exec(process.execPath, [
+						cleanupAPI = atomic;
+						child = atomic.exec(process.execPath, [
 							"-e",
 							'const fs=require("node:fs");fs.writeFileSync("started","");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);process.stdout.write("complete");}},10);',
 						]);
@@ -4634,7 +4638,7 @@ test.each(["close", "close-error", "candidate", "factory"])(
 					});
 					if (mode === "factory") throw new Error("factory primary");
 					if (mode === "candidate" && id > 1)
-						pi.on("session_start", () => {
+						atomic.on("session_start", () => {
 							throw new Error("startup primary");
 						});
 				},
@@ -4739,9 +4743,9 @@ test.each(["manual", "invalidate", "throwing", "invalidate-throwing"])(
 			eventBus,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					api = pi;
-					pi.on("session_shutdown", async () => {
+				(atomic) => {
+					api = atomic;
+					atomic.on("session_shutdown", async () => {
 						entered();
 						await held;
 					});
@@ -4818,21 +4822,21 @@ test("factory rollback drains admitted callbacks before shutdown", async () => {
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			async (pi) => {
-				pi.on("session_shutdown", () => {
+			async (atomic) => {
+				atomic.on("session_shutdown", () => {
 					log.push("shutdown");
 					for (const timer of live) clearInterval(timer);
 					live.clear();
 				});
-				pi.events.on("acquire", async () => {
+				atomic.events.on("acquire", async () => {
 					log.push("started");
 					entered();
 					await held;
-					pi.events.on("late-owned-subscription", () => {});
+					atomic.events.on("late-owned-subscription", () => {});
 					live.add(setInterval(() => {}, 1000));
 					log.push("acquired");
 				});
-				pi.events.emit("acquire", {});
+				atomic.events.emit("acquire", {});
 				throw new Error("factory primary");
 			},
 		],
@@ -4914,19 +4918,19 @@ test.each(["creation", "creation-error", "replay", "ordinary", "transaction", "t
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const id = ++generation;
-					peer = pi;
-					pi.events.on("peer", () => {
+					peer = atomic;
+					atomic.events.on("peer", () => {
 						deliveries++;
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						shutdowns.push(`peer${id}`);
 					});
 				},
-				(pi) => {
+				(atomic) => {
 					const id = generation;
-					pi.on("session_shutdown", async () => {
+					atomic.on("session_shutdown", async () => {
 						shutdowns.push(`held${id}`);
 						if ((!reloading && mode !== "replay") || id > 1) {
 							entered();
@@ -5061,27 +5065,27 @@ test.each([false, true])(
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					selected = pi;
-					pi.events.on("selected", async () => {
+				(atomic) => {
+					selected = atomic;
+					atomic.events.on("selected", async () => {
 						await selectedWork.promise;
 					});
-					pi.events.emit("selected", {});
-					pi.on("session_start", () => {
+					atomic.events.emit("selected", {});
+					atomic.on("session_start", () => {
 						if (startupFails) throw primary;
 					});
 				},
-				(pi) => {
-					omitted = pi;
-					pi.on("session_shutdown", () => {
+				(atomic) => {
+					omitted = atomic;
+					atomic.on("session_shutdown", () => {
 						log.push("peer-shutdown");
 						for (const timer of live) clearInterval(timer);
 						live.clear();
 					});
-					pi.events.on("omitted", async () => {
+					atomic.events.on("omitted", async () => {
 						admitted.resolve();
 						await omittedWork.promise;
-						pi.events.on("late", () => {});
+						atomic.events.on("late", () => {});
 						try {
 							other.events.on("unrelated", () => {});
 						} catch (error) {
@@ -5090,11 +5094,11 @@ test.each([false, true])(
 						live.add(setInterval(() => {}, 1000));
 						log.push("acquired");
 					});
-					pi.events.emit("omitted", {});
+					atomic.events.emit("omitted", {});
 				},
-				(pi) => {
-					other = pi;
-					pi.on("session_shutdown", async () => {
+				(atomic) => {
+					other = atomic;
+					atomic.on("session_shutdown", async () => {
 						log.push("last-shutdown");
 						entered.resolve();
 						await cleanupWork.promise;
@@ -5296,11 +5300,11 @@ test.each(["factory", "session_start"] as const)(
 					settingsManager,
 					noExtensions: true,
 					extensionFactories: [
-						(pi) => {
+						(atomic) => {
 							const contribute = () =>
-								pi.registerMcpServer("same", { url: `${server.url}/owner-${index}`, exposure: "direct" });
+								atomic.registerMcpServer("same", { url: `${server.url}/owner-${index}`, exposure: "direct" });
 							if (registration === "factory") contribute();
-							else pi.on("session_start", contribute);
+							else atomic.on("session_start", contribute);
 						},
 					],
 				});
@@ -5465,7 +5469,7 @@ test("SDK native MCP login without a TTY does not authorize before or after call
 		agentDir: join(root, "agent"),
 		settingsManager,
 		noExtensions: true,
-		extensionFactories: [(pi) => pi.registerMcpServer("issues", { url: server.url, exposure: "direct" })],
+		extensionFactories: [(atomic) => atomic.registerMcpServer("issues", { url: server.url, exposure: "direct" })],
 	});
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
 	let session: AgentSession | undefined;

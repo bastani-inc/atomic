@@ -308,8 +308,8 @@ describe("queued messages", () => {
 			const release = Promise.withResolvers<void>();
 			const h = await harness([], {
 				extensionFactories: [
-					(pi) => {
-						pi.on("input", async (event) => {
+					(atomic) => {
+						atomic.on("input", async (event) => {
 							if (event.text === "only if idle") {
 								entered.resolve();
 								await release.promise;

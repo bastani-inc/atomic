@@ -32,13 +32,13 @@ describe("MCP server contributions", () => {
 	}
 
 	function contributionReader(): {
-		factory: (pi: ExtensionAPI) => void;
+		factory: (atomic: ExtensionAPI) => void;
 		read: () => McpServerContribution[];
 	} {
 		let api: ExtensionAPI | undefined;
 		return {
-			factory: (pi) => {
-				api = pi;
+			factory: (atomic) => {
+				api = atomic;
 			},
 			read: () => {
 				if (!api?.getMcpServerContributions) throw new Error("expected getMcpServerContributions on the API");
@@ -117,15 +117,15 @@ describe("MCP server contributions", () => {
 				{ name: "reader", factory: reader.factory },
 				{
 					name: "registrar",
-					factory: (pi) => {
-						pi.registerMcpServer("shared", { url: "http://127.0.0.1:4318/mcp", lifecycle: "eager" });
-						pi.registerMcpServer("runtime", { command: "node", args: ["server.js"] });
+					factory: (atomic) => {
+						atomic.registerMcpServer("shared", { url: "http://127.0.0.1:4318/mcp", lifecycle: "eager" });
+						atomic.registerMcpServer("runtime", { command: "node", args: ["server.js"] });
 					},
 				},
 				{
 					name: "broken",
-					factory: (pi) => {
-						pi.registerMcpServer("abandoned", { url: "https://abandoned.test/mcp" });
+					factory: (atomic) => {
+						atomic.registerMcpServer("abandoned", { url: "https://abandoned.test/mcp" });
 						throw new Error("factory failed after registering");
 					},
 				},

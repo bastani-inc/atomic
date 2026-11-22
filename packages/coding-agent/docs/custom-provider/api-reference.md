@@ -1,6 +1,6 @@
 ---
 title: Provider API reference
-description: ProviderConfig and ProviderModelConfig TypeScript contracts for pi.registerProvider().
+description: ProviderConfig and ProviderModelConfig TypeScript contracts for atomic.registerProvider().
 ---
 
 # Provider API reference

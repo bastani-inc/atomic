@@ -616,9 +616,9 @@ describe("extension message renderer precedence over builtin notice cards", () =
 			settingsManager: SettingsManager.inMemory(),
 			builtinPackagePaths: getBuiltinPackagePaths(),
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					for (const customType of ALL_TEN_TYPES) {
-						pi.registerMessageRenderer(customType, () => new Text(`INLINE:${customType}`, 0, 0));
+						atomic.registerMessageRenderer(customType, () => new Text(`INLINE:${customType}`, 0, 0));
 					}
 				},
 			],
@@ -734,9 +734,9 @@ describe("extension message renderer precedence over builtin notice cards", () =
 			);
 		};
 
-		const inlineFactory = (marker: string) => (pi: ExtensionAPI) => {
+		const inlineFactory = (marker: string) => (atomic: ExtensionAPI) => {
 			for (const customType of MATRIX_TYPES) {
-				pi.registerMessageRenderer(customType, () => new Text(`${marker}:${customType}`, 0, 0));
+				atomic.registerMessageRenderer(customType, () => new Text(`${marker}:${customType}`, 0, 0));
 			}
 		};
 
@@ -990,9 +990,9 @@ describe("extension message renderer precedence over builtin notice cards", () =
 
 		let lateApi: ExtensionAPI | undefined;
 		const subagentsExt = await loadExtensionFromFactory(
-			(pi) => {
+			(atomic) => {
 				for (const t of ["subagent-notify", "subagent-resume-note"]) {
-					pi.registerMessageRenderer(t, () => new Text(`SUB:${t}`, 0, 0));
+					atomic.registerMessageRenderer(t, () => new Text(`SUB:${t}`, 0, 0));
 				}
 			},
 			process.cwd(),
@@ -1001,10 +1001,10 @@ describe("extension message renderer precedence over builtin notice cards", () =
 			"builtin:subagents",
 		);
 		const webExt = await loadExtensionFromFactory(
-			(pi) => {
-				lateApi = pi;
-				pi.registerMessageRenderer("curator-config", () => new Text("ATTACHED_RENDERER", 0, 0));
-				pi.registerMessageRenderer("web-search-error", () => new Text("ERR_RENDERER", 0, 0));
+			(atomic) => {
+				lateApi = atomic;
+				atomic.registerMessageRenderer("curator-config", () => new Text("ATTACHED_RENDERER", 0, 0));
+				atomic.registerMessageRenderer("web-search-error", () => new Text("ERR_RENDERER", 0, 0));
 			},
 			process.cwd(),
 			bus,

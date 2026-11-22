@@ -46,6 +46,7 @@ import {
 	MAX_COLLECTION_ROUNDS,
 	trackCollection,
 } from "../helpers/collect-garbage.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -107,7 +108,7 @@ function isChildEntry(entry: SessionEntry, childId: string): boolean {
 /** Register the subagents extension on `at`'s session; returns what starts it, which settles once its start has. */
 function startExtension(at: SessionManager, policy: { readonly depth: number }): () => Promise<unknown> {
 	const handlers = new Map<string, (event: { reason?: string }, ctx: ExtensionContext) => unknown>();
-	const pi = {
+	const atomic = {
 		events: { on: () => () => {}, emit() {} },
 		appendEntry: async (customType: string, data?: unknown) => {
 			await at.appendCustomEntry(customType, data);
@@ -120,7 +121,7 @@ function startExtension(at: SessionManager, policy: { readonly depth: number }):
 			handlers.set(event, handler);
 		},
 	} as unknown as ExtensionAPI;
-	registerSubagentExtension(pi);
+	registerSubagentExtension(atomic);
 	const ctx = {
 		cwd: at.getCwd(),
 		mode: "tui",
@@ -893,7 +894,7 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		};
 		assert.equal(await recordSubagentChildReply(host, ownerSessionId, "ix-later:0", "q-1", reply, Date.now()), true);
 		assert.equal(subagentChildIndexEntry("ix-later:0")?.entryId, latestEntryId());
-		assert.deepEqual(subagentChildRecordOf(ownerSessionId, "ix-later:0")?.heldToolResults, [reply]);
+		assert.deepEqual(heldAsArrived(subagentChildRecordOf(ownerSessionId, "ix-later:0")?.heldToolResults), [reply]);
 
 		await recordSubagentChildGone(host, base);
 		assert.equal(subagentChildIndexEntry("ix-later:0")?.entryId, latestEntryId());

@@ -397,8 +397,8 @@ test(
 		const preparing = Promise.withResolvers<void>();
 		const releasePreparation = Promise.withResolvers<void>();
 		let holdPreparation = false;
-		const holdWokenTurn = (pi: ExtensionAPI) => {
-			pi.on("before_agent_start", async () => {
+		const holdWokenTurn = (atomic: ExtensionAPI) => {
+			atomic.on("before_agent_start", async () => {
 				if (!holdPreparation) return;
 				holdPreparation = false;
 				preparing.resolve();
@@ -533,8 +533,8 @@ test.each(["initial", "woken", "fallback-end"] as const)(
 		const inWindow = Promise.withResolvers<void>();
 		const releaseStart = Promise.withResolvers<void>();
 		let extensionStarts = 0;
-		const holdTargetStart = (pi: ExtensionAPI) => {
-			pi.on("agent_start", async () => {
+		const holdTargetStart = (atomic: ExtensionAPI) => {
+			atomic.on("agent_start", async () => {
 				extensionStarts += 1;
 				if (turnKind === "fallback-end" || extensionStarts !== targetStart) return;
 				await writeFile(join(env.root, `start-${extensionStarts}.txt`), String(extensionStarts));

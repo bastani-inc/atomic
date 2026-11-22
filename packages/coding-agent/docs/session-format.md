@@ -384,7 +384,7 @@ Set `label` to `undefined` to clear a bookmark.
 
 ### SessionInfoEntry
 
-Session metadata such as the display name set by `/name`, `--name` / `-n`, or `pi.setSessionName()`:
+Session metadata such as the display name set by `/name`, `--name` / `-n`, or `atomic.setSessionName()`:
 
 ```json
 {"type":"session_info","id":"k1l2m3n4","parentId":"j0k1l2m3","timestamp":"2024-12-03T14:35:00.000Z","name":"Refactor auth module"}
@@ -563,7 +563,7 @@ Every append method returns a promise resolving to the new entry ID:
 - `buildSessionProjection(mode?)`: return the context-edited projection (`entries` with source entries and model-visible messages, plus `thinkingLevel` and `model`). Pass `"transcript"` for saved chat rows that keep original displayed content for edited or omitted entries while hiding non-displayed custom messages. For a live session, `session.transcriptMessages` also includes unsaved live messages.
 - `buildSessionContext()`: return messages, thinking level, and model for the LLM.
 - `buildContextEntries()`: return active-branch entries after the latest compaction boundary.
-- `getEntries()`: return raw entries in the manager's current window, excluding the header. System tool-change messages and `pi.appendEntry()` extension entries on the active branch stay resident here; use `readHistory()` or `readEntry(id)` for older retired entries.
+- `getEntries()`: return raw entries in the manager's current window, excluding the header. System tool-change messages and `atomic.appendEntry()` extension entries on the active branch stay resident here; use `readHistory()` or `readEntry(id)` for older retired entries.
 - `hasFullHistory()`: return whether every stored entry is resident in memory.
 - `loadFullHistory()`: load every stored entry on every branch into memory. Prefer `readHistory()` so large sessions stay bounded; Atomic itself never calls `loadFullHistory()`.
 - `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)`: iterate pages of `{ seq, entry }` between inclusive bounds. Use `direction: "backward"` to start from the latest page while keeping entries inside each page in append order. Resume with `{ cursor: page.nextCursor }` without new bounds. Entries over 1 MiB appear as `{ kind: "oversized", seq, bytes }` references instead of truncated objects. Replaced or recreated sessions reject rather than mixing generations.

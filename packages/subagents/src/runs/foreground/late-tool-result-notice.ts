@@ -240,18 +240,18 @@ export function unreadResumeNoteKinds(sessionManager: NoticeEntries): Set<Subage
 
 /**
  * The stable admission key of the notice for these results: admitting it again adds nothing. Each result is named by its
- * call's id, the entry that issued its call when known (by id, from `calls`) and a digest of what it holds, so the notice
- * of another result for a call id seen before, such as a later call's that a provider gave an earlier call's id (#3274),
- * is a notice of its own.
+ * call's id, the entry that issued its call when known (`calls`, by position) and a digest of what it holds, so the
+ * notice of another result for a call id seen before, such as a later call's that a provider gave an earlier call's id
+ * (#3274), is a notice of its own. Results of two calls with one id name each its own call.
  */
 export function lateToolResultNoticeKey(
 	results: readonly DetachedToolResult[],
-	calls?: ReadonlyMap<string, string>,
+	calls?: readonly (string | undefined)[],
 ): string {
 	return `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:${JSON.stringify(
-		results.map((result) => [
+		results.map((result, index) => [
 			result.toolCallId,
-			calls?.get(result.toolCallId) ?? null,
+			calls?.[index] ?? null,
 			createHash("sha256")
 				.update(JSON.stringify([result.isError, result.result.content]))
 				.digest("hex")
@@ -277,6 +277,34 @@ function noticeItems(details: unknown): LateToolResultNoticeItem[] {
 				preview: typeof preview === "string" ? preview : "",
 			},
 		];
+	});
+}
+
+/**
+ * The calls whose late results a saved notice holds: each one's id, and the entry that issued it when the notice was
+ * admitted under a key that names it ({@link lateToolResultNoticeKey}).
+ */
+export function lateToolResultNoticeCalls(message: {
+	readonly customType?: string;
+	readonly details?: unknown;
+	readonly stageAdmissionKey?: unknown;
+}): Array<{ readonly toolCallId: string; readonly callEntryId?: string }> {
+	let named: unknown;
+	const key = message.stageAdmissionKey;
+	const prefix = `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:`;
+	if (typeof key === "string" && key.startsWith(prefix)) {
+		try {
+			named = JSON.parse(key.slice(prefix.length));
+		} catch {
+			named = undefined;
+		}
+	}
+	// The key names the results in the notice's order: each its own call, also two with one id (#3274).
+	return lateToolResultNoticeIds(message).map((toolCallId, index) => {
+		const item: unknown = Array.isArray(named) ? named[index] : undefined;
+		const callEntryId =
+			Array.isArray(item) && item[0] === toolCallId && typeof item[1] === "string" ? item[1] : undefined;
+		return callEntryId === undefined ? { toolCallId } : { toolCallId, callEntryId };
 	});
 }
 

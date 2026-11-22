@@ -245,8 +245,8 @@ describe("a detachable shell wait (#4374)", () => {
 			{
 				store,
 				extensionFactories: [
-					(pi) => {
-						pi.on("tool_execution_start", async (event) => {
+					(atomic) => {
+						atomic.on("tool_execution_start", async (event) => {
 							if (event.toolCallId === "w-1") {
 								firstHeard.resolve();
 								await releaseFirst.promise;

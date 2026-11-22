@@ -388,7 +388,7 @@ export async function indexedForkWindow(
 				catalogTypes.push("session_summary", "branch_summary");
 		}
 		let nameSeq: number | undefined, summarySeq: number | undefined;
-		// Extensions restore the state they saved with `pi.appendEntry` from their branch, as they could from the
+		// Extensions restore the state they saved with `atomic.appendEntry` from their branch, as they could from the
 		// complete-branch copy. An index an earlier build saved does not list those entries, so find them below.
 		const extensionState = index.extensionState;
 		for (const seq of extensionState ?? []) if (seq < start && onEarlierBranch(seq)) keep.add(seq);

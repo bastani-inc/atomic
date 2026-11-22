@@ -134,8 +134,8 @@ describe("AgentSession cycle fallback controls", () => {
 				{ id: "faux-2", name: "Two", reasoning: true },
 			],
 			extensionFactories: [
-				(pi) => {
-					pi.on("model_select", async (event) => {
+				(atomic) => {
+					atomic.on("model_select", async (event) => {
 						if (event.source !== "cycle") return;
 						hookCalls += 1;
 						throw new Error("cycle selection rejected");

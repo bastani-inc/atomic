@@ -26,8 +26,8 @@ test("a session closed while its results are finalized refuses with the closed-s
 		[waitTool().definition],
 		[waitForCiTurn("ci-1")],
 		[
-			(pi) => {
-				pi.on("tool_result", async () => {
+			(atomic) => {
+				atomic.on("tool_result", async () => {
 					inHandler.resolve();
 					await release.promise;
 				});
@@ -60,8 +60,8 @@ test("a session reloaded while its results are finalized refuses with the closed
 		[waitTool().definition],
 		[waitForCiTurn("ci-1")],
 		[
-			(pi) => {
-				pi.on("tool_result", async () => {
+			(atomic) => {
+				atomic.on("tool_result", async () => {
 					if (reloaded) return;
 					reloaded = true;
 					// The reload ends the generation the continuation started in, and completes before the handler returns.

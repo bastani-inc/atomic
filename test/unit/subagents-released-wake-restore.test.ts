@@ -29,6 +29,7 @@ import {
 	lateToolResultNotice,
 	lateToolResultNoticeKey,
 	legacyLateToolResultMessage,
+	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
@@ -45,6 +46,7 @@ import {
 	observeSubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
+	bindSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	holdInterruptedStillRunningCalls,
 	holdSubagentChildMessages,
@@ -74,6 +76,7 @@ import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { cleanupWorktrees, createWorktrees, runGitChecked } from "../../packages/subagents/src/runs/shared/worktree.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { subagentLaunchCard } from "../helpers/subagent-launch-card.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -175,7 +178,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 			}
 		},
 	};
-	const pi = {
+	const atomic = {
 		events,
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
 			await sessionManager.appendCustomEntry(customType, data);
@@ -233,7 +236,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 					orchestratorIntercomTarget: "parent",
 					...extra,
 				},
-				recordChild: createSubagentChildRecordSink(pi, state.ctx),
+				recordChild: createSubagentChildRecordSink(atomic, state.ctx),
 				runtime: { runSync: runtime },
 			});
 			assert.equal(response.kind, "admitted");
@@ -259,11 +262,14 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 		if (task !== ORIGINAL_TASK) {
 			const { resumeToolResults: results, skipTaskPrompt, ...rest } = options;
 			// As the real runner: a woken run's results are saved into its transcript only once nothing stopped it first, and
-			// then toolResultsSaved reports them.
+			// then toolResultsSaved reports them, as the results its pending calls are answered with.
 			const saveResults = () => {
 				if (!results?.length) return;
 				state.saved.push(...results);
-				options.taskExecution?.toolResultsSaved?.(results.map((result) => result.toolCallId));
+				options.taskExecution?.toolResultsSaved?.(
+					results.map((result) => result.toolCallId),
+					false,
+				);
 			};
 			const woken = state.wokenGate;
 			// A promptless wake's run writes nothing into the child's transcript before the results it continues its turn
@@ -341,7 +347,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 		};
 	};
 	const deps: ExecutorDeps = {
-		pi,
+		pi: atomic,
 		state: {
 			baseCwd: cwd,
 			currentSessionId: "parent",
@@ -1796,7 +1802,7 @@ for (const question of [
 		assert.equal(latest?.state, "terminal");
 		assert.equal(latest?.terminalStatus, "ok");
 		// Its next wake or resume still tells it, once, that the question was interrupted.
-		assert.deepEqual(held.heldToolResults, [
+		assert.deepEqual(heldAsArrived(held.heldToolResults), [
 			{
 				...question,
 				result: { content: [{ type: "text", text: SUBAGENT_INTERRUPTED_BY_RESTART_RESULT }], details: undefined },
@@ -1944,6 +1950,259 @@ for (const compacted of [false, true])
 		assert.equal(lateTimes(run, late), 1, "the result it never read reaches it once");
 	});
 
+/**
+ * A released child whose wake gave its run the late result `late`, which the run read in its notice, while the owner's
+ * record that lets the result go was lost (Atomic stopped, or the write failed): the record holds what it held as the
+ * run started. Then the child made another call a provider gave the same id, and waits on it.
+ */
+async function readButNotReleased(h: Harness, runId: string) {
+	const record = await endedOnPendingCall(h, runId);
+	await saveIntoTranscript(record, [stillRunning]);
+	const late = waitResult("run 7 deployed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+	const first = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+	assert.equal(lateTimes(first, late), 1);
+	assert.ok(record.childSessionFile);
+	const transcript = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	assert.ok(
+		transcript
+			.getBranch()
+			.some((entry) => entry.type === "custom_message" && entry.customType === SUBAGENT_LATE_TOOL_RESULT_TYPE),
+		"its run saved the notice",
+	);
+	const records = h.sessionManager
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom" && entry.customType === SUBAGENT_CHILD_RECORD_TYPE
+				? [entry.data as SubagentChildRecord]
+				: [],
+		)
+		.filter((written) => written.childId === record.childId);
+	const holding = records.findLast((written) => (written.heldToolResults?.length ?? 0) > 0);
+	assert.ok(holding?.heldToolResults);
+	const heldAsTheRunStarted = Object.fromEntries(
+		Object.entries(holding).filter(([field]) => field.startsWith("heldToolResult")),
+	);
+	const lost = { ...h.latest(record.childId), ...heldAsTheRunStarted } as SubagentChildRecord;
+	await appendRecord(h, lost);
+	observeSubagentChildRecord(lost);
+	await endSessionOnPendingCall(record);
+	return { record, late };
+}
+
+for (const newer of ["told it is still running", "waiting on it"] as const)
+	test(`a late result a run read whose release its owner did not record is not given again after a newer call with its id, ${newer} (#3274)`, async () => {
+		const h = harness();
+		const { record } = await readButNotReleased(h, `unrecorded-release-${newer.split(" ")[0]}`);
+		if (newer === "told it is still running") await saveIntoTranscript(record, [stillRunning]);
+
+		const second = await restored(h, record.childId, { prompt: "another message", message: "another message" });
+
+		assert.doesNotMatch(told(second), /run 7 deployed/, "neither again nor as the newer call's result");
+		assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "it is let go");
+	});
+
+test("the result of a newer call a provider gave the id of one whose result a run read but whose release was not recorded reaches that call (#3274)", async () => {
+	const h = harness();
+	const { record, late } = await readButNotReleased(h, "newer-call-result");
+	// The newer call's own result arrives while the earlier one is still held.
+	const newer = waitResult("run 8 passed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [newer]);
+
+	const second = await restored(h, record.childId, { ...MESSAGE_WAKE, toolResults: [newer], promptless: true });
+
+	assert.deepEqual(second.resumeToolResults, [newer], "the newer call's own result answers it");
+	assert.equal(lateTimes(second, late), 0);
+	assert.doesNotMatch(told(second), /run 7 deployed/);
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "both are let go once read");
+});
+
+test("a held result for an older call than the one its child waits on with that id is read late, and that call is tracked as still running (#3274)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "older-call-result");
+	assert.ok(record.childSessionFile);
+	const callEntries = async () =>
+		(await SessionManager.open(record.childSessionFile!, undefined, record.cwd))
+			.getBranch()
+			.filter(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					entry.message.content.some((part) => part.type === "toolCall" && part.id === WAIT_CALL.toolCallId),
+			)
+			.map((entry) => entry.id);
+	const [olderCall] = await callEntries();
+	assert.ok(olderCall);
+	const older = waitResult("run 7 deployed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [older]);
+	// A wake bound it to its call and gave it to a run that read nothing (as a child restored paused), and the child then
+	// made another call a provider gave the same id.
+	const heldSeq = h.latest(record.childId)?.heldToolResults?.[0]?.heldSeq;
+	assert.ok(heldSeq !== undefined);
+	await bindSubagentChildHeldToolResults(
+		h.deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		new Map([[heldSeq, olderCall]]),
+	);
+	await saveIntoTranscript(record, [stillRunning]);
+	await endSessionOnPendingCall(record);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.equal(lateTimes(run, older), 1, "read late");
+	assert.deepEqual(run.resumeToolResults, [stillRunning], "never the newer call's result");
+	const [, newerCall] = await callEntries();
+	assert.deepEqual(run.stillRunning, [
+		{ ...WAIT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION, callEntryId: newerCall },
+	]);
+});
+
+test("the result of the newer call that arrives while a run reads an older call's result with its id is kept, and wakes the child once that run ends (#3274)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "newer-arrives-during-run");
+	assert.ok(record.childSessionFile);
+	const [olderCall] = (await SessionManager.open(record.childSessionFile, undefined, record.cwd))
+		.getBranch()
+		.filter(
+			(entry) =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.content.some((part) => part.type === "toolCall" && part.id === WAIT_CALL.toolCallId),
+		)
+		.map((entry) => entry.id);
+	assert.ok(olderCall);
+	const older = waitResult("run 7 deployed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [older]);
+	const heldSeq = h.latest(record.childId)?.heldToolResults?.[0]?.heldSeq;
+	assert.ok(heldSeq !== undefined);
+	await bindSubagentChildHeldToolResults(
+		h.deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		new Map([[heldSeq, olderCall]]),
+	);
+	await saveIntoTranscript(record, [stillRunning]);
+	await endSessionOnPendingCall(record);
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	const gate = Promise.withResolvers<void>();
+	h.wokenGate = { gate, at: "before-save" };
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
+		prompt: "a new message",
+		message: "a new message",
+	});
+	assert.ok(outcome.kind === "restored", JSON.stringify(outcome));
+	await h.waitForLatest(record.childId, (latest) => latest.state === "running" && latest.taskId === outcome.taskId);
+	const runs = h.runs.length;
+
+	// The newer call's own result arrives while that run still runs: it is held for the child.
+	const newer = waitResult("run 8 passed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [newer]);
+	h.wokenGate = undefined;
+	gate.resolve();
+	await settled(h, outcome.taskId);
+
+	const woken = await h.waitForLatest(
+		record.childId,
+		(latest) => latest.taskId !== outcome.taskId && latest.state === "terminal",
+	);
+	await dispatcher.whenIdle();
+	assert.ok(woken.taskId);
+	assert.equal(h.runs.length, runs + 1, "woken once more, for the newer call's result");
+	const run = h.runs.at(-1);
+	assert.ok(run);
+	assert.equal(lateTimes({ ...run.options, task: run.task }, newer), 1, "given to the child");
+	assert.equal(lateTimes({ ...run.options, task: run.task }, older), 0);
+});
+
+function ownerRecordsOf(h: Harness, childId: string): SubagentChildRecord[] {
+	return h.sessionManager
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom" && entry.customType === SUBAGENT_CHILD_RECORD_TYPE
+				? [entry.data as SubagentChildRecord]
+				: [],
+		)
+		.filter((written) => written.childId === childId);
+}
+
+async function callEntriesOf(record: SubagentChildRecord): Promise<string[]> {
+	assert.ok(record.childSessionFile);
+	return (await SessionManager.open(record.childSessionFile, undefined, record.cwd))
+		.getBranch()
+		.filter(
+			(entry) =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.content.some((part) => part.type === "toolCall" && part.id === WAIT_CALL.toolCallId),
+		)
+		.map((entry) => entry.id);
+}
+
+test("a wake whose child was paused before it ran writes nothing for the results it read back (#3274)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "paused-before-run");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [waitResult("built")]);
+	const written = ownerRecordsOf(h, record.childId).length;
+
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "continue" }, () =>
+		h.latest(record.childId),
+	);
+
+	assert.equal(outcome.kind, "terminal", JSON.stringify(outcome));
+	assert.equal(ownerRecordsOf(h, record.childId).length, written, "no record written");
+	assert.equal(h.latest(record.childId)?.heldToolResultCalls, undefined);
+});
+
+test("a wake that gives an earlier call's result late keeps tracking a later call with its id that is still running (#3274)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "later-still-running");
+	await saveIntoTranscript(record, [stillRunning]);
+	await endSessionOnPendingCall(record);
+	await saveIntoTranscript(record, [stillRunning]);
+	const [earlierCall, laterCall] = await callEntriesOf(record);
+	assert.ok(earlierCall && laterCall);
+	const earlier = waitResult("run 7 deployed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [earlier]);
+	const seq = h.latest(record.childId)?.heldToolResults?.[0]?.heldSeq;
+	assert.ok(seq !== undefined);
+	await bindSubagentChildHeldToolResults(
+		h.deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		new Map([[seq, earlierCall]]),
+	);
+	const latest = h.latest(record.childId);
+	assert.ok(latest);
+	const later = { ...WAIT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION, callEntryId: laterCall };
+	const tracked: SubagentChildRecord = { ...latest, stillRunning: [later] };
+	await appendRecord(h, tracked);
+	observeSubagentChildRecord(tracked);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.equal(lateTimes(run, earlier), 1);
+	assert.deepEqual(run.stillRunning, [later], "the later call is still running");
+});
+
+test("a call a wake answers still running is tracked by the entry that issued it, read from the transcript (#3274)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "tracked-by-entry");
+	await saveIntoTranscript(record, [waitResult("run 6 passed")]);
+	await endSessionOnPendingCall(record);
+	const [, laterCall] = await callEntriesOf(record);
+	assert.ok(laterCall);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.deepEqual(run.stillRunning, [
+		{ ...WAIT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION, callEntryId: laterCall },
+	]);
+});
+
 test("a woken child's run is told which entry issued its late result's call, as the restore read it back (#3274)", async () => {
 	const h = harness();
 	const record = await releasedChild(h, "late-call-entry");
@@ -1970,7 +2229,7 @@ test("a woken child's run is told which entry issued its late result's call, as 
 	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
 
 	assert.equal(lateTimes(run, late), 1);
-	assert.equal(run.resumeLateToolResultCalls?.get(WAIT_CALL.toolCallId), calls[1], "the newer call's entry");
+	assert.deepEqual(run.resumeLateToolResultCalls, [calls[1]], "the newer call's entry");
 });
 
 test("a late result the child already read as a message is not given to it again (#5012)", async () => {
@@ -2014,7 +2273,7 @@ test("a restart turns only the calls an earlier owner process told still running
 		interruptedStillRunningResult,
 	);
 
-	assert.deepEqual(held?.heldToolResults, [lint, interruptedDeploy()]);
+	assert.deepEqual(heldAsArrived(held?.heldToolResults), [lint, interruptedDeploy()]);
 	assert.deepEqual(held?.stillRunning, [current]);
 	assert.equal(
 		await holdInterruptedStillRunningCalls(
@@ -2027,6 +2286,41 @@ test("a restart turns only the calls an earlier owner process told still running
 		undefined,
 		"nothing is written once nothing is left to report",
 	);
+});
+
+test("a restart tells a call it was still running nothing more while its result, bound to it by a wake, is held (#3274)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "bound-still-running");
+	const deploy: DetachedToolResult = { ...waitResult("deployed"), ...DEPLOY_CALL };
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [deploy]);
+	const seq = h.latest(record.childId)?.heldToolResults?.[0]?.heldSeq;
+	assert.ok(seq !== undefined);
+	// A wake bound it to the call told it was still running, then lost its process before a run took it.
+	await bindSubagentChildHeldToolResults(
+		h.deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		new Map([[seq, "deploy-entry"]]),
+	);
+	const latest = h.latest(record.childId);
+	assert.ok(latest);
+	const marked: SubagentChildRecord = {
+		...latest,
+		stillRunning: [{ ...DEPLOY_CALL, ownerGeneration: "earlier-process" }],
+	};
+	await appendRecord(h, marked);
+	observeSubagentChildRecord(marked);
+
+	const held = await holdInterruptedStillRunningCalls(
+		h.deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		"this-process",
+		interruptedStillRunningResult,
+	);
+
+	assert.deepEqual(heldAsArrived(held?.heldToolResults), [deploy]);
+	assert.deepEqual(held?.stillRunning, []);
 });
 
 test("a wake keeps tracking the calls the child was told are still running until their results reach it (#5014)", async () => {
@@ -2053,9 +2347,11 @@ test("a wake keeps tracking the calls the child was told are still running until
 		promptless: true,
 	});
 
+	// Told again, it is tracked by the entry that issued it (#3274).
+	const lintCall = (await callEntriesOf(record)).at(-1);
 	assert.deepEqual(run.stillRunning, [
 		{ ...build, ownerGeneration: SUBAGENT_OWNER_GENERATION },
-		{ ...LINT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION },
+		{ ...LINT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION, callEntryId: lintCall },
 	]);
 	assert.deepEqual(h.latest(record.childId)?.stillRunning, run.stillRunning);
 });

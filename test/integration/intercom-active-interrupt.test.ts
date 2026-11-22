@@ -64,13 +64,13 @@ async function receiver(
 			: {}),
 		tools,
 		extensionFactories: [
-			(pi) => {
-				intercomHeavy(pi, {
+			(atomic) => {
+				intercomHeavy(atomic, {
 					captureInboundHandler: (handler) => {
 						inbound = handler;
 					},
 				});
-				pi.on("session_start", (_event, context) => {
+				atomic.on("session_start", (_event, context) => {
 					ctx = context;
 				});
 			},
@@ -280,8 +280,8 @@ for (const kind of ["child"] as const) {
 				let inputCalls = 0;
 				const h = await receiver(kind, [], {
 					extensionFactories: [
-						(pi) => {
-							pi.on("input", async () => {
+						(atomic) => {
+							atomic.on("input", async () => {
 								inputCalls += 1;
 								entered.resolve();
 								await release.promise;
@@ -353,8 +353,8 @@ for (const kind of ["child"] as const) {
 				let inputCalls = 0;
 				const h = await receiver(kind, [], {
 					extensionFactories: [
-						(pi) => {
-							pi.on("input", async () => {
+						(atomic) => {
+							atomic.on("input", async () => {
 								inputCalls += 1;
 								entered.resolve();
 								await release.promise;

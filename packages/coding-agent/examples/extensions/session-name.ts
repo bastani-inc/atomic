@@ -9,17 +9,17 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("session-name", {
+export default function (atomic: ExtensionAPI) {
+	atomic.registerCommand("session-name", {
 		description: "Set or show session name (usage: /session-name [new name])",
 		handler: async (args, ctx) => {
 			const name = args.trim();
 
 			if (name) {
-				await pi.setSessionName(name);
+				await atomic.setSessionName(name);
 				ctx.ui.notify(`Session named: ${name}`, "info");
 			} else {
-				const current = pi.getSessionName();
+				const current = atomic.getSessionName();
 				ctx.ui.notify(current ? `Session: ${current}` : "No session name set", "info");
 			}
 		},

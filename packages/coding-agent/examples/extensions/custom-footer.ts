@@ -12,10 +12,10 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	let enabled = false;
 
-	pi.registerCommand("footer", {
+	atomic.registerCommand("footer", {
 		description: "Toggle custom footer",
 		handler: async (_args, ctx) => {
 			enabled = !enabled;

@@ -22,8 +22,8 @@ interface RegisterWebSearchCommandDeps {
 	buildSearchReturn: SearchReturnBuilder;
 }
 
-export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSearchCommandDeps): void {
-	pi.registerCommand("websearch", {
+export function registerWebSearchCommand(atomic: ExtensionAPI, deps: RegisterWebSearchCommandDeps): void {
+	atomic.registerCommand("websearch", {
 		description: "Open web search curator",
 		handler: async (args, ctx) => {
 			const sessionSignal = ctx.sessionSignal;
@@ -77,7 +77,7 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				const payload = await deps.buildSearchReturn(options);
 				// A save already admitted by submission must settle, but teardown must not start a turn.
 				if (sessionSignal.aborted) return;
-				await pi.sendMessage({
+				await atomic.sendMessage({
 					customType: "web-search-results",
 					content: payload.content,
 					display: true,
@@ -216,7 +216,7 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				}
 				deps.state.activeCurator = handle;
 				await openCuratorWindow(
-					pi,
+					atomic,
 					handle.url,
 					"Search Curator",
 					win => {

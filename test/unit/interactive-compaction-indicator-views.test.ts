@@ -74,8 +74,8 @@ function createCompactionGate(): CompactionGate {
 	};
 	let current = newGate();
 	return {
-		factory: (pi) => {
-			pi.on("session_before_compact", async () => {
+		factory: (atomic) => {
+			atomic.on("session_before_compact", async () => {
 				const gate = current;
 				gate.entered.resolve();
 				await gate.released.promise;

@@ -204,8 +204,8 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 	test("the extension API reference documents expandPromptTemplates on sendUserMessage", () => {
 		const extensions = doc("extensions/api-reference.md");
 		const send = extensions.slice(
-			extensions.indexOf("### pi.sendUserMessage(content, options?)"),
-			extensions.indexOf("### pi.appendEntry"),
+			extensions.indexOf("### atomic.sendUserMessage(content, options?)"),
+			extensions.indexOf("### atomic.appendEntry"),
 		);
 		assert.ok(send.includes("expandPromptTemplates"), "sendUserMessage must document expandPromptTemplates");
 		assert.match(send, /Defaults to `false`/u);

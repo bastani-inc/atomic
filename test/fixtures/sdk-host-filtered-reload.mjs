@@ -12,15 +12,15 @@ const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth"), mo
 const records = [];
 let generation = 0;
 const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true,
-  extensionFactories: ["keep", "omit"].map(name => pi => {
+  extensionFactories: ["keep", "omit"].map(name => atomic => {
     if (name === "keep") generation++;
-    const record = { name, generation, calls: 0, stops: 0, write: () => pi.setSessionName(`selected-${generation}`), timer: setInterval(() => {}, 60_000) };
+    const record = { name, generation, calls: 0, stops: 0, write: () => atomic.setSessionName(`selected-${generation}`), timer: setInterval(() => {}, 60_000) };
     records.push(record);
-    pi.events.on("selected-ping", () => { record.calls++; });
-    pi.registerCommand(name, { description: name, handler: async (_args, ctx) => {
-      await record.write(); assert.ok(ctx.getAgentTaskHost()); pi.events.emit("selected-ping");
+    atomic.events.on("selected-ping", () => { record.calls++; });
+    atomic.registerCommand(name, { description: name, handler: async (_args, ctx) => {
+      await record.write(); assert.ok(ctx.getAgentTaskHost()); atomic.events.emit("selected-ping");
     } });
-    pi.on("session_shutdown", () => {
+    atomic.on("session_shutdown", () => {
       record.stops++; clearInterval(record.timer);
       if (mode === "cleanup" && record.generation === 2 && name === "omit") throw new Error("omitted reload cleanup failed");
     });

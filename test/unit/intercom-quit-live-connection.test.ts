@@ -53,8 +53,8 @@ test("a shutdown handler that runs before Intercom's own still reaches the broke
 	let lifetimeEnded: boolean | undefined;
 	let duringQuit: { isError?: boolean; content: unknown } | undefined;
 	// Registered before Intercom, so its handler runs before Intercom's own.
-	const earlier = (pi: ExtensionAPI) => {
-		pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
+	const earlier = (atomic: ExtensionAPI) => {
+		atomic.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
 			lifetimeEnded = ctx.getCurrentSessionSignal?.().aborted;
 			const tool = harness.session.extensionRunner.getToolDefinition("intercom");
 			assert.ok(tool, "the intercom tool is registered");

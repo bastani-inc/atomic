@@ -19,8 +19,8 @@ async function loadNotifyRegistration(
 	runtime.sendMessage = () => sendMessage();
 	const registrations: Array<{ pi: ExtensionAPI; cleanup: () => void }> = [];
 	await loadExtensionFromFactory(
-		(pi) => {
-			registrations.push({ pi, cleanup: registerSubagentNotify(pi) });
+		(atomic) => {
+			registrations.push({ pi: atomic, cleanup: registerSubagentNotify(atomic) });
 		},
 		process.cwd(),
 		eventBus,

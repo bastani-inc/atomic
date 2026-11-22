@@ -53,8 +53,116 @@ function findSectionEnd(prompt: string, startIndex: number, nextHeaders: string[
 	return endIndex;
 }
 
+function replaceTaggedBlocks(prompt: string, openTag: string, closeTag: string, replacement: string): string {
+	let output = "";
+	let copied = 0;
+	let searchFrom = 0;
+	while (searchFrom < prompt.length) {
+		const openIdx = prompt.indexOf(openTag, searchFrom);
+		if (openIdx === -1) break;
+		const closeIdx = prompt.indexOf(closeTag, openIdx + openTag.length);
+		if (closeIdx === -1) break;
+		let start = openIdx;
+		while (start > copied && prompt.charCodeAt(start - 1) === 0x0a) {
+			start--;
+		}
+		let end = closeIdx + closeTag.length;
+		while (end < prompt.length && prompt.charCodeAt(end) === 0x0a) {
+			end++;
+		}
+		output += `${prompt.slice(copied, start)}${replacement}`;
+		copied = end;
+		searchFrom = end;
+	}
+	return copied === 0 ? prompt : `${output}${prompt.slice(copied)}`;
+}
+
+function isJsWhitespaceCode(code: number): boolean {
+	return (
+		code === 0x20 ||
+		(code >= 0x09 && code <= 0x0d) ||
+		code === 0xa0 ||
+		code === 0x1680 ||
+		(code >= 0x2000 && code <= 0x200a) ||
+		code === 0x2028 ||
+		code === 0x2029 ||
+		code === 0x202f ||
+		code === 0x205f ||
+		code === 0x3000 ||
+		code === 0xfeff
+	);
+}
+
+function stripNamedSubagentSkillBlocks(prompt: string): string {
+	const openPrefix = "<skill";
+	const closeTag = "</skill>";
+	let output = "";
+	let copied = 0;
+	let searchFrom = 0;
+	while (searchFrom < prompt.length) {
+		const openIdx = prompt.indexOf(openPrefix, searchFrom);
+		if (openIdx === -1) break;
+		let wsEnd = openIdx + openPrefix.length;
+		while (wsEnd < prompt.length && isJsWhitespaceCode(prompt.charCodeAt(wsEnd))) {
+			wsEnd++;
+		}
+		if (wsEnd === openIdx + openPrefix.length || !prompt.startsWith("name=", wsEnd)) {
+			searchFrom = Math.max(openIdx + openPrefix.length, wsEnd);
+			continue;
+		}
+		const quotePos = wsEnd + 5;
+		if (quotePos >= prompt.length) break;
+		const openQuote = prompt.charCodeAt(quotePos);
+		if (openQuote !== 0x22 && openQuote !== 0x27) {
+			searchFrom = quotePos;
+			continue;
+		}
+		const nameStart = quotePos + 1;
+		if (!prompt.startsWith("subagent", nameStart)) {
+			searchFrom = nameStart;
+			continue;
+		}
+		let afterName = nameStart + 8;
+		if (afterName < prompt.length && prompt.charCodeAt(afterName) === 0x40) {
+			afterName++;
+			while (afterName < prompt.length) {
+				const c = prompt.charCodeAt(afterName);
+				if (c === 0x22 || c === 0x27) break;
+				afterName++;
+			}
+			if (afterName >= prompt.length) break;
+		}
+		if (afterName >= prompt.length) break;
+		const closeQuote = prompt.charCodeAt(afterName);
+		if (closeQuote !== 0x22 && closeQuote !== 0x27) {
+			searchFrom = afterName;
+			continue;
+		}
+		const gtIdx = prompt.indexOf(">", afterName + 1);
+		if (gtIdx === -1) break;
+		const closeIdx = prompt.indexOf(closeTag, gtIdx + 1);
+		if (closeIdx === -1) break;
+		let start = openIdx;
+		let lead = 0;
+		while (lead < 2 && start > copied && prompt.charCodeAt(start - 1) === 0x0a) {
+			start--;
+			lead++;
+		}
+		let end = closeIdx + closeTag.length;
+		let trail = 0;
+		while (trail < 2 && end < prompt.length && prompt.charCodeAt(end) === 0x0a) {
+			end++;
+			trail++;
+		}
+		output += `${prompt.slice(copied, start)}\n\n`;
+		copied = end;
+		searchFrom = end;
+	}
+	return copied === 0 ? prompt : `${output}${prompt.slice(copied)}`;
+}
+
 export function stripProjectContext(prompt: string): string {
-	const tagged = prompt.replace(/\n*<project_context>[\s\S]*?<\/project_context>\n*/g, "\n");
+	const tagged = replaceTaggedBlocks(prompt, "<project_context>", "</project_context>", "\n");
 	const startIndex = tagged.indexOf(PROJECT_CONTEXT_HEADER);
 	if (startIndex === -1) return tagged;
 	const endIndex = findSectionEnd(tagged, startIndex + PROJECT_CONTEXT_HEADER.length, [SKILLS_HEADER, DATE_HEADER]);
@@ -62,7 +170,7 @@ export function stripProjectContext(prompt: string): string {
 }
 
 export function stripInheritedSkills(prompt: string): string {
-	const tagged = prompt.replace(/\n*<skills>[\s\S]*?<\/skills>\n*/g, "\n");
+	const tagged = replaceTaggedBlocks(prompt, "<skills>", "</skills>", "\n");
 	const startIndex = tagged.indexOf(SKILLS_HEADER);
 	if (startIndex === -1) return tagged;
 	const endIndex = findSectionEnd(tagged, startIndex + SKILLS_HEADER.length, [DATE_HEADER]);
@@ -70,9 +178,7 @@ export function stripInheritedSkills(prompt: string): string {
 }
 
 export function stripSubagentOrchestrationSkill(prompt: string): string {
-	return stripSkillBlocksNamingSubagent(
-		prompt.replace(/\n{0,2}<skill\s+name=["']subagent(?:@[^"']*)?["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n"),
-	);
+	return stripSkillBlocksNamingSubagent(stripNamedSubagentSkillBlocks(prompt));
 }
 
 const SKILL_OPEN = "<skill>";

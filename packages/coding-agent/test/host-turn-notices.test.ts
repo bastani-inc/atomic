@@ -108,8 +108,8 @@ test("manual compaction cancellation leaves one saved diagnostic after the reply
 	const started = Promise.withResolvers<void>();
 	const h: Harness = await harness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_compact", async ({ signal }) => {
+			(atomic) => {
+				atomic.on("session_before_compact", async ({ signal }) => {
 					started.resolve();
 					await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 					return { cancel: true };

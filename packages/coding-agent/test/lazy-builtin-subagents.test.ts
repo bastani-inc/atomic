@@ -205,11 +205,11 @@ describe("lazy builtin subagents", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-subagents-ic-replay-"));
 		tempDirs.push(dir);
 		const receivedConnected: unknown[] = [];
-		const factory = createLazyBuiltinFactory(subagentsLazyBuiltinSpec, async () => (pi) => {
-			pi.events.on("intercom:connected", (payload) => {
+		const factory = createLazyBuiltinFactory(subagentsLazyBuiltinSpec, async () => (atomic) => {
+			atomic.events.on("intercom:connected", (payload) => {
 				receivedConnected.push(payload);
 			});
-			pi.registerTool({
+			atomic.registerTool({
 				name: "subagent",
 				label: "Subagent",
 				description: "Subagent",

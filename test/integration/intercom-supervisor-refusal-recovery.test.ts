@@ -65,7 +65,7 @@ function startChild(policy: SubagentChildPolicy) {
 	let sessionName: string | undefined;
 	let activeTools: string[] = [];
 	const entries: object[] = [];
-	const pi = {
+	const atomic = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
@@ -90,7 +90,7 @@ function startChild(policy: SubagentChildPolicy) {
 		},
 		events: createEventBus(),
 	} as never as ExtensionAPI;
-	intercom(pi);
+	intercom(atomic);
 	const extension = {
 		path: "<intercom>",
 		resolvedPath: "<intercom>",
