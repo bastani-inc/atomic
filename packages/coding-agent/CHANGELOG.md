@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- In the standalone binary and under Bun, Amazon Bedrock requests whose proxy or HTTP/1.1 TLS connection closes before its handshake finishes — including plain-HTTP Bedrock endpoints through an `https://` proxy — now retry at the provider SDK level (`retry.provider.maxRetries`) and recover from transient closes as on Node.js instead of failing on the first attempt.
+- In the standalone binary and under Bun, Amazon Bedrock requests whose proxy or HTTP/1.1 TLS connection closes before its handshake finishes — including plain-HTTP Bedrock endpoints through an `https://` proxy — now retry at the provider SDK level (`retry.provider.maxRetries`) and recover from transient closes as on Node.js instead of failing on the first attempt ([#6448](https://github.com/bastani-inc/atomic/pull/6448)).
 
 ## [0.10.4] - 2026-11-22
 
