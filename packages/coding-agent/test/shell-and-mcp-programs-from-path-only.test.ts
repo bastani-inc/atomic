@@ -31,6 +31,16 @@ const hiddenPaths = vi.hoisted(() => new Set<string>());
 const heldRealpaths = vi.hoisted(() => new Set<string>());
 /** Every process started through `node:child_process` while a test ran, and the folder it started in. */
 const startedProcesses = vi.hoisted(() => [] as { child: ChildProcess; cwd: string }[]);
+/** Forces `holdProcessDescendantsResult` unavailable to exercise the non-native `taskkill` fallback. */
+const forceNativeHoldUnavailable = vi.hoisted(() => ({ value: false }));
+vi.mock("../src/core/process-tree-containment.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/process-tree-containment.ts")>();
+	return {
+		...actual,
+		holdProcessDescendantsResult: (pid: number) =>
+			forceNativeHoldUnavailable.value ? { kind: "unavailable" as const } : actual.holdProcessDescendantsResult(pid),
+	};
+});
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	const spawn = ((command: string, argsOrOptions?: readonly string[] | SpawnOptions, options?: SpawnOptions) => {
@@ -154,6 +164,7 @@ afterEach(async () => {
 	process.chdir(previousCwd);
 	hiddenPaths.clear();
 	heldRealpaths.clear();
+	forceNativeHoldUnavailable.value = false;
 	vi.unstubAllEnvs();
 	// A process still running in a folder keeps Windows from removing it: every server is ended and gone, and every
 	// process started meanwhile has exited, before the folders go.
@@ -428,17 +439,31 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 	test("ending a process tree runs its kill command outside the project folder", async () => {
 		const { spawn } = await import("node:child_process");
 		const { killProcessTree } = await import("../src/utils/shell.ts");
+
+		// With the native module available, ending the tree spawns no external kill command at all.
 		const target = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
 		assert.ok(target.pid !== undefined);
 		servers.push(await recordProcess(target.pid));
-		const before = startedProcesses.length;
+		const beforeNative = startedProcesses.length;
 
 		killProcessTree(target.pid);
 
-		const commands = startedProcesses.slice(before);
-		assert.equal(commands.length, 1, "one command ends the tree");
+		assert.deepEqual(startedProcesses.slice(beforeNative), [], "native path starts no external kill command");
+		assert.equal(await exitedWithin(target, PROCESS_EXIT_BUDGET_MS), true, "the tree was ended natively");
+
+		// When the native module is unavailable, the fallback kill command still runs outside the project folder.
+		forceNativeHoldUnavailable.value = true;
+		const fallbackTarget = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
+		assert.ok(fallbackTarget.pid !== undefined);
+		servers.push(await recordProcess(fallbackTarget.pid));
+		const beforeFallback = startedProcesses.length;
+
+		killProcessTree(fallbackTarget.pid);
+
+		const commands = startedProcesses.slice(beforeFallback);
+		assert.equal(commands.length, 1, "one fallback command ends the tree");
 		assert.ok(!isInside(project, commands[0]!.cwd), `${commands[0]!.child.spawnfile} ran in the project folder`);
-		assert.equal(await exitedWithin(target, PROCESS_EXIT_BUDGET_MS), true, "the tree was ended");
+		assert.equal(await exitedWithin(fallbackTarget, PROCESS_EXIT_BUDGET_MS), true, "the tree was ended");
 	});
 
 	test("closing an MCP server never runs taskkill inside a junction pointing into the project folder", async () => {

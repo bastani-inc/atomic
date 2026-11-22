@@ -4,6 +4,8 @@ import { delimiter, join, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { type ChildProcess, spawn } from "child_process";
 import { getBinDir } from "../config.js";
+import * as processStartToken from "../core/process-start-token.js";
+import * as processTreeContainment from "../core/process-tree-containment.ts";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { findHelperExecutable, findHelperExecutableAsync } from "./helper-command.ts";
 import { type HostChildProcess, spawnContainedProcess } from "./host-spawn.ts";
@@ -488,9 +490,9 @@ export function startParentProcessGuardian(parentPid: number, stopFile?: string)
 		workerData: { parentPid, stopFile, aiAgent: createChildProcessEnvironment().AI_AGENT },
 	});
 	detachedChildGuardian = guardian;
-	for (const [pid, exited] of trackedDetachedChildPids) {
+	for (const [pid, entry] of trackedDetachedChildPids) {
 		guardian.postMessage({ action: "track", pid });
-		if (exited) guardian.postMessage({ action: "exited", pid });
+		if (entry.exited) guardian.postMessage({ action: "exited", pid });
 	}
 	guardian.unref();
 	return async () => {
@@ -500,20 +502,44 @@ export function startParentProcessGuardian(parentPid: number, stopFile?: string)
 	};
 }
 
+interface TrackedDetachedChild {
+	exited: boolean;
+	readonly child?: ChildProcess;
+	/**
+	 * On Windows when tracked by bare PID without a ChildProcess handle: creation time captured via the native addon
+	 * while tracked, `null` when the native addon saw the process already absent, or `undefined` when unavailable.
+	 */
+	readonly created?: string | null;
+}
+
 /**
  * Detached child processes must be tracked so they can be killed on parent
  * shutdown signals (SIGHUP/SIGTERM).
  */
-const trackedDetachedChildPids = new Map<number, boolean>();
+const trackedDetachedChildPids = new Map<number, TrackedDetachedChild>();
+
+function captureWindowsCreationTime(pid: number): string | null | undefined {
+	if (process.platform !== "win32") return undefined;
+	return processStartToken.nativeProcessCreationTime?.(pid);
+}
 
 export function trackDetachedChildPid(pid: number): void {
-	trackedDetachedChildPids.set(pid, false);
+	trackedDetachedChildPids.set(pid, { exited: false, created: captureWindowsCreationTime(pid) });
+	detachedChildGuardian?.postMessage({ action: "track", pid });
+}
+
+/** Tracks `child` with its live handle so shutdown can stop it on Windows without bare-PID kills. */
+export function trackDetachedChildProcess(child: ChildProcess): void {
+	const pid = child.pid;
+	if (pid === undefined) return;
+	trackedDetachedChildPids.set(pid, { exited: child.exitCode !== null || child.signalCode !== null, child });
 	detachedChildGuardian?.postMessage({ action: "track", pid });
 }
 
 export function markDetachedChildExited(pid: number): void {
-	if (!trackedDetachedChildPids.has(pid)) return;
-	trackedDetachedChildPids.set(pid, true);
+	const entry = trackedDetachedChildPids.get(pid);
+	if (entry === undefined) return;
+	entry.exited = true;
 	detachedChildGuardian?.postMessage({ action: "exited", pid });
 }
 
@@ -542,7 +568,7 @@ export interface ShellProcess {
  * another process may have been given. A program that asks to leave the job (as Git Bash's do) leaves it, and a stop
  * ends it only while it is below the running shell, as `taskkill /T` did. {@link ShellProcess.finish} lets go of the
  * job, so what the command left running outlives Atomic. Otherwise it is `child_process.spawn` (detached on POSIX),
- * stopped with {@link killProcessTree}.
+ * stopped with {@link killChildProcessTree}.
  */
 export async function spawnShellProcess(
 	shell: string,
@@ -573,16 +599,29 @@ export async function spawnShellProcess(
 		windowsHide: true,
 	});
 	const pid = child.pid;
-	if (pid) trackDetachedChildPid(pid);
+	let exited = false;
+	child.once("exit", () => {
+		exited = true;
+		if (pid !== undefined) markDetachedChildExited(pid);
+	});
+	if (pid !== undefined) trackDetachedChildProcess(child);
 	return {
 		child,
 		stop: () => {
-			if (pid) killProcessTree(pid);
+			killChildProcessTree(child, exited);
 		},
 		finish: () => {
-			if (pid) untrackDetachedChildPid(pid);
+			if (pid !== undefined) untrackDetachedChildPid(pid);
 		},
 	};
+}
+
+function holdDescendantsStatus(pid: number): processTreeContainment.ProcessDescendantsHold {
+	if (processTreeContainment.holdProcessDescendantsResult !== undefined) {
+		return processTreeContainment.holdProcessDescendantsResult(pid);
+	}
+	const held = processTreeContainment.holdProcessDescendants?.(pid);
+	return held === undefined ? { kind: "unavailable" } : { kind: "held", held };
 }
 
 /**
@@ -593,10 +632,22 @@ export async function spawnShellProcess(
 export function killTrackedDetachedChildren(spare?: ReadonlySet<number>): void {
 	for (const endTree of runningShellTrees) endTree();
 	runningShellTrees.clear();
-	for (const [pid, exited] of trackedDetachedChildPids) {
+	for (const [pid, entry] of trackedDetachedChildPids) {
 		if (spare?.has(pid)) continue;
-		if (!exited) killProcessTree(pid);
-		else if (process.platform !== "win32") {
+		if (entry.child !== undefined) {
+			killChildProcessTree(entry.child, entry.exited);
+		} else if (!entry.exited) {
+			if (process.platform === "win32") {
+				if (typeof entry.created === "string") {
+					const terminated = processStartToken.nativeTerminateProcess?.(pid, entry.created, true);
+					if (terminated === undefined) killProcessTree(pid);
+				} else if (entry.created === undefined) {
+					killProcessTree(pid);
+				}
+			} else {
+				killProcessTree(pid);
+			}
+		} else if (process.platform !== "win32") {
 			try {
 				process.kill(-pid, "SIGKILL");
 			} catch {}
@@ -609,12 +660,16 @@ export function killTrackedDetachedChildren(spare?: ReadonlySet<number>): void {
 /**
  * Stops `child` and its descendants when no Job object contains them; `exited` says whether its exit was reported.
  * Once it was, the root's pid may already name another process: on POSIX only its process group, which lives on only
- * while its descendants do, is signalled, and on Windows nothing is killed by pid. While the root runs, its tree is
- * killed and then the root itself through its handle, which on Windows also ends a root that taskkill could not.
+ * while its descendants do, is signalled, and on Windows nothing is killed by pid. While the root runs, on Windows
+ * the native handle-held walk ends it and its verified descendants synchronously; only when the native module is
+ * unavailable does it fall back to `taskkill` and then the root's handle.
  * A child that never started (no pid) has nothing to kill: Node reports its failure as an `error` event, and on
  * Windows its `kill()` throws.
  */
-export function killChildProcessTree(child: ChildProcess, exited: boolean): void {
+export function killChildProcessTree(
+	child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "kill">,
+	exited: boolean,
+): void {
 	const pid = child.pid;
 	if (pid === undefined) return;
 	if (pid === process.pid) {
@@ -622,9 +677,30 @@ export function killChildProcessTree(child: ChildProcess, exited: boolean): void
 		return;
 	}
 	if (process.platform === "win32") {
-		if (exited) return;
+		if (exited || child.exitCode !== null || child.signalCode !== null) return;
+		const hold = holdDescendantsStatus(pid);
+		if (hold.kind === "held") {
+			if (!hold.held.endAll() && child.exitCode === null && child.signalCode === null) {
+				try {
+					child.kill("SIGKILL");
+				} catch {}
+			}
+			return;
+		}
+		if (hold.kind === "absent") {
+			if (child.exitCode === null && child.signalCode === null) {
+				try {
+					child.kill("SIGKILL");
+				} catch {}
+			}
+			return;
+		}
 		taskkillTree(pid, () => {
-			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			if (child.exitCode === null && child.signalCode === null) {
+				try {
+					child.kill("SIGKILL");
+				} catch {}
+			}
 		});
 		return;
 	}
@@ -697,6 +773,12 @@ function taskkillTree(pid: number, settled?: () => void): void {
  */
 export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
+		const hold = holdDescendantsStatus(pid);
+		if (hold.kind === "held") {
+			hold.held.endAll();
+			return;
+		}
+		if (hold.kind === "absent") return;
 		taskkillTree(pid);
 	} else {
 		if (process.platform === "darwin") {

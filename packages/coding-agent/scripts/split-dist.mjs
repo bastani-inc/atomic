@@ -30,6 +30,7 @@ import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transform } from "esbuild";
 import { rolldown } from "rolldown";
+import { codeStringLiteral } from "./code-string-literal.mjs";
 import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } from "./split-dist-names.mjs";
 import { parse } from "acorn";
 import semver from "semver";
@@ -626,7 +627,7 @@ const bundle = await rolldown({
 					const target = join(dist, `${entry}.js`);
 					const code = compiledEntries.get(target)?.code ?? "";
 					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
-					const spec = JSON.stringify(target);
+					const spec = codeStringLiteral(target);
 					return {
 						code: hasDefault
 							? `export * from ${spec};\nexport { default } from ${spec};\n`
@@ -639,7 +640,7 @@ const bundle = await rolldown({
 					const target = join(dist, path);
 					const code = compiledSource(path);
 					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
-					const spec = JSON.stringify(target);
+					const spec = codeStringLiteral(target);
 					return {
 						code: hasDefault
 							? `export * from ${spec};\nexport { default } from ${spec};\n`
@@ -696,7 +697,7 @@ const bundle = await rolldown({
 				const transformed = await transform(withMap, {
 					...options,
 					sourcemap: "external",
-					banner: `const ${META_URL_SYMBOL} = new URL(${JSON.stringify(`${DIST_PATH_MARK}${url}`)}, import.meta.url).href;`,
+					banner: `const ${META_URL_SYMBOL} = new URL(${codeStringLiteral(`${DIST_PATH_MARK}${url}`)}, import.meta.url).href;`,
 				});
 				return { code: transformed.code, map: JSON.parse(transformed.map) };
 			},
@@ -888,7 +889,7 @@ for (const item of generated.output) {
 		const from = toPosix(relative(dist, dirname(path)));
 		contents = contents.replace(new RegExp(`"${DIST_PATH_MARK}([^"]+)"`, "g"), (_, target) => {
 			const local = posix.relative(from, target);
-			return JSON.stringify(local.startsWith(".") ? local : `./${local}`);
+			return codeStringLiteral(local.startsWith(".") ? local : `./${local}`);
 		});
 		if (contents.includes(DIST_PATH_MARK)) {
 			throw new Error(`split-dist: ${item.fileName} retained an unrewritten ${DIST_PATH_MARK} path`);
@@ -1057,13 +1058,13 @@ const guardCallSites = (from, source) => {
 					if (gated.has(target)) {
 						// The module's path (a gated module's is a file of this package, `<name>.js`) with its code's name.
 						const code = `${specifier.slice(0, -".js".length)}.code.js`;
-						edits.push({ start: node.source.start, end: node.source.end, text: JSON.stringify(code) });
+						edits.push({ start: node.source.start, end: node.source.end, text: codeStringLiteral(code) });
 					}
 				}
 				edits.push({
 					start: node.end,
 					end: node.end,
-					text: `.catch((error) => ${CALL_SITE_GUARD}(error, ${JSON.stringify(feature)}))`,
+					text: `.catch((error) => ${CALL_SITE_GUARD}(error, ${codeStringLiteral(feature)}))`,
 				});
 			}
 		}
