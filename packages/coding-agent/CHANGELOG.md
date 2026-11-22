@@ -36,6 +36,7 @@
 - After you change a Git packing setting, such as `core.compression` or `pack.window`, unpushed commits that a worktree snapshot left out because their bundle was over `snapshots.maxSnapshotBytes` are bundled again, and recorded when they now fit. Atomic kept leaving them out until the commits or the repository's packs changed.
 - A line written straight to standard output while Atomic starts, for example by an extension as it loads, is no longer lost when the editor shown before the session is ready gives way to it: it shows once, where it would without that editor, whether Atomic then exits or the session goes on ([#6344](https://github.com/bastani-inc/atomic/pull/6344))
 - A worktree snapshot that leaves unpushed history out because commits add a denied path, such as a private key, now names every such commit after the remote branch moves back, for example after a force-push to an older commit. A capture of an unchanged checkout kept the earlier list, which left out the commits that became unpushed again.
+- After you change the Git attributes that turn delta compression off (`-delta`), in a `.gitattributes` file, `.git/info/attributes`, your `core.attributesFile` or the system's attributes file, unpushed commits that a worktree snapshot left out because their bundle was over `snapshots.maxSnapshotBytes` are bundled again, and recorded when they now fit. Atomic kept leaving them out until the commits, the repository's packs or its packing settings changed.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
