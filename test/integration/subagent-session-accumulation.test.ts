@@ -45,10 +45,13 @@ const MANY_FINISHED = 200;
 /** Each child reads this file twice: about 128 KiB of history a finished child kept in memory before the fix. */
 const FILE_BYTES = 64 * 1024;
 /**
- * The heap each finished child may still hold, measured from 50 to 200 finished: its task record and launch metadata.
- * Before the fix it kept its whole history and the text of every skill file it loaded, about 250 KiB here.
+ * The heap each finished child may still hold, measured from 50 to 200 finished. A finished child keeps its task record
+ * and launch metadata, the activity reports its owner keeps for the task, the commands its chat offers, and the
+ * supervising session's own entries about it: 5 to 7 KiB here, on Linux and Windows alike. One that kept its whole
+ * history would hold about 55 KiB here; before the fix a child also kept the text of every skill file it loaded, about
+ * 250 KiB here.
  */
-const RETAINED_BYTES_PER_FINISHED_CHILD = 48 * 1024;
+const RETAINED_BYTES_PER_FINISHED_CHILD = 24 * 1024;
 /** Timers the 150 children finished between the two measurements may leave pending; before the fix, one each. */
 const PENDING_TIMERS_GROWTH = 16;
 /**
@@ -136,6 +139,16 @@ const respond: FauxResponseFactory = (context, _options, _state, model) => {
 	return fauxAssistantMessage("ok");
 };
 
+/**
+ * Keeps V8 from dropping the bytecode of functions that have not run for a while until the returned function is called.
+ * V8 drops it at some collections and not others: between the two measurements that freed 5 to 8 MB in some runs and
+ * nothing in others, as much as 150 children keep. Without it, the measurements hold only what the session keeps.
+ */
+function keepBytecode(): () => void {
+	v8.setFlagsFromString("--no-flush-bytecode");
+	return () => v8.setFlagsFromString("--flush-bytecode");
+}
+
 function collectGarbage(): void {
 	v8.setFlagsFromString("--expose-gc");
 	try {
@@ -152,6 +165,7 @@ let session: AgentSession;
 let unregister: () => void;
 let launched = 0;
 let stopCounting: (() => void) | undefined;
+let restoreBytecodeFlushing: (() => void) | undefined;
 let lastLaunchAt = 0;
 const measured = new Map<number, Measurement>();
 
@@ -296,6 +310,7 @@ async function measure(): Promise<Measurement> {
 
 describe("a long supervising session as its children accumulate (#5186)", () => {
 	beforeAll(async () => {
+		restoreBytecodeFlushing = keepBytecode();
 		vi.stubEnv("NODE_ENV", "production");
 		// The scripted provider would otherwise keep every child's last prompt as its simulated prompt cache.
 		vi.stubEnv("PI_CACHE_RETENTION", "none");
@@ -315,6 +330,7 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 	}, ACCUMULATION_TIMEOUT_MS);
 
 	afterAll(async () => {
+		restoreBytecodeFlushing?.();
 		stopCounting?.();
 		await session?.dispose();
 		unregister?.();
