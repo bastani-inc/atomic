@@ -42,7 +42,7 @@ use windows_sys::Win32::System::JobObjects::{
 	JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
 	JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows_sys::Win32::System::Threading::{
 	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
 	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
@@ -612,13 +612,31 @@ fn cancel_until_finished(thread: &JoinHandle<()>) {
 	}
 }
 
+/// Reads the pipe into `buffer`: waits for its first bytes, then takes once what else it holds by then, as
+/// `child_process` reads what a pipe holds when its loop gets to it. A program that writes a line in two writes, as
+/// PowerShell does, is then read a line at a time, not half a line. `Ok(0)` is the pipe's end.
+fn read_available(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
+	let count = file.read(buffer)?;
+	let mut available = 0u32;
+	if count == 0
+		|| count == buffer.len()
+		|| unsafe { PeekNamedPipe(raw(file), null_mut(), 0, null_mut(), &mut available, null_mut()) }
+			== 0
+		|| available == 0
+	{
+		return Ok(count);
+	}
+	let wanted = (available as usize).min(buffer.len() - count);
+	Ok(count + file.read(&mut buffer[count..count + wanted]).unwrap_or(0))
+}
+
 fn read_output(shared: &Arc<Shared>, mut file: File, index: usize) {
 	let mut buffer = vec![0u8; READ_CHUNK_BYTES];
 	loop {
 		if shared.stopping.load(Ordering::Acquire) {
 			return;
 		}
-		match file.read(&mut buffer) {
+		match read_available(&mut file, &mut buffer) {
 			Ok(0) => break,
 			Ok(count) => {
 				if !shared.send_output(index, &buffer[..count]) {
