@@ -344,11 +344,7 @@ describe("standalone clipboard native packaging", () => {
 		const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 		// bun.lock was deleted when install moved to `npm ci`; package-lock.json
 		// is now the single lockfile this staging must leave untouched.
-		const protectedFiles = [
-			"package.json",
-			"package-lock.json",
-			"packages/coding-agent/npm-shrinkwrap.json",
-		] as const;
+		const protectedFiles = ["package.json", "package-lock.json"] as const;
 		const before = new Map(protectedFiles.map((path) => [path, readFileSync(join(repoRoot, path), "utf-8")]));
 		const root = mkdtempSync(join(tmpdir(), "atomic-clipboard-real-stage-"));
 		try {

@@ -67,6 +67,13 @@ On Node 22, `AsyncLocalStorage` runs on promise hooks. Once a session has run, t
 
 On Node 22.7 or a later 22.x release, start your host with `node --experimental-async-context-frame` to avoid it. The flag switches `AsyncLocalStorage` to Node 24's implementation for the whole process, so check any code of your own that relies on Node 22's behavior, such as `disable()`. Pass it on the host's own command line, not in `NODE_OPTIONS`: Node 24 and later refuse the flag, and commands your sessions' tools run inherit `NODE_OPTIONS`, so a newer Node among them would fail to start.
 
+### Updating Atomic while your program runs
+
+When `npm install`, `pnpm add` or `bun add` replaces `@bastani/atomic` while your program runs, the program keeps the Atomic code it has already loaded and loads the rest from the update when it first needs it. When code of the update cannot load beside what the program holds, the error Atomic reports says that Atomic was updated and to restart (see [updating the CLI](/reference/cli#package-commands)). Restart the program in these cases too, where no such message comes:
+
+- A program started on Atomic 0.10.2 or earlier: restart it after every in-place update.
+- A program started on 0.10.3 that imports `@bastani/atomic/rpc-entry` for the first time after an in-place update: restart it before it imports that entry.
+
 ### Migrating an existing Node host
 
 <a id="migrating-from-the-experimental-client" />
