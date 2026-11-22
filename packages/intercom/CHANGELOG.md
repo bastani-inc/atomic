@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- With multi-node routing, a session answering a sender outside its groups can no longer send a fourth answer after that sender's latest message when the shared database failed to record that message as delivered and it was handed to the session again. Answers the session sent since the message first reached it now count toward that message's 3.
+- On Windows, an Intercom broker no longer waits for good to start when an earlier broker stopped while it was starting and Windows gave that broker's process ID to another process. Brokers now record when their process was created next to its ID, so a later process with the same ID is not taken for the earlier broker. A broker of an earlier version still goes by the process ID alone.
+- With multi-node routing, a session that took back its own Intercom ID without the hand-over its broker gave it for the move (for example, after Atomic restarted during the move) is now told at once that its answer to an ask sent to its earlier ID cannot be delivered. It was told to try again shortly for as long as 10 minutes after any broker went down, although no retry could succeed. The refusal is the final one (`Pending question route does not authorize this public reply`), so the ask also leaves `pending`.
+
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Added
 
 - `intercom({ action: "cancel", replyTo })` closes an ask sent to you that you will not answer: it leaves `pending` and stays closed after restarts, and nothing is sent to its sender ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).

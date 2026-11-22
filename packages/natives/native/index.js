@@ -907,6 +907,7 @@ module.exports.holdProcessDescendants = nativeBinding.holdProcessDescendants
 module.exports.HostProcessEventKind = nativeBinding.HostProcessEventKind
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
+module.exports.nativeVersion = nativeBinding.nativeVersion
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
 module.exports.pendingStdinInput = nativeBinding.pendingStdinInput
 module.exports.pinWindowsFile = nativeBinding.pinWindowsFile
