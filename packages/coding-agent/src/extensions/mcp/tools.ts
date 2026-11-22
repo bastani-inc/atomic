@@ -34,6 +34,7 @@ import {
 	type Tool as McpTool,
 	toLlmContent,
 } from "./client/index.js";
+import { redactOAuthErrorText } from "./client/oauth/redact.js";
 import type { McpExposure } from "./config.ts";
 
 /**
@@ -193,7 +194,7 @@ export async function limitMcpContent(
 		fullOutputPath = await saveOutput(combined, ".txt");
 		where = `[Full output: ${fullOutputPath} (read it with offset/limit)]`;
 	} catch (error) {
-		where = `[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`;
+		where = `[Could not save the full output: ${redactOAuthErrorText(error instanceof Error ? error.message : String(error))}]`;
 	}
 	const tokens = Math.ceil(truncation.totalBytes / 4);
 	const text = `Warning: truncated output (original token count: ${tokens})\nTotal output lines: ${truncation.totalLines}\n\n${truncation.content}\n\n${where}`;
@@ -249,7 +250,7 @@ async function blockToContent(
 			const path = await (options.saveOutput ?? saveToTempFile)(data, extensionOf(uri));
 			return [{ type: "text", text: `[Binary resource ${uri} (${kind}) saved to ${path}]` }];
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
+			const reason = redactOAuthErrorText(error instanceof Error ? error.message : String(error));
 			return [{ type: "text", text: `[Binary resource ${uri} (${kind}) could not be saved: ${reason}]` }];
 		}
 	}
