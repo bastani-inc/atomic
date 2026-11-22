@@ -240,26 +240,28 @@ async function openPort(
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let panelTimer: ReturnType<typeof setTimeout> | undefined;
 	let settled = false;
-	const framed = await Promise.race([
-		mount.firstFrame().then(async (first) => {
-			if (first && panelDrawn !== undefined && !settled)
-				await Promise.race([
-					panelDrawn(),
-					new Promise<void>((resolve) => {
-						panelTimer = setTimeout(resolve, PANEL_FIRST_FRAME_TIMEOUT_MS);
-						panelTimer.unref?.();
-					}),
-				]);
-			return first;
-		}),
-		new Promise<boolean>((resolve) => {
-			timer = setTimeout(() => resolve(true), FIRST_FRAME_TIMEOUT_MS);
-			timer.unref?.();
-		}),
-	]);
-	settled = true;
-	clearTimeout(timer);
-	clearTimeout(panelTimer);
+	let framed: boolean;
+	try {
+		framed = await Promise.race([
+			mount.firstFrame().then(async (first) => {
+				if (first && panelDrawn !== undefined && !settled)
+					await Promise.race([
+						panelDrawn(),
+						new Promise<void>((resolve) => {
+							panelTimer = setTimeout(resolve, PANEL_FIRST_FRAME_TIMEOUT_MS);
+						}),
+					]);
+				return first;
+			}),
+			new Promise<boolean>((resolve) => {
+				timer = setTimeout(() => resolve(true), FIRST_FRAME_TIMEOUT_MS);
+			}),
+		]);
+	} finally {
+		settled = true;
+		clearTimeout(timer);
+		clearTimeout(panelTimer);
+	}
 	if (!framed) {
 		port.retain()();
 		return undefined;

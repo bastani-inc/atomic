@@ -793,7 +793,6 @@ function agentTaskSettles(store: OwnerTaskStore, id: TaskId): Promise<boolean> {
 			if (settled()) finish(true);
 		});
 		const timer = setTimeout(() => finish(false), ENDED_TASK_SETTLE_WAIT_MS);
-		timer.unref?.();
 	});
 }
 

@@ -158,7 +158,6 @@ function withTimeout<T>(operation: Promise<T>, label: string, timeoutMs: number)
 		operation,
 		new Promise<never>((_, reject) => {
 			timer = setTimeout(() => reject(new Error(`${label} did not answer within ${timeoutMs / 1000} s`)), timeoutMs);
-			timer.unref?.();
 		}),
 	]).finally(() => clearTimeout(timer));
 }

@@ -5,6 +5,58 @@ export const DEFAULT_TOOL_ABORT_GRACE_MS = 10_000;
 /** The longest delay a timer takes; a larger value would fire at once. */
 const MAX_TIMER_MS = 2_147_483_647;
 
+const activeGraceTimers = new WeakMap<AbortSignal, Set<ReturnType<typeof setTimeout>>>();
+const releasedGraceSignals = new WeakSet<AbortSignal>();
+
+/**
+ * Arm an abort-grace timer for `signal`. The timer stays ref'd while active so a caller awaiting the aborted turn or
+ * tool call is not terminated early when no other handle is open, and is cleared on settlement or unref'd if session
+ * disposal stops waiting at its shutdown deadline.
+ */
+export function armToolAbortGraceTimer(
+	signal: AbortSignal | undefined,
+	graceMs: number,
+	onExpire: () => void,
+): ReturnType<typeof setTimeout> {
+	const timer = setTimeout(() => {
+		if (signal !== undefined) activeGraceTimers.get(signal)?.delete(timer);
+		onExpire();
+	}, graceMs);
+	if (signal !== undefined) {
+		if (releasedGraceSignals.has(signal)) {
+			timer.unref?.();
+		} else {
+			let timers = activeGraceTimers.get(signal);
+			if (timers === undefined) {
+				timers = new Set();
+				activeGraceTimers.set(signal, timers);
+			}
+			timers.add(timer);
+		}
+	}
+	return timer;
+}
+
+/** Clear an abort-grace timer armed through {@link armToolAbortGraceTimer}. */
+export function clearToolAbortGraceTimer(
+	signal: AbortSignal | undefined,
+	timer: ReturnType<typeof setTimeout> | undefined,
+): void {
+	if (timer === undefined) return;
+	clearTimeout(timer);
+	if (signal !== undefined) activeGraceTimers.get(signal)?.delete(timer);
+}
+
+/** Unref any remaining abort-grace timers for `signal` once disposal has stopped waiting for its abort step. */
+export function releaseToolAbortGraceTimers(signal: AbortSignal | undefined): void {
+	if (signal === undefined) return;
+	releasedGraceSignals.add(signal);
+	const timers = activeGraceTimers.get(signal);
+	if (timers === undefined) return;
+	for (const timer of timers) timer.unref?.();
+	timers.clear();
+}
+
 /** `ATOMIC_TOOL_ABORT_GRACE_MS` when it is a whole number of milliseconds, otherwise the default. */
 export function toolAbortGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 	const value = env.ATOMIC_TOOL_ABORT_GRACE_MS?.trim();
@@ -51,11 +103,11 @@ export function withToolAbortGrace(tool: AgentTool): AgentTool {
 				let timer: ReturnType<typeof setTimeout> | undefined;
 				const startGrace = () => {
 					const graceMs = toolAbortGraceMs();
-					timer = setTimeout(() => resolve(abandonedToolResult(tool.name, graceMs)), graceMs);
-					timer.unref?.();
+					timer = armToolAbortGraceTimer(signal, graceMs, () => resolve(abandonedToolResult(tool.name, graceMs)));
 				};
 				const settle = () => {
-					clearTimeout(timer);
+					clearToolAbortGraceTimer(signal, timer);
+					timer = undefined;
 					signal.removeEventListener("abort", startGrace);
 				};
 				if (signal.aborted) startGrace();

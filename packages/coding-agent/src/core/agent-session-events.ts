@@ -92,6 +92,7 @@ import { retryStatusUpdate } from "./session-retry-status.js";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { saveChatRecord } from "./storage/session/chat-records.js";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
+import { releaseToolAbortGraceTimers } from "./tools/tool-abort-grace.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
@@ -892,7 +893,11 @@ export function closeAgentSession(
 		});
 		await attempt("event subscriptions", () => cancelSessionSubscriptions(session));
 		await attempt("shell abort", () => abortBash.call(session));
+		const abortSignal = session.agent.signal;
 		await attempt("abort", () => abortCurrentGeneration.call(session));
+		// Once disposal moves past the abort step (including when the shutdown deadline expires before a long abort
+		// grace), any remaining grace timer must not hold the process open past dispose().
+		releaseToolAbortGraceTimers(abortSignal);
 		await attempt("reload rollback", () => drainSessionReload(session));
 		await attempt("tasks", () => session.closeSessionTasks());
 		await attempt("summary", () => session.abortSessionSummary());
