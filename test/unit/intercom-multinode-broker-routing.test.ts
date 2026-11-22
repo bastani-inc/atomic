@@ -61,6 +61,7 @@ import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
 import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
 import {
+	HELD_SEND_GRACE_MS,
 	RECIPIENT_RECEIPT_TIMEOUT_MS,
 	RECIPIENT_SAVE_MAX_WAIT_MS,
 	RECIPIENT_SAVING_REPORT_INTERVAL_MS,
@@ -1999,7 +2000,10 @@ test(
 const DECISION_STEP_MS = 100;
 
 function holdsOf(session: BrokerConnectedSession, id: string) {
-	return framesOf(session).filter((frame) => frame.type === "send_held" && frame.messageId === id);
+	return framesOf(session).filter(
+		(frame): frame is Extract<BrokerOutboundFrame, { type: "send_held" }> =>
+			frame.type === "send_held" && frame.messageId === id,
+	);
 }
 
 /** Steps fake time until the sender's broker decides its next receipt wait: one more hold, or an outcome. */
@@ -2780,7 +2784,7 @@ test("a cross-node send whose routing queries consume part of the client respons
 	}
 });
 
-test("a cross-node send whose routing queries make slow progress past 18 s keeps extending the sender every saving-report interval and succeeds, while a hung database sends no holds", async () => {
+test("a cross-node send whose routing queries make slow progress past 18 s keeps extending without shrinking and succeeds, while hung and fast-then-hung databases emit no holds", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");
 	const recipient = await b!.connect("recipient");
@@ -2799,17 +2803,32 @@ test("a cross-node send whose routing queries make slow progress past 18 s keeps
 	const markReplied = pendingAsks.markReplied.bind(pendingAsks);
 	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);
 	const STEP_MS = 3_500;
-	let mode: "slow-21s" | "hung" | "mid-hang" | "off" = "slow-21s";
-	const stepPause = () => new Promise<void>((resolve) => setTimeout(resolve, STEP_MS));
+	let mode: "slow-21s" | "hung" | "fast-then-hang" | "mid-hang" | "off" = "slow-21s";
+	const unblocks: Array<() => void> = [];
+	const stepPause = () =>
+		new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+			setTimeout(resolve, STEP_MS);
+		});
+	const parkForever = () =>
+		new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+		});
 	const leaseSpy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
 		if (kind === "presence") {
-			if (mode === "hung") return new Promise<never>(() => {});
+			if (mode === "hung") {
+				await parkForever();
+				return [];
+			}
 			if (mode === "slow-21s" || mode === "mid-hang") await stepPause();
 		}
 		return listLive(kind, staleAfterMs);
 	});
 	const bindingSpy = vi.spyOn(known, "binding").mockImplementation(async (id, retentionMs) => {
-		if (mode === "mid-hang") return new Promise<never>(() => {});
+		if (mode === "mid-hang" || mode === "fast-then-hang") {
+			await parkForever();
+			return { status: "unbound" as const };
+		}
 		if (mode === "slow-21s") await stepPause();
 		return binding(id, retentionMs);
 	});
@@ -2838,9 +2857,9 @@ test("a cross-node send whose routing queries make slow progress past 18 s keeps
 	const baseDate = Date.now();
 	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
 	try {
-		// Part 1: 6 steps * 3.5 s = 21 s (> 18 s) of continuous routing progress; simulate client deadline tracking.
+		// Part 1: 6 steps * 3.5 s = 21 s (> 18 s) of continuous routing progress; simulate legacy (shrinking) client.
 		const slow = message({ replyTo: ask.id, content: { text: "slow-reply" } });
-		let clientDeadline = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
+		let legacyClientDeadline = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
 		let seenHolds = 0;
 		const startedAt = Date.now();
 		b!.send(recipient, sender.info.id, slow, { requirePendingReply: true });
@@ -2850,40 +2869,49 @@ test("a cross-node send whose routing queries make slow progress past 18 s keeps
 			while (seenHolds < holds.length) {
 				const frame = holds[seenHolds++]!;
 				assert.equal(frame.type, "send_held");
-				assert.equal(frame.timeoutMs, RECIPIENT_RECEIPT_TIMEOUT_MS);
-				clientDeadline = Math.max(clientDeadline, Date.now() + frame.timeoutMs + 5_000);
+				assert.ok(frame.timeoutMs > 0 && frame.timeoutMs <= RECIPIENT_RECEIPT_TIMEOUT_MS);
+				const nextDeadline = Date.now() + frame.timeoutMs + HELD_SEND_GRACE_MS;
+				assert.ok(nextDeadline > legacyClientDeadline, "progress hold must strictly extend even a legacy client");
+				legacyClientDeadline = nextDeadline;
 			}
-			assert.ok(Date.now() < clientDeadline, `client would have timed out at ${Date.now() - startedAt} ms`);
+			assert.ok(Date.now() < legacyClientDeadline, `client would have timed out at ${Date.now() - startedAt} ms`);
 		}
 		assert.ok(Date.now() - startedAt >= 21_000, "routing spanned past 18 s");
-		assert.ok(seenHolds >= 6, `expected periodic progress holds across 21 s, got ${seenHolds}`);
+		assert.ok(seenHolds >= 3, `expected progress holds across 21 s, got ${seenHolds}`);
 		await waitFor(() => (messageFrames(sender, slow.id).length === 1 ? true : undefined));
 		assert.equal(a!.router.received(sender, slow.id), true);
 		const delivered = await advanceUntil(() => outcomeOf(recipient, slow.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
 		assert.equal(delivered?.value.type, "delivered", JSON.stringify(delivered));
 
-		// Part 2: permanently hung database (store answers nothing) emits zero holds past SEND_RESPONSE_TIMEOUT_MS.
+		// Part 2: permanently hung database emits zero holds past SEND_RESPONSE_TIMEOUT_MS.
 		mode = "hung";
 		const hung = message();
 		b!.send(recipient, sender.info.id, hung);
 		await advance(SEND_RESPONSE_TIMEOUT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS);
 		assert.deepEqual(holdsOf(recipient, hung.id), [], "a hung database must not extend the sender");
 
-		// Part 3: database that answers step 1 then hangs stops emitting holds once RECIPIENT_RECEIPT_TIMEOUT_MS passes.
+		// Part 3: fast step 1 (< 1 s) followed by hang on step 2 emits zero holds (keeps main's 10 s timeout).
+		mode = "fast-then-hang";
+		const fastHung = message();
+		b!.send(recipient, sender.info.id, fastHung);
+		await advance(SEND_RESPONSE_TIMEOUT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		assert.deepEqual(
+			holdsOf(recipient, fastHung.id),
+			[],
+			"a fast step 1 followed by a hang must not extend past main's 10 s bound",
+		);
+
+		// Part 4: slow step 1 (3.5 s) then hang emits at most one hold and stops extending without new progress.
 		mode = "mid-hang";
 		const midHung = message();
 		b!.send(recipient, sender.info.id, midHung);
 		await advance(STEP_MS + RECIPIENT_RECEIPT_TIMEOUT_MS + 2 * RECIPIENT_SAVING_REPORT_INTERVAL_MS);
-		const holdsAfterStall = holdsOf(recipient, midHung.id).length;
-		assert.ok(holdsAfterStall >= 1, "progress on step 1 emitted at least one hold");
+		assert.equal(holdsOf(recipient, midHung.id).length, 1, "slow step 1 then hang emits exactly one hold");
 		await advance(3 * RECIPIENT_SAVING_REPORT_INTERVAL_MS);
-		assert.equal(
-			holdsOf(recipient, midHung.id).length,
-			holdsAfterStall,
-			"no further holds once progress stops for RECIPIENT_RECEIPT_TIMEOUT_MS",
-		);
+		assert.equal(holdsOf(recipient, midHung.id).length, 1, "no further holds once progress stops");
 	} finally {
 		mode = "off";
+		for (const release of unblocks.splice(0)) release();
 		perfSpy.mockRestore();
 		markSpy.mockRestore();
 		enqueueSpy.mockRestore();
@@ -2895,17 +2923,27 @@ test("a cross-node send whose routing queries make slow progress past 18 s keeps
 	}
 });
 
-test("a slow sent-message acceptance near the client deadline extends the sender before finishing delivery", async () => {
+test("a slow sent-message acceptance near the client deadline extends the sender, while a hung acceptance after fast delivery emits no holds", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");
 	const recipient = await b!.connect("recipient");
 	const sentMessages = a!.opened.state.sentMessages;
 	const accept = sentMessages.accept.bind(sentMessages);
-	let stallAccept = false;
+	let acceptMode: "normal" | "stall-3s" | "hang" = "normal";
+	let acceptEntered = false;
+	const unblocks: Array<() => void> = [];
 	const acceptSpy = vi.spyOn(sentMessages, "accept").mockImplementation(async (args) => {
-		if (stallAccept) {
-			stallAccept = false;
-			await new Promise((resolve) => setTimeout(resolve, 3_000));
+		acceptEntered = true;
+		if (acceptMode === "stall-3s") {
+			acceptMode = "normal";
+			await new Promise<void>((resolve) => {
+				unblocks.push(resolve);
+				setTimeout(resolve, 3_000);
+			});
+		} else if (acceptMode === "hang") {
+			await new Promise<void>((resolve) => {
+				unblocks.push(resolve);
+			});
 		}
 		return accept(args);
 	});
@@ -2915,22 +2953,489 @@ test("a slow sent-message acceptance near the client deadline extends the sender
 	const baseDate = Date.now();
 	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
 	try {
+		// Case 1: fast delivery (< 1 s) then hung sentMessages.accept emits zero holds (matches main's 10 s bound).
+		acceptMode = "hang";
+		acceptEntered = false;
+		const fastHung = message();
+		a!.send(sender, "recipient", fastHung);
+		await waitFor(() => (messageFrames(recipient, fastHung.id).length > 0 ? true : undefined));
+		assert.equal(b!.router.received(recipient, fastHung.id), true);
+		await waitFor(() => (acceptEntered ? true : undefined));
+		await advance(SEND_RESPONSE_TIMEOUT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		assert.deepEqual(
+			holdsOf(sender, fastHung.id),
+			[],
+			"hung sentMessages.accept after fast delivery must not emit send_held",
+		);
+		acceptMode = "normal";
+		for (const release of unblocks.splice(0)) release();
+		await advanceUntil(() => outcomeOf(sender, fastHung.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+
+		// Case 2: slow delivery (7.5 s) then 3 s sentMessages.accept emits send_held before 10 s and delivers.
 		const sent = message();
 		a!.send(sender, "recipient", sent);
 		await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
-		// Advance to 7.5 s (2.5 s before 10 s deadline); sentMessages.accept stalls 3 s (past 10 s!).
 		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS - 500);
-		stallAccept = true;
+		acceptMode = "stall-3s";
 		assert.equal(b!.router.received(recipient, sent.id), true);
-		// By 9.5 s (strictly before 10 s client deadline), the unified progress reporter must have emitted send_held.
 		await advance(2_000);
 		assert.ok(holdsOf(sender, sent.id).length >= 1, "slow sentMessages.accept emitted send_held before 10 s");
 		await advance(1_500);
 		const delivered = await advanceUntil(() => outcomeOf(sender, sent.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
 		assert.equal(delivered?.value.type, "delivered", JSON.stringify(delivered));
 	} finally {
+		acceptMode = "normal";
+		for (const release of unblocks.splice(0)) release();
 		perfSpy.mockRestore();
 		acceptSpy.mockRestore();
 		vi.useRealTimers();
+	}
+});
+
+test("holdForRemoteReservation stops routing progress reporting before writing its 20 s hold during a slow wake", async () => {
+	const [a, b] = await cluster();
+	const supervisor = await b!.connect("supervisor", { group: "crew" });
+	const sender = await a!.connect("sender", { group: "crew" });
+	const key = releasedReservationKey("released-child-id");
+	await b!.router.restoringReserved(key, supervisor.info.id, "restored-child", normalizeGroup("crew"), [], true, {
+		wake: true,
+	});
+	await vi.waitFor(async () => {
+		const lookup = await a!.opened.state.reservations.lookup(
+			"restored-child",
+			{ sessionId: sender.info.id, groups: [normalizeGroup("crew")] },
+			30_000,
+		);
+		assert.equal(lookup.status, "reserved");
+	});
+	// Make heldSends.hold take 3.5 s (so routing progress arms a hold) and requestWake take 4 s after send_held(20 s).
+	const heldSends = a!.opened.state.heldSends;
+	const reservations = a!.opened.state.reservations;
+	const origHold = heldSends.hold.bind(heldSends);
+	const origRequestWake = reservations.requestWake.bind(reservations);
+	const unblocks: Array<() => void> = [];
+	const holdSpy = vi.spyOn(heldSends, "hold").mockImplementation(async (entry) => {
+		await new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+			setTimeout(resolve, 3_500);
+		});
+		return origHold(entry);
+	});
+	const wakeSpy = vi.spyOn(reservations, "requestWake").mockImplementation(async (reservationKey, wake) => {
+		await new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+			setTimeout(resolve, 4_000);
+		});
+		return origRequestWake(reservationKey, wake);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	const now = performance.now.bind(performance);
+	const basePerf = now();
+	const baseDate = Date.now();
+	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
+	try {
+		const sent = message();
+		a!.send(sender, "restored-child", sent, { awaitRestoringRecipient: true });
+		await advance(10_000);
+		const holds = holdsOf(sender, sent.id);
+		const restoreIdx = holds.findIndex((frame) => frame.timeoutMs === RESTORING_RECIPIENT_HOLD_MS);
+		assert.ok(
+			restoreIdx !== -1,
+			`expected a ${RESTORING_RECIPIENT_HOLD_MS} ms restoring hold, got ${JSON.stringify(holds)}`,
+		);
+		assert.equal(
+			holds.length,
+			restoreIdx + 1,
+			`no shorter progress hold may follow the 20 s restoring hold: ${JSON.stringify(holds)}`,
+		);
+	} finally {
+		for (const release of unblocks.splice(0)) release();
+		perfSpy.mockRestore();
+		wakeSpy.mockRestore();
+		holdSpy.mockRestore();
+		vi.useRealTimers();
+	}
+});
+
+test("progress timers never arm without store progress and clear cleanly when the router closes", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	await b!.connect("recipient");
+	const leases = a!.opened.state.leases;
+	const listLive = leases.listLive.bind(leases);
+	const known = a!.opened.state.knownSessions;
+	const binding = known.binding.bind(known);
+	let mode: "hung" | "slow-then-hang" = "hung";
+	const unblocks: Array<() => void> = [];
+	const park = () =>
+		new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+		});
+	const leaseSpy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
+		if (kind === "presence") {
+			if (mode === "hung") {
+				await park();
+				return [];
+			}
+			await new Promise<void>((resolve) => {
+				unblocks.push(resolve);
+				setTimeout(resolve, 3_500);
+			});
+		}
+		return listLive(kind, staleAfterMs);
+	});
+	const bindingSpy = vi.spyOn(known, "binding").mockImplementation(async (id, retentionMs) => {
+		if (mode === "slow-then-hang") {
+			await park();
+			return { status: "unbound" as const };
+		}
+		return binding(id, retentionMs);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	const now = performance.now.bind(performance);
+	const basePerf = now();
+	const baseDate = Date.now();
+	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
+	try {
+		const progressStops = (a!.router as unknown as { progressStops: Set<() => void> }).progressStops;
+		// 50 hung sends must arm 0 progress timers.
+		for (let i = 0; i < 50; i++) a!.send(sender, "recipient", message());
+		await advance(100);
+		assert.equal(progressStops.size, 0, "hung sends with no store progress must arm zero progress timers");
+
+		// Slow sends that answered step 1 at 3.5 s arm one-shot timers that close() must clear immediately.
+		mode = "slow-then-hang";
+		for (let i = 0; i < 5; i++) a!.send(sender, "recipient", message());
+		await advance(3_600);
+		assert.equal(progressStops.size, 5, "each slow-progressing send armed one pending hold timer");
+		await a!.router.close();
+		assert.equal(progressStops.size, 0, "router.close() must cancel every active progress timer");
+	} finally {
+		for (const release of unblocks.splice(0)) release();
+		perfSpy.mockRestore();
+		bindingSpy.mockRestore();
+		leaseSpy.mockRestore();
+		vi.useRealTimers();
+	}
+});
+
+test("routing that exceeds RECIPIENT_SAVE_MAX_WAIT_MS before enqueue fails without writing an outbox row", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const leases = a!.opened.state.leases;
+	const listLive = leases.listLive.bind(leases);
+	let stallOnce = true;
+	const unblocks: Array<() => void> = [];
+	const spy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
+		if (stallOnce && kind === "presence") {
+			stallOnce = false;
+			await new Promise<void>((resolve) => {
+				unblocks.push(resolve);
+				setTimeout(resolve, RECIPIENT_SAVE_MAX_WAIT_MS + 1_000);
+			});
+		}
+		return listLive(kind, staleAfterMs);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	const now = performance.now.bind(performance);
+	const basePerf = now();
+	const baseDate = Date.now();
+	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
+	try {
+		const sent = message();
+		a!.send(sender, "recipient", sent);
+		await advance(RECIPIENT_SAVE_MAX_WAIT_MS + 2_000, 5_000);
+		const outcome = outcomeOf(sender, sent.id);
+		assert.equal(outcome?.type, "delivery_failed", JSON.stringify(outcome));
+		const row = await a!.opened.state.outbox.read(sent.id);
+		assert.equal(row.status, "missing", "must not write an outbox row once the save cap has passed");
+		assert.deepEqual(messageFrames(recipient, sent.id), [], "no late delivery after cap");
+	} finally {
+		for (const release of unblocks.splice(0)) release();
+		perfSpy.mockRestore();
+		spy.mockRestore();
+		vi.useRealTimers();
+	}
+});
+
+test("two concurrent slow replies in the same sender reply lane both extend past 10 s and deliver without Send timeout, while hung replies emit no holds", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const replier = await b!.connect("replier");
+	const ask1 = await savedAsk(a!, asker, b!, replier);
+	const ask2 = await savedAsk(a!, asker, b!, replier);
+	const state = b!.opened.state;
+	const leases = state.leases;
+	const known = state.knownSessions;
+	const outbox = state.outbox;
+	const pendingAsks = state.pendingAsks;
+	const listLive = leases.listLive.bind(leases);
+	const binding = known.binding.bind(known);
+	const readOutbox = outbox.read.bind(outbox);
+	const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
+	const markReplied = pendingAsks.markReplied.bind(pendingAsks);
+	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);
+	const STEP_MS = 2_000;
+	let mode: "slow" | "hung" | "off" = "slow";
+	const unblocks: Array<() => void> = [];
+	const pause = () =>
+		new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+			setTimeout(resolve, STEP_MS);
+		});
+	const park = () =>
+		new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+		});
+	const leaseSpy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
+		if (kind === "presence") {
+			if (mode === "hung") {
+				await park();
+				return [];
+			}
+			if (mode === "slow") await pause();
+		}
+		return listLive(kind, staleAfterMs);
+	});
+	const bindingSpy = vi.spyOn(known, "binding").mockImplementation(async (id, retentionMs) => {
+		if (mode === "slow") await pause();
+		return binding(id, retentionMs);
+	});
+	const outboxSpy = vi.spyOn(outbox, "read").mockImplementation(async (id) => {
+		if (mode === "slow") await pause();
+		return readOutbox(id);
+	});
+	const matchSpy = vi.spyOn(pendingAsks, "matchesReply").mockImplementation(async (route) => {
+		if (mode === "slow") await pause();
+		return matchesReply(route);
+	});
+	const enqueueSpy = vi.spyOn(state, "reserveAndEnqueue").mockImplementation(async (reservation, req) => {
+		if (mode === "slow") await pause();
+		return reserveAndEnqueue(reservation, req);
+	});
+	const markSpy = vi.spyOn(pendingAsks, "markReplied").mockImplementation(async (route) => {
+		if (mode === "slow") await pause();
+		return markReplied(route);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	const now = performance.now.bind(performance);
+	const basePerf = now();
+	const baseDate = Date.now();
+	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
+	try {
+		const r1 = message({ replyTo: ask1.id, content: { text: "reply-1" } });
+		const r2 = message({ replyTo: ask2.id, content: { text: "reply-2" } });
+		let d1 = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
+		let d2 = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
+		let seen1 = 0;
+		let seen2 = 0;
+		b!.send(replier, asker.info.id, r1, { requirePendingReply: true });
+		b!.send(replier, asker.info.id, r2, { requirePendingReply: true });
+		let r1Confirmed = false;
+		let r2Confirmed = false;
+		// r1 takes ~12 s (6 * 2 s > 10 s) while r2 waits in serial("reply:replier"), then r2 takes ~12 s (~24 s total < 30 s lease TTL).
+		for (let elapsed = 0; elapsed < 26_000; elapsed += 500) {
+			await advance(500);
+			for (const [id, update] of [
+				[r1.id, (next: number) => (d1 = next)],
+				[r2.id, (next: number) => (d2 = next)],
+			] as const) {
+				const holds = holdsOf(replier, id);
+				const seen = id === r1.id ? seen1 : seen2;
+				for (let i = seen; i < holds.length; i++) {
+					const frame = holds[i]!;
+					update(Date.now() + frame.timeoutMs + HELD_SEND_GRACE_MS);
+				}
+				if (id === r1.id) seen1 = holds.length;
+				else seen2 = holds.length;
+			}
+			if (!r1Confirmed && (await readOutbox(r1.id)).status === "found") {
+				await waitFor(() => (messageFrames(asker, r1.id).length === 1 ? true : undefined));
+				assert.equal(a!.router.received(asker, r1.id), true);
+				r1Confirmed = true;
+			}
+			if (!r2Confirmed && (await readOutbox(r2.id)).status === "found") {
+				await waitFor(() => (messageFrames(asker, r2.id).length === 1 ? true : undefined));
+				assert.equal(a!.router.received(asker, r2.id), true);
+				r2Confirmed = true;
+			}
+			if (outcomeOf(replier, r1.id) === undefined) assert.ok(Date.now() < d1, "r1 must stay inside client deadline");
+			if (outcomeOf(replier, r2.id) === undefined) assert.ok(Date.now() < d2, "r2 must stay inside client deadline");
+			if (r1Confirmed && r2Confirmed) {
+				mode = "off";
+				break;
+			}
+		}
+		assert.equal(r1Confirmed, true, "r1 arrived and was confirmed");
+		assert.equal(r2Confirmed, true, "r2 arrived and was confirmed");
+		const o1 = await advanceUntil(() => outcomeOf(replier, r1.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+		const o2 = await advanceUntil(() => outcomeOf(replier, r2.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+		assert.equal(o1?.value.type, "delivered", JSON.stringify(o1));
+		assert.equal(o2?.value.type, "delivered", JSON.stringify(o2));
+
+		// Control: when the first reply in the lane hangs with no store progress, neither reply emits send_held.
+		mode = "hung";
+		const hung1 = message({ replyTo: randomUUID(), content: { text: "hung-reply-1" } });
+		const hung2 = message({ replyTo: randomUUID(), content: { text: "hung-reply-2" } });
+		b!.send(replier, asker.info.id, hung1, { requirePendingReply: true });
+		b!.send(replier, asker.info.id, hung2, { requirePendingReply: true });
+		await advance(SEND_RESPONSE_TIMEOUT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		assert.deepEqual(holdsOf(replier, hung1.id), [], "hung first reply emits no holds");
+		assert.deepEqual(holdsOf(replier, hung2.id), [], "reply queued behind a hung reply emits no holds");
+	} finally {
+		mode = "off";
+		for (const release of unblocks.splice(0)) release();
+		perfSpy.mockRestore();
+		markSpy.mockRestore();
+		enqueueSpy.mockRestore();
+		matchSpy.mockRestore();
+		outboxSpy.mockRestore();
+		bindingSpy.mockRestore();
+		leaseSpy.mockRestore();
+		vi.useRealTimers();
+	}
+});
+
+test("re-entrant local-to-remote fallback enables progress reporting and queued remote sends inherit blocker progress without extending behind hung sends", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipientA = await a!.connect("target", { returnAddress: "stable-target" });
+	const state = a!.opened.state;
+	const leases = state.leases;
+	const known = state.knownSessions;
+	const outbox = state.outbox;
+	const listLive = leases.listLive.bind(leases);
+	const binding = known.binding.bind(known);
+	const readOutbox = outbox.read.bind(outbox);
+	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);
+	let blockFirstRead: (() => void) | undefined;
+	let slowStep = false;
+	const unblocks: Array<() => void> = [];
+	const stepDelay = () =>
+		new Promise<void>((resolve) => {
+			unblocks.push(resolve);
+			setTimeout(resolve, 3_500);
+		});
+	const outboxSpy = vi.spyOn(outbox, "read").mockImplementation(async (id) => {
+		if (blockFirstRead === undefined && slowStep === false && id === m1.id) {
+			await new Promise<void>((resolve) => {
+				blockFirstRead = resolve;
+				unblocks.push(resolve);
+			});
+		} else if (slowStep && id === m1.id) {
+			await stepDelay();
+		}
+		return readOutbox(id);
+	});
+	const leaseSpy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
+		if (kind === "presence" && slowStep) await stepDelay();
+		return listLive(kind, staleAfterMs);
+	});
+	const bindingSpy = vi.spyOn(known, "binding").mockImplementation(async (id, retentionMs) => {
+		if (slowStep) await stepDelay();
+		return binding(id, retentionMs);
+	});
+	const enqueueSpy = vi.spyOn(state, "reserveAndEnqueue").mockImplementation(async (reservation, req) => {
+		if (slowStep && reservation.messageId === m1.id) await stepDelay();
+		return reserveAndEnqueue(reservation, req);
+	});
+	const m1 = message({ content: { text: "reentrant-m1" } });
+	const m2 = message({ content: { text: "queued-m2" } });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	const now = performance.now.bind(performance);
+	const basePerf = now();
+	const baseDate = Date.now();
+	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
+	try {
+		// m1 starts as localTarget = recipientA; while its outbox lookup runs, recipient moves to broker b.
+		a!.send(sender, "target", m1);
+		await settleFileIo();
+		a!.leave(recipientA);
+		const recipientB = await b!.connect("target", { returnAddress: "stable-target" });
+		slowStep = true;
+		// Release m1's local lookup so commitLocalNotFound re-enters remote routing on slow DB,
+		// and concurrently send m2 directly to remote target so m2 queues in SendOrderGate.waitForEarlier behind m1.
+		blockFirstRead?.();
+		await advance(100, 100);
+		a!.send(sender, "target", m2);
+		let d1 = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
+		let d2 = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
+		let seen1 = 0;
+		let seen2 = 0;
+		for (let elapsed = 0; elapsed < 20_000; elapsed += 500) {
+			await advance(500);
+			const h1 = holdsOf(sender, m1.id);
+			while (seen1 < h1.length) d1 = Date.now() + h1[seen1++]!.timeoutMs + HELD_SEND_GRACE_MS;
+			const h2 = holdsOf(sender, m2.id);
+			while (seen2 < h2.length) d2 = Date.now() + h2[seen2++]!.timeoutMs + HELD_SEND_GRACE_MS;
+			if (outcomeOf(sender, m1.id) === undefined) assert.ok(Date.now() < d1, "re-entered m1 stayed inside deadline");
+			if (outcomeOf(sender, m2.id) === undefined) assert.ok(Date.now() < d2, "queued m2 stayed inside deadline");
+			if (messageFrames(recipientB, m1.id).length === 1 && messageFrames(recipientB, m2.id).length === 1) {
+				slowStep = false;
+				break;
+			}
+		}
+		assert.equal(messageFrames(recipientB, m1.id).length, 1);
+		assert.equal(messageFrames(recipientB, m2.id).length, 1);
+		// Verify delivery order m1 before m2 is preserved!
+		const texts = framesOf(recipientB)
+			.filter((frame) => frame.type === "message")
+			.map((frame) => frame.message.content.text);
+		assert.deepEqual(texts, ["reentrant-m1", "queued-m2"]);
+		assert.equal(b!.router.received(recipientB, m1.id), true);
+		assert.equal(b!.router.received(recipientB, m2.id), true);
+		const o1 = await advanceUntil(() => outcomeOf(sender, m1.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+		const o2 = await advanceUntil(() => outcomeOf(sender, m2.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+		assert.equal(o1?.value.type, "delivered", JSON.stringify(o1));
+		assert.equal(o2?.value.type, "delivered", JSON.stringify(o2));
+	} finally {
+		slowStep = false;
+		for (const release of unblocks.splice(0)) release();
+		perfSpy.mockRestore();
+		enqueueSpy.mockRestore();
+		bindingSpy.mockRestore();
+		leaseSpy.mockRestore();
+		outboxSpy.mockRestore();
+		vi.useRealTimers();
+	}
+});
+
+test("an already-settled cross-node retry releases its send-order ticket before slow sentMessages.accept so later sends do not block", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	// Deliver m1 first so its outbox row is already in state="delivered".
+	const m1 = message({ content: { text: "already-delivered" } });
+	a!.send(sender, "recipient", m1);
+	await waitFor(() => (messageFrames(recipient, m1.id).length === 1 ? true : undefined));
+	assert.equal(b!.router.received(recipient, m1.id), true);
+	await waitFor(() => (outcomeOf(sender, m1.id)?.type === "delivered" ? true : undefined));
+
+	// Now stall sentMessages.accept on the retry of m1, and send m2 immediately behind it.
+	const sentMessages = a!.opened.state.sentMessages;
+	const origAccept = sentMessages.accept.bind(sentMessages);
+	let releaseAccept: (() => void) | undefined;
+	const acceptSpy = vi.spyOn(sentMessages, "accept").mockImplementation(async (args) => {
+		if (args.messageId === m1.id) {
+			await new Promise<void>((resolve) => {
+				releaseAccept = resolve;
+			});
+		}
+		return origAccept(args);
+	});
+	try {
+		const m2 = message({ content: { text: "not-blocked-by-accept" } });
+		a!.send(sender, "recipient", m1);
+		a!.send(sender, "recipient", m2);
+		// m2 must arrive on recipient while m1's sentMessages.accept is still stalled!
+		await waitFor(() => (messageFrames(recipient, m2.id).length === 1 ? true : undefined));
+		assert.ok(releaseAccept !== undefined, "m1 retry was still awaiting sentMessages.accept when m2 arrived");
+		assert.equal(b!.router.received(recipient, m2.id), true);
+		await waitFor(() => (outcomeOf(sender, m2.id)?.type === "delivered" ? true : undefined));
+		releaseAccept!();
+	} finally {
+		releaseAccept?.();
+		acceptSpy.mockRestore();
 	}
 });

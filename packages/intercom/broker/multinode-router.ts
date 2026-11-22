@@ -540,8 +540,13 @@ interface SendProgress {
 	clientDeadlineAt: number;
 	hadProgress: boolean;
 	lastProgressAt: number;
+	reportingEnabled: boolean;
+	readonly socket: BrokerConnectedSession["socket"];
+	readonly messageId: string;
+	readonly attemptId?: string;
+	readonly ticket?: SendOrderTicket;
 	waitingOnReplyKey?: string;
-	onProgress?: (now: number) => void;
+	scheduledFireAt?: number;
 	stopReporting?: () => void;
 }
 
@@ -1063,6 +1068,8 @@ export class MultiNodeRouter {
 		string,
 		{ active?: SendOrderTicket; lastProgress?: SendProgress; queued: number }
 	>();
+	/** Sends currently waiting on an earlier send in `SendOrderGate` or `serial("reply:...")`, by `senderKey`. */
+	private readonly queuedProgress = new Map<string, Set<SendProgress>>();
 	/** Active progress-reporting timer disposers, cancelled in `close()`. */
 	private readonly progressStops = new Set<() => void>();
 	private readonly holds = new Map<string, TrackedHold>();
@@ -3520,29 +3527,35 @@ export class MultiNodeRouter {
 			return;
 		}
 		const startedAt = performance.now();
-		const previousDeadline = this.sendProgress.get(request.clientMessage)?.clientDeadlineAt ?? 0;
-		const progress: SendProgress = {
-			startedAt,
-			clientDeadlineAt: Math.max(startedAt + SEND_RESPONSE_TIMEOUT_MS, previousDeadline),
-			hadProgress: false,
-			lastProgressAt: startedAt,
-		};
+		const senderKey = deliveryTargetIdentity(request.from);
 		const ticket = this.sendOrder.begin(
 			request.localTarget === undefined
 				? {
-						senderKey: deliveryTargetIdentity(request.from),
+						senderKey,
 						rawTarget: request.target,
 						arrivedRegSeq: this.registrationSeq,
 						isLocal: false,
 					}
 				: {
-						senderKey: deliveryTargetIdentity(request.from),
+						senderKey,
 						rawTarget: request.target,
 						arrivedRegSeq: this.registrationSeq,
 						isLocal: true,
 						targetIdentity: deliveryTargetIdentity(request.localTarget),
 					},
 		);
+		const previousDeadline = this.sendProgress.get(request.clientMessage)?.clientDeadlineAt ?? 0;
+		const progress: SendProgress = {
+			startedAt,
+			clientDeadlineAt: Math.max(startedAt + SEND_RESPONSE_TIMEOUT_MS, previousDeadline),
+			hadProgress: false,
+			lastProgressAt: startedAt,
+			reportingEnabled: request.localTarget === undefined,
+			socket: request.socket,
+			messageId: request.message.id,
+			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
+			ticket,
+		};
 		this.sendProgress.set(request.clientMessage, progress);
 		this.ticketProgress.set(ticket, progress);
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
@@ -3556,14 +3569,23 @@ export class MultiNodeRouter {
 			}
 			lane.queued += 1;
 			if (request.localTarget !== undefined) this.sendOrder.markUnbounded(ticket);
-			progress.waitingOnReplyKey = replyKey;
-			if (request.localTarget === undefined || lane.queued > 1) {
-				this.startProgressReporting(request.socket, request.message.id, request.attemptId, progress, ticket);
+			const queuedBehind = lane.queued > 1;
+			if (queuedBehind) {
+				progress.waitingOnReplyKey = replyKey;
+				progress.reportingEnabled = true;
+				this.trackQueuedProgress(senderKey, progress);
+				this.syncProgressFromBlocker(progress, this.resolveBlockerProgress(progress, ticket));
+				this.scheduleProgressHold(progress, startedAt);
 			}
 			this.serial(replyKey, async () => {
+				if (queuedBehind) this.untrackQueuedProgress(senderKey, progress);
 				this.syncProgressFromBlocker(progress, lane.lastProgress);
 				progress.waitingOnReplyKey = undefined;
-				if (request.localTarget !== undefined) progress.stopReporting?.();
+				if (request.localTarget !== undefined) {
+					this.stopProgress(progress);
+				} else if (progress.hadProgress) {
+					this.scheduleProgressHold(progress);
+				}
 				lane.active = ticket;
 				lane.lastProgress = progress;
 				try {
@@ -3575,9 +3597,6 @@ export class MultiNodeRouter {
 				}
 			});
 		} else {
-			if (request.localTarget === undefined) {
-				this.startProgressReporting(request.socket, request.message.id, request.attemptId, progress, ticket);
-			}
 			void this.routeSendSafely(request, ticket, true);
 		}
 	}
@@ -3605,101 +3624,107 @@ export class MultiNodeRouter {
 			}
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
 		} finally {
-			this.sendProgress.get(request.clientMessage)?.stopReporting?.();
+			const progress = this.sendProgress.get(request.clientMessage);
+			if (progress !== undefined) this.stopProgress(progress);
 			if (ownsTicket) this.sendOrder.finish(ticket);
 		}
 	}
 
-	/**
-	 * While shared-store routing or acceptance work is making progress, extend the sender with `send_held` up to
-	 * `min(startedAt + RECIPIENT_SAVE_MAX_WAIT_MS, lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS)` whenever that
-	 * horizon moves within `MIN_WAIT_CLIENT_MARGIN_MS` of the client's current deadline. Emits nothing when the store
-	 * has not answered (or only answered within the initial 1 s margin before hanging), never shrinks an existing
-	 * client deadline, and cancels all timers on completion, socket close, deadline expiry, or `close()`.
-	 */
-	private startProgressReporting(
-		socket: BrokerConnectedSession["socket"],
-		messageId: string,
-		attemptId: string | undefined,
-		progress: SendProgress,
-		ticket?: SendOrderTicket,
-	): () => void {
+	private stopProgress(progress: SendProgress): void {
+		progress.reportingEnabled = false;
 		progress.stopReporting?.();
-		if (this.closed || socket.destroyed === true || socket.writableEnded === true) return () => {};
+	}
+
+	private trackQueuedProgress(senderKey: string, progress: SendProgress): void {
+		let set = this.queuedProgress.get(senderKey);
+		if (set === undefined) {
+			set = new Set();
+			this.queuedProgress.set(senderKey, set);
+		}
+		set.add(progress);
+	}
+
+	private untrackQueuedProgress(senderKey: string, progress: SendProgress): void {
+		const set = this.queuedProgress.get(senderKey);
+		if (set === undefined) return;
+		set.delete(progress);
+		if (set.size === 0) this.queuedProgress.delete(senderKey);
+	}
+
+	/**
+	 * Event-driven horizon progress reporter: never arms a timer when there is no store progress or while
+	 * `desired = min(startedAt + RECIPIENT_SAVE_MAX_WAIT_MS, lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS)` still
+	 * fits inside `clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS`. When an actual store answer advances `desired`
+	 * past that margin, schedules at most one timer (bounded by `RECIPIENT_SAVING_REPORT_INTERVAL_MS` and
+	 * `clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS`) to extend the sender without ever shrinking an existing hold.
+	 */
+	private scheduleProgressHold(progress: SendProgress, now = performance.now()): void {
+		if (!progress.reportingEnabled || !progress.hadProgress || this.closed) return;
+		if (progress.socket.destroyed === true || progress.socket.writableEnded === true) {
+			this.stopProgress(progress);
+			return;
+		}
+		const capAt = progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
+		if (now >= capAt || now >= progress.clientDeadlineAt) {
+			this.stopProgress(progress);
+			return;
+		}
+		const desired = Math.min(capAt, progress.lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS);
+		if (now >= desired || desired + MIN_WAIT_CLIENT_MARGIN_MS <= progress.clientDeadlineAt) return;
+		const guardAt = progress.clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS;
+		if (now >= guardAt) {
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, desired - now);
+			if (timeoutMs > 0) {
+				progress.stopReporting?.();
+				this.sendHoldFrame(progress.socket, progress.messageId, progress.attemptId, timeoutMs, progress);
+			}
+			return;
+		}
+		const delayMs = Math.min(RECIPIENT_SAVING_REPORT_INTERVAL_MS, guardAt - now);
+		const fireAt = now + delayMs;
+		if (progress.scheduledFireAt !== undefined && progress.scheduledFireAt <= fireAt) return;
+		progress.stopReporting?.();
 		let active = true;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		let scheduledFireAt = Number.POSITIVE_INFINITY;
 		const stop = (): void => {
 			active = false;
 			if (timer !== undefined) {
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			scheduledFireAt = Number.POSITIVE_INFINITY;
+			if (progress.stopReporting === stop) {
+				progress.stopReporting = undefined;
+				progress.scheduledFireAt = undefined;
+			}
 			this.progressStops.delete(stop);
-			if (progress.stopReporting === stop) progress.stopReporting = undefined;
-			if (progress.onProgress === onProgress) progress.onProgress = undefined;
-		};
-		const maybeEmitHold = (tickNow: number): boolean => {
-			const effective = this.effectiveProgress(progress, ticket);
-			if (!effective.hadProgress) return false;
-			const capAt = progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
-			const desired = Math.min(capAt, effective.lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS);
-			if (tickNow >= desired) return false;
-			if (desired + MIN_WAIT_CLIENT_MARGIN_MS <= progress.clientDeadlineAt) return false;
-			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, desired - tickNow);
-			if (timeoutMs <= 0) return false;
-			this.sendHoldFrame(socket, messageId, attemptId, timeoutMs, progress);
-			return true;
-		};
-		const schedule = (now = performance.now()): void => {
-			if (!active || this.closed || socket.destroyed === true || socket.writableEnded === true) {
-				stop();
-				return;
-			}
-			const capAt = progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
-			if (now >= capAt || now >= progress.clientDeadlineAt) {
-				stop();
-				return;
-			}
-			const guardAt = progress.clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS;
-			const delayMs =
-				now < guardAt
-					? Math.min(RECIPIENT_SAVING_REPORT_INTERVAL_MS, guardAt - now)
-					: Math.min(RECIPIENT_SAVING_REPORT_INTERVAL_MS, progress.clientDeadlineAt - now);
-			if (timer !== undefined) clearTimeout(timer);
-			scheduledFireAt = now + delayMs;
-			timer = setTimeout(() => {
-				timer = undefined;
-				scheduledFireAt = Number.POSITIVE_INFINITY;
-				if (!active || this.closed || socket.destroyed === true || socket.writableEnded === true) {
-					stop();
-					return;
-				}
-				const tickNow = performance.now();
-				if (tickNow >= progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS || tickNow >= progress.clientDeadlineAt) {
-					stop();
-					return;
-				}
-				maybeEmitHold(tickNow);
-				schedule(performance.now());
-			}, delayMs);
-			timer.unref?.();
-		};
-		const onProgress = (now: number): void => {
-			if (!active || this.closed || socket.destroyed === true || socket.writableEnded === true) return;
-			const guardAt = progress.clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS;
-			if (now >= guardAt) {
-				if (maybeEmitHold(now)) schedule(performance.now());
-			} else if (scheduledFireAt > guardAt) {
-				schedule(now);
-			}
 		};
 		progress.stopReporting = stop;
-		progress.onProgress = onProgress;
+		progress.scheduledFireAt = fireAt;
 		this.progressStops.add(stop);
-		schedule();
-		return stop;
+		timer = setTimeout(() => {
+			if (!active || !progress.reportingEnabled || this.closed) {
+				stop();
+				return;
+			}
+			stop();
+			if (progress.socket.destroyed === true || progress.socket.writableEnded === true) {
+				progress.reportingEnabled = false;
+				return;
+			}
+			const tickNow = performance.now();
+			const tickCapAt = progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
+			if (tickNow >= tickCapAt || tickNow >= progress.clientDeadlineAt) {
+				progress.reportingEnabled = false;
+				return;
+			}
+			const tickDesired = Math.min(tickCapAt, progress.lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS);
+			if (tickNow >= tickDesired || tickDesired + MIN_WAIT_CLIENT_MARGIN_MS <= progress.clientDeadlineAt) return;
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, tickDesired - tickNow);
+			if (timeoutMs > 0) {
+				this.sendHoldFrame(progress.socket, progress.messageId, progress.attemptId, timeoutMs, progress);
+			}
+		}, delayMs);
+		timer.unref?.();
 	}
 
 	private resolveBlockerProgress(progress: SendProgress, ticket?: SendOrderTicket): SendProgress | undefined {
@@ -3736,13 +3761,16 @@ export class MultiNodeRouter {
 		}
 	}
 
-	private effectiveProgress(
-		progress: SendProgress,
-		ticket?: SendOrderTicket,
-	): { readonly hadProgress: boolean; readonly lastProgressAt: number } {
-		const blocker = this.resolveBlockerProgress(progress, ticket);
-		this.syncProgressFromBlocker(progress, blocker);
-		return { hadProgress: progress.hadProgress, lastProgressAt: progress.lastProgressAt };
+	private notifyQueuedProgress(senderKey: string, source: SendProgress, now: number): void {
+		const queued = this.queuedProgress.get(senderKey);
+		if (queued === undefined) return;
+		for (const waiting of queued) {
+			if (!waiting.reportingEnabled) continue;
+			const blocker = this.resolveBlockerProgress(waiting, waiting.ticket);
+			if (blocker !== source) continue;
+			this.syncProgressFromBlocker(waiting, source);
+			this.scheduleProgressHold(waiting, now);
+		}
 	}
 
 	private markRoutingProgress(request: RemoteSendRequest): void {
@@ -3752,7 +3780,8 @@ export class MultiNodeRouter {
 			const now = performance.now();
 			progress.hadProgress = true;
 			if (now > progress.lastProgressAt) progress.lastProgressAt = now;
-			progress.onProgress?.(now);
+			this.scheduleProgressHold(progress, now);
+			this.notifyQueuedProgress(deliveryTargetIdentity(request.from), progress, now);
 		}
 	}
 
@@ -3793,11 +3822,22 @@ export class MultiNodeRouter {
 	): Promise<void> {
 		const wait = this.sendOrder.waitForEarlier(ticket, options);
 		if (wait === undefined) return;
-		await wait;
+		const senderKey = ticket.senderKey;
 		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined) {
+			this.trackQueuedProgress(senderKey, progress);
+			this.syncProgressFromBlocker(progress, this.resolveBlockerProgress(progress, ticket));
+			this.scheduleProgressHold(progress);
+		}
+		try {
+			await wait;
+		} finally {
+			if (progress !== undefined) this.untrackQueuedProgress(senderKey, progress);
+		}
 		const lastBlocker = this.sendOrder.lastBlockingTicket(ticket);
 		if (progress !== undefined && lastBlocker !== undefined) {
 			this.syncProgressFromBlocker(progress, this.ticketProgress.get(lastBlocker));
+			this.scheduleProgressHold(progress);
 		}
 	}
 
@@ -3875,13 +3915,8 @@ export class MultiNodeRouter {
 			this.sendOrder.reenterRemote(ticket);
 			const progress = this.sendProgress.get(frame.reentrant.clientMessage);
 			if (progress !== undefined && frame.reentrant.localTarget === undefined) {
-				this.startProgressReporting(
-					frame.reentrant.socket,
-					frame.reentrant.message.id,
-					frame.reentrant.attemptId,
-					progress,
-					ticket,
-				);
+				progress.reportingEnabled = true;
+				if (progress.hadProgress) this.scheduleProgressHold(progress);
 			}
 			await this.routeSendSafely(frame.reentrant, ticket, false);
 		}
@@ -4986,7 +5021,7 @@ export class MultiNodeRouter {
 	): Promise<void> {
 		const { message } = request;
 		const progress = this.sendProgress.get(request.clientMessage);
-		progress?.stopReporting?.();
+		if (progress !== undefined) this.stopProgress(progress);
 		if (row.digest !== digest || row.targetIdentity !== target.identity) {
 			this.failConflict(request);
 			return;
@@ -5003,12 +5038,16 @@ export class MultiNodeRouter {
 				clientDeadlineAt: progress?.clientDeadlineAt ?? now + SEND_RESPONSE_TIMEOUT_MS,
 				hadProgress: true,
 				lastProgressAt: now,
+				reportingEnabled: true,
+				socket: request.socket,
+				messageId: message.id,
+				...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			};
-			const stop = this.startProgressReporting(request.socket, message.id, request.attemptId, acceptance);
+			this.scheduleProgressHold(acceptance, now);
 			try {
 				await this.state.sentMessages.accept({ messageId: message.id, digest });
 			} finally {
-				stop();
+				this.stopProgress(acceptance);
 			}
 			if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
 			this.host.write(request.socket, { type: "delivered", messageId: message.id, attemptId: request.attemptId });
@@ -5226,8 +5265,8 @@ export class MultiNodeRouter {
 		});
 		// Stop routing progress reporting before writing the 20 s hold so no 8 s routing hold can shrink it during `requestWake`.
 		const progress = this.sendProgress.get(request.clientMessage);
-		progress?.stopReporting?.();
 		if (progress !== undefined) {
+			this.stopProgress(progress);
 			const holdDeadline = performance.now() + RESTORING_RECIPIENT_HOLD_MS + HELD_SEND_GRACE_MS;
 			if (holdDeadline > progress.clientDeadlineAt) progress.clientDeadlineAt = holdDeadline;
 		}
@@ -5605,15 +5644,23 @@ export class MultiNodeRouter {
 			clientDeadlineAt: waiter.clientDeadlineAt,
 			hadProgress: true,
 			lastProgressAt: now,
+			reportingEnabled: true,
+			socket: waiter.socket,
+			messageId: waiter.messageId,
+			...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
 		};
-		const stop = this.startProgressReporting(waiter.socket, waiter.messageId, waiter.attemptId, acceptance);
+		this.scheduleProgressHold(acceptance, now);
 		try {
 			await this.state.sentMessages.accept({ messageId: waiter.messageId, digest: waiter.digest });
-			acceptance.lastProgressAt = performance.now();
+			const afterAccept = performance.now();
+			acceptance.lastProgressAt = afterAccept;
+			this.scheduleProgressHold(acceptance, afterAccept);
 			if (waiter.expectsReply && waiter.resolveReplyTarget && waiter.attemptId !== undefined) {
 				// #3777: a recipient that reconnected before confirming answers under its new session id.
 				const current = await this.state.leases.read({ kind: "presence", targetIdentity: waiter.targetIdentity });
-				acceptance.lastProgressAt = performance.now();
+				const afterLease = performance.now();
+				acceptance.lastProgressAt = afterLease;
+				this.scheduleProgressHold(acceptance, afterLease);
 				if (
 					current.status === "found" &&
 					current.lease.subject.kind === "presence" &&
@@ -5625,7 +5672,7 @@ export class MultiNodeRouter {
 				}
 			}
 		} finally {
-			stop();
+			this.stopProgress(acceptance);
 		}
 		this.host.write(waiter.socket, { type: "delivered", messageId: waiter.messageId, attemptId: waiter.attemptId });
 	}
@@ -6040,6 +6087,7 @@ export class MultiNodeRouter {
 		this.closed = true;
 		for (const stop of [...this.progressStops]) stop();
 		this.progressStops.clear();
+		this.queuedProgress.clear();
 		this.replyLanes.clear();
 		this.sendOrder.close();
 		for (const initial of this.initialScans.values()) initial.resolve();
