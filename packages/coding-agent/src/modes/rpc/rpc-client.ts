@@ -146,6 +146,8 @@ export class RpcClient extends RpcClientApi {
 	private stoppingEngine: ChildProcess | undefined;
 	/** Contains and reports what the listeners of an interactive engine's host throw; a raw client has none. */
 	private readonly listenerFailures: HostListenerFailures | undefined;
+	/** What the engine child wrote, and how it ended, while {@link holdChildOutput} holds them, in arrival order. */
+	private heldChildOutput: Array<() => void> | undefined;
 
 	private declare options: RpcClientOptions;
 
@@ -155,6 +157,29 @@ export class RpcClient extends RpcClientApi {
 		this.listenerFailures = options.interactiveEngine
 			? new HostListenerFailures((diagnostic) => this.options.interactiveEngine?.onDiagnostic(diagnostic))
 			: undefined;
+	}
+
+	/**
+	 * Hold what the engine child writes, and its exit, until the returned function releases them. They then reach this
+	 * client in the order they arrived, as if the child had only started then, so a host can start its engine before the
+	 * listeners that read it exist. A stop releases them first.
+	 */
+	holdChildOutput(): () => void {
+		const held: Array<() => void> = [];
+		this.heldChildOutput = held;
+		return () => this.releaseChildOutput(held);
+	}
+
+	private releaseChildOutput(held: Array<() => void> | undefined = this.heldChildOutput): void {
+		if (held === undefined || this.heldChildOutput !== held) return;
+		this.heldChildOutput = undefined;
+		for (const handle of held) handle();
+	}
+
+	/** Handle something the engine child wrote or did now, or once its held output is released. */
+	private receive(handle: () => void): void {
+		if (this.heldChildOutput) this.heldChildOutput.push(handle);
+		else handle();
 	}
 
 	async start(restartPermit?: number): Promise<void> {
@@ -239,10 +264,14 @@ export class RpcClient extends RpcClientApi {
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
 
 		childProcess.once("exit", (code, signal) =>
-			this.failGeneration(this.createProcessExitError(code, signal), generation, "exit"),
+			this.receive(() => this.failGeneration(this.createProcessExitError(code, signal), generation, "exit")),
 		);
-		childProcess.once("error", (rawError) => this.failGeneration(rawError, generation, "process-error"));
-		childProcess.stdin?.on("error", (rawError) => this.failGeneration(rawError, generation, "stdin-error"));
+		childProcess.once("error", (rawError) =>
+			this.receive(() => this.failGeneration(rawError, generation, "process-error")),
+		);
+		childProcess.stdin?.on("error", (rawError) =>
+			this.receive(() => this.failGeneration(rawError, generation, "stdin-error")),
+		);
 		const reportStderr = createStderrReporter((message) => {
 			if (generation !== this.generation) return;
 			if (this.options.interactiveEngine) {
@@ -257,11 +286,13 @@ export class RpcClient extends RpcClientApi {
 		});
 		// Decode continuously per child, including split code points and the final incomplete sequence at EOF.
 		childProcess.stderr?.setEncoding("utf8");
-		childProcess.stderr?.on("data", (data: string) => {
-			if (generation !== this.generation) return;
-			this.stderr = appendBoundedStderr(this.stderr, data);
-			reportStderr(data);
-		});
+		childProcess.stderr?.on("data", (data: string) =>
+			this.receive(() => {
+				if (generation !== this.generation) return;
+				this.stderr = appendBoundedStderr(this.stderr, data);
+				reportStderr(data);
+			}),
+		);
 		const readerOptions = createInteractiveJsonlOptions(this.engineMonitor !== undefined);
 		let markStdoutDrained!: () => void;
 		this.stdoutDrained = new Promise<void>((resolve) => {
@@ -269,10 +300,11 @@ export class RpcClient extends RpcClientApi {
 		});
 		this.stopReadingStdout = attachJsonlLineReader(
 			childProcess.stdout!,
-			(line) => {
-				if (generation === this.generation) this.handleLine(line, generation);
-			},
-			{ ...readerOptions, onDrained: () => markStdoutDrained() },
+			(line) =>
+				this.receive(() => {
+					if (generation === this.generation) this.handleLine(line, generation);
+				}),
+			{ ...readerOptions, onDrained: () => this.receive(() => markStdoutDrained()) },
 		);
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
 		else await sleep(100);
@@ -328,6 +360,7 @@ export class RpcClient extends RpcClientApi {
 	 * ending that group at once always did.
 	 */
 	stop(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
+		this.releaseChildOutput();
 		this.restartRevision += 1;
 		if (this.stopPromise) return this.stopPromise;
 		if (!this.process) return Promise.resolve();
@@ -348,6 +381,8 @@ export class RpcClient extends RpcClientApi {
 	 * request; only then is the generation retired (see RpcTerminalDrain).
 	 */
 	private async stopCurrentGeneration(graceful = false, hostSignaled = false): Promise<void> {
+		// The stop waits for the child's output to drain: whatever is held reaches the client first.
+		this.releaseChildOutput();
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
