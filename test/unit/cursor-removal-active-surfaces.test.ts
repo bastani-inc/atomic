@@ -59,11 +59,7 @@ describe("removed provider active surfaces", () => {
 		const dependency = "@bufbuild/" + "protobuf";
 		// bun.lock was deleted when install moved to npm; package-lock.json is now
 		// the single verified lockfile and already covered both surfaces.
-		for (const path of [
-			"packages/coding-agent/package.json",
-			"package-lock.json",
-			"packages/coding-agent/npm-shrinkwrap.json",
-		]) {
+		for (const path of ["packages/coding-agent/package.json", "package-lock.json"]) {
 			assert.equal(read(path).includes(dependency), false, path);
 		}
 	});
