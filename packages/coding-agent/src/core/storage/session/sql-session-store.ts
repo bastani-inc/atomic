@@ -448,6 +448,23 @@ async function entryByteLengthOf(database: SqliteDatabase): Promise<(expression:
 	}
 }
 
+/**
+ * The most bytes of statements a session write sends as one batch: an ordinary message's are far fewer. A larger
+ * write, an import or a fork's whole window, runs its statements one at a time as they are made.
+ */
+const STATEMENT_BATCH_BYTES = 1024 * 1024;
+
+/** About how many bytes `statement` carries: its text and its parameters. */
+function statementBytes(statement: SqliteStatement): number {
+	let bytes = statement.sql.length;
+	for (const value of statement.params) {
+		if (typeof value === "string") bytes += value.length;
+		else if (value instanceof Uint8Array) bytes += value.byteLength;
+		else bytes += 8;
+	}
+	return bytes;
+}
+
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly dialect: StorageDialect;
@@ -3801,75 +3818,82 @@ export class SqlSessionStore implements SessionStore {
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
 	): Promise<void> {
-		for (const { sql, params } of this.entryWrites(sessionId, entries, lastSeq, texts).statements)
-			await tx.run(sql, ...params);
+		for (const { sql, params } of this.entryWrites(sessionId, entries, lastSeq, texts)) await tx.run(sql, ...params);
 	}
 
 	/**
-	 * The statements that store `entries` after `lastSeq`, in order: each entry's row and its chunks, the version step
-	 * a first chunked entry takes, then the entries' search texts. `chunked` tells whether any entry is in chunks.
+	 * The statements that store `entries` after `lastSeq`, in order, each entry encoded only when its statements are
+	 * taken: each entry's row and its chunks, the version step a first chunked entry takes, then the entries' search
+	 * texts.
 	 */
-	private entryWrites(
+	private *entryWrites(
 		sessionId: string,
 		entries: readonly SessionEntry[],
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
-	): { readonly statements: readonly SqliteStatement[]; readonly chunked: boolean } {
-		const statements: SqliteStatement[] = [];
+	): Generator<SqliteStatement> {
 		let chunked = false;
 		for (const [index, entry] of entries.entries()) {
 			const seq = lastSeq + index + 1;
 			const stored = storedEntry(entry, this.encode(entry));
 			chunked ||= stored.chunks.length > 0;
-			statements.push({
+			yield {
 				sql: `INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) VALUES (?, ?, ?, ?, ?)`,
 				params: [sessionId, seq, entry.id, stored.json, stored.chunks.length],
-			});
+			};
 			if (stored.chunks.length > 0) {
-				statements.push({
+				yield {
 					sql: `DELETE FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ?`,
 					params: [sessionId, seq],
-				});
+				};
 			}
 			for (const [chunk, data] of stored.chunks.entries()) {
-				statements.push({
+				yield {
 					sql: `INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
 					params: [sessionId, seq, chunk, data],
-				});
+				};
 			}
 		}
 		// One way, in the transaction that writes the first chunked entry: a build that knows only version 1 refuses the
 		// database when next opened instead of reading the entry as a stub.
 		if (chunked) {
-			statements.push({
+			yield {
 				sql: `UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ?`,
 				params: [SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED],
-			});
+			};
 		}
 		for (const { index, text } of texts) {
-			statements.push({
+			yield {
 				sql: `INSERT INTO ${this.tables.searchTexts} (session_id, seq, text_json) VALUES (?, ?, ?)`,
 				params: [sessionId, lastSeq + index + 1, this.encode(text)],
-			});
+			};
 		}
-		return { statements, chunked };
 	}
 
 	/**
-	 * Runs the session row's statement and the entries' statements in order: on a connection thread as one batch that
-	 * waits for the thread once, unless an entry is stored in chunks, whose statements then run one at a time, so no
-	 * request carries more than one chunk.
+	 * Runs the session row's statement, then `entries`' statements, in order. A write of up to
+	 * {@link STATEMENT_BATCH_BYTES}, as an ordinary message is, goes to a connection thread as one batch that waits for
+	 * it once. A larger one runs its statements one at a time as they are made, as before, so it never holds more than
+	 * about that much of them, or sends it, at once.
 	 */
 	private async writeEntries(
 		tx: SqliteExecutor,
 		summary: SqliteStatement,
-		entries: { readonly statements: readonly SqliteStatement[]; readonly chunked: boolean },
+		entries: Iterable<SqliteStatement>,
 	): Promise<void> {
-		if (!entries.chunked) {
-			await statementBatch(tx, [summary, ...entries.statements], []);
+		const batch: SqliteStatement[] = [summary];
+		let bytes = statementBytes(summary);
+		const pending = entries[Symbol.iterator]();
+		for (let next = pending.next(); next.done !== true; next = pending.next()) {
+			batch.push(next.value);
+			bytes += statementBytes(next.value);
+			if (bytes <= STATEMENT_BATCH_BYTES) continue;
+			for (const { sql, params } of batch) await tx.run(sql, ...params);
+			for (let rest = pending.next(); rest.done !== true; rest = pending.next())
+				await tx.run(rest.value.sql, ...rest.value.params);
 			return;
 		}
-		for (const { sql, params } of [summary, ...entries.statements]) await tx.run(sql, ...params);
+		await statementBatch(tx, batch, []);
 	}
 
 	private encode(value: SessionRecordHeader | SessionEntry | StoredSummaryState | string): string {
