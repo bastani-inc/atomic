@@ -783,18 +783,36 @@ export default function intercom(atomic: ExtensionAPI, options: LightweightInter
 	});
 	atomic.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
+		const signal = payload.signal;
+		if (signal?.aborted) {
+			payload.completion = Promise.resolve(false);
+			return;
+		}
 		const forwarded: AwaitIntercomPeerRequest = {
 			name: payload.name,
 			timeoutMs: payload.timeoutMs,
 			...(payload.group === undefined ? {} : { group: payload.group }),
+			...(signal === undefined ? {} : { signal }),
 		};
-		payload.completion = loadHeavy(latestLifecycleContext())
+		const work = loadHeavy(latestLifecycleContext())
 			.then(async (handle) => {
+				if (signal?.aborted) return false;
 				handle.assertCurrent();
 				await dispatchEventHandlers(handle.heavy, SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, forwarded);
 				return forwarded.completion ? await forwarded.completion : false;
 			})
 			.catch(() => false);
+		payload.completion =
+			signal === undefined
+				? work
+				: new Promise<boolean>((resolve) => {
+						const onAbort = () => resolve(false);
+						signal.addEventListener("abort", onAbort, { once: true });
+						void work.then((result) => {
+							signal.removeEventListener("abort", onAbort);
+							resolve(result);
+						});
+					});
 	});
 	// #3760: a resume restoring a child asks the broker, through this session's connection, to hold its sends.
 	atomic.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {

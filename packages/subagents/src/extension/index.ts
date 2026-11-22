@@ -527,10 +527,13 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 		});
 		atomic.on("session_recovery_restore", async (_event, ctx) => {
 			// Subagent children never own children, and each session restores its children at most once.
-			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx) || restoredSessionChildren) return undefined;
+			const signal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
+			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx) || restoredSessionChildren || signal?.aborted)
+				return undefined;
 			restoredSessionChildren = true;
 			const writer = subagentChildOwnerWriter(atomic, ctx.sessionManager);
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
+			if (signal?.aborted || !lifecycle.isCurrent()) return undefined;
 			const notices = subagentChildRestoreNotices(outcomes);
 			// Report once: record the children the notices call gone, so later restarts neither retry nor repeat them.
 			await recordReportedGoneSubagentChildren(writer, outcomes);
