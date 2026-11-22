@@ -23,10 +23,14 @@ import { interceptConnectionRequests, isExec } from "../helpers/sqlite-connectio
  * The wrapped connection's busy timeout: how long a statement of 0.10.1 held the event loop for a lock the threaded
  * transaction kept, and how long one waits for the transaction here.
  */
-const WRAPPED_BUSY_TIMEOUT_MS = 2_000;
+const WRAPPED_BUSY_TIMEOUT_MS = 6_000;
 /** How long the threaded transaction keeps the write lock across a timer, which needs the event loop. */
 const HOLD_MS = 300;
-/** The longest the event loop may go without running: half the busy timeout leaves room for a loaded machine. */
+/**
+ * The longest the event loop may go without running: half the busy timeout. A statement that waits for the lock on
+ * the event loop stops it for the whole busy timeout, and on a loaded Windows runner the event loop went 1.1 s without
+ * a turn while a write waited off it.
+ */
 const MAX_EVENT_LOOP_STALL_MS = WRAPPED_BUSY_TIMEOUT_MS / 2;
 /**
  * How many `[` that no `]` closes the statement of unclosed `[` holds, one per two characters. Read once, its text takes
