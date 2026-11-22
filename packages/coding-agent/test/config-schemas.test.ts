@@ -198,14 +198,171 @@ describe("theme schema", () => {
 			/theme names cannot contain/,
 		);
 		assert.throws(() => parseThemeJson("invalid", { ...builtIn, colors: {} }), /Missing required color tokens/);
-		for (const invalid of [
-			{ ...builtIn, unexpected: true },
-			{ ...builtIn, colors: { ...(builtIn.colors as Record<string, unknown>), scrollbarThmb: "" } },
-			{ ...builtIn, export: { unexpected: "" } },
-			{ ...builtIn, workingIndicator: { unexpected: "" } },
-		]) {
-			assert.throws(() => parseThemeJson("invalid", invalid), /additional properties/i);
+		for (const [invalid, pathPattern] of [
+			[{ ...builtIn, unexpected: true }, /\/unexpected/],
+			[
+				{ ...builtIn, colors: { ...(builtIn.colors as Record<string, unknown>), scrollbarThmb: "" } },
+				/\/colors\/scrollbarThmb/,
+			],
+			[{ ...builtIn, export: { unexpected: "" } }, /\/export\/unexpected/],
+			[{ ...builtIn, workingIndicator: { unexpected: "" } }, /\/workingIndicator\/unexpected/],
+		] as const) {
+			assert.throws(
+				() => parseThemeJson("invalid", invalid),
+				(error: unknown) => {
+					assert.ok(error instanceof Error);
+					assert.match(error.message, /additional properties/i);
+					assert.match(error.message, pathPattern);
+					return true;
+				},
+			);
 		}
+	});
+
+	it("matches validateThemeJson accept/reject and error messages identically without loading TypeBox on the fast path", async () => {
+		const { validateThemeJson } = await import("../src/modes/interactive/theme/theme-schema.js");
+		const builtIn = JSON.parse(readPackageFile("src/modes/interactive/theme/dark.json")) as Record<string, unknown>;
+		const builtInColors = builtIn.colors as Record<string, unknown>;
+		const nonEnumExtra = { ...builtIn };
+		Object.defineProperty(nonEnumExtra, "hidden", { value: 1, enumerable: false });
+		const nullProtoValid = Object.assign(Object.create(null) as Record<string, unknown>, builtIn, {
+			colors: Object.assign(Object.create(null) as Record<string, unknown>, builtInColors),
+		});
+		const cases: unknown[] = [
+			builtIn,
+			nullProtoValid,
+			{ ...builtIn, $schema: "https://example.com/schema.json" },
+			{ ...builtIn, $schema: undefined },
+			{ ...builtIn, $schema: 123 },
+			{ ...builtIn, name: "" },
+			{ ...builtIn, name: "a/b" },
+			{ ...builtIn, name: 42 },
+			{ ...builtIn, vars: { primary: "#ffffff", idx: 0, max: 255 } },
+			{ ...builtIn, vars: { badNeg: -1 } },
+			{ ...builtIn, vars: { badHigh: 256 } },
+			{ ...builtIn, vars: { badFloat: 1.5 } },
+			{ ...builtIn, vars: { badBool: true } },
+			{ ...builtIn, vars: [] },
+			{ ...builtIn, vars: null },
+			{ ...builtIn, colors: { ...builtInColors, accent: 0, border: 255, scrollbarThumb: undefined } },
+			{ ...builtIn, colors: { ...builtInColors, accent: -1 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: 256 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: 12.3 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: null } },
+			{ ...builtIn, colors: [] },
+			{ ...builtIn, colors: {} },
+			{ ...builtIn, workingIndicator: { dark: "#111111", peak: 255 } },
+			{ ...builtIn, workingIndicator: { dark: 256 } },
+			{ ...builtIn, workingIndicator: { extra: "#111111" } },
+			{ ...builtIn, workingIndicator: [] },
+			{ ...builtIn, export: { pageBg: "#000000", cardBg: 16, infoBg: "" } },
+			{ ...builtIn, export: { pageBg: -1 } },
+			{ ...builtIn, export: { extra: "" } },
+			{ ...builtIn, export: null },
+			{ ...builtIn, unknownTop: 1 },
+			nonEnumExtra,
+			null,
+			[],
+			"string",
+			42,
+			{},
+		];
+		const formatExpectedError = (label: string, candidate: unknown): string | undefined => {
+			if (
+				typeof candidate === "object" &&
+				candidate !== null &&
+				"name" in candidate &&
+				typeof (candidate as { name: unknown }).name === "string" &&
+				(candidate as { name: string }).name.includes("/")
+			) {
+				return `Invalid theme name "${(candidate as { name: string }).name}": theme names cannot contain "/" because it is reserved for automatic light/dark theme settings.`;
+			}
+			if (validateThemeJson.Check(candidate)) return undefined;
+			const missingColors = new Set<string>();
+			const otherErrors: string[] = [];
+			for (const error of validateThemeJson.Errors(candidate)) {
+				if (error.keyword === "required" && error.instancePath === "/colors") {
+					const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
+					for (const requiredProperty of requiredProperties ?? []) missingColors.add(requiredProperty);
+					continue;
+				}
+				otherErrors.push(`  - ${error.instancePath || "/"}: ${error.message}`);
+			}
+			let errorMessage = `Invalid theme "${label}":\n`;
+			if (missingColors.size > 0) {
+				errorMessage += "\nMissing required color tokens:\n";
+				errorMessage += Array.from(missingColors)
+					.sort()
+					.map((color) => `  - ${color}`)
+					.join("\n");
+				errorMessage += '\n\nPlease add these colors to your theme\'s "colors" object.';
+				errorMessage += "\nSee the built-in themes (dark.json, light.json) for reference values.";
+			}
+			if (otherErrors.length > 0) errorMessage += `\n\nOther errors:\n${otherErrors.join("\n")}`;
+			return errorMessage;
+		};
+		for (const candidate of cases) {
+			const expectedError = formatExpectedError("diff", candidate);
+			let actualError: string | undefined;
+			try {
+				parseThemeJson("diff", candidate);
+			} catch (error) {
+				actualError = error instanceof Error ? error.message : String(error);
+			}
+			assert.equal(actualError, expectedError, `mismatch for ${JSON.stringify(candidate)}`);
+		}
+
+		// Verify importing theme-parse and validating a valid theme does not load TypeBox
+		const { spawnSync } = await import("node:child_process");
+		const parseUrl = new URL("../src/modes/interactive/theme/theme-parse.ts", import.meta.url).href;
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { existsSync } from "node:fs";
+				import { registerHooks } from "node:module";
+				import { fileURLToPath } from "node:url";
+				const loaded = [];
+				registerHooks({
+					resolve(specifier, context, next) {
+						if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL?.startsWith("file:")) {
+							const tsUrl = new URL(specifier.slice(0, -3) + ".ts", context.parentURL);
+							if (existsSync(fileURLToPath(tsUrl))) return { url: tsUrl.href, shortCircuit: true };
+						}
+						return next(specifier, context);
+					},
+					load(url, ctx, next) { loaded.push(url); return next(url, ctx); },
+				});
+				const { parseThemeJson } = await import(${JSON.stringify(parseUrl)});
+				parseThemeJson("dark", ${JSON.stringify(builtIn)});
+				process.stdout.write(JSON.stringify(loaded.filter((u) => u.includes("typebox") || /\\/theme-schema\\.[jt]s$/.test(u))));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		assert.deepEqual(JSON.parse(probe.stdout), []);
+
+		// Verify settings-defaults stays aligned with atomic-ai's retry default without importing atomic-ai
+		const { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } = await import("@bastani/atomic-ai/utils/retry");
+		const { SETTINGS_DEFAULTS } = await import("../src/core/settings-defaults.js");
+		assert.equal(SETTINGS_DEFAULTS.retry.maxAgentDelayMs, DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
+		const defaultsUrl = new URL("../src/core/settings-defaults.ts", import.meta.url).href;
+		const defaultsProbe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const loaded = [];
+				registerHooks({ load(url, ctx, next) { loaded.push(url); return next(url, ctx); } });
+				await import(${JSON.stringify(defaultsUrl)});
+				process.stdout.write(JSON.stringify(loaded.filter((u) => u.includes("atomic-ai") || u.includes("/packages/ai/"))));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(defaultsProbe.status, 0, defaultsProbe.stderr);
+		assert.deepEqual(JSON.parse(defaultsProbe.stdout), []);
 	});
 });
 

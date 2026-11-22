@@ -352,17 +352,20 @@ builtTest(
 			!/http-dispatcher\.js/.test(stage0) && !/http-dispatcher\.js/.test(stage1),
 			`stages 0 and 1 must not eagerly evaluate http-dispatcher.js:\nstage0:\n${stage0}\nstage1:\n${stage1}`,
 		);
-		const stage1Shared = [...stage1.matchAll(/\.\.\/_shared\/([^"']+\.js)/g)].map((m) => m[1]);
-		assert.ok(stage1Shared.length > 0, `expected stage 1 to load a _shared chunk:\n${stage1}`);
-		for (const file of stage1Shared) {
+		const earlyShared = [...`${stage0}\n${stage1}`.matchAll(/\.\.\/_shared\/([^"']+\.js)/g)].map((m) => m[1]);
+		assert.ok(
+			earlyShared.length > 0,
+			`expected stages 0..1 to load a _shared chunk:\nstage0:\n${stage0}\nstage1:\n${stage1}`,
+		);
+		for (const file of earlyShared) {
 			assert.ok(
 				file.startsWith("http-undici-"),
-				`expected stage 1 to load only the lazy http-undici wrapper (not eager http-dispatcher), got ${file}`,
+				`expected stages 0..1 to load only the lazy http-undici wrapper (not eager http-dispatcher), got ${file}`,
 			);
 			const code = readFileSync(join(DIST, "_shared", file), "utf8");
 			assert.ok(
 				!/\b__toESM\s*\(\s*require_undici\s*\(\s*\)\s*\)/.test(code),
-				`stage 1 chunk ${file} must define require_undici lazily without executing it at top level`,
+				`early startup chunk ${file} must define require_undici lazily without executing it at top level`,
 			);
 		}
 	},

@@ -109,3 +109,60 @@ test("a direct send stays linear in the sessions the broker serves and asks abou
 	assert.ok(lookups.holds + lookups.answerable <= RETURN_PATH_LOOKUPS_PER_SEND, JSON.stringify(lookups));
 	assert.ok(reads.id <= sessions.size * ID_READS_PER_SESSION, `${reads.id} id reads for ${sessions.size} sessions`);
 });
+
+test("not_found with many pending openings stays linear in sessions and never scans sessions per opening", () => {
+	const sessions = new Map<string, BrokerConnectedSession>();
+	const stage = session("stage", "stages", {} as net.Socket);
+	sessions.set(stage.info.id, stage);
+	const numSessions = 200;
+	const numPending = 50;
+	for (let index = 0; index < numSessions; index++) {
+		const id = `other-${index}`;
+		sessions.set(id, session(id, "other", {} as net.Socket));
+	}
+	const paths = new ReturnPaths();
+	const authority = createReturnPathAuthority(paths, sessions);
+	const delivered = new DeliveredMessageCache();
+	const pending = new PendingQuestionIndex();
+	const supervisor = new SupervisorChannelCache();
+
+	const measureNotFound = (messageId: string): number => {
+		reads.id = 0;
+		handleBrokerSend(
+			stage.socket,
+			{ type: "send", to: "nonexistent-peer", message: { id: messageId, timestamp: 1, content: { text: "x" } } },
+			stage.info.id,
+			sessions,
+			delivered,
+			() => true,
+			supervisor,
+			pending,
+			(_s, _f, done) => done(true),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			authority,
+		);
+		return reads.id;
+	};
+
+	const baselineReads = measureNotFound("nf-baseline");
+	const releases: Array<() => void> = [];
+	for (let index = 0; index < numPending; index++) {
+		const sender = sessions.get(`other-${index}`)!;
+		const release = authority.beginOpening(stage, returnPathParty(sender), sender.info, authority.handOverTime());
+		if (release !== undefined) releases.push(release);
+	}
+	const withPendingReads = measureNotFound("nf-with-pending");
+	for (const release of releases) release();
+	delivered.close();
+
+	// O(1) indexed target lookup reads zero additional sessions regardless of P pending openings.
+	assert.equal(
+		withPendingReads,
+		baselineReads,
+		`expected O(1) lookup with ${numPending} pending openings (baseline ${baselineReads} id reads, got ${withPendingReads})`,
+	);
+});

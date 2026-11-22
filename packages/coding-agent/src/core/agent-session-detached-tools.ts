@@ -17,7 +17,13 @@ import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
-import { abandonedToolResult, toolAbortGraceMs } from "./tools/tool-abort-grace.ts";
+import {
+	abandonedToolResult,
+	armToolAbortGraceTimer,
+	clearToolAbortGraceTimer,
+	holdToolAbortGraceWhenObserved,
+	toolAbortGraceMs,
+} from "./tools/tool-abort-grace.ts";
 import {
 	resolveToolConcurrency,
 	type ToolConcurrencyMode,
@@ -573,8 +579,7 @@ export function detachableTool(
 				interrupted = true;
 				abort(signal?.reason);
 				graceMs = toolAbortGraceMs();
-				graceTimer = setTimeout(() => open(ABANDON), graceMs);
-				graceTimer.unref?.();
+				graceTimer = armToolAbortGraceTimer(session, graceMs, () => open(ABANDON));
 			};
 			if (signal?.aborted) forwardAbort();
 			else signal?.addEventListener("abort", forwardAbort, { once: true });
@@ -610,7 +615,7 @@ export function detachableTool(
 			} finally {
 				hold.gate = undefined;
 				clearTimeout(timer);
-				clearTimeout(graceTimer);
+				clearToolAbortGraceTimer(session, graceTimer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}
@@ -1063,7 +1068,15 @@ function recordWithoutContinuing(session: AgentSession, answers: readonly Answer
  * `onRecorded` is told the ids of the results it recorded as soon as they are saved, before the turn continues, so a
  * caller that holds them elsewhere can let them go even if the continued turn never ends.
  */
-export async function resumeDetachedTurn(
+export function resumeDetachedTurn(
+	this: AgentSession,
+	results: readonly DetachedToolResult[],
+	onRecorded?: (toolCallIds: readonly string[]) => void,
+): Promise<void> {
+	return holdToolAbortGraceWhenObserved(this, runResumeDetachedTurn.call(this, results, onRecorded));
+}
+
+async function runResumeDetachedTurn(
 	this: AgentSession,
 	results: readonly DetachedToolResult[],
 	onRecorded?: (toolCallIds: readonly string[]) => void,

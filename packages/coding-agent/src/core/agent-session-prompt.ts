@@ -56,6 +56,7 @@ import {
 import { expandSkillCommand, getSkillCatalog } from "./skill-catalog.ts";
 import { parseSlashCommand } from "./slash-commands.js";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
+import { holdToolAbortGraceWhenObserved } from "./tools/tool-abort-grace.ts";
 import { noteUserMessageOrigin } from "./user-message-origin.js";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
@@ -161,7 +162,11 @@ export async function normalizeQueuedMessageImages(session: AgentSession, messag
 	message.content = [{ type: "text", text }, ...rest.filter((block) => block.type !== "image"), ...normalized.images];
 }
 
-export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
+export function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
+	return holdToolAbortGraceWhenObserved(this, runPrompt.call(this, text, options));
+}
+
+async function runPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	if (this._disposed || sessionGenerationClosing.has(this))
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	if (subagentExecutionEnded(this)) throw subagentExecutionEndedError();
