@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
 	type RecordedProcess,
@@ -64,14 +64,42 @@ async function recordedFrom(file: string): Promise<RecordedProcess> {
 	return recorded;
 }
 
+/** A program that records its pid in the file its first argument names, then runs until it is ended. */
+const RECORDS_ITS_PID =
+	'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/** {@link RECORDS_ITS_PID}, ignoring SIGTERM. */
+const RECORDS_ITS_PID_DEAF =
+	'process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+/** A program that records its pid in the file its first argument names, then ends after the ms its second gives. */
+const RECORDS_ITS_PID_BOUNDED =
+	'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, Number(process.argv[2]));';
+/**
+ * A program that starts a process of its own running the program its second argument holds, with its first argument,
+ * a file, as that program's argument, in a session of its own when its third argument is `detached`, and runs until
+ * it is ended. When its fourth argument is a poll interval in milliseconds, it passes the output limit once the
+ * started process has recorded its pid in that file.
+ */
+const STARTS_A_PROCESS =
+	'const [file, program, session, overflowPollMs] = process.argv.slice(1); require("node:child_process").spawn(process.execPath, ["-e", program, "--", file], { stdio: "ignore", detached: session === "detached" }).unref(); setInterval(() => {}, 1000); if (overflowPollMs) { const overflow = setInterval(() => { let pid = ""; try { pid = require("node:fs").readFileSync(file, "utf8"); } catch {} if (pid === "") return; clearInterval(overflow); process.stdout.write("x".repeat(4096)); }, Number(overflowPollMs)); }';
+
 /**
  * A command that starts a process of its own in the background, as `sleep 1000 &` does, which records its pid in
- * `file`; both run until they are ended. `detached` starts it in a session of its own, `deaf` has it ignore SIGTERM.
+ * `file`; both run until they are ended. `detached` starts it in a session of its own, `deaf` has it ignore SIGTERM,
+ * and `overflowPollMs` writes past the output limit once `file` holds the started process's pid.
  */
-function commandStartingAProcess(file: string, options: { detached?: boolean; deaf?: boolean } = {}): string[] {
-	const child = `${options.deaf ? 'process.on("SIGTERM", () => {});' : ""}require("node:fs").writeFileSync(${JSON.stringify(file)}, String(process.pid)); setInterval(() => {}, 1000);`;
-	const root = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: "ignore", detached: ${options.detached === true} }).unref(); setInterval(() => {}, 1000);`;
-	return ["-e", root];
+function commandStartingAProcess(
+	file: string,
+	options: { detached?: boolean; deaf?: boolean; overflowPollMs?: number } = {},
+): string[] {
+	return [
+		"-e",
+		STARTS_A_PROCESS,
+		"--",
+		file,
+		options.deaf ? RECORDS_ITS_PID_DEAF : RECORDS_ITS_PID,
+		options.detached ? "detached" : "attached",
+		...(options.overflowPollMs === undefined ? [] : [String(options.overflowPollMs)]),
+	];
 }
 
 describe("a pi.exec command ended by Atomic ends with the processes it started", () => {
@@ -102,13 +130,14 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 
 	test("also when the output limit ends it", async () => {
 		const file = pidFile();
-		const [flag, root] = commandStartingAProcess(file);
 		// The command passes the output limit only once the process it started has recorded its pid, however long
 		// that process takes to start on a loaded machine: ended before then, it would leave no pid to check.
-		const overflowOnceStarted = `const overflow = setInterval(() => { let pid = ""; try { pid = require("node:fs").readFileSync(${JSON.stringify(file)}, "utf8"); } catch {} if (pid === "") return; clearInterval(overflow); process.stdout.write("x".repeat(4096)); }, ${POLL_MS});`;
-		const running = execCommand(process.execPath, [flag!, `${root} ${overflowOnceStarted}`], process.cwd(), {
-			maxBuffer: 1024,
-		});
+		const running = execCommand(
+			process.execPath,
+			commandStartingAProcess(file, { overflowPollMs: POLL_MS }),
+			process.cwd(),
+			{ maxBuffer: 1024 },
+		);
 		const started = await recordedFrom(file);
 
 		const result = await running;
@@ -179,6 +208,14 @@ function uniqueMarker(): string {
 
 /** How long a Windows test's processes run when nothing ends them: bounded, well past any test. */
 const WINDOWS_FIXTURE_SECONDS = 120;
+const POWERSHELL_START_PROCESS = [
+	"param([string]$file, [int]$seconds)",
+	"$p = Start-Process -WindowStyle Hidden ping -ArgumentList '-n',\"$seconds\",'127.0.0.1' -PassThru",
+	"Set-Content -NoNewline -LiteralPath $file -Value $p.Id",
+	"Start-Sleep $seconds",
+].join("\r\n");
+const POWERSHELL_START_UNRELATED_PING =
+	"(Start-Process -WindowStyle Hidden ping -ArgumentList '-n',$env:ATOMIC_FIXTURE_SECONDS,'127.0.0.1' -PassThru).Id";
 
 interface WindowsProcess {
 	readonly pid: number;
@@ -268,14 +305,20 @@ describe.runIf(process.platform === "win32")(
 
 		test("a program PowerShell's Start-Process started", async () => {
 			const file = pidFile();
+			const script = join(dirname(file), "start-process.ps1");
+			writeFileSync(script, POWERSHELL_START_PROCESS);
 			const controller = new AbortController();
 			const running = execCommand(
 				"powershell.exe",
 				[
 					"-NoProfile",
 					"-NonInteractive",
-					"-Command",
-					`$p = Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${WINDOWS_FIXTURE_SECONDS}','127.0.0.1' -PassThru; Set-Content -NoNewline -Path '${file.replace(/'/g, "''")}' -Value $p.Id; Start-Sleep ${WINDOWS_FIXTURE_SECONDS}`,
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					script,
+					file,
+					String(WINDOWS_FIXTURE_SECONDS),
 				],
 				process.cwd(),
 				{ signal: controller.signal },
@@ -290,12 +333,17 @@ describe.runIf(process.platform === "win32")(
 
 		test("a program a Git Bash background job started", async () => {
 			const file = pidFile();
-			// The program records its own process ID, and ends by itself after the fixture's bound.
-			const program = `require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, ${WINDOWS_FIXTURE_SECONDS * 1000});`;
 			const controller = new AbortController();
 			const running = execCommand(
 				"bash",
-				["-c", '"$0" -e "$1" "$2" & wait', process.execPath.replace(/\\/g, "/"), program, file],
+				[
+					"-c",
+					'"$0" -e "$1" -- "$2" "$3" & wait',
+					process.execPath.replace(/\\/g, "/"),
+					RECORDS_ITS_PID_BOUNDED,
+					file,
+					String(WINDOWS_FIXTURE_SECONDS * 1000),
+				],
 				process.cwd(),
 				{ signal: controller.signal },
 			);
@@ -312,13 +360,12 @@ describe.runIf(process.platform === "win32")(
 				Number(
 					execFileSync(
 						"powershell.exe",
-						[
-							"-NoProfile",
-							"-NonInteractive",
-							"-Command",
-							`(Start-Process -WindowStyle Hidden ping -ArgumentList '-n','${WINDOWS_FIXTURE_SECONDS}','127.0.0.1' -PassThru).Id`,
-						],
-						{ encoding: "utf8", timeout: GONE_MS * 4 },
+						["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_START_UNRELATED_PING],
+						{
+							encoding: "utf8",
+							timeout: GONE_MS * 4,
+							env: { ...process.env, ATOMIC_FIXTURE_SECONDS: String(WINDOWS_FIXTURE_SECONDS) },
+						},
 					).trim(),
 				),
 			);
