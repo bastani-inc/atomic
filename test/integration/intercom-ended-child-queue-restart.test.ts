@@ -1035,6 +1035,40 @@ test(
 );
 
 test(
+	"a send addressed by a resumed subagent's new session ID right after a restart reaches it after messages still kept for it (#5999)",
+	async () => {
+		const host = new Host();
+		await host.start();
+		const ownerBefore = await owner(host, "order-id");
+		const childName = "subagent-worker-order-id-1";
+		await endedChild(host, ownerBefore, childName, "stopped");
+		const senderBefore = await connect(host, "order-id-sender");
+		const kept: string[] = [];
+		for (let index = 0; index < 12; index++) {
+			const queued = await senderBefore.client.send(childName, {
+				text: `kept ${index} ${"x".repeat(1024 * 1024 - 64)}`,
+				wakeEndedRecipient: true,
+			});
+			assert.equal(queued.queued, true, queued.reason);
+			kept.push(`kept ${index}`);
+		}
+		await host.kill();
+		await host.start();
+		const ownerBack = await owner(host, "order-id", ownerBefore);
+		const sender = await again(host, "order-id-sender", senderBefore);
+		const child = await resume(host, ownerBack, childName);
+		const live = await sender.client.send(child.sessionId, { text: "after them by id" });
+		assert.equal(live.delivered, true, live.reason);
+		await vi.waitFor(() => assert.equal(child.received.length, 13), WAIT);
+		assert.deepEqual(
+			child.received.map(({ message }) => message.content.text.split(" x")[0]),
+			[...kept, "after them by id"],
+		);
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a subagent's queue holds at most its 32 MiB on disk: the cap counts what each message takes there (#5999)",
 	async () => {
 		const host = new Host();

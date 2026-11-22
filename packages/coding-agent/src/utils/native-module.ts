@@ -83,8 +83,8 @@ let firstRefusal: { readonly file: string; readonly identity: string | undefined
 /** What tells the native module file `file` on disk from another one in its place; undefined when it is gone. */
 async function fileIdentity(file: string): Promise<string | undefined> {
 	try {
-		const { dev, ino, size, mtimeMs } = await stat(file);
-		return `${dev}:${ino}:${size}:${mtimeMs}`;
+		const { dev, ino, size, mtimeNs } = await stat(file, { bigint: true });
+		return `${dev}:${ino}:${size}:${mtimeNs}`;
 	} catch {
 		return undefined;
 	}
