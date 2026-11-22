@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { getPriority, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +63,8 @@ const PACED_TURN_LIMIT_MS = 3 * SLOW_INDEX_QUERY_MS;
 const WATCHED_TURN_LIMIT_MS = Math.min(TURN_LIMIT_MS, PACED_TURN_LIMIT_MS);
 const LONG_SESSION_ENTRIES = 3000;
 const LONG_SESSION_SEARCH_ROWS = 100;
+/** Wall-clock headroom for tests that assert slice-size bounds rather than the 3 s default call deadline. */
+const SPILLED_SLICE_TIME_BUDGET_MS = 60_000;
 
 function header(id: string): SessionRecordHeader {
 	return { id, version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: PROJECT };
@@ -1168,12 +1171,12 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			);
 			await store.releaseSession("spilled");
 			await store.append("spilled", [message("e2001", "user", "tail-2001", BASE + 2_001_000)], { expectSeq: 2000 });
-			const { read } = historyOver(store);
+			const { read } = historyOver(store, { timeMs: SPILLED_SLICE_TIME_BUDGET_MS });
 			assert.match(await read("history://sessions"), /history:\/\/sessions\/spilled/);
 			assert.equal(fullReads, 0, "listing without search text must not read the spill file");
 			const slice = await read("history://sessions/spilled:250-251");
-			assert.ok(slice.includes("spilled-entry-250"));
-			assert.ok(slice.includes("spilled-entry-251"));
+			assert.ok(slice.includes("spilled-entry-250"), slice);
+			assert.ok(slice.includes("spilled-entry-251"), slice);
 			assert.equal(fullReads, 0, "ranged read must not read the whole spill file");
 			assert.ok(
 				rangeBytesRead > 0 && rangeBytesRead <= 2 * SPILL_BLOCK_BYTES,
@@ -1181,6 +1184,108 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			);
 			assert.ok(store.historyBytes().onDisk > 4 * SPILL_BLOCK_BYTES);
 		} finally {
+			await store.close();
+		}
+	});
+
+	it("does not invoke realpath or burn the call time budget when reading a slice of a same-project session (#5250)", async () => {
+		const SAME_CWD_BUDGET_MS = 500;
+		const SAME_CWD_LSTAT_DELAY_MS = 1_500;
+		const sameCwd = join(dir, "same-cwd-marker");
+		mkdirSync(sameCwd);
+		const store = new MemorySessionStore();
+		await store.create(
+			{ id: "spilled", version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: sameCwd },
+			numbered(300, (seq) => `spilled-entry-${seq}`),
+		);
+		const router = createHistoryRouter({
+			cwd: sameCwd,
+			sessionStore: () => store,
+			budget: { timeMs: SAME_CWD_BUDGET_MS },
+		});
+		const cjsFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+		const originalLstat = cjsFs.lstat;
+		let lstatCalls = 0;
+		const timers: ReturnType<typeof setTimeout>[] = [];
+		cjsFs.lstat = ((...args: Parameters<typeof originalLstat>) => {
+			if (String(args[0]).includes("same-cwd-marker")) {
+				lstatCalls++;
+				const timer = setTimeout(() => {
+					Reflect.apply(originalLstat, cjsFs, args);
+				}, SAME_CWD_LSTAT_DELAY_MS);
+				timers.push(timer);
+				return;
+			}
+			return Reflect.apply(originalLstat, cjsFs, args);
+		}) as typeof originalLstat;
+		try {
+			const slice = (await router.read!("history://sessions/spilled:250-251")) ?? "";
+			assert.ok(slice.includes("spilled-entry-250"), slice);
+			assert.ok(slice.includes("spilled-entry-251"), slice);
+			assert.equal(lstatCalls, 0, "identical project cwd must not trigger fs.realpath");
+		} finally {
+			for (const timer of timers) clearTimeout(timer);
+			cjsFs.lstat = originalLstat;
+			await store.close();
+		}
+	});
+
+	it("bounds project cwd canonicalization to the history time budget and caller abort signal (#5250)", async () => {
+		const STALLED_AUTH_TIME_MS = 50;
+		const STALLED_AUTH_BOUND_MS = 5_000;
+		const ABORT_AUTH_BUDGET_MS = 15_000;
+		const targetCwd = join(dir, "auth-target-cwd");
+		const otherSpelling = join(dir, "auth-other-spelling");
+		mkdirSync(targetCwd);
+		mkdirSync(otherSpelling);
+		const store = new MemorySessionStore();
+		await store.create(
+			{ id: "linked", version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: otherSpelling },
+			numbered(300, (seq) => `linked-entry-${seq}`),
+		);
+		const cjsFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+		const originalLstat = cjsFs.lstat;
+		const parked: Array<() => void> = [];
+		cjsFs.lstat = ((...args: Parameters<typeof originalLstat>) => {
+			if (String(args[0]).includes("auth-other-spelling")) {
+				parked.push(() => Reflect.apply(originalLstat, cjsFs, args));
+				return;
+			}
+			return Reflect.apply(originalLstat, cjsFs, args);
+		}) as typeof originalLstat;
+		try {
+			const timed = createHistoryRouter({
+				cwd: targetCwd,
+				sessionStore: () => store,
+				budget: { timeMs: STALLED_AUTH_TIME_MS },
+			});
+			const t0 = performance.now();
+			const out = (await timed.read!("history://sessions/linked:250-251")) ?? "";
+			assert.ok(
+				performance.now() - t0 < STALLED_AUTH_BOUND_MS,
+				"stalled cwd check must stop at the call time budget",
+			);
+			assert.match(out, /time budget/);
+			assert.match(out, /continue with history:\/\/sessions\/linked:250-251/);
+
+			const abortable = createHistoryRouter({
+				cwd: targetCwd,
+				sessionStore: () => store,
+				budget: { timeMs: ABORT_AUTH_BUDGET_MS },
+			});
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(new Error("abort auth check")), 20);
+			const t1 = performance.now();
+			await assert.rejects(
+				Promise.resolve(
+					abortable.readSelected!("history://sessions/linked:250-251", { signal: controller.signal }),
+				),
+				/abort auth check/,
+			);
+			assert.ok(performance.now() - t1 < STALLED_AUTH_BOUND_MS, "aborted cwd check must reject promptly");
+		} finally {
+			cjsFs.lstat = originalLstat;
+			for (const release of parked) release();
 			await store.close();
 		}
 	});

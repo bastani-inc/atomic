@@ -36,6 +36,7 @@ import {
 } from "../../core/storage/session/types.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
+import { noteUserMessageOrigin } from "../../core/user-message-origin.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { warnDeprecation } from "../../utils/deprecation.js";
@@ -375,6 +376,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (change.taken !== undefined)
 				for (const listener of [...this.queuedMessagesTakenListeners]) listener(change.taken);
 			if (change.message !== undefined) this.queuedMessageIds.set(event, change.message);
+			if (change.origin !== undefined && event.type === "message_start" && event.message.role === "user")
+				noteUserMessageOrigin(event.message, change.origin);
 			const end = this.queuedDeliveries.receive(change);
 			// The messages it ended leave when the event reaches the chat, with the row it draws.
 			if (end === undefined) return;
@@ -1323,16 +1326,24 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					if (cancellationEpoch !== this.promptCancellationEpoch) return;
 					let disposition: PromptDisposition;
 					try {
-						// The id goes with the prompt only when there is one, so other prompts are sent as they always were.
+						// Send ids go with the prompt only when present, so other prompts keep their exact argument shape.
 						disposition =
-							options?.queuedMessageId === undefined
-								? await this.client.prompt(text, options?.images, options?.streamingBehavior)
-								: await this.client.prompt(
+							options?.originSendId !== undefined
+								? await this.client.prompt(
 										text,
 										options.images,
 										options.streamingBehavior,
 										options.queuedMessageId,
-									);
+										options.originSendId,
+									)
+								: options?.queuedMessageId !== undefined
+									? await this.client.prompt(
+											text,
+											options.images,
+											options.streamingBehavior,
+											options.queuedMessageId,
+										)
+									: await this.client.prompt(text, options?.images, options?.streamingBehavior);
 					} catch (error) {
 						if (!isRpcRequestAcceptedFailure(error)) options?.preflightResult?.(false);
 						throw error;

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
@@ -629,6 +630,7 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 			route: "queue",
 			// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
 			showAsQueued: !this.isExtensionCommand(text),
+			originSendId: randomUUID(),
 		});
 		if (submitted.kind === "failed") throw submitted.error;
 		if (submitted.kind === "lost") {

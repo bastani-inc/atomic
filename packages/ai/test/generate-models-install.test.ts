@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, it } from "vitest";
+import { moveChangedFiles } from "../scripts/catalog-files.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const temporaryRoots: string[] = [];
@@ -177,5 +188,116 @@ describe("installing a generated model catalog", () => {
 			[...again].filter(([name, state]) => installed.get(name) !== state).map(([name]) => name),
 			["providers/data/.manifest.json"],
 		);
+	});
+
+	it("ignores and cleans up a stray subdirectory in src/providers/data without breaking readers", () => {
+		const fixture = isolatedPackage();
+		const strayDir = join(fixture.root, "src", "providers", "data", ".tmp-stale-cache");
+		mkdirSync(strayDir, { recursive: true });
+		writeFileSync(join(strayDir, "leftover.json"), "{}\n");
+
+		assert.deepEqual(generate(fixture, "stray-data-dir"), []);
+		assert.equal(existsSync(strayDir), false, "stray subdirectory in src/providers/data should be removed");
+		const check = spawnSync(process.execPath, ["scripts/check-model-data.ts"], {
+			cwd: fixture.root,
+			encoding: "utf8",
+		});
+		assert.equal(check.status, 0, `${check.stdout}\n${check.stderr}`);
+	});
+
+	it("recovers when stray or colliding directories exist in catalog locations and when models.generated.ts is absent", () => {
+		const fixture = isolatedPackage();
+		const strayShardDir = join(fixture.root, "src", "providers", "stray.models.ts");
+		mkdirSync(strayShardDir, { recursive: true });
+		writeFileSync(join(strayShardDir, "nested.ts"), "export {};\n");
+		const collidingData = join(fixture.root, "src", "providers", "data", "anthropic.json");
+		rmSync(collidingData, { force: true, recursive: true });
+		mkdirSync(collidingData, { recursive: true });
+		writeFileSync(join(collidingData, "nested.json"), "{}\n");
+		rmSync(join(fixture.root, "src", "models.generated.ts"), { force: true });
+
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				pathToFileURL(join(fixture.fixtureRoot, "mock-fetch.mjs")).href,
+				"scripts/generate-models.ts",
+				"--strict",
+			],
+			{ cwd: fixture.root, encoding: "utf8", timeout: 60_000 },
+		);
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.equal(existsSync(strayShardDir), false, "stray .models.ts directory should be removed");
+		assert.equal(statSync(collidingData).isFile(), true, "colliding directory should be replaced with data file");
+		assert.equal(statSync(join(fixture.root, "src", "models.generated.ts")).isFile(), true);
+		const check = spawnSync(process.execPath, ["scripts/check-model-data.ts"], {
+			cwd: fixture.root,
+			encoding: "utf8",
+		});
+		assert.equal(check.status, 0, `${check.stdout}\n${check.stderr}`);
+	});
+
+	it("restores previous regular catalog files on install failure even when a stray directory exists", () => {
+		const fixture = isolatedPackage();
+		const dataDir = join(fixture.root, "src", "providers", "data");
+		const strayDir = join(dataDir, ".tmp-stale-cache");
+		mkdirSync(strayDir, { recursive: true });
+		writeFileSync(join(strayDir, "leftover.json"), "{}\n");
+		const beforeAgg = readFileSync(join(fixture.root, "src", "models.generated.ts"));
+		const beforeAnthropic = readFileSync(join(dataDir, "anthropic.json"));
+
+		const failInstall = join(fixture.fixtureRoot, "fail-install.mjs");
+		writeFileSync(
+			failInstall,
+			`
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const origRename = fs.renameSync;
+fs.renameSync = function (from, to) {
+	if (String(to).endsWith("models.generated.ts")) throw new Error("INJECTED_INSTALL_FAILURE");
+	return origRename.call(this, from, to);
+};
+syncBuiltinESMExports();
+`,
+		);
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				pathToFileURL(join(fixture.fixtureRoot, "mock-fetch.mjs")).href,
+				"--import",
+				pathToFileURL(failInstall).href,
+				"scripts/generate-models.ts",
+				"--strict",
+			],
+			{ cwd: fixture.root, encoding: "utf8", timeout: 60_000 },
+		);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /INJECTED_INSTALL_FAILURE/);
+		assert.doesNotMatch(result.stderr, /EISDIR/);
+		assert.deepEqual(readFileSync(join(fixture.root, "src", "models.generated.ts")), beforeAgg);
+		assert.deepEqual(readFileSync(join(dataDir, "anthropic.json")), beforeAnthropic);
+	});
+
+	it("moveChangedFiles replaces a colliding directory while leaving unchanged regular files untouched", () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-move-changed-files-"));
+		temporaryRoots.push(root);
+		const staged = join(root, "staged");
+		const target = join(root, "target");
+		mkdirSync(staged, { recursive: true });
+		mkdirSync(join(target, "colliding.json"), { recursive: true });
+		writeFileSync(join(target, "colliding.json", "nested"), "x");
+		writeFileSync(join(staged, "colliding.json"), '{"ok":true}\n');
+		writeFileSync(join(staged, "same.json"), '{"same":1}\n');
+		writeFileSync(join(target, "same.json"), '{"same":1}\n');
+		const sameBefore = statSync(join(target, "same.json"), { bigint: true });
+
+		const moved = moveChangedFiles(staged, target);
+		assert.deepEqual(moved, ["colliding.json", "same.json"]);
+		assert.equal(statSync(join(target, "colliding.json")).isFile(), true);
+		assert.equal(readFileSync(join(target, "colliding.json"), "utf8"), '{"ok":true}\n');
+		const sameAfter = statSync(join(target, "same.json"), { bigint: true });
+		assert.equal(sameAfter.ino, sameBefore.ino);
+		assert.equal(sameAfter.mtimeNs, sameBefore.mtimeNs);
 	});
 });
