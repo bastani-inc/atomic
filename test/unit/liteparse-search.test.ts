@@ -206,6 +206,26 @@ describe.skipIf(python === undefined)("liteparse's search helper", () => {
 		);
 	});
 
+	test("returns every match asked for in a document with exactly as many lines", () => {
+		const { dir, document } = setUp("zebra quantum one\nzebra quantum two\nzebra quantum three\n");
+		const result = runSearch(dir, [document, "-q", "zebra quantum", "-k", "3", "-e", "1"]);
+		assert.equal(result.exitCode, 0, result.stderr);
+		assert.equal(
+			result.stdout,
+			[
+				"Match #0",
+				"Lines 0 - 1\n\n\nzebra quantum one\nzebra quantum two",
+				SEPARATOR,
+				"Match #1",
+				"Lines 0 - 2\n\n\nzebra quantum one\nzebra quantum two\nzebra quantum three",
+				SEPARATOR,
+				"Match #2",
+				"Lines 1 - 2\n\n\nzebra quantum two\nzebra quantum three",
+				"",
+			].join("\n"),
+		);
+	});
+
 	test("searches a document of one block as one part, its last line ending without a line break", () => {
 		const lines = filler(10);
 		lines[9] = "zebra quantum";
