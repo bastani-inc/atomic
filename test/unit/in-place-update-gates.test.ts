@@ -10,6 +10,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
+	gatedImplementation,
+	gatedModuleOf,
 	gateSource,
 	RELEASE_MODULE_STUB,
 	releaseVersionModules,
@@ -202,5 +204,10 @@ describe("the modules that tell which release a process runs", () => {
 				),
 			/more than one recorded release tells its version only through a file this build writes/,
 		);
+	});
+
+	test("maps a gate implementation path back to its module path", () => {
+		assert.equal(gatedModuleOf(gatedImplementation("core/export-html/index.js")), "core/export-html/index.js");
+		assert.equal(gatedModuleOf("core/export-html/index.js"), undefined);
 	});
 });
