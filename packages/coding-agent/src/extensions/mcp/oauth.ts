@@ -20,7 +20,6 @@ import { type AsyncAuthStorageReads, asyncAuthStorageReads } from "../../core/au
 import { releaseLock } from "../../core/lock-release.ts";
 import { waitForLock } from "../../core/lock-wait.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
-import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import type { AuthProvider, McpFetch } from "./client/index.js";
 import {
 	authorizeMcp,
@@ -37,6 +36,7 @@ import {
 	parseWwwAuthenticate,
 	stepUpScope,
 } from "./client/oauth/index.js";
+import { redactOAuthErrorText } from "./client/oauth/redact.js";
 
 const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/callback";
@@ -117,7 +117,12 @@ const writeQueues = new WeakMap<AuthStorageBackend, Promise<unknown>>();
 
 function parseStates(content: string | undefined): StoredStates {
 	if (!content?.trim()) return {};
-	const parsed: unknown = JSON.parse(content);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		throw new Error("Failed to parse MCP OAuth credentials file");
+	}
 	return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as StoredStates) : {};
 }
 
@@ -494,7 +499,12 @@ export class McpSignInCancelledError extends Error {
 
 type AuthorizationResponse = Pick<OAuthCallback, "code" | "iss">;
 
-function responseFromRedirectUrl(input: string, state: string, redirectUrl: URL): AuthorizationResponse {
+function responseFromRedirectUrl(
+	input: string,
+	state: string,
+	redirectUrl: URL,
+	extraSecrets: readonly (string | undefined)[] = [],
+): AuthorizationResponse {
 	let url: URL;
 	try {
 		url = new URL(input.trim());
@@ -505,7 +515,14 @@ function responseFromRedirectUrl(input: string, state: string, redirectUrl: URL)
 		throw new Error("The redirect URL does not match this sign-in's redirect URI");
 	}
 	const error = url.searchParams.get("error");
-	if (error) throw new Error(redactCredentialShapes(url.searchParams.get("error_description") ?? error));
+	if (error) {
+		throw new Error(
+			redactOAuthErrorText(url.searchParams.get("error_description") || error, [
+				url.searchParams.get("code") ?? undefined,
+				...extraSecrets,
+			]),
+		);
+	}
 	if (url.searchParams.get("state") !== state) throw new Error("The redirect URL belongs to a different sign-in");
 	const code = url.searchParams.get("code");
 	if (!code) throw new Error("The redirect URL does not contain an authorization code");
@@ -522,13 +539,14 @@ async function waitForAuthorizationResponse(
 	redirectUrl: URL,
 	prompt: McpSignInPrompt,
 	signal: AbortSignal | undefined,
+	extraSecrets: readonly (string | undefined)[] = [],
 ): Promise<AuthorizationResponse> {
 	const controller = new AbortController();
 	const promptSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 	const fromBrowser = callback.waitForCallback(state, redirectUrl.pathname);
 	const fromUser = prompt.promptForRedirectUrl(promptSignal).then((input) => {
 		if (!input?.trim()) throw new McpSignInCancelledError();
-		return responseFromRedirectUrl(input, state, redirectUrl);
+		return responseFromRedirectUrl(input, state, redirectUrl, extraSecrets);
 	});
 	try {
 		return await Promise.race([fromBrowser, fromUser]);
@@ -654,6 +672,7 @@ export async function signInMcpServer(options: {
 			authorizationRedirectUrl,
 			options.prompt,
 			signal,
+			[settings.clientSecret],
 		);
 		await authorizeMcp(provider, { ...flow, authorizationCode: code, iss });
 		await complete();

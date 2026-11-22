@@ -35,7 +35,6 @@ import { join, resolve } from "node:path";
 import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
 import type { SelectItem } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
-import { redactUrlCredentials } from "../../core/error-contract.ts";
 import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
@@ -50,11 +49,11 @@ import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import { sliceHead } from "../../core/tools/truncate.ts";
-import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
 import type { Tool as McpTool } from "./client/index.js";
+import { redactAuthorizationUrlForDisplay, redactOAuthErrorText, redactUrlForDisplay } from "./client/oauth/redact.js";
 import {
 	getMcpToolExposure,
 	type LoadedMcpConfig,
@@ -150,7 +149,7 @@ const EXPOSURE_DESCRIPTIONS: Record<Exclude<McpExposure, "hidden">, string> = {
 };
 
 function errorMessage(error: unknown): string {
-	return redactCredentialShapes(error instanceof Error ? error.message : String(error));
+	return redactOAuthErrorText(error instanceof Error ? error.message : String(error));
 }
 
 function firstLine(text: string): string {
@@ -432,8 +431,8 @@ function attentionRank(server: McpServer): number {
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
-	if ("url" in config) return redactUrlCredentials(config.url, "server-url");
-	return redactCredentialShapes([config.command, ...(config.args ?? [])].join(" "));
+	if ("url" in config) return redactUrlForDisplay(config.url);
+	return redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 
 const MCP_USAGE = "Usage: /mcp, /mcp login [server], /mcp logout [server], /mcp reconnect [server]";
@@ -1475,7 +1474,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				server,
 				{
 					showAuthorizationUrl: (url) => {
-						authorizationUrl = url.href;
+						authorizationUrl = redactAuthorizationUrlForDisplay(url);
 						openUrl(url.href);
 					},
 					promptForRedirectUrl: async (signal) => {
@@ -1639,7 +1638,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				failure = await signIn(server, {
 					showAuthorizationUrl: (url) => {
 						ctx.ui.notify(
-							`Sign in to MCP server "${name}" in your browser:\n${redactUrlCredentials(url.href, "server-url")}`,
+							`Sign in to MCP server "${name}" in your browser:\n${redactAuthorizationUrlForDisplay(url)}`,
 							"info",
 						);
 						openUrl(url.href);

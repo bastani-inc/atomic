@@ -1,4 +1,4 @@
-import { redactUrlCredentials } from "./redact.js";
+import { redactOAuthErrorText, redactUrlForDisplay } from "./redact.js";
 
 export class OAuthError extends Error {
 	readonly code: string;
@@ -7,10 +7,12 @@ export class OAuthError extends Error {
 	readonly status: number | undefined;
 
 	constructor(code: string, message: string, errorUri?: string, status?: number) {
-		super(message || code);
+		const safeCode = redactOAuthErrorText(code);
+		const safeMessage = message ? redactOAuthErrorText(message) : safeCode;
+		super(safeMessage);
 		this.name = "OAuthError";
-		this.code = code;
-		this.errorUri = errorUri;
+		this.code = safeCode;
+		this.errorUri = errorUri === undefined ? undefined : redactUrlForDisplay(errorUri);
 		this.status = status;
 	}
 }
@@ -21,8 +23,9 @@ export class OAuthError extends Error {
  */
 export class OAuthTemporarilyUnavailableError extends Error {
 	constructor(cause: unknown) {
-		const reason = cause instanceof Error ? cause.message : String(cause);
-		super(`OAuth authorization server temporarily unavailable during token refresh: ${reason}`, { cause });
+		const reason = redactOAuthErrorText(cause instanceof Error ? cause.message : String(cause));
+		const safeCause = cause instanceof OAuthError ? cause : new Error(reason);
+		super(`OAuth authorization server temporarily unavailable during token refresh: ${reason}`, { cause: safeCause });
 		this.name = "OAuthTemporarilyUnavailableError";
 	}
 }
@@ -34,12 +37,13 @@ export class OAuthIssuerMismatchError extends Error {
 	readonly received: string | undefined;
 
 	constructor(expected: string | undefined, received: string | undefined) {
-		const format = (issuer: string | undefined) =>
-			issuer === undefined ? "none" : JSON.stringify(redactUrlCredentials(issuer, "server-url"));
-		super(`OAuth issuer mismatch: expected ${format(expected)}, received ${format(received)}`);
+		const safeExpected = expected === undefined ? undefined : redactUrlForDisplay(expected);
+		const safeReceived = received === undefined ? undefined : redactUrlForDisplay(received);
+		const format = (issuer: string | undefined) => (issuer === undefined ? "none" : JSON.stringify(issuer));
+		super(`OAuth issuer mismatch: expected ${format(safeExpected)}, received ${format(safeReceived)}`);
 		this.name = "OAuthIssuerMismatchError";
-		this.expected = expected === undefined ? undefined : redactUrlCredentials(expected, "server-url");
-		this.received = received === undefined ? undefined : redactUrlCredentials(received, "server-url");
+		this.expected = safeExpected;
+		this.received = safeReceived;
 	}
 }
 
@@ -47,7 +51,7 @@ export class OAuthInsecureEndpointError extends Error {
 	readonly endpoint: string;
 
 	constructor(endpoint: string) {
-		const safeEndpoint = redactUrlCredentials(endpoint, "server-url");
+		const safeEndpoint = redactUrlForDisplay(endpoint);
 		super(`Refusing to send OAuth credentials to non-HTTPS endpoint ${safeEndpoint}`);
 		this.name = "OAuthInsecureEndpointError";
 		this.endpoint = safeEndpoint;
@@ -59,10 +63,11 @@ export class OAuthRegistrationError extends Error {
 	readonly body: string;
 
 	constructor(status: number, body: string) {
-		super(`OAuth dynamic client registration failed with status ${status}: ${body}`);
+		const safeBody = redactOAuthErrorText(body);
+		super(`OAuth dynamic client registration failed with status ${status}: ${safeBody}`);
 		this.name = "OAuthRegistrationError";
 		this.status = status;
-		this.body = body;
+		this.body = safeBody;
 	}
 }
 

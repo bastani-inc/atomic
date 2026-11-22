@@ -20,7 +20,7 @@ import {
 	OAuthRegistrationError,
 	OAuthTemporarilyUnavailableError,
 } from "./errors.js";
-import { extractAuthorizationSecrets, redactOAuthErrorText, redactUrlCredentials } from "./redact.js";
+import { extractHeaderSecrets, redactOAuthErrorText, redactUrlForDisplay } from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	isHttpUrl,
@@ -182,8 +182,9 @@ export async function startAuthorization(
 	}
 	const url = new URL(metadata?.authorization_endpoint ?? new URL("/authorize", authorizationServerUrl));
 	// Callers open this URL with the platform URL handler, which also launches files and custom protocols.
-	if (!isHttpUrl(url))
-		throw new Error(`Invalid authorization endpoint ${redactUrlCredentials(url.href, "server-url")}`);
+	if (!isHttpUrl(url)) throw new Error(`Invalid authorization endpoint ${redactUrlForDisplay(url.href)}`);
+	url.username = "";
+	url.password = "";
 	const { verifier, challenge } = await pkce();
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("client_id", options.clientInformation.client_id);
@@ -193,9 +194,25 @@ export async function startAuthorization(
 	if (options.state) url.searchParams.set("state", options.state);
 	if (options.scope) url.searchParams.set("scope", options.scope);
 	if (options.scope?.split(/\s+/).includes("offline_access")) url.searchParams.set("prompt", "consent");
-	if (options.resource) url.searchParams.set("resource", options.resource);
+	if (options.resource) url.searchParams.set("resource", redactUrlForDisplay(options.resource));
 	return { authorizationUrl: url, codeVerifier: verifier };
 }
+
+const NON_SECRET_TOKEN_HEADERS = new Set(["accept", "content-type", "user-agent"]);
+
+const SENSITIVE_BODY_FIELDS = new Set([
+	"access_token",
+	"refresh_token",
+	"id_token",
+	"client_secret",
+	"code_verifier",
+	"code",
+	"registration_access_token",
+	"client_assertion",
+	"token",
+	"secret",
+	"password",
+]);
 
 function tokenRequestSecrets(options: TokenRequestOptions, headers: Headers, params: URLSearchParams): string[] {
 	const secrets: (string | undefined)[] = [
@@ -204,18 +221,37 @@ function tokenRequestSecrets(options: TokenRequestOptions, headers: Headers, par
 		params.get("code_verifier") ?? undefined,
 		params.get("refresh_token") ?? undefined,
 		params.get("code") ?? undefined,
-		...extractAuthorizationSecrets(headers.get("Authorization")),
+		params.get("client_assertion") ?? undefined,
 	];
+	headers.forEach((value, name) => {
+		if (!NON_SECRET_TOKEN_HEADERS.has(name.toLowerCase())) {
+			secrets.push(...extractHeaderSecrets(name, value));
+		}
+	});
 	return secrets.filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
-function responseBodySecrets(value: Record<string, unknown>): string[] {
+function responseBodySecrets(value: unknown, depth = 0): string[] {
+	if (depth > 6 || value === null || value === undefined || typeof value !== "object") return [];
+	if (Array.isArray(value)) {
+		return value.flatMap((item) => responseBodySecrets(item, depth + 1));
+	}
 	const secrets: string[] = [];
-	for (const field of ["access_token", "refresh_token", "id_token", "client_secret", "code_verifier"] as const) {
-		const candidate = value[field];
-		if (typeof candidate === "string" && candidate.length > 0) secrets.push(candidate);
+	for (const [key, entry] of Object.entries(value)) {
+		if (typeof entry === "string" && entry.length > 0 && SENSITIVE_BODY_FIELDS.has(key.toLowerCase())) {
+			secrets.push(entry);
+		} else if (typeof entry === "object" && entry !== null) {
+			secrets.push(...responseBodySecrets(entry, depth + 1));
+		}
 	}
 	return secrets;
+}
+
+function scrubTokenFetchError(error: unknown, secrets: readonly string[]): Error {
+	const message = redactOAuthErrorText(error instanceof Error ? error.message : String(error), secrets);
+	if (error instanceof TypeError) return new TypeError(message);
+	if (error instanceof DOMException) return new DOMException(message, error.name);
+	return new Error(message);
 }
 
 async function tokenRequest(
@@ -240,12 +276,17 @@ async function tokenRequest(
 		);
 	}
 	const requestSecrets = tokenRequestSecrets(options, headers, params);
-	const response = await (options.fetch ?? globalThis.fetch)(url, {
-		method: "POST",
-		headers,
-		body: params,
-		signal: options.signal,
-	});
+	let response: Response;
+	try {
+		response = await (options.fetch ?? globalThis.fetch)(url, {
+			method: "POST",
+			headers,
+			body: params,
+			signal: options.signal,
+		});
+	} catch (error) {
+		throw scrubTokenFetchError(error, requestSecrets);
+	}
 	const text = await response.text();
 	let value: unknown;
 	try {
@@ -254,11 +295,15 @@ async function tokenRequest(
 	// Servers may report OAuth errors with any status, so check the body before the status.
 	if (isObject(value) && typeof value.error === "string") {
 		const allSecrets = [...requestSecrets, ...responseBodySecrets(value)];
-		const rawDescription = typeof value.error_description === "string" ? value.error_description : value.error;
+		const safeCode = redactOAuthErrorText(value.error, allSecrets);
+		const rawDescription =
+			typeof value.error_description === "string" && value.error_description.length > 0
+				? value.error_description
+				: safeCode;
 		throw new OAuthError(
-			value.error,
+			safeCode,
 			redactOAuthErrorText(rawDescription, allSecrets),
-			typeof value.error_uri === "string" ? redactUrlCredentials(value.error_uri, "server-url") : undefined,
+			typeof value.error_uri === "string" ? redactUrlForDisplay(value.error_uri) : undefined,
 			response.status,
 		);
 	}
@@ -301,8 +346,16 @@ export async function registerClient(
 			signal: options.signal,
 		},
 	);
-	if (!response.ok) throw new OAuthRegistrationError(response.status, redactOAuthErrorText(await response.text()));
-	return parseClientInformation(await response.json());
+	const text = await response.text();
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {}
+	if (!response.ok) {
+		throw new OAuthRegistrationError(response.status, redactOAuthErrorText(text, responseBodySecrets(parsed)));
+	}
+	if (parsed === undefined) throw new Error("Invalid OAuth client registration response");
+	return parseClientInformation(parsed);
 }
 
 export async function exchangeAuthorizationCode(

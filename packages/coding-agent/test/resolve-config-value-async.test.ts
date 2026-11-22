@@ -56,7 +56,7 @@ describe("resolveConfigValueAsync", () => {
 		},
 	);
 
-	test("resolveConfigValueOrThrow and resolveConfigValueOrThrowAsync omit raw commands and unset template fragments from errors", async () => {
+	test("resolveConfigValueOrThrow and resolveConfigValueOrThrowAsync omit raw commands and literal secret fragments while keeping explicit env var names", async () => {
 		const bangSecret = "opaqueBangSecret991122";
 		const dollarSuffix = "UnsetSecretSegment778899";
 
@@ -78,6 +78,7 @@ describe("resolveConfigValueAsync", () => {
 			expect((error as Error).message).not.toContain(bangSecret);
 		}
 
+		// Glued / mixed-case unbraced `$` inside a literal secret must not leak the secret fragment.
 		await expect(
 			resolveConfigValueOrThrowAsync(`prefix$${dollarSuffix}`, 'MCP server "s" oauth.clientSecret', {}),
 		).rejects.toThrow('Failed to resolve MCP server "s" oauth.clientSecret from environment variable');
@@ -86,6 +87,35 @@ describe("resolveConfigValueAsync", () => {
 		} catch (error) {
 			expect((error as Error).message).not.toContain(dollarSuffix);
 		}
+
+		// Explicit braced `${VAR}` and standalone `$UPPER_VAR` references preserve missing env var names.
+		const envRef = (name: string) => `$\{${name}}`;
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`Bearer ${envRef("MISSING_DOCS_TOKEN")}`,
+				'MCP server "docs" header "Authorization"',
+				{},
+			),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "docs" header "Authorization" from environment variable: MISSING_DOCS_TOKEN',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`${envRef("FIRST_VAR")}:${envRef("SECOND_VAR")}`,
+				'MCP server "docs" header "X-Pair"',
+				{},
+			),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "docs" header "X-Pair" from environment variables: FIRST_VAR, SECOND_VAR',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync(envRef("OAUTH_CLIENT_SECRET"), 'MCP server "s" oauth.clientSecret', {}),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "s" oauth.clientSecret from environment variable: OAUTH_CLIENT_SECRET',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync("$MISSING_API_KEY", 'API key for provider "custom"', {}),
+		).rejects.toThrow('Failed to resolve API key for provider "custom" from environment variable: MISSING_API_KEY');
 	});
 
 	/** How long a stopped command may take to settle, far below the 10 s command timeout and the grandchild's 30 s. */

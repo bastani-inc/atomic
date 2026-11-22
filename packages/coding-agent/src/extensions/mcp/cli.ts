@@ -9,13 +9,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME } from "../../config.js";
-import { redactUrlCredentials } from "../../core/error-contract.ts";
 import { validateMcpServerConfig } from "../../core/mcp-servers.ts";
 import { ModelRuntime } from "../../core/model-runtime.js";
 import { ProjectTrustStore } from "../../core/trust-manager.ts";
-import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.js";
+import { redactAuthorizationUrlForDisplay, redactOAuthErrorText, redactUrlForDisplay } from "./client/oauth/redact.js";
 import {
 	addMcpServerConfigAsync,
 	getMcpToolExposure,
@@ -113,14 +112,14 @@ interface ServerReport {
 }
 
 function errorMessage(error: unknown): string {
-	return redactCredentialShapes(error instanceof Error ? error.message : String(error));
+	return redactOAuthErrorText(error instanceof Error ? error.message : String(error));
 }
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
 	return "url" in config
-		? redactUrlCredentials(config.url, "server-url")
-		: redactCredentialShapes([config.command, ...(config.args ?? [])].join(" "));
+		? redactUrlForDisplay(config.url)
+		: redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 
 function getAuthProvider(entry: McpServerEntry): string | undefined {
@@ -166,7 +165,7 @@ function createProviderTokenReader(
 		} catch (error) {
 			// Missing or unrefreshable credentials: the server's 401 then reports that sign-in is needed. The reason
 			// goes to mcp.log, so the fallback stays visible.
-			log.write(provider, {
+			log.writeRedacted(provider, {
 				level: "warning",
 				data: `Could not read the ${provider} credentials: ${errorMessage(error)}`,
 			});
@@ -213,9 +212,9 @@ function parseOptions(
 		const name = arg.slice(2);
 		const kind = known[name];
 		if (!kind) {
-			const safeTyped = typed.startsWith("--oauth-client-secret=")
-				? "--oauth-client-secret=[redacted]"
-				: redactCredentialShapes(typed);
+			const eq = typed.indexOf("=");
+			const safeTyped =
+				eq > 0 ? `${redactOAuthErrorText(typed.slice(0, eq))}=[redacted]` : redactOAuthErrorText(typed);
 			error(`Unknown option ${safeTyped}.\n${HELP_HINT}`);
 			return undefined;
 		}
@@ -399,7 +398,7 @@ async function runServerCommand(
 			}
 		}
 		default:
-			error(`Unknown mcp command "${redactCredentialShapes(command)}".\n${HELP_HINT}`);
+			error(`Unknown mcp command "${redactOAuthErrorText(command)}".\n${HELP_HINT}`);
 			return 1;
 	}
 }
@@ -424,7 +423,7 @@ function parsePairs(option: string, pairs: string[] | undefined, error: (line: s
 	for (const pair of pairs) {
 		const separator = pair.indexOf("=");
 		if (separator <= 0) {
-			error(`--${option} expects KEY=VALUE, got "${redactCredentialShapes(pair)}".`);
+			error(`--${option} expects KEY=VALUE.`);
 			return undefined;
 		}
 		record[pair.slice(0, separator)] = pair.slice(separator + 1);
@@ -701,9 +700,7 @@ async function login(
 		return 0;
 	} catch {
 		if (connection.state !== "needs-auth") {
-			error(
-				`MCP server "${name}" failed to connect: ${redactCredentialShapes(connection.error ?? "unknown error")}`,
-			);
+			error(`MCP server "${name}" failed to connect: ${redactOAuthErrorText(connection.error ?? "unknown error")}`);
 			return 1;
 		}
 	}
@@ -718,7 +715,7 @@ async function login(
 			challenge: connection.challenge,
 			prompt: {
 				showAuthorizationUrl: (authorizationUrl) => {
-					const displayUrl = redactUrlCredentials(authorizationUrl.href, "server-url");
+					const displayUrl = redactAuthorizationUrlForDisplay(authorizationUrl);
 					log(`Sign in to MCP server "${name}" in your browser:\n${displayUrl}`);
 					openUrl(authorizationUrl.href);
 				},

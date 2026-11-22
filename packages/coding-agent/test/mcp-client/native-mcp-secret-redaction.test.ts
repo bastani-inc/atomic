@@ -9,7 +9,23 @@ import { afterEach, describe, it, vi } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage-backends.js";
 import { ModelRuntime } from "../../src/core/model-runtime.js";
 import { runMcpCommand } from "../../src/extensions/mcp/cli.js";
+import { McpHttpError, StreamableHttpTransport } from "../../src/extensions/mcp/client/index.js";
+import {
+	exchangeAuthorizationCode,
+	OAuthError,
+	OAuthTemporarilyUnavailableError,
+	registerClient,
+} from "../../src/extensions/mcp/client/oauth/index.js";
+import {
+	extractAuthorizationSecrets,
+	redactOAuthErrorText,
+	redactSecretValues,
+	redactWwwAuthenticateHeader,
+} from "../../src/extensions/mcp/client/oauth/redact.js";
+import { createMcpExtension } from "../../src/extensions/mcp/index.js";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.js";
+import { createMcpResourceToolDefinitions } from "../../src/extensions/mcp/resources.js";
+import { initTheme } from "../../src/modes/interactive/theme/theme.js";
 import { startOAuthMcpServer } from "./native-oauth-server.js";
 
 const STDERR_FIXTURE = fileURLToPath(new URL("./fixtures/stderr-server.mjs", import.meta.url));
@@ -727,5 +743,633 @@ describe("mcp CLI secret redaction", () => {
 		const removeMissing = await runCli(["remove", "sentry"], { agentDir });
 		assert.equal(removeMissing.exitCode, 1);
 		assertNoSecretLeaked(removeMissing, [clientSecret, headerSecret, urlSecret]);
+	});
+
+	it("single-pass redaction preserves HTTP status text, does not rescan [redacted], stays idempotent, and handles all producer encodings", () => {
+		// Short secrets must not corrupt HTTP status text or [redacted].
+		assert.equal(redactOAuthErrorText("HTTP 400: invalid_client", ["40"]), "HTTP 400: invalid_client");
+		assert.equal(redactOAuthErrorText("HTTP 400: invalid_client", ["400"]), "HTTP 400: invalid_client");
+		assert.equal(redactSecretValues("prefix acted suffix", ["acted", "red"]), "prefix [redacted] suffix");
+		assert.equal(
+			redactSecretValues("HTTP 500: bad longSecret123 and red", ["longSecret123", "red"]),
+			"HTTP 500: bad [redacted] and red",
+		);
+
+		// Idempotence even when secrets are substrings of "[redacted]".
+		const once = redactSecretValues("prefix acted redact suffix", ["acted", "redact"]);
+		assert.equal(once, "prefix [redacted] [redacted] suffix");
+		assert.equal(redactSecretValues(once, ["acted", "redact"]), once);
+
+		// No exponential blowup when inputs repeat sentinel characters.
+		const repeated = redactSecretValues("e".repeat(100), ["e", "d", "a", "c", "t", "r"]);
+		assert.ok(repeated.length <= 1_100, `unexpected expansion: ${repeated.length}`);
+
+		// Lowercase/mixed-case %xx, HTML entities, RFC 3986 reserved chars, Go JSON escapes.
+		const sPct = "sec/ret+val=99";
+		const sPctLower = encodeURIComponent(sPct).toLowerCase();
+		const sPctMixed = "sec%2fret%2Bval%3d99";
+		assert.equal(redactOAuthErrorText(`echoed=${sPctLower}`, [sPct]).includes(sPctLower), false);
+		assert.equal(redactOAuthErrorText(`echoed=${sPctMixed}`, [sPct]).includes(sPctMixed), false);
+
+		const sHtml = `sec&<"'>9988`;
+		const sHtmlEsc = "sec&amp;&lt;&quot;&#39;&gt;9988";
+		const sHtmlApos = "sec&amp;&lt;&quot;&apos;&gt;9988";
+		assert.equal(redactOAuthErrorText(`echoed=${sHtmlEsc}`, [sHtml]).includes(sHtmlEsc), false);
+		assert.equal(redactOAuthErrorText(`echoed=${sHtmlApos}`, [sHtml]).includes(sHtmlApos), false);
+
+		const sRfc = "!sec'()* ret 9988";
+		const sRfcEnc = "%21sec%27%28%29%2A%20ret%209988";
+		const sRfcPlus = "%21sec%27%28%29%2a+ret+9988";
+		assert.equal(redactOAuthErrorText(`echoed=${sRfcEnc}`, [sRfc]).includes(sRfcEnc), false);
+		assert.equal(redactOAuthErrorText(`echoed=${sRfcPlus}`, [sRfc]).includes(sRfcPlus), false);
+
+		const sGoJson = "a&b<c>d/e9988";
+		const sGoEsc = String.raw`a\u0026b\u003cc\u003ed\/e9988`;
+		assert.equal(redactOAuthErrorText(`{"x":"${sGoEsc}"}`, [sGoJson]).includes(sGoEsc), false);
+
+		// Scheme + tab, Basic base64 decode, `=` scheme fields, code_verifier, Bearer with !/$/%.
+		const basicPass = "opaqueDecodedBasicPass8877";
+		const basicB64 = Buffer.from(`alice:${basicPass}`).toString("base64");
+		assert.ok(extractAuthorizationSecrets(`Bearer\topaqueTabTok9988`).includes("opaqueTabTok9988"));
+		assert.ok(extractAuthorizationSecrets(`Basic\t${basicB64}`).includes(basicPass));
+		assert.equal(redactOAuthErrorText("auth=Bearer opaqueEqTok998877").includes("opaqueEqTok998877"), false);
+		assert.equal(redactOAuthErrorText(`Authorization=Basic ${basicB64}`).includes(basicB64), false);
+		assert.equal(redactOAuthErrorText(`rejected Basic ${basicB64}`).includes(basicB64), false);
+		assert.equal(
+			redactOAuthErrorText('{"code_verifier":"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE"}').includes(
+				"AbCdEfGhIjKlMnOpQrStUvWxYz",
+			),
+			false,
+		);
+		assert.equal(redactOAuthErrorText("Bearer tok%2FopaqueTail998877").includes("opaqueTail998877"), false);
+		assert.equal(redactOAuthErrorText("Bearer tok!cbBang$Dollar7788").includes("cbBang$Dollar7788"), false);
+	});
+
+	it("login redacts /token empty error_description fallback, /register JSON client_secret & Basic, and callback Basic/code/code_verifier/Bearer", async () => {
+		const clientSecret = "opaqueEmptyDescSecret778899";
+		const regSec = "opaqueRegSec445566";
+		const basicB64 = Buffer.from("alice:opaqueBasicPass778899").toString("base64");
+		const codeSec = "cbAuthCodeSecret3344";
+		const verifierSec = "cbVerifierSecret5566";
+		const bangBearer = "tok!cbBang$Dollar7788";
+		let capturedVerifier = "";
+		let capturedCode = "";
+		let callbackHtml = "";
+
+		const server = await startCustomServer(async (request, response, origin) => {
+			const url = new URL(request.url ?? "/", origin);
+			if (url.pathname === "/mcp-empty" || url.pathname === "/mcp-reg" || url.pathname === "/mcp-cb") {
+				response
+					.writeHead(401, {
+						"www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource${url.pathname}"`,
+					})
+					.end();
+				return;
+			}
+			if (url.pathname.startsWith("/.well-known/oauth-protected-resource/")) {
+				const suffix = url.pathname.slice("/.well-known/oauth-protected-resource".length);
+				json(response, 200, { resource: `${origin}${suffix}`, authorization_servers: [`${origin}${suffix}-as`] });
+				return;
+			}
+			if (url.pathname === "/.well-known/oauth-authorization-server/mcp-empty-as") {
+				json(response, 200, {
+					issuer: `${origin}/mcp-empty-as`,
+					authorization_endpoint: `${origin}/authorize-empty`,
+					token_endpoint: `${origin}/token-empty`,
+					response_types_supported: ["code"],
+					code_challenge_methods_supported: ["S256"],
+					token_endpoint_auth_methods_supported: ["client_secret_post"],
+				});
+				return;
+			}
+			if (url.pathname === "/.well-known/oauth-authorization-server/mcp-reg-as") {
+				json(response, 200, {
+					issuer: `${origin}/mcp-reg-as`,
+					authorization_endpoint: `${origin}/authorize-empty`,
+					token_endpoint: `${origin}/token-empty`,
+					registration_endpoint: `${origin}/register-secret`,
+					response_types_supported: ["code"],
+					code_challenge_methods_supported: ["S256"],
+				});
+				return;
+			}
+			if (url.pathname === "/.well-known/oauth-authorization-server/mcp-cb-as") {
+				json(response, 200, {
+					issuer: `${origin}/mcp-cb-as`,
+					authorization_endpoint: `${origin}/authorize-cb`,
+					token_endpoint: `${origin}/token-empty`,
+					response_types_supported: ["code"],
+					code_challenge_methods_supported: ["S256"],
+				});
+				return;
+			}
+			if (url.pathname === "/authorize-empty") {
+				const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
+				capturedCode = "authCodeEmptyDesc9988";
+				redirect.searchParams.set("code", capturedCode);
+				redirect.searchParams.set("state", url.searchParams.get("state") ?? "");
+				response.writeHead(302, { location: redirect.href }).end();
+				return;
+			}
+			if (url.pathname === "/token-empty") {
+				const params = new URLSearchParams(await readBody(request));
+				capturedVerifier = params.get("code_verifier") ?? "";
+				json(response, 400, {
+					error: `rejected_${clientSecret}_${capturedVerifier}_${capturedCode}`,
+					error_description: "",
+				});
+				return;
+			}
+			if (url.pathname === "/register-secret") {
+				json(response, 400, {
+					client_secret: regSec,
+					error: `bad registration for ${regSec} auth Basic ${basicB64}`,
+				});
+				return;
+			}
+			if (url.pathname === "/authorize-cb") {
+				const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
+				redirect.searchParams.set("error", "access_denied");
+				redirect.searchParams.set(
+					"error_description",
+					`Basic ${basicB64} code=${codeSec} code_verifier=${verifierSec} Authorization=Basic ${basicB64} Bearer ${bangBearer}`,
+				);
+				redirect.searchParams.set("state", url.searchParams.get("state") ?? "");
+				response.writeHead(302, { location: redirect.href }).end();
+				return;
+			}
+			response.writeHead(404).end();
+		});
+
+		const agentDir = createAgentDir({
+			empty: { url: `${server.origin}/mcp-empty`, oauth: { clientId: "cid", clientSecret } },
+			reg: { url: `${server.origin}/mcp-reg` },
+			cb: { url: `${server.origin}/mcp-cb`, oauth: { clientId: "cid" } },
+		});
+
+		const emptyRes = await runCli(["login", "empty", "--timeout", "10"], {
+			agentDir,
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			openUrl: (u) => {
+				void fetch(u, { redirect: "manual" }).then((r) => fetch(r.headers.get("location") ?? ""));
+			},
+		});
+		assert.equal(emptyRes.exitCode, 1);
+		assert.ok(capturedVerifier.length > 0);
+		assertNoSecretLeaked(emptyRes, [clientSecret, capturedVerifier, capturedCode]);
+
+		const regRes = await runCli(["login", "reg", "--timeout", "10"], {
+			agentDir,
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			openUrl: () => {},
+		});
+		assert.equal(regRes.exitCode, 1);
+		assertNoSecretLeaked(regRes, [regSec, basicB64]);
+
+		const cbRes = await runCli(["login", "cb", "--timeout", "10"], {
+			agentDir,
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			openUrl: (u) => {
+				void fetch(u, { redirect: "manual" })
+					.then((r) => fetch(r.headers.get("location") ?? ""))
+					.then(async (r) => {
+						callbackHtml = await r.text();
+					});
+			},
+		});
+		assert.equal(cbRes.exitCode, 1);
+		assertNoSecretLeaked(cbRes, [basicB64, codeSec, verifierSec, bangBearer, "!cbBang$Dollar7788"]);
+		for (const secret of [basicB64, codeSec, verifierSec, bangBearer, "!cbBang$Dollar7788"]) {
+			assert.equal(callbackHtml.includes(secret), false, `callback HTML leaked ${secret}: ${callbackHtml}`);
+		}
+	});
+
+	it("add redacts --header=..., --env=..., and malformed pair values with missing or leading =", async () => {
+		const agentDir = createAgentDir();
+		const basicB64 = Buffer.from("u:addBasicPass9988").toString("base64");
+		const cases: [string[], string][] = [
+			[["add", "s", "--url", "https://example.com", "--header=X-Custom=opaqueHdrEq1122"], "opaqueHdrEq1122"],
+			[["add", "s", "--url", "https://example.com", `--header=Authorization=Basic ${basicB64}`], basicB64],
+			[["add", "s", "--env=MY_CUSTOM_VAR=opaqueEnvEq3344", "--", "node", "x.js"], "opaqueEnvEq3344"],
+			[["add", "s", "--url", "https://example.com", "--header", `Authorization Basic ${basicB64}`], basicB64],
+			[
+				["add", "s", "--url", "https://example.com", "--header", "X-Custom opaqueCustomSpace7788"],
+				"opaqueCustomSpace7788",
+			],
+			[
+				["add", "s", "--url", "https://example.com", "--header", "=opaqueLeadingEqHdr9900"],
+				"opaqueLeadingEqHdr9900",
+			],
+			[["add", "s", "--env", "MY_SECRET opaqueEnvSpace1122", "--", "node", "x.js"], "opaqueEnvSpace1122"],
+			[["add", "s", "--env", "=opaqueLeadingEqEnv3344", "--", "node", "x.js"], "opaqueLeadingEqEnv3344"],
+		];
+		for (const [args, secret] of cases) {
+			const res = await runCli(args, { agentDir });
+			assert.equal(res.exitCode, 1, args.join(" "));
+			assertNoSecretLeaked(res, [secret]);
+		}
+	});
+
+	it("Streamable HTTP and SSE redact 200 JSON-RPC errors, Cookie/custom/tab headers, concurrent tokens, and URL query secrets", async () => {
+		const accessTok = "opaqueHttp200JsonRpcTok998877";
+		const cookieVal = "opaqueCookieSidVal998877";
+		const customHdr = "opaqueCustomHdrVal998877";
+		const sessHdr = "opaqueSessionHdrVal998877";
+		const tabTok = "opaqueTabBearerTok998877";
+		const urlQuerySec = "opaqueUrlQuerySecret5566";
+		const tokA = "opaqueConcurrentTokenAAA111";
+		const tokB = "opaqueConcurrentTokenBBB222";
+		let releaseFirst: (() => void) | undefined;
+
+		const srv = await startCustomServer(async (req, res, origin) => {
+			const u = new URL(req.url ?? "/", origin);
+			const bodyText = await readBody(req);
+			if (u.pathname === "/mcp-200-rpc-err") {
+				const msg = JSON.parse(bodyText) as { id?: number };
+				json(res, 200, {
+					jsonrpc: "2.0",
+					id: msg.id ?? 1,
+					error: { code: -32000, message: `rejected ${accessTok}` },
+				});
+				return;
+			}
+			if (u.pathname === "/mcp-sse-rpc-err") {
+				const msg = JSON.parse(bodyText) as { id?: number };
+				res.writeHead(200, { "content-type": "text/event-stream" });
+				res.end(
+					`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: msg.id ?? 1, error: { code: -32000, message: `sse rejected ${accessTok}` } })}\n\n`,
+				);
+				return;
+			}
+			if (u.pathname === "/mcp-500-cookie") {
+				res.writeHead(500).end(`invalid session ${cookieVal}`);
+				return;
+			}
+			if (u.pathname === "/mcp-500-custom") {
+				res.writeHead(500).end(`rejected ${customHdr} and ${sessHdr}`);
+				return;
+			}
+			if (u.pathname === "/mcp-500-tab") {
+				res.writeHead(500).end(`rejected ${tabTok}`);
+				return;
+			}
+			if (u.pathname === "/mcp-500-query") {
+				res.writeHead(500).end(`rejected query ${u.searchParams.get("api_key") ?? ""}`);
+				return;
+			}
+			if (u.pathname === "/mcp-500-boundary") {
+				res.writeHead(500).end(`${"x".repeat(8180)}opaqueBoundaryTokenSplit12345${"y".repeat(500)}`);
+				return;
+			}
+			if (u.pathname === "/mcp-200-badjson") {
+				res.writeHead(200, { "content-type": "application/json" }).end(`opaqueBadJsonToken998877`);
+				return;
+			}
+			if (u.pathname === "/mcp-concurrent") {
+				const auth = req.headers.authorization ?? "";
+				if (auth.includes(tokA)) {
+					await new Promise<void>((resolve) => {
+						releaseFirst = resolve;
+					});
+					res.writeHead(500).end(`first failed for ${tokA}`);
+					return;
+				}
+				releaseFirst?.();
+				res.writeHead(202).end();
+				return;
+			}
+			res.writeHead(404).end();
+		});
+
+		const creds = new McpOAuthCredentialStore(new InMemoryAuthStorageBackend());
+		const rpcUrl = `${srv.origin}/mcp-200-rpc-err`;
+		await creds.forServer("rpc-err", rpcUrl).save({
+			serverUrl: rpcUrl,
+			tokens: { access_token: accessTok, token_type: "Bearer" },
+			tokensExpireAt: Date.now() + 3_600_000,
+		});
+		const sseUrl = `${srv.origin}/mcp-sse-rpc-err`;
+		await creds.forServer("sse-err", sseUrl).save({
+			serverUrl: sseUrl,
+			tokens: { access_token: accessTok, token_type: "Bearer" },
+			tokensExpireAt: Date.now() + 3_600_000,
+		});
+
+		const agentDir = createAgentDir({
+			"rpc-err": { url: rpcUrl },
+			"sse-err": { url: sseUrl },
+			"cookie-err": { url: `${srv.origin}/mcp-500-cookie`, headers: { Cookie: `sid=${cookieVal}; other=abc` } },
+			"custom-err": {
+				url: `${srv.origin}/mcp-500-custom`,
+				headers: { "X-Custom": customHdr, "X-Session": sessHdr },
+			},
+			"tab-err": { url: `${srv.origin}/mcp-500-tab`, headers: { Authorization: `Bearer\t${tabTok}` } },
+			"url-query": { url: `${srv.origin}/mcp-500-query?api_key=${urlQuerySec}` },
+			"boundary-err": {
+				url: `${srv.origin}/mcp-500-boundary`,
+				headers: { Authorization: "Bearer opaqueBoundaryTokenSplit12345" },
+			},
+			"badjson-err": { url: `${srv.origin}/mcp-200-badjson` },
+		});
+
+		const listRes = await runCli(["list", "--json"], { agentDir, credentials: creds });
+		assert.equal(listRes.exitCode, 1);
+		assertNoSecretLeaked(listRes, [
+			accessTok,
+			cookieVal,
+			customHdr,
+			sessHdr,
+			tabTok,
+			urlQuerySec,
+			"opaqueBoundaryTokenSplit12345",
+			"opaqueBoundary",
+			"opaqueBadJsonToken998877",
+		]);
+
+		// Concurrent request token isolation on StreamableHttpTransport.
+		let callCount = 0;
+		const transport = new StreamableHttpTransport({
+			url: `${srv.origin}/mcp-concurrent`,
+			openGetStream: false,
+			authProvider: {
+				token: async () => (++callCount === 1 ? tokA : tokB),
+			},
+		});
+		await transport.start();
+		const firstReq = transport.send({ jsonrpc: "2.0", id: 1, method: "ping" }).catch((error: unknown) => error);
+		// Let first request enter fetch before second overwrites lastToken.
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		await transport.send({ jsonrpc: "2.0", method: "notifications/ping" });
+		const firstErr = await firstReq;
+		await transport.close();
+		assert.ok(firstErr instanceof McpHttpError);
+		assert.equal(firstErr.message.includes(tokA), false, firstErr.message);
+		assert.equal(firstErr.body.includes(tokA), false, firstErr.body);
+	});
+
+	it("stdio redacts configured env values in stderr, redacts before sliceTail, and redacts mcp.log server notifications", async () => {
+		const envSecret = "opaqueStdioEnvVal887766";
+		const cutBearer = "opaqueCutBearerVal554433";
+		const notifSecret = "opaqueNotifBearerVal332211";
+		const notifUrlPass = "opaqueNotifUrlPass110099";
+
+		const scriptDir = createAgentDir();
+		const envLeakScript = join(scriptDir, "env-leak.mjs");
+		writeFileSync(
+			envLeakScript,
+			`process.stderr.write("startup failed for " + process.env.API_SECRET + "\\n"); process.exit(1);\n`,
+		);
+		const cutBearerScript = join(scriptDir, "cut-bearer.mjs");
+		writeFileSync(
+			cutBearerScript,
+			`process.stderr.write("Authorization: Bearer ${cutBearer} " + "x".repeat(1974) + "\\n"); process.exit(1);\n`,
+		);
+		const notifScript = join(scriptDir, "notif-server.mjs");
+		writeFileSync(
+			notifScript,
+			`import readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "notif", version: "1.0.0" } } }) + "\\n");
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "Authorization: Bearer ${notifSecret} https://alice:${notifUrlPass}@host/mcp env=" + process.env.API_SECRET } }) + "\\n");
+  } else if (msg.method === "tools/list") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [] } }) + "\\n");
+  }
+});
+`,
+		);
+
+		const agentDir = createAgentDir({
+			"stdio-env": { command: process.execPath, args: [envLeakScript], env: { API_SECRET: envSecret } },
+			"stdio-cut": { command: process.execPath, args: [cutBearerScript] },
+			"stdio-notif": { command: process.execPath, args: [notifScript], env: { API_SECRET: envSecret } },
+		});
+
+		const listRes = await runCli(["list", "--json"], { agentDir });
+		assert.equal(listRes.exitCode, 1);
+		assertNoSecretLeaked(listRes, [envSecret, cutBearer]);
+
+		const logPath = join(agentDir, "mcp.log");
+		assert.equal(existsSync(logPath), true);
+		const logContent = readFileSync(logPath, "utf8");
+		for (const secret of [notifSecret, notifUrlPass, envSecret]) {
+			assert.equal(logContent.includes(secret), false, `mcp.log leaked ${secret}: ${logContent}`);
+		}
+	});
+
+	it("/mcp TUI signInWithUi strips userinfo from authorizationUrl and list_mcp_resources redacts tool result errors", async () => {
+		initTheme("dark", false);
+		const uiUrlPass = "opaqueUiAuthUrlPass776655";
+		const srv = await startCustomServer((req, res, origin) => {
+			const u = new URL(req.url ?? "/", origin);
+			if (u.pathname === "/mcp") {
+				res.writeHead(401, {
+					"www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
+				}).end();
+				return;
+			}
+			if (u.pathname === "/.well-known/oauth-protected-resource/mcp") {
+				json(res, 200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+				return;
+			}
+			if (u.pathname === "/.well-known/oauth-authorization-server") {
+				const authEndpoint = `${origin.replace("http://", `http://alice:${uiUrlPass}@`)}/authorize`;
+				json(res, 200, {
+					issuer: origin,
+					authorization_endpoint: authEndpoint,
+					token_endpoint: `${origin}/token`,
+					response_types_supported: ["code"],
+					code_challenge_methods_supported: ["S256"],
+				});
+				return;
+			}
+			res.writeHead(404).end();
+		});
+
+		let capturedRedirectPromptUrl = "";
+		const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+		const ext = createMcpExtension({
+			loadConfig: () => ({
+				servers: [
+					{ name: "s", config: { url: srv.url, oauth: { clientId: "cid" } }, source: "mcp.json", scope: "global" },
+				],
+				errors: [],
+			}),
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			openUrl: () => {},
+		});
+		ext({
+			on: (ev: string, fn: (event: unknown, ctx: unknown) => Promise<void>) => handlers.set(ev, fn),
+			registerCommand: (name: string, cmd: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+				commands.set(name, cmd),
+			registerTool: () => {},
+			registerToolRenderer: () => {},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			setActiveTools: () => {},
+			appendEntry: async () => {},
+		} as never);
+
+		const ctx = {
+			cwd: tmpdir(),
+			hasUI: true,
+			mode: "tui",
+			isProjectTrusted: () => true,
+			sessionManager: { getBranch: () => [] },
+			ui: {
+				notify: () => {},
+				custom: async (
+					factory: (
+						tui: unknown,
+						theme: unknown,
+						keybindings: unknown,
+						done: () => void,
+					) => { redirectUrl: (title: string, authUrl: string) => Promise<string | undefined> },
+				) => {
+					await new Promise<void>((resolve) => {
+						const view = factory(
+							{ requestRender: () => {} },
+							{ fg: (_: string, t: string) => t, bold: (t: string) => t },
+							{ matches: () => false },
+							resolve,
+						);
+						view.redirectUrl = async (_title: string, authUrl: string) => {
+							capturedRedirectPromptUrl = authUrl;
+							return undefined;
+						};
+					});
+				},
+			},
+		};
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("mcp")?.handler("login s", ctx);
+		await handlers.get("session_shutdown")?.({}, ctx);
+		assert.ok(capturedRedirectPromptUrl.length > 0, "expected redirect prompt URL");
+		assert.equal(capturedRedirectPromptUrl.includes(uiUrlPass), false, capturedRedirectPromptUrl);
+
+		// list_mcp_resources errorMessage must be redacted before entering tool results.
+		const resSecret = "opaqueResourceErrBearer9988";
+		const defs = createMcpResourceToolDefinitions({
+			exposure: "direct",
+			servers: () => [
+				{
+					name: "s",
+					timeoutMs: 1000,
+					resourcesPage: async () => ({ resources: [] }),
+					resourceTemplatesPage: async () => ({ resourceTemplates: [] }),
+					allResources: async () => {
+						throw new Error(`failed with Authorization: Bearer ${resSecret} https://u:${resSecret}@host/x`);
+					},
+					allResourceTemplates: async () => [],
+					readResource: async () => ({ contents: [] }),
+				},
+			],
+		});
+		const listRes = await defs[0]!.execute("call-1", {}, undefined, undefined, {} as never);
+		const serialized = JSON.stringify(listRes);
+		assert.equal(serialized.includes(resSecret), false, serialized);
+	});
+
+	it("OAuthError, OAuthTemporarilyUnavailableError, tokenRequest fetch/nested/custom-auth, and registerClient bad-JSON never leak secrets", async () => {
+		const fetchSec = "opaqueFetchThrowSecret5544";
+		const nestedTok = "opaqueNestedAccessTok8899";
+		const customKey = "opaqueCustomClientKey6677";
+		const assertion = "opaqueClientAssertion3344";
+		const causePass = "opaqueNestedCausePass9911";
+		const badRegBody = "opaqueRegBodyLeak998877";
+
+		// tokenRequest fetch rejection scrubs requestSecrets while preserving TypeError for transient classification.
+		const fetchErr = await exchangeAuthorizationCode("https://auth.example.com", {
+			clientInformation: { client_id: "cid", client_secret: fetchSec },
+			code: "auth-code-1",
+			codeVerifier: "verifier-secret-123456789012345678901234567890123",
+			redirectUrl: "http://127.0.0.1:9999/callback",
+			fetch: async () => {
+				throw new TypeError(`proxy rejected ${fetchSec}`);
+			},
+		}).catch((error: unknown) => error);
+		assert.ok(fetchErr instanceof TypeError);
+		assert.equal(fetchErr.message.includes(fetchSec), false, fetchErr.message);
+
+		// OAuthTemporarilyUnavailableError scrubs message and does not retain raw nested cause with credentials.
+		const rawCause = new TypeError("fetch failed", {
+			cause: new Error(`connect https://alice:${causePass}@auth.example.com/token`),
+		});
+		const tempErr = new OAuthTemporarilyUnavailableError(rawCause);
+		assert.equal(tempErr.message.includes(causePass), false);
+		assert.equal(String((tempErr.cause as Error | undefined)?.message ?? "").includes(causePass), false);
+		assert.equal((tempErr.cause as { cause?: unknown } | undefined)?.cause, undefined);
+
+		// Nested details.access_token + addClientAuthentication custom header + client_assertion + error_uri query.
+		const nestedErr = await exchangeAuthorizationCode("https://auth.example.com", {
+			clientInformation: { client_id: "cid" },
+			code: "auth-code-2",
+			codeVerifier: "verifier-secret-223456789012345678901234567890123",
+			redirectUrl: "http://127.0.0.1:9999/callback",
+			addClientAuthentication: (headers, params) => {
+				headers.set("X-Client-Key", customKey);
+				params.set("client_assertion", assertion);
+			},
+			fetch: async () =>
+				new Response(
+					JSON.stringify({
+						error: `bad_${customKey}`,
+						error_description: `nested ${nestedTok} assert ${assertion}`,
+						error_uri: `https://auth.example.com/err?secret=${customKey}`,
+						details: { access_token: nestedTok },
+					}),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				),
+		}).catch((error: unknown) => error);
+		assert.ok(nestedErr instanceof OAuthError);
+		for (const field of [nestedErr.message, nestedErr.code, nestedErr.errorUri ?? ""]) {
+			for (const secret of [customKey, nestedTok, assertion]) {
+				assert.equal(field.includes(secret), false, `OAuthError leaked ${secret} in ${field}`);
+			}
+		}
+
+		// registerClient HTTP 200 non-JSON body never quotes raw body in SyntaxError.
+		const regErr = await registerClient("https://auth.example.com", {
+			clientMetadata: { redirect_uris: ["http://127.0.0.1:9999/callback"] },
+			fetch: async () => new Response(badRegBody, { status: 200 }),
+		}).catch((error: unknown) => error);
+		assert.ok(regErr instanceof Error);
+		assert.equal(regErr.message.includes(badRegBody), false, regErr.message);
+
+		// Corrupted mcp-auth.json never quotes raw token fragments in JSON.parse SyntaxError.
+		const corruptToken = "opaqueCorruptAuthToken9988";
+		const corruptBackend = new InMemoryAuthStorageBackend();
+		corruptBackend.withLock(() => ({ result: undefined, next: corruptToken }));
+		const corruptStore = new McpOAuthCredentialStore(corruptBackend);
+		const parseErr = await corruptStore
+			.forServer("s", "https://example.com/mcp")
+			.load()
+			.catch((error: unknown) => error);
+		assert.ok(parseErr instanceof Error);
+		assert.equal(parseErr.message, "Failed to parse MCP OAuth credentials file");
+		assert.equal(parseErr.message.includes(corruptToken), false);
+
+		// Corrupted mcp.json during `add` never quotes raw secret fragments in JSON.parse SyntaxError.
+		const corruptCfgSecret = "opaqueCorruptMcpJsonSecret7766";
+		const agentDir = createAgentDir();
+		writeFileSync(join(agentDir, "mcp.json"), corruptCfgSecret);
+		const addCorrupt = await runCli(["add", "s", "--url", "https://example.com/mcp"], { agentDir });
+		assert.equal(addCorrupt.exitCode, 1);
+		assertNoSecretLeaked(addCorrupt, [corruptCfgSecret]);
+
+		// RFC 6750/9728 WWW-Authenticate challenge keeps its challenge metadata intact while scrubbing URL userinfo.
+		assert.equal(
+			redactWwwAuthenticateHeader('Bearer resource_metadata="https://example.com/meta"'),
+			'Bearer resource_metadata="https://example.com/meta"',
+		);
+		assert.equal(
+			redactWwwAuthenticateHeader('Bearer resource_metadata="https://alice:wwwPass99@example.com/meta"').includes(
+				"wwwPass99",
+			),
+			false,
+		);
 	});
 });

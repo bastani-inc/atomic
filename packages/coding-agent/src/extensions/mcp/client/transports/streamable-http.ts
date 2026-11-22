@@ -1,5 +1,10 @@
 import type { AuthProvider, McpFetch } from "../auth-provider.js";
-import { extractAuthorizationSecrets, redactOAuthErrorText } from "../oauth/redact.js";
+import {
+	extractHeaderSecrets,
+	redactOAuthErrorText,
+	redactWwwAuthenticateHeader,
+	scrubUnknownErrorData,
+} from "../oauth/redact.js";
 import {
 	isJsonRpcRequest,
 	isJsonRpcResponse,
@@ -19,6 +24,8 @@ import {
 } from "./transport.js";
 
 const MAX_ERROR_BODY_BYTES = 8 * 1024;
+/** Extra lookahead read before redaction so a secret straddling `MAX_ERROR_BODY_BYTES` is caught whole. */
+const ERROR_BODY_REDACTION_LOOKAHEAD_BYTES = 512;
 const ERROR_MESSAGE_BODY_CHARS = 500;
 const DEFAULT_RECONNECT_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 30_000;
@@ -196,10 +203,11 @@ export class McpHttpError extends Error {
 export class McpAuthRequiredError extends McpHttpError {
 	readonly wwwAuthenticate: string | null;
 
-	constructor(response: Response, body = "") {
+	constructor(response: Response, body = "", secrets: readonly string[] = []) {
 		super(401, "MCP server requires authentication", body);
 		this.name = "McpAuthRequiredError";
-		this.wwwAuthenticate = response.headers.get("www-authenticate");
+		const raw = response.headers.get("www-authenticate");
+		this.wwwAuthenticate = raw === null ? null : redactWwwAuthenticateHeader(raw, secrets);
 	}
 }
 
@@ -257,19 +265,19 @@ async function readBodyText(response: Response, maxBytes: number): Promise<{ tex
 	}
 }
 
-function isSensitiveHeaderName(name: string): boolean {
-	const lower = name.toLowerCase();
-	return (
-		lower === "authorization" ||
-		lower === "proxy-authorization" ||
-		lower === "cookie" ||
-		lower.includes("token") ||
-		lower.includes("secret") ||
-		lower.includes("key") ||
-		lower.includes("auth") ||
-		lower.includes("password")
-	);
-}
+/** Standard non-secret HTTP headers that never carry credentials; all other configured headers are treated as sensitive. */
+const NON_SECRET_HTTP_HEADERS = new Set([
+	"accept",
+	"accept-encoding",
+	"accept-language",
+	"cache-control",
+	"content-type",
+	"mcp-protocol-version",
+	"origin",
+	"pragma",
+	"referer",
+	"user-agent",
+]);
 
 function describeHttpFailure(status: number, body: string): string {
 	const text = body.trim();
@@ -323,7 +331,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 
 	async send(message: JsonRpcMessage, { signal }: McpTransportSendOptions = {}): Promise<void> {
 		if (!this.started || this.closed) throw new McpConnectionClosedError();
-		const response = await this.authorizedFetch(
+		const { response, token } = await this.authorizedFetch(
 			"POST",
 			{
 				headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
@@ -331,7 +339,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			},
 			signal,
 		);
-		await this.checkResponse(response);
+		await this.checkResponse(response, token);
 		this.captureSession(response);
 
 		if (!isJsonRpcRequest(message)) {
@@ -349,12 +357,19 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			const maxBytes = this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
 			const { text, truncated } = await readBodyText(response, maxBytes);
 			if (truncated) throw new Error(`MCP JSON response exceeds ${maxBytes} bytes`);
-			const body: unknown = JSON.parse(text);
-			for (const item of Array.isArray(body) ? body : [body]) this.emitMessage(parseJsonRpcMessage(item));
+			let body: unknown;
+			try {
+				body = JSON.parse(text);
+			} catch {
+				throw new Error("Invalid MCP JSON response");
+			}
+			for (const item of Array.isArray(body) ? body : [body]) {
+				this.emitMessage(this.scrubIncomingMessage(parseJsonRpcMessage(item), token));
+			}
 			return;
 		}
 		if (type === "text/event-stream" && response.body) {
-			void this.consumeResponseStream(response.body, message.id, signal);
+			void this.consumeResponseStream(response.body, message.id, signal, token);
 			return;
 		}
 		await discard(response);
@@ -388,7 +403,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		method: "GET" | "POST",
 		init: { headers: Record<string, string>; body?: string },
 		signal?: AbortSignal,
-	): Promise<Response> {
+	): Promise<{ response: Response; token: string | undefined }> {
 		const onUnauthorized = this.options.authProvider?.onUnauthorized?.bind(this.options.authProvider);
 		// Aborting the request ends its fetch and response body, as closing the transport does.
 		const fetchSignal = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
@@ -401,7 +416,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 				body: init.body,
 				signal: fetchSignal,
 			});
-			if (attempt > 0 || !onUnauthorized || !needsAuthorization(response)) return response;
+			if (attempt > 0 || !onUnauthorized || !needsAuthorization(response)) return { response, token };
 			try {
 				await onUnauthorized({ response, serverUrl: this.url, fetch: this.fetch, token });
 			} finally {
@@ -430,23 +445,58 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		if (sessionId) this.sessionIdValue = sessionId;
 	}
 
-	private activeRequestSecrets(): string[] {
+	/** Active credentials associated with this transport (for redacting error/log output). */
+	activeSecrets(requestToken?: string): string[] {
 		const secrets: string[] = [];
-		if (this.lastToken) secrets.push(this.lastToken);
+		const token = requestToken ?? this.lastToken;
+		if (token) secrets.push(token);
+		if (this.lastToken && this.lastToken !== token) secrets.push(this.lastToken);
+		if (this.url.password) secrets.push(this.url.password);
+		for (const value of this.url.searchParams.values()) {
+			if (value) secrets.push(value);
+		}
 		if (this.options.headers) {
 			for (const [name, value] of Object.entries(this.options.headers)) {
-				if (isSensitiveHeaderName(name)) secrets.push(...extractAuthorizationSecrets(value));
+				if (!NON_SECRET_HTTP_HEADERS.has(name.toLowerCase())) {
+					secrets.push(...extractHeaderSecrets(name, value));
+				}
 			}
 		}
 		return secrets;
 	}
 
-	private async checkResponse(response: Response): Promise<void> {
+	private scrubIncomingMessage(message: JsonRpcMessage, requestToken?: string): JsonRpcMessage {
+		if (!isJsonRpcResponse(message) || !("error" in message)) return message;
+		const secrets = this.activeSecrets(requestToken);
+		return {
+			...message,
+			error: {
+				...message.error,
+				message: redactOAuthErrorText(message.error.message, secrets),
+				...(message.error.data === undefined ? {} : { data: scrubUnknownErrorData(message.error.data, secrets) }),
+			},
+		};
+	}
+
+	private async checkResponse(response: Response, requestToken?: string): Promise<void> {
 		if (response.ok) return;
-		// Read only the excerpt the error keeps and cancel the rest.
-		const rawBody = (await readBodyText(response, MAX_ERROR_BODY_BYTES).catch(() => ({ text: "" }))).text;
-		const body = redactOAuthErrorText(rawBody, this.activeRequestSecrets());
-		if (response.status === 401) throw new McpAuthRequiredError(response, body);
+		const secrets = this.activeSecrets(requestToken);
+		// Read past the cap by at least the longest encoded active secret so a secret straddling the boundary is caught whole.
+		let maxSecretBytes = 0;
+		for (const secret of secrets) {
+			const encodedUpperBound = Buffer.byteLength(secret) * 3;
+			if (encodedUpperBound > maxSecretBytes) maxSecretBytes = encodedUpperBound;
+		}
+		const lookahead = Math.max(ERROR_BODY_REDACTION_LOOKAHEAD_BYTES, Math.min(maxSecretBytes, MAX_ERROR_BODY_BYTES));
+		const { text: rawBody, truncated } = await readBodyText(response, MAX_ERROR_BODY_BYTES + lookahead).catch(() => ({
+			text: "",
+			truncated: false,
+		}));
+		let body = redactOAuthErrorText(rawBody, secrets);
+		if ((truncated || rawBody.length > MAX_ERROR_BODY_BYTES) && body.length > MAX_ERROR_BODY_BYTES) {
+			body = body.slice(0, MAX_ERROR_BODY_BYTES);
+		}
+		if (response.status === 401) throw new McpAuthRequiredError(response, body, secrets);
 		if (response.status === 404 && this.sessionIdValue) throw new McpSessionExpiredError(body);
 		throw new McpHttpError(response.status, describeHttpFailure(response.status, body), body);
 	}
@@ -456,6 +506,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		cursor: StreamCursor,
 		onMessage?: (message: JsonRpcMessage) => void,
 		signal?: AbortSignal,
+		requestToken?: string,
 	): Promise<void> {
 		await consumeSseStream(stream, {
 			maxEventBytes: this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES,
@@ -472,10 +523,14 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 				if (!event.data.trim() || (event.event !== undefined && event.event !== "message")) return;
 				let message: JsonRpcMessage;
 				try {
-					message = parseJsonRpcMessage(JSON.parse(event.data));
+					message = this.scrubIncomingMessage(parseJsonRpcMessage(JSON.parse(event.data)), requestToken);
 				} catch (error) {
 					// An event the stream ended in the middle of is discarded; a resume replays it.
-					if (terminated) this.emitError(error);
+					if (terminated) {
+						this.emitError(
+							new Error(redactOAuthErrorText(toError(error).message, this.activeSecrets(requestToken))),
+						);
+					}
 					return;
 				}
 				onMessage?.(message);
@@ -494,6 +549,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		body: ReadableStream<Uint8Array>,
 		requestId: JsonRpcId,
 		signal: AbortSignal | undefined,
+		initialToken: string | undefined,
 	): Promise<void> {
 		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, advanced: false };
 		let answered = false;
@@ -501,11 +557,12 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			if (isJsonRpcResponse(message) && message.id === requestId) answered = true;
 		};
 		let stream: ReadableStream<Uint8Array> | undefined = body;
+		let token = initialToken;
 		let failure: unknown;
 		for (let attempt = 0; ; ) {
 			if (stream) {
 				try {
-					await this.consumeSse(stream, cursor, onMessage, signal);
+					await this.consumeSse(stream, cursor, onMessage, signal, token);
 					failure = undefined;
 				} catch (error) {
 					failure = error;
@@ -518,7 +575,9 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			cursor.advanced = false;
 			if (!(await this.sleep(this.reconnectDelay(attempt++, cursor.retryMs)))) return;
 			try {
-				stream = await this.openSseStream(cursor.lastEventId, signal);
+				const reopened = await this.openSseStream(cursor.lastEventId, signal);
+				stream = reopened?.stream;
+				token = reopened?.token ?? token;
 			} catch (error) {
 				failure = error;
 				if (!this.isRetryable(error)) break;
@@ -526,7 +585,10 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			}
 		}
 		if (this.closed || signal?.aborted) return;
-		const reason = failure === undefined ? "stream ended without a response" : toError(failure).message;
+		const reason =
+			failure === undefined
+				? "stream ended without a response"
+				: redactOAuthErrorText(toError(failure).message, this.activeSecrets(token));
 		this.emitMessage({
 			jsonrpc: "2.0",
 			id: requestId,
@@ -545,11 +607,11 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, advanced: false };
 		for (let attempt = 0; !this.closed; ) {
 			try {
-				const stream = await this.openSseStream(cursor.lastEventId);
+				const opened = await this.openSseStream(cursor.lastEventId);
 				// The server does not offer a GET stream.
-				if (!stream) return;
+				if (!opened) return;
 				const openedAt = Date.now();
-				await this.consumeSse(stream, cursor);
+				await this.consumeSse(opened.stream, cursor, undefined, undefined, opened.token);
 				// Resumable progress, or a stream that stayed up for a while, counts as healthy.
 				if (cursor.advanced || Date.now() - openedAt > this.maxDelay()) attempt = 0;
 			} catch (error) {
@@ -572,8 +634,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	private async openSseStream(
 		lastEventId: string | undefined,
 		signal?: AbortSignal,
-	): Promise<ReadableStream<Uint8Array> | undefined> {
-		const response = await this.authorizedFetch(
+	): Promise<{ stream: ReadableStream<Uint8Array>; token: string | undefined } | undefined> {
+		const { response, token } = await this.authorizedFetch(
 			"GET",
 			{
 				headers: {
@@ -587,14 +649,14 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			await discard(response);
 			return undefined;
 		}
-		await this.checkResponse(response);
+		await this.checkResponse(response, token);
 		this.captureSession(response);
 		const type = contentType(response);
 		if (type !== "text/event-stream" || !response.body) {
 			await discard(response);
 			throw new McpHttpError(response.status, `Unsupported MCP GET response content type: ${type ?? "missing"}`);
 		}
-		return response.body;
+		return { stream: response.body, token };
 	}
 
 	/**

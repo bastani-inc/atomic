@@ -12,7 +12,6 @@ import { VERSION } from "../../config.js";
 import { resolveMcpServerUrl } from "../../core/mcp-servers.ts";
 import { resolveConfigValueOrThrowAsync, resolveHeadersOrThrowAsync } from "../../core/resolve-config-value.ts";
 import { sliceTail } from "../../core/tools/truncate.ts";
-import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import {
 	type AuthProvider,
 	type CallToolResult,
@@ -39,6 +38,7 @@ import {
 	type OAuthChallenge,
 	OAuthTemporarilyUnavailableError,
 } from "./client/oauth/index.js";
+import { redactOAuthErrorText } from "./client/oauth/redact.js";
 import { type McpServerEntry, mcpRequestTimeoutMs } from "./config.ts";
 import type { McpServerLog } from "./log.ts";
 import {
@@ -85,8 +85,15 @@ export type McpTransportFactory = (
 	authProvider: AuthProvider | undefined,
 ) => McpTransport | Promise<McpTransport>;
 
-function errorMessage(error: unknown): string {
-	return redactCredentialShapes(error instanceof Error ? error.message : String(error));
+function errorMessage(error: unknown, secrets: Iterable<string | undefined> = []): string {
+	return redactOAuthErrorText(error instanceof Error ? error.message : String(error), secrets);
+}
+
+function transportSecrets(transport: McpTransport | undefined): readonly string[] {
+	if (transport instanceof StdioTransport || transport instanceof StreamableHttpTransport) {
+		return transport.activeSecrets();
+	}
+	return [];
 }
 
 /**
@@ -498,7 +505,6 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		});
 		this.initializingClient = client;
 		const log = this.log;
-		if (log) client.onNotification("notifications/message", (params) => log.write(this.entry.name, params));
 		// A second client.close() can return before its transport has finished closing.
 		let closing: Promise<void> | undefined;
 		const closeClient = () => {
@@ -507,6 +513,11 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		};
 		this.shutdown.signal.addEventListener("abort", closeClient, { once: true });
 		let transport: McpTransport | undefined;
+		if (log) {
+			client.onNotification("notifications/message", (params) =>
+				log.write(this.entry.name, params, transportSecrets(transport)),
+			);
+		}
 		try {
 			transport = await this.createTransport(this.entry, this.cwd, this.authProvider);
 			this.initializingTransport = transport;
@@ -533,7 +544,10 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		} catch (error) {
 			await closeClient();
 			if (transport instanceof StdioTransport) {
-				this.stderrTail = sliceTail(transport.stderr.trim(), STDERR_TAIL_CHARS) || undefined;
+				const rawStderr = transport.stderr.trim();
+				this.stderrTail = rawStderr
+					? sliceTail(redactOAuthErrorText(rawStderr, transport.activeSecrets()), STDERR_TAIL_CHARS) || undefined
+					: undefined;
 			}
 			throw error;
 		} finally {
@@ -553,8 +567,9 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			return new Error(signInRequiredMessage(this.entry));
 		}
 		this.state = this.closed ? "closed" : "failed";
-		const stderr = this.stderrTail ? redactCredentialShapes(this.stderrTail) : undefined;
-		this.error = stderr ? `${errorMessage(error)}\n${stderr}` : errorMessage(error);
+		const secrets = transportSecrets(this.initializingTransport);
+		const message = errorMessage(error, secrets);
+		this.error = this.stderrTail ? `${message}\n${this.stderrTail}` : message;
 		this.changed();
 		return new Error(`MCP server "${this.entry.name}" failed to connect: ${this.error}`);
 	}
@@ -564,8 +579,12 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		if (this.client !== client || this.closed) return;
 		this.client = undefined;
 		this.state = "disconnected";
-		const stderr = stdio ? sliceTail(stdio.stderr.trim(), STDERR_TAIL_CHARS) : undefined;
-		this.error = stderr ? `Connection closed\n${redactCredentialShapes(stderr)}` : "Connection closed";
+		const rawStderr = stdio?.stderr.trim();
+		const stderr =
+			rawStderr && stdio
+				? sliceTail(redactOAuthErrorText(rawStderr, stdio.activeSecrets()), STDERR_TAIL_CHARS) || undefined
+				: undefined;
+		this.error = stderr ? `Connection closed\n${stderr}` : "Connection closed";
 		this.changed();
 	}
 

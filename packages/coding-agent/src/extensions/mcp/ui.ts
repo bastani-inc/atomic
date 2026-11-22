@@ -22,7 +22,7 @@ import { DynamicBorder } from "../../modes/interactive/components/dynamic-border
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { FramedSelector, type SelectorItem } from "../../modes/interactive/components/selector.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
-import { redactCredentialShapes } from "../../utils/credential-redaction.js";
+import { redactAuthorizationUrlForDisplay, redactOAuthErrorText } from "./client/oauth/redact.js";
 
 export interface McpMenu {
 	title: string;
@@ -197,7 +197,7 @@ export class McpManagerView implements McpUi, Component, Focusable {
 			}
 			signal.addEventListener("abort", onAbort, { once: true });
 			const input = new Input();
-			const link = new AuthUrlComponent(this.tui, authorizationUrl);
+			const link = new AuthUrlComponent(this.tui, redactAuthorizationUrlForDisplay(authorizationUrl));
 			const body: Component[] = [
 				new Spacer(1),
 				new Text(this.theme.fg("muted", "Approve access in your browser. If it did not open, visit:"), 1, 0),
@@ -267,7 +267,7 @@ export async function showMcpManager(
 		void manage(view).then(
 			() => done(),
 			(error: unknown) => {
-				ctx.ui.notify(redactCredentialShapes(error instanceof Error ? error.message : String(error)), "error");
+				ctx.ui.notify(redactOAuthErrorText(error instanceof Error ? error.message : String(error)), "error");
 				done();
 			},
 		);

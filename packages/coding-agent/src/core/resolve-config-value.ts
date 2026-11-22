@@ -24,9 +24,26 @@ const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ENV_VAR_NAME_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*/;
 const LEGACY_ENV_VAR_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 
-type TemplatePart = { type: "literal"; value: string } | { type: "env"; name: string };
+type TemplatePart = { type: "literal"; value: string } | { type: "env"; name: string; braced: boolean; glued: boolean };
 
 type ConfigValueReference = { type: "command"; config: string } | { type: "template"; parts: TemplatePart[] };
+
+const ENV_VAR_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
+
+function isIdentifierCharCode(code: number): boolean {
+	return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
+}
+
+function allowlistedEnvVarName(name: string): string | undefined {
+	if (!ENV_VAR_NAME_RE.test(name)) return undefined;
+	let clean = "";
+	for (let index = 0; index < name.length; index++) {
+		const pos = ENV_VAR_ALPHABET.indexOf(name[index]!);
+		if (pos < 0) return undefined;
+		clean += ENV_VAR_ALPHABET[pos]!;
+	}
+	return clean;
+}
 
 function appendLiteral(parts: TemplatePart[], value: string): void {
 	if (!value) return;
@@ -68,7 +85,7 @@ function parseConfigValueTemplate(config: string): TemplatePart[] {
 
 			const name = config.slice(dollarIndex + 2, endIndex);
 			if (ENV_VAR_NAME_RE.test(name)) {
-				parts.push({ type: "env", name });
+				parts.push({ type: "env", name, braced: true, glued: false });
 			} else {
 				appendLiteral(parts, config.slice(dollarIndex, endIndex + 1));
 			}
@@ -78,7 +95,8 @@ function parseConfigValueTemplate(config: string): TemplatePart[] {
 
 		const match = config.slice(dollarIndex + 1).match(ENV_VAR_NAME_PREFIX_RE);
 		if (match) {
-			parts.push({ type: "env", name: match[0] });
+			const glued = dollarIndex > 0 && isIdentifierCharCode(config.charCodeAt(dollarIndex - 1));
+			parts.push({ type: "env", name: match[0], braced: false, glued });
 			index = dollarIndex + 1 + match[0].length;
 			continue;
 		}
@@ -477,6 +495,25 @@ export async function resolveConfigValueOrThrowAsync(
 	throw unresolvedConfigValueError(config, description, env);
 }
 
+function safeDiagnosticMissingEnvVars(
+	parts: readonly TemplatePart[],
+	env?: Record<string, string>,
+): { missingCount: number; safeNames: string[] } {
+	const seen = new Set<string>();
+	const safeNames: string[] = [];
+	for (const part of parts) {
+		if (part.type !== "env") continue;
+		if (resolveEnvConfigValue(part.name, env) !== undefined) continue;
+		if (seen.has(part.name)) continue;
+		seen.add(part.name);
+		if (part.braced || (!part.glued && LEGACY_ENV_VAR_NAME_RE.test(part.name))) {
+			const safe = allowlistedEnvVarName(part.name);
+			if (safe !== undefined) safeNames.push(safe);
+		}
+	}
+	return { missingCount: seen.size, safeNames };
+}
+
 function unresolvedConfigValueError(config: string, description: string, env?: Record<string, string>): Error {
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
@@ -484,11 +521,21 @@ function unresolvedConfigValueError(config: string, description: string, env?: R
 	}
 
 	if (reference.type === "template") {
-		const missingCount = getMissingConfigValueEnvVarNames(config, env).length;
+		const { missingCount, safeNames } = safeDiagnosticMissingEnvVars(reference.parts, env);
 		if (missingCount === 1) {
-			return new Error(`Failed to resolve ${description} from environment variable`);
+			return new Error(
+				safeNames.length === 1
+					? `Failed to resolve ${description} from environment variable: ${safeNames[0]}`
+					: `Failed to resolve ${description} from environment variable`,
+			);
 		}
 		if (missingCount > 1) {
+			if (safeNames.length === 1) {
+				return new Error(`Failed to resolve ${description} from environment variable: ${safeNames[0]}`);
+			}
+			if (safeNames.length > 1) {
+				return new Error(`Failed to resolve ${description} from environment variables: ${safeNames.join(", ")}`);
+			}
 			return new Error(`Failed to resolve ${description} from environment variables`);
 		}
 	}
