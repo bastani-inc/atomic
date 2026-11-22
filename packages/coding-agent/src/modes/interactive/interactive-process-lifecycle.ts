@@ -101,9 +101,13 @@ type TerminalEndNotice =
  */
 function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): void {
 	const ending = hostEnding(mode);
-	if (notice.kind === "console-closed" && !ending.consoleClosed) {
+	if (notice.kind === "console-closed") {
+		if (ending.consoleClosed) return;
 		ending.consoleClosed = true;
 		setTimeout(() => mode.emergencyTerminalExit(), Math.max(CONSOLE_CLOSED_SHUTDOWN_MS - notice.closedMsAgo, 0));
+		// The terminal is gone with the console: that loss goes through the mode's own handler, as any other does.
+		mode.handleTerminalLost();
+		return;
 	}
 	if (ending.terminalLost) return;
 	ending.terminalLost = true;
