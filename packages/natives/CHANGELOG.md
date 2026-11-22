@@ -5,6 +5,7 @@
 ### Added
 
 - `containProcessTreeAllowingBreakaway(pid)`: on Windows, puts process `pid` into a kill-on-close Job object with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so descendants that explicitly ask to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) can start and outlive it while non-breakaway descendants remain contained and end on `terminate()`. `release()` clears kill-on-close while keeping `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. Returns `null` off Windows.
+- `HeldProcessDescendants.endDescendants()`: ends only the held descendants while keeping the root handle intact so a process cleaning up its own tree can terminate verified descendants before ending itself.
 
 ## [0.10.4] - 2026-11-22
 
