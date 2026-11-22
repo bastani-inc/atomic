@@ -41,13 +41,15 @@ interface Context {
 		getSessionId?(): string;
 	};
 	runtimeHost: { dispose: (options?: { fromSignal?: boolean }) => Promise<void> };
-	ui: { terminal: { drainInput: () => Promise<void> } };
+	ui: { terminal: { drainInput: () => Promise<void> }; stop?: () => void };
 	themeController: { disableAutoSync: () => void };
 	stop: () => void;
 	shutdown: (options?: { fromSignal?: boolean }) => Promise<void>;
 	handleTerminalLost: () => void;
 	emergencyTerminalExit: () => never;
 	unregisterSignalHandlers: () => void;
+	uncaughtCrash?: (error: Error) => never;
+	getCrashExtensionHint?: () => string | undefined;
 }
 
 interface Prototype {
@@ -56,6 +58,7 @@ interface Prototype {
 	shutdown(this: Context, options?: { fromSignal?: boolean }): Promise<void>;
 	handleTerminalLost(this: Context): void;
 	emergencyTerminalExit(this: Context): never;
+	uncaughtCrash(this: Context, error: Error): never;
 }
 
 const prototype = InteractiveMode.prototype as unknown as Prototype;
@@ -74,7 +77,7 @@ let contexts: Context[] = [];
 function createWindowsHost(
 	dispose: () => Promise<void>,
 	runtime?: IsolatedInteractiveRuntime,
-): { context: Context; closeConsole: () => void } {
+): { context: Context; closeConsole: () => void; throwUncaught: (error: Error) => void } {
 	const context: Context = {
 		isShuttingDown: false,
 		signalCleanupHandlers: [],
@@ -83,10 +86,12 @@ function createWindowsHost(
 		exitOutputWritten: undefined,
 		sessionManager: { isPersisted: () => false, getSessionFile: () => undefined },
 		runtimeHost: runtime ? Object.assign(runtime, { dispose: vi.fn(dispose) }) : { dispose: vi.fn(dispose) },
-		ui: { terminal: { drainInput: vi.fn(async () => {}) } },
+		ui: { terminal: { drainInput: vi.fn(async () => {}) }, stop: vi.fn() },
 		themeController: { disableAutoSync: vi.fn() },
 		// As the interactive mode's stop does.
 		stop: vi.fn(() => context.unregisterSignalHandlers()),
+		uncaughtCrash: (error) => prototype.uncaughtCrash.call(context, error),
+		getCrashExtensionHint: () => undefined,
 		// The shutdown ends in process.exit, which these tests turn into a rejection.
 		shutdown: (options) =>
 			prototype.shutdown.call(context, options).catch((error: unknown) => {
@@ -98,9 +103,12 @@ function createWindowsHost(
 	};
 	contexts.push(context);
 	const others = process.listeners("SIGHUP");
+	const otherUncaught = process.listeners("uncaughtException");
 	// Windows for the rest of the test; afterEach restores the platform.
 	Object.defineProperty(process, "platform", { ...platform, value: "win32" });
 	prototype.registerSignalHandlers.call(context);
+	const uncaught = process.listeners("uncaughtException").filter((candidate) => !otherUncaught.includes(candidate));
+	assert.equal(uncaught.length, 1, "Atomic handles an uncaught exception");
 	/** Atomic's console-close listener as it is registered now. */
 	const listener = (): NodeJS.SignalsListener => {
 		const own = process.listeners("SIGHUP").filter((candidate) => !others.includes(candidate));
@@ -108,7 +116,12 @@ function createWindowsHost(
 		return own[0]!;
 	};
 	listener();
-	return { context, closeConsole: () => listener()("SIGHUP") };
+	return {
+		context,
+		closeConsole: () => listener()("SIGHUP"),
+		// As the process reports an exception nothing caught.
+		throwUncaught: (error) => uncaught[0]!(error, "uncaughtException"),
+	};
 }
 
 function deadTerminal(): NodeJS.ErrnoException {
@@ -409,6 +422,113 @@ describe("a console Atomic finds gone before Windows says it closed", () => {
 			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
 		});
 	}
+});
+
+describe("while the lost terminal's exit gives a close notice its turns", () => {
+	// Once the lost terminal's bound has run out on Windows with no close proven, Atomic's exit is decided: it waits at most
+	// two turns for a close notice already received, and nothing else that happens meanwhile ends Atomic another way.
+	const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+	const errorListeners = () => process.stdin.listenerCount("error");
+	let report: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+		report = vi.spyOn(console, "error").mockImplementation(() => {});
+	});
+	afterEach(() => {
+		if (stdinIsTTY) Object.defineProperty(process.stdin, "isTTY", stdinIsTTY);
+		else Reflect.deleteProperty(process.stdin, "isTTY");
+	});
+
+	/** A host whose terminal is gone and whose shutdown has not ended, one millisecond before the lost terminal's bound. */
+	async function hostAtTheBound(dispose: () => Promise<void> = () => new Promise<void>(() => {})) {
+		const before = errorListeners();
+		const host = createWindowsHost(dispose);
+		process.stdin.emit("end");
+		await settle();
+		await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
+		assert.deepEqual(exits, []);
+		return { ...host, before };
+	}
+
+	test("an uncaught exception then still ends Atomic quietly, with 129, and its handlers removed", async () => {
+		const { throwUncaught, before } = await hostAtTheBound();
+		// In the same turn as the bound's timer, after it.
+		setTimeout(() => throwUncaught(new Error("late failure")), 1);
+
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
+		assert.deepEqual(exits, [TERMINAL_LOST_EXIT_CODE]);
+		assert.equal(report.mock.calls.length, 0, "nothing is reported as a crash");
+		assert.equal(errorListeners(), before, "the handlers are removed");
+	});
+
+	test("a failure on the terminal's streams that is not its end then still ends Atomic quietly, with 129", async () => {
+		const { before } = await hostAtTheBound();
+		setTimeout(
+			() =>
+				process.stdout.emit("error", Object.assign(new Error("write EPERM"), { code: "EPERM", syscall: "write" })),
+			1,
+		);
+
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
+		assert.deepEqual(exits, [TERMINAL_LOST_EXIT_CODE]);
+		assert.equal(report.mock.calls.length, 0, "nothing is reported as a crash");
+		assert.equal(errorListeners(), before, "the handlers are removed");
+	});
+
+	test("Windows' notice read in the first turn ends Atomic at that turn, with STATUS_CONTROL_C_EXIT, before anything later", async () => {
+		const { closeConsole, throwUncaught } = await hostAtTheBound();
+		setTimeout(closeConsole, 1);
+		// Due after the first turn, where the second would come.
+		setTimeout(() => throwUncaught(new Error("late failure")), 1 + PENDING_NOTICE_TURNS_MS);
+
+		// The bound's turn and the first turn only.
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS - 1), ProcessExit);
+		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		assert.equal(report.mock.calls.length, 0, "nothing is reported as a crash");
+	});
+
+	test("a session whose shutdown ends just after the bound still exits with the status Windows' waiting notice gives", async () => {
+		const disposed = Promise.withResolvers<void>();
+		const { closeConsole, before } = await hostAtTheBound(() => disposed.promise);
+		// The shutdown ends in the same turn as the bound's timer; Windows' notice is read after it.
+		setTimeout(() => disposed.resolve(), 1);
+		setTimeout(closeConsole, 1);
+
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
+		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		assert.equal(errorListeners(), before, "the handlers are removed");
+	});
+
+	test("a dead terminal's raw mode failure then does not end Atomic before the engine's notice is read", async () => {
+		const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+		const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime, {
+			getReadyEngineChildPid: () => undefined,
+			onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
+				engineListeners.push(listener);
+				return () => engineListeners.splice(engineListeners.indexOf(listener), 1);
+			},
+		});
+		const { throwUncaught } = createWindowsHost(() => new Promise<void>(() => {}), runtime);
+		process.stdin.emit("end");
+		await settle();
+		await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
+		// The engine's line is read in the bound's turn and parsed in the next; raw mode fails in between.
+		setTimeout(
+			() =>
+				setImmediate(() => {
+					for (const listener of [...engineListeners]) listener({ type: "engine_console_closed" });
+				}),
+			1,
+		);
+		setTimeout(
+			() => throwUncaught(Object.assign(new Error("setRawMode EIO"), { code: "EIO", syscall: "setRawMode" })),
+			1,
+		);
+
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
+		assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		assert.equal(report.mock.calls.length, 0, "nothing is reported as a crash");
+	});
 });
 
 describe("on Linux and macOS", () => {

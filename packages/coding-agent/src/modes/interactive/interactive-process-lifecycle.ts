@@ -50,6 +50,13 @@ interface HostEnding {
 	terminalLost: boolean;
 	/** Set once the Windows console is closed: Atomic exits with {@link CONSOLE_CLOSED_EXIT_CODE} instead of 129. */
 	consoleClosed: boolean;
+	/**
+	 * Set once the lost terminal's bound has run out on Windows with the close not proven: Atomic's exit is decided and
+	 * waits only for the turns that read a close notice already received ({@link lostTerminalBoundEnded}). Nothing that
+	 * happens in them ends Atomic another way: a shutdown that ends, an uncaught exception or a failure on the terminal's
+	 * streams leaves the exit to it, as it was before the bound's exit waited at all.
+	 */
+	lostExitDeciding: boolean;
 	/** Settles when the terminal is gone, so a shutdown stops waiting on output that can no longer be written. */
 	readonly terminalLoss: Promise<void>;
 	readonly settleTerminalLoss: () => void;
@@ -69,6 +76,7 @@ function hostEnding(mode: InteractiveModeBase): HostEnding {
 			sigterms: 0,
 			terminalLost: false,
 			consoleClosed: false,
+			lostExitDeciding: false,
 			terminalLoss: loss.promise,
 			settleTerminalLoss: () => loss.resolve(),
 			forced: forced.promise,
@@ -126,11 +134,26 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
  * turns, and nothing more, are given to it before Atomic exits, so that it still decides the status.
  */
 function lostTerminalBoundEnded(mode: InteractiveModeBase): void {
-	if (process.platform === "win32" && !hostEnding(mode).consoleClosed) {
-		setImmediate(() => setImmediate(() => mode.emergencyTerminalExit()));
+	const ending = hostEnding(mode);
+	if (process.platform === "win32" && !ending.consoleClosed) {
+		ending.lostExitDeciding = true;
+		setImmediate(() => {
+			// Windows' own notice, read in the first turn, needs no second.
+			if (ending.consoleClosed) return mode.emergencyTerminalExit();
+			setImmediate(() => mode.emergencyTerminalExit());
+		});
 		return;
 	}
 	mode.emergencyTerminalExit();
+}
+
+/**
+ * Exit as a host whose terminal is gone, with the status its notices decide; once that exit is deciding at the lost
+ * terminal's bound, it is left to that exit. Returns only then.
+ */
+function exitAsTerminalLost(ending: HostEnding): void {
+	if (ending.lostExitDeciding) return;
+	exitWithStatus(terminalLostExitCode(ending));
 }
 
 /**
@@ -272,7 +295,9 @@ InteractiveModeBase.prototype.shutdown = async function (
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			if (!ending.terminalLost) stopTerminal(this);
 		}
-		exitWithStatus(ending.terminalLost ? terminalLostExitCode(ending) : 0);
+		if (ending.terminalLost) exitAsTerminalLost(ending);
+		else exitWithStatus(0);
+		return;
 	}
 
 	// Drain any in-flight Kitty key release events briefly before stopping.
@@ -294,10 +319,10 @@ InteractiveModeBase.prototype.shutdown = async function (
 	}
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await disposeRuntime(this, false);
-	if (ending.terminalLost) exitWithStatus(terminalLostExitCode(ending));
+	if (ending.terminalLost) return exitAsTerminalLost(ending);
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	// The terminal can be lost while the hint is being looked up; then it is not written.
-	if (ending.terminalLost) exitWithStatus(terminalLostExitCode(ending));
+	if (ending.terminalLost) return exitAsTerminalLost(ending);
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 	}
@@ -431,7 +456,11 @@ function registerEndingHandlers(mode: InteractiveModeBase, cleanups: Array<() =>
 	}
 
 	const terminalErrorHandler = (error: Error) => {
-		if (!isDeadTerminalError(error)) throw error;
+		if (!isDeadTerminalError(error)) {
+			// Atomic's exit is already decided at the lost terminal's bound, and comes within its turns.
+			if (hostEnding(mode).lostExitDeciding) return;
+			throw error;
+		}
 		mode.handleTerminalLost();
 	};
 	for (const stream of [process.stdin, process.stdout, process.stderr]) {
@@ -465,6 +494,8 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 	// A feature whose code an update replaced while this session runs, and that no longer loads, fails alone: the
 	// session goes on and says to restart instead of exiting.
 	const uncaughtExceptionHandler = (error: Error) => {
+		// Atomic's exit is already decided at the lost terminal's bound, and comes within its turns.
+		if (hostEnding(this).lostExitDeciding) return;
 		if (this.isShuttingDown || !(error instanceof UpdatedInstallError || isModuleLoadFailure(error))) {
 			return this.uncaughtCrash(error);
 		}
