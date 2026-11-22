@@ -61,6 +61,7 @@ export abstract class RpcClientApi {
 		images?: ImageContent[],
 		streamingBehavior?: "steer" | "followUp",
 		queuedMessageId?: string,
+		originSendId?: string,
 	): Promise<PromptDisposition> {
 		const response = await this.request({
 			type: "prompt",
@@ -68,6 +69,7 @@ export abstract class RpcClientApi {
 			images,
 			streamingBehavior,
 			...(queuedMessageId === undefined ? {} : { queuedMessageId }),
+			...(originSendId === undefined ? {} : { originSendId }),
 		});
 		return this.data<{ disposition: PromptDisposition }>(response).disposition;
 	}

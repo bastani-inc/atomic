@@ -136,6 +136,8 @@ export type RpcCommand =
 			streamingBehavior?: "steer" | "followUp";
 			/** When the message is queued, the id it is queued with, which the client names it by (see `PromptOptions`). */
 			queuedMessageId?: string;
+			/** Ephemeral host send id echoed back on user `message_start` for exact echo matching (see `PromptOptions`). */
+			originSendId?: string;
 	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }

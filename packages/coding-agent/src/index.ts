@@ -841,6 +841,8 @@ export {
 	getDefaultSessionDirPath,
 	getLatestCompactionBoundaryEntry,
 	getSessionLeafId,
+	type LatestBranchSetting,
+	type LatestBranchSettings,
 	type ModelChangeEntry,
 	type ModelFallbackRecord,
 	type NewSessionOptions,

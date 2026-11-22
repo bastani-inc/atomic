@@ -19,6 +19,8 @@
  * that does not hold one would load and run it.
  */
 
+import { codeStringArrayLiteral, codeStringLiteral } from "./code-string-literal.mjs";
+
 /** The first line of each gate and stub, by which a later split knows it as a split's output, not compiled code. */
 export const GATE_FILE_MARK = "// Written by the build (scripts/in-place-update-gate.mjs)";
 
@@ -45,15 +47,25 @@ export const moduleOfPath = (path) => {
  */
 export const GUARDED_SINCE = "0.10.5-alpha.1";
 
+/** Characters of a release's version (`0.10.5`, `0.10.5-alpha.1`, `1.0.0+build.7`). */
+const VERSION_CHARACTERS = new Set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-+");
+
+/** `version`, which the gates and guards write inside a template literal: a release's version needs no escape there. */
+function releaseVersion(version) {
+	if (version === "" || [...version].some((character) => !VERSION_CHARACTERS.has(character)))
+		throw new Error(`in-place update gates: ${JSON.stringify(version)} is not a release's version`);
+	return version;
+}
+
 /** The probes of the release a process runs, as the gates and the call-site guards share them (see the gates above). */
 function runningReleaseSource(indent, probes, version) {
 	return [
 		'const releases = (globalThis[Symbol.for("atomic.in-place-update-release.v1")] ??= new Map());',
-		`const key = \`\${root.href}#${version}\`;`,
+		`const key = \`\${root.href}#${releaseVersion(version)}\`;`,
 		"let release = releases.get(key);",
 		"if (release === undefined) {",
 		"\trelease = (async () => {",
-		`\t\tfor (const path of ${JSON.stringify(probes)}) {`,
+		`\t\tfor (const path of ${codeStringArrayLiteral(probes)}) {`,
 		"\t\t\ttry {",
 		"\t\t\t\tconst held = await import(new URL(path, root).href);",
 		'\t\t\t\tif (typeof held.VERSION === "string") return { version: held.VERSION, name: held.APP_NAME };',
@@ -95,7 +107,7 @@ export function callSiteGuardSource({ root, probes, version, application }) {
 		"// demand that fails in a process an in-place update left running says to restart.",
 		`function ${CALL_SITE_GUARD}(error, feature) {`,
 		"\treturn (async () => {",
-		`\t\tconst root = new URL(${JSON.stringify(root)}, import.meta.url);`,
+		`\t\tconst root = new URL(${codeStringLiteral(root)}, import.meta.url);`,
 		...runningReleaseSource("\t\t", probes, version),
 		"\t\tlet installed;",
 		"\t\ttry {",
@@ -105,15 +117,15 @@ export function callSiteGuardSource({ root, probes, version, application }) {
 		"\t\t} catch {",
 		"\t\t\t// No installation to read, as in a bundle of the package: the release the process runs decides.",
 		"\t\t}",
-		`\t\tconst updatedTo = typeof installed === "string" && installed !== ${JSON.stringify(version)} ? installed : running !== undefined && running.version !== ${JSON.stringify(version)} ? ${JSON.stringify(version)} : undefined;`,
+		`\t\tconst updatedTo = typeof installed === "string" && installed !== ${codeStringLiteral(version)} ? installed : running !== undefined && running.version !== ${codeStringLiteral(version)} ? ${codeStringLiteral(version)} : undefined;`,
 		"\t\tif (updatedTo === undefined) throw error;",
-		`\t\tconst application = typeof running?.name === "string" ? running.name : ${JSON.stringify(application)};`,
+		`\t\tconst application = typeof running?.name === "string" ? running.name : ${codeStringLiteral(application)};`,
 		"\t\tconst restart = new Error(`${application} was updated to ${updatedTo} while this session was running; restart it to keep using ${feature}.`, {",
 		"\t\t\tcause: error,",
 		"\t\t});",
 		// What a caller that loads the feature on demand (`loadOnDemand`) needs to name it in the message itself.
 		'\t\trestart.name = "UpdatedInstallError";',
-		`\t\trestart[Symbol.for(${JSON.stringify(CALL_SITE_RESTART_KEY)})] = { application, updatedTo, feature };`,
+		`\t\trestart[Symbol.for(${codeStringLiteral(CALL_SITE_RESTART_KEY)})] = { application, updatedTo, feature };`,
 		"\t\tthrow restart;",
 		"\t})();",
 		"}",
@@ -202,12 +214,12 @@ export function gateSource({ path, code, exports, probes, version }) {
 		"// that an in-place update left running, the process is told to restart.",
 		"let module;",
 		"try {",
-		`	module = await import(${JSON.stringify(code)});`,
+		`	module = await import(${codeStringLiteral(code)});`,
 		"} catch (error) {",
-		`	const root = new URL(${JSON.stringify(root)}, import.meta.url);`,
+		`	const root = new URL(${codeStringLiteral(root)}, import.meta.url);`,
 		...runningReleaseSource("\t", probes, version),
-		`	if (running === undefined || running.version === ${JSON.stringify(version)}) throw error;`,
-		`	throw new Error((typeof running.name === "string" ? running.name : "atomic") + ${JSON.stringify(restart)}, {`,
+		`	if (running === undefined || running.version === ${codeStringLiteral(version)}) throw error;`,
+		`	throw new Error((typeof running.name === "string" ? running.name : "atomic") + ${codeStringLiteral(restart)}, {`,
 		"\t\tcause: error,",
 		"\t});",
 		"}",
@@ -226,8 +238,8 @@ export function gateSource({ path, code, exports, probes, version }) {
 export function aliasSource({ code, exports }) {
 	return [
 		`${GATE_FILE_MARK}: a later release's path of this module.`,
-		...(exports.some((name) => name !== "default") ? [`export * from ${JSON.stringify(code)};`] : []),
-		...(exports.includes("default") ? [`export { default } from ${JSON.stringify(code)};`] : []),
+		...(exports.some((name) => name !== "default") ? [`export * from ${codeStringLiteral(code)};`] : []),
+		...(exports.includes("default") ? [`export { default } from ${codeStringLiteral(code)};`] : []),
 		"",
 	].join("\n");
 }
