@@ -383,12 +383,14 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 		plantProgram(bin, "atomic-test-mcp-server");
 		vi.stubEnv("PATH", bin);
 		const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
-		// A server that does not exit when its input closes: the close ends it.
+		// A server that does not exit when its input closes: the close ends it. The close waits for the command that ends
+		// it as long as the server is given to exit, set here past how long that command takes on a loaded machine.
 		const transport = new StdioTransport({
 			command: "atomic-test-mcp-server",
 			args: ["-e", "setTimeout(() => {}, 5000)"],
 			cwd: project,
 			projectCwd: project,
+			closeTimeoutMs: PROCESS_EXIT_BUDGET_MS,
 		});
 		await transport.start();
 		servers.push(await recordProcess(transport.pid!));
