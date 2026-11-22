@@ -29,10 +29,12 @@ const allowed = JSON.parse(readFileSync(join(RECORDS, "allowed.json"), "utf8")) 
 >;
 
 test("the releases this build is checked against are recorded", () => {
-	assert.ok(
-		records.some((record) => record.version === "0.10.3"),
-		records.map((record) => record.version).join(", "),
-	);
+	for (const version of ["0.10.3", "0.10.4"]) {
+		assert.ok(
+			records.some((record) => record.version === version),
+			records.map((record) => record.version).join(", "),
+		);
+	}
 });
 
 for (const record of records) {
