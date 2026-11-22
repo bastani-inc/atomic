@@ -4,6 +4,14 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `Editor.setTextAsTyped(text)` puts text in the prompt as `setText` does and starts the completion lookup that typing its last character would start: at once, or when the editor gets a provider if the prompt still holds that text and cursor ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+
+### Fixed
+
+- A click that places the cursor drops a completion lookup typed before the editor had a provider, as a key that starts no lookup does, so clicking away and back no longer starts it when the provider arrives ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added
@@ -11,7 +19,6 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - `TuiAltScreen.onViewportChange(listener)` calls the listener after each input, late single click and painted frame, so a caller can wait for `isPointerIdle()` without polling ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
 - `Editor.setAutocompleteProvider(provider, { preserveSelection: true, refreshMenu: true })` shows the new provider's rows in an open menu in which nothing was chosen, whether it lists commands, arguments or files ([#6183](https://github.com/bastani-inc/atomic/pull/6183), [#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - `EditorComponent.setAutocompleteProvider` takes the same optional second argument, so an editor built on `Editor` keeps its menu when its host replaces the provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
-- `Editor.setTextAsTyped(text)` puts text in the prompt as `setText` does and starts the completion lookup that typing its last character would start: at once, or when the editor gets a provider if the prompt still holds that text and cursor ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
 
 ### Changed
 
@@ -25,7 +32,6 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - `setAutocompleteProvider(..., { preserveSelection: true })` asks the new provider for a lookup still under way also when a menu is open, so the rows that follow come from the new provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - A lookup's answer shows at the next render. Keys pressed before then act on the menu as it was drawn while it answers the prompt's text, so an answer that reorders the rows, or that the replacement of a provider brings, no longer changes which row Enter or Tab takes or opens a menu the user has not seen; a press or click on rows that changed since they were drawn chooses nothing ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - A completion lookup typed before the editor had a provider (`/`, an `@` token, a trigger character, Tab) starts when `setAutocompleteProvider` gives it one, unless a later key that starts no lookup itself (an edit, a cursor move, undo, a history step, Esc) came first; `snapshotDraft()` and `restoreDraft()` carry it to the editor that takes the prompt ([#6224](https://github.com/bastani-inc/atomic/pull/6224))
-- A click that places the cursor drops a completion lookup typed before the editor had a provider, as a key that starts no lookup does, so clicking away and back no longer starts it when the provider arrives ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
 - The check whether tmux forwards hyperlinks runs `tmux` only from the absolute directories in PATH; the working directory counts only when PATH names it.
 
 ## [0.10.3] - 2026-11-21
