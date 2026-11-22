@@ -190,7 +190,36 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
+      # skill-creator's package_skill.py and quick_validate.py read SKILL.md with PyYAML. Linux's image has it; Windows'
+      # Python does not, so their tests skipped there. Install the pinned release from PyPI into that Python, checked
+      # against its Windows wheels' SHA-256 (CPython 3.10-3.15), and check that it imports without the user's
+      # site-packages, as the tests' reduced environment runs it.
+      - name: Install the pinned PyYAML for the skill-creator tests
+        if: runner.os == 'Windows'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          python --version
+          requirements="$RUNNER_TEMP/pyyaml-requirements.txt"
+          cat > "$requirements" <<'EOF'
+          PyYAML==6.0.4 \
+            --hash=sha256:5246a0feaaac497b09c9462aa926280ae02fc8791b0099c0a925ebd7c7f249a6 \
+            --hash=sha256:0db75f402e99c25239003a499c214a61947b4ef5312af34711d4c63e5c179318 \
+            --hash=sha256:131d11bd9b60d705a6388366d77ed67850995a4d2be85fe149785a257c17e531 \
+            --hash=sha256:0a3a351f04dc124f9357512bdb80ac37cd1750cf1371da33e7cbb96d80ac865f \
+            --hash=sha256:1d2f08c122727c86f8303bb1dd45159ca1de1f2d68798e671ec46974e321008e \
+            --hash=sha256:609e8efaffa5662da16b7d53eef76fc4eedbbe56fce5829b67ba808a6e35d399 \
+            --hash=sha256:67da066ca12eb60114ea87f2ecbcca622fff0c205c743cc900437127564fabf6 \
+            --hash=sha256:a3cc63af3d639d1609143711837b926183418260aae89ed95193c07b25b99d33
+          EOF
+          python -m pip install --disable-pip-version-check --no-input --retries 5 --timeout 30 \
+            --no-deps --only-binary=:all: --require-hashes --requirement "$requirements"
+          python -I -c "import sys, yaml; print('PyYAML', yaml.__version__, 'from', yaml.__file__); sys.exit(yaml.__version__ != '6.0.4')"
       - name: Unit tests
+        env:
+          # The skill-creator tests that need PyYAML fail instead of skipping when it is missing.
+          ATOMIC_REQUIRE_PYYAML: "1"
         run: >-
           bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }})"
           -- npm run test:unit -- --shard=${{ matrix.shard }}/${{ matrix.shards }}

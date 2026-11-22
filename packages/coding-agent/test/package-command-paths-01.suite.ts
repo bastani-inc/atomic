@@ -324,6 +324,35 @@ describe("package commands", () => {
 			errorSpy.mockRestore();
 		}
 	});
+	it("routes uninstall subcommand through package-manager CLI for help, validation, and removal", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["uninstall", "--help"])).resolves.toBeUndefined();
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				"atomic remove <source> [-l]",
+			);
+			expectSuccessfulExitCode();
+
+			await expect(main(["uninstall"])).resolves.toBeUndefined();
+			const missingErr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(missingErr).toContain("Missing remove source.");
+			expect(process.exitCode).toBe(1);
+
+			process.exitCode = 0;
+			logSpy.mockClear();
+			errorSpy.mockClear();
+			await expect(main(["install", packageDir])).resolves.toBeUndefined();
+			expectSuccessfulExitCode();
+			await expect(main(["uninstall", packageDir])).resolves.toBeUndefined();
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(`Removed ${packageDir}`);
+			expectSuccessfulExitCode();
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
 	it("uses the update check version for forced self updates even when current", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const projectPrefix = join(tempDir, "project-prefix");
