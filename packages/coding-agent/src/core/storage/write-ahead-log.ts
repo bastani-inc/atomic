@@ -71,11 +71,15 @@ const WAL_SWITCH = "PRAGMA journal_mode = WAL";
  * meet that lock. A switch refused with SQLITE_IOERR_TRUNCATE, as on Windows while a killed process still maps the
  * wal-index, is tried again for at most `TRUNCATE_RETRY_MS`. Any other failure is thrown at once.
  */
-export async function switchToWriteAheadLog(
+export function switchToWriteAheadLog(exec: (sql: string) => Awaitable<unknown>, busyTimeoutMs: number): Promise<void> {
+	return switchRetrying(exec, retryAfter(busyTimeoutMs));
+}
+
+/** Attempts the switch until it succeeds, waiting `nextWait(error)` after each failed attempt, which throws to give up. */
+async function switchRetrying(
 	exec: (sql: string) => Awaitable<unknown>,
-	busyTimeoutMs: number,
+	nextWait: (error: unknown) => number,
 ): Promise<void> {
-	const nextWait = retryAfter(busyTimeoutMs);
 	for (;;) {
 		try {
 			await exec(WAL_SWITCH);
@@ -85,6 +89,30 @@ export async function switchToWriteAheadLog(
 			await new Promise((resolve) => setTimeout(resolve, wait));
 		}
 	}
+}
+
+/**
+ * Sets the busy timeout, switches the file to the write-ahead log, then runs `settings` (more PRAGMAs), all through
+ * `exec` as one script: one call of `exec`, where `switchToWriteAheadLog` and the settings took three. A failure in it is
+ * the switch's first attempt failing, as only the switch fails: it is retried as `switchToWriteAheadLog` retries it,
+ * within the same busy timeout, or fails at once, and then the settings run on their own.
+ */
+export async function configureConnection(
+	exec: (sql: string) => Awaitable<unknown>,
+	busyTimeoutMs: number,
+	settings: string,
+): Promise<void> {
+	const nextWait = retryAfter(busyTimeoutMs);
+	try {
+		await exec(`PRAGMA busy_timeout=${busyTimeoutMs}; ${WAL_SWITCH}; ${settings}`);
+		return;
+	} catch (error) {
+		const wait = nextWait(error);
+		await new Promise((resolve) => setTimeout(resolve, wait));
+	}
+	await exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+	await switchRetrying(exec, nextWait);
+	await exec(settings);
 }
 
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
