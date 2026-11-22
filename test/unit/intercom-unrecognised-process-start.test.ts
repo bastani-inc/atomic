@@ -80,8 +80,11 @@ describe.runIf(process.platform === "win32" || process.platform === "darwin")(
 					{ pid: 4242, started: start, wroteBrokerPid: "unknown" },
 					async () => "1234",
 				);
-				assert.equal(isLater(), false);
-				await new Promise((resolve) => setImmediate(resolve));
+				// The probe takes the broker it was given, then reads the pid's start, and says so the call after.
+				for (let call = 0; call < 3; call++) {
+					assert.equal(isLater(), false, start);
+					await new Promise((resolve) => setImmediate(resolve));
+				}
 				assert.equal(isLater(), false, start);
 			}
 		});
