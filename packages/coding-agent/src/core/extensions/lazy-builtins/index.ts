@@ -1,5 +1,6 @@
 import { hasLazyBuiltinSpec, registerLazyBuiltin } from "../lazy-builtin.js";
 import { intercomLazyBuiltinSpec } from "./intercom.js";
+import { mcpLazyBuiltinSpec } from "./mcp.js";
 import { subagentsLazyBuiltinSpec } from "./subagents.js";
 import { webAccessLazyBuiltinSpec } from "./web-access.js";
 
@@ -12,4 +13,5 @@ export function ensureDefaultLazyBuiltinsRegistered(): void {
 	if (!hasLazyBuiltinSpec("intercom")) registerLazyBuiltin("intercom", intercomLazyBuiltinSpec);
 	if (!hasLazyBuiltinSpec("web-access")) registerLazyBuiltin("web-access", webAccessLazyBuiltinSpec);
 	if (!hasLazyBuiltinSpec("subagents")) registerLazyBuiltin("subagents", subagentsLazyBuiltinSpec);
+	if (!hasLazyBuiltinSpec("mcp")) registerLazyBuiltin("mcp", mcpLazyBuiltinSpec);
 }
