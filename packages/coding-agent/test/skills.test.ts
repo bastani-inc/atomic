@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -510,6 +510,55 @@ describe("skills", () => {
 				);
 				expect(probe.status, probe.stderr).toBe(0);
 				expect(JSON.parse(probe.stdout)).toEqual([join(dirA, ".gitignore")]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it("matches sync loadSkills diagnostics on ENOTDIR, ELOOP, and uppercase ignore files", async () => {
+			const root = mkdtempSync(join(tmpdir(), "skills-async-errors-"));
+			try {
+				const regularFile = join(root, "not-a-dir.md");
+				writeFileSync(regularFile, "plain");
+				const enotdirPath = join(regularFile, "child");
+
+				const paths = [enotdirPath];
+				if (process.platform !== "win32") {
+					const loopA = join(root, "loop-a");
+					const loopB = join(root, "loop-b");
+					symlinkSync(loopB, loopA);
+					symlinkSync(loopA, loopB);
+					paths.push(loopA);
+				}
+
+				const upperIgnoreDir = join(root, "upper-ignore");
+				mkdirSync(join(upperIgnoreDir, "ignored-sub"), { recursive: true });
+				mkdirSync(join(upperIgnoreDir, "kept-sub"), { recursive: true });
+				writeFileSync(join(upperIgnoreDir, ".GITIGNORE"), "ignored-sub/\n");
+				writeFileSync(
+					join(upperIgnoreDir, "ignored-sub", "SKILL.md"),
+					"---\nname: ignored-sub\ndescription: Ignored on case-insensitive FS\n---\nBody\n",
+				);
+				writeFileSync(
+					join(upperIgnoreDir, "kept-sub", "SKILL.md"),
+					"---\nname: kept-sub\ndescription: Kept skill\n---\nBody\n",
+				);
+				paths.push(upperIgnoreDir);
+
+				const options = {
+					cwd: root,
+					agentDir: join(root, "agent"),
+					skillPaths: paths,
+					includeDefaults: false,
+				};
+				const syncResult = loadSkills(options);
+				const asyncResult = await loadSkillsAsync(options);
+				expect(asyncResult.skills).toEqual(syncResult.skills);
+				expect(asyncResult.candidates).toEqual(syncResult.candidates);
+				expect(asyncResult.diagnostics).toEqual(syncResult.diagnostics);
+				expect(asyncResult.diagnostics.filter((d) => d.message === "skill path does not exist").length).toBe(
+					process.platform === "win32" ? 1 : 2,
+				);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

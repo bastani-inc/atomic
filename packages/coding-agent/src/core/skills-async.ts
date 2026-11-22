@@ -1,18 +1,28 @@
 import type { Dirent } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { access, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import { createBatchedCanonicalizePathAsync } from "../utils/batched-canonical-path.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { isPathWithin, resolvePath } from "../utils/paths.ts";
+import { getPathComparisonKey, isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";
 import type { LoadSkillsOptions, LoadSkillsResult, Skill, SkillFrontmatter } from "./skills.ts";
-import { createSyntheticSourceInfo, getResourcePathKeyAsync, type SourceInfo } from "./source-info.ts";
+import { createSyntheticSourceInfo, isSyntheticPath, type SourceInfo } from "./source-info.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
 type IgnoreMatcher = NestedGitignore;
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 function toPosixPath(path: string): string {
 	return path.split(sep).join("/");
@@ -24,7 +34,12 @@ async function withIgnoreRules(
 	rootDir: string,
 	entries: readonly Dirent[],
 ): Promise<IgnoreMatcher> {
-	const present = IGNORE_FILE_NAMES.filter((filename) => entries.some((entry) => entry.name === filename));
+	// Match case-insensitively against the directory listing, then open the canonical lowercase filename so
+	// case-insensitive filesystems (Windows, default macOS) honor e.g. `.GITIGNORE` while case-sensitive
+	// filesystems keep exact-name semantics identical to direct `readFile(join(dir, filename))`.
+	const present = IGNORE_FILE_NAMES.filter((filename) =>
+		entries.some((entry) => entry.name.toLowerCase() === filename),
+	);
 	if (present.length === 0) return rules;
 	const loaded = await Promise.all(
 		present.map((filename) => readFile(join(dir, filename), "utf-8").catch(() => null)),
@@ -186,10 +201,15 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
 	const userSkillsDir = join(resolvedAgentDir, "skills");
 	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
+	const canonicalize = createBatchedCanonicalizePathAsync();
+	const resolveSkillPathKey = async (filePath: string): Promise<string> => {
+		if (isSyntheticPath(filePath)) return filePath;
+		return getPathComparisonKey(await canonicalize(filePath));
+	};
 	const addSkills = async (result: LoadSkillsResult) => {
 		allDiagnostics.push(...result.diagnostics);
 		if (result.skills.length === 0) return;
-		const realPaths = await Promise.all(result.skills.map((skill) => getResourcePathKeyAsync(skill.filePath)));
+		const realPaths = await Promise.all(result.skills.map((skill) => resolveSkillPathKey(skill.filePath)));
 		for (const [index, skill] of result.skills.entries()) {
 			const realPath = realPaths[index]!;
 			if (realPathSet.has(realPath)) continue;
@@ -242,7 +262,7 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 				diagnostics: [{ type: "warning", message: "skill path is not a markdown file", path: resolvedPath }],
 			};
 		} catch (error) {
-			if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+			if (!(await exists(resolvedPath))) {
 				return {
 					skills: [],
 					candidates: [],

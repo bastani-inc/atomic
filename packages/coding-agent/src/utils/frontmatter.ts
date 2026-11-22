@@ -9,10 +9,28 @@ type ParsedFrontmatter<T extends Record<string, unknown>> = {
 const normalizeNewlines = (value: string): string => value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
 const YAML_RESERVED_PLAIN_SCALARS = new Set(["null", "Null", "NULL", "~", "True", "TRUE", "False", "FALSE"]);
+const YAML_RESERVED_KEY_NAMES = new Set([
+	"null",
+	"Null",
+	"NULL",
+	"true",
+	"True",
+	"TRUE",
+	"false",
+	"False",
+	"FALSE",
+	"__proto__",
+]);
 
 function isSimpleKey(key: string): boolean {
-	if (key.length === 0 || key === "__proto__") return false;
-	for (let i = 0; i < key.length; i++) {
+	if (key.length === 0 || YAML_RESERVED_KEY_NAMES.has(key)) return false;
+	const first = key.charCodeAt(0);
+	const firstOk =
+		(first >= 0x61 && first <= 0x7a) || // a-z
+		(first >= 0x41 && first <= 0x5a) || // A-Z
+		first === 0x5f; // _
+	if (!firstOk) return false;
+	for (let i = 1; i < key.length; i++) {
 		const c = key.charCodeAt(i);
 		const ok =
 			(c >= 0x61 && c <= 0x7a) || // a-z
@@ -21,6 +39,14 @@ function isSimpleKey(key: string): boolean {
 			c === 0x2d || // -
 			c === 0x5f; // _
 		if (!ok) return false;
+	}
+	return true;
+}
+
+function isSpaceOnlyPipeHeader(rest: string): boolean {
+	if (rest.length === 0 || rest.charCodeAt(0) !== 0x7c) return false; // '|'
+	for (let i = 1; i < rest.length; i++) {
+		if (rest.charCodeAt(i) !== 0x20) return false; // ASCII space only
 	}
 	return true;
 }
@@ -151,7 +177,7 @@ function tryParseSimpleFrontmatter(yamlString: string): Record<string, unknown> 
 				result[key] = nested;
 				currentMap = nested;
 				hasEntries = true;
-			} else if (rest.trimEnd() === "|") {
+			} else if (isSpaceOnlyPipeHeader(rest)) {
 				// Simple literal block scalar (default clip chomping): 1+ non-empty indented lines at a single uniform indent.
 				let blockIndent = 0;
 				const blockLines: string[] = [];

@@ -1,6 +1,5 @@
-import { lstat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { canonicalizePathAsync } from "../utils/canonical-path.ts";
+import { dirname, isAbsolute, relative, sep } from "node:path";
+import { createBatchedCanonicalizePathAsync } from "../utils/batched-canonical-path.ts";
 import { BUILTIN_PACKAGE_DIR_NAMES } from "./builtin-install-layout.ts";
 import { getAllBuiltinPackageLocations, getBuiltinPackageLocations } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, instantiateExtensions, loadExtensions } from "./extensions/loader.ts";
@@ -41,42 +40,8 @@ class BuiltinResourceLoader implements ResourceLoader {
 	private async resolveRealPaths(paths: Iterable<string>): Promise<void> {
 		const unique = [...new Set(paths)];
 		if (unique.length === 0) return;
-		if (process.platform !== "win32") {
-			const resolved = await Promise.all(unique.map((path) => canonicalizePathAsync(path)));
-			unique.forEach((path, index) => {
-				this.realPaths.set(path, resolved[index]!);
-			});
-			return;
-		}
-		// On Windows, resolve shared parent directories once per batch so sibling skill files avoid
-		// repeating multi-component JS lstat walks while preserving exact realpathSync spelling.
-		const parentCache = new Map<string, Promise<string>>();
-		const resolveDir = (dir: string): Promise<string> => {
-			let pending = parentCache.get(dir);
-			if (pending === undefined) {
-				pending = canonicalizePathAsync(dir);
-				parentCache.set(dir, pending);
-			}
-			return pending;
-		};
-		const resolved = await Promise.all(
-			unique.map(async (path) => {
-				const parent = dirname(path);
-				const leaf = basename(path);
-				if (parent === path || leaf === "" || leaf === "." || leaf === "..") {
-					return canonicalizePathAsync(path);
-				}
-				const realParent = await resolveDir(parent);
-				const candidate = join(realParent, leaf);
-				try {
-					const st = await lstat(candidate);
-					if (!st.isSymbolicLink()) return candidate;
-				} catch {
-					return canonicalizePathAsync(path);
-				}
-				return canonicalizePathAsync(path);
-			}),
-		);
+		const canonicalize = createBatchedCanonicalizePathAsync();
+		const resolved = await Promise.all(unique.map((path) => canonicalize(path)));
 		unique.forEach((path, index) => {
 			this.realPaths.set(path, resolved[index]!);
 		});

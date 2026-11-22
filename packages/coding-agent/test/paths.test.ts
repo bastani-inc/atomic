@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { createBatchedCanonicalizePathAsync } from "../src/utils/batched-canonical-path.ts";
 import {
 	canonicalizePath,
 	canonicalizePathAsync,
@@ -108,6 +109,37 @@ describe("canonicalizePath", () => {
 			expect(lstatCalls).toBeGreaterThan(0);
 		} finally {
 			cjsFs.lstat = originalLstat;
+		}
+	});
+
+	it("matches canonicalizePath in createBatchedCanonicalizePathAsync across symlinks, missing paths, and trailing slashes", async () => {
+		const dir = createTempDir();
+		const targetDir = join(dir, "target-dir");
+		const nestedFile = join(targetDir, "file.txt");
+		const linkDir = join(dir, "link-dir");
+		const linkFile = join(targetDir, "link.txt");
+		mkdirSync(targetDir);
+		writeFileSync(nestedFile, "hello");
+		symlinkSync(targetDir, linkDir, "dir");
+		symlinkSync(nestedFile, linkFile);
+
+		const batched = createBatchedCanonicalizePathAsync();
+		const candidates = [
+			"",
+			".",
+			"..",
+			nestedFile,
+			`${nestedFile}/`,
+			`${targetDir}/`,
+			linkDir,
+			join(linkDir, "file.txt"),
+			linkFile,
+			join(targetDir, "missing.txt"),
+			join(linkDir, "missing.txt"),
+			join(targetDir, "..", "target-dir", "file.txt"),
+		];
+		for (const candidate of candidates) {
+			expect(await batched(candidate), candidate).toBe(canonicalizePath(candidate));
 		}
 	});
 });

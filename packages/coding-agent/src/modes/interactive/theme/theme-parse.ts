@@ -1,6 +1,12 @@
+import type { Compile as TypeBoxCompile } from "@bastani/atomic-ai/utils/typebox/compile";
+import type { Type as TypeBoxType } from "@bastani/atomic-ai/utils/typebox/index";
+import { createModuleRequire } from "../../../utils/module-require.js";
 import { stripBom } from "../../../utils/text.ts";
-import type { ThemeJson } from "./theme-schema.ts";
+import type { ThemeJson, validateThemeJson } from "./theme-schema.ts";
+import { createThemeJsonSchema } from "./theme-schema-factory.ts";
 import { THEME_TOKENS, type ThemeTokenDescriptors } from "./theme-tokens.ts";
+
+type ThemeValidator = typeof validateThemeJson;
 
 const THEME_TOKEN_MAP: ThemeTokenDescriptors = THEME_TOKENS;
 const TOP_LEVEL_KEYS = new Set(["$schema", "name", "vars", "colors", "workingIndicator", "export"]);
@@ -10,8 +16,36 @@ const REQUIRED_COLOR_TOKENS = Object.entries(THEME_TOKEN_MAP)
 	.filter(([, descriptor]) => descriptor.fallback === undefined)
 	.map(([name]) => name);
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+let cachedValidator: ThemeValidator | undefined;
+let registeredValidatorLoader: (() => ThemeValidator) | undefined;
+
+/**
+ * Registers a lazy validator loader for bundled runtimes (such as the standalone Bun binary) where
+ * bare package specifiers cannot be resolved dynamically from disk via `createModuleRequire`.
+ */
+export function registerThemeValidatorLoader(loader: () => ThemeValidator): void {
+	registeredValidatorLoader = loader;
+}
+
+function getThemeValidator(): ThemeValidator {
+	if (cachedValidator !== undefined) return cachedValidator;
+	if (registeredValidatorLoader !== undefined) {
+		cachedValidator = registeredValidatorLoader();
+		return cachedValidator;
+	}
+	const req = createModuleRequire(import.meta.url);
+	const { Type } = req("@bastani/atomic-ai/utils/typebox/index") as { Type: typeof TypeBoxType };
+	const { Compile } = req("@bastani/atomic-ai/utils/typebox/compile") as { Compile: typeof TypeBoxCompile };
+	cachedValidator = Compile(createThemeJsonSchema(Type));
+	return cachedValidator;
+}
+
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null) return false;
+	const proto = Object.getPrototypeOf(value);
+	if (proto !== Object.prototype && proto !== null) return false;
+	// Reject objects with non-enumerable own properties so the TypeBox slow path handles them identically.
+	return Object.keys(value).length === Object.getOwnPropertyNames(value).length;
 }
 
 function isColorValue(value: unknown): boolean {
@@ -20,25 +54,50 @@ function isColorValue(value: unknown): boolean {
 	);
 }
 
-function validateColorSection(
-	sectionName: string,
-	value: unknown,
-	allowedKeys: ReadonlySet<string>,
-	otherErrors: string[],
-): void {
-	if (!isPlainObject(value)) {
-		otherErrors.push(`  - /${sectionName}: must be object`);
-		return;
-	}
+function isValidOptionalColorSection(value: unknown, allowedKeys: ReadonlySet<string>): boolean {
+	if (!isPlainJsonObject(value)) return false;
 	for (const [key, entry] of Object.entries(value)) {
-		if (!allowedKeys.has(key)) {
-			otherErrors.push(`  - /${sectionName}: must NOT have additional properties (${key})`);
-			continue;
-		}
-		if (entry !== undefined && !isColorValue(entry)) {
-			otherErrors.push(`  - /${sectionName}/${key}: must be a color string or integer between 0 and 255`);
+		if (!allowedKeys.has(key) || !isColorValue(entry)) return false;
+	}
+	return true;
+}
+
+/**
+ * Sound accept-only fast path for plain JSON theme objects (matching `ThemeJsonSchema` without loading TypeBox).
+ * Returns `false` for any invalid theme or non-plain-object edge case so the real `Compile(ThemeJsonSchema)`
+ * produces byte-identical accept/reject decisions and error messages.
+ */
+function isValidThemeJsonFast(json: unknown): json is ThemeJson {
+	if (!isPlainJsonObject(json)) return false;
+	for (const key of Object.keys(json)) {
+		if (!TOP_LEVEL_KEYS.has(key)) return false;
+	}
+	if (Object.hasOwn(json, "$schema") && typeof json.$schema !== "string") return false;
+	if (!Object.hasOwn(json, "name") || typeof json.name !== "string") return false;
+	if (json.name.length === 0 || json.name.includes("/")) return false;
+	if (Object.hasOwn(json, "vars")) {
+		if (!isPlainJsonObject(json.vars)) return false;
+		for (const entry of Object.values(json.vars)) {
+			if (!isColorValue(entry)) return false;
 		}
 	}
+	if (!Object.hasOwn(json, "colors") || !isPlainJsonObject(json.colors)) return false;
+	for (const token of REQUIRED_COLOR_TOKENS) {
+		if (!Object.hasOwn(json.colors, token)) return false;
+	}
+	for (const [key, entry] of Object.entries(json.colors)) {
+		if (!Object.hasOwn(THEME_TOKEN_MAP, key) || !isColorValue(entry)) return false;
+	}
+	if (
+		Object.hasOwn(json, "workingIndicator") &&
+		!isValidOptionalColorSection(json.workingIndicator, WORKING_INDICATOR_KEYS)
+	) {
+		return false;
+	}
+	if (Object.hasOwn(json, "export") && !isValidOptionalColorSection(json.export, EXPORT_KEYS)) {
+		return false;
+	}
+	return true;
 }
 
 export function assertThemeNameIsValid(name: string): void {
@@ -53,65 +112,29 @@ export function parseThemeJson(label: string, json: unknown): ThemeJson {
 	if (typeof json === "object" && json !== null && "name" in json && typeof json.name === "string") {
 		assertThemeNameIsValid(json.name);
 	}
-	const missingColors = new Set<string>();
-	const otherErrors: string[] = [];
-
-	if (!isPlainObject(json)) {
-		otherErrors.push("  - /: must be object");
-	} else {
-		for (const key of Object.keys(json)) {
-			if (!TOP_LEVEL_KEYS.has(key)) {
-				otherErrors.push(`  - /: must NOT have additional properties (${key})`);
-			}
-		}
-		if (json.$schema !== undefined && typeof json.$schema !== "string") {
-			otherErrors.push("  - /$schema: must be string");
-		}
-		if (typeof json.name !== "string") {
-			otherErrors.push("  - /name: must be string");
-		} else if (json.name.length === 0 || json.name.includes("/")) {
-			otherErrors.push('  - /name: must match pattern "^[^/]+$"');
-		}
-		if (json.vars !== undefined) {
-			if (!isPlainObject(json.vars)) {
-				otherErrors.push("  - /vars: must be object");
-			} else {
-				for (const [key, entry] of Object.entries(json.vars)) {
-					if (!isColorValue(entry)) {
-						otherErrors.push(`  - /vars/${key}: must be a color string or integer between 0 and 255`);
-					}
-				}
-			}
-		}
-		if (!isPlainObject(json.colors)) {
-			otherErrors.push("  - /colors: must be object");
-		} else {
-			for (const token of REQUIRED_COLOR_TOKENS) {
-				if (!Object.hasOwn(json.colors, token)) {
-					missingColors.add(token);
-				}
-			}
-			for (const [key, entry] of Object.entries(json.colors)) {
-				const descriptor = Object.hasOwn(THEME_TOKEN_MAP, key) ? THEME_TOKEN_MAP[key] : undefined;
-				if (descriptor === undefined) {
-					otherErrors.push(`  - /colors: must NOT have additional properties (${key})`);
-					continue;
-				}
-				if (entry === undefined && descriptor.fallback !== undefined) continue;
-				if (!isColorValue(entry)) {
-					otherErrors.push(`  - /colors/${key}: must be a color string or integer between 0 and 255`);
-				}
-			}
-		}
-		if (json.workingIndicator !== undefined) {
-			validateColorSection("workingIndicator", json.workingIndicator, WORKING_INDICATOR_KEYS, otherErrors);
-		}
-		if (json.export !== undefined) {
-			validateColorSection("export", json.export, EXPORT_KEYS, otherErrors);
-		}
+	if (isValidThemeJsonFast(json)) {
+		assertThemeNameIsValid(json.name);
+		return json;
 	}
+	const validator = getThemeValidator();
+	if (!validator.Check(json)) {
+		const errors = Array.from(validator.Errors(json));
+		const missingColors = new Set<string>();
+		const otherErrors: string[] = [];
 
-	if (missingColors.size > 0 || otherErrors.length > 0) {
+		for (const error of errors) {
+			if (error.keyword === "required" && error.instancePath === "/colors") {
+				const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
+				for (const requiredProperty of requiredProperties ?? []) {
+					missingColors.add(requiredProperty);
+				}
+				continue;
+			}
+
+			const path = error.instancePath || "/";
+			otherErrors.push(`  - ${path}: ${error.message}`);
+		}
+
 		let errorMessage = `Invalid theme "${label}":\n`;
 		if (missingColors.size > 0) {
 			errorMessage += "\nMissing required color tokens:\n";

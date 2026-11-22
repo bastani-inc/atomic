@@ -1,11 +1,7 @@
 import { realpath, realpathSync } from "node:fs";
-import { realpath as realpathNative } from "node:fs/promises";
 import { promisify } from "node:util";
 
-// On POSIX, fs.promises.realpath (native realpath(3)) matches realpathSync identically in a single syscall,
-// avoiding Node's multi-lstat JS realpath loop. On Windows, keep JS realpath so 8.3 short paths and drive-letter
-// casing remain identical to canonicalizePath (realpathSync).
-const realpathAsync = process.platform === "win32" ? promisify(realpath) : realpathNative;
+const realpathAsync = promisify(realpath);
 
 /** Resolve symlinks, retaining the original spelling when the target cannot be resolved. */
 export function canonicalizePath(path: string): string {
@@ -51,6 +47,7 @@ export function createSessionCwdMatcherAsync(cwd: string): (candidate: string | 
 	};
 	return async (candidate) => {
 		if (candidate === undefined) return false;
+		if (candidate === cwd) return true;
 		const [expected, path] = await Promise.all([resolveCached(cwd), resolveCached(candidate)]);
 		return path === expected;
 	};

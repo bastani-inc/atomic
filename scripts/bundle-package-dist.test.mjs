@@ -443,19 +443,86 @@ test("single-entry inlined packages coalesce their static modules into one chunk
 	assert.equal(thingCode.includes(sdkChunks[0]), false, "unrelated entry must not import fake-sdk chunk");
 });
 
-test("strictExecutionOrder: false omits __esmMin wrappers while preserving singletons, standalone imports, and compatNoopExports", async () => {
+test("strictExecutionOrder: false uses content-hashed chunks, isolates side effects, preserves shebangs, and supports in-place updates from strictExecutionOrder: true", async () => {
 	const { pkg } = fixture();
+	// Add a bin entry with shebang and a side-effectful module sharing an external footprint with a pure sibling.
+	writeTree(pkg, {
+		"dist/cli-entry.js": `#!/usr/bin/env node\nimport { shared } from "./shared.js";\nexport const cliShared = shared;\n`,
+		"dist/pure-sibling.js": `import { shared } from "./shared.js";\nexport const pureVal = shared.count + 1;\n`,
+		"dist/side-effect.js": `import { shared } from "./shared.js";\nglobalThis.__seCount = (globalThis.__seCount ?? 0) + 1;\nexport const seVal = shared.count + 2;\n`,
+		"dist/side-effect-user.js": `import { seVal } from "./side-effect.js";\nexport { seVal };\n`,
+	});
+	const manifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+	manifest.sideEffects = ["./dist/side-effect.js", "./dist/_modules/side-effect.js"];
+	manifest.exports["./pure-sibling"] = {
+		module: "./dist/_modules/pure-sibling.js",
+		browser: "./dist/_modules/pure-sibling.js",
+		import: "./dist/pure-sibling.js",
+	};
+	manifest.exports["./side-effect-user"] = {
+		module: "./dist/_modules/side-effect-user.js",
+		browser: "./dist/_modules/side-effect-user.js",
+		import: "./dist/side-effect-user.js",
+	};
+	writeFileSync(join(pkg, "package.json"), JSON.stringify(manifest));
+
+	// First bundle with strictExecutionOrder: true (old release) to record legacy chunk names.
+	await bundlePackageDist(pkg, {
+		standalone: ["standalone.js"],
+		strictExecutionOrder: true,
+		log: () => {},
+	});
+	const legacyShared = sharedFiles(pkg);
+	const legacyLazy = legacyShared.find((name) => name.startsWith("_lazy-"));
+	assert.ok(legacyLazy, `expected a legacy _lazy-* chunk in ${legacyShared.join(", ")}`);
+
+	// Re-bundle with strictExecutionOrder: false and a legacy compat shim for legacyLazy.
 	await bundlePackageDist(pkg, {
 		standalone: ["standalone.js"],
 		strictExecutionOrder: false,
+		compatNoopExports: { [legacyLazy]: ["init_legacy_compat"] },
 		log: () => {},
 	});
 	const shared = sharedFiles(pkg);
-	assert.ok(shared.length > 0);
-	for (const name of shared) {
+	const eagerShared = shared.filter((name) => name !== legacyLazy);
+	assert.ok(eagerShared.length > 0);
+	for (const name of eagerShared) {
+		assert.match(name, /^_[a-zA-Z0-9.-]+\.e-[0-9a-f]{8}\.js$/, `${name} must use content-hashed .e-<8hex> name`);
+		assert.equal(legacyShared.includes(name), false, `${name} must not collide with any legacy chunk path`);
 		const code = readFileSync(join(pkg, "dist", name), "utf8");
 		assert.equal(code.includes("__esmMin"), false, `${name} should not contain __esmMin wrappers`);
+		assert.equal(code.includes(legacyLazy), false, `${name} must never import legacy compat shim ${legacyLazy}`);
 	}
+	const mainChunks = eagerShared.filter((name) => name.startsWith("_main.e-"));
+	assert.ok(
+		mainChunks.some((name) => readFileSync(join(pkg, "dist", name), "utf8").includes('import("./heavy-user.js")')),
+		"dynamic import must stay targeted at the public entry path ./heavy-user.js",
+	);
+	// Shebang preserved on virtual entry facade.
+	assert.ok(
+		readFileSync(join(pkg, "dist/cli-entry.js"), "utf8").startsWith("#!/usr/bin/env node\n"),
+		"cli-entry.js must preserve its shebang",
+	);
+	// Compat shim exists at legacyLazy, re-exports from the new chunk, and provides callable no-op init_legacy_compat.
+	const shimCode = readFileSync(join(pkg, "dist", legacyLazy), "utf8");
+	assert.match(shimCode, /export function init_legacy_compat\(\)/);
+	assert.match(shimCode, /from "\.\/_lazy\.e-[0-9a-f]{8}\.js"/);
+	const compatCall = inChild(
+		join(pkg, "dist", legacyLazy),
+		`process.stdout.write(JSON.stringify({ type: typeof m.init_legacy_compat, ret: m.init_legacy_compat() === undefined }));`,
+	);
+	assert.deepEqual(compatCall, { type: "function", ret: true });
+
+	// Side-effect isolation: importing pure-sibling must NOT run side-effect.js; importing side-effect-user MUST.
+	const seCheck = inChild(
+		join(pkg, "dist/pure-sibling.js"),
+		`const before = globalThis.__seCount ?? 0;
+		const user = await import(${JSON.stringify(pathToFileURL(join(pkg, "dist/side-effect-user.js")).href)});
+		const after = globalThis.__seCount ?? 0;
+		process.stdout.write(JSON.stringify({ before, after, pureVal: m.pureVal, seVal: user.seVal }));`,
+	);
+	assert.deepEqual(seCheck, { before: 0, after: 1, pureVal: 1, seVal: 2 });
+
 	const result = inChild(
 		join(pkg, "dist/index.js"),
 		`const base = ${JSON.stringify(pathToFileURL(join(pkg, "dist/")).href)};
@@ -479,21 +546,50 @@ test("strictExecutionOrder: false omits __esmMin wrappers while preserving singl
 		nestedAssetOk: true,
 	});
 
-	// Re-bundle with compatNoopExports targeting one of the shared chunks and verify the no-op export is callable
-	const targetChunk = shared.find((name) => name.startsWith("_lazy-"));
-	assert.ok(targetChunk, `expected a _lazy-* chunk in ${shared.join(", ")}`);
+	// Changing a module's output bytes must produce a new content-hashed shared chunk filename.
+	writeFileSync(join(pkg, "dist/shared.js"), `export const shared = { count: 99 };\nexport class Shared {}\n`);
 	await bundlePackageDist(pkg, {
 		standalone: ["standalone.js"],
 		strictExecutionOrder: false,
-		compatNoopExports: { [targetChunk]: ["init_legacy_compat"] },
+		compatNoopExports: { [legacyLazy]: ["init_legacy_compat"] },
 		log: () => {},
 	});
-	const compatCode = readFileSync(join(pkg, "dist", targetChunk), "utf8");
-	assert.match(compatCode, /export function init_legacy_compat\(\)/);
-	assert.match(compatCode, /\/\/# sourceMappingURL=[^\n]+\n?$/);
-	const compatCall = inChild(
-		join(pkg, "dist", targetChunk),
-		`process.stdout.write(JSON.stringify({ type: typeof m.init_legacy_compat, ret: m.init_legacy_compat() === undefined }));`,
+	const nextMainChunks = sharedFiles(pkg).filter((name) => name.startsWith("_main.e-"));
+	assert.notDeepEqual(
+		nextMainChunks,
+		mainChunks,
+		"changing module output bytes must change content-hashed chunk names",
 	);
-	assert.deepEqual(compatCall, { type: "function", ret: true });
+
+	// Live in-place update simulation: a process loads index.js from strictExecutionOrder: true, disk swaps to
+	// strictExecutionOrder: false, then the running process lazily imports extra.js and legacyLazy.
+	const { pkg: livePkg } = fixture();
+	await bundlePackageDist(livePkg, { standalone: ["standalone.js"], strictExecutionOrder: true, log: () => {} });
+	const liveLegacyLazy = sharedFiles(livePkg).find((name) => name.startsWith("_lazy-"));
+	assert.ok(liveLegacyLazy);
+	const stagedNew = mkdtempSync(join(tmpdir(), "bundle-live-new-"));
+	roots.push(stagedNew);
+	const { pkg: newPkg } = fixture();
+	await bundlePackageDist(newPkg, {
+		standalone: ["standalone.js"],
+		strictExecutionOrder: false,
+		compatNoopExports: { [liveLegacyLazy]: ["init_heavy_user"] },
+		log: () => {},
+	});
+	const swapOut = inChild(
+		join(livePkg, "dist/index.js"),
+		`import { cpSync, rmSync } from "node:fs";
+		rmSync(${JSON.stringify(join(livePkg, "dist"))}, { recursive: true, force: true });
+		cpSync(${JSON.stringify(join(newPkg, "dist"))}, ${JSON.stringify(join(livePkg, "dist"))}, { recursive: true });
+		const extra = await import(${JSON.stringify(pathToFileURL(join(livePkg, "dist/extra.js")).href)});
+		const heavy = await m.loadHeavy();
+		const shim = await import(${JSON.stringify(pathToFileURL(join(livePkg, "dist", liveLegacyLazy)).href)});
+		process.stdout.write(JSON.stringify({
+			extraHasShared: typeof extra.shared === "object" && extra.shared !== null,
+			extraHasClass: typeof extra.Shared === "function",
+			heavyOk: typeof heavy.sharedFromHeavy === "object" && heavy.sharedFromHeavy !== null,
+			shimInit: typeof shim.init_heavy_user === "function",
+		}));`,
+	);
+	assert.deepEqual(swapOut, { extraHasShared: true, extraHasClass: true, heavyOk: true, shimInit: true });
 });

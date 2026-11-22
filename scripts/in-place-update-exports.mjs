@@ -538,11 +538,23 @@ export function checkRelease(earlier, dirs, allowed = {}) {
 						problems.add(`${name}/${path} imports ${specifier}: ${target.path} is new in a directory ${at} had`);
 				}
 				const exported = view.mayHold(targetKey) ? earlierFile(targetKey) : undefined;
-				const missing = exported === undefined ? [] : lacking(exported, names);
-				if (missing.length > 0)
-					problems.add(
-						`${name}/${path} imports ${missing.join(", ")} from ${target.name}/${target.path}, which ${at}'s copy lacks`,
-					);
+				if (exported !== undefined) {
+					const missing = lacking(exported, names);
+					if (missing.length > 0)
+						problems.add(
+							`${name}/${path} imports ${missing.join(", ")} from ${target.name}/${target.path}, which ${at}'s copy lacks`,
+						);
+					// A shared chunk of the earlier release built with deferred initialization (`init_*` exports) leaves
+					// its value bindings undefined until an importer invokes its initializer(s). Importing from that path
+					// without calling an `init_*` would read `undefined` after an in-place update.
+					const hasDeferredInits = exported.some((exportedName) => exportedName.startsWith("init_"));
+					const importsInit = names.some((importedName) => importedName.startsWith("init_"));
+					if (hasDeferredInits && !importsInit) {
+						problems.add(
+							`${name}/${path} imports ${target.name}/${target.path}, whose ${at} copy defers initialization via init_*`,
+						);
+					}
+				}
 			}
 		}
 	}
@@ -573,6 +585,60 @@ export function checkRelease(earlier, dirs, allowed = {}) {
 						`${at}'s ${name}/${importers[0]} imports ${target.name}/${target.path}, which no longer exports ${missing.join(", ")}`,
 					);
 			}
+	return [...problems].sort();
+}
+
+/**
+ * Verifies the mechanical in-place-update disjointness invariant across every compiled package:
+ * no file of this build may statically or dynamically import any `dist/_*.js` shared chunk path that existed in
+ * `earlier` with deferred `init_*` exports (unless this build itself still imports an `init_*` from it). In
+ * particular, any legacy compat shim kept at an old shared-chunk path must never be reachable from this build's files.
+ * @param {ReleaseRecord} earlier @param {string[]} dirs
+ * @returns {string[]}
+ */
+export function checkDeferredChunkDisjointness(earlier, dirs) {
+	const packages = loadPackages(dirs);
+	const current = resolvableOf(packages, exportNames(packages));
+	const before = new Map(Object.entries(earlier.packages));
+	const at = earlier.version;
+	const deferredOldShared = new Set();
+	for (const [name, record] of before) {
+		for (const [path, exports] of Object.entries(record.files)) {
+			if (!path.startsWith("dist/_")) continue;
+			if (exports.some((exported) => exported.startsWith("init_"))) {
+				deferredOldShared.add(`${name}:${path}`);
+			}
+		}
+	}
+	const problems = new Set();
+	for (const [name, pkg] of packages) {
+		for (const [path, syntax] of pkg.syntax) {
+			// Skip legacy compat shims themselves when checking what HEAD's own modules import; shims only re-export
+			// from new content-hashed chunks and are themselves checked for unreachability below.
+			for (const entry of syntax.imports) {
+				const target = resolveImport(entry.specifier, path, name, current);
+				if (!target?.path) continue;
+				const targetKey = `${target.name}:${target.path}`;
+				if (!deferredOldShared.has(targetKey)) continue;
+				const importsInit = entry.names.some((imported) => imported.startsWith("init_"));
+				if (!importsInit) {
+					problems.add(
+						`${name}/${path} statically imports ${target.name}/${target.path}, which ${at} shipped with deferred init_*`,
+					);
+				}
+			}
+			for (const specifier of syntax.lazy) {
+				const target = resolveImport(specifier, path, name, current);
+				if (!target?.path) continue;
+				const targetKey = `${target.name}:${target.path}`;
+				if (deferredOldShared.has(targetKey)) {
+					problems.add(
+						`${name}/${path} dynamically imports ${target.name}/${target.path}, which ${at} shipped with deferred init_*`,
+					);
+				}
+			}
+		}
+	}
 	return [...problems].sort();
 }
 

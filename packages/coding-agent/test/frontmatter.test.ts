@@ -98,6 +98,21 @@ describe("parseFrontmatter", () => {
 			"---\nname: block-blank\ndescription: |\n  First line\n\n  Third line\n---\nBody",
 			"---\nname: block-trailing\ndescription: |\n  Only line\n\n---\nBody",
 			"---\nname: block-strip\ndescription: |-\n  No trailing newline\n---\nBody",
+			// Coerced YAML 1.2 keys and coerced duplicate keys must fall back to yaml.parse
+			"---\n00: a\n007: b\n010: c\n-0: d\n0o10: e\n0x10: f\n9007199254740993: g\n1e2: h\n1e50000: i\n---\nBody",
+			"---\nTrue: a\nFALSE: b\nnull: c\n---\nBody",
+			"---\n0x10: a\n16: b\n---\nBody",
+			"---\n123: a\n0123: b\n---\nBody",
+			"---\ntrue: a\nTrue: b\n---\nBody",
+			"---\nnull: a\nNull: b\n---\nBody",
+			"---\n-0: a\n0: b\n---\nBody",
+			"---\nfoo: a\n010: b\n---\nBody",
+			// Non-ASCII whitespace after literal block '|' must reject like yaml.parse
+			"---\ndescription: |\u000b\n  line\n---\nBody",
+			"---\ndescription: |\u000c\n  line\n---\nBody",
+			"---\ndescription: |\u00a0\n  line\n---\nBody",
+			"---\ndescription: |\u2028\n  line\n---\nBody",
+			"---\ndescription: |\ufeff\n  line\n---\nBody",
 		];
 		for (const raw of edgeCases) {
 			const end = raw.indexOf("\n---", 3);
@@ -112,7 +127,9 @@ describe("parseFrontmatter", () => {
 			if (expectedThrew) {
 				expect(() => parseFrontmatter(raw), yamlStr).toThrow();
 			} else {
-				expect(parseFrontmatter(raw).frontmatter, yamlStr).toEqual(expected);
+				const actual = parseFrontmatter(raw).frontmatter;
+				expect(actual, yamlStr).toEqual(expected);
+				expect(Object.keys(actual), yamlStr).toEqual(Object.keys(expected as Record<string, unknown>));
 			}
 		}
 	});

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { checkRelease, recordRelease } from "./in-place-update-exports.mjs";
+import { checkDeferredChunkDisjointness, checkRelease, recordRelease } from "./in-place-update-exports.mjs";
 
 /** Writes a package of `files` (path -> source) with `manifest` into a new directory, and returns it. */
 function writePackage(t, manifest, files) {
@@ -182,4 +182,66 @@ test("a bundled module's own URL is not a file the release starts, and a worker 
 	assert.deepEqual(checkRelease(record, [withoutWorker, dependency(t)]), [
 		"1.0.0's @bastani/atomic/dist/tool.js starts @bastani/atomic/dist/worker.js: this build lacks it",
 	]);
+});
+
+test("importing a deferred-init shared chunk from an earlier release without calling init_* fails both checks", (t) => {
+	const earlierDep = writePackage(
+		t,
+		{
+			name: "@bastani/atomic-ai",
+			version: "1.0.0",
+			exports: { ".": "./dist/index.js", "./api/*": "./dist/api/*.js" },
+		},
+		{
+			"dist/_lazy-AAAABBBB.js":
+				"export var stream;\nexport function init_a() { stream = () => 'a'; }\nexport function init_b() { stream = () => 'b'; }\n",
+			"dist/index.js": 'export const model = () => import("./api/b.js");\n',
+			"dist/api/a.js": 'import { init_a, stream } from "../_lazy-AAAABBBB.js";\ninit_a();\nexport { stream };\n',
+			"dist/api/b.js": 'import { init_b, stream } from "../_lazy-AAAABBBB.js";\ninit_b();\nexport { stream };\n',
+		},
+	);
+	const app = application(t);
+	const record = recordRelease([app, earlierDep]);
+
+	// Bad update: omits init_b() while reusing the same shared chunk path _lazy-AAAABBBB.js.
+	const badDep = writePackage(
+		t,
+		{
+			name: "@bastani/atomic-ai",
+			version: "2.0.0",
+			exports: { ".": "./dist/index.js", "./api/*": "./dist/api/*.js" },
+		},
+		{
+			"dist/_lazy-AAAABBBB.js": "export const stream = () => 'b';\n",
+			"dist/index.js": 'export const model = () => import("./api/b.js");\n',
+			"dist/api/a.js": 'export { stream } from "../_lazy-AAAABBBB.js";\n',
+			"dist/api/b.js": 'export { stream } from "../_lazy-AAAABBBB.js";\n',
+		},
+	);
+	assert.ok(
+		checkRelease(record, [app, badDep]).some((p) => p.includes("defers initialization via init_*")),
+		"checkRelease must flag reusing a deferred-init shared chunk without init_*",
+	);
+	assert.ok(
+		checkDeferredChunkDisjointness(record, [app, badDep]).some((p) => p.includes("deferred init_*")),
+		"checkDeferredChunkDisjointness must flag importing any old deferred-init shared chunk",
+	);
+
+	// Good update: uses a brand-new content-hashed chunk path _lazy.e-12345678.js.
+	const goodDep = writePackage(
+		t,
+		{
+			name: "@bastani/atomic-ai",
+			version: "2.0.0",
+			exports: { ".": "./dist/index.js", "./api/*": "./dist/api/*.js" },
+		},
+		{
+			"dist/_lazy.e-12345678.js": "export const stream = () => 'b';\n",
+			"dist/index.js": 'export const model = () => import("./api/b.js");\n',
+			"dist/api/a.js": 'export { stream } from "../_lazy.e-12345678.js";\n',
+			"dist/api/b.js": 'export { stream } from "../_lazy.e-12345678.js";\n',
+		},
+	);
+	assert.deepEqual(checkRelease(record, [app, goodDep]), []);
+	assert.deepEqual(checkDeferredChunkDisjointness(record, [app, goodDep]), []);
 });

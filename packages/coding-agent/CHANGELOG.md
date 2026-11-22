@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Interactive sessions reach the editor and first model request faster on warm starts: early theme and settings defaults no longer load TypeBox or `@bastani/atomic-ai` before the editor paints, prewarmed engines preload RPC mode and the native addon while waiting for adoption, isolated host initialization queries state and models concurrently, and skill discovery avoids unnecessary ignore-file reads, uses native `realpath` on POSIX, and parses simple YAML frontmatter linearly.
+- Interactive sessions reach the editor and first model request faster on warm starts: early theme and settings defaults no longer load TypeBox or `@bastani/atomic-ai` before the editor paints, prewarmed engines preload RPC mode and the native addon while waiting for adoption, and skill discovery avoids unnecessary ignore-file reads, batches shared parent-directory path resolution, and parses simple YAML frontmatter linearly.
 
 ## [0.10.4] - 2026-11-22
 
