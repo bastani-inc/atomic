@@ -79,6 +79,15 @@ function rendererRoutes(runtime: IsolatedInteractiveRuntime): RendererRoutes {
 		});
 		runtime.onEngineMessage((message) => {
 			if (message.type === "engine_bound" && created.clicks.signal.aborted) created.clicks = new AbortController();
+			if (message.type === "engine_resources_ready") {
+				const scopePrefix = JSON.stringify([runtimeFrameScope(runtime), ""]).slice(0, -3);
+				for (const key of [...recentFrames.keys()]) {
+					if (key.startsWith(scopePrefix)) recentFrames.delete(key);
+				}
+				for (const [componentId, row] of created.rows) {
+					row.receive({ type: "engine_custom_invalidate", componentId });
+				}
+			}
 			if ("componentId" in message) created.rows.get(message.componentId)?.receive(message);
 		});
 		routesByRuntime.set(runtime, created);

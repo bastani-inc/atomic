@@ -60,24 +60,33 @@ export function hasExtensionHandlers(extensions: Extension[], eventType: string)
 	return false;
 }
 
+/**
+ * Custom types whose bundled renderers were added after callers could already register inline SDK `extensionFactories`
+ * behind `builtinPackagePaths`: defer `configurationOrigin === "bundled"` only for these types so every other type and
+ * source (including `inherited-pi` and pre-existing builtin renderers) keeps exact first-match order.
+ */
+const DEFERRED_BUNDLED_MESSAGE_RENDERER_TYPES: ReadonlySet<string> = new Set([
+	"intercom_subagent_wake",
+	"curator-config",
+	"google-account",
+	"web-search-results",
+	"web-search-content-ready",
+	"web-search-error",
+]);
+
 export function findMessageRenderer(extensions: Extension[], customType: string): MessageRenderer | undefined {
+	const deferBundled = DEFERRED_BUNDLED_MESSAGE_RENDERER_TYPES.has(customType);
 	let bundledFallback: MessageRenderer | undefined;
-	let inheritedFallback: MessageRenderer | undefined;
 	for (const ext of extensions) {
 		const renderer = ext.messageRenderers.get(customType);
 		if (!renderer) continue;
-		const origin = ext.sourceInfo?.configurationOrigin;
-		if (origin === "bundled") {
+		if (deferBundled && ext.sourceInfo?.configurationOrigin === "bundled") {
 			bundledFallback ??= renderer;
-			continue;
-		}
-		if (origin === "inherited-pi") {
-			inheritedFallback ??= renderer;
 			continue;
 		}
 		return renderer;
 	}
-	return bundledFallback ?? inheritedFallback;
+	return bundledFallback;
 }
 
 export function collectMarkdownTransformers(extensions: Extension[]): MarkdownTransformer[] {

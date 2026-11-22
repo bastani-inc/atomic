@@ -300,6 +300,8 @@ export class ExtensionRunner {
 	private activeUIPrompt:
 		| { depth: number; reason: "ui_prompt" | "project_trust"; kind: UIPromptKind; title: string | undefined }
 		| undefined;
+	private _rendererVersion = 0;
+	private readonly rendererChangeListeners = new Set<() => void>();
 
 	constructor(
 		extensions: Extension[],
@@ -321,6 +323,44 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 		this.subagentPolicy = subagentPolicy;
 		this.intercomPolicy = intercomPolicy;
+		if (runtime && typeof runtime === "object") {
+			const runnerRef = new WeakRef(this);
+			if (!runtime.rendererChangeListeners) runtime.rendererChangeListeners = new Set();
+			const listeners = runtime.rendererChangeListeners;
+			const onRuntimeRendererChange = (): void => {
+				const live = runnerRef.deref();
+				if (!live) {
+					listeners.delete(onRuntimeRendererChange);
+					return;
+				}
+				live.bumpRendererVersion();
+			};
+			listeners.add(onRuntimeRendererChange);
+		}
+	}
+
+	/** Monotonic version incremented whenever extensions or renderers change on this runner in place. */
+	get rendererVersion(): number {
+		return this._rendererVersion;
+	}
+
+	/** Subscribe to renderer registry changes (in-place deferred startup attachment or dynamic registrations). */
+	onRenderersChanged(listener: () => void): () => void {
+		this.rendererChangeListeners.add(listener);
+		return () => {
+			this.rendererChangeListeners.delete(listener);
+		};
+	}
+
+	private bumpRendererVersion(): void {
+		this._rendererVersion += 1;
+		for (const listener of [...this.rendererChangeListeners]) {
+			try {
+				listener();
+			} catch {
+				// Listener failure must not abort extension registration.
+			}
+		}
 	}
 
 	bindCore(
@@ -988,6 +1028,7 @@ export class ExtensionRunner {
 		const newcomers = extensions.filter((extension) => !this.extensions.includes(extension));
 		const retained = this.extensions.filter((extension) => !extensions.includes(extension));
 		this.extensions = [...extensions, ...retained];
+		this.bumpRendererVersion();
 		return async () => {
 			await runResourceRegistrationBatch(this.runtime, () =>
 				runGenericHandlers(

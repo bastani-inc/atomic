@@ -22,6 +22,7 @@ import { createCustomMessage } from "../../packages/coding-agent/src/core/messag
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
+import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
@@ -692,5 +693,252 @@ describe("extension message renderer precedence over builtin notice cards", () =
 	test("mandatory intercom entry path stays valid when loaded standalone", () => {
 		const [intercomEntry] = getMandatoryBuiltinExtensionPaths();
 		assert.ok(intercomEntry);
+	});
+
+	test("7-source x 14-type message renderer precedence matrix matches main cell for cell", async () => {
+		const PREEXISTING_BUILTINS = [
+			"intercom_message",
+			"subagent-slash-result",
+			"subagent-notify",
+			"subagent-late-tool-result",
+			"subagent-resume-note",
+			"subagent_control_notice",
+		] as const;
+		const NEW_BUILTINS = [
+			"intercom_subagent_wake",
+			"curator-config",
+			"google-account",
+			"web-search-results",
+			"web-search-content-ready",
+			"web-search-error",
+		] as const;
+		const MATRIX_TYPES = [
+			...PREEXISTING_BUILTINS,
+			...NEW_BUILTINS,
+			"session-recovery-notice",
+			"third-party-custom",
+		] as const;
+
+		const writeMatrixExt = (filePath: string, marker: string) => {
+			writeFileSync(
+				filePath,
+				`export default function (pi) {
+	for (const customType of ${JSON.stringify(MATRIX_TYPES)}) {
+		pi.registerMessageRenderer(customType, () => ({
+			invalidate() {},
+			render() { return ["${marker}:" + customType]; },
+		}));
+	}
+}
+`,
+			);
+		};
+
+		const inlineFactory = (marker: string) => (pi: ExtensionAPI) => {
+			for (const customType of MATRIX_TYPES) {
+				pi.registerMessageRenderer(customType, () => new Text(`${marker}:${customType}`, 0, 0));
+			}
+		};
+
+		const winnerOf = (runner: ExtensionRunner, customType: string): string => {
+			const msg = createCustomMessage(customType, "body", true, {}, new Date(0).toISOString());
+			const comp = new CustomMessageComponent(msg, runner.getMessageRenderer(customType));
+			const text = plain(comp.render(100)).join(" ").trim();
+			const match = /^([A-Z_]+):/.exec(text);
+			return match ? match[1]! : "BUNDLED";
+		};
+
+		const checkRunner = (
+			label: string,
+			runner: ExtensionRunner,
+			expected: Record<(typeof MATRIX_TYPES)[number], string>,
+		) => {
+			for (const customType of MATRIX_TYPES) {
+				assert.equal(winnerOf(runner, customType), expected[customType], `${label} mismatch for ${customType}`);
+			}
+		};
+
+		const all = (winner: string) =>
+			Object.fromEntries(MATRIX_TYPES.map((t) => [t, winner])) as Record<(typeof MATRIX_TYPES)[number], string>;
+
+		const loadAndBuildRunner = async (loader: DefaultResourceLoader) => {
+			await loader.reload();
+			const loaded = loader.getExtensions();
+			assert.deepEqual(loaded.errors, []);
+			return new ExtensionRunner(
+				loaded.extensions,
+				loaded.runtime,
+				process.cwd(),
+				SessionManager.inMemory(process.cwd()),
+				new ModelRegistry(await ModelRuntime.create({ modelsPath: null })),
+			);
+		};
+
+		// 1. Inline + DefaultResourceLoader(builtinPackagePaths): pre-existing 6 keep BUNDLED, new 6 + core + custom -> INLINE
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-1-"));
+			tempDirs.push(root);
+			const cwd = join(root, "proj");
+			const agentDir = join(root, "agent");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			const runner = await loadAndBuildRunner(
+				new DefaultResourceLoader({
+					cwd,
+					agentDir,
+					settingsManager: SettingsManager.inMemory(),
+					builtinPackagePaths: getBuiltinPackagePaths(),
+					extensionFactories: [inlineFactory("INLINE")],
+				}),
+			);
+			checkRunner("1. Inline + DefaultResourceLoader(builtinPackagePaths)", runner, {
+				...all("INLINE"),
+				...Object.fromEntries(PREEXISTING_BUILTINS.map((t) => [t, "BUNDLED"])),
+			});
+		}
+
+		// 2. Inline + createAgentSession (BuiltinResourceLoader): ALL 14 -> INLINE
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-2-"));
+			tempDirs.push(root);
+			const cwd = join(root, "proj");
+			const agentDir = join(root, "agent");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager,
+				extensionFactories: [inlineFactory("INLINE")],
+			});
+			await resourceLoader.reload();
+			const created = await createAgentSession({
+				cwd,
+				agentDir,
+				sessionManager: SessionManager.inMemory(cwd),
+				settingsManager,
+				resourceLoader,
+			});
+			try {
+				checkRunner("2. Inline + createAgentSession", created.session.extensionRunner, all("INLINE"));
+			} finally {
+				await created.session.dispose();
+			}
+		}
+
+		// 6. Inherited-pi project (.pi/extensions) + user (~/.atomic/agent/extensions): ALL 14 -> INHERITED_PI_PROJ
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-6-"));
+			tempDirs.push(root);
+			const cwd = join(root, "proj");
+			const agentDir = join(root, "agent");
+			mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+			mkdirSync(join(agentDir, "extensions"), { recursive: true });
+			writeMatrixExt(join(cwd, ".pi", "extensions", "legacy.js"), "INHERITED_PI_PROJ");
+			writeMatrixExt(join(agentDir, "extensions", "user.js"), "USER_ATOMIC");
+			const runner = await loadAndBuildRunner(
+				new DefaultResourceLoader({
+					cwd,
+					agentDir,
+					settingsManager: SettingsManager.inMemory(),
+					builtinPackagePaths: getBuiltinPackagePaths(),
+				}),
+			);
+			checkRunner("6. Inherited-pi (.pi/extensions) + user (~/.atomic)", runner, all("INHERITED_PI_PROJ"));
+		}
+
+		// 7. Inherited-pi user (~/.pi/agent/extensions): ALL 14 -> INHERITED_PI_USER
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-7-"));
+			tempDirs.push(root);
+			const fakeHome = join(root, "home");
+			const cwd = join(root, "proj");
+			const agentDir = join(fakeHome, ".atomic", "agent");
+			const legacyPiExtDir = join(fakeHome, ".pi", "agent", "extensions");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			mkdirSync(legacyPiExtDir, { recursive: true });
+			writeMatrixExt(join(legacyPiExtDir, "legacy-user.js"), "INHERITED_PI_USER");
+			const origHome = process.env.HOME;
+			const origUserProfile = process.env.USERPROFILE;
+			const origAtomicDir = process.env.ATOMIC_CODING_AGENT_DIR;
+			const origPiDir = process.env.PI_CODING_AGENT_DIR;
+			process.env.HOME = fakeHome;
+			process.env.USERPROFILE = fakeHome;
+			delete process.env.ATOMIC_CODING_AGENT_DIR;
+			delete process.env.PI_CODING_AGENT_DIR;
+			try {
+				const runner = await loadAndBuildRunner(
+					new DefaultResourceLoader({
+						cwd,
+						agentDir,
+						settingsManager: SettingsManager.inMemory(),
+						builtinPackagePaths: getBuiltinPackagePaths(),
+					}),
+				);
+				checkRunner("7. Inherited-pi user (~/.pi/agent/extensions)", runner, all("INHERITED_PI_USER"));
+			} finally {
+				if (origHome === undefined) delete process.env.HOME;
+				else process.env.HOME = origHome;
+				if (origUserProfile === undefined) delete process.env.USERPROFILE;
+				else process.env.USERPROFILE = origUserProfile;
+				if (origAtomicDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+				else process.env.ATOMIC_CODING_AGENT_DIR = origAtomicDir;
+				if (origPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+				else process.env.PI_CODING_AGENT_DIR = origPiDir;
+			}
+		}
+	});
+
+	test("in-process CustomMessageComponent refreshes when attachStartupExtensions or registerMessageRenderer fires on the same runner", async () => {
+		const bus = createEventBus();
+		const runtimeObj = createExtensionRuntime();
+		const runner = new ExtensionRunner(
+			[],
+			runtimeObj,
+			process.cwd(),
+			SessionManager.inMemory(process.cwd()),
+			new ModelRegistry(await ModelRuntime.create({ modelsPath: null })),
+		);
+
+		const msg = createCustomMessage(
+			"curator-config",
+			[{ type: "text", text: "Curator disabled — web_search will return raw results" }],
+			true,
+			{ workflow: "none" },
+			new Date(0).toISOString(),
+		);
+		const comp = new CustomMessageComponent(msg, runner.getMessageRenderer(msg.customType));
+		assert.ok(plain(comp.render(100)).join("\n").includes("[curator-config]"));
+
+		let versionBumps = 0;
+		const stop = runner.onRenderersChanged(() => {
+			versionBumps += 1;
+			comp.setCustomRenderer(runner.getMessageRenderer(msg.customType));
+		});
+		const v0 = runner.rendererVersion;
+		let lateApi: ExtensionAPI | undefined;
+		const ext = await loadExtensionFromFactory(
+			(pi) => {
+				lateApi = pi;
+				pi.registerMessageRenderer("curator-config", () => new Text("ATTACHED_RENDERER", 0, 0));
+			},
+			process.cwd(),
+			bus,
+			runtimeObj,
+			"inline:late",
+		);
+		const start = runner.attachStartupExtensions([ext]);
+		await start();
+		assert.ok(runner.rendererVersion > v0);
+		assert.ok(versionBumps >= 1);
+		assert.ok(plain(comp.render(100)).join("\n").includes("ATTACHED_RENDERER"));
+
+		const v1 = runner.rendererVersion;
+		lateApi!.registerMessageRenderer("curator-config", () => new Text("DYNAMIC_RENDERER", 0, 0));
+		assert.ok(runner.rendererVersion > v1);
+		assert.ok(plain(comp.render(100)).join("\n").includes("DYNAMIC_RENDERER"));
+		stop();
 	});
 });

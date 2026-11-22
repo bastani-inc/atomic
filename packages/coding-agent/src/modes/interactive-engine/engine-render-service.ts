@@ -47,7 +47,12 @@ function keptTaskActionOf(command: ToolRenderCommand): () => KeptTaskAction | un
  * once the session's extension runner changes, so rows rendered before
  * deferred resources loaded pick up the extensions' renderers.
  */
-type RenderRecord = { runner: AgentSession["extensionRunner"]; terminal: RenderTerminal; tui: TUI } & (
+type RenderRecord = {
+	runner: AgentSession["extensionRunner"];
+	rendererVersion: number;
+	terminal: RenderTerminal;
+	tui: TUI;
+} & (
 	| { kind: "message"; component: CustomMessageComponent }
 	| {
 			kind: "tool";
@@ -105,6 +110,7 @@ export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
 	private readonly disposedIds = new Set<string>();
 	private session: AgentSession | undefined;
+	private stopRendererWatch: (() => void) | undefined;
 	private readonly write: (line: string) => void;
 	/** Row renders and repaint checks wait here, behind keyboard input and custom UI frames. */
 	private readonly backgroundRenders = new BackgroundRenderLane();
@@ -116,6 +122,19 @@ export class EngineRenderService {
 	bindSession(session: AgentSession): void {
 		this.dispose();
 		this.session = session;
+		this.stopRendererWatch = session.extensionRunner?.onRenderersChanged?.(() => {
+			this.invalidateStaleRendererRecords();
+		});
+	}
+
+	private invalidateStaleRendererRecords(): void {
+		const currentRunner = this.session?.extensionRunner;
+		const currentVersion = currentRunner?.rendererVersion ?? 0;
+		for (const [componentId, record] of [...this.records.entries()]) {
+			if (record.runner !== currentRunner || record.rendererVersion === currentVersion) continue;
+			this.disposeRecord(componentId);
+			this.send({ type: "engine_custom_invalidate", componentId });
+		}
 	}
 
 	handleLine(line: string): boolean {
@@ -186,6 +205,8 @@ export class EngineRenderService {
 	}
 
 	dispose(): void {
+		this.stopRendererWatch?.();
+		this.stopRendererWatch = undefined;
 		for (const id of [...this.records.keys()]) this.disposeRecord(id);
 	}
 
@@ -263,9 +284,11 @@ export class EngineRenderService {
 			];
 		}
 		let record = this.records.get(command.componentId);
+		const currentVersion = this.session?.extensionRunner?.rendererVersion ?? 0;
 		if (
 			record?.kind !== "tool" ||
 			record.runner !== this.session?.extensionRunner ||
+			record.rendererVersion !== currentVersion ||
 			record.toolOwner !== scope.identity ||
 			record.rendererTaskId !== command.rendererTaskId ||
 			record.keptTaskAction !== command.keptTaskAction
@@ -303,6 +326,7 @@ export class EngineRenderService {
 				terminal,
 				tui,
 				runner: session.extensionRunner,
+				rendererVersion: session.extensionRunner?.rendererVersion ?? 0,
 				toolOwner: scope.identity,
 				rendererTaskId: command.rendererTaskId,
 				keptTaskAction: command.keptTaskAction,
@@ -343,7 +367,12 @@ export class EngineRenderService {
 
 	private renderMessage(command: MessageRenderCommand): string[] {
 		let record = this.records.get(command.componentId);
-		if (record?.kind !== "message" || record.runner !== this.session?.extensionRunner) {
+		const currentVersion = this.session?.extensionRunner?.rendererVersion ?? 0;
+		if (
+			record?.kind !== "message" ||
+			record.runner !== this.session?.extensionRunner ||
+			record.rendererVersion !== currentVersion
+		) {
 			const session = this.boundSession();
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
@@ -382,7 +411,14 @@ export class EngineRenderService {
 				},
 			);
 			tui.addChild(component);
-			record = { kind: "message", component, terminal, tui, runner: session.extensionRunner };
+			record = {
+				kind: "message",
+				component,
+				terminal,
+				tui,
+				runner: session.extensionRunner,
+				rendererVersion: session.extensionRunner?.rendererVersion ?? 0,
+			};
 			this.records.set(command.componentId, record);
 		} else {
 			record.terminal.columns = Math.max(1, command.width);

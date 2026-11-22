@@ -1,4 +1,4 @@
-import { setCapabilityOverrides } from "@bastani/atomic-tui";
+import { type Component, type Container, setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { ExtensionBindings, SessionRecoveryReport } from "../../core/agent-session-types.js";
 import { cancelInitialBinding, initialBindScope, registerInitialBindings } from "../../core/extension-startup-close.ts";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
@@ -8,10 +8,34 @@ import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { promptHandle } from "./agent-view/agent-drafts.ts";
 import { AtomicWorkedStatusComponent } from "./components/atomic-working-status.ts";
+import { CustomMessageComponent } from "./components/custom-message.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
 import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
+
+const stopRendererWatchByMode = new WeakMap<InteractiveModeBase, () => void>();
+
+function refreshCustomMessageRenderers(
+	root: Component,
+	getRenderer: (
+		customType: string,
+	) => ReturnType<InteractiveModeBase["session"]["extensionRunner"]["getMessageRenderer"]>,
+): boolean {
+	let changed = false;
+	const visit = (node: Component): void => {
+		if (node instanceof CustomMessageComponent) {
+			if (node.setCustomRenderer(getRenderer(node.customType))) changed = true;
+			return;
+		}
+		const children = (node as Partial<Container>).children;
+		if (Array.isArray(children)) {
+			for (const child of children) visit(child);
+		}
+	};
+	visit(root);
+	return changed;
+}
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (this: InteractiveModeBase): Promise<void> {
 	const uiContext = this.createExtensionUIContext();
@@ -111,6 +135,18 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 
 	const extensionRunner = this.session.extensionRunner;
 	this.setupExtensionShortcuts(extensionRunner);
+	stopRendererWatchByMode.get(this)?.();
+	stopRendererWatchByMode.delete(this);
+	if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime)) {
+		const stopWatch = extensionRunner.onRenderersChanged?.(() => {
+			if (this.isShuttingDown || this.session !== session || this.session.extensionRunner !== extensionRunner)
+				return;
+			if (refreshCustomMessageRenderers(this.chatContainer, (type) => extensionRunner.getMessageRenderer(type))) {
+				this.ui.requestRender();
+			}
+		});
+		if (stopWatch) stopRendererWatchByMode.set(this, stopWatch);
+	}
 	if (!this.deferredStartupPending && !this.initialStartupBinding) {
 		this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true });
 		this.showStartupNoticesIfNeeded();

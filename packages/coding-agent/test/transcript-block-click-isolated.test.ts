@@ -15,11 +15,19 @@ import {
 import { afterEach, beforeAll, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
 import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "../../intercom/ui/wake-notice.js";
+import { registerWebAccessMessageRenderers } from "../../web-access/message-renderers.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
+import { createEventBus } from "../src/core/event-bus.js";
+import { loadExtensionFromFactory } from "../src/core/extensions/loader.js";
+import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.js";
+import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { CustomMessage } from "../src/core/messages.js";
+import { ModelRegistry } from "../src/core/model-registry.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import {
 	supersedeBlockClicks,
 	toggleClickedBlocks,
@@ -540,4 +548,149 @@ test("clicking an Intercom subagent wake notice in the isolated host expands ful
 		() => assert.equal(chat.shows(/subagent-debugger-45255a2f-7 · 45255a2f:6/), false),
 		ENGINE_FRAME_WAIT,
 	);
+});
+
+test("deferred startup attachStartupExtensions in place replaces pre-attach fallback boxes on the same runner in isolated host", async () => {
+	const bus = createEventBus();
+	const runtimeObj = createExtensionRuntime();
+	const runner = new ExtensionRunner(
+		[],
+		runtimeObj,
+		"/workspace",
+		SessionManager.inMemory("/workspace"),
+		new ModelRegistry(await ModelRuntime.create({ modelsPath: null })),
+	);
+
+	// Isolated engine wired to the real ExtensionRunner (mutated in place by attachStartupExtensions).
+	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
+	const ended = new Set<(event: { generation: number }) => void>();
+	const deliver = (message: InteractiveEngineMessage) => {
+		for (const listener of [...listeners]) listener(message);
+	};
+	setCallbackActivityReporter({ started() {}, finished() {} });
+	const service = new EngineRenderService((line) => {
+		const parsed = parseInteractiveEngineMessage(line.trim());
+		if (parsed) deliver(parsed);
+	});
+	const session = {
+		extensionRunner: runner,
+		getToolDefinition: () => undefined,
+		sessionManager: { getCwd: () => "/workspace" },
+	} as unknown as AgentSession;
+	service.bindSession(session);
+	const isolatedRuntime = {
+		getEngineGeneration: () => 1,
+		onGenerationEnded(listener: (event: { generation: number }) => void) {
+			ended.add(listener);
+			return () => ended.delete(listener);
+		},
+		onEngineMessage(listener: (message: InteractiveEngineMessage) => void) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		sendEngineCommand(command: InteractiveEngineCommand) {
+			service.handleLine(serializeInteractiveEngineFrame(command).trim());
+		},
+	} as unknown as IsolatedInteractiveRuntime;
+	closers.push(() => {
+		service.dispose();
+		setCallbackActivityReporter(undefined);
+	});
+
+	const terminal = new RecordingTerminal();
+	terminal.columns = 100;
+	terminal.rows = 60;
+	const tui = createFullscreenTui({ showHardwareCursor: false, logDirectory: tmpdir(), terminal }) as TuiAltScreen;
+	closers.unshift(() => tui.stop());
+	let transcript: ScrollView | undefined;
+	const chatContainer = new StartupChatContainer(
+		() => false,
+		() => transcript,
+	);
+	chatContainer.releaseStartupOutput();
+	const document = new WindowedContainer();
+	document.addChild(chatContainer);
+	transcript = new ScrollView(document, { follow: "end", primary: true });
+	const editor = new Text("editor", 0, 0);
+	tui.addChild(editor);
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: editor, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
+		]),
+	);
+	tui.setFocus(editor);
+	tui.start();
+
+	const curatorMsg: CustomMessage<unknown> = {
+		role: "custom",
+		customType: "curator-config",
+		content: [{ type: "text", text: "Curator disabled — web_search will return raw results" }],
+		display: true,
+		details: { workflow: "none" },
+		timestamp: 1,
+	};
+	const errorMsg: CustomMessage<unknown> = {
+		role: "custom",
+		customType: "web-search-error",
+		content: "Content fetch failed [fetch-abcd]: upstream timeout",
+		display: true,
+		timestamp: 2,
+	};
+
+	const curatorCard = new RemoteCustomMessageComponent(curatorMsg, isolatedRuntime, () => tui.requestRender(), 1);
+	const errorCard = new RemoteCustomMessageComponent(errorMsg, isolatedRuntime, () => tui.requestRender(), 1);
+	chatContainer.addChild(curatorCard);
+	chatContainer.addChild(errorCard);
+
+	const screen = () => {
+		tui.renderNow();
+		return tui
+			.getScreenLines()
+			.map((l) => stripTerminalSequences(l).trimEnd())
+			.join("\n");
+	};
+
+	// 1. Before deferred startup attaches web-access, both cards render through the generic bracketed fallback box.
+	await vi.waitFor(() => {
+		const text = screen();
+		assert.ok(text.includes("[curator-config]"), `expected initial fallback box, got:\n${text}`);
+		assert.ok(text.includes("[web-search-error]"), `expected initial fallback box, got:\n${text}`);
+	}, ENGINE_FRAME_WAIT);
+
+	// 2. Deferred startup completes IN PLACE on the exact same runner reference (preserveRunner: true).
+	const webAccessExt = await loadExtensionFromFactory(
+		(pi) => {
+			registerWebAccessMessageRenderers(pi);
+		},
+		"/workspace",
+		bus,
+		runtimeObj,
+		"builtin:web-access",
+	);
+	const startNewcomers = runner.attachStartupExtensions([webAccessExt]);
+	await startNewcomers();
+
+	// 3. Both already-rendered cards automatically repaint to styled notice cards (NO Ctrl+O required).
+	await vi.waitFor(() => {
+		const text = screen();
+		assert.ok(text.includes("Search curator disabled"), `curator card stayed stuck:\n${text}`);
+		assert.ok(text.includes("Web content fetch failed"), `error card stayed stuck:\n${text}`);
+		assert.equal(text.includes("[curator-config]"), false, `stale [curator-config] remained:\n${text}`);
+		assert.equal(text.includes("[web-search-error]"), false, `stale [web-search-error] remained:\n${text}`);
+	}, ENGINE_FRAME_WAIT);
+
+	// 4. Ctrl+O expands the repainted cards cleanly to full wrapped text.
+	curatorCard.setExpanded(true);
+	errorCard.setExpanded(true);
+	tui.requestRender();
+	await vi.waitFor(() => {
+		const text = screen();
+		assert.ok(
+			text.includes("Curator disabled — web_search will return raw results"),
+			`expanded curator missing:\n${text}`,
+		);
+		assert.ok(text.includes("Fetch ID · fetch-abcd"), `expanded error missing Fetch ID:\n${text}`);
+		assert.ok(text.includes("upstream timeout"), `expanded error missing reason:\n${text}`);
+	}, ENGINE_FRAME_WAIT);
 });

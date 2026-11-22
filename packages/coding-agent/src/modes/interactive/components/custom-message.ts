@@ -131,6 +131,18 @@ export class CustomMessageComponent extends Container {
 		this.clear();
 	}
 
+	get customType(): string {
+		return this.message.customType;
+	}
+
+	/** Update the message renderer in place when extensions attach or register renderers after mount. */
+	setCustomRenderer(renderer: MessageRenderer | undefined): boolean {
+		if (this.disposed || this.customRenderer === renderer) return false;
+		this.customRenderer = renderer;
+		this.rebuild();
+		return true;
+	}
+
 	setOutputPad(outputPad: number): void {
 		if (this.disposed) return;
 		if (this.outputPad === outputPad) return;

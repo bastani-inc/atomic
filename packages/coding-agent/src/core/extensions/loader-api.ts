@@ -323,6 +323,9 @@ export function createExtensionAPI(
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
 			assertActive();
 			extension.messageRenderers.set(customType, captureRegistrationInvocation(renderer) as MessageRenderer);
+			if (runtime.rendererChangeListeners) {
+				for (const listener of [...runtime.rendererChangeListeners]) listener();
+			}
 		},
 
 		registerMarkdownTransformer(transformer: MarkdownTransformer, options?: MarkdownTransformerOptions): void {
@@ -331,11 +334,17 @@ export function createExtensionAPI(
 				transformer,
 				messageTypes: new Set(options?.messageTypes ?? DEFAULT_MARKDOWN_MESSAGE_TYPES),
 			});
+			if (runtime.rendererChangeListeners) {
+				for (const listener of [...runtime.rendererChangeListeners]) listener();
+			}
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
 			assertActive();
 			extension.entryRenderers.set(customType, captureRegistrationInvocation(renderer) as EntryRenderer);
+			if (runtime.rendererChangeListeners) {
+				for (const listener of [...runtime.rendererChangeListeners]) listener();
+			}
 		},
 
 		registerToolRenderer(resolver: ToolRendererResolver): void {
@@ -344,6 +353,9 @@ export function createExtensionAPI(
 			extension.toolRenderers.push(
 				captureRegistrationInvocation((toolName, next) => captureRegistrationInvocation(resolver(toolName, next))),
 			);
+			if (runtime.rendererChangeListeners) {
+				for (const listener of [...runtime.rendererChangeListeners]) listener();
+			}
 		},
 
 		getFlag(name: string): boolean | string | undefined {
