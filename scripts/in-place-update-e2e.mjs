@@ -17,9 +17,19 @@
 // `<tarball-dir>` holds the build's packages as `npm pack` names them (`bastani-atomic-<version>.tgz`, ...). Without
 // versions, every recorded release is updated.
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Atomic's packages an update puts in place: the application first. */
@@ -42,7 +52,7 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const HOST = `
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 const [packageDir, held, targets] = [process.argv[2], JSON.parse(process.argv[3]), JSON.parse(process.argv[4])];
 const load = (path) => import(pathToFileURL(join(packageDir, path)).href);
 for (const path of held) await load(path);
@@ -87,11 +97,13 @@ function installedPackageDirs(root) {
 }
 
 /**
- * Unpacks the tarball `file` into the directory `into`. The archive is named relative to its directory: GNU tar, which
- * Git for Windows puts on PATH, takes `C:` in an archive's path for a remote host.
+ * Unpacks the tarball `file` into the directory `into`, from a copy there named without a directory: GNU tar, which Git
+ * for Windows puts on PATH, takes `C:` in a path for a remote host and does not read `\\` as a separator.
  */
 function untar(file, into) {
-	const result = spawnSync("tar", ["-xzf", basename(file), "-C", into], { cwd: dirname(file) });
+	copyFileSync(file, join(into, basename(file)));
+	const result = spawnSync("tar", ["-xzf", basename(file)], { cwd: into });
+	rmSync(join(into, basename(file)));
 	if (result.status !== 0) throw new Error(`could not unpack ${file}: ${result.stderr}`);
 }
 
