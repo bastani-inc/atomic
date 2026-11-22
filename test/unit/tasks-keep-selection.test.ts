@@ -1644,6 +1644,77 @@ test("R4-1/R4-2 (real in-process startup order): bridge attached before lazy Own
 		/third gamma/,
 		"R3-2 + R4-2: failed pending open clears on failure so a later view never resurrects",
 	);
+
+	// E1 (PROBE_A): Supersede chain without an idle gap clears superseded pending immediately:
+	// /tasks Enter a1 -> external switcher.view(a3) supersedes a1 -> /tasks Esc -> external switcher.view(a1) ->
+	// back to main -> fresh /tasks starts at top a3 (never resurrects stale a1!).
+	let releaseA1!: (port: AgentViewPort | undefined) => void;
+	let releaseA3!: (port: AgentViewPort | undefined) => void;
+	let a1Calls = 0;
+	const chainSwitcher = new AgentViewSwitcher(
+		(taskId) => {
+			if (taskId === "a1" && a1Calls++ === 0) {
+				return new Promise<AgentViewPort | undefined>((resolve) => {
+					releaseA1 = resolve;
+				});
+			}
+			if (taskId === "a3") {
+				return new Promise<AgentViewPort | undefined>((resolve) => {
+					releaseA3 = resolve;
+				});
+			}
+			return Promise.resolve(fakePort(taskId));
+		},
+		() => {},
+	);
+	const chainSession = { extensionRunner: {} };
+	setAgentViewBridge(chainSession, chainSwitcher);
+	const chainStore = new FakeOwnerTaskStore([a1, a2, a3]);
+	bindOwnerTaskStore(chainSession, chainStore);
+
+	// /tasks Enter a1 (stays pending on releaseA1).
+	await openTasks(
+		chainSession,
+		chainStore,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(DOWN); // a1
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	// External switcher.view(a3) supersedes pending a1 without an idle gap (pending moves directly a1 -> a3).
+	const a3Promise = chainSwitcher.view("a3" as TaskId);
+	// Dismiss /tasks with Esc while a3 is still opening.
+	await openTasks(
+		chainSession,
+		chainStore,
+		mountUi((component) => {
+			component.handleInput(ESC);
+		}).ui,
+	);
+	// External switcher.view(a1) now supersedes a3 and succeeds!
+	const a1SecondPromise = chainSwitcher.view("a1" as TaskId);
+	releaseA1(undefined);
+	releaseA3(undefined);
+	await Promise.all([a3Promise, a1SecondPromise]);
+	assert.equal(chainSwitcher.viewedTaskId(), "a1");
+	// Return to main -> fresh /tasks must start at top a3, NOT stale superseded a1!
+	await chainSwitcher.view(undefined);
+	let afterSupersedeChain = "";
+	await openTasks(
+		chainSession,
+		chainStore,
+		mountUi((component, rows) => {
+			afterSupersedeChain = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(
+		afterSupersedeChain,
+		/third gamma/,
+		"E1: supersede chain without idle gap clears superseded pending so later external view(a1) never resurrects a1",
+	);
+	chainSwitcher.dispose();
 	switcher.dispose();
 });
 

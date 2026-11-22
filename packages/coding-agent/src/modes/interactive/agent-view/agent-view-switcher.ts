@@ -179,7 +179,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		const releaseScreen = this.releaseScreen;
 		this.releaseScreen = undefined;
 		const settled = previous === undefined ? undefined : { taskId: previous, outcome };
-		if (taskId === undefined && settled !== undefined) {
+		if (settled !== undefined && (taskId === undefined || settled.outcome === "superseded")) {
 			settleStoreTasksReturn(ownerTaskStoreForBridge(this), this.viewedTaskId());
 		}
 		for (const listener of [...this.pendingListeners]) {
