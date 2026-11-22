@@ -1586,12 +1586,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		let notices: ReleaseNotices | undefined;
 		let holding = false;
 		try {
-			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named.
-			await this.holderRecord?.trying();
-			// Writers already waiting in other processes go first.
+			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named. The writers'
+			// queue is looked at meanwhile, so the two file system calls cost one wait for its threads instead of two.
 			const queue = this.writeQueue;
 			queue?.observe();
-			if (queue !== undefined && (await queue.contendedOffLoop())) {
+			const [, contended] = await Promise.all([this.holderRecord?.trying(), queue?.contendedOffLoop()]);
+			// Writers already waiting in other processes go first.
+			if (queue !== undefined && contended === true) {
 				const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
 				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}
