@@ -1316,10 +1316,10 @@ class IntercomBroker {
                 if (claimed.status === "granted")
                   void multiNode.releaseOwner({ intercomSessionId: claimed.grant.sessionId, token: claimed.grant.token });
                 else if (claimed.status === "unanswered")
-                  void multiNode.releaseOwner({
-                    intercomSessionId: claimed.unanswered.sessionId,
-                    token: claimed.unanswered.token,
-                  });
+                  void multiNode.releaseOwner(
+                    { intercomSessionId: claimed.unanswered.sessionId, token: claimed.unanswered.token },
+                    claimed.unanswered.claim,
+                  );
               };
               if (socket.destroyed || socket.writableEnded) {
                 giveBack();

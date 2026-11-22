@@ -250,6 +250,7 @@ export function createRpcCommandHandler({
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
 						...(typeof command.queuedMessageId === "string" ? { queuedMessageId: command.queuedMessageId } : {}),
+						...(typeof command.originSendId === "string" ? { originSendId: command.originSendId } : {}),
 						source: "rpc",
 						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {

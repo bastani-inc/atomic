@@ -101,6 +101,23 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	fallback?: ModelFallbackRecord;
 }
 
+/**
+ * Per-axis lookup result for the active branch's latest setting change after a given sequence position:
+ * - `"found"`: the latest active-branch change after `afterSeq` is held in memory at `seq`.
+ * - `"none"`: the manager vouches that no active-branch change of this axis exists after `afterSeq`.
+ * - `"not-held"`: partial history or an unvouched resume plan omitted entries that could carry a change after `afterSeq`.
+ */
+export type LatestBranchSetting<T extends SessionEntry> =
+	| { readonly status: "found"; readonly entry: T; readonly seq: number }
+	| { readonly status: "none" }
+	| { readonly status: "not-held" };
+
+/** Per-axis result of `SessionManager.getLatestBranchSettingsWithProvenance(afterSeq)`. */
+export interface LatestBranchSettings {
+	readonly model: LatestBranchSetting<ModelChangeEntry>;
+	readonly thinkingLevel: LatestBranchSetting<ThinkingLevelChangeEntry>;
+}
+
 export interface UsageEntry extends SessionEntryBase {
 	type: "usage";
 	kind: string;
