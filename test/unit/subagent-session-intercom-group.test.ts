@@ -80,13 +80,13 @@ test("a real foreground subagent inherits its parent’s group and stays outside
 		childGroups.push(options.intercomGroup);
 		return { agent, task, status: "ok", messages: [], usage, finalOutput: "done" };
 	};
-	const pi: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
+	const atomic: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
 		events: { on: () => () => {}, emit: () => {} },
 		getSessionName: () => "parent-session",
 	};
 	try {
 		const executor = createSubagentExecutor({
-			pi: pi as ExecutorDeps["pi"],
+			pi: atomic as ExecutorDeps["pi"],
 			state: makeState(),
 			config: { parallel: { concurrency: 2, maxTasks: 10 } },
 			tempArtifactsDir: join(root, "artifacts"),

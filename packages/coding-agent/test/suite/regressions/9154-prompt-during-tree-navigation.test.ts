@@ -39,14 +39,14 @@ describe("pi #9154: prompt during tree navigation", () => {
 		const treeReleased = deferred();
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const pause = async () => {
 						promptStarted.resolve();
 						await promptReleased.promise;
 					};
-					if (hook === "input") pi.on("input", pause);
-					else pi.on("before_agent_start", pause);
-					pi.on("session_before_tree", async () => {
+					if (hook === "input") atomic.on("input", pause);
+					else atomic.on("before_agent_start", pause);
+					atomic.on("session_before_tree", async () => {
 						treeStarted.resolve();
 						await treeReleased.promise;
 					});
@@ -87,8 +87,8 @@ describe("pi #9154: prompt during tree navigation", () => {
 			const harness = await createHarness({
 				withConfiguredAuth: outcome !== "rejected",
 				extensionFactories: [
-					(pi) => {
-						if (outcome === "handled") pi.on("input", async () => ({ action: "handled" }));
+					(atomic) => {
+						if (outcome === "handled") atomic.on("input", async () => ({ action: "handled" }));
 					},
 				],
 			});
@@ -106,8 +106,8 @@ describe("pi #9154: prompt during tree navigation", () => {
 		const released = deferred();
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("input", async (event) => {
+				(atomic) => {
+					atomic.on("input", async (event) => {
 						if (event.text === "waiting prompt") {
 							started.resolve();
 							await released.promise;
@@ -141,9 +141,9 @@ describe("pi #9154: prompt during tree navigation", () => {
 			const released = deferred();
 			const harness = await createHarness({
 				extensionFactories: [
-					(pi) => {
-						pi.registerCommand("noop", { handler: async () => {} });
-						pi.on("input", async (event) => {
+					(atomic) => {
+						atomic.registerCommand("noop", { handler: async () => {} });
+						atomic.on("input", async (event) => {
 							if (event.text !== "waiting prompt") return { action: "continue" };
 							started.resolve();
 							await released.promise;
@@ -175,8 +175,8 @@ describe("pi #9154: prompt during tree navigation", () => {
 		const errors: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_tree", async () => {
+				(atomic) => {
+					atomic.on("session_tree", async () => {
 						await harness.session.sendUserMessage("continue on the selected branch");
 					});
 				},
@@ -199,14 +199,14 @@ describe("pi #9154: prompt during tree navigation", () => {
 		let continuation: Promise<unknown> | undefined;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_tree", async (event) => {
+				(atomic) => {
+					atomic.on("session_before_tree", async (event) => {
 						if (event.preparation.targetId === nextTargetId) {
 							started.resolve();
 							await released.promise;
 						}
 					});
-					pi.on("session_tree", () => {
+					atomic.on("session_tree", () => {
 						continuation ??= harness.session.navigateTree(nextTargetId).then(
 							() => undefined,
 							(error: unknown) => error,
@@ -238,8 +238,8 @@ describe("pi #9154: prompt during tree navigation", () => {
 		const reasonsDuringNavigation: Array<string | undefined> = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_tree", async () => {
+				(atomic) => {
+					atomic.on("session_before_tree", async () => {
 						reasonsDuringNavigation.push(harness.session.compactionReason);
 						return { cancel: true };
 					});
@@ -268,13 +268,13 @@ describe("pi #9154: prompt during tree navigation", () => {
 		let navigated = false;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const navigate = async () => {
 						await harness.session.navigateTree(targetId);
 						navigated = true;
 					};
-					if (event === "command") pi.registerCommand("rewind", { handler: navigate });
-					else pi.on("agent_settled", navigate);
+					if (event === "command") atomic.registerCommand("rewind", { handler: navigate });
+					else atomic.on("agent_settled", navigate);
 				},
 			],
 		});

@@ -41,26 +41,26 @@ for (const origin of ["inherited-pi", "bundled"] as const) {
 			for (const name of candidate.tools.keys()) registryTools.add(name);
 			activeTools = [...new Set([...activeTools, ...additions])];
 		};
-		const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		const { api: atomic } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 		let sawTool = false;
 		let sawCommand = false;
 		let sawActiveTool = false;
-		pi.on("session_start", async () => {
-			pi.registerFlag("unique-flag", { type: "string", default: "ready" });
-			pi.registerTool({ name: "unique-tool", parameters: {} as never, execute: async () => ({ content: [] }) });
-			pi.registerCommand("unique-command", { handler: async () => {} });
-			sawTool = pi.getAllTools().some((tool) => tool.name === "unique-tool");
-			sawCommand = pi.getCommands().some((command) => command.name === "unique-command");
-			sawActiveTool = pi.getActiveTools().includes("unique-tool");
-			pi.setActiveTools([]);
-			pi.registerTool({
+		atomic.on("session_start", async () => {
+			atomic.registerFlag("unique-flag", { type: "string", default: "ready" });
+			atomic.registerTool({ name: "unique-tool", parameters: {} as never, execute: async () => ({ content: [] }) });
+			atomic.registerCommand("unique-command", { handler: async () => {} });
+			sawTool = atomic.getAllTools().some((tool) => tool.name === "unique-tool");
+			sawCommand = atomic.getCommands().some((command) => command.name === "unique-command");
+			sawActiveTool = atomic.getActiveTools().includes("unique-tool");
+			atomic.setActiveTools([]);
+			atomic.registerTool({
 				name: "tool-after-selection",
 				parameters: {} as never,
 				execute: async () => ({ content: [] }),
 			});
-			sawActiveTool = sawActiveTool && pi.getActiveTools().includes("tool-after-selection");
-			if (pi.getFlag("unique-flag") === "ready")
-				pi.registerCommand("conditional-command", { handler: async () => {} });
+			sawActiveTool = sawActiveTool && atomic.getActiveTools().includes("tool-after-selection");
+			if (atomic.getFlag("unique-flag") === "ready")
+				atomic.registerCommand("conditional-command", { handler: async () => {} });
 		});
 		const result = { extensions: [candidate], errors: [], runtime };
 		resolveInheritedExtensionOverlaps(result);
@@ -77,7 +77,7 @@ for (const origin of ["inherited-pi", "bundled"] as const) {
 test("preserves constrainedSampling own-property state in staged inherited inspection", () => {
 	const runtime = createExtensionRuntime();
 	const candidate = extension("sampling", "inherited-pi");
-	const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+	const { api: atomic } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 	const grammar = {
 		type: "grammar" as const,
 		variants: { openai_lark: 'start: "α" | "β"\n', openai_regex: "^(a|a)$" },
@@ -92,7 +92,7 @@ test("preserves constrainedSampling own-property state in staged inherited inspe
 			{ name: "grammar", constrainedSampling: grammar },
 		];
 		for (const registration of registrations) {
-			pi.registerTool({
+			atomic.registerTool({
 				...registration,
 				label: registration.name,
 				description: registration.name,
@@ -118,12 +118,12 @@ test("keeps original event order while committing only the bundled collision win
 	const trace: string[] = [];
 	let inheritedObserved: boolean | string | undefined;
 	for (const candidate of [inherited, bundled]) {
-		const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
-		pi.on("session_start", async () => {
+		const { api: atomic } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		atomic.on("session_start", async () => {
 			trace.push(candidate.sourceInfo.configurationOrigin ?? "missing");
-			pi.registerFlag("shared", { type: "string", default: candidate.path });
-			if (candidate === inherited) inheritedObserved = pi.getFlag("shared");
-			pi.registerCommand("shared", { handler: async () => {} });
+			atomic.registerFlag("shared", { type: "string", default: candidate.path });
+			if (candidate === inherited) inheritedObserved = atomic.getFlag("shared");
+			atomic.registerCommand("shared", { handler: async () => {} });
 		});
 	}
 	const result = { extensions: [inherited, bundled], errors: [], runtime };
@@ -154,26 +154,26 @@ test("preserves first-registration views across pending inherited duplicates", a
 	let secondView: Array<boolean | string | undefined> = [];
 	let secondCommands: string[] = [];
 	for (const candidate of extensions) {
-		const { api: pi } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
-		pi.on("session_start", async () => {
-			pi.registerFlag("shared", { type: "string", default: candidate.path });
-			pi.registerTool({
+		const { api: atomic } = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		atomic.on("session_start", async () => {
+			atomic.registerFlag("shared", { type: "string", default: candidate.path });
+			atomic.registerTool({
 				name: "shared",
 				description: candidate.path,
 				parameters: {} as never,
 				execute: async () => ({ content: [] }),
 			});
-			pi.registerCommand("shared", { description: candidate.path, handler: async () => {} });
+			atomic.registerCommand("shared", { description: candidate.path, handler: async () => {} });
 			if (candidate === first) {
-				pi.registerFlag("repeated", { type: "string", default: "first-default" });
-				pi.registerFlag("repeated", { type: "string", default: "second-default" });
+				atomic.registerFlag("repeated", { type: "string", default: "first-default" });
+				atomic.registerFlag("repeated", { type: "string", default: "second-default" });
 			} else {
 				secondView = [
-					pi.getFlag("shared"),
-					pi.getAllTools().find((tool) => tool.name === "shared")?.description,
-					pi.getCommands().find((command) => command.description === "first")?.description,
+					atomic.getFlag("shared"),
+					atomic.getAllTools().find((tool) => tool.name === "shared")?.description,
+					atomic.getCommands().find((command) => command.description === "first")?.description,
 				];
-				secondCommands = pi.getCommands().map((command) => `${command.name}:${command.description}`);
+				secondCommands = atomic.getCommands().map((command) => `${command.name}:${command.description}`);
 			}
 		});
 	}

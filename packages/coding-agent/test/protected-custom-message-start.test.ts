@@ -11,8 +11,8 @@ test.each(["followUp", "steer"] as const)(
 		const requests: TranscriptContext[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("before_agent_start", (event) => {
+				(atomic) => {
+					atomic.on("before_agent_start", (event) => {
 						if (event.messageType === "custom" && typeof event.message.content === "string")
 							starters.push(event.message.content);
 						return {

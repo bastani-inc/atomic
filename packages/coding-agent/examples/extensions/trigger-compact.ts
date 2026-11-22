@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 
 const COMPACT_THRESHOLD_TOKENS = 100_000;
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	let previousTokens: number | null | undefined;
 
 	const triggerCompaction = (ctx: ExtensionContext, instructions?: string) => {
@@ -25,7 +25,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	};
 
-	pi.on("turn_end", (_event, ctx) => {
+	atomic.on("turn_end", (_event, ctx) => {
 		const usage = ctx.getContextUsage();
 		const currentTokens = usage?.tokens ?? null;
 		if (currentTokens === null) {
@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 		triggerCompaction(ctx);
 	});
 
-	pi.registerCommand("trigger-compact", {
+	atomic.registerCommand("trigger-compact", {
 		description: "Trigger compaction immediately; optional instructions say what to recover first",
 		handler: async (args, ctx) => {
 			triggerCompaction(ctx, args.trim() || undefined);

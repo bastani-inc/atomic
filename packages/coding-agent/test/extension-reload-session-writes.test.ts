@@ -28,12 +28,12 @@ for (const outcome of ["startup-rejection", "publication-rejection", "success"] 
 		const baseline = manager.getEntries();
 		let isolatedDuringStartup = false;
 		let reopenedStore: JsonlSessionStore | undefined;
-		const factory: ExtensionFactory = (pi) => {
-			pi.on("session_start", async () => {
-				await pi.appendEntry("candidate entry", { saved: true });
-				await pi.setSessionName("candidate name");
-				await pi.setLabel(target, "candidate label");
-				await pi.appendEntry("candidate tail", { saved: true });
+		const factory: ExtensionFactory = (atomic) => {
+			atomic.on("session_start", async () => {
+				await atomic.appendEntry("candidate entry", { saved: true });
+				await atomic.setSessionName("candidate name");
+				await atomic.setLabel(target, "candidate label");
+				await atomic.appendEntry("candidate tail", { saved: true });
 				isolatedDuringStartup =
 					manager.getEntries().length === baseline.length &&
 					harness.eventsOfType("entry_appended").length === 0 &&

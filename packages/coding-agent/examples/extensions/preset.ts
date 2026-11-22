@@ -106,14 +106,14 @@ interface OriginalState {
 	tools: string[];
 }
 
-export default function presetExtension(pi: ExtensionAPI) {
+export default function presetExtension(atomic: ExtensionAPI) {
 	let presets: PresetsConfig = {};
 	let activePresetName: string | undefined;
 	let activePreset: Preset | undefined;
 	let originalState: OriginalState | undefined;
 
 	// Register --preset CLI flag
-	pi.registerFlag("preset", {
+	atomic.registerFlag("preset", {
 		description: "Preset configuration to use",
 		type: "string",
 	});
@@ -126,8 +126,8 @@ export default function presetExtension(pi: ExtensionAPI) {
 		if (activePresetName === undefined) {
 			originalState = {
 				model: ctx.model,
-				thinkingLevel: pi.getThinkingLevel(),
-				tools: pi.getActiveTools(),
+				thinkingLevel: atomic.getThinkingLevel(),
+				tools: atomic.getActiveTools(),
 			};
 		}
 
@@ -135,7 +135,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 		if (preset.provider && preset.model) {
 			const model = ctx.modelRegistry.find(preset.provider, preset.model);
 			if (model) {
-				const success = await pi.setModel(model);
+				const success = await atomic.setModel(model);
 				if (!success) {
 					ctx.ui.notify(`Preset "${name}": No API key for ${preset.provider}/${preset.model}`, "warning");
 				}
@@ -146,12 +146,12 @@ export default function presetExtension(pi: ExtensionAPI) {
 
 		// Apply thinking level if specified
 		if (preset.thinkingLevel) {
-			await pi.setThinkingLevel(preset.thinkingLevel);
+			await atomic.setThinkingLevel(preset.thinkingLevel);
 		}
 
 		// Apply tools if specified
 		if (preset.tools && preset.tools.length > 0) {
-			const allToolNames = pi.getAllTools().map((t) => t.name);
+			const allToolNames = atomic.getAllTools().map((t) => t.name);
 			const validTools = preset.tools.filter((t) => allToolNames.includes(t));
 			const invalidTools = preset.tools.filter((t) => !allToolNames.includes(t));
 
@@ -160,7 +160,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 			}
 
 			if (validTools.length > 0) {
-				pi.setActiveTools(validTools);
+				atomic.setActiveTools(validTools);
 			}
 		}
 
@@ -275,12 +275,12 @@ export default function presetExtension(pi: ExtensionAPI) {
 			// Clear preset and restore original state
 			if (originalState) {
 				if (originalState.model) {
-					await pi.setModel(originalState.model);
+					await atomic.setModel(originalState.model);
 				}
-				await pi.setThinkingLevel(originalState.thinkingLevel);
-				pi.setActiveTools(originalState.tools);
+				await atomic.setThinkingLevel(originalState.thinkingLevel);
+				atomic.setActiveTools(originalState.tools);
 			} else {
-				pi.setActiveTools(["read", "bash", "edit", "write"]);
+				atomic.setActiveTools(["read", "bash", "edit", "write"]);
 			}
 			activePresetName = undefined;
 			activePreset = undefined;
@@ -331,12 +331,12 @@ export default function presetExtension(pi: ExtensionAPI) {
 		if (nextName === "(none)") {
 			if (originalState) {
 				if (originalState.model) {
-					await pi.setModel(originalState.model);
+					await atomic.setModel(originalState.model);
 				}
-				await pi.setThinkingLevel(originalState.thinkingLevel);
-				pi.setActiveTools(originalState.tools);
+				await atomic.setThinkingLevel(originalState.thinkingLevel);
+				atomic.setActiveTools(originalState.tools);
 			} else {
-				pi.setActiveTools(["read", "bash", "edit", "write"]);
+				atomic.setActiveTools(["read", "bash", "edit", "write"]);
 			}
 			activePresetName = undefined;
 			activePreset = undefined;
@@ -353,7 +353,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 		updateStatus(ctx);
 	}
 
-	pi.registerShortcut(Key.ctrlShift("u"), {
+	atomic.registerShortcut(Key.ctrlShift("u"), {
 		description: "Cycle presets",
 		handler: async (ctx) => {
 			await cyclePreset(ctx);
@@ -361,7 +361,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 	});
 
 	// Register /preset command
-	pi.registerCommand("preset", {
+	atomic.registerCommand("preset", {
 		description: "Switch preset configuration",
 		handler: async (args, ctx) => {
 			// If preset name provided, apply directly
@@ -387,7 +387,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 	});
 
 	// Inject preset instructions into system prompt
-	pi.on("before_agent_start", async (event) => {
+	atomic.on("before_agent_start", async (event) => {
 		if (activePreset?.instructions) {
 			return {
 				systemPrompt: `${event.systemPrompt}\n\n${activePreset.instructions}`,
@@ -396,12 +396,12 @@ export default function presetExtension(pi: ExtensionAPI) {
 	});
 
 	// Initialize on session start
-	pi.on("session_start", async (_event, ctx) => {
+	atomic.on("session_start", async (_event, ctx) => {
 		// Load presets from config files
 		presets = loadPresets(ctx.cwd, ctx.isProjectTrusted());
 
 		// Check for --preset flag
-		const presetFlag = pi.getFlag("preset");
+		const presetFlag = atomic.getFlag("preset");
 		if (typeof presetFlag === "string" && presetFlag) {
 			const preset = presets[presetFlag];
 			if (preset) {
@@ -432,9 +432,9 @@ export default function presetExtension(pi: ExtensionAPI) {
 	});
 
 	// Persist preset state
-	pi.on("turn_start", async () => {
+	atomic.on("turn_start", async () => {
 		if (activePresetName) {
-			await pi.appendEntry("preset-state", { name: activePresetName });
+			await atomic.appendEntry("preset-state", { name: activePresetName });
 		}
 	});
 }

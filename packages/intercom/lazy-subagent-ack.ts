@@ -4,7 +4,7 @@ const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 
 export function rejectLazyResultRelay(
-  pi: ExtensionAPI,
+  atomic: ExtensionAPI,
   eventName: string,
   payload: unknown,
   error: unknown,
@@ -13,7 +13,7 @@ export function rejectLazyResultRelay(
   const requestId = (payload as { requestId?: unknown }).requestId;
   if (typeof requestId !== "string") return;
   try {
-    pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
+    atomic.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
       requestId,
       delivered: false,
       error: error instanceof Error ? error.message : String(error),

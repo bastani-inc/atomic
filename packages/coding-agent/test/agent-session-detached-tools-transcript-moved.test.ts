@@ -34,8 +34,8 @@ const NOTIFICATION = { customType: "subagent-notify", content: "child finished",
 const NOTIFICATION_OPTIONS = { triggerTurn: true, stageAdmissionKey: "subagent:child-1" } as const;
 
 /** Stands in for the compaction planner: every compaction keeps this text. */
-const compactedText: ExtensionFactory = (pi) => {
-	pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
+const compactedText: ExtensionFactory = (atomic) => {
+	atomic.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
 };
 
 function lines(count: number, characters: number): string {

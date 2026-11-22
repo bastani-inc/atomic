@@ -112,10 +112,10 @@ it("candidate tool inspection and activation honor permissions and remain isolat
 		settingsManager,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				if (!candidate) return;
 				for (const name of ["candidate_tool", "excluded_tool", "unlisted_tool", "hidden_tool"]) {
-					pi.registerTool({
+					atomic.registerTool({
 						name,
 						label: name,
 						description: name,
@@ -125,10 +125,10 @@ it("candidate tool inspection and activation honor permissions and remain isolat
 						execute: async () => ({ content: [], details: {} }),
 					});
 				}
-				pi.on("session_start", async () => {
-					candidateTools = pi.getAllTools().map((tool) => tool.name);
-					pi.setActiveTools(["read", "candidate_tool", "excluded_tool", "unlisted_tool", "hidden_tool"]);
-					candidateActive = pi.getActiveTools();
+				atomic.on("session_start", async () => {
+					candidateTools = atomic.getAllTools().map((tool) => tool.name);
+					atomic.setActiveTools(["read", "candidate_tool", "excluded_tool", "unlisted_tool", "hidden_tool"]);
+					candidateActive = atomic.getActiveTools();
 					entered();
 					await gate;
 					if (rejectCandidate) throw new Error("reject successor after discovery");

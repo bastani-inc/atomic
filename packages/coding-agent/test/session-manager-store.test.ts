@@ -462,8 +462,8 @@ test("extension entry events and the visible index wait for commit and stay unch
 	const harness = await createHarness({
 		sessionManager: manager,
 		extensionFactories: [
-			(pi) => {
-				api = pi;
+			(atomic) => {
+				api = atomic;
 			},
 		],
 	});
@@ -507,8 +507,8 @@ test("session disposal waits for an admitted extension entry to commit", async (
 	const harness = await createHarness({
 		sessionManager: manager,
 		extensionFactories: [
-			(pi) => {
-				api = pi;
+			(atomic) => {
+				api = atomic;
 			},
 		],
 	});
@@ -545,8 +545,8 @@ test("message transformations precede commit while public completion waits for d
 	const harness = await createHarness({
 		sessionManager: manager,
 		extensionFactories: [
-			(pi) => {
-				pi.on("message_end", (event) => {
+			(atomic) => {
+				atomic.on("message_end", (event) => {
 					if (event.message.role !== "user") return;
 					transformed++;
 					return { message: { ...event.message, content: "transformed" } };
@@ -797,8 +797,8 @@ test.each(["user", "custom"] as const)(
 		const harness = await createHarness({
 			sessionManager: manager,
 			extensionFactories: [
-				(pi) => {
-					pi.on("before_agent_start", async () => {
+				(atomic) => {
+					atomic.on("before_agent_start", async () => {
 						if (!prepareBash) return;
 						prepareBash = false;
 						harness.session.agent.state.isStreaming = true;

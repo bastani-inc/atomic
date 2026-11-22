@@ -20,8 +20,8 @@ fulfilled.then = (...args) => {
 		throw new Error("observer cleanup failed");
 	});
 };
-const factory = (pi) => llamaExtension({
-	...pi,
+const factory = (atomic) => llamaExtension({
+	...atomic,
 	registerProvider() {
 		calls.push("provider");
 		return independent ? Promise.reject(providerError) : fulfilled;

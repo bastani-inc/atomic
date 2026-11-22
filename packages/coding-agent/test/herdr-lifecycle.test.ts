@@ -146,15 +146,17 @@ test("real compaction and continued prompts retain pane authority until quit", a
 		],
 		extensionFactories: [
 			createHerdrExtension({ env: fake.env, enabled: () => true }),
-			(pi) => {
-				pi.on("session_start", () => {
+			(atomic) => {
+				atomic.on("session_start", () => {
 					lifecycle.push("start");
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					lifecycle.push("shutdown");
 				});
-				pi.on("session_before_compact", (event) => ({ compactedText: event.preparation.region.lines.join("\n") }));
-				pi.on("session_compact", () => {
+				atomic.on("session_before_compact", (event) => ({
+					compactedText: event.preparation.region.lines.join("\n"),
+				}));
+				atomic.on("session_compact", () => {
 					lifecycle.push("compact");
 				});
 			},

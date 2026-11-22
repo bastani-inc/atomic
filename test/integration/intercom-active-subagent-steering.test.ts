@@ -53,13 +53,13 @@ async function childHarness(
 			executionEnded: ended.signal,
 		},
 		extensionFactories: [
-			(pi) => {
-				intercomHeavy(pi, {
+			(atomic) => {
+				intercomHeavy(atomic, {
 					captureInboundHandler: (handler) => {
 						inbound = handler;
 					},
 				});
-				pi.on("session_start", (_event, ctx) => {
+				atomic.on("session_start", (_event, ctx) => {
 					context = ctx;
 				});
 			},
@@ -140,8 +140,8 @@ test("Intercom arriving during the original child prompt preflight cannot start 
 	const current = await childHarness(
 		[],
 		[
-			(pi) => {
-				pi.on("before_agent_start", async () => {
+			(atomic) => {
+				atomic.on("before_agent_start", async () => {
 					preflight.resolve();
 					await release.promise;
 				});
@@ -178,8 +178,8 @@ test("the child task drains an Intercom delivery admitted at native settlement b
 	const current = await childHarness(
 		[],
 		[
-			(pi) => {
-				pi.on("agent_settled", () => {
+			(atomic) => {
+				atomic.on("agent_settled", () => {
 					if (sent) return;
 					sent = true;
 					void current.deliver();
@@ -227,8 +227,8 @@ test("cancellation during tool-safe admission cannot restart the child to consum
 	const current = await childHarness(
 		[tool],
 		[
-			(pi) => {
-				pi.on("tool_execution_start", async () => {
+			(atomic) => {
+				atomic.on("tool_execution_start", async () => {
 					await releaseEvent.promise;
 				});
 			},
@@ -287,8 +287,8 @@ test("multiple arrivals stay FIFO and deduplicated across the active-tool to mod
 	const current = await childHarness(
 		[tool],
 		[
-			(pi) => {
-				pi.on("tool_execution_start", async () => {
+			(atomic) => {
+				atomic.on("tool_execution_start", async () => {
 					await releaseEvent.promise;
 				});
 			},
@@ -358,8 +358,8 @@ test("steering remains open during a model continuation admitted at the child's 
 	const current = await childHarness(
 		[],
 		[
-			(pi) => {
-				pi.on("agent_settled", () => {
+			(atomic) => {
+				atomic.on("agent_settled", () => {
 					if (sent) return;
 					sent = true;
 					void current.deliver({ ...amendment, id: "settlement-first" });
@@ -402,8 +402,8 @@ test("cancellation during child preflight holds admitted steering without starti
 	const current = await childHarness(
 		[],
 		[
-			(pi) => {
-				pi.on("before_agent_start", async () => {
+			(atomic) => {
+				atomic.on("before_agent_start", async () => {
 					preflight.resolve();
 					await release.promise;
 				});

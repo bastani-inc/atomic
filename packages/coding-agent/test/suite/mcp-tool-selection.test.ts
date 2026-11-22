@@ -17,9 +17,9 @@ describe("MCP-aware tool selection", () => {
 				...selection,
 				initialActiveToolNames: selection.allowedToolNames,
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						for (const name of [...mcpTools, "codemode"])
-							pi.registerTool({
+							atomic.registerTool({
 								name,
 								label: name,
 								description: name,

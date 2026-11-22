@@ -12,13 +12,13 @@ import { z } from "zod";
 
 function captureTools() {
 	const tools = new Map<string, ToolDefinition>();
-	const pi = {
+	const atomic = {
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		on: () => () => {},
 		registerShortcut: () => {},
 		registerCommand: () => {},
 	} as Pick<ExtensionAPI, "registerTool" | "on" | "registerShortcut" | "registerCommand"> as ExtensionAPI;
-	return { tools, pi };
+	return { tools, pi: atomic };
 }
 
 test("lazy and heavy code_search schemas agree and the registered tool completes an SDK HTTP session", async () => {
@@ -26,13 +26,13 @@ test("lazy and heavy code_search schemas agree and the registered tool completes
 	const { default: webAccess } = (await import(
 		new URL("../../packages/web-access/index.ts", import.meta.url).href
 	)) as {
-		default: (pi: ExtensionAPI) => void;
+		default: (atomic: ExtensionAPI) => void;
 	};
 	const { registerContentTools } = (await import(
 		new URL("../../packages/web-access/content-tools.ts", import.meta.url).href
 	)) as {
 		registerContentTools: (
-			pi: ExtensionAPI,
+			atomic: ExtensionAPI,
 			deps: { maxInlineContent: number; stripThumbnails: () => never[]; formatFullResults: () => string },
 		) => void;
 	};

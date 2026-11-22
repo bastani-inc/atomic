@@ -25,9 +25,9 @@ async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
   await release[id - 2].promise;
   if ((outcome === "failure" && id === 2) || outcome === "both-fail") throw new Error(`factory ${id} failed`);
  }
- const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [pi => {
-  pi.on("session_start", () => { active.add(id); if (outcome === "startup" && id === 2) throw new Error("candidate startup failed"); });
-  pi.on("session_shutdown", () => { active.delete(id); if (outcome === "cleanup" && id === 3) throw new Error("displaced cleanup failed"); });
+ const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [atomic => {
+  atomic.on("session_start", () => { active.add(id); if (outcome === "startup" && id === 2) throw new Error("candidate startup failed"); });
+  atomic.on("session_shutdown", () => { active.delete(id); if (outcome === "cleanup" && id === 3) throw new Error("displaced cleanup failed"); });
  }] });
  await resourceLoader.reload();
  const result = await createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, resourceLoader, sessionManager, sessionStartEvent, builtins: { subagents: false, mcp: false, intercom: false, "web-access": false } });

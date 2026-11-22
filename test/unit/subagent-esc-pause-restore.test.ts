@@ -84,7 +84,7 @@ function parentSession(
 	options: { beforeAppend?: (data: SubagentChildRecord | undefined) => Promise<boolean> } = {},
 ) {
 	const sessionManager = SessionManager.inMemory(cwd);
-	const pi = {
+	const atomic = {
 		events: { on: () => () => {}, emit() {} },
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
 			if (options.beforeAppend !== undefined && !(await options.beforeAppend(data))) return;
@@ -102,7 +102,7 @@ function parentSession(
 			thinkingLevel: undefined,
 		}) as unknown as ExtensionContext;
 	const latest = (childId: string) => readSubagentChildRecords(sessionManager.getEntries()).get(childId);
-	return { sessionManager, pi, ctx, latest };
+	return { sessionManager, pi: atomic, ctx, latest };
 }
 
 function transcriptOf(host: AgentTaskHost, taskId: string): TaskTranscriptSource | undefined {

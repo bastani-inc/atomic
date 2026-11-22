@@ -14,12 +14,12 @@ export function heavyToolCallMayDetach(toolName: string, params: { readonly acti
 }
 
 export async function appendEntryUnlessReleased<T>(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	customType: string,
 	data: T,
 ): Promise<"appended" | "released"> {
 	try {
-		await pi.appendEntry(customType, data);
+		await atomic.appendEntry(customType, data);
 		return "appended";
 	} catch (error) {
 		if (isStaleExtensionContextError(error)) return "released";

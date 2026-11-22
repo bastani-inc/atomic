@@ -51,8 +51,8 @@ async function sessionEvents(options?: {
 	const h = await createHarness({
 		tools: [tool],
 		extensionFactories: [
-			(pi) => {
-				pi.on("message_end", async (event) => {
+			(atomic) => {
+				atomic.on("message_end", async (event) => {
 					if (event.message.role === "user" && getMessageText(event.message) === "queued while it worked")
 						await options?.onQueuedSave();
 				});

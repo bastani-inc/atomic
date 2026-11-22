@@ -233,7 +233,7 @@ function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): Bas
 		},
 	};
 }
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	const localCwd = process.cwd();
 	const workspace = new RealFSProvider(localCwd);
 	const localRead = createReadTool(localCwd);
@@ -284,11 +284,11 @@ export default function (pi: ExtensionAPI) {
 		}
 		return vmStarting;
 	}
-	pi.on("session_start", async (_event, ctx) => {
+	atomic.on("session_start", async (_event, ctx) => {
 		fileTools = undefined;
 		await ensureVm(ctx);
 	});
-	pi.on("session_shutdown", async (_event, ctx) => {
+	atomic.on("session_shutdown", async (_event, ctx) => {
 		fileTools = undefined;
 		const activeVm = vm;
 		vm = undefined;
@@ -301,7 +301,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("gondolin", undefined);
 		}
 	});
-	pi.registerCommand("gondolin", {
+	atomic.registerCommand("gondolin", {
 		description: "Show Gondolin VM status",
 		handler: async (_args, ctx) => {
 			const activeVm = await ensureVm(ctx);
@@ -316,7 +316,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		},
 	});
-	pi.registerTool({
+	atomic.registerTool({
 		...localRead,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const activeVm = await ensureVm(ctx);
@@ -325,7 +325,7 @@ export default function (pi: ExtensionAPI) {
 				.execute(id, params, signal, onUpdate);
 		},
 	});
-	pi.registerTool({
+	atomic.registerTool({
 		...localWrite,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const activeVm = await ensureVm(ctx);
@@ -334,7 +334,7 @@ export default function (pi: ExtensionAPI) {
 				.execute(id, params, signal, onUpdate);
 		},
 	});
-	pi.registerTool({
+	atomic.registerTool({
 		...localEdit,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const activeVm = await ensureVm(ctx);
@@ -343,7 +343,7 @@ export default function (pi: ExtensionAPI) {
 				.execute(id, params, signal, onUpdate);
 		},
 	});
-	pi.registerTool({
+	atomic.registerTool({
 		...localBash,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const activeVm = await ensureVm(ctx);
@@ -353,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-	pi.registerTool({
+	atomic.registerTool({
 		...localLs,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const activeVm = await ensureVm(ctx);
@@ -363,7 +363,7 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-	pi.registerTool({
+	atomic.registerTool({
 		...localFind,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const activeVm = await ensureVm(ctx);
@@ -373,11 +373,11 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-	pi.on("user_bash", async (_event, ctx) => {
+	atomic.on("user_bash", async (_event, ctx) => {
 		const activeVm = await ensureVm(ctx);
 		return { operations: createGondolinBashOps(activeVm, localCwd, shellPath) };
 	});
-	pi.on("before_agent_start", async (event, ctx) => {
+	atomic.on("before_agent_start", async (event, ctx) => {
 		await ensureVm(ctx);
 		const localLine = `Current working directory: ${localCwd}`;
 		const guestLine = `Current working directory: ${GUEST_WORKSPACE} (Gondolin VM; host workspace mounted from ${localCwd})`;

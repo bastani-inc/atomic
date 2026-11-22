@@ -25,8 +25,8 @@ import type { SingleResult, SubagentDetails } from "./types.js";
 
 const MAX_CONCURRENCY = 4;
 
-export default function (pi: ExtensionAPI) {
-	pi.registerTool({
+export default function (atomic: ExtensionAPI) {
+	atomic.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description: [

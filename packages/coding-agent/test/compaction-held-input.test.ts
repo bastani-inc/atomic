@@ -66,8 +66,8 @@ describe("input held while the session compacts", () => {
 	test("holds input that an input hook sends while the session compacts (#4251)", async () => {
 		let session: AgentSession | undefined;
 		const { harness, releaseCompaction } = await createCompactingSession([
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text !== "outer") return { action: "continue" };
 					// The hook waits for the input it sends; that input must still wait for compaction.
 					await session?.prompt("nested", { streamingBehavior: "steer" });

@@ -50,7 +50,7 @@ interface WebSearchTool {
 }
 
 interface WebSearchFeaturesModule {
-	registerWebSearchFeatures(pi: ExtensionAPI, initConfig: Record<string, never>): void;
+	registerWebSearchFeatures(atomic: ExtensionAPI, initConfig: Record<string, never>): void;
 }
 
 // vi.importActual keeps the web-access sources out of the root typecheck, as in the other web-search suites.

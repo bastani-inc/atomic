@@ -63,8 +63,8 @@ test("persisted model selection mirrors the saved default model and scope when m
 			{ id: "chosen", reasoning: true },
 		],
 		engineExtensions: [
-			(pi) => {
-				pi.on("model_select", async (event) => {
+			(atomic) => {
+				atomic.on("model_select", async (event) => {
 					if (event.model.id === "chosen") await switchBack();
 				});
 			},

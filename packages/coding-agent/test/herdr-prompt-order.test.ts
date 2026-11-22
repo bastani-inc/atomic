@@ -25,8 +25,8 @@ test("a slow prompt observer cannot leave Herdr blocked after the user answers",
 	const observer = deferred<void>();
 	const answer = deferred<boolean>();
 	const slow = await loadExtensionFromFactory(
-		(pi) => {
-			pi.on("ui_prompt_start", () => {
+		(atomic) => {
+			atomic.on("ui_prompt_start", () => {
 				observerEntered.resolve();
 				return observer.promise;
 			});
@@ -85,7 +85,7 @@ test("the shipped /agents browser is navigation, not a user-decision wait", asyn
 		"herdr",
 	);
 	const catalog = await loadExtensionFromFactory(
-		(pi) => registerSlashCommands(pi, {} as never),
+		(atomic) => registerSlashCommands(atomic, {} as never),
 		fake.dir,
 		createEventBus(),
 		runtime,

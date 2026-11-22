@@ -12,11 +12,11 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function pirateExtension(pi: ExtensionAPI) {
+export default function pirateExtension(atomic: ExtensionAPI) {
 	let pirateMode = false;
 
 	// Register /pirate command to toggle pirate mode
-	pi.registerCommand("pirate", {
+	atomic.registerCommand("pirate", {
 		description: "Toggle pirate mode (agent speaks like a pirate)",
 		handler: async (_args, ctx) => {
 			pirateMode = !pirateMode;
@@ -25,7 +25,7 @@ export default function pirateExtension(pi: ExtensionAPI) {
 	});
 
 	// Append to system prompt when pirate mode is enabled
-	pi.on("before_agent_start", async (event) => {
+	atomic.on("before_agent_start", async (event) => {
 		if (pirateMode) {
 			return {
 				systemPrompt:

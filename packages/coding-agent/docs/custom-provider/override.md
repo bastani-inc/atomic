@@ -11,19 +11,19 @@ Redirect an existing built-in provider through a proxy or attach custom headers 
 
 ```typescript
 // Route all Anthropic requests through a proxy
-await pi.registerProvider("anthropic", {
+await atomic.registerProvider("anthropic", {
   baseUrl: "https://proxy.example.com"
 });
 
 // Add custom headers to OpenAI requests
-await pi.registerProvider("openai", {
+await atomic.registerProvider("openai", {
   headers: {
     "X-Custom-Header": "value"
   }
 });
 
 // Override both baseUrl and headers
-await pi.registerProvider("google", {
+await atomic.registerProvider("google", {
   baseUrl: "https://ai-gateway.corp.com/google",
   headers: {
     "X-Corp-Auth": "$CORP_AUTH_TOKEN" // resolves from env; omit $ for a literal

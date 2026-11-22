@@ -93,8 +93,8 @@ test.each(["with Esc during preparation", "without a second Esc"] as const)(
 		const preparing = Promise.withResolvers<void>();
 		const releasePreparation = Promise.withResolvers<void>();
 		let holdPreparation = false;
-		const holdWokenTurn = (pi: ExtensionAPI) => {
-			pi.on("before_agent_start", async () => {
+		const holdWokenTurn = (atomic: ExtensionAPI) => {
+			atomic.on("before_agent_start", async () => {
 				if (!holdPreparation) return;
 				holdPreparation = false;
 				preparing.resolve();
@@ -194,8 +194,8 @@ test.each(SAVE_FAILURE_CASES)(
 		const preparing = Promise.withResolvers<void>();
 		const releasePreparation = Promise.withResolvers<void>();
 		let holdPreparation = false;
-		const holdWokenTurn = (pi: ExtensionAPI) => {
-			pi.on("before_agent_start", async () => {
+		const holdWokenTurn = (atomic: ExtensionAPI) => {
+			atomic.on("before_agent_start", async () => {
 				if (!holdPreparation) return;
 				holdPreparation = false;
 				preparing.resolve();
@@ -365,8 +365,8 @@ test.each(INTERRUPTING_MESSAGES)(
 		const preparing = Promise.withResolvers<void>();
 		const releasePreparation = Promise.withResolvers<void>();
 		let holdPreparation = false;
-		const holdWokenTurn = (pi: ExtensionAPI) => {
-			pi.on("before_agent_start", async () => {
+		const holdWokenTurn = (atomic: ExtensionAPI) => {
+			atomic.on("before_agent_start", async () => {
 				if (!holdPreparation) return;
 				holdPreparation = false;
 				preparing.resolve();

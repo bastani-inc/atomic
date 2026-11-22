@@ -156,7 +156,7 @@ When multiple real skill files declare the same name, Atomic keeps the precedenc
 /skill:review@builtin          # Unique bundled candidate
 ```
 
-`@project`, `@user`, and `@builtin` are available only when that family has one candidate in the collision. If a family contains multiple package candidates, Atomic advertises package-qualified aliases instead, such as `/skill:review@team-review` and `/skill:review@company-review`. Autocomplete, `pi.getCommands()`, and RPC `get_commands` return the same advertised names.
+`@project`, `@user`, and `@builtin` are available only when that family has one candidate in the collision. If a family contains multiple package candidates, Atomic advertises package-qualified aliases instead, such as `/skill:review@team-review` and `/skill:review@company-review`. Autocomplete, `atomic.getCommands()`, and RPC `get_commands` return the same advertised names.
 
 Qualified selection is exact. An unknown or ambiguous qualified selector reports an error and never falls back to the bare winner. Aliases are recalculated on reload, so a qualified alias disappears when its collision disappears. The model-visible skill list uses the same aliases.
 

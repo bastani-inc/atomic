@@ -54,14 +54,14 @@ async function viewSubagent(): Promise<ViewedScreen> {
 			name: "atomic-app",
 			builtin: true,
 			bundled: true,
-			factory: (pi) =>
-				pi.registerCommand("appcmd", {
+			factory: (atomic) =>
+				atomic.registerCommand("appcmd", {
 					description: "An app command Atomic ships",
 					handler: async () => void ran.push("/appcmd on main"),
 				}),
 		},
-		(pi) =>
-			pi.registerCommand("plan", {
+		(atomic) =>
+			atomic.registerCommand("plan", {
 				description: "A command the user installed",
 				handler: async () => void ran.push("/plan on main"),
 			}),
@@ -633,8 +633,10 @@ describe("commands typed while a subagent is shown, on the isolated host", () =>
 			const ran: string[] = [];
 			const rig = await createRig("isolated", "quiet", {
 				extensions: [
-					(pi) => pi.registerCommand("appcmd", { handler: async () => void ran.push("/appcmd in the engine") }),
-					(pi) => pi.registerCommand("plan", { handler: async () => void ran.push("/plan in the engine") }),
+					(atomic) =>
+						atomic.registerCommand("appcmd", { handler: async () => void ran.push("/appcmd in the engine") }),
+					(atomic) =>
+						atomic.registerCommand("plan", { handler: async () => void ran.push("/plan in the engine") }),
 				],
 			});
 			rigs.push(rig);

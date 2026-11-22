@@ -37,12 +37,12 @@ interface BuildSearchReturnDeps {
 	startBackgroundFetch(urls: string[]): string | null;
 }
 
-async function storeAndPublishSearch(pi: ExtensionAPI, results: QueryResultData[], storage: ResultStorage): Promise<string> {
+async function storeAndPublishSearch(atomic: ExtensionAPI, results: QueryResultData[], storage: ResultStorage): Promise<string> {
 	const id = generateId();
 	const data: StoredSearchData = {
 		id, type: "search", timestamp: Date.now(), queries: results,
 	};
-	await pi.appendEntry("web-search-results", data);
+	await atomic.appendEntry("web-search-results", data);
 	storage.storeResult(id, data);
 	return id;
 }

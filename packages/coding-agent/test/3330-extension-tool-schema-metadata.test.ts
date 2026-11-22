@@ -52,7 +52,7 @@ test("copied extension tool schemas keep TypeBox metadata out of JSON (#3330)", 
 
 	const runtime = createExtensionRuntime();
 	const extension = await loadExtensionFromFactory(
-		(pi) => pi.registerTool(createTool()),
+		(atomic) => atomic.registerTool(createTool()),
 		process.cwd(),
 		createEventBus(),
 		runtime,
