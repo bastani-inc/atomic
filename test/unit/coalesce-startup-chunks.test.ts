@@ -38,8 +38,9 @@ test("assignStartupGroups keeps phases and tiers disjoint, isolates http/setting
 		shellOnly: [],
 		stages: ["stagesOnly"],
 		stagesOnly: [],
-		http: ["shellHttpBoth", "httpOnly"],
+		http: ["shellHttpBoth", "httpOnly", "node_modules/undici/index.js"],
 		httpOnly: [],
+		"node_modules/undici/index.js": [],
 		settingsStartup: ["settingsStartupOnly"],
 		settingsStartupOnly: [],
 		main: ["ownerA", "mainTop", "shellMainBoth", "http", "settingsStartup"],
@@ -91,6 +92,7 @@ test("assignStartupGroups keeps phases and tiers disjoint, isolates http/setting
 	assert.equal(g1.get("shellOnly"), "p2-shell");
 	assert.equal(g1.get("stagesOnly"), "p3a-stages");
 	assert.equal(g1.get("httpOnly"), "http");
+	assert.equal(g1.get("node_modules/undici/index.js"), "http-undici");
 	assert.equal(g1.get("settingsStartupOnly"), "settings-startup");
 	// Mode overlaps go to mode-shared so rpc never pulls interOnly and interactive never pulls rpcOnly.
 	assert.equal(g1.get("modeBoth"), "mode-shared");
@@ -123,7 +125,7 @@ test("assignStartupGroups keeps phases and tiers disjoint, isolates http/setting
 });
 
 builtTest(
-	"dist/startup-files.json loads <= 30 dist/_shared chunks instead of ~130-170 Venn-diagram shards and keeps >= 8 startup stages",
+	"dist/startup-files.json loads <= 35 dist/_shared chunks instead of ~130-170 Venn-diagram shards and keeps >= 8 startup stages",
 	() => {
 		const list = JSON.parse(readFileSync(join(DIST, "startup-files.json"), "utf8")) as {
 			packages: [string, number][];
@@ -133,8 +135,8 @@ builtTest(
 			.filter(([index, file]) => list.packages[index]?.[0] === "@bastani/atomic" && file.startsWith("dist/_shared/"))
 			.map(([, file]) => file);
 		assert.ok(
-			sharedStartup.length <= 30,
-			`expected <= 30 dist/_shared startup chunks, got ${sharedStartup.length}: ${sharedStartup.slice(0, 10).join(", ")}`,
+			sharedStartup.length <= 35,
+			`expected <= 35 dist/_shared startup chunks, got ${sharedStartup.length}: ${sharedStartup.slice(0, 10).join(", ")}`,
 		);
 		const stages = JSON.parse(readFileSync(join(DIST, "startup-stages/stages.json"), "utf8")) as {
 			stages: number;
@@ -276,8 +278,8 @@ console.log(JSON.stringify({ shared, files, kb: Math.round(bytes / 1024), extern
 			`core/http-dispatcher pulled startup/shell chunks: ${http.shared.join(", ")}`,
 		);
 		assert.ok(
-			http.shared.length <= 4,
-			`expected <= 4 dist/_shared chunks for http-dispatcher, got ${http.shared.length}`,
+			http.shared.length <= 5,
+			`expected <= 5 dist/_shared chunks for http-dispatcher, got ${http.shared.length}`,
 		);
 
 		const settingsStartup = audit("cli/settings-startup.js");
@@ -340,3 +342,28 @@ builtTest("virtual facade split entries overwrite pre-split tsc source maps and 
 		assert.equal(parsed.file, base);
 	}
 });
+
+builtTest(
+	"early startup stages 0 and 1 keep bundled undici lazy so keystrokes echo before require_undici() executes",
+	() => {
+		const stage0 = readFileSync(join(DIST, "startup-stages/0.js"), "utf8");
+		const stage1 = readFileSync(join(DIST, "startup-stages/1.js"), "utf8");
+		assert.ok(
+			!/http-dispatcher\.js/.test(stage0) && !/http-dispatcher\.js/.test(stage1),
+			`stages 0 and 1 must not eagerly evaluate http-dispatcher.js:\nstage0:\n${stage0}\nstage1:\n${stage1}`,
+		);
+		const stage1Shared = [...stage1.matchAll(/\.\.\/_shared\/([^"']+\.js)/g)].map((m) => m[1]);
+		assert.ok(stage1Shared.length > 0, `expected stage 1 to load a _shared chunk:\n${stage1}`);
+		for (const file of stage1Shared) {
+			assert.ok(
+				file.startsWith("http-undici-"),
+				`expected stage 1 to load only the lazy http-undici wrapper (not eager http-dispatcher), got ${file}`,
+			);
+			const code = readFileSync(join(DIST, "_shared", file), "utf8");
+			assert.ok(
+				!/\b__toESM\s*\(\s*require_undici\s*\(\s*\)\s*\)/.test(code),
+				`stage 1 chunk ${file} must define require_undici lazily without executing it at top level`,
+			);
+		}
+	},
+);

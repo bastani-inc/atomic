@@ -234,8 +234,10 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 		} else if (inStages && !inMain && !inHttp && !inSettingsStartup && !inInteractive && !inRpc && !inSdk) {
 			groups.set(id, "p3a-stages");
 		} else if (inHttp) {
-			// `core/http-dispatcher` (+ bundled `undici` when inlined), strictly isolated from `startup-0-*`.
-			groups.set(id, "http");
+			// Split `undici`'s lazy CJS wrapper (`http-undici`) from `core/http-dispatcher` (`http`) so `startup-stages`
+			// loads `http-undici` (defining `require_undici` without executing it) in stage 1 and yields to the early
+			// editor for key echo before `core/http-dispatcher` executes `require_undici()` in stage 2.
+			groups.set(id, /(?:^|\/)node_modules\/undici\//.test(id.replace(/\\/g, "/")) ? "http-undici" : "http");
 		} else if (inSettingsStartup) {
 			// `cli/settings-startup` (~6 tiny error/config helpers + chalk), strictly isolated from `startup-0-*`.
 			groups.set(id, "settings-startup");
