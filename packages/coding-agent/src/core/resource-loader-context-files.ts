@@ -11,7 +11,15 @@ import { findGitPaths, findGitPathsAsync } from "./footer-data-provider.ts";
 
 type ContextFile = { path: string; content: string };
 
-export async function resolvePromptInput(input: string | undefined, description: string): Promise<string | undefined> {
+const emitWarningDefault = (message: string): void => {
+	console.error(message);
+};
+
+export async function resolvePromptInput(
+	input: string | undefined,
+	description: string,
+	onWarning: (message: string) => void = emitWarningDefault,
+): Promise<string | undefined> {
 	if (!input) {
 		return undefined;
 	}
@@ -20,7 +28,7 @@ export async function resolvePromptInput(input: string | undefined, description:
 		try {
 			return stripBom(await readFile(input, "utf-8"));
 		} catch (error) {
-			console.error(chalk.yellow(`Warning: Could not read ${description} file ${input}: ${error}`));
+			onWarning(chalk.yellow(`Warning: Could not read ${description} file ${input}: ${error}`));
 			return input;
 		}
 	}
@@ -61,7 +69,10 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 	return null;
 }
 
-async function loadContextFileFromDirAsync(dir: string): Promise<ContextFile | null> {
+async function loadContextFileFromDirAsync(
+	dir: string,
+	onWarning: (message: string) => void = emitWarningDefault,
+): Promise<ContextFile | null> {
 	for (const filename of CONTEXT_FILE_NAMES) {
 		const filePath = join(dir, filename);
 		if (await exists(filePath)) {
@@ -72,7 +83,7 @@ async function loadContextFileFromDirAsync(dir: string): Promise<ContextFile | n
 					content: stripBom(await readFile(filePath, "utf-8")),
 				};
 			} catch (error) {
-				console.error(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));
+				onWarning(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));
 			}
 		}
 	}
@@ -168,7 +179,10 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	return join(mainRepoRoot, basename(worktreeContextFile.path));
 }
 
-async function findShadowedContextFileAsync(cwd: string): Promise<string | undefined> {
+async function findShadowedContextFileAsync(
+	cwd: string,
+	onWarning: (message: string) => void = emitWarningDefault,
+): Promise<string | undefined> {
 	const gitPaths = await findGitPathsAsync(cwd);
 	if (!gitPaths) return undefined;
 	const commonGitDir = await realPathAsync(gitPaths.commonGitDir);
@@ -176,10 +190,10 @@ async function findShadowedContextFileAsync(cwd: string): Promise<string | undef
 	const mainRepoRoot = dirname(commonGitDir);
 	if (!isDescendantOf(mainRepoRoot, worktreeRoot)) return undefined;
 	if (!samePath(await realPathAsync(join(mainRepoRoot, ".git")), commonGitDir)) return undefined;
-	const worktreeContextFile = await loadContextFileFromDirAsync(worktreeRoot);
+	const worktreeContextFile = await loadContextFileFromDirAsync(worktreeRoot, onWarning);
 	if (!worktreeContextFile) return undefined;
 	if (basename(worktreeContextFile.path) === "AGENTS.override.md") {
-		const mainRepoContextFile = await loadContextFileFromDirAsync(mainRepoRoot);
+		const mainRepoContextFile = await loadContextFileFromDirAsync(mainRepoRoot, onWarning);
 		return mainRepoContextFile ? join(mainRepoRoot, basename(mainRepoContextFile.path)) : undefined;
 	}
 	return join(mainRepoRoot, basename(worktreeContextFile.path));
@@ -238,17 +252,30 @@ export function loadProjectContextFiles(options: ProjectContextFileOptions): Arr
 	return orderContextFiles(agentContextFiles, ancestorContextFiles);
 }
 
-export async function loadProjectContextFilesAsync(options: ProjectContextFileOptions): Promise<ContextFile[]> {
+export async function loadProjectContextFilesAsync(
+	options: ProjectContextFileOptions,
+	onWarning: (message: string) => void = emitWarningDefault,
+): Promise<ContextFile[]> {
 	const resolvedCwd = resolvePath(options.cwd);
+	const agentDirs = contextAgentDirs(resolvePath(options.agentDir));
+	const agentWarnings = agentDirs.map(() => [] as string[]);
 	const agentContextFiles = await Promise.all(
-		contextAgentDirs(resolvePath(options.agentDir)).map((dir) => loadContextFileFromDirAsync(dir)),
+		agentDirs.map((dir, index) => loadContextFileFromDirAsync(dir, (msg) => agentWarnings[index]!.push(msg))),
 	);
+	for (const warnings of agentWarnings) {
+		for (const msg of warnings) onWarning(msg);
+	}
 	if (options.projectTrusted === false) return orderContextFiles(agentContextFiles, []);
 
-	const shadowedContextFile = await findShadowedContextFileAsync(resolvedCwd);
+	const shadowWarnings: string[] = [];
+	const shadowedContextFile = await findShadowedContextFileAsync(resolvedCwd, (msg) => shadowWarnings.push(msg));
+	for (const msg of shadowWarnings) onWarning(msg);
+
+	const ancestorDirs = getAncestorDirectories(resolvedCwd);
+	const ancestorWarnings = ancestorDirs.map(() => [] as string[]);
 	const ancestorContextFiles = await Promise.all(
-		getAncestorDirectories(resolvedCwd).map(async (currentDir) => {
-			const contextFile = await loadContextFileFromDirAsync(currentDir);
+		ancestorDirs.map(async (currentDir, index) => {
+			const contextFile = await loadContextFileFromDirAsync(currentDir, (msg) => ancestorWarnings[index]!.push(msg));
 			const isShadowed =
 				shadowedContextFile !== undefined &&
 				contextFile !== null &&
@@ -256,5 +283,8 @@ export async function loadProjectContextFilesAsync(options: ProjectContextFileOp
 			return isShadowed ? null : contextFile;
 		}),
 	);
+	for (const warnings of ancestorWarnings) {
+		for (const msg of warnings) onWarning(msg);
+	}
 	return orderContextFiles(agentContextFiles, ancestorContextFiles);
 }

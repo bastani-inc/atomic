@@ -59,7 +59,16 @@ export default (pi) => {
 		}
 		if (fixture.execGrandchild) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
-			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
+			const run = () => void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
+			// A command with a timeout starts once the test watches for it, so the timeout cannot pass before its pid is read.
+			if (fixture.execTimeoutMs === undefined) run();
+			else {
+				const go = setInterval(() => {
+					if (!existsSync(fixture.files.execGo)) return;
+					clearInterval(go);
+					run();
+				}, fixture.pollMs);
+			}
 		}
 		if (fixture.execLeftoverTree) {
 			// PowerShell starts a program that Node did not start, in no job of Node's, and then the command ends.
@@ -82,6 +91,20 @@ export default (pi) => {
 		appendFileSync(fixture.files.shutdown, JSON.stringify({ ...call, finished: true }) + "\\n");
 	});
 };`;
+
+/**
+ * The text of `file`, or "" while it is missing or its writer still holds it open: Windows refuses to open a file for
+ * reading with EBUSY while PowerShell's Set-Content writes it.
+ */
+function writtenText(file: string): string {
+	try {
+		return readTextSync(file, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "EBUSY") return "";
+		throw error;
+	}
+}
 
 interface ShutdownRecord {
 	readonly pid: number;
@@ -157,6 +180,7 @@ async function endSession(
 	const eventLoopLog = join(root, "event-loop.jsonl");
 	const groupChild = join(root, "group-child");
 	const execChild = join(root, "exec-child");
+	const execGo = join(root, "exec-go");
 	const released = join(root, "released");
 	let program: PtyProgram | undefined;
 	let groupChildProcess: RecordedProcess | undefined;
@@ -178,7 +202,7 @@ async function endSession(
 				waitForRelease: options.waitForRelease === true,
 				pollMs: RECORD_POLL_MS,
 				handlerWorkMs,
-				files: { started, shutdown, groupChild, execChild, released },
+				files: { started, shutdown, groupChild, execChild, execGo, released },
 			}),
 		);
 		writeFileSync(extension, SHUTDOWN_EXTENSION);
@@ -229,10 +253,14 @@ async function endSession(
 			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
 		}
 		if (options.execGrandchild || options.execLeftover || options.execLeftoverTree) {
-			while (!(fileExistsSync(execChild) && readTextSync(execChild, "utf8") !== "") && Date.now() < deadline)
+			if (options.execTimeoutMs !== undefined) writeFileSync(execGo, "");
+			let written = writtenText(execChild);
+			while (written === "" && Date.now() < deadline) {
 				await sleep(RECORD_POLL_MS);
+				written = writtenText(execChild);
+			}
 			// The command, and so the process it started, is running: the pid names that process.
-			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
+			execChildProcess = await recordProcess(Number(written));
 			assert.ok(await stillRuns(execChildProcess), "the command started its process");
 			if (options.execLeftoverTree) {
 				while (!fileExistsSync(`${execChild}.done`) && Date.now() < deadline) await sleep(RECORD_POLL_MS);

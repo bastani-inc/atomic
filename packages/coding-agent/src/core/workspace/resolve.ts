@@ -350,17 +350,20 @@ async function checkoutBranch(
 	path: string,
 	branch: string,
 	missingBranchStart: () => Promise<string>,
+	beforeAdd: () => Promise<void>,
 	onSpawn: (pid: number) => Promise<void>,
 ): Promise<void> {
 	const local = await commitOf(repository, `refs/heads/${branch}`);
 	const remote = await commitOf(repository, `refs/remotes/origin/${branch}`);
-	const add = (args: readonly string[]) =>
-		runWorkspaceGit({
+	const add = async (args: readonly string[]) => {
+		await beforeAdd();
+		return runWorkspaceGit({
 			cwd: repository.root,
 			args: ["worktree", "add", "--lock", "--reason", WORKTREE_ADDING_REASON, ...args],
 			phase: "worktree-add",
 			onSpawn,
 		});
+	};
 	if (local === undefined) {
 		await add(["-b", branch, path, remote ?? (await missingBranchStart())]);
 		return;
@@ -467,6 +470,30 @@ async function processStartTime(pid: number): Promise<string | null> {
 	}
 }
 
+/** `error` from writing the adder's `record`, as the bind reports it. */
+function unrecordedAdder(record: string, error: unknown): unknown {
+	const errno = (error as { readonly code?: unknown }).code;
+	if (typeof errno !== "string") return error;
+	return new WorkspaceBindingError({
+		code: "filesystem-failed",
+		fields: { operation: "record the git adding", path: record, errno },
+		cause: error,
+	});
+}
+
+/**
+ * Make the directory of the adder's `record` before git starts. Git is stopped when its adder cannot be recorded, but
+ * on a busy machine the record's file work can come after git has added the worktree, which then stays: a directory
+ * that cannot be made fails the bind before git adds anything.
+ */
+async function prepareAdderRecord(record: string): Promise<void> {
+	try {
+		await mkdir(dirname(record), { recursive: true });
+	} catch (error) {
+		throw unrecordedAdder(record, error);
+	}
+}
+
 async function recordAdder(record: string, pid: number): Promise<void> {
 	const adder: WorktreeAdder = { host: hostname(), pid, startTime: await processStartTime(pid) };
 	const staging = `${record}.${randomUUID()}.tmp`;
@@ -481,13 +508,7 @@ async function recordAdder(record: string, pid: number): Promise<void> {
 		}
 		await rename(staging, record);
 	} catch (error) {
-		const errno = (error as { readonly code?: unknown }).code;
-		if (typeof errno !== "string") throw error;
-		throw new WorkspaceBindingError({
-			code: "filesystem-failed",
-			fields: { operation: "record the git adding", path: record, errno },
-			cause: error,
-		});
+		throw unrecordedAdder(record, error);
 	}
 }
 
@@ -675,8 +696,14 @@ async function addWorktree(
 			await git(repository.root, ["worktree", "prune"], "worktree-add");
 			// A failed addition keeps its record: its git has exited, so a later bind sees the adder gone and repairs it.
 			const record = worktreeAdderRecord(repository.commonDir, path);
-			await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, (pid) =>
-				recordAdder(record, pid),
+			await checkoutBranch(
+				repository,
+				repo,
+				path,
+				branch,
+				steps.missingBranchStart,
+				() => prepareAdderRecord(record),
+				(pid) => recordAdder(record, pid),
 			);
 			await git(repository.root, ["worktree", "unlock", path], "worktree-add");
 			await filesystem("remove the record of the git adding", record, () => rm(record, { force: true }));
