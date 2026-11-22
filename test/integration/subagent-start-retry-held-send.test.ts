@@ -38,10 +38,16 @@ fixture.overrideAgentDir();
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 
-/** A start budget a real child start on a loaded machine reaches its extensions' start within. */
-const BUDGET_MS = 12_000;
-/** How long the first start is held: past its budget, then let go so the retry may open a session. */
-const STALL_MS = BUDGET_MS + 500;
+/**
+ * A start budget a real child start on a loaded machine reaches its extensions' start within. A launch also waits half
+ * of it for a stalled start to let go of its session before it retries, which a loaded Windows runner took over 6 s for.
+ */
+const BUDGET_MS = 24_000;
+/**
+ * The longest the first start is held if its launch never reports the retry: the stall is let go as soon as the launch
+ * has given up on that start and waits for it to let go of its session.
+ */
+const STALL_BOUND_MS = 4 * BUDGET_MS;
 /** Structural cost: a real broker and two real child starts, the first held past its budget. */
 const REAL_RETRY_TEST_TIMEOUT_MS = 180_000;
 const STALL_HOOK = "__subagentStartRetryHoldStall";
@@ -197,13 +203,23 @@ for (const { stallAt, resume } of [
 			});
 			fixture.onCleanup(() => optionsSource.dispose());
 
-			// A child-only extension: the first start stalls in session_start past its budget, then lets go.
-			let starts = 0;
+			// A child-only extension: the first start stalls past its budget, then lets go once its launch reports the retry.
+			// A stall of a fixed length would also have to cover how long the start took to get there, which a loaded
+			// runner stretches past the time the launch waits for a stalled start to let go of its session.
+			// The hook knows which start it runs in from the attempt the launch reported last: a loaded runner can run the
+			// first start out of its budget before it gets here, and the retry is then the only start that does.
+			let attempt = 1;
+			let retryStarted = false;
+			const retryReported = Promise.withResolvers<void>();
 			const retryDisposing = Promise.withResolvers<void>();
 			const releaseRetry = Promise.withResolvers<void>();
 			globals[STALL_HOOK] = (point) => {
-				if (point === "start") return ++starts === 1 ? sleep(STALL_MS) : undefined;
-				if (starts !== 2) return undefined;
+				if (point === "start") {
+					if (attempt === 1) return Promise.race([retryReported.promise, sleep(STALL_BOUND_MS)]);
+					retryStarted = true;
+					return undefined;
+				}
+				if (!retryStarted) return undefined;
 				retryDisposing.resolve();
 				return releaseRetry.promise;
 			};
@@ -275,6 +291,8 @@ for (const { stallAt, resume } of [
 				reportStart: (progress) => {
 					if (progress === undefined) return;
 					reports.push(`attempt ${progress.attempt}: ${progress.step}`);
+					attempt = progress.attempt;
+					if (progress.attempt === 2) retryReported.resolve();
 					if (progress.attempt === 2 && gapSend === undefined)
 						gapSend = peer.send(childName, { text: "GAP-2 while the first start stalled" });
 				},
@@ -321,7 +339,10 @@ for (const { stallAt, resume } of [
 			});
 			startHold.settle(result);
 			try {
-				assert.equal(starts, 2, "the first start stalled and was retried once");
+				assert.ok(
+					retryStarted,
+					`the first start stalled and was retried once: ${JSON.stringify({ reports, cause: result.cause })}`,
+				);
 				assert.equal(result.status, "ok", JSON.stringify(result));
 				await retryDisposing.promise;
 				await new Promise<void>((resolve) => setImmediate(resolve));

@@ -82,8 +82,14 @@ function hostCommandPath(command: string): string {
 	return process.platform === "darwin" ? `/usr/sbin/${command}` : command;
 }
 
-/** This host's real identity sources, saving a machine id under `configDir`. */
-export const systemSources = (configDir: string = getIntercomDirPath()): HostIdentitySources => ({
+/**
+ * This host's real identity sources, saving a machine id under `configDir`. With `directoryHeld`, `configDir` is its
+ * caller's: it is not created, and the id is saved only while `directoryHeld` says the directory is still there.
+ */
+export const systemSources = (
+	configDir: string = getIntercomDirPath(),
+	directoryHeld?: () => boolean,
+): HostIdentitySources => ({
 	platform: process.platform,
 	readFile: (path) => readFileSync(path, "utf8"),
 	readLink: (path) => readlinkSync(path),
@@ -98,7 +104,8 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 			child.stdin?.end();
 		}),
 	writeNewPrivateFile: (path, content) => {
-		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+		if (directoryHeld === undefined) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+		else if (!directoryHeld()) throw new Error(`${dirname(path)} was removed`);
 		writeFileSync(path, content, { mode: 0o600, flag: "wx" });
 	},
 	configDir,
