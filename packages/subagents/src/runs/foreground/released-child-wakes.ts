@@ -37,6 +37,7 @@ import {
 } from "./released-child-resume.js";
 import {
 	handleReleasedChildWakes,
+	heldForWake,
 	holdToolResultsInRecord,
 	isRelaunchableChildRecord,
 	reportInterruptedStillRunningCalls,
@@ -66,6 +67,7 @@ import {
 	recordSubagentChildWakeFailure,
 	reportSubagentChildWakeFailure,
 	type SubagentChildRecord,
+	sameHeldResult,
 	subagentChildOwner,
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
@@ -253,10 +255,12 @@ export function bindReleasedChildWakes(
 		ctx,
 		{
 			wake: async (record, decision, slot) => {
+				// What the record holds already, by the number it holds it under or as a repeat of one not bound yet.
 				const unsaved = decision.toolResults.filter(
-					(result) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === result.toolCallId),
+					(result) => !(record.heldToolResults ?? []).some((held) => sameHeldResult(record, held, result)),
 				);
 				if (unsaved.length > 0) await holdResults(record, unsaved);
+				heldForWake(decision.toolResults);
 				if (refuseRelaunch(record)() !== undefined) return;
 				// #5551: only a released child is reserved; one that ended on its own and is woken for a late result is not.
 				const reservation = releasedChildReservation(record);
@@ -280,10 +284,16 @@ export function bindReleasedChildWakes(
 					slot,
 				);
 			},
-			hold: holdResults,
+			hold: async (record, toolResults) => {
+				await holdResults(record, toolResults);
+				heldForWake(toolResults);
+			},
 			resume: async (record, request) => {
 				// Held first, as a wake holds them: a stop before the resumed run saves them leaves them for its resume (#5012).
-				if (request.toolResults?.length) await holdResults(record, request.toolResults);
+				if (request.toolResults?.length) {
+					await holdResults(record, request.toolResults);
+					heldForWake(request.toolResults);
+				}
 				const outcome = await restoreSubagentChild(deps, ctx, record.childId, request);
 				if (outcome.kind === "unrestorable")
 					throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
