@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { APP_NAME, detectInstallChangeAsync, isBunBinary, NATIVES_VERSION } from "../config.js";
 import { createModuleRequire } from "./module-require.js";
@@ -27,9 +27,10 @@ export interface NativeModuleProblem {
 	readonly loadFailed: boolean;
 	readonly cause?: unknown;
 	/**
-	 * For a native module of another release: the file this process loaded it from and the release it needs. When the
-	 * package of that file on disk is of that release by now, it was reinstalled while this process ran: a restart
-	 * loads it. The process keeps the one it loaded until then, as other parts of it already use that one.
+	 * For a native module of another release: the file this process loaded it from and the release it needs. When that
+	 * file changed on disk after an earlier refusal in this process and its package is of that release by now, it was
+	 * reinstalled while this process ran: a restart loads it. The process keeps the one it loaded until then, as other
+	 * parts of it already use that one.
 	 */
 	readonly refused?: { readonly file: string; readonly release: string };
 }
@@ -76,11 +77,24 @@ function loadedNativeFile(require: NodeJS.Require): string | undefined {
 		.at(-1);
 }
 
+/** The first refusal of a native module of another release in this process: its file, and that file's identity then. */
+let firstRefusal: { readonly file: string; readonly identity: string | undefined } | undefined;
+
+/** What tells the native module file `file` on disk from another one in its place; undefined when it is gone. */
+async function fileIdentity(file: string): Promise<string | undefined> {
+	try {
+		const { dev, ino, size, mtimeMs } = await stat(file);
+		return `${dev}:${ino}:${size}:${mtimeMs}`;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Whether the package of the native module file `file` (its own directory's package.json, or its parent's for one
  * beside the loader) is of `release` on disk now.
  */
-async function reinstalledSince(file: string, release: string): Promise<boolean> {
+async function packageOfRelease(file: string, release: string): Promise<boolean> {
 	for (const directory of [dirname(file), dirname(dirname(file))]) {
 		try {
 			const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as { version?: unknown };
@@ -90,6 +104,26 @@ async function reinstalledSince(file: string, release: string): Promise<boolean>
 		}
 	}
 	return false;
+}
+
+/**
+ * Whether the native module this process refused (`refused`) was reinstalled in the release it needs while the process
+ * ran: an earlier refusal in this process saw its file, the file on disk is another one now, and its package is of that
+ * release. A first refusal never says so: a stale file can sit in a package of the right release, as a Windows update
+ * leaves one it could not replace while a process held it, and a restart would load that file again.
+ */
+async function reinstalledSinceRefused(refused: NonNullable<NativeModuleProblem["refused"]>): Promise<boolean> {
+	const identity = await fileIdentity(refused.file);
+	if (firstRefusal === undefined) {
+		firstRefusal = { file: refused.file, identity };
+		return false;
+	}
+	return (
+		firstRefusal.file === refused.file &&
+		identity !== undefined &&
+		identity !== firstRefusal.identity &&
+		(await packageOfRelease(refused.file, refused.release))
+	);
 }
 
 /**
@@ -125,15 +159,13 @@ export function nativeModuleProblem(): NativeModuleProblem | undefined {
 
 /**
  * The {@link NativeModuleUnavailableError} of `problem`: when an update replaced or removed the installation since this
- * process started, or the native module this process refused was reinstalled in the right release since, it says to
- * restart (before the loader's message, for a module that could not load); otherwise it is the problem's own message.
+ * process started, or the native module this process refused before was reinstalled in the right release since, it says
+ * to restart (before the loader's message, for a module that could not load); otherwise it is the problem's own message.
  */
 export async function nativeModuleUnavailable(problem: NativeModuleProblem): Promise<never> {
 	const change = await detectInstallChangeAsync();
 	const reinstalled =
-		change === undefined &&
-		problem.refused !== undefined &&
-		(await reinstalledSince(problem.refused.file, problem.refused.release));
+		change === undefined && problem.refused !== undefined && (await reinstalledSinceRefused(problem.refused));
 	const restart =
 		change === undefined
 			? reinstalled
