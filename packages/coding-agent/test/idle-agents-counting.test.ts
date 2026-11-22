@@ -56,7 +56,7 @@ Object.defineProperty(probeHooks, "AsyncLocalStorage", {
 	writable: true,
 });
 syncBuiltinESMExports();
-const probeLog = join(process.cwd(), ".probe-idle-stores.log");
+const probeLog = process.env.PROBE_IDLE_LOG ?? join(process.cwd(), ".probe-idle-stores.log");
 const probeAlive = () => probeStores.filter((entry) => entry.ref.deref() !== undefined);
 const probeFrames = (stack: string) =>
 	stack
