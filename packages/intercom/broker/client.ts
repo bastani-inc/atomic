@@ -70,7 +70,7 @@ import {
 	VERIFIED_REGISTRATION_PROTOCOL,
 } from "./protocol-version.js";
 import { IntercomSupervisorAuthorizationRefusedError, SUPERVISOR_AUTHORIZATION_REFUSED_CODE } from "../supervisor-refusal.js";
-import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
+import { HELD_SEND_GRACE_MS, SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
 	ENDED_CHILD_OWNER_AWAY_MAX_MS,
 	ENDED_CHILD_WAKE_ANSWER_MS,
@@ -165,8 +165,6 @@ async function classifyRegistrationFailure(error: Error, socketPath: string): Pr
     cause: error,
   });
 }
-/** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
-const HELD_SEND_GRACE_MS = 5000;
 /** #5145: how many outcomes a client remembers hearing, so a second copy of one is not heard again. */
 const HEARD_OUTCOMES_MAX = 1_000;
 

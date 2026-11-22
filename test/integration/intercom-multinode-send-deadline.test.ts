@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterAll, beforeAll, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
 import { TwoBrokerHarness, twoBrokerHarnessStartTimeoutMs } from "../helpers/intercom-two-broker-harness.js";
 
 const localMessage = randomUUID();
@@ -15,6 +15,7 @@ let harness: TwoBrokerHarness;
 beforeAll(async () => {
 	harness = await TwoBrokerHarness.start(options);
 }, twoBrokerHarnessStartTimeoutMs(options));
+beforeEach(() => harness.ensureBrokersRunning(), twoBrokerHarnessStartTimeoutMs(options));
 afterAll(() => harness?.cleanup(), twoBrokerHarnessStartTimeoutMs(options));
 
 test("a local send is confirmed when its broker stalls during the duplicate check and its recipient takes six seconds to save (#5607)", async () => {
@@ -76,3 +77,41 @@ test("a reply to an ask on a crashed broker gets a retryable refusal without los
 	assert.equal(live.messagesWithId(reply).length, 1);
 	assert.match(readFileSync(`${harness.sharedDatabasePath}.reads`, "utf8"), /^route\nsettled$/mu);
 }, 45_000);
+
+test("a cross-node ask and reply over a slow shared database extend the sender's deadline instead of failing with Send timeout", async () => {
+	const group = `slow-${randomUUID().slice(0, 8)}`;
+	const asker = await harness.connect("a", "slow-asker", { group });
+	const recipient = await harness.connect("b", "slow-recipient", { group });
+	const delayFile = `${harness.sharedDatabasePath}.delay`;
+	const askId = randomUUID();
+	try {
+		// 800 ms per shared-database call makes routing + outbox round trips exceed SEND_RESPONSE_TIMEOUT_MS (10 s).
+		writeFileSync(delayFile, "800");
+		const sent = await asker.client.send(recipient.sessionId, {
+			messageId: askId,
+			text: "slow ask",
+			expectsReply: true,
+		});
+		assert.equal(sent.delivered, true, sent.reason);
+		await vi.waitFor(() => assert.equal(recipient.messagesWithId(askId).length, 1), {
+			timeout: 15_000,
+			interval: 25,
+		});
+
+		const replied = await recipient.client.send(asker.sessionId, {
+			text: "slow reply",
+			replyTo: askId,
+			requirePendingReply: true,
+			expectedRecipientId: asker.sessionId,
+		});
+		assert.equal(replied.delivered, true, replied.reason);
+		await vi.waitFor(
+			() => assert.equal(asker.received.filter((frame) => frame.message.replyTo === askId).length, 1),
+			{ timeout: 15_000, interval: 25 },
+		);
+	} finally {
+		rmSync(delayFile, { force: true });
+		await harness.disconnect(asker);
+		await harness.disconnect(recipient);
+	}
+}, 90_000);

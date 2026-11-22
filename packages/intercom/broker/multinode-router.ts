@@ -5,8 +5,10 @@ import { normalizeGroup } from "../group.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import {
 	DELIVERED_MESSAGE_TTL_MS,
+	HELD_SEND_GRACE_MS,
 	RECIPIENT_RECEIPT_TIMEOUT_MS,
 	RECIPIENT_SAVE_MAX_WAIT_MS,
+	SEND_RESPONSE_TIMEOUT_MS,
 } from "../retry-policy.js";
 import {
 	resolveSessionTarget,
@@ -133,6 +135,11 @@ const MAX_HELD_SENDS = 256;
  * `RECIPIENT_RECEIPT_TIMEOUT_MS`).
  */
 const HOLD_CHECK_GRACE_MS = 500;
+/**
+ * Minimum client-deadline margin past a receipt wait so `expireWaiter` and its provisional hold still land strictly
+ * before the sender's client times out (`SEND_RESPONSE_TIMEOUT_MS`).
+ */
+const MIN_WAIT_CLIENT_MARGIN_MS = 2 * HOLD_CHECK_GRACE_MS;
 /** A session that moved here may find its presence lease still held by the broker it just left. */
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
@@ -505,6 +512,8 @@ interface Waiter {
 	timer: ReturnType<typeof setTimeout> | undefined;
 	/** When, by `performance.now()`, the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
 	readonly waitingSince: number;
+	/** Monotonic time when the sender's client would time out unless extended with `send_held`. */
+	clientDeadlineAt: number;
 	/** Ends the wait as uncertain at the save cap, whatever the store does (#3983). */
 	capTimer?: ReturnType<typeof setTimeout>;
 	/** The hold check whose outbox read is in flight; a wait that ends meanwhile reuses it (#3983). */
@@ -515,6 +524,13 @@ interface Waiter {
 	 * wait as uncertain (#4443).
 	 */
 	missedSavingReport?: boolean;
+}
+
+interface SendDeadline {
+	readonly startedAt: number;
+	clientDeadlineAt: number;
+	routingProgressed: boolean;
+	clearRoutingHold?: () => void;
 }
 
 interface TrackedHold {
@@ -1024,6 +1040,8 @@ export class MultiNodeRouter {
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
 	private readonly inflight = new Map<string, Inflight>();
 	private readonly waiters = new Map<string, Waiter>();
+	/** Monotonic start and client-deadline budget for each in-flight send routed through this router. */
+	private readonly sendDeadlines = new WeakMap<SendClientMessage, SendDeadline>();
 	private readonly holds = new Map<string, TrackedHold>();
 	private readonly mirrored = new Map<string, MirroredReservation>();
 	/** Reservations with a backup-poll wake check queued or running: one each while the store stalls, not a backlog. */
@@ -3353,6 +3371,34 @@ export class MultiNodeRouter {
 
 	/** Answer a send no local session resolved: another node's session, a shared hold, an offline session, or none. */
 	routeSend(request: RemoteSendRequest): void {
+		const startedAt = performance.now();
+		const sendDeadline: SendDeadline = {
+			startedAt,
+			clientDeadlineAt: startedAt + SEND_RESPONSE_TIMEOUT_MS,
+			routingProgressed: false,
+		};
+		this.sendDeadlines.set(request.clientMessage, sendDeadline);
+		if (request.localTarget === undefined) {
+			let cleared = false;
+			const routingHold = setTimeout(() => {
+				if (cleared || this.closed) return;
+				if (!sendDeadline.routingProgressed && this.storeAnsweredAt <= startedAt) return;
+				const remaining = Math.max(0, startedAt + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now());
+				if (remaining === 0) return;
+				this.sendHoldFrame(
+					request.socket,
+					request.message.id,
+					request.attemptId,
+					Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining),
+					sendDeadline,
+				);
+			}, RECIPIENT_RECEIPT_TIMEOUT_MS);
+			routingHold.unref?.();
+			sendDeadline.clearRoutingHold = () => {
+				cleared = true;
+				clearTimeout(routingHold);
+			};
+		}
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
 		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
 		if (isReleasedReplyCandidate(request)) this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request));
@@ -3370,6 +3416,43 @@ export class MultiNodeRouter {
 			// Local delivery does not depend on the shared database (spec §8).
 			if (request.localTarget !== undefined) return this.deliverLocally(request, request.localTarget);
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+		} finally {
+			this.sendDeadlines.get(request.clientMessage)?.clearRoutingHold?.();
+		}
+	}
+
+	private markRoutingProgress(request: RemoteSendRequest): void {
+		this.storeAnswered();
+		const deadline = this.sendDeadlines.get(request.clientMessage);
+		if (deadline !== undefined) deadline.routingProgressed = true;
+	}
+
+	private sendHoldFrame(
+		socket: BrokerConnectedSession["socket"],
+		messageId: string,
+		attemptId: string | undefined,
+		timeoutMs: number,
+		deadline: { clientDeadlineAt: number },
+	): void {
+		const nextDeadline = performance.now() + timeoutMs + HELD_SEND_GRACE_MS;
+		if (nextDeadline > deadline.clientDeadlineAt) deadline.clientDeadlineAt = nextDeadline;
+		this.host.write(socket, {
+			type: "send_held",
+			messageId,
+			...(attemptId === undefined ? {} : { attemptId }),
+			timeoutMs,
+		});
+	}
+
+	private extendBeforeLocalReceiptWait(request: RemoteSendRequest, target: BrokerConnectedSession): void {
+		if (target.acknowledgesReceipt !== true) return;
+		const sendDeadline = this.sendDeadlines.get(request.clientMessage);
+		if (sendDeadline === undefined) return;
+		const now = performance.now();
+		const remaining = Math.max(0, sendDeadline.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS - now);
+		const waitMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
+		if (waitMs > 0 && sendDeadline.clientDeadlineAt - (now + waitMs) < MIN_WAIT_CLIENT_MARGIN_MS) {
+			this.sendHoldFrame(request.socket, request.message.id, request.attemptId, waitMs, sendDeadline);
 		}
 	}
 
@@ -3424,6 +3507,7 @@ export class MultiNodeRouter {
 				lease.holderId !== this.brokerId &&
 				!this.host.sessions.has(lease.subject.session.id),
 		);
+		this.markRoutingProgress(request);
 		const presenceOf = (lease: LeaseState) => lease.subject as RecipientPresenceSubject;
 		// #5607: a plain send to an id a session holds as an alias reaches that session.
 		const plain = isPlainSend(request);
@@ -3976,6 +4060,7 @@ export class MultiNodeRouter {
 				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
 				// the local path's final refusal just because the outbox lookup was slow.
 				if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
+				this.extendBeforeLocalReceiptWait(sending, target);
 				sending.notFound();
 				return;
 			}
@@ -3991,6 +4076,7 @@ export class MultiNodeRouter {
 			const sending = await this.adoptSharedRouteWithin(request, target);
 			if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
 			if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
+			this.extendBeforeLocalReceiptWait(sending, target);
 			sending.notFound();
 		} finally {
 			clearTimeout(bound);
@@ -4115,6 +4201,7 @@ export class MultiNodeRouter {
 		}
 		const digest = crossNodeDigest(request.signature);
 		const existing = await this.state.outbox.read(message.id);
+		this.markRoutingProgress(request);
 		if (existing.status === "found") {
 			await this.answerExistingRow(request, target, digest, existing.row);
 			return;
@@ -4303,6 +4390,8 @@ export class MultiNodeRouter {
 		row: OutboxRow,
 	): Promise<void> {
 		const { message } = request;
+		const sendDeadline = this.sendDeadlines.get(request.clientMessage);
+		sendDeadline?.clearRoutingHold?.();
 		if (row.digest !== digest || row.targetIdentity !== target.identity) {
 			this.failConflict(request);
 			return;
@@ -4313,7 +4402,26 @@ export class MultiNodeRouter {
 		}
 		const asksTarget = message.expectsReply === true && request.resolveReplyTarget && request.attemptId !== undefined;
 		if (row.state === "delivered") {
-			await this.state.sentMessages.accept({ messageId: message.id, digest });
+			const now = performance.now();
+			const startedAt = sendDeadline?.startedAt ?? now;
+			const deadlineState = sendDeadline ?? { startedAt, clientDeadlineAt: now + SEND_RESPONSE_TIMEOUT_MS, routingProgressed: true };
+			const provisional = setTimeout(() => {
+				const remaining = Math.max(0, startedAt + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now());
+				if (remaining === 0) return;
+				this.sendHoldFrame(
+					request.socket,
+					message.id,
+					request.attemptId,
+					Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining),
+					deadlineState,
+				);
+			}, HOLD_CHECK_GRACE_MS);
+			provisional.unref?.();
+			try {
+				await this.state.sentMessages.accept({ messageId: message.id, digest });
+			} finally {
+				clearTimeout(provisional);
+			}
 			if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
 			this.host.write(request.socket, { type: "delivered", messageId: message.id, attemptId: request.attemptId });
 			return;
@@ -4321,6 +4429,9 @@ export class MultiNodeRouter {
 		const offline = target.hostBrokerId === undefined;
 		const previous = this.waiters.get(message.id);
 		if (previous !== undefined) this.dropWaiter(previous);
+		const now = performance.now();
+		const waitingSince = sendDeadline?.startedAt ?? now;
+		const clientDeadlineAt = sendDeadline?.clientDeadlineAt ?? now + SEND_RESPONSE_TIMEOUT_MS;
 		const waiter: Waiter = {
 			messageId: message.id,
 			digest,
@@ -4334,13 +4445,26 @@ export class MultiNodeRouter {
 			targetIdentity: target.identity,
 			queued: offline,
 			timer: undefined,
-			waitingSince: performance.now(),
+			waitingSince,
+			clientDeadlineAt,
 		};
-		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
-		this.waiters.set(message.id, waiter);
 		if (offline) {
+			this.armWaiter(waiter, DELIVERED_MESSAGE_TTL_MS);
+			this.waiters.set(message.id, waiter);
 			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
 			return;
+		}
+		const remaining = this.capRemaining(waiter);
+		if (remaining === 0) {
+			this.waiters.set(message.id, waiter);
+			this.expireUncertain(waiter);
+			return;
+		}
+		const receiptWaitMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
+		this.armWaiter(waiter, receiptWaitMs);
+		this.waiters.set(message.id, waiter);
+		if (waiter.clientDeadlineAt - (now + receiptWaitMs) < MIN_WAIT_CLIENT_MARGIN_MS) {
+			this.holdSender(waiter, receiptWaitMs);
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
 		await this.bus.publish({ brokerId: target.hostBrokerId!, reason: "outbox", version: row.sequence });
@@ -4842,19 +4966,35 @@ export class MultiNodeRouter {
 
 	private async finishDelivered(waiter: Waiter): Promise<void> {
 		this.dropWaiter(waiter);
-		await this.state.sentMessages.accept({ messageId: waiter.messageId, digest: waiter.digest });
-		if (waiter.expectsReply && waiter.resolveReplyTarget && waiter.attemptId !== undefined) {
-			// #3777: a recipient that reconnected before confirming answers under its new session id.
-			const current = await this.state.leases.read({ kind: "presence", targetIdentity: waiter.targetIdentity });
-			if (
-				current.status === "found" &&
-				current.lease.subject.kind === "presence" &&
-				current.lease.subject.session.id !== waiter.targetSessionId
-			) {
-				await this.writeQuestionTarget(waiter.socket, waiter.messageId, waiter.attemptId, {
-					sessionId: current.lease.subject.session.id,
-				});
+		const provisional = setTimeout(() => {
+			const remaining = this.capRemaining(waiter);
+			if (remaining === 0) return;
+			this.sendHoldFrame(
+				waiter.socket,
+				waiter.messageId,
+				waiter.attemptId,
+				Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining),
+				waiter,
+			);
+		}, HOLD_CHECK_GRACE_MS);
+		provisional.unref?.();
+		try {
+			await this.state.sentMessages.accept({ messageId: waiter.messageId, digest: waiter.digest });
+			if (waiter.expectsReply && waiter.resolveReplyTarget && waiter.attemptId !== undefined) {
+				// #3777: a recipient that reconnected before confirming answers under its new session id.
+				const current = await this.state.leases.read({ kind: "presence", targetIdentity: waiter.targetIdentity });
+				if (
+					current.status === "found" &&
+					current.lease.subject.kind === "presence" &&
+					current.lease.subject.session.id !== waiter.targetSessionId
+				) {
+					await this.writeQuestionTarget(waiter.socket, waiter.messageId, waiter.attemptId, {
+						sessionId: current.lease.subject.session.id,
+					});
+				}
 			}
+		} finally {
+			clearTimeout(provisional);
 		}
 		this.host.write(waiter.socket, { type: "delivered", messageId: waiter.messageId, attemptId: waiter.attemptId });
 	}
@@ -4960,12 +5100,7 @@ export class MultiNodeRouter {
 
 	private holdSender(waiter: Waiter, timeoutMs: number): void {
 		if (this.waiters.get(waiter.messageId) !== waiter) return;
-		this.host.write(waiter.socket, {
-			type: "send_held",
-			messageId: waiter.messageId,
-			...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
-			timeoutMs,
-		});
+		this.sendHoldFrame(waiter.socket, waiter.messageId, waiter.attemptId, timeoutMs, waiter);
 	}
 
 	private expireUncertain(waiter: Waiter): void {
