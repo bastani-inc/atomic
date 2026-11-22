@@ -152,6 +152,31 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
 /**
+ * The longest a claim waits in all once it found the id owned by a broker of this host that has exited: each step that
+ * gives that broker's ids up and binds the id again has `SESSION_ID_CLAIM_BOUND_MS` of its own, as a shared database
+ * that answers slowly takes one round trip for each, up to this. The registration's presence wait is shortened by the
+ * extra time (`presenceBoundAfterClaim`), so both together stay within the client's 10 s.
+ */
+export const SESSION_ID_CLAIM_PROGRESS_CAP_MS = 2 * SESSION_ID_CLAIM_BOUND_MS;
+
+/**
+ * What a claim reports to its registration: how much longer than `SESSION_ID_CLAIM_BOUND_MS` it gave itself to take the
+ * id from a broker of this host that has exited (0 when it did not).
+ */
+export interface SessionIdClaimProgress {
+	extendedMs: number;
+}
+
+/**
+ * The presence wait (`PRESENCE_REGISTRATION_BOUND_MS`) of a registration whose id claim gave itself `extendedMs` past its
+ * own bound. Only that time is taken off: a claim that ran late for any other reason (a stalled broker) leaves the
+ * presence wait as it was.
+ */
+export function presenceBoundAfterClaim(extendedMs: number): number {
+	const most = SESSION_ID_CLAIM_PROGRESS_CAP_MS - SESSION_ID_CLAIM_BOUND_MS;
+	return PRESENCE_REGISTRATION_BOUND_MS - Math.min(most, Math.max(0, extendedMs));
+}
+/**
  * #5607: waits between a returning registration's attempts at an id that another registration of the same session
  * still owns, as when its broker is still releasing it after that session moved here. Tried while within the claim's
  * bound; still owned after that, the session gets a fresh id.
@@ -1069,6 +1094,7 @@ export class MultiNodeRouter {
 		returnAddress: string,
 		identity?: string,
 		handoff?: string,
+		progress?: SessionIdClaimProgress,
 	): Promise<SessionIdClaim> {
 		if (this.closed) return { status: "refused" };
 		// #5607: written with the binding, so a later write can tell whether the binding is still this claim's.
@@ -1103,8 +1129,31 @@ export class MultiNodeRouter {
 						};
 		const owner = this.newOwner(reserved?.token);
 		if (reserved !== undefined) this.consumingTokens.add(reserved.token);
-		const deadline = performance.now() + SESSION_ID_CLAIM_BOUND_MS;
+		// Past `deadline` the claim decides nothing more. A claim that found the id owned by a broker of this host that has
+		// exited moves it on with each step that gives that broker's ids up and binds the id again, within
+		// SESSION_ID_CLAIM_PROGRESS_CAP_MS in all (`progress.extendedMs` says by how much). Waiting for a live owner never
+		// moves it.
 		let expired = false;
+		const started = performance.now();
+		const retryDeadline = started + SESSION_ID_CLAIM_BOUND_MS;
+		let deadline = retryDeadline;
+		let extended = false;
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		let giveUp: (() => void) | undefined;
+		const arm = (ms: number) => {
+			clearTimeout(bound);
+			bound = setTimeout(() => giveUp?.(), ms);
+			bound.unref?.();
+		};
+		const progressed = () => {
+			if (expired) return;
+			const now = performance.now();
+			const next = Math.min(started + SESSION_ID_CLAIM_PROGRESS_CAP_MS, Math.max(deadline, now + SESSION_ID_CLAIM_BOUND_MS));
+			if (next <= deadline) return;
+			deadline = next;
+			extended = true;
+			arm(Math.max(0, deadline - now));
+		};
 		const attempts = (async (): Promise<SessionIdClaim> => {
 			let retired = false;
 			for (let attempt = 0; ; attempt++) {
@@ -1124,33 +1173,34 @@ export class MultiNodeRouter {
 				if (result.status !== "held") return { status: "refused" };
 				// An owner whose broker on this host is known to have exited is no live registration: at once, not after the
 				// stale age.
-				if (!retired && !expired && (await this.retireIfExitedHere(result.ownerBroker))) {
+				if (!retired && !expired && (await this.retireIfExitedHere(result.ownerBroker, progressed))) {
 					retired = true;
 					// A broker that stalled through the check does not try again past the claim's bound.
 					if (expired || performance.now() >= deadline) return { status: "held" };
+					progressed();
 					continue;
 				}
+				// A live owner (or one that took the id once the exited broker's ids were given up) is waited for within the
+				// claim's own bound only.
 				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
-				if (expired || performance.now() + wait >= deadline) return { status: "held" };
+				if (expired || performance.now() + wait >= retryDeadline) return { status: "held" };
 				await new Promise<void>((resolve) => setTimeout(resolve, wait).unref());
 				// A broker that stalled through the wait does not try again past the claim's bound.
-				if (expired || performance.now() >= deadline) return { status: "held" };
+				if (expired || performance.now() >= retryDeadline) return { status: "held" };
 			}
 		})();
-		let bound: ReturnType<typeof setTimeout> | undefined;
 		try {
 			const claimed = await Promise.race<SessionIdClaim>([
 				attempts,
 				new Promise<SessionIdClaim>((resolve) => {
-					bound = setTimeout(
-						() =>
-							resolve({
-								status: "unanswered",
-								unanswered: { sessionId, claim, token: owner.token, ...handedAlias },
-							}),
-						SESSION_ID_CLAIM_BOUND_MS,
-					);
-					bound.unref?.();
+					giveUp = () => {
+						expired = true;
+						resolve({
+							status: "unanswered",
+							unanswered: { sessionId, claim, token: owner.token, ...handedAlias },
+						});
+					};
+					arm(SESSION_ID_CLAIM_BOUND_MS);
 				}),
 			]);
 			// An attempt in flight decides nothing more: the registration's binding write does (`reclaimOrBind`).
@@ -1179,6 +1229,10 @@ export class MultiNodeRouter {
 			return lapsed === undefined ? { status: "refused" } : { status: "held", recovery: lapsed.recovery };
 		} finally {
 			clearTimeout(bound);
+			// What the claim took past its own bound because it gave an exited broker's ids up, and only that: a claim answered
+			// within its bound, or late for any other reason (a stalled broker), takes nothing off the presence wait.
+			if (progress !== undefined && extended)
+				progress.extendedMs = Math.max(0, Math.min(deadline, performance.now()) - retryDeadline);
 			// A held token stays in use until the registration that took it is registered here, which its broker does as
 			// it reads this answer.
 			if (reserved !== undefined) setImmediate(() => this.consumingTokens.delete(reserved.token));
@@ -1189,8 +1243,9 @@ export class MultiNodeRouter {
 	 * #5607: whether the broker `brokerId`, which owns an id, ran on this host (same node, boot and process namespace) and
 	 * no process has its pid any more: its ids are then given up at once, as its own restart would. A broker elsewhere,
 	 * or one whose pid names a process (itself, or a later one the host gave the pid to), keeps them until they go stale.
+	 * `exitedFound` runs once the broker is known to have exited, before its ids are given up.
 	 */
-	private async retireIfExitedHere(brokerId: string | undefined): Promise<boolean> {
+	private async retireIfExitedHere(brokerId: string | undefined, exitedFound?: () => void): Promise<boolean> {
 		const owners = this.state.knownSessions.owners;
 		if (brokerId === undefined || brokerId === this.brokerId || this.hostKey === undefined || owners === undefined)
 			return false;
@@ -1199,6 +1254,7 @@ export class MultiNodeRouter {
 		const { instanceKey, pid } = membership.lease.subject as Partial<BrokerMembershipSubject>;
 		if (instanceKey === undefined || !instanceKey.startsWith(this.hostKey) || pid === undefined) return false;
 		if (this.isProcessAlive(pid)) return false;
+		exitedFound?.();
 		await owners.retireBroker(brokerId);
 		return true;
 	}
@@ -1962,8 +2018,9 @@ export class MultiNodeRouter {
 
 	/**
 	 * A session registered here: record it as known and take its presence lease, retrying briefly while the broker
-	 * it left still holds it. Resolves once other brokers can resolve it, or after `PRESENCE_REGISTRATION_BOUND_MS`
-	 * while the database does not answer; what waits for it is delivered after.
+	 * it left still holds it. Resolves once other brokers can resolve it, or after `boundMs` while the database does not
+	 * answer; what waits for it is delivered after. `boundMs` is `PRESENCE_REGISTRATION_BOUND_MS`, less what the session's id
+	 * claim gave itself past its own bound (`presenceBoundAfterClaim`).
 	 */
 	sessionRegistered(
 		session: BrokerConnectedSession,
@@ -1972,6 +2029,7 @@ export class MultiNodeRouter {
 		grant?: SessionIdGrant,
 		awaits?: string,
 		recovery?: string,
+		boundMs: number = PRESENCE_REGISTRATION_BOUND_MS,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
@@ -2002,7 +2060,7 @@ export class MultiNodeRouter {
 		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
 		insertedBy?.catch(() => {});
 		return new Promise<void>((resolve) => {
-			const bound = setTimeout(resolve, PRESENCE_REGISTRATION_BOUND_MS);
+			const bound = setTimeout(resolve, boundMs);
 			bound.unref?.();
 			this.serial(identity, async () => {
 				try {

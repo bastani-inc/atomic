@@ -84,6 +84,7 @@ import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
+  presenceBoundAfterClaim,
   readSharedStorageSetting,
   resolveMultiNodeStartup,
   SHARED_STORAGE_UNAVAILABLE_REASON,
@@ -870,6 +871,7 @@ class IntercomBroker {
     grant?: SessionIdGrant,
     awaits?: string,
     recovery?: string,
+    presenceBoundMs?: number,
   ): void {
         let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -1079,6 +1081,7 @@ class IntercomBroker {
           grant,
           awaits,
           recovery,
+          presenceBoundMs,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS once the store can open, and by ENDED_QUEUE_TOTAL_WAIT_MS in all).
@@ -1262,12 +1265,14 @@ class IntercomBroker {
           // #5607: a client that takes ids back is told which id it awaits; a hand-over it presents takes one.
           const takesIdHandoff = clientMessage.takesIdHandoff === true;
           const idHandoff = typeof clientMessage.idHandoff === "string" ? clientMessage.idHandoff : undefined;
+          const claimProgress = { extendedMs: 0 };
           void multiNode
             .claimSessionId(
               preferred,
               returnAddress,
               JSON.stringify(["return", returnAddress, normalizeGroup(home)]),
               idHandoff,
+              claimProgress,
             )
             .then((claimed) => {
               this.claimingSessionIds.delete(socket);
@@ -1316,6 +1321,8 @@ class IntercomBroker {
                 // fresh one.
                 awaited ? preferred : undefined,
                 !awaited ? undefined : claimed.status === "held" ? claimed.recovery : claimed.unanswered.recovery,
+                // The claim and the presence wait together stay within the client's registration wait.
+                presenceBoundAfterClaim(claimProgress.extendedMs),
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));

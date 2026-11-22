@@ -11,9 +11,11 @@ import {
 	MultiNodeRouter,
 	type MultiNodeRouterOptions,
 	PRESENCE_REGISTRATION_BOUND_MS,
+	presenceBoundAfterClaim,
 	RESERVED_ID_HOLD_MS,
 	type ReservationOptions,
 	SESSION_ID_CLAIM_BOUND_MS,
+	SESSION_ID_CLAIM_PROGRESS_CAP_MS,
 	SESSION_ID_OWNER_SAFE_MS,
 	type SessionIdClaim,
 	type SessionIdGrant,
@@ -2556,6 +2558,8 @@ describe("a row queued for an offline session that registered meanwhile (#5607)"
 describe("one live registration per Intercom id across brokers (#5607)", () => {
 	// The wall clock alone moves a session's id window on: its elapsed time is the larger of the two clocks'.
 	const ADVANCE = ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] as const;
+	/** A remote shared database's round trip, as the slow-store integration suites take it: four of them pass the claim's bound. */
+	const SLOW_DATABASE_ANSWER_MS = 700;
 
 	/** Another registration of `original`'s session: the same id and return address, a connection of its own. */
 	function twinOf(original: BrokerConnectedSession, name = "twin"): BrokerConnectedSession {
@@ -4216,6 +4220,153 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.notEqual(fromElsewhere.status, "granted", "a broker on another host cannot tell its process has exited");
 		const fromHere = await here.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
 		assert.equal(fromHere.status, "granted");
+	});
+
+	/**
+	 * `live` registered on a broker of this host that then exited (its pid names no process), and another broker of this
+	 * host whose shared database answers each of the claim's calls after `latencies(call)` ms, in the order they are made.
+	 */
+	async function claimAfterExitWithSlowDatabase(
+		latencies: (call: "bind" | "read" | "retireBroker", nth: number) => number,
+		/** A broker on another host, running, registers the session and takes its id once the exited broker's are given up. */
+		contended = false,
+	) {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "performance"] });
+		const shared = await cluster();
+		const EXITED = 2_000_000_004;
+		const isProcessAlive = (pid: number) => pid !== EXITED;
+		const exited = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "first-socket", pid: EXITED, isProcessAlive },
+		});
+		const live = session("live");
+		await registeredOn(exited, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
+		});
+		const calls = { bind: 0, read: 0, retireBroker: 0 };
+		const slowly =
+			<A extends unknown[], R>(call: keyof typeof calls, answer: (...args: A) => Promise<R>) =>
+			(...args: A): Promise<R> =>
+				new Promise<R>((resolve, reject) => {
+					setTimeout(() => answer(...args).then(resolve, reject), latencies(call, calls[call]++));
+				});
+		const knownSessions = here.state.knownSessions;
+		const owners = knownSessions.owners!;
+		const twin = twinOf(live);
+		const contender = contended
+			? await startNode(shared, {
+					process: { hostIdentity: "another-host", instanceKey: "first-socket", isProcessAlive: () => true },
+				})
+			: undefined;
+		const realRetire = owners.retireBroker.bind(owners);
+		const [bind, read, retireBroker] = [
+			slowly("bind", knownSessions.bind.bind(knownSessions)),
+			slowly("read", here.state.leases.read.bind(here.state.leases)),
+			slowly("retireBroker", async (brokerId: string) => {
+				await realRetire(brokerId);
+				const taken = await contender?.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+				assert.ok(taken === undefined || taken.status === "granted", JSON.stringify(taken));
+			}),
+		];
+		vi.spyOn(knownSessions, "bind").mockImplementation(bind);
+		vi.spyOn(here.state.leases, "read").mockImplementation(read);
+		vi.spyOn(owners, "retireBroker").mockImplementation(retireBroker);
+		let answered: SessionIdClaim | undefined;
+		const progress = { extendedMs: 0 };
+		void here.router
+			.claimSessionId(twin.info.id, twin.registrationReturnAddress!, undefined, undefined, progress)
+			.then((claim) => {
+				answered = claim;
+			});
+		return { calls, progress, answer: () => answered };
+	}
+
+	test("a session whose broker on this host exited gets its id back on another broker of this host while each answer of the shared database takes 700 ms (#5607)", async () => {
+		// Binding the id (held by the exited broker), reading that broker's membership, giving its ids up and binding again
+		// take four round trips, more than the claim's bound in all.
+		const { answer, progress } = await claimAfterExitWithSlowDatabase(() => SLOW_DATABASE_ANSWER_MS);
+
+		await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+
+		assert.equal(answer()?.status, "granted", JSON.stringify(answer()));
+		// The registration's presence wait gives back what the claim took past its bound: four round trips less the bound.
+		assert.equal(progress.extendedMs, 4 * SLOW_DATABASE_ANSWER_MS - SESSION_ID_CLAIM_BOUND_MS);
+	});
+
+	test("a claim that keeps giving an exited broker's ids up answers within its cap in all, and binds nothing more (#5607)", async () => {
+		// Each step answers just inside the bound the step before it earned, so only the cap ends the claim.
+		const step = SESSION_ID_CLAIM_BOUND_MS - 100;
+		const { calls, answer } = await claimAfterExitWithSlowDatabase((call, nth) =>
+			call === "bind" && nth === 0 ? 0 : step,
+		);
+
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+
+		assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
+		await vi.advanceTimersByTimeAsync(4 * step);
+		assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
+	});
+
+	test("a claim whose id a live broker took once the exited broker's ids were given up is answered held at once, not tried again past its bound (#5607)", async () => {
+		const { calls, answer } = await claimAfterExitWithSlowDatabase(() => SLOW_DATABASE_ANSWER_MS, true);
+
+		await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+
+		assert.equal(answer()?.status, "held", JSON.stringify(answer()));
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+		assert.equal(calls.bind, 2, "no bind after the one the exited broker's ids were given up for");
+	});
+
+	test("a claim answered within its bound after giving an exited broker's ids up takes nothing off the presence wait (#5607)", async () => {
+		// Four round trips of 600 ms fit in the bound.
+		const { answer, progress } = await claimAfterExitWithSlowDatabase(() => 600);
+
+		await vi.advanceTimersByTimeAsync(4 * 600 + 100);
+
+		assert.equal(answer()?.status, "granted", JSON.stringify(answer()));
+		assert.equal(progress.extendedMs, 0);
+	});
+
+	test("a live owner's id is still answered within the claim's bound while each answer of the shared database takes 700 ms (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "performance"] });
+		const shared = await cluster();
+		// The broker that owns the id runs, on another host: no step of the claim can give its ids up.
+		const owner = await startNode(shared, {
+			process: { hostIdentity: "another-host", instanceKey: "first-socket", isProcessAlive: () => true },
+		});
+		const live = session("live");
+		await registeredOn(owner, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive: () => true },
+		});
+		const knownSessions = here.state.knownSessions;
+		const realBind = knownSessions.bind.bind(knownSessions);
+		vi.spyOn(knownSessions, "bind").mockImplementation(
+			(...args: Parameters<typeof realBind>) =>
+				new Promise((resolve, reject) => {
+					setTimeout(() => realBind(...args).then(resolve, reject), SLOW_DATABASE_ANSWER_MS);
+				}),
+		);
+		const twin = twinOf(live);
+		let answered: SessionIdClaim | undefined;
+		const progress = { extendedMs: 0 };
+		void here.router
+			.claimSessionId(twin.info.id, twin.registrationReturnAddress!, undefined, undefined, progress)
+			.then((claim) => {
+				answered = claim;
+			});
+
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+
+		assert.ok(answered !== undefined && answered.status !== "granted", JSON.stringify(answered));
+		assert.equal(progress.extendedMs, 0, "the registration keeps its whole presence wait");
+	});
+
+	test("the presence wait gives back only what an id claim gave itself past its bound, so both stay within the client's wait", () => {
+		assert.equal(presenceBoundAfterClaim(0), 5_000);
+		assert.equal(presenceBoundAfterClaim(1_100), 3_900);
+		assert.equal(presenceBoundAfterClaim(2_500), 2_500);
+		assert.equal(presenceBoundAfterClaim(6_500), 2_500);
 	});
 
 	test("a broker paused past the stale age disconnects its session once the store answers it again, and the registration that took the id keeps it (#5607)", async () => {
