@@ -5,6 +5,7 @@
 ### Changed
 
 - In a subagent's chat on its page in a task list, a click on `/tasks to manage` under a command the subagent started opens the subagent's own task list, as typing `/tasks` there does. It works only while the chat takes what you type. Without colour the hint is text, as the main chat's hints are.
+- A turn that runs a file-writing tool waits less for its worktree snapshot, most of all on Windows, where each Git process takes 25 to 45 ms to start: a capture lists the checkout's files with one `git status` instead of three Git commands (a checkout with submodules still asks `git diff-files` about them, as before), and no longer reads `HEAD`'s tree again while `HEAD` stays the same. In a checkout of about 7,800 files on Windows, a turn that changed nothing waits about 115 ms instead of 280 ms (175 ms instead of 300 ms when the checkout has uncommitted changes), and one that changed files about 370 ms instead of 490 ms. Snapshots record exactly what they recorded before.
 - Interactive startup reaches its first prompt sooner by loading bundled extensions once instead of tearing down and reloading them during deferred startup completion. With `--no-mcp`, optional builtins are no longer loaded twice before and after binding (and `--no-extensions --no-mcp` no longer loads optional builtins); when settings or project trust change before deferred startup finishes, a full reload still runs as before.
 
 ### Fixed
