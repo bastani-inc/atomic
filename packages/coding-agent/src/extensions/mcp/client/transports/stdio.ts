@@ -551,27 +551,18 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		this.processTree = undefined;
 		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
 		if (!child) {
-			if (tree !== undefined) {
-				if (treeRunning(tree)) {
-					tree.terminate();
-					await processTreeContainment.processTreeEnded(tree, closeTimeoutMs);
-				}
-				tree.close();
-			}
+			tree?.release();
+			tree?.close();
 			this.emitClose();
 			return;
 		}
 		// With process groups, a server that already exited can leave children holding its pipes; the
-		// group cleanup below still has to run for them. On Windows, drain any remaining Job members.
-		if (!USE_PROCESS_GROUPS && (child.exitCode !== null || child.signalCode !== null)) {
+		// group cleanup below still has to run for them. On Windows, a server that already exited before
+		// close() keeps any detached helpers it left behind, so release the Job without terminating them.
+		if (process.platform === "win32" && (child.exitCode !== null || child.signalCode !== null)) {
 			child.stdin?.end();
-			if (tree !== undefined) {
-				if (treeRunning(tree)) {
-					tree.terminate();
-					await processTreeContainment.processTreeEnded(tree, closeTimeoutMs);
-				}
-				tree.close();
-			}
+			tree?.release();
+			tree?.close();
 			return;
 		}
 		// Shutdown per the spec: close stdin and let the server exit, then SIGTERM, then SIGKILL.
@@ -579,6 +570,13 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		const kills = new Set<Promise<void>>();
 		const closeAbort = new AbortController();
 		const windowsTreeState: WindowsTreeStopState = { tree, treeTerminated: false };
+		let forcedKill = false;
+		let treeReleased = false;
+		const releaseTree = () => {
+			if (treeReleased || tree === undefined) return;
+			treeReleased = true;
+			tree.release();
+		};
 		const windowsKillCwd: {
 			done: boolean;
 			value: string | undefined;
@@ -638,11 +636,19 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 					childClosed = true;
 					closeAbort.abort();
 					for (const timer of timers) clearTimeout(timer);
-					// Children of the server that ignored stdin closing would otherwise outlive it.
-					if (tree === undefined || treeRunning(tree)) {
+					if (process.platform !== "win32") {
+						// Children of the server in its process group that ignored stdin closing would otherwise outlive it;
+						// detached daemons live in their own group and survive.
 						kill("SIGTERM");
+					} else if (forcedKill) {
+						// Forced close: finish terminating any remaining Job members (including orphaned grandchildren).
+						if (tree === undefined || treeRunning(tree)) kill("SIGTERM");
+					} else {
+						// Cooperative close on Windows: release the Job without terminating its members so detached
+						// helpers deliberately left running by the server survive.
+						releaseTree();
 					}
-					const needsTreeDrain = tree !== undefined && treeRunning(tree);
+					const needsTreeDrain = forcedKill && tree !== undefined && treeRunning(tree);
 					if (kills.size === 0 && !needsTreeDrain) {
 						resolve();
 						return;
@@ -657,8 +663,18 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 					});
 				});
 				const grace = Math.min(STDIN_CLOSE_GRACE_MS, closeTimeoutMs);
-				timers.push(setTimeout(() => kill("SIGTERM"), grace));
-				timers.push(setTimeout(() => kill("SIGKILL"), grace + closeTimeoutMs));
+				timers.push(
+					setTimeout(() => {
+						forcedKill = true;
+						kill("SIGTERM");
+					}, grace),
+				);
+				timers.push(
+					setTimeout(() => {
+						forcedKill = true;
+						kill("SIGKILL");
+					}, grace + closeTimeoutMs),
+				);
 				// A process that left the server's group can keep the pipes open after the kill; stop waiting for it.
 				timers.push(
 					setTimeout(
@@ -674,6 +690,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 				if (!childClosed) startWindowsKillCwd();
 			});
 		} finally {
+			if (!forcedKill) releaseTree();
 			tree?.close();
 		}
 	}

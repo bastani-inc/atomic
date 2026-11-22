@@ -342,6 +342,51 @@ describe("O9b Windows MCP stdio close, guardian, and remaining bare-PID kill saf
 		assert.equal(fakeChild.kill.mock.calls.length, 1, "falls back to live handle kill only");
 	});
 
+	test("StdioTransport on Windows releases the Job object without terminating members on cooperative close and already-exited close", async () => {
+		fakePlatform("win32");
+		fakes.interceptContainment = true;
+		fakes.containAvailable = true;
+		fakes.interceptHold = true;
+		fakes.holdMode = "held";
+
+		// 1) Cooperative close: server exits on stdin EOF before grace fires.
+		const coopChild = createFakeChild(51010);
+		coopChild.stdin.on("finish", () => {
+			coopChild.exitCode = 0;
+			coopChild.emit("close", 0, null);
+		});
+		fakes.crossSpawnOverride = () => {
+			process.nextTick(() => coopChild.emit("spawn"));
+			return coopChild as unknown as ChildProcess;
+		};
+
+		const transport1 = new StdioTransport({ command: "C:\\Tools\\node.exe", closeTimeoutMs: 500 });
+		await transport1.start();
+		await transport1.close();
+
+		assert.equal(fakes.containedTrees.length, 1);
+		assert.equal(fakes.containedTrees[0]!.terminated, 0, "cooperative close must not terminate Job members");
+		assert.equal(fakes.containedTrees[0]!.released, 1, "cooperative close releases Job before closing");
+		assert.equal(fakes.containedTrees[0]!.closed, 1, "cooperative close closes Job handle");
+		assert.deepEqual(fakes.holdCalls, [], "cooperative close does not force-kill descendants");
+
+		// 2) Already exited before close().
+		const exitedChild = createFakeChild(51011);
+		fakes.crossSpawnOverride = () => {
+			process.nextTick(() => exitedChild.emit("spawn"));
+			return exitedChild as unknown as ChildProcess;
+		};
+		const transport2 = new StdioTransport({ command: "C:\\Tools\\node.exe", closeTimeoutMs: 500 });
+		await transport2.start();
+		exitedChild.exitCode = 0;
+		await transport2.close();
+
+		assert.equal(fakes.containedTrees.length, 2);
+		assert.equal(fakes.containedTrees[1]!.terminated, 0, "already-exited close must not terminate Job members");
+		assert.equal(fakes.containedTrees[1]!.released, 1, "already-exited close releases Job before closing");
+		assert.equal(fakes.containedTrees[1]!.closed, 1, "already-exited close closes Job handle");
+	});
+
 	test("killTrackedDetachedChildren on Windows never kills an unverified bare PID when natives are unavailable", () => {
 		fakePlatform("win32");
 		fakes.interceptStartToken = true;
@@ -580,6 +625,44 @@ public static class AtomicMcpBreakaway {
 			);
 		});
 
+		test("StdioTransport preserves a detached non-breakaway helper across a cooperative close", async () => {
+			const dir = makeTempDir("atomic-win-mcp-coop-detached-");
+			const pidFile = join(dir, "detached.pid");
+			const helperScript = join(dir, "helper.cjs");
+			writeFileSync(
+				helperScript,
+				`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
+			);
+			const serverScript = join(dir, "server.cjs");
+			writeFileSync(
+				serverScript,
+				`const cp = require("node:child_process");
+cp.spawn(process.execPath, [process.argv[2], process.argv[3]], { cwd: require("node:os").tmpdir(), detached: true, stdio: "ignore", windowsHide: true }).unref();
+process.stdin.on("end", () => process.exit(0));
+process.stdin.resume();
+setTimeout(() => process.exit(0), 120_000);
+`,
+			);
+
+			const transport = new StdioTransport({
+				command: process.execPath,
+				args: [serverScript, helperScript, pidFile],
+				cwd: tmpdir(),
+				closeTimeoutMs: 5_000,
+			});
+			await transport.start();
+			const detachedHelper = await waitForPidFile(pidFile);
+			assert.equal(await stillRuns(detachedHelper), true);
+
+			await transport.close();
+
+			assert.equal(
+				await waitUntilGone(detachedHelper, NOT_ENDED_MS),
+				false,
+				"detached helper must survive cooperative MCP close",
+			);
+		});
+
 		test("PARENT_GUARDIAN_SOURCE terminates self, its live child, and a live verified tracked tree natively while sparing a live reused-PID decoy", async () => {
 			const dir = makeTempDir("atomic-win-guardian-decoy-");
 			const stopFile = join(dir, "stop");
@@ -680,6 +763,152 @@ setTimeout(() => { process.stdout.write("SURVIVED"); process.exit(0); }, 20_000)
 				"reused-PID decoy process MUST survive guardian cleanup",
 			);
 			await trackedProc.exited;
+		});
+
+		test("PARENT_GUARDIAN_SOURCE falls back to taskkill for self when older natives lack endDescendants, ending detached descendants", async () => {
+			const dir = makeTempDir("atomic-win-guardian-old-natives-");
+			const stopFile = join(dir, "stop");
+			const childPidFile = join(dir, "child.pid");
+			const childScript = join(dir, "child.cjs");
+			writeFileSync(
+				childScript,
+				`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
+			);
+			// Preload that intercepts @bastani/atomic-natives inside the Node guardian worker to strip endDescendants,
+			// matching a 0.10.4 native binary where endAll() alone would kill self before ending descendants.
+			const preload = join(dir, "old-natives-preload.cjs");
+			writeFileSync(
+				preload,
+				`const Module = require("node:module");
+const origLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+	const mod = origLoad.apply(this, arguments);
+	if (request === "@bastani/atomic-natives" && mod && typeof mod.holdProcessDescendants === "function") {
+		return {
+			...mod,
+			holdProcessDescendants(pid) {
+				const held = mod.holdProcessDescendants(pid);
+				if (!held) return held;
+				return {
+					get count() { return held.count; },
+					endAll: () => held.endAll(),
+					release: () => held.release(),
+				};
+			},
+		};
+	}
+	return mod;
+};
+`,
+			);
+			const resolveTsHook = `data:text/javascript,${encodeURIComponent(`import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+	try { return nextResolve(specifier, context); }
+	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
+} });`)}`;
+			const shellUrl = pathToFileURL(join(process.cwd(), "src/utils/shell.ts")).href;
+			const hostScript = `
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { startParentProcessGuardian } from ${JSON.stringify(shellUrl)};
+
+spawn(process.execPath, [${JSON.stringify(childScript)}, ${JSON.stringify(childPidFile)}], {
+	cwd: tmpdir(),
+	detached: true,
+	stdio: "ignore",
+	windowsHide: true,
+}).unref();
+while (!(existsSync(${JSON.stringify(childPidFile)}) && readFileSync(${JSON.stringify(childPidFile)}, "utf8").trim() !== "")) {
+	await new Promise((r) => setTimeout(r, 20));
+}
+
+startParentProcessGuardian(process.pid, ${JSON.stringify(stopFile)});
+await new Promise((r) => setTimeout(r, 150));
+writeFileSync(${JSON.stringify(stopFile)}, "stop");
+setTimeout(() => { process.stdout.write("SURVIVED"); process.exit(0); }, 20_000);
+`;
+			const host = spawnProcess(
+				[process.execPath, "--import", resolveTsHook, "--input-type=module", "--eval", hostScript],
+				{
+					stdout: "pipe",
+					stderr: "pipe",
+					env: { ...process.env, NODE_OPTIONS: `--require ${JSON.stringify(preload)}` },
+				},
+			);
+			const hostRec = await recordProcess(host.pid!);
+			recordedProcs.push(hostRec);
+
+			const childRec = await waitForPidFile(childPidFile);
+			const exitCode = await Promise.race([
+				host.exited,
+				new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 15_000)),
+			]);
+			if (exitCode === "timeout") host.kill();
+
+			assert.notEqual(exitCode, "timeout", "guardian terminated host under older natives");
+			assert.equal(
+				await waitUntilGone(childRec, GONE_MS),
+				true,
+				"guardian fell back to taskkill and ended detached child when older natives lacked endDescendants",
+			);
+		});
+
+		test("PARENT_GUARDIAN_SOURCE exits its host via process.exit(1) when natives are unavailable and fallback taskkill cannot spawn", async () => {
+			const dir = makeTempDir("atomic-win-guardian-tk-enoent-");
+			const stopFile = join(dir, "stop");
+			const emptySystemRoot = join(dir, "empty-win");
+			mkdirSync(emptySystemRoot);
+			const preload = join(dir, "no-natives-preload.cjs");
+			writeFileSync(
+				preload,
+				`const Module = require("node:module");
+const origLoad = Module._load;
+Module._load = function (request) {
+	if (request === "@bastani/atomic-natives") {
+		throw Object.assign(new Error("Cannot find module '@bastani/atomic-natives'"), { code: "MODULE_NOT_FOUND" });
+	}
+	return origLoad.apply(this, arguments);
+};
+`,
+			);
+			const resolveTsHook = `data:text/javascript,${encodeURIComponent(`import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+	try { return nextResolve(specifier, context); }
+	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
+} });`)}`;
+			const shellUrl = pathToFileURL(join(process.cwd(), "src/utils/shell.ts")).href;
+			const hostScript = `
+import { writeFileSync } from "node:fs";
+import { startParentProcessGuardian } from ${JSON.stringify(shellUrl)};
+startParentProcessGuardian(process.pid, ${JSON.stringify(stopFile)});
+await new Promise((r) => setTimeout(r, 150));
+writeFileSync(${JSON.stringify(stopFile)}, "stop");
+setTimeout(() => { process.stdout.write("SURVIVED"); process.exit(0); }, 20_000);
+`;
+			const host = spawnProcess(
+				[process.execPath, "--import", resolveTsHook, "--input-type=module", "--eval", hostScript],
+				{
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						...process.env,
+						SystemRoot: emptySystemRoot,
+						windir: emptySystemRoot,
+						NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
+					},
+				},
+			);
+			const hostRec = await recordProcess(host.pid!);
+			recordedProcs.push(hostRec);
+
+			const exitCode = await Promise.race([
+				host.exited,
+				new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 10_000)),
+			]);
+			if (exitCode === "timeout") host.kill();
+
+			assert.equal(exitCode, 1, "guardian still exited host with code 1 when fallback taskkill failed with ENOENT");
 		});
 	},
 );

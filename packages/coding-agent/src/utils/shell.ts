@@ -476,8 +476,11 @@ function fallbackTaskkillSelf() {
     const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
     const cwd = safeKillCwd(taskkillPath);
     const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(process.pid)], { ...(cwd === undefined ? {} : { cwd }), stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
-    child.once("error", () => {});
+    child.once("error", () => process.exit(1));
+    child.once("exit", () => process.exit(1));
+    return;
   } catch {}
+  process.exit(1);
 }
 function killTracked(pid, entry, native) {
   if (process.platform === "win32") {
@@ -495,14 +498,20 @@ function killTracked(pid, entry, native) {
 function killSelf(native) {
   if (process.platform === "win32") {
     if (native && typeof native.holdProcessDescendants === "function") {
-      try {
-        const held = native.holdProcessDescendants(process.pid);
-        if (held) {
-          if (typeof held.endDescendants === "function") held.endDescendants();
+      let held;
+      try { held = native.holdProcessDescendants(process.pid); } catch {}
+      // Only take the native path when endDescendants() is available so verified descendants end BEFORE self;
+      // older native binaries lacking endDescendants() would terminate self first in endAll().
+      if (held && typeof held.endDescendants === "function") {
+        try {
+          held.endDescendants();
           held.endAll();
-        }
-      } catch {}
-      process.exit(1);
+        } catch {}
+        process.exit(1);
+      }
+      if (held) {
+        try { held.release(); } catch {}
+      }
     }
     fallbackTaskkillSelf();
     return;
