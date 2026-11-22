@@ -803,6 +803,13 @@ for (const backend of storageBackends) {
 					],
 					["extension", { groups: "[draft", tasks: "[draft", owner: "{draft" }],
 					["intercom_session_memberships", { sessionId: "s", homeGroup: "home", groups: ["b"] }],
+					// Atomic's own JSON null under these names reads as null: the latest membership, with no groups, is valid.
+					["workflow-stage-parked-tasks", { tasks: null }],
+					[
+						"subagent-child",
+						{ childId: "child2", version: 1, index: 1, state: "running", runId: "r", owner: null },
+					],
+					["intercom_session_memberships", { sessionId: "s", homeGroup: "home2", groups: null }],
 				];
 				const entries: SessionEntry[] = protocols.map(([customType, data], i) => ({
 					type: "custom",
@@ -823,6 +830,11 @@ for (const backend of storageBackends) {
 					);
 				// The index the store folded from the whole entries as it wrote them.
 				const { resume: written, ...summary } = await state();
+				assert.equal(
+					written.latest["intercom_session_memberships:s"][0],
+					protocols.length,
+					"the latest membership, whose groups are null, is the valid one",
+				);
 				const rebuild = async (refused = false) => {
 					await db.run(
 						`UPDATE ${tables.sessions} SET summary_state = ? WHERE id = ?`,
