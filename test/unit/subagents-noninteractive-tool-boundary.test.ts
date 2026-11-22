@@ -235,7 +235,7 @@ describe("programmatic subagent tool boundary", () => {
 
 	test("typed restricted child policy blocks management mutation without environment state", async () => {
 		let registered: ToolDefinition | undefined;
-		const pi = {
+		const atomic = {
 			registerTool: (tool: ToolDefinition) => {
 				registered = tool;
 			},
@@ -248,7 +248,7 @@ describe("programmatic subagent tool boundary", () => {
 		} as unknown as ExtensionAPI;
 		// The production door: the full extension resolves a child-scoped executor
 		// from `ctx.subagentPolicy`, so the policy must be carried on the context.
-		registerSubagentExtension(pi);
+		registerSubagentExtension(atomic);
 		const restrictedChildPolicy = {
 			managementActions: "restricted" as const,
 			fanoutAuthorized: true,
@@ -316,7 +316,7 @@ describe("programmatic subagent tool boundary", () => {
 		let registered: ToolDefinition | undefined;
 		const commands: string[] = [];
 		const handlers = new Map<string, Array<() => void>>();
-		const pi = {
+		const atomic = {
 			registerTool: (tool: ToolDefinition) => {
 				registered = tool;
 			},
@@ -333,7 +333,7 @@ describe("programmatic subagent tool boundary", () => {
 			events: { on: () => () => {}, emit: () => {} },
 			getSessionName: () => "parent",
 		} as unknown as ExtensionAPI;
-		registerSubagentExtension(pi);
+		registerSubagentExtension(atomic);
 
 		assert.ok(registered);
 

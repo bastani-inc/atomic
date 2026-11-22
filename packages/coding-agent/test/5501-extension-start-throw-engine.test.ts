@@ -79,8 +79,8 @@ function extensionErrors(output: object[]): object[] {
 test("the interactive engine keeps its session when an extension throws in session_start and reports it once (#5501)", async () => {
 	harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_start", () => {
+			(atomic) => {
+				atomic.on("session_start", () => {
 					throw new Error("boom in session_start");
 				});
 			},
@@ -165,8 +165,8 @@ test("an engine startup that settles project trust reports a resources_discover 
 	let discoveries = 0;
 	harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("resources_discover", () => {
+			(atomic) => {
+				atomic.on("resources_discover", () => {
 					discoveries++;
 					throw new Error("boom in resources_discover");
 				});
@@ -196,8 +196,8 @@ test("an engine startup that settles project trust still reports a second discov
 	let discoveries = 0;
 	harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.on("resources_discover", () => {
+			(atomic) => {
+				atomic.on("resources_discover", () => {
 					discoveries++;
 					throw new Error(`boom in discovery ${discoveries}`);
 				});

@@ -68,12 +68,24 @@ record = {
     "skill": (skill_dir / "SKILL.md").read_text(encoding="utf-8") if skill_dir else None,
 }
 log = Path(os.environ["FAKE_ATOMIC_LOG"])
+# On Windows a record cannot be replaced while another process reads it, as the console harness does
+# while it waits for the records; a read lasts moments, so the replace is tried again for this long.
+REPLACE_ATTEMPTS = 250
+REPLACE_RETRY_SECONDS = 0.02
 
 
 def save() -> None:
     target = log / f"{os.getpid()}.json"
-    target.with_suffix(".tmp").write_text(json.dumps(record), encoding="utf-8")
-    os.replace(target.with_suffix(".tmp"), target)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record), encoding="utf-8")
+    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(temporary, target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS:
+                raise
+            time.sleep(REPLACE_RETRY_SECONDS)
 
 
 def emit(event: dict, end: str = "\n") -> None:

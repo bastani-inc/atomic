@@ -487,8 +487,8 @@ function streamCustomAnthropic(
 	})();
 	return stream;
 }
-export default function (pi: ExtensionAPI) {
-	pi.registerProvider("custom-anthropic", {
+export default function (atomic: ExtensionAPI) {
+	atomic.registerProvider("custom-anthropic", {
 		baseUrl: "https://api.anthropic.com",
 		apiKey: "$CUSTOM_ANTHROPIC_API_KEY",
 		api: "custom-anthropic-api",

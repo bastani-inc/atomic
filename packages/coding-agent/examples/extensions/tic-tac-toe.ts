@@ -96,9 +96,9 @@ function applyCursorMove(state: GameState, action: Exclude<Action, "play">): str
 	}
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
-	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+export default function (atomic: ExtensionAPI) {
+	atomic.on("session_start", async (_event, ctx) => reconstructState(ctx));
+	atomic.on("session_tree", async (_event, ctx) => reconstructState(ctx));
 
 	// Sent once per game at end-of-game. The custom renderer paints the banner;
 	// `content` is a plain-text fallback for any non-TUI consumer and for the
@@ -112,7 +112,7 @@ export default function (pi: ExtensionAPI) {
 					: gameState.status === "draw"
 						? "Draw"
 						: "Game over";
-		await pi.sendMessage({
+		await atomic.sendMessage({
 			customType: GAME_OVER_MESSAGE_TYPE,
 			content: `Game over: ${label}.`,
 			display: true,
@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	};
 
-	pi.registerMessageRenderer(MOVE_MESSAGE_TYPE, (message, { expanded }, theme) => {
+	atomic.registerMessageRenderer(MOVE_MESSAGE_TYPE, (message, { expanded }, theme) => {
 		const details = message.details as BoardDetails | undefined;
 		const turnLabel =
 			details?.currentTurn === "O"
@@ -130,18 +130,18 @@ export default function (pi: ExtensionAPI) {
 		return new BannerMessageComponent(title, details, expanded, theme);
 	});
 
-	pi.registerMessageRenderer(GAME_OVER_MESSAGE_TYPE, (message, _options, theme) => {
+	atomic.registerMessageRenderer(GAME_OVER_MESSAGE_TYPE, (message, _options, theme) => {
 		const details = message.details as BoardDetails | undefined;
 		const status = (details?.status ?? "draw") as GameStatus;
 		return new GameOverMessageComponent(status, details, theme);
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	atomic.on("before_agent_start", async (event) => {
 		if (!gameActive) return undefined;
 		return { systemPrompt: buildTicTacToeInstructions(event.systemPrompt) };
 	});
 
-	pi.registerCommand("tic-tac-toe", {
+	atomic.registerCommand("tic-tac-toe", {
 		description: "Play tic-tac-toe against the agent",
 
 		handler: async (_args, ctx) => {
@@ -154,7 +154,7 @@ export default function (pi: ExtensionAPI) {
 			if (gameState.status !== "playing") {
 				gameState = createInitialState();
 			}
-			await pi.setSessionName("Tic-Tac-Toe");
+			await atomic.setSessionName("Tic-Tac-Toe");
 			gameActive = true;
 			let userMovePending = false;
 
@@ -174,7 +174,7 @@ export default function (pi: ExtensionAPI) {
 							nextState.board[row][col] = nextState.userMark;
 							nextState.status = checkWin(nextState.board);
 							if (nextState.status === "playing") nextState.currentTurn = nextState.agentMark;
-							await pi.appendEntry(SAVE_TYPE, toBoardDetails(nextState));
+							await atomic.appendEntry(SAVE_TYPE, toBoardDetails(nextState));
 							gameState = nextState;
 							component?.updateState(gameState);
 
@@ -186,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 									gameState.agentCursorRow,
 									gameState.agentCursorCol,
 								);
-								await pi.sendMessage(
+								await atomic.sendMessage(
 									{
 										customType: MOVE_MESSAGE_TYPE,
 										content:
@@ -217,7 +217,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "tic_tac_toe",
 		label: "Tic-Tac-Toe",
 		description:
@@ -242,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 			const nextState = { ...gameState, board: gameState.board.map((row) => [...row]) };
 			const result =
 				params.action === "play" ? handleAgentPlay(nextState) : applyCursorMove(nextState, params.action);
-			await pi.appendEntry(SAVE_TYPE, toBoardDetails(nextState));
+			await atomic.appendEntry(SAVE_TYPE, toBoardDetails(nextState));
 			gameState = nextState;
 			component?.updateState(gameState);
 			if (params.action === "play" && gameState.status !== "playing") {
@@ -275,7 +275,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "tic_tac_toe_see_board",
 		label: "See Board",
 		description:

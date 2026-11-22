@@ -221,8 +221,8 @@ describe("a detached call's result is finalized as an inline call's is (#4309)",
 	test("a tool_result extension sees the detached call and its redaction is what is saved (#4309)", async () => {
 		const agentDir = temporaryDirectory("atomic-detached-redaction-");
 		const seen: { readonly toolCallId: string; readonly input: Record<string, unknown> }[] = [];
-		const redacting: ExtensionFactory = (pi) => {
-			pi.on("tool_result", (event) => {
+		const redacting: ExtensionFactory = (atomic) => {
+			atomic.on("tool_result", (event) => {
 				seen.push({ toolCallId: event.toolCallId, input: event.input });
 				return {
 					content: event.content.map((block) =>

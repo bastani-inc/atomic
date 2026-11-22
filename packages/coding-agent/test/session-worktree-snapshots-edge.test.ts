@@ -211,8 +211,8 @@ describe("which turns record, and where", () => {
 		const target = { dir: "" };
 		const tool =
 			(name: string, writesFiles: boolean): ExtensionFactory =>
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name,
 					label: name,
 					description: name,

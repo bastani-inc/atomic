@@ -21,8 +21,8 @@ afterEach(() => pool.cleanup());
 
 /** An extension that, once, asks to continue the run it settles with a message of its own. */
 function continuingOnce(settled: { count: number }): ExtensionFactory {
-	return (pi) => {
-		pi.on("agent_before_settle", () => {
+	return (atomic) => {
+		atomic.on("agent_before_settle", () => {
 			settled.count++;
 			if (settled.count > 1) return;
 			return {

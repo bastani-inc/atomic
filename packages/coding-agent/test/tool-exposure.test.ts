@@ -27,8 +27,8 @@ test("tool exposure preserves activation and prevents hidden tools from being ac
 		agentDir: dir,
 		settingsManager,
 		extensionFactories: [
-			(pi) => {
-				for (const tool of tools) pi.registerTool(tool);
+			(atomic) => {
+				for (const tool of tools) atomic.registerTool(tool);
 			},
 		],
 	});

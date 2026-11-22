@@ -342,8 +342,8 @@ test("Escape while /tree summarizes cancels the summary in the engine and keeps 
 		summarizing = resolve;
 	});
 	// Holds the summary until the host cancels it, or lets it run after a while so the test fails rather than hangs.
-	const holdSummary: ExtensionFactory = (pi) => {
-		pi.on("session_before_tree", async (event) => {
+	const holdSummary: ExtensionFactory = (atomic) => {
+		atomic.on("session_before_tree", async (event) => {
 			summarizing();
 			await new Promise<void>((resolve) => {
 				const fallback = setTimeout(resolve, ENGINE_TURN_SETTLE_TIMEOUT_MS);

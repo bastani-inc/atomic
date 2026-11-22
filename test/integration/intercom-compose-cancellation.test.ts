@@ -69,8 +69,8 @@ for (const ending of ["reload", "shutdown"] as const) {
 			return append(type, data);
 		});
 		const loaded = await createTestExtensionsResult([
-			(pi) =>
-				registerIntercomOverlay(pi, {
+			(atomic) =>
+				registerIntercomOverlay(atomic, {
 					runtimeGeneration: () => 1,
 					getLiveContext: (ctx) => (ctx && !ctx.sessionSignal.aborted ? ctx : null),
 					notifyIfLive() {},

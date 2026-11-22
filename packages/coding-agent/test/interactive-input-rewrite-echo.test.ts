@@ -24,8 +24,8 @@ import { pressAltEnter, pressAltUp, showUserMessagesInChat } from "./helpers/int
 import { getUserTexts } from "./suite/harness.js";
 
 /** An `input` hook that rewrites every message before it is sent. */
-const rewriteInput: ExtensionFactory = (pi) => {
-	pi.on("input", (event) => ({ action: "transform", text: `${event.text} (rewritten)` }));
+const rewriteInput: ExtensionFactory = (atomic) => {
+	atomic.on("input", (event) => ({ action: "transform", text: `${event.text} (rewritten)` }));
 };
 
 const rewritten = (text: string): string => `${text} (rewritten)`;
@@ -241,16 +241,16 @@ describe.each(["local", "isolated"] as const)("a message an input hook rewrites 
 		test("sent twice with the same text while the first run prepares, is shown once each, as sent", async () => {
 			const preparing = createGate();
 			const shown = createGate();
-			const holdFirstRun: ExtensionFactory = (pi) => {
+			const holdFirstRun: ExtensionFactory = (atomic) => {
 				let prepare = true;
 				let show = true;
-				pi.on("before_agent_start", async () => {
+				atomic.on("before_agent_start", async () => {
 					if (!prepare) return;
 					prepare = false;
 					preparing.entered.resolve();
 					await preparing.release.promise;
 				});
-				pi.on("message_start", async (event) => {
+				atomic.on("message_start", async (event) => {
 					if (event.message.role !== "user" || !show) return;
 					show = false;
 					shown.entered.resolve();
@@ -378,8 +378,8 @@ describe.each(["local", "isolated"] as const)("a message an input hook rewrites 
  * holds the message "slow" until `slow` is released, so a test can type while the host waits for it to be dispatched.
  */
 function handleInput(slow?: Gate): ExtensionFactory {
-	return (pi) => {
-		pi.on("input", async (event) => {
+	return (atomic) => {
+		atomic.on("input", async (event) => {
 			if (event.text.startsWith("handled:")) return { action: "handled" };
 			if (event.text === "slow" && slow) {
 				slow.entered.resolve();

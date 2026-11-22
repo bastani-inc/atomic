@@ -99,8 +99,8 @@ describe("interactive deferred startup first prompt readiness", () => {
 				builtinPackagePaths: [],
 				noExtensions: true,
 				extensionFactories: [
-					(pi) =>
-						pi.on("session_start", (_event, ctx) => {
+					(atomic) =>
+						atomic.on("session_start", (_event, ctx) => {
 							observed.push(ctx.isPresentationOnly);
 						}),
 				],
@@ -153,9 +153,9 @@ describe("interactive deferred startup first prompt readiness", () => {
 			builtinPackagePaths: [],
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
+				(atomic) => {
+					atomic.on("session_start", () => {
+						atomic.registerTool({
 							name: "startup_tool",
 							label: "Startup Tool",
 							description: "Tool registered during deferred startup",
@@ -166,9 +166,9 @@ describe("interactive deferred startup first prompt readiness", () => {
 								details: {},
 							}),
 						});
-						pi.registerProvider("anthropic", { baseUrl: deferredBaseUrl });
+						atomic.registerProvider("anthropic", { baseUrl: deferredBaseUrl });
 					});
-					pi.on("resources_discover", () => ({ skillPaths: [skillFile] }));
+					atomic.on("resources_discover", () => ({ skillPaths: [skillFile] }));
 				},
 			],
 		});
@@ -290,9 +290,9 @@ describe("interactive deferred startup first prompt readiness", () => {
 			builtinPackagePaths: [],
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", async () => {
-						pi.registerTool({
+				(atomic) => {
+					atomic.on("session_start", async () => {
+						atomic.registerTool({
 							name: "session_start_tool",
 							label: "Session Start Tool",
 							description: "Published before the queued provider turn",
@@ -300,16 +300,16 @@ describe("interactive deferred startup first prompt readiness", () => {
 							parameters: Type.Object({ nonce: Type.String() }),
 							execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 						});
-						pi.registerProvider(providerId, {
+						atomic.registerProvider(providerId, {
 							api: model.api,
 							apiKey: "test-key",
 							baseUrl: model.baseUrl,
 							models: [model],
 						});
-						modelSelectionAccepted = await pi.setModel(model);
-						pi.sendUserMessage("session-start-provider-turn");
+						modelSelectionAccepted = await atomic.setModel(model);
+						atomic.sendUserMessage("session-start-provider-turn");
 					});
-					pi.on("resources_discover", async () => {
+					atomic.on("resources_discover", async () => {
 						discoveryStarted();
 						await discoveryBlocked;
 						return { skillPaths: [skillFile] };
@@ -375,19 +375,19 @@ describe("interactive deferred startup first prompt readiness", () => {
 					return base;
 				},
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						if (!candidate) {
-							pi.events.on("candidate-start", () => pi.sendUserMessage("old-event-bus-dispatch"));
+							atomic.events.on("candidate-start", () => atomic.sendUserMessage("old-event-bus-dispatch"));
 							return;
 						}
-						pi.on("session_start", (_event, ctx) => {
-							pi.events.emit("candidate-start", undefined);
-							pi.sendUserMessage("candidate-direct-dispatch");
+						atomic.on("session_start", (_event, ctx) => {
+							atomic.events.emit("candidate-start", undefined);
+							atomic.sendUserMessage("candidate-direct-dispatch");
 							ctx.compact();
 							ctx.abort();
 							ctx.shutdown();
 						});
-						pi.on("resources_discover", () => ({ themePaths: [themeFile] }));
+						atomic.on("resources_discover", () => ({ themePaths: [themeFile] }));
 					},
 				],
 			});
@@ -431,9 +431,9 @@ describe("interactive deferred startup first prompt readiness", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					if (!registerProvider) return;
-					pi.registerProvider(providerId, {
+					atomic.registerProvider(providerId, {
 						api: "openai-completions",
 						baseUrl: "http://localhost:8080/removed-provider/v1",
 						models: [{ id: "removed-model", name: "Removed model" }],
@@ -474,10 +474,10 @@ describe("interactive deferred startup first prompt readiness", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
-					const state = sessionScopedExtensionState(pi.lifecycleScope!, "staged-reload", () => ({ loads: 0 }));
+				(atomic) => {
+					const state = sessionScopedExtensionState(atomic.lifecycleScope!, "staged-reload", () => ({ loads: 0 }));
 					state.loads += 1;
-					pi.on("session_start", () => {
+					atomic.on("session_start", () => {
 						if (initialState === undefined) initialState = state;
 						else reloadedState = state;
 						observedLoads = state.loads;
@@ -554,24 +554,24 @@ describe("interactive deferred startup first prompt readiness", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					if (!candidate) {
-						emitLiveProbe = () => pi.events.emit("publication-probe", undefined);
-						pi.events.on("publication-probe", () => pi.sendUserMessage("old-live-handler"));
-						pi.on("session_shutdown", () => {
+						emitLiveProbe = () => atomic.events.emit("publication-probe", undefined);
+						atomic.events.on("publication-probe", () => atomic.sendUserMessage("old-live-handler"));
+						atomic.on("session_shutdown", () => {
 							shutdownCount += 1;
 						});
 						return;
 					}
-					pi.events.on("publication-probe", () => pi.sendUserMessage("candidate-live-handler"));
-					pi.registerTool({
+					atomic.events.on("publication-probe", () => atomic.sendUserMessage("candidate-live-handler"));
+					atomic.registerTool({
 						name: "late_candidate_tool",
 						label: "Late Candidate Tool",
 						description: "Must not publish when provider refresh fails",
 						parameters: Type.Object({}),
 						execute: async () => ({ content: [{ type: "text", text: "unexpected" }], details: {} }),
 					});
-					pi.registerProvider("late-candidate-provider", {
+					atomic.registerProvider("late-candidate-provider", {
 						api: "openai-completions",
 						baseUrl: "http://localhost:8080/late-candidate/v1",
 						models: [{ id: "late-model", name: "Late model" }],
@@ -644,11 +644,11 @@ describe("interactive deferred startup first prompt readiness", () => {
 			settingsManager,
 			eventBus,
 			extensionFactories: [
-				(pi) => {
+				(atomic) => {
 					const handlerMessage = candidate ? "candidate-event-handler" : "old-event-handler";
-					pi.events.on("transaction-probe", () => pi.sendUserMessage(handlerMessage));
+					atomic.events.on("transaction-probe", () => atomic.sendUserMessage(handlerMessage));
 					if (candidate) {
-						pi.registerProvider("event-bus-candidate", {
+						atomic.registerProvider("event-bus-candidate", {
 							api: "openai-completions",
 							baseUrl: "http://localhost:8080/event-bus-candidate/v1",
 							models: [{ id: "candidate-model", name: "Candidate model" }],
@@ -712,17 +712,17 @@ describe("interactive deferred startup first prompt readiness", () => {
 				return base;
 			},
 			extensionFactories: [
-				(pi) => {
-					pi.registerTool({
+				(atomic) => {
+					atomic.registerTool({
 						name: "partial_startup_tool",
 						label: "Partial Startup Tool",
 						description: "Must not publish when extension resources fail",
 						parameters: Type.Object({}),
 						execute: async () => ({ content: [{ type: "text", text: "unexpected" }], details: {} }),
 					});
-					pi.registerProvider("anthropic", { baseUrl: "http://localhost:8080/partial-provider" });
-					pi.on("session_start", () => pi.sendUserMessage("must-not-dispatch"));
-					pi.on("resources_discover", () => ({
+					atomic.registerProvider("anthropic", { baseUrl: "http://localhost:8080/partial-provider" });
+					atomic.on("session_start", () => atomic.sendUserMessage("must-not-dispatch"));
+					atomic.on("resources_discover", () => ({
 						skillPaths: [skillFile],
 						promptPaths: [promptFile],
 						themePaths: [themeFile],

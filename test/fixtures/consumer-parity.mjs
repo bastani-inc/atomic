@@ -163,8 +163,8 @@ try {
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_shutdown", () => {
+				(atomic) => {
+					atomic.on("session_shutdown", () => {
 						released.push("factory");
 						throw new Error("cleanup failed");
 					});
@@ -184,14 +184,14 @@ try {
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_shutdown", () => {
+				(atomic) => {
+					atomic.on("session_shutdown", () => {
 						released.push("first");
 						throw new Error("first cleanup");
 					});
 				},
-				(pi) => {
-					pi.on("session_shutdown", async () => {
+				(atomic) => {
+					atomic.on("session_shutdown", async () => {
 						await delay(10);
 						released.push("second");
 					});

@@ -18,9 +18,9 @@ test("a failed human move save leaves the board and turn playable for retry", as
 	const send = vi.fn().mockResolvedValue(undefined);
 	const notices: string[] = [];
 	const loaded = await createTestExtensionsResult([
-		(pi) =>
+		(atomic) =>
 			ticTacToe({
-				...pi,
+				...atomic,
 				appendEntry: append,
 				setSessionName: async () => {},
 				sendMessage: send,
@@ -75,7 +75,7 @@ for (const action of ["cursor", "play", "win"] as const) {
 		const append = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
 		const send = vi.fn().mockResolvedValue(undefined);
 		const loaded = await createTestExtensionsResult([
-			(pi) => ticTacToe({ ...pi, appendEntry: append, setSessionName: async () => {}, sendMessage: send }),
+			(atomic) => ticTacToe({ ...atomic, appendEntry: append, setSessionName: async () => {}, sendMessage: send }),
 		]);
 		const extension = loaded.extensions[0];
 		const initial: BoardDetails = {

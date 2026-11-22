@@ -72,9 +72,9 @@ describe("the overlapped blueprint build's tool gate (#4748)", () => {
 		const INTERRUPTED_WITHIN_MS = 5_000;
 		const child = generator();
 		let nested: AgentToolCallOutcome | "still waiting" | undefined;
-		const parent: ExtensionFactory = (pi) => {
-			pi.registerTool(child.definition);
-			pi.registerTool({
+		const parent: ExtensionFactory = (atomic) => {
+			atomic.registerTool(child.definition);
+			atomic.registerTool({
 				name: "parent",
 				label: "Parent",
 				description: "Runs generate as a nested call and interrupts it",
@@ -141,8 +141,8 @@ describe("the overlapped blueprint build's tool gate (#4748)", () => {
 	] as const) {
 		test(`a call that waited for the build but ${how} leaves its report to the next call that waits (#4748)`, async () => {
 			const tool = generator();
-			const stopFirst: ExtensionFactory = (pi) => {
-				pi.on("tool_call", (event) => {
+			const stopFirst: ExtensionFactory = (atomic) => {
+				atomic.on("tool_call", (event) => {
 					if (event.toolCallId !== "g-1") return undefined;
 					if (outcome instanceof Error) throw outcome;
 					return outcome;

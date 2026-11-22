@@ -251,8 +251,8 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		// #3105: real extension hooks retain cancellation and shutdown contracts.
 		const extensionsResult = await createTestExtensionsResult([
-			(pi) => {
-				pi.on("message_end", async (event) => {
+			(atomic) => {
+				atomic.on("message_end", async (event) => {
 					if (event.message.role === "assistant") await new Promise((resolve) => setTimeout(resolve, 40));
 				});
 			},

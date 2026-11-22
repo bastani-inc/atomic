@@ -42,7 +42,7 @@ async function enabled(ctx: ExtensionContext): Promise<boolean> {
 }
 
 export function createHerdrExtension(options: HerdrExtensionOptions = {}): ExtensionFactory {
-	return (pi) => {
+	return (atomic) => {
 		if (!captureHerdrEnvironment(options.env ?? process.env)) return;
 		let owner: PaneOwner | undefined;
 		// Supplied loaders can share closures across sessions and overlapping reload runners.
@@ -127,28 +127,28 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			}
 			report(true);
 		};
-		pi.on("session_start", (_event, ctx) => publishExtensionContextEffect(ctx, () => start(ctx)));
-		pi.on("agent_start", (_event, ctx) => {
+		atomic.on("session_start", (_event, ctx) => publishExtensionContextEffect(ctx, () => start(ctx)));
+		atomic.on("agent_start", (_event, ctx) => {
 			if (!ownsBinding(ctx)) return;
 			agentRunning = true;
 			report();
 		});
-		pi.on("agent_settled", (_event, ctx) => {
+		atomic.on("agent_settled", (_event, ctx) => {
 			if (!ownsBinding(ctx)) return;
 			agentRunning = false;
 			report();
 		});
-		pi.on("ui_prompt_start", (_event, ctx) => {
+		atomic.on("ui_prompt_start", (_event, ctx) => {
 			if (!ownsBinding(ctx)) return;
 			openPromptCount++;
 			report();
 		});
-		pi.on("ui_prompt_end", (_event, ctx) => {
+		atomic.on("ui_prompt_end", (_event, ctx) => {
 			if (!ownsBinding(ctx)) return;
 			openPromptCount = Math.max(0, openPromptCount - 1);
 			report();
 		});
-		pi.on("session_shutdown", async (event, ctx) => {
+		atomic.on("session_shutdown", async (event, ctx) => {
 			const stopping = getExtensionContextOwner(ctx);
 			stops.set(stopping, (stops.get(stopping) ?? 0) + 1);
 			if (!ownsBinding(ctx)) return;
@@ -173,6 +173,6 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 	};
 }
 
-export default function herdrExtension(pi: ExtensionAPI): void {
-	createHerdrExtension()(pi);
+export default function herdrExtension(atomic: ExtensionAPI): void {
+	createHerdrExtension()(atomic);
 }

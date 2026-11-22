@@ -299,8 +299,8 @@ describe("AgentSession concurrent prompt guard", () => {
 		const snapshots: string[][] = [];
 		// #3105: exercise the real runner, including awaited lifecycle cleanup.
 		const extensionsResult = await createTestExtensionsResult([
-			(pi) => {
-				pi.on("tool_call", () => {
+			(atomic) => {
+				atomic.on("tool_call", () => {
 					snapshots.push(
 						sessionManager
 							.getEntries()

@@ -186,7 +186,7 @@ const { session } = await createAgentSession({
 - **Selections:** `{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, `{ kind: "adapter", module, options?, secrets?, prefix? }`, or a `SessionStore` instance. Legacy `sessionDir` was removed.
 - **Precedence:** Resolved in order from `sessionManager`, then `sessionStore`, then `storage`, then process environment variables or flags (`ATOMIC_SESSIONS_STORAGE` and `ATOMIC_STORAGE`, see [Selecting storage per process](/storage#selecting-storage-per-process)), then settings (`sessions.storage` before `storage`, see [Session settings](/settings#sessions)), and finally default SQLite. Memory is never a fallback.
 - **Package adapters:** Pass `additionalExtensionPaths: [packageRoot]` on `DefaultResourceLoader` before opening storage to select an embedded package adapter by name ([Adapters from Atomic packages](/storage#adapters-from-atomic-packages)).
-- **Ownership and resume:** Atomic closes stores opened from selections during `dispose()`, leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Await every `SessionManager` mutation and `pi.appendEntry`, `setSessionName`, `setLabel`, and `setThinkingLevel` call (there is no `flush()`; see [Storage errors](/storage#storage-errors)):
+- **Ownership and resume:** Atomic closes stores opened from selections during `dispose()`, leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Await every `SessionManager` mutation and `atomic.appendEntry`, `setSessionName`, `setLabel`, and `setThinkingLevel` call (there is no `flush()`; see [Storage errors](/storage#storage-errors)):
 
 ```typescript
 import { createAgentSession, resolveSessionStore, SessionManager } from "@bastani/atomic";
@@ -330,7 +330,7 @@ try {
 ```
 
 - `setModel(model, { thinkingLevel: "high", persist: true })` clamps unsupported thinking levels and optionally saves global defaults (project overrides still win at startup).
-- Extension APIs reject new actions once close or reload begins; give `pi.exec()` calls timeouts or abort signals. Custom messages with `persistWhenStreaming: true` survive reload.
+- Extension APIs reject new actions once close or reload begins; give `atomic.exec()` calls timeouts or abort signals. Custom messages with `persistWhenStreaming: true` survive reload.
 
 #### Event subscriptions
 
@@ -355,7 +355,7 @@ const subscription = session.subscribe(
 
 #### Finishing admitted work
 
-Disposal and reload drain admitted callbacks, refreshes, and `pi.exec()` subprocesses. Always register cleanup before acquiring resources, pass timeouts/signals to subprocesses, unsubscribe `pi.events.on()` listeners when done, and never await disposal from inside a cleanup handler.
+Disposal and reload drain admitted callbacks, refreshes, and `atomic.exec()` subprocesses. Always register cleanup before acquiring resources, pass timeouts/signals to subprocesses, unsubscribe `atomic.events.on()` listeners when done, and never await disposal from inside a cleanup handler.
 
 #### Reload failures and resource ownership
 
@@ -365,10 +365,10 @@ Disposal and reload drain admitted callbacks, refreshes, and `pi.exec()` subproc
 ```typescript
 import { publishExtensionContextEffect, type ExtensionFactory } from "@bastani/atomic";
 
-const extension: ExtensionFactory = (pi) => {
-  pi.on("session_start", (_event, ctx) =>
+const extension: ExtensionFactory = (atomic) => {
+  atomic.on("session_start", (_event, ctx) =>
     publishExtensionContextEffect(ctx, () => {
-      pi.events.emit("example:session-ready", { sessionId: ctx.sessionManager.getSessionId() });
+      atomic.events.emit("example:session-ready", { sessionId: ctx.sessionManager.getSessionId() });
     }),
   );
 };

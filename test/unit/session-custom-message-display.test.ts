@@ -227,8 +227,8 @@ async function extensionSession(storage: "jsonl" | "sqlite") {
 	const harness = await createHarness({
 		sessionManager: manager,
 		extensionFactories: [
-			(pi: ExtensionAPI) => {
-				api = pi;
+			(atomic: ExtensionAPI) => {
+				api = atomic;
 			},
 		],
 	});
@@ -247,12 +247,12 @@ const notices = (entries: Stored[]) =>
 for (const storage of ["jsonl", "sqlite"] as const) {
 	describe(`an extension writing to a ${storage === "jsonl" ? "JSONL" : "SQLite"} session (#6097)`, () => {
 		it("stores display as a boolean, as the chat reads it (#6097)", async () => {
-			const { pi, reopen, stored } = await extensionSession(storage);
-			const send = pi.sendMessage as (message: object) => Promise<void>;
+			const { pi: atomic, reopen, stored } = await extensionSession(storage);
+			const send = atomic.sendMessage as (message: object) => Promise<void>;
 			await send({ customType: "tool-display", content: "shown", display: "tool" });
 			await send({ customType: "one-display", content: "shown", display: 1 });
 			await send({ customType: "no-display", content: "hidden" });
-			await (pi.sendMessages as (messages: object[]) => Promise<void>)([
+			await (atomic.sendMessages as (messages: object[]) => Promise<void>)([
 				{ customType: "batch-display", content: "shown", display: "tool" },
 			]);
 			const expected = [
@@ -266,27 +266,32 @@ for (const storage of ["jsonl", "sqlite"] as const) {
 		});
 
 		it("rejects what the session could not read back, at the call, and stores nothing (#6097)", async () => {
-			const { pi, reopen, stored, userEntry } = await extensionSession(storage);
+			const { pi: atomic, reopen, stored, userEntry } = await extensionSession(storage);
 			const before = await stored();
 			const calls: Array<[string, () => unknown]> = [
 				[
 					"content that is an object",
-					() => (pi.sendMessage as (message: object) => unknown)({ customType: "x", content: {}, display: true }),
+					() =>
+						(atomic.sendMessage as (message: object) => unknown)({ customType: "x", content: {}, display: true }),
 				],
 				[
 					"a customType that is a number",
-					() => (pi.sendMessage as (message: object) => unknown)({ customType: 7, content: "x", display: true }),
+					() =>
+						(atomic.sendMessage as (message: object) => unknown)({ customType: 7, content: "x", display: true }),
 				],
 				[
 					"a batch with one bad message",
 					() =>
-						(pi.sendMessages as (messages: object[]) => unknown)([
+						(atomic.sendMessages as (messages: object[]) => unknown)([
 							{ customType: "fine", content: "x", display: true },
 							{ customType: "x", content: 7, display: true },
 						]),
 				],
-				["an entry without customType", () => (pi.appendEntry as (type?: string) => unknown)(undefined)],
-				["a label that is a number", () => (pi.setLabel as (id: string, label: unknown) => unknown)(userEntry, 7)],
+				["an entry without customType", () => (atomic.appendEntry as (type?: string) => unknown)(undefined)],
+				[
+					"a label that is a number",
+					() => (atomic.setLabel as (id: string, label: unknown) => unknown)(userEntry, 7),
+				],
 			];
 			for (const [label, call] of calls)
 				await assert.rejects(

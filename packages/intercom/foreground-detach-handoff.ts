@@ -23,7 +23,7 @@ export class ForegroundDetachHandoff {
   private generationCancellation = new AbortController();
 
   constructor(
-    private readonly pi: Pick<ExtensionAPI, "events">,
+    private readonly atomic: Pick<ExtensionAPI, "events">,
     private readonly ackTimeoutMs = 50,
   ) {}
 
@@ -108,7 +108,7 @@ export class ForegroundDetachHandoff {
       };
       const cancel = () => finish("cancelled");
       try {
-        unsubscribe = this.pi.events?.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
+        unsubscribe = this.atomic.events?.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
           if (!payload || typeof payload !== "object") return;
           const response = payload as Partial<DetachHandshake> & { accepted?: unknown };
           if (response.accepted === true
@@ -131,7 +131,7 @@ export class ForegroundDetachHandoff {
         return;
       }
       try {
-        this.pi.events?.emit(INTERCOM_DETACH_REQUEST_EVENT, route);
+        this.atomic.events?.emit(INTERCOM_DETACH_REQUEST_EVENT, route);
       } catch (error) {
         if (!isStaleExtensionContextError(error)) throw error;
         finish("timed-out");

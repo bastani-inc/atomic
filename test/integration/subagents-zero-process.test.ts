@@ -91,7 +91,7 @@ function state(): ExecutorDeps["state"] {
 
 function makeExecutor(root: string, gate: Promise<void>) {
 	const worker = agent();
-	const pi = {
+	const atomic = {
 		events: { on: () => () => {}, emit: () => {} },
 		getSessionName: () => "zero-process-parent",
 	} as unknown as ExecutorDeps["pi"];
@@ -103,7 +103,7 @@ function makeExecutor(root: string, gate: Promise<void>) {
 			}),
 	};
 	const executor = createSubagentExecutor({
-		pi,
+		pi: atomic,
 		state: state(),
 		config: { parallel: { concurrency: 4, maxTasks: 50 } },
 		tempArtifactsDir: join(root, "temp-artifacts"),

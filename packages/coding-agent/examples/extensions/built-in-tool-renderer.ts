@@ -34,12 +34,12 @@ import {
 } from "@bastani/atomic";
 import { Text } from "@bastani/atomic-tui";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	// --- Read tool: show path and line count ---
 	const originalRead = createReadToolDefinition(cwd);
-	pi.registerTool({
+	atomic.registerTool({
 		...originalRead,
 
 		renderCall(args, theme, _context) {
@@ -91,7 +91,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Bash tool: show command and exit code ---
 	const originalBash = createBashToolDefinition(cwd);
-	pi.registerTool({
+	atomic.registerTool({
 		...originalBash,
 
 		renderCall(args, theme, _context) {
@@ -143,7 +143,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Edit tool: show path and diff stats ---
 	const originalEdit = createEditToolDefinition(cwd);
-	pi.registerTool({
+	atomic.registerTool({
 		...originalEdit,
 
 		renderCall(args, theme, _context) {
@@ -200,7 +200,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Write tool: show path and size ---
 	const originalWrite = createWriteToolDefinition(cwd);
-	pi.registerTool({
+	atomic.registerTool({
 		...originalWrite,
 
 		renderCall(args, theme, _context) {

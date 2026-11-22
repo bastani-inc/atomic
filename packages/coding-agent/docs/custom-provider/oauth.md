@@ -12,7 +12,7 @@ Add OAuth or SSO login integrated with `/login`:
 ```typescript
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/atomic-ai";
 
-await pi.registerProvider("corporate-ai", {
+await atomic.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
   api: "openai-responses",
   models: [],
@@ -78,7 +78,7 @@ OAuth callbacks run in the engine process in isolated interactive mode. Use the 
 
 Set `loginLabel` to customize the login dialog title. Set `usesCallbackServer: true` to show a redirect-URL paste field alongside the local callback server.
 
-For a native `pi.registerProvider(provider)` registration, set `provider.auth.oauth.usesCallbackServer: true` when your flow races a local callback server against `interaction.prompt({ type: "manual_code", message: "Paste redirect URL:" })`. The built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth objects already set this flag; keep it when wrapping them, or set `false` for a replacement flow without a callback server. `pi.registerProvider(id, config)` reads `config.oauth.usesCallbackServer`.
+For a native `atomic.registerProvider(provider)` registration, set `provider.auth.oauth.usesCallbackServer: true` when your flow races a local callback server against `interaction.prompt({ type: "manual_code", message: "Paste redirect URL:" })`. The built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth objects already set this flag; keep it when wrapping them, or set `false` for a replacement flow without a callback server. `atomic.registerProvider(id, config)` reads `config.oauth.usesCallbackServer`.
 
 Successful login saves credentials before refreshing the model catalog. Logout removes stored credentials without calling `refreshModels`. Pressing Escape or Ctrl+C cancels login cleanly and keeps prior credentials and models unchanged. Later registrations override earlier ones by provider ID.
 
@@ -134,7 +134,7 @@ Other failures (HTTP 5xx, network failures, or OAuth errors such as `invalid_cli
 Providers whose model lists change at runtime can implement `refreshModels(context)`. Atomic calls it during the model picker's bounded asynchronous refresh independently of login completion:
 
 ```typescript
-await pi.registerProvider("corporate-ai", {
+await atomic.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
   api: "openai-responses",
   apiKey: "$CORPORATE_AI_KEY",
@@ -146,7 +146,7 @@ await pi.registerProvider("corporate-ai", {
 });
 ```
 
-Legacy `ProviderConfig.refreshModels(context)` returns mixed-operation `ProviderModelConfig[]` definitions that replace that registration's live models. A native `Provider` registered with `pi.registerProvider(provider)` calls `await context.publish({ persist, update })` to persist an optional `ModelsStoreEntry` and install provider-owned model state, then returns the latest list from `getModels()` (or `getAllModels()` for mixed-operation providers).
+Legacy `ProviderConfig.refreshModels(context)` returns mixed-operation `ProviderModelConfig[]` definitions that replace that registration's live models. A native `Provider` registered with `atomic.registerProvider(provider)` calls `await context.publish({ persist, update })` to persist an optional `ModelsStoreEntry` and install provider-owned model state, then returns the latest list from `getModels()` (or `getAllModels()` for mixed-operation providers).
 
 The existing catalog stays usable while a refresh runs. Each provider's refresh settles independently; if one fails, times out, or sees an aborted `signal`, it keeps its previous list. Pass `persist` to `context.publish()` only when the catalog should persist across sessions in `models-store.json`.
 

@@ -22,8 +22,8 @@ test("unavailable actions and definition mutations never reach subagent permissi
 		extensionFactories: [
 			createCodemodeExtension(),
 			registerSubagentExtension,
-			(pi) => {
-				pi.on("tool_call", (event) => {
+			(atomic) => {
+				atomic.on("tool_call", (event) => {
 					if (event.toolName === "subagent") permitted.push(String(event.input.action));
 				});
 			},

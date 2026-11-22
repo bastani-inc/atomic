@@ -68,7 +68,7 @@ function startChild(refusal: Error, refusals = Number.POSITIVE_INFINITY) {
 	const handlers = new Map<string, LifecycleHandler[]>();
 	const tools = new Map<string, ToolDefinition>();
 	let sessionName: string | undefined;
-	const pi = {
+	const atomic = {
 		on(event: string, handler: LifecycleHandler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
@@ -108,7 +108,7 @@ function startChild(refusal: Error, refusals = Number.POSITIVE_INFINITY) {
 	});
 	vi.spyOn(IntercomClient.prototype, "isConnected").mockImplementation(() => connected);
 	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
-	intercom(pi);
+	intercom(atomic);
 	const extension = {
 		path: "<intercom>",
 		resolvedPath: "<intercom>",

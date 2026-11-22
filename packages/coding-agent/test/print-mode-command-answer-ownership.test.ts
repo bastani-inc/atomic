@@ -63,8 +63,8 @@ function captureOutput(): { stdout: string[]; stderr: string[] } {
 }
 
 /** A notice another sender saves to the session, outside any command. */
-function foreignNotice(pi: ExtensionAPI): Promise<void> {
-	return pi.sendMessage({ customType: "notice", content: "Unrelated notice", display: true });
+function foreignNotice(atomic: ExtensionAPI): Promise<void> {
+	return atomic.sendMessage({ customType: "notice", content: "Unrelated notice", display: true });
 }
 
 /**
@@ -77,21 +77,21 @@ function answeringCommand(
 	finish: PromiseWithResolvers<void>,
 	api: { pi?: ExtensionAPI },
 ): ExtensionFactory {
-	return (pi) => {
-		api.pi = pi;
-		pi.registerCommand("answer", {
+	return (atomic) => {
+		api.pi = atomic;
+		atomic.registerCommand("answer", {
 			description: "Answers, then waits",
 			handler: async () => {
 				if (how === "message") {
-					await pi.sendMessage({ customType: "answer", content: "Own answer", display: true });
+					await atomic.sendMessage({ customType: "answer", content: "Own answer", display: true });
 				} else {
 					const settled = new Promise<void>((resolve) => {
-						const stop = pi.on("agent_settled", () => {
+						const stop = atomic.on("agent_settled", () => {
 							stop?.();
 							resolve();
 						});
 					});
-					await pi.sendMessage(
+					await atomic.sendMessage(
 						{ customType: "question", content: "Which account?", display: true },
 						{ triggerTurn: true },
 					);
@@ -173,11 +173,11 @@ test("a JSON run still fails when the session's last message is another run's fa
 
 test("a command that answers and then opens a new session prints the new session, not its old answer", async () => {
 	const cleanups: Harness[] = [];
-	const extension: ExtensionFactory = (pi) => {
-		pi.registerCommand("move", {
+	const extension: ExtensionFactory = (atomic) => {
+		atomic.registerCommand("move", {
 			description: "Answers, then leaves the conversation",
 			handler: async (_args, ctx) => {
-				await pi.sendMessage({ customType: "old", content: "Answer in the old session", display: true });
+				await atomic.sendMessage({ customType: "old", content: "Answer in the old session", display: true });
 				await ctx.newSession();
 			},
 		});
@@ -218,19 +218,19 @@ function askingWhileSettling(
 	asked: PromiseWithResolvers<void>,
 	earlierDelivery?: () => Promise<void>,
 ): ExtensionFactory {
-	return (pi) => {
+	return (atomic) => {
 		let settles = 0;
-		pi.on("agent_settled", async () => {
+		atomic.on("agent_settled", async () => {
 			if (++settles !== 1) return;
 			await earlierDelivery?.();
 			settling.resolve();
 			await finishSettling.promise;
 		});
-		pi.registerCommand("answer", {
+		atomic.registerCommand("answer", {
 			description: "Asks while an earlier run settles",
 			handler: async () => {
 				await settling.promise;
-				pi.sendUserMessage("Which account am I using?");
+				atomic.sendUserMessage("Which account am I using?");
 				asked.resolve();
 			},
 		});
