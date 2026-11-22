@@ -112,6 +112,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly transcriptEndBlock: (() => Component | undefined) | undefined;
 	readonly keptTaskAction: ChatSessionHostOpts<TExtraEntry>["keptTaskAction"];
+	readonly keptTaskRoute: ChatSessionHostOpts<TExtraEntry>["keptTaskRoute"];
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly workingTokenCount: (() => number | undefined) | undefined;
@@ -341,6 +342,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getTaskSource = opts.getTaskSource;
 		this.transcriptEndBlock = opts.transcriptEndBlock;
 		this.keptTaskAction = opts.keptTaskAction;
+		this.keptTaskRoute = opts.keptTaskRoute;
 		this.echoedInitialPrompt = opts.echoedInitialPrompt;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingTokenCount = opts.workingTokenCount;
