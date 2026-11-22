@@ -186,3 +186,31 @@ test("a large write makes each entry's statements only when it reaches them", as
 	assert.ok(encodedFirst <= 4, `${encodedFirst} of 24 entries were encoded before the first statement was sent`);
 	assert.equal((await store.load("lazy")).entries.length, 24);
 });
+
+test("an append whose session row cannot be saved writes none of its entries", async () => {
+	const { database, store } = await openStore();
+	const created = await store.create(header("refused"), []);
+	const first = message("first", null);
+	const saved = await store.append("refused", [first], { expectSeq: created.lastSeq, epoch: created.epoch });
+	// The session row's write, the first statement of the append's batch, fails as a constraint refuses it.
+	await database.exec(
+		"CREATE TRIGGER refuse_row BEFORE UPDATE ON session_sessions BEGIN SELECT RAISE(ABORT, 'row refused'); END",
+	);
+	await assert.rejects(
+		store.append("refused", [message("second", first.id), message("third", first.id)], {
+			expectSeq: saved.lastSeq,
+			epoch: created.epoch,
+		}),
+		/row refused/,
+	);
+	await database.exec("DROP TRIGGER refuse_row");
+	const rows = await database.get<SqliteRow & { n: number }>(
+		"SELECT count(*) AS n FROM session_entries WHERE session_id = 'refused'",
+	);
+	assert.equal(rows?.n, 1, "none of the refused append's entries were written");
+	const loaded = await store.load("refused");
+	assert.deepEqual(
+		loaded.entries.map((entry) => entry.id),
+		[first.id],
+	);
+});
