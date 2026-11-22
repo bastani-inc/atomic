@@ -322,9 +322,10 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 }
 
-/** A capture of a checkout that runs now, and when it started. */
+/** A capture of a checkout that runs now, and when it started: as a capture tick, and in milliseconds. */
 interface CheckoutCapture {
 	readonly startedAt: number;
+	readonly startedMs: number;
 	readonly result: Promise<WorktreeSnapshotCapture>;
 }
 
@@ -335,13 +336,45 @@ interface CheckoutCapture {
 const runningCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCapture>>();
 
 /**
+ * The capture queued behind the running one of each key, for the turns that ended while it ran; it is forgotten once it
+ * starts.
+ */
+const queuedCaptures = new WeakMap<SnapshotBlobStore, Map<string, Promise<WorktreeSnapshotCapture>>>();
+
+/**
+ * How long a queued capture waits for the capture ahead of it at most: at least this long, and otherwise four times
+ * the last capture this process finished. A capture still running then is taken as stuck, and the queued one starts
+ * beside it, so a stuck capture holds only the turns it was started for.
+ */
+export const QUEUED_CAPTURE_MIN_WAIT_MS = 10_000;
+const QUEUED_CAPTURE_WAIT_PER_CAPTURE = 4;
+
+/** How long the last capture this process finished took. */
+let lastCaptureMs = 0;
+
+function queuedCaptureWaitMs(): number {
+	return Math.max(QUEUED_CAPTURE_MIN_WAIT_MS, QUEUED_CAPTURE_WAIT_PER_CAPTURE * lastCaptureMs);
+}
+
+function capturesOf<T>(maps: WeakMap<SnapshotBlobStore, Map<string, T>>, blobs: SnapshotBlobStore): Map<string, T> {
+	let map = maps.get(blobs);
+	if (map === undefined) {
+		map = new Map();
+		maps.set(blobs, map);
+	}
+	return map;
+}
+
+/**
  * Captures the checkout at `root` from the session's own earlier snapshot of it, `previous`, for a turn whose writes
  * ended at `wroteBy`, sharing the work with every session of this process that captures it into the same blob table
  * under the same settings from the same snapshot, as a parent and its fresh subagents do. A session's first capture of a
  * checkout records it from its commit, never from another session's snapshot, whose history is not this session's. A
- * capture that started after the turn's writes serves the turn as it is. When the one running started before, the next
- * starts at once and serves every turn that ends before it starts, so a turn waits for at most the capture running when
- * it ended and one more.
+ * capture that started after the turn's writes serves the turn as it is. When the one running started before, the turn
+ * waits for the next one, which starts when the running one ends and serves every turn that ends before then: captures
+ * of one checkout that run side by side slow each other down, on Windows several times over. A turn waits for at most
+ * the capture running when it ended and one more; a running capture that takes far longer than captures do
+ * ({@link queuedCaptureWaitMs}) no longer holds the next one.
  */
 async function sharedCheckoutCapture(
 	blobs: SnapshotBlobStore,
@@ -351,30 +384,52 @@ async function sharedCheckoutCapture(
 	previous: WorktreeSnapshot | undefined,
 	capture: (startedAt: number) => Promise<WorktreeSnapshotCapture>,
 ): Promise<WorktreeSnapshotCapture> {
-	let running = runningCaptures.get(blobs);
-	if (running === undefined) {
-		running = new Map();
-		runningCaptures.set(blobs, running);
-	}
+	const running = capturesOf(runningCaptures, blobs);
+	const queued = capturesOf(queuedCaptures, blobs);
 	const key = JSON.stringify([resolve(root), settings, previous?.id ?? null]);
-	let failed: CheckoutCapture | undefined;
+	const start = (): CheckoutCapture => {
+		const startedAt = nextCaptureTick();
+		const startedMs = performance.now();
+		const current: CheckoutCapture = { startedAt, startedMs, result: capture(startedAt) };
+		running.set(key, current);
+		const forget = () => {
+			if (running.get(key) === current) running.delete(key);
+		};
+		current.result.then(() => {
+			lastCaptureMs = performance.now() - startedMs;
+			forget();
+		}, forget);
+		return current;
+	};
+	// The next capture, queued behind `ahead`: it starts when `ahead` ends, or once `ahead` ran past the wait.
+	const queue = (ahead: CheckoutCapture): Promise<WorktreeSnapshotCapture> => {
+		const next = new Promise<WorktreeSnapshotCapture>((resolveNext, rejectNext) => {
+			let started = false;
+			const begin = () => {
+				if (started) return;
+				started = true;
+				clearTimeout(wait);
+				if (queued.get(key) === next) queued.delete(key);
+				start().result.then(resolveNext, rejectNext);
+			};
+			const wait = setTimeout(begin, Math.max(0, ahead.startedMs + queuedCaptureWaitMs() - performance.now()));
+			wait.unref?.();
+			ahead.result.then(begin, begin);
+		});
+		queued.set(key, next);
+		return next;
+	};
+	let failed: Promise<WorktreeSnapshotCapture> | undefined;
 	for (;;) {
 		const flight = running.get(key);
-		// A capture that started after the turn's writes serves it; one that started before does not, and the next starts
-		// at once: its scan of the working files follows the running one's.
-		if (flight === undefined || flight === failed || flight.startedAt < wroteBy) {
-			const startedAt = nextCaptureTick();
-			const current: CheckoutCapture = { startedAt, result: capture(startedAt) };
-			running.set(key, current);
-			try {
-				return await current.result;
-			} finally {
-				if (running.get(key) === current) running.delete(key);
-			}
-		}
-		const result = await flight.result.catch(() => undefined);
+		if (flight === undefined || flight.result === failed) return await start().result;
+		// A capture that started after the turn's writes serves it; one that started before does not, and the turn
+		// waits for the next one.
+		const shared = flight.startedAt < wroteBy ? (queued.get(key) ?? queue(flight)) : flight.result;
+		const result = await shared.catch(() => undefined);
 		if (result?.status === "captured" || result?.status === "unchanged") return result;
-		failed = flight;
+		// A capture that ended is forgotten before the turns waiting on it read its result; one still listed is not joined.
+		failed = shared;
 	}
 }
 
