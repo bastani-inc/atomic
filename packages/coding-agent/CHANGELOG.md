@@ -36,6 +36,7 @@
 - Installing Atomic writes about 1,600 fewer files and 9 MB less: Atomic's converter for PDF, Office and EPUB files (`markit-ai`) is now part of Atomic's own files, so an install no longer adds that package and the packages only it depends on. The converter now uses MuPDF 1.28.6 and mammoth 1.13, which read more of some PDF and Word documents, as a Bun install already did. A session that was running while Atomic was updated in place from an earlier version fails its first PDF, Office or EPUB read after the update until you restart it.
 - Built-in Intercom now registers its tool, command, and shortcut from a static description at startup and loads the Intercom extension bundle on first use or when the background startup join runs, reducing time to first prompt in both the host and engine processes.
 - Built-in Web Access now registers its tools, commands, and shortcuts from a static description at startup and loads the 4.9 MB Web Access bundle only on first tool, command, or shortcut use.
+- Built-in Subagents now registers its tool, `/agents` command, argument validation, and message renderers from a static description at startup and loads the 1.9 MB Subagents bundle on first use or when resuming a session with existing subagent history.
 
 ### Fixed
 
