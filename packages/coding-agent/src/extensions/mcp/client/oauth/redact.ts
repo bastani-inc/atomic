@@ -1,10 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { redactUrlCredentials } from "../../../../core/error-contract.ts";
-import {
-	isBasicAuthPayload,
-	redactCredentialShapes,
-	stripAnsiWithOrigin,
-} from "../../../../utils/credential-redaction.js";
+import { redactCredentialShapes } from "../../../../utils/credential-redaction.js";
 
 const REDACTED = "[redacted]";
 /** Minimum length for unlabelled literal secret scrubbing so 1-3 character strings (e.g. HTTP status codes) are never over-redacted. */
@@ -1244,6 +1240,52 @@ function isBase64CredentialChar(code: number): boolean {
 	);
 }
 
+function isValidStandardBase64(value: string): boolean {
+	if (value.length < 4 || value.length % 4 !== 0) return false;
+	let pad = 0;
+	for (let i = value.length - 1; i >= 0 && value.charCodeAt(i) === 61; i--) pad++;
+	if (pad > 2) return false;
+	const end = value.length - pad;
+	for (let i = 0; i < end; i++) {
+		const c = value.charCodeAt(i);
+		const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47;
+		if (!ok) return false;
+	}
+	return true;
+}
+
+function looksLikeBase64Credential(value: string): boolean {
+	if (value.length < 4) return false;
+	let hasUpper = false;
+	let hasLower = false;
+	let hasDigit = false;
+	let hasSymbol = false;
+	for (let i = 0; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		if (c >= 65 && c <= 90) hasUpper = true;
+		else if (c >= 97 && c <= 122) hasLower = true;
+		else if (c >= 48 && c <= 57) hasDigit = true;
+		else hasSymbol = true;
+	}
+	if (hasSymbol) return true;
+	if (value.length >= 8 && ((hasUpper && hasLower) || hasDigit)) return true;
+	return false;
+}
+
+/**
+ * Unbounded one-sided check for RFC 7617 `Basic <base64(id:secret)>`:
+ * every valid RFC 7617 `Basic` credential has length >= 4, multiple of 4, valid Base64, and decodes to bytes
+ * containing `:` (0x3a). Falls back to `looksLikeBase64Credential` for non-colon opaque tokens.
+ * Leaves ordinary prose ("Basic auth", "Basic mode", "Basic text") untouched.
+ */
+function isBasicAuthPayload(value: string): boolean {
+	if (value.length < 4) return false;
+	if (isValidStandardBase64(value) && Buffer.from(value, "base64").includes(0x3a)) {
+		return true;
+	}
+	return looksLikeBase64Credential(value);
+}
+
 function isSignedInteger(value: string): boolean {
 	if (value.length === 0) return false;
 	let i = value.charCodeAt(0) === 45 ? 1 : 0;
@@ -1474,12 +1516,88 @@ function isWwwAuthenticateChallengeParam(text: string, start: number): boolean {
 }
 
 /**
+ * Strip ANSI CSI/OSC sequences into `plain`, recording for each index of `plain` its index in `text`
+ * (plus `text.length` sentinel at the end). Chunked linear single pass, zero regular expressions.
+ */
+function stripAnsiWithOrigin(text: string): {
+	readonly plain: string;
+	readonly origin: Int32Array | undefined;
+} {
+	if (!text.includes("\x1b")) return { plain: text, origin: undefined };
+	const chunks: string[] = [];
+	const origin = new Int32Array(text.length + 1);
+	let plainLen = 0;
+	let copied = 0;
+	let i = 0;
+
+	const flush = (end: number) => {
+		if (end <= copied) return;
+		chunks.push(text.slice(copied, end));
+		for (let k = copied; k < end; k++) origin[plainLen++] = k;
+		copied = end;
+	};
+
+	while (i < text.length) {
+		const esc = text.indexOf("\x1b", i);
+		if (esc === -1) {
+			flush(text.length);
+			break;
+		}
+		if (esc + 1 < text.length) {
+			const next = text.charCodeAt(esc + 1);
+			if (next === 0x5b) {
+				// CSI: ESC [ [0-?]* [ -/]* [@-~]
+				let j = esc + 2;
+				while (j < text.length && text.charCodeAt(j) >= 0x30 && text.charCodeAt(j) <= 0x3f) j++;
+				while (j < text.length && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
+				if (j < text.length && text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) {
+					flush(esc);
+					copied = j + 1;
+					i = j + 1;
+					continue;
+				}
+			} else if (next === 0x5d) {
+				// OSC: ESC ] [^\x07\x1b]* (BEL | ESC \) — break on any ESC so unterminated OSC stays O(n).
+				let j = esc + 2;
+				let matched = false;
+				while (j < text.length) {
+					const c = text.charCodeAt(j);
+					if (c === 0x07) {
+						flush(esc);
+						copied = j + 1;
+						i = j + 1;
+						matched = true;
+						break;
+					}
+					if (c === 0x1b) {
+						if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
+							flush(esc);
+							copied = j + 2;
+							i = j + 2;
+							matched = true;
+						}
+						break;
+					}
+					j++;
+				}
+				if (matched) continue;
+			}
+		}
+		i = esc + 1;
+	}
+	if (copied < text.length) flush(text.length);
+	origin[plainLen] = text.length;
+	return { plain: chunks.join(""), origin };
+}
+
+/**
  * Single-pass linear-time secondary net for OAuth/HTTP credential shapes:
  * - `Bearer <token>` (SP/HTAB, arbitrary opaque token chars incl. `!`, `$`, `%`, `:`; preserves prose & WWW-Authenticate challenges)
- * - standalone or assigned `Basic <base64>` (SP/HTAB; shared RFC 7617 `isBasicAuthPayload`)
+ * - standalone or assigned `Basic <base64>` (SP/HTAB; unbounded RFC 7617 `:` check + Base64 fallback)
  * - `code_verifier` / `code-verifier` / `codeVerifier` (form, JSON, escaped `\"...\"`, ANSI-styled)
  * - `code=<secret>` (excluding integers, POSIX/Node `E...` error codes, and standard OAuth error codes)
  * - sensitive URL query parameter values (`?api_key=...`, `&token=...`, etc.)
+ * - long-line `password=<token>` linear fallback (covers >2KB lines where regex engines may abort)
  */
 function redactOAuthStructuredCredentials(text: string): string {
 	if (!text) return text;
@@ -1490,6 +1608,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 	const parts: string[] = [];
 	let copied = 0;
 	let i = 0;
+	const longInput = plain.length > 2048;
 
 	const emitReplacement = (plainFrom: number, plainTo: number) => {
 		if (plainTo <= plainFrom) return;
@@ -1652,6 +1771,25 @@ function redactOAuthStructuredCredentials(text: string): string {
 							i = valEnd;
 							continue;
 						}
+					}
+				}
+			}
+		}
+
+		// 6. Long-line linear fallback for `password=<val>` / `passwd=<val>` / `pwd=<val>` (avoids regex match-limit bypass on >2KB lines)
+		if (longInput && !prevWord) {
+			let pwdLen = 0;
+			if (matchesAsciiInsensitive(plain, i, "password")) pwdLen = 8;
+			else if (matchesAsciiInsensitive(plain, i, "passwd")) pwdLen = 6;
+			else if (matchesAsciiInsensitive(plain, i, "pwd")) pwdLen = 3;
+			if (pwdLen > 0 && i + pwdLen < plain.length && plain.charCodeAt(i + pwdLen) === 61) {
+				const valStart = i + pwdLen + 1;
+				if (valStart < plain.length && !plain.startsWith(REDACTED, valStart)) {
+					const valEnd = scanQuotedOrTokenValueEnd(plain, valStart);
+					if (valEnd > valStart) {
+						emitReplacement(valStart, valEnd);
+						i = valEnd;
+						continue;
 					}
 				}
 			}
