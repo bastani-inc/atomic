@@ -127,6 +127,40 @@ export function interactiveEngineClientOptions(cwd: string): {
 export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-write-cache`;
 
 /**
+ * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG}, after `=`, with the host's arguments (JSON, base64url): while it
+ * waits, the child reads them as the command line does and loads the API implementation of the model the settings
+ * select, when the arguments leave the model to the settings. Read by `cli.ts` through {@link prewarmHostArguments} from
+ * this module's namespace, as {@link INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG} is; an earlier version ignores it.
+ */
+export const INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-default-model-api`;
+
+/**
+ * The longest encoding of a host's arguments a prewarmed child is given, well within every platform's command line.
+ * A host with longer arguments, such as a long first message, gives none: its child loads nothing before it is adopted.
+ */
+export const PREWARM_HOST_ARGUMENTS_MAX_LENGTH = 8192;
+
+function hostArgumentsFlag(args: readonly string[]): string | undefined {
+	const encoded = Buffer.from(JSON.stringify(args), "utf8").toString("base64url");
+	return encoded.length > PREWARM_HOST_ARGUMENTS_MAX_LENGTH
+		? undefined
+		: `${INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG}=${encoded}`;
+}
+
+/** The host's arguments a prewarmed child was started with, if its host gave it them. */
+export function prewarmHostArguments(argv: readonly string[]): string[] | undefined {
+	const prefix = `${INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG}=`;
+	const flag = argv.find((arg) => arg.startsWith(prefix));
+	if (flag === undefined) return undefined;
+	try {
+		const args: unknown = JSON.parse(Buffer.from(flag.slice(prefix.length), "base64url").toString("utf8"));
+		return Array.isArray(args) && args.every((arg) => typeof arg === "string") ? args : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * How a prewarmed engine's launch compares with the one a host prewarmed before it gave the prewarm the environment
  * `main()` derives from the arguments and the global settings: `"unchanged"` when that environment added nothing, so
  * such a host would have run the prewarmed engine too, and `"derived"` when it added something, so such a host would
@@ -210,10 +244,12 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 		// for its engine's exit work).
 		// The write-cache flag follows the no-database marker, which the engine reads as its second argument.
 		const writeCache = options.basis === "derived" && process.platform !== "win32";
+		const hostArguments = hostArgumentsFlag(args);
 		const prewarmArgs = [
 			INTERACTIVE_ENGINE_PREWARM_FLAG,
 			...(args.includes("--no-session") ? [PREWARM_NO_DATABASE] : []),
 			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
+			...(hostArguments ? [hostArguments] : []),
 		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,
