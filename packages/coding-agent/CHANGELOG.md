@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored interrupted running subagents in `/tasks` and the agent panel automatically after an isolated-engine crash without showing user-facing resume prompts or replaying interrupted deliveries.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

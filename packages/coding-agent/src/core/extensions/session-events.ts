@@ -46,6 +46,8 @@ export type SessionRecoveryReason = "startup" | "resume";
 export interface SessionRecoveryRestoreEvent {
 	type: "session_recovery_restore";
 	reason: SessionRecoveryReason;
+	/** True when an isolated engine child replaced one that crashed, rather than a user startup or `/resume`. */
+	readonly engineRestart?: true;
 }
 
 /** A durable delivery card that was shown before the process exited but never reached the model. */

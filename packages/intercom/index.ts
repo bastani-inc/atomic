@@ -914,7 +914,8 @@ export default function intercom(atomic: ExtensionAPI, options: LightweightInter
 			return [];
 		}
 	}
-	atomic.on("session_recovery_restore", async (_event, ctx) => {
+	atomic.on("session_recovery_restore", async (event, ctx) => {
+		if (event.engineRestart === true) return undefined;
 		const closed = await closeFinishedChildAsks(atomic, ctx);
 		const usedIntercom = hasIntercomHistory(ctx.sessionManager.getEntries());
 		const peers = usedIntercom ? await recoveryPeers(ctx) : undefined;

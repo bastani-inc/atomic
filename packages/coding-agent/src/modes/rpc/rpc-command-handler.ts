@@ -906,6 +906,14 @@ export function createRpcCommandHandler({
 				);
 			}
 
+			case "start_pending_recovery_restore": {
+				return createRpcSuccessResponse(
+					id,
+					"start_pending_recovery_restore",
+					await session.startPendingRecoveryRestore(command.reason),
+				);
+			}
+
 			case "get_shortcuts": {
 				const effectiveBindings = await getShortcutBindings();
 				const shortcuts = session.extensionRunner.getShortcuts(effectiveBindings);

@@ -5,6 +5,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	initTheme,
+	isInteractiveEngineRestarted,
 	keyHintIfBound,
 	publishExtensionContextEffect,
 	type SessionEntry,
@@ -473,9 +474,11 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 		let unbindChildOwner: (() => void) | undefined;
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
+		let restoredSessionChildren = false;
 		atomic.on("agent_start", () => taskResumer?.ensure());
 		atomic.on("session_start", async (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
+			restoredSessionChildren = false;
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
 				releaseStartupCleanup = claimStartupCleanup(maintenance);
 			resetSessionState(ctx);
@@ -514,7 +517,7 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 				});
 				await Promise.all([committed, started]);
 				if (opened) void holdRunningSubagentChildren(atomic.events, ctx).catch(() => undefined);
-				if (opened)
+				if (opened && !isInteractiveEngineRestarted())
 					void resumeAwaitingSubagentChildren(
 						executorDeps,
 						ctx,
@@ -524,8 +527,9 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 			}
 		});
 		atomic.on("session_recovery_restore", async (_event, ctx) => {
-			// Subagent children never own children.
-			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
+			// Subagent children never own children, and each session restores its children at most once.
+			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx) || restoredSessionChildren) return undefined;
+			restoredSessionChildren = true;
 			const writer = subagentChildOwnerWriter(atomic, ctx.sessionManager);
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
 			const notices = subagentChildRestoreNotices(outcomes);

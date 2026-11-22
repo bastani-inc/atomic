@@ -901,6 +901,35 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	isRecovering(): boolean {
 		return this.health.isRecovering();
 	}
+	/**
+	 * Run only the background-restore phase (`session_recovery_restore`) in a replacement engine child after a crash.
+	 * Older engines without the command, transport losses from a second crash, or disposal degrade cleanly to a no-op.
+	 */
+	async startPendingRecoveryRestore(reason: SessionRecoveryReason = "resume"): Promise<SessionRecoveryReport> {
+		const empty: SessionRecoveryReport = { replayed: 0, dropped: 0, completions: 0, notices: [] };
+		if (this.disposed) return empty;
+		const generation = this.client.getGeneration();
+		try {
+			const report = await this.client.requestInternal<SessionRecoveryReport>({
+				type: "start_pending_recovery_restore",
+				reason,
+			});
+			return this.disposed || generation !== this.client.getGeneration() ? empty : report;
+		} catch (error) {
+			if (
+				this.disposed ||
+				generation !== this.client.getGeneration() ||
+				isRpcTransportFailure(error) ||
+				(error instanceof Error &&
+					(error.message.includes("Unknown command: start_pending_recovery_restore") ||
+						(error as { code?: unknown }).code === "SessionClosed"))
+			) {
+				return empty;
+			}
+			throw error;
+		}
+	}
+
 	/** Subscribe to host-local engine generation death (see engine-generation.ts). */
 	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
 		return this.client.onGenerationEnded(listener);
@@ -1442,6 +1471,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: (reason?: SessionRecoveryReason) =>
 					this.client.requestInternal<SessionRecoveryReport>({ type: "start_pending_recovery", reason }),
+			},
+			startPendingRecoveryRestore: {
+				configurable: true,
+				value: (reason?: SessionRecoveryReason) => this.startPendingRecoveryRestore(reason),
 			},
 			setSessionName: {
 				configurable: true,

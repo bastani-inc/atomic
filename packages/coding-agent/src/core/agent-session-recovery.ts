@@ -14,6 +14,10 @@ export const SESSION_RECOVERY_NOTICE_TYPE = "session-recovery-notice";
 export const SESSION_RECOVERY_REPLAY_TYPE = "session-recovery-replay";
 
 const recoveries = new WeakMap<AgentSession, Promise<SessionRecoveryReport>>();
+/** Shared per-session restore barrier so startup recovery and post-crash restore never restore children twice. */
+const restores = new WeakMap<AgentSession, Promise<readonly string[]>>();
+/** Sessions whose restore notices have already been written, preventing duplicate notice messages. */
+const restoreNoticesPosted = new WeakSet<AgentSession>();
 
 /**
  * Recover work an earlier process left unfinished. Binding never does this, so a host
@@ -36,16 +40,71 @@ export function startPendingRecovery(
 	return recovery;
 }
 
+/**
+ * Run only the background-restore phase (`session_recovery_restore`) after an isolated engine child replaces one that
+ * crashed: restores interrupted running subagents without replaying interrupted deliveries, starting a main-chat turn,
+ * or prompting the user. Shares its per-session restore barrier with {@link startPendingRecovery}.
+ */
+export function startPendingRecoveryRestore(
+	this: AgentSession,
+	reason: SessionRecoveryReason = "resume",
+): Promise<SessionRecoveryReport> {
+	try {
+		assertSessionOpen(this);
+		return trackSessionWork(this, async (): Promise<SessionRecoveryReport> => {
+			const notices = await runRestorePhase(this, reason, true);
+			if (notices.length > 0 && !isClosing(this) && !restoreNoticesPosted.has(this)) {
+				restoreNoticesPosted.add(this);
+				await this.sendCustomMessage(
+					{
+						customType: SESSION_RECOVERY_NOTICE_TYPE,
+						content: ["Session recovery after restart:", ...notices.map((notice) => `- ${notice}`)].join("\n"),
+						display: true,
+						details: { reason, notices: [...notices] },
+					},
+					{ triggerTurn: false },
+				);
+			}
+			return { replayed: 0, dropped: 0, completions: 0, notices: [...notices] };
+		});
+	} catch (error) {
+		return Promise.reject(error);
+	}
+}
+
 function isClosing(session: AgentSession): boolean {
 	return session._disposed || sessionGenerationClosing.has(session);
+}
+
+function runRestorePhase(
+	session: AgentSession,
+	reason: SessionRecoveryReason,
+	engineRestart: boolean,
+): Promise<readonly string[]> {
+	let pending = restores.get(session);
+	if (pending === undefined) {
+		pending = (async () => {
+			await session._waitForExtensionStart();
+			if (isClosing(session)) return [];
+			const restored = await session.extensionRunner.emitSessionRecovery({
+				type: "session_recovery_restore",
+				reason,
+				...(engineRestart ? { engineRestart: true as const } : {}),
+			});
+			return restored.notices;
+		})();
+		restores.set(session, pending);
+	}
+	return pending;
 }
 
 async function recover(session: AgentSession, reason: SessionRecoveryReason): Promise<SessionRecoveryReport> {
 	await session._waitForExtensionStart();
 	const report: SessionRecoveryReport = { replayed: 0, dropped: 0, completions: 0, notices: [] };
 	if (isClosing(session)) return report;
-	const restored = await session.extensionRunner.emitSessionRecovery({ type: "session_recovery_restore", reason });
-	report.notices.push(...restored.notices);
+	const restoredNotices = await runRestorePhase(session, reason, false);
+	const includeRestoreNotices = !restoreNoticesPosted.has(session);
+	if (includeRestoreNotices) report.notices.push(...restoredNotices);
 	if (isClosing(session)) return report;
 	const pending = pendingProtectedStreamingCustomMessages(session);
 	let replay = pending;
@@ -66,6 +125,7 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 	}
 
 	if (report.notices.length > 0) {
+		if (includeRestoreNotices && restoredNotices.length > 0) restoreNoticesPosted.add(session);
 		await session.sendCustomMessage(
 			{
 				customType: SESSION_RECOVERY_NOTICE_TYPE,
@@ -109,4 +169,5 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 
 export const agentSessionRecoveryMethods = {
 	startPendingRecovery,
+	startPendingRecoveryRestore,
 };
