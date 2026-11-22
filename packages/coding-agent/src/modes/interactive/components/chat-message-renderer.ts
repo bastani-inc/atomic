@@ -129,6 +129,8 @@ export interface ChatMessageRenderOptions {
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	/** See `ToolExecutionOptions.keptTaskAction`. */
 	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
+	/** See `ToolExecutionOptions.keptTaskRoute`. */
+	keptTaskRoute?: string;
 	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
 	hasTaskTranscript?: (taskId: TaskId) => boolean;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
@@ -1120,6 +1122,7 @@ export function renderHostedChatEntry(
 					outputPad: options.outputPad,
 					getTaskRecord: options.getTaskRecord,
 					...(options.keptTaskAction === undefined ? {} : { keptTaskAction: options.keptTaskAction }),
+					...(options.keptTaskRoute === undefined ? {} : { keptTaskRoute: options.keptTaskRoute }),
 					getToolDefinition: options.getToolDefinition,
 				},
 				options.getToolDefinition?.(messageEntry.toolName),
