@@ -108,43 +108,44 @@ function packageName(specifier: string): string | undefined {
 	return specifier.startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0];
 }
 
-/**
- * Atomic's own published modules. Bundles that Bun builds (the builtin extensions and the codemode
- * worker) carry their dependencies inside; native-builtin-bundle-imports pins their imports to the host.
- */
-function publishedSourceFiles(directory: string): string[] {
-	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-		const path = join(directory, entry.name);
-		if (entry.isDirectory()) return publishedSourceFiles(path);
-		if (entry.name.endsWith(".bundle.mjs") || entry.name === "codemode-worker.js") return [];
-		return /\.(?:[cm]?js|[cm]?ts)$/.test(entry.name) ? [path] : [];
-	});
+/** Paths in `dist/.npmignore` that `npm pack` leaves out of the published package (unreachable declarations). */
+function npmignoredPaths(directory: string): Set<string> {
+	const ignoreFile = join(directory, ".npmignore");
+	if (!existsSync(ignoreFile)) return new Set();
+	return new Set(
+		readFileSync(ignoreFile, "utf8")
+			.split(/\r?\n/)
+			.filter((line) => line.length > 0 && !line.startsWith("#"))
+			.map((line) => (line.startsWith("/") ? line.slice(1) : line)),
+	);
 }
 
 /**
- * Dependencies the package bundles into its shared files and that no published file loads by name any more. They stay
- * declared for the release that stops shipping the compiled files that loaded them: a session that started on an
- * earlier version and is updated in place still imports them by name from the code it loaded, and an upgrade removes
- * every package the new version does not declare. Remove them from the dependencies in a later release.
+ * Atomic's own published modules. Bundles that Bun builds (the builtin extensions and the codemode
+ * worker) carry their dependencies inside; native-builtin-bundle-imports pins their imports to the host.
+ * Declaration files excluded by `dist/.npmignore` are not packed and are skipped here too.
  */
-const KEPT_FOR_IN_PLACE_UPDATE = new Set([
-	"brace-expansion",
-	"cross-spawn",
-	"diff",
-	"fast-sha256",
-	"hosted-git-info",
-	"lovely-mermaid",
-	"lru-cache",
-	"semver",
-	// Atomic's own code bundles it; markit-ai, which loaded it by name, is bundled now too.
-	"turndown",
-	"yaml",
-]);
+function publishedSourceFiles(directory: string, root = directory, ignored = npmignoredPaths(directory)): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) return publishedSourceFiles(path, root, ignored);
+		if (entry.name.endsWith(".bundle.mjs") || entry.name === "codemode-worker.js") return [];
+		if (!/\.(?:[cm]?js|[cm]?ts)$/.test(entry.name)) return [];
+		const rel = relative(root, path).replaceAll("\\", "/");
+		return ignored.has(rel) ? [] : [path];
+	});
+}
 
 builtTest("@bastani/atomic depends on exactly the packages its published files load", () => {
+	const files = publishedSourceFiles(DIST);
+	const relativeFiles = new Set(files.map((file) => relative(DIST, file).replaceAll("\\", "/")));
+	assert.ok(
+		relativeFiles.has("index.d.ts") && relativeFiles.has("core/http-dispatcher.d.ts"),
+		"published declaration files must be scanned alongside runtime modules",
+	);
 	const loaded = new Map<string, string>();
 	const named = new Set<string>();
-	for (const file of publishedSourceFiles(DIST)) {
+	for (const file of files) {
 		const typescript = /\.[cm]?ts$/.test(file);
 		const declaration = /\.d\.[cm]?ts$/.test(file);
 		const references = fileReferences(readFileSync(file, "utf8"), typescript, declaration);
@@ -167,12 +168,9 @@ builtTest("@bastani/atomic depends on exactly the packages its published files l
 	const installed = new Map<string, { dependencies?: Record<string, string> }>();
 	for (const { name, entry } of codingAgentDependencyClosure()) if (!installed.has(name)) installed.set(name, entry);
 	const required = new Set([...loaded.keys()].flatMap((name) => Object.keys(installed.get(name)?.dependencies ?? {})));
-	const notLoaded = [...declared].filter((name) => !loaded.has(name) && !named.has(name) && !required.has(name));
-	const unused = notLoaded.filter((name) => !KEPT_FOR_IN_PLACE_UPDATE.has(name));
-	// A package kept for in-place updates is one the published files no longer load, and still a dependency.
-	const keptNeedlessly = [...KEPT_FOR_IN_PLACE_UPDATE].filter((name) => !notLoaded.includes(name));
+	const unused = [...declared].filter((name) => !loaded.has(name) && !named.has(name) && !required.has(name));
 	// An undeclared package is missing from installs; an unused one adds files to every install.
-	assert.deepEqual({ undeclared, unused, keptNeedlessly }, { undeclared: [], unused: [], keptNeedlessly: [] });
+	assert.deepEqual({ undeclared, unused }, { undeclared: [], unused: [] });
 });
 
 interface PackDryRunResult {

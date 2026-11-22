@@ -454,7 +454,7 @@ export class RpcClient extends RpcClientApi {
 		} finally {
 			if (this.stoppingEngine === child) this.stoppingEngine = undefined;
 		}
-		await this.beginTerminalDrain(endedGeneration, stopError);
+		await this.beginTerminalDrain(endedGeneration, stopError, true);
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
 		this.generation += 1;
@@ -833,14 +833,20 @@ export class RpcClient extends RpcClientApi {
 			this.activeActivityIds.clear();
 			this.notifyActivity(false);
 		}
-		this.beginTerminalDrain(generation, error);
+		this.beginTerminalDrain(generation, error, this.pendingRequests.size > 0);
 		this.publishGenerationEnded(generation, error, kind, false);
 	}
 	/** Hold this generation's requests until its stdout drains (RpcTerminalDrain). */
-	private beginTerminalDrain(generation: number, error: Error): Promise<void> {
-		return this.terminalDrain.begin(generation, this.stdoutDrained, error, (settled) => {
-			if (generation === this.generation) this.pendingRequests.rejectAll(settled);
-		});
+	private beginTerminalDrain(generation: number, error: Error, keepAlive: boolean): Promise<void> {
+		return this.terminalDrain.begin(
+			generation,
+			this.stdoutDrained,
+			error,
+			(settled) => {
+				if (generation === this.generation) this.pendingRequests.rejectAll(settled);
+			},
+			keepAlive,
+		);
 	}
 	private publishGenerationEnded(
 		generation: number,

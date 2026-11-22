@@ -1263,14 +1263,17 @@ export async function main(argv: string[], options?: MainOptions) {
 						cleaning = extension;
 					});
 					let bound: NodeJS.Timeout | undefined;
-					const failures = await Promise.race([
-						shutDown,
-						new Promise<undefined>((resolve) => {
-							bound = setTimeout(() => resolve(undefined), ENGINE_SHUTDOWN_GRACE_MS);
-							bound.unref?.();
-						}),
-					]);
-					clearTimeout(bound);
+					let failures: unknown[] | undefined;
+					try {
+						failures = await Promise.race([
+							shutDown,
+							new Promise<undefined>((resolve) => {
+								bound = setTimeout(() => resolve(undefined), ENGINE_SHUTDOWN_GRACE_MS);
+							}),
+						]);
+					} finally {
+						clearTimeout(bound);
+					}
 					// What fails later is part of the shutdown already reported as unfinished.
 					if (failures === undefined) return cleaning ? { extension: cleaning } : {};
 					for (const failure of failures) console.error(chalk.yellow(`Warning: ${String(failure)}`));
