@@ -1713,6 +1713,23 @@ describe("interrupted worktree additions (#3109)", () => {
 		},
 	);
 
+	test.skipIf(process.platform === "win32")(
+		"a git that added the worktree before it was stopped for an adder that cannot be recorded leaves nothing added (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "unrecordable-late");
+			writeFileSync(join(realpathSync(join(repo, ".git")), "atomic-worktree-adders"), "in the way\n");
+			const path = autoWorktree(repo, "feat/unrecorded-late");
+			const error = await withInjectedGit(dirs.root, { FAKE_GIT_MODE: "add-outlives-stop" }, () =>
+				rejection(resolveWorkspace(workspace({ repo, branch: "feat/unrecorded-late" }))),
+			);
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "filesystem-failed");
+			assert.equal(error.fields.operation, "record the git adding");
+			assert.equal(existsSync(path), false, "the worktree git added is removed");
+			assert.doesNotMatch(git(repo, "worktree", "list", "--porcelain"), /unrecorded-late/);
+		},
+	);
+
 	test("binds a worktree the user locked for another reason and leaves it locked (#3109)", async () => {
 		const repo = createRepository(dirs.root, "user-locked");
 		const path = join(dirs.root, "removable", "feat-user");

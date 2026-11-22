@@ -625,6 +625,18 @@ async function removeAdditionWithoutHead(path: string, adminDir: string): Promis
 		await filesystem("remove interrupted worktree", directory, () => rm(directory, { recursive: true }));
 }
 
+/** Remove what a git stopped while adding `path` left there: a worktree it added in part or in whole. */
+async function removeStoppedAddition(
+	repository: OpenRepository,
+	repo: string,
+	path: string,
+	branch: string,
+): Promise<void> {
+	const state = await worktreeState(repository, path);
+	if (state.kind === "interrupted" || state.kind === "orphaned")
+		await removeIncompleteWorktree(repository, repo, path, branch, state);
+}
+
 /** An addition that may still be running, so its worktree must not be used or repaired yet. */
 interface WorktreeBusy {
 	readonly fields: Readonly<Record<string, string>>;
@@ -675,9 +687,22 @@ async function addWorktree(
 			await git(repository.root, ["worktree", "prune"], "worktree-add");
 			// A failed addition keeps its record: its git has exited, so a later bind sees the adder gone and repairs it.
 			const record = worktreeAdderRecord(repository.commonDir, path);
-			await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, (pid) =>
-				recordAdder(record, pid),
-			);
+			let unrecorded = false;
+			try {
+				await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, async (pid) => {
+					try {
+						await recordAdder(record, pid);
+					} catch (error) {
+						unrecorded = true;
+						throw error;
+					}
+				});
+			} catch (error) {
+				// A git whose adder could not be recorded is stopped, and has exited by now, but it can have added the
+				// worktree before it was stopped: nothing could tell a later bind that this addition is over, so it goes now.
+				if (unrecorded) await removeStoppedAddition(repository, repo, path, branch);
+				throw error;
+			}
 			await git(repository.root, ["worktree", "unlock", path], "worktree-add");
 			await filesystem("remove the record of the git adding", record, () => rm(record, { force: true }));
 			return undefined;
