@@ -4,13 +4,22 @@ import net from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
+import { BROKER_DISCONNECT_TIMEOUT_MS } from "../../packages/intercom/retry-policy.js";
 import { stopDetachedBroker } from "./detached-broker.js";
 import { removeTestDirectory } from "./test-directory-removal.js";
 import { TEST_TIMEOUT_MS } from "./test-timeout.js";
 
 const BROKER_TERMINATE_GRACE_MS = 1_000;
-/** How long the suite's own client cleanups may take; each ends its connection itself well within it. */
-const CLIENT_CLEANUP_TIMEOUT_MS = 5_000;
+/** Margin kept below `TEST_TIMEOUT_MS` so even a multi-phase cleanup timeout reports the fixture's own error. */
+const CLEANUP_HOOK_MARGIN_MS = 5_000;
+/** Shared ceiling across all teardown phases so client, exit, and stdio waits never reach `TEST_TIMEOUT_MS`. */
+const CLEANUP_TOTAL_TIMEOUT_MS = TEST_TIMEOUT_MS - CLEANUP_HOOK_MARGIN_MS;
+/**
+ * How long the suite's own client cleanups may take. Each Intercom client destroys its socket after
+ * `BROKER_DISCONNECT_TIMEOUT_MS`, so this leaves load headroom for the disconnect timer and its close callback
+ * while still failing a hanging cleanup inside the hook timeout.
+ */
+const CLIENT_CLEANUP_TIMEOUT_MS = Math.min(TEST_TIMEOUT_MS / 2, BROKER_DISCONNECT_TIMEOUT_MS * 5);
 /**
  * How long a broker killed at teardown may take to exit. A killed process exits once the system has ended it, which a
  * loaded machine slows, so this only names a kill that never took, well inside the hook's own timeout.
@@ -22,15 +31,26 @@ const BROKER_READY_POLL_MS = 25;
 
 async function bounded<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let firstTurn: ReturnType<typeof setImmediate> | undefined;
+	let secondTurn: ReturnType<typeof setImmediate> | undefined;
 	try {
 		return await Promise.race([
 			operation,
 			new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+				timer = setTimeout(() => {
+					// If an event-loop stall fired both a client's disconnect destroy timer and this deadline in the
+					// same timers phase, yield past libuv's close-callbacks phase so `socket.destroy()` can deliver
+					// its `'close'` event before rejecting.
+					firstTurn = setImmediate(() => {
+						secondTurn = setImmediate(() => reject(new Error(message)));
+					});
+				}, timeoutMs);
 			}),
 		]);
 	} finally {
 		clearTimeout(timer);
+		if (firstTurn !== undefined) clearImmediate(firstTurn);
+		if (secondTurn !== undefined) clearImmediate(secondTurn);
 	}
 }
 
@@ -180,7 +200,15 @@ export class IntercomBrokerFixture {
 		});
 	}
 
-	private async stopBroker(): Promise<void> {
+	/** Stops the tracked broker process (SIGTERM, escalating to SIGKILL) within the fixture's shared cleanup ceiling. */
+	async stopBroker(): Promise<void> {
+		const cleanupDeadline = performance.now() + CLEANUP_TOTAL_TIMEOUT_MS;
+		await this.stopTrackedBroker((phaseBudgetMs) =>
+			Math.min(phaseBudgetMs, Math.max(0, cleanupDeadline - performance.now())),
+		);
+	}
+
+	private async stopTrackedBroker(remainingBudgetMs: (phaseBudgetMs: number) => number): Promise<void> {
 		const broker = this.broker;
 		if (!broker || this.hasClosed) return;
 		const signal = (name: NodeJS.Signals) => {
@@ -192,13 +220,13 @@ export class IntercomBrokerFixture {
 			signal("SIGTERM");
 			await bounded(
 				this.exited,
-				BROKER_EXIT_TIMEOUT_MS,
+				remainingBudgetMs(BROKER_EXIT_TIMEOUT_MS),
 				"Broker did not close before cleanup deadline (it had not exited); keeping its files",
 			);
 			// Unlike exit or kill success, close also proves inherited stdio was released.
 			await bounded(
 				this.closed,
-				BROKER_STDIO_RELEASE_TIMEOUT_MS,
+				remainingBudgetMs(BROKER_STDIO_RELEASE_TIMEOUT_MS),
 				"Broker did not close before cleanup deadline; keeping its files",
 			);
 		} finally {
@@ -215,15 +243,18 @@ export class IntercomBrokerFixture {
 	}
 
 	async cleanup(): Promise<void> {
+		const cleanupDeadline = performance.now() + CLEANUP_TOTAL_TIMEOUT_MS;
+		const remainingBudgetMs = (phaseBudgetMs: number): number =>
+			Math.min(phaseBudgetMs, Math.max(0, cleanupDeadline - performance.now()));
 		try {
 			try {
 				await bounded(
 					Promise.all(this.cleanups.splice(0).map(async (cleanup) => cleanup())),
-					CLIENT_CLEANUP_TIMEOUT_MS,
+					remainingBudgetMs(CLIENT_CLEANUP_TIMEOUT_MS),
 					"Broker clients did not close before cleanup deadline",
 				);
 			} finally {
-				await this.stopBroker();
+				await this.stopTrackedBroker(remainingBudgetMs);
 				await this.stopSuccessorBroker();
 			}
 			removeTestDirectory(this.agentDir, { retries: 20, retryDelayMs: 50 });
