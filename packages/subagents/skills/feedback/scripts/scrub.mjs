@@ -434,6 +434,39 @@ function scrubPrivateKeys(input) {
 		replacements: count ? [{ category: "private-key", count }] : [],
 	};
 }
+/** A character an email's local part may hold. */
+const EMAIL_LOCAL_CHARACTER = /^[A-Z0-9._%+-]$/iu;
+const WORD_CHARACTER = /^\w$/iu;
+/** An email's domain, read from just after its `@`. */
+const EMAIL_DOMAIN = /[A-Z0-9.-]+\.[A-Z]{2,}\b/iuy;
+const isWordCharacter = (character) => character !== undefined && WORD_CHARACTER.test(character);
+/**
+ * Redacts the emails `\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b` (ignoring case) finds, in one pass. That expression
+ * reads on to the end of a run of local-part characters from each word boundary in it, so text such as `a-a-a-...`
+ * took time growing with the square of its length: 4 s for 64 KiB, and a minute on a busy machine. A local part
+ * cannot hold `@` and ends at one, so each `@` is read back to the start of its run instead.
+ */
+function scrubEmails(input) {
+	let text = "";
+	let cursor = 0;
+	let count = 0;
+	for (let at = input.indexOf("@"); at >= 0; at = input.indexOf("@", at + 1)) {
+		// The local part starts at the first word boundary of the run before the `@`, after the previous email.
+		let start = at;
+		while (start > cursor && EMAIL_LOCAL_CHARACTER.test(input[start - 1])) start -= 1;
+		while (start < at && isWordCharacter(input[start - 1]) === isWordCharacter(input[start])) start += 1;
+		if (start === at) continue;
+		EMAIL_DOMAIN.lastIndex = at + 1;
+		if (!EMAIL_DOMAIN.test(input)) continue;
+		text += input.slice(cursor, start) + REDACTION_PLACEHOLDER;
+		cursor = EMAIL_DOMAIN.lastIndex;
+		count += 1;
+	}
+	return {
+		text: text + input.slice(cursor),
+		replacements: count ? [{ category: "email", count }] : [],
+	};
+}
 const seg = "[\\\\/](?:Users|home)[\\\\/][^\\\\/\\s]+";
 const rules = [
 	{
@@ -470,7 +503,7 @@ const rules = [
 		pattern: new RegExp(`(?<!\\w)(?:${escaped(homedir())}|(?:\\w:)?${seg})(?:${seg})*[\\\\/]?`, "giu"),
 		replacement: (match) => (/[\\/]$/u.test(match) ? "~/" : "~"),
 	},
-	{ category: "email", pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, replacement: REDACTION_PLACEHOLDER },
+	{ category: "email", scrub: scrubEmails },
 ];
 
 export function scrub(text) {
