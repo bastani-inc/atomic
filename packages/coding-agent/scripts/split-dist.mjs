@@ -342,12 +342,39 @@ const visitBundled = (path) => {
 	}
 };
 for (const entry of [...BUNDLED_ENTRIES, ...OWNER_ENTRIES, ...lateImports]) visitBundled(entry.endsWith(".js") ? entry : `${entry}.js`);
+/**
+ * The modules an earlier release imports on demand by their paths, as each release's record holds them
+ * (`in-place-update/<version>.json`, see `scripts/in-place-update-exports.mjs`). A process of that release, still running
+ * from an install updated in place, imports each by that path when it first needs it, so each stays an entry at its
+ * path, also once this package imports it statically or not at all. A shared file is left out: its name says what it
+ * exports, and the release check reports one this build no longer writes.
+ */
+const RELEASE_RECORDS = join(packageDir, "in-place-update");
+if (!existsSync(RELEASE_RECORDS))
+	throw new Error(
+		`split-dist: ${RELEASE_RECORDS} is missing; the split keeps the modules the releases recorded there import on demand`,
+	);
+const releasedLazyTargets = new Set();
+for (const file of readdirSync(RELEASE_RECORDS).filter((name) => /^\d.*\.json$/.test(name))) {
+	const record = JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8"));
+	for (const key of Object.keys(record.packages["@bastani/atomic"]?.lazy ?? {})) {
+		const prefix = "@bastani/atomic:dist/";
+		if (!key.startsWith(prefix) || key.startsWith(`${prefix}${SHARED_DIRECTORY}/`)) continue;
+		const path = key.slice(prefix.length);
+		if (!existsSync(join(dist, path)) && !existsSync(join(COMPILED_ENTRIES, path)))
+			throw new Error(
+				`split-dist: ${record.version} imports dist/${path} on demand, and no module of this package compiles to it; keep a module at that path`,
+			);
+		releasedLazyTargets.add(path);
+		visitBundled(path);
+	}
+}
 const SPLIT_ENTRIES = [
 	...new Set([
 		...BUNDLED_ENTRIES,
 		...OWNER_ENTRIES,
 		...PATH_LOADED_ENTRIES,
-		...[...lateImports, ...lazyTargets]
+		...[...lateImports, ...lazyTargets, ...releasedLazyTargets]
 			.filter((path) => !compiledModules.has(path) && !threadModules.has(path))
 			.map((path) => path.replace(/\.js$/, "")),
 	]),

@@ -78,6 +78,7 @@ import type { ChatSteeringTarget } from "./chat-session-host-steering.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { parseWheelReport, ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
+import { registerHintRoute } from "./hint-routes.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import type { KeptTaskAction } from "./kept-task.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
@@ -445,7 +446,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 */
 	private noteKeptTaskFacts(): void {
 		if (this.keptTasks !== "openWaited") {
-			this.takesTyping = this.source.sendTaskMessage !== undefined && this.readOnlyReason() === undefined;
+			this.takesTyping = this.takesTypingNow();
 			return;
 		}
 		const task = this.liveTask();
@@ -453,6 +454,20 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			task === undefined
 				? undefined
 				: waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks).at(-1)?.ref.taskId;
+	}
+	/** Whether the chat takes what is typed, so `/tasks` typed into it runs its own. */
+	private takesTypingNow(): boolean {
+		return this.source.sendTaskMessage !== undefined && this.readOnlyReason() === undefined;
+	}
+	/**
+	 * A click on this chat's own `/tasks` hint runs `/tasks` here, as typing it does, while the chat takes what is typed.
+	 * One on a hint drawn before it stopped taking it runs nothing.
+	 */
+	private runTasksHint(command: string): boolean {
+		if (this.disposed || classifyChatCommand(command) !== "tasks" || !this.takesTypingNow()) return false;
+		const ran = this.runCommand(command);
+		this.requestRender();
+		return ran;
 	}
 	/** Why messages cannot reach this task any more, or `undefined` while they can. */
 	readOnlyReason(): string | undefined {
@@ -500,6 +515,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly reportLate: (reason: string) => void;
 	private readonly showKeys: (() => void) | undefined;
 	private readonly keptTasks: "ownTasks" | "openWaited";
+	/** Where a click on this chat's own `/tasks` hint leads, while the page lives. */
+	private readonly tasksHintRoute: { readonly route: string; dispose(): void } | undefined;
 	private waitedShell: TaskId | undefined;
 	private takesTyping = false;
 
@@ -531,6 +548,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.reportLate = reportLate;
 		this.showKeys = options.showKeys;
 		this.keptTasks = options.keptTasks ?? "ownTasks";
+		this.tasksHintRoute =
+			this.keptTasks === "ownTasks" ? registerHintRoute((command) => this.runTasksHint(command)) : undefined;
 		this.chat = env.createChat({
 			style: env.style,
 			tui: env.tui,
@@ -600,6 +619,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
 			transcriptEndBlock: () => this.releasedCard(),
 			keptTaskAction: (keptTaskId) => this.keptTaskAction(keptTaskId),
+			...(this.tasksHintRoute === undefined ? {} : { keptTaskRoute: this.tasksHintRoute.route }),
 			// The completion the subagent's chat offers, from its own cwd and skills.
 			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
 				const commands = await source.taskCommands?.(this.liveTaskId());
@@ -1214,6 +1234,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptPromptHistories.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.tasksHintRoute?.dispose();
 		const open = openPages.get(this.source);
 		for (const [id, page] of open ?? []) if (page === this) open?.delete(id);
 		this.cancelAdjacent();

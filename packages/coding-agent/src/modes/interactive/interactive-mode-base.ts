@@ -186,7 +186,7 @@ function isCommandLikeStartupInput(text: string): boolean {
 
 export function seedStartupInput(
 	pendingUserInputs: InteractiveSubmission[],
-	editor: { setText(text: string): void },
+	editor: { setText(text: string): void; setTextAsTyped?(text: string): void },
 	startupInput: EarlyInputSnapshot | undefined,
 	startupReplayInputs: string[] = [],
 	setStartupDraftText?: (text: string) => void,
@@ -209,8 +209,12 @@ export function seedStartupInput(
 	if (startupInput.text.length === 0) return;
 	if (commandReplayStarted) {
 		setStartupDraftText?.(startupInput.text);
-	} else {
+	} else if (startupInput.heldForStartupDecision || !editor.setTextAsTyped) {
+		// Held for a startup decision: the notice says Enter sends it as it is, so no completion menu opens over it.
 		editor.setText(startupInput.text);
+	} else {
+		// Typed before the screen appeared: the completion typing it asks for opens as if it had been typed in the prompt.
+		editor.setTextAsTyped(startupInput.text);
 	}
 }
 

@@ -60,6 +60,7 @@ import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
 	isMandatoryResourceLoader,
 	isolateMandatoryResourceLoader,
+	mandatoryLoaderCoversBuiltins,
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
 import {
@@ -450,7 +451,8 @@ async function constructAgentSession(
 	}
 	if (
 		(options.resourceLoader || options.builtins) &&
-		(!isMandatoryResourceLoader(resourceLoader) || options.builtins)
+		(!isMandatoryResourceLoader(resourceLoader) ||
+			(options.builtins !== undefined && !mandatoryLoaderCoversBuiltins(resourceLoader, options.builtins)))
 	) {
 		resourceLoader = await withBuiltinResourceLoader(resourceLoader, cwd, agentDir, options.builtins);
 	}
