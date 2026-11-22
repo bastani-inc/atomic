@@ -20,13 +20,30 @@ export function isLineTerminatorCode(code: number): boolean {
 	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
 }
 
+export function isAsciiDigitCode(code: number): boolean {
+	return code >= 0x30 && code <= 0x39;
+}
+
+export function isAsciiLetterCode(code: number): boolean {
+	return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
+
+export function isAsciiHexCode(code: number): boolean {
+	return isAsciiDigitCode(code) || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66);
+}
+
 export function isAsciiWordCode(code: number): boolean {
-	return (
-		(code >= 0x30 && code <= 0x39) ||
-		(code >= 0x41 && code <= 0x5a) ||
-		(code >= 0x61 && code <= 0x7a) ||
-		code === 0x5f
-	);
+	return isAsciiDigitCode(code) || isAsciiLetterCode(code) || code === 0x5f;
+}
+
+export function isHorizontalWsCode(code: number): boolean {
+	return code === 0x20 || code === 0x09;
+}
+
+export function skipHorizontalWs(text: string, pos: number): number {
+	let cur = pos;
+	while (cur < text.length && isHorizontalWsCode(text.charCodeAt(cur))) cur++;
+	return cur;
 }
 
 /** ASCII case-insensitive match at `offset` (matching JS non-`/u` `/i` without shifting UTF-16 indices). */

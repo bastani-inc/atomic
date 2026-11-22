@@ -36,7 +36,12 @@ import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
 import { hideAgentPanelFor } from "./agent-panel-bridge.ts";
-import { engineAgentViewSettlementSeq } from "./agent-view-rpc-panel.ts";
+import {
+	engineAgentViewHasTypedHost,
+	engineAgentViewLastRequestId,
+	engineAgentViewLegacySettlementSeq,
+	engineAgentViewSettledRequestId,
+} from "./agent-view-rpc-panel.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
@@ -149,7 +154,8 @@ export async function showTaskInspector(
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
 	let requestedAgentId: TaskId | undefined;
-	let engineSeqAtRequest: number | undefined;
+	let requestedEngineId: number | undefined;
+	let legacySeqAtRequest: number | undefined;
 	const trackReturn = !options.chat && options.source === undefined;
 	const session = options.board ? boardSessions.get(options.board) : undefined;
 	const bridge = session === undefined ? undefined : agentViewBridge(session);
@@ -182,8 +188,9 @@ export async function showTaskInspector(
 		if (bridge !== undefined)
 			inspector.setAgentView((id) => {
 				requestedAgentId = id;
-				engineSeqAtRequest = engineAgentViewSettlementSeq(bridge);
+				legacySeqAtRequest = engineAgentViewLegacySettlementSeq(bridge);
 				bridge.requestView(id, { keepScreen: true });
+				requestedEngineId = engineAgentViewLastRequestId(bridge);
 			});
 
 		const reopenOptions = { board: options.board };
@@ -323,10 +330,17 @@ export async function showTaskInspector(
 			if (inspector.closeReason === "navigated-agent" && inspector.returnAnchor !== undefined) {
 				const anchor = inspector.returnAnchor;
 				const currentViewed = bridge?.viewedTaskId();
+				const awaitingTypedHostAck =
+					bridge !== undefined &&
+					requestedEngineId !== undefined &&
+					engineAgentViewHasTypedHost(bridge) &&
+					(engineAgentViewSettledRequestId(bridge) ?? 0) < requestedEngineId &&
+					engineAgentViewLegacySettlementSeq(bridge) === legacySeqAtRequest;
 				if (
 					bridge === undefined ||
 					requestedAgentId === undefined ||
-					(currentViewed !== undefined &&
+					(!awaitingTypedHostAck &&
+						currentViewed !== undefined &&
 						(currentViewed === requestedAgentId ||
 							resolveStoreTaskKey(store, currentViewed) === anchor.selectedKey))
 				) {
@@ -335,20 +349,33 @@ export async function showTaskInspector(
 					const priorViewedKey =
 						priorViewedId === undefined ? undefined : resolveStoreTaskKey(store, priorViewedId);
 					const priorFallbackAnchor =
-						priorViewedId !== undefined && priorViewedKey !== undefined && anchor.selectedKey !== priorViewedKey
-							? priorSaved !== undefined && priorSaved.selectedKey === priorViewedKey
-								? priorSaved
-								: {
-										selectedKey: priorViewedKey,
-										orderKeys: anchor.orderKeys,
-										scroll: anchor.scroll,
-									}
+						priorViewedId !== undefined && priorViewedKey !== undefined
+							? anchor.selectedKey !== priorViewedKey
+								? priorSaved !== undefined && priorSaved.selectedKey === priorViewedKey
+									? priorSaved
+									: {
+											selectedKey: priorViewedKey,
+											orderKeys: anchor.orderKeys,
+											scroll: anchor.scroll,
+										}
+								: priorSaved !== undefined && priorSaved.selectedKey === priorViewedKey
+									? priorSaved
+									: undefined
 							: undefined;
 					const awaitingAsyncSettlement =
 						(bridge instanceof AgentViewSwitcher && bridge.pendingTaskId !== undefined) ||
-						(engineSeqAtRequest !== undefined && engineAgentViewSettlementSeq(bridge) === engineSeqAtRequest);
+						(requestedEngineId !== undefined &&
+							(engineAgentViewSettledRequestId(bridge) ?? 0) < requestedEngineId &&
+							engineAgentViewLegacySettlementSeq(bridge) === legacySeqAtRequest);
 					if (awaitingAsyncSettlement) {
-						stagePendingTasksReturn(store, requestedAgentId, anchor, priorFallbackAnchor, priorViewedId);
+						stagePendingTasksReturn(
+							store,
+							requestedAgentId,
+							anchor,
+							priorFallbackAnchor,
+							priorViewedId,
+							requestedEngineId,
+						);
 					} else if (priorViewedId !== undefined && currentViewed === priorViewedId) {
 						if (priorFallbackAnchor !== undefined)
 							saveTasksReturnAnchor(store, priorFallbackAnchor, priorViewedId);
