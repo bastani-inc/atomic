@@ -181,6 +181,7 @@ test("every step hashes the tsconfig and bunfig files its compilers and bundlers
 	}
 	const atomic = BUILD_STEPS.find((step) => step.name === "atomic");
 	assert.ok(atomic && inputPaths(atomic).includes("packages/coding-agent/tsconfig.build.json"));
+	assert.ok(atomic && inputPaths(atomic).includes("packages/coding-agent/in-place-update"));
 });
 
 test("each package builds after the forked packages and native step whose outputs it consumes", () => {

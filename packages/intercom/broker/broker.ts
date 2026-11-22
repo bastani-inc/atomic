@@ -75,9 +75,11 @@ type ReleasedAskerReplyRouter,
 	type SendClientMessage,
 	detachSend,
 	messageFrameFor,
+	retargetSendToSessionId,
 	resolveSessionAliasesWith,
 	senderAtReceipt,
 } from "./send-handler.js";
+import { isVerticalBypass } from "./group-isolation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import {
   DurableEndedQueue,
@@ -1072,7 +1074,7 @@ class IntercomBroker {
               ? { childName: registered, groups: sessionGroups(info), ...(supervisorId ? { authorizedBy: supervisorId } : {}) }
               : undefined,
           );
-          for (const send of departedSends.filter(isQueuedForWake)) this.dispatchQueuedForWake(send, registered);
+          for (const send of departedSends.filter(isQueuedForWake)) this.dispatchQueuedForWake(send, registered, id);
           for (const send of restoredSends) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
           this.dispatchHeldSends(departedSends.filter((send) => !isQueuedForWake(send)));
         };
@@ -1909,29 +1911,53 @@ class IntercomBroker {
     // a sender's later message never overtakes its earlier ones. Sends to other sessions never wait.
     if (typeof clientMessage.to === "string" && this.endedQueue.restorePhase !== "idle" && this.endedQueue.restorePhase !== "ready") {
       const sender = senderId === null ? undefined : this.sessions.get(senderId);
-      const extraReachable: ConnectedSession[] = [];
-      if (sender !== undefined) {
-        const message = isMessage(clientMessage.message) ? clientMessage.message : undefined;
-        const replyTo = message?.replyTo;
-        if (replyTo !== undefined) {
-          for (const session of this.sessions.values()) {
-            if (this.pendingQuestions.matchesReply(sender.info.id, session.info.id, replyTo)) {
-              extraReachable.push(session);
+      const supervisorSend = clientMessage.type === "supervisor_send";
+      const message = isMessage(clientMessage.message) ? clientMessage.message : undefined;
+      if (!supervisorSend || (sender?.supervisorId !== undefined && clientMessage.to.trim() === sender.supervisorId)) {
+        const extraReachable: ConnectedSession[] = [];
+        const returnPathReachable: ConnectedSession[] = [];
+        if (sender !== undefined) {
+          if (supervisorSend && sender.supervisorId !== undefined) {
+            const supervisor = this.sessions.get(sender.supervisorId);
+            if (supervisor !== undefined) extraReachable.push(supervisor);
+          }
+          const replyTo = message?.replyTo;
+          if (replyTo !== undefined) {
+            for (const session of this.sessions.values()) {
+              if (
+                this.pendingQuestions.matchesReply(sender.info.id, session.info.id, replyTo) ||
+                isVerticalBypass({
+                  replyTo,
+                  sender: sender.info,
+                  target: session.info,
+                  supervisorCache: this.supervisorChannel,
+                })
+              ) {
+                extraReachable.push(session);
+              }
             }
           }
+          if (message !== undefined && mayUseReturnPath(message, supervisorSend, sender)) {
+            for (const session of this.returnPathAuthority.answerable(sender)) returnPathReachable.push(session);
+          }
         }
-        if (message !== undefined && mayUseReturnPath(message, clientMessage.type === "supervisor_send", sender)) {
-          for (const session of this.returnPathAuthority.answerable(sender)) extraReachable.push(session);
+        const plainSend =
+          !supervisorSend &&
+          message?.replyTo === undefined &&
+          clientMessage.requirePendingReply !== true &&
+          clientMessage.expectedRecipientId === undefined;
+        if (
+          shouldHoldSendForEndedQueueRestore(this.endedQueue, clientMessage.to, sender, this.sessions, {
+            ...(this.multiNode === undefined || !plainSend
+              ? {}
+              : { localAliasTarget: (target) => this.multiNode?.localAliasTarget(target) }),
+            ...(extraReachable.length === 0 ? {} : { extraReachable }),
+            ...(returnPathReachable.length === 0 ? {} : { returnPathReachable }),
+          })
+        ) {
+          this.endedQueue.whenRestored(() => this.dispatchSend(socket, clientMessage, senderId));
+          return;
         }
-      }
-      if (
-        shouldHoldSendForEndedQueueRestore(this.endedQueue, clientMessage.to, sender, this.sessions, {
-          ...(this.multiNode === undefined ? {} : { localAliasTarget: (target) => this.multiNode?.localAliasTarget(target) }),
-          ...(extraReachable.length === 0 ? {} : { extraReachable }),
-        })
-      ) {
-        this.endedQueue.whenRestored(() => this.dispatchSend(socket, clientMessage, senderId));
-        return;
       }
     }
     handleBrokerSend(
@@ -2624,7 +2650,8 @@ class IntercomBroker {
       // A subagent registered already takes what was kept for it.
       if (session.supervisorId === undefined || session.registrationName === undefined) continue;
       const sends = this.departedChildren.registered(session.registrationName, sessionGroups(session.info), session.supervisorId);
-      for (const send of sends.filter(isQueuedForWake)) this.dispatchQueuedForWake(send, session.registrationName);
+      for (const send of sends.filter(isQueuedForWake))
+        this.dispatchQueuedForWake(send, session.registrationName, session.info.id);
       this.dispatchHeldSends(sends.filter((send) => !isQueuedForWake(send)));
     }
   }
@@ -2821,9 +2848,22 @@ class IntercomBroker {
    * would tell the sender stays here, except a refusal, which the sender gets as that message's delivery failure. One
    * kept while the subagent was paused is marked so, so the subagent takes it after what it is continued with.
    */
-  private dispatchQueuedForWake(send: HeldSend, childName: string = send.clientMessage.to.trim()): void {
+  private dispatchQueuedForWake(
+    send: HeldSend,
+    childName: string = send.clientMessage.to.trim(),
+    targetSessionId?: string,
+  ): void {
     const clientMessage = send.clientMessage as HeldSend["clientMessage"] & { message: Message };
-    if (isHeldWhilePaused(send)) clientMessage.message = { ...clientMessage.message, heldWhilePaused: true };
+    const message: Message = isHeldWhilePaused(send)
+      ? { ...clientMessage.message, heldWhilePaused: true }
+      : clientMessage.message;
+    const dispatchedMessage =
+      targetSessionId !== undefined
+        ? retargetSendToSessionId(clientMessage, targetSessionId, message)
+        : (() => {
+            if (isHeldWhilePaused(send)) clientMessage.message = message;
+            return clientMessage;
+          })();
     const write = (socket: net.Socket, frame: BrokerMessage): boolean => {
       if (socket !== send.socket) return writeMessageIfOpen(socket, frame);
       const about = (frame as { readonly messageId?: unknown }).messageId;
@@ -2838,7 +2878,7 @@ class IntercomBroker {
           writeMessageIfOpen(sender.socket, { type: "delivered", messageId: send.messageId });
         // An ask that reached its subagent while its asker is away: the reply is held for the asker, as for any ask
         // whose asker is away.
-        if (sender === undefined && clientMessage.message.expectsReply === true && send.senderReturnAddress !== undefined)
+        if (sender === undefined && message.expectsReply === true && send.senderReturnAddress !== undefined)
           this.pendingQuestions.keepForAwayAsker(send.messageId, send.senderId, send.senderReturnAddress);
         this.endedQueue.settled([send.messageId]);
       }
@@ -2848,7 +2888,7 @@ class IntercomBroker {
     };
     handleBrokerSend(
       send.socket,
-      send.clientMessage,
+      dispatchedMessage,
       send.senderId,
       this.sessions,
       this.deliveredMessages,

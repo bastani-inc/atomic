@@ -6,6 +6,9 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ### Fixed
 
+- With multi-node routing, a session that reconnects to the same broker while that broker is still recording the departure of its earlier connection keeps its Intercom ID. Before, when the shared database also answered the ID claim late, the broker waited for that departure to finish before it checked the claim, and the session could get a fresh ID instead.
+- After an Intercom broker restarts, queued messages for a resumed subagent are now routed to that subagent's registered session ID instead of its display name, so renaming the subagent before queue restoration completes no longer drops its queued messages or misdelivers them to another session using the old name.
+- Supervisor replies sent across group isolation on the supervisor channel while the restarted broker is still restoring queued messages now wait behind the subagent's queued messages across every addressing form (session ID, prefix, name, or host session ID), without delaying sends to non-subagent peers.
 - With multi-node routing on a shared or pooled database, messages from one sender to the same recipient now stay in send order across local deliveries, cross-node deliveries, mixed replies and plain sends, reconnects, and broker startup, without serializing independent database lookups or blocking sends to other recipients.
 
 ## [0.10.4] - 2026-11-22
