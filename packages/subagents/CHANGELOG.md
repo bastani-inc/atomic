@@ -28,6 +28,7 @@
 - `skill-creator`'s `package_skill.py` gives the `.skill` file its name only once it is complete: a failure or Ctrl+C leaves an earlier `.skill` file as it was and no partial file, a replaced file keeps its permissions, and a `.skill` file written inside the skill folder no longer contains itself.
 - A user agent in `~/.atomic/agent/agents/` now wins over an agent of the same name in `~/.agents/` or legacy `~/.pi/agent/agents/`, as `.atomic/agents/` already does in a project. Before, the agent in `~/.agents/` or `~/.pi/agent/agents/` ran instead.
 - The `subagent` tool's `share` parameter no longer tells the model that it uploads the session to a GitHub Gist: it has no effect, and nothing is uploaded. Sibling `subagent` calls in one message no longer have to agree on it: one that sets `share: true` next to one that leaves it out no longer rejects both with "incompatible top-level field 'share'", and both launch. The `sessionDir` parameter's description no longer says that `share` decides whether sessions are kept; it now says that `sessionDir` keeps fresh (not forked) subagents' sessions as JSONL files under that directory instead of the launching session's store.
+- With Git 2.30 to 2.32, a named worktree (`worktree: { branch }`) is created instead of failing with `unknown option 'reason'`. With those versions, one whose creation was cut off, for example by a killed Atomic, is reported as busy after a 30-second wait rather than at once.
 
 ## [0.10.3] - 2026-11-21
 
