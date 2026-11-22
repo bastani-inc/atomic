@@ -1783,8 +1783,10 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 Set-StrictMode -Version Latest
 
-if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -lt 1) {
-    throw "Dynamic installer fixtures require Windows PowerShell 5.1."
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    $PSVersionTable.PSVersion.Major -lt 5 -or
+    ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -lt 1)) {
+    throw "Dynamic installer fixtures require Windows PowerShell 5.1 or PowerShell 7+ on Windows."
 }
 
 function Assert-Fixture {
