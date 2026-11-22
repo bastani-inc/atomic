@@ -7,8 +7,11 @@ import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { afterAll, afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { BROKER_UPGRADE_STOP_TIMEOUT_MS } from "../../packages/intercom/broker/broker-stop.js";
+import { BROKER_READY_TIMEOUT_MS } from "../../packages/intercom/broker/startup-timeout.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import {
+	isGone,
 	READS_PROCESS_STARTS,
 	type RecordedProcess,
 	recordProcess,
@@ -29,8 +32,10 @@ import { temporaryAgentDir, useTemporaryAgentDir } from "../helpers/temporary-ag
 
 useTemporaryAgentDir();
 
-const UPGRADE_TEST_TIMEOUT_MS = 120_000;
-const WAIT = { timeout: 30_000, interval: 25 };
+/** Covers one upgrade stop window plus two broker start windows (old and successor). */
+const UPGRADE_TEST_TIMEOUT_MS = BROKER_UPGRADE_STOP_TIMEOUT_MS + 2 * BROKER_READY_TIMEOUT_MS;
+const PREVIOUS_RECONNECT_BUDGET_MS = BROKER_UPGRADE_STOP_TIMEOUT_MS + BROKER_READY_TIMEOUT_MS;
+const WAIT = { timeout: BROKER_READY_TIMEOUT_MS, interval: 25 };
 const repoRoot = resolve(import.meta.dirname, "../..");
 const previousRelease = join(repoRoot, "test/fixtures/intercom-0.9.71");
 
@@ -161,7 +166,7 @@ class PreviousSession {
 	) {}
 
 	async start(): Promise<void> {
-		await this.modules.spawnBrokerIfNeeded("bun", [], 30_000);
+		await this.modules.spawnBrokerIfNeeded("bun", [], BROKER_READY_TIMEOUT_MS);
 		await this.register();
 	}
 
@@ -185,14 +190,15 @@ class PreviousSession {
 	}
 
 	private async reconnect(): Promise<void> {
-		for (let attempt = 0; !this.stopped; attempt += 1) {
+		const deadline = Date.now() + PREVIOUS_RECONNECT_BUDGET_MS;
+		while (!this.stopped) {
 			await new Promise((settle) => setTimeout(settle, 250));
 			try {
-				await this.modules.spawnBrokerIfNeeded("bun", [], 30_000);
+				await this.modules.spawnBrokerIfNeeded("bun", [], BROKER_READY_TIMEOUT_MS);
 				await this.register();
 				return;
 			} catch {
-				if (attempt > 40) throw new Error(`${this.name} did not re-register`);
+				if (Date.now() >= deadline) throw new Error(`${this.name} did not re-register`);
 			}
 		}
 	}
@@ -309,6 +315,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 		async () => {
 			const previous = await startPreviousSession("previous-session");
 			const before = await runningBroker();
+			const beforeProcess = await recordProcess(before.pid);
 			assert.equal(before.protocol, undefined, "the 0.9.71 broker advertises no protocol range");
 			assert.equal(before.sessions, 1);
 			const previousId = previous.client?.sessionId;
@@ -321,7 +328,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 			const after = await runningBroker();
 			assert.deepEqual(after.protocol, { min: 1, max: 4 });
 			assert.notEqual(after.pid, before.pid);
-			assert.equal(isAlive(before.pid), false, "the 0.9.71 broker exited");
+			assert.equal(await isGone(beforeProcess), true, "the 0.9.71 broker exited");
 			await previous.reconnected(2);
 			assert.deepEqual(previous.registrations, [previousId, previousId]);
 			assert.deepEqual(
@@ -374,6 +381,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 		async () => {
 			const previous = await startPreviousSession("previous-crowded");
 			const before = await runningBroker();
+			const beforeProcess = await recordProcess(before.pid);
 			const sessions = await Promise.all(
 				["current-one", "current-two", "current-three"].map((name) => startCurrentSession(name)),
 			);
@@ -382,7 +390,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 			await previous.reconnected(2);
 			const after = await runningBroker();
 			assert.deepEqual(after.protocol, { min: 1, max: 4 });
-			assert.equal(isAlive(before.pid), false);
+			assert.equal(await isGone(beforeProcess), true, "the 0.9.71 broker exited");
 			assert.equal(after.sessions, 4);
 			assert.deepEqual(
 				sessions.map((current) => singleMachineWarnings(current.notices)),
@@ -426,6 +434,8 @@ interface FakeLegacyBrokerOptions {
 	readonly status?: "report" | "malformed" | "dropped";
 	/** `dropped`: closes the shutdown request unanswered. `ignored`: acknowledges it and never exits. */
 	readonly shutdown?: "exits" | "dropped" | "ignored";
+	/** Hold the Nth (1-based) `broker_status` request open without answering until `shutdown` closes all sockets. */
+	readonly holdStatusRequest?: number;
 }
 
 /** A broker of protocol 1 at the agent directory's socket: its pid is a real process that ends when it shuts down. */
@@ -433,6 +443,7 @@ async function startFakeLegacyBroker(options: FakeLegacyBrokerOptions = {}): Pro
 	shutdownRequests: () => number;
 	statusRequests: () => number;
 	exitedAt: () => number | undefined;
+	heldStatusReceived: Promise<void>;
 	pid: number;
 }> {
 	const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
@@ -445,6 +456,7 @@ async function startFakeLegacyBroker(options: FakeLegacyBrokerOptions = {}): Pro
 	let shutdowns = 0;
 	let statuses = 0;
 	let exitedAt: number | undefined;
+	const heldStatus = Promise.withResolvers<void>();
 	const sockets = new Set<net.Socket>();
 	const server = net.createServer((socket) => {
 		sockets.add(socket);
@@ -457,6 +469,10 @@ async function startFakeLegacyBroker(options: FakeLegacyBrokerOptions = {}): Pro
 					if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return;
 					if (frame.type === "broker_status") {
 						statuses += 1;
+						if (options.holdStatusRequest === statuses) {
+							heldStatus.resolve();
+							return;
+						}
 						if (options.status === "dropped") {
 							socket.destroy();
 							return;
@@ -508,11 +524,142 @@ async function startFakeLegacyBroker(options: FakeLegacyBrokerOptions = {}): Pro
 		shutdownRequests: () => shutdowns,
 		statusRequests: () => statuses,
 		exitedAt: () => exitedAt,
+		heldStatusReceived: heldStatus.promise,
 		pid: holder.pid ?? 0,
 	};
 }
 
 describe("replacing an older broker (#4538)", () => {
+	test(
+		"a session whose broker_status request is dropped mid-shutdown during another session's upgrade retries onto the successor with no single-machine warning (#4538)",
+		async () => {
+			const legacy = await startFakeLegacyBroker({ holdStatusRequest: 1 });
+			const waiting = await startCurrentSession("mid-shutdown-waiting");
+			const upgrader = await startCurrentSession("mid-shutdown-upgrader");
+
+			const waitingStatus = waiting.run({ action: "status" });
+			await legacy.heldStatusReceived;
+			const upgraderStatus = upgrader.run({ action: "status" });
+
+			const [first, second] = await Promise.all([waitingStatus, upgraderStatus]);
+			assert.equal(first.isError, false, first.content[0]?.text);
+			assert.equal(second.isError, false, second.content[0]?.text);
+			assert.equal(legacy.shutdownRequests(), 1);
+			const after = await runningBroker();
+			assert.deepEqual(after.protocol, { min: 1, max: 4 });
+			assert.equal(after.sessions, 2);
+			assert.deepEqual([singleMachineWarnings(waiting.notices), singleMachineWarnings(upgrader.notices)], [[], []]);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a shared-storage session whose broker_status request is dropped mid-shutdown during another session's upgrade retries instead of failing with broker-routing-unavailable (#4538)",
+		async () => {
+			const selection = JSON.stringify({ adapter: "@example/adapter-that-is-not-installed", prefix: "race_" });
+			vi.stubEnv("ATOMIC_STORAGE", selection);
+			vi.resetModules();
+			const { sharedStorageDigest } = await import("../../packages/intercom/broker/shared-storage-setting.js");
+			const legacy = await startFakeLegacyBroker({
+				holdStatusRequest: 1,
+				storage: { digest: sharedStorageDigest(JSON.parse(selection)), source: "env" },
+			});
+			const waiting = await startCurrentSession("shared-mid-shutdown-waiting");
+			const upgrader = await startCurrentSession("shared-mid-shutdown-upgrader");
+
+			const waitingStatus = waiting.run({ action: "status" });
+			await legacy.heldStatusReceived;
+			const upgraderStatus = upgrader.run({ action: "status" });
+
+			const [first, second] = await Promise.all([waitingStatus, upgraderStatus]);
+			assert.equal(first.isError, false, first.content[0]?.text);
+			assert.equal(second.isError, false, second.content[0]?.text);
+			assert.equal(legacy.shutdownRequests(), 1);
+			const after = await runningBroker();
+			assert.deepEqual(after.protocol, { min: 1, max: 4 });
+			assert.equal(after.sessions, 2);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a session whose register_verified closes unanswered after a successor broker already replaced broker.pid retries onto the successor (#4538)",
+		async () => {
+			const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+			const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
+			const pidPath = getBrokerPidPath(agentDir);
+			writeFileSync(pidPath, String(process.pid));
+			const earlier = (Date.now() - 5_000) / 1_000;
+			utimesSync(pidPath, earlier, earlier);
+
+			let replaced = false;
+			let registerAttempts = 0;
+			const sockets = new Set<net.Socket>();
+			const server = net.createServer((socket) => {
+				sockets.add(socket);
+				socket.on("error", () => {});
+				socket.on("close", () => sockets.delete(socket));
+				socket.on(
+					"data",
+					createMessageReader(
+						(frame) => {
+							if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return;
+							if (frame.type === "broker_status") {
+								writeMessage(socket, {
+									type: "broker_status",
+									requestId: frame.requestId,
+									report: {
+										pid: replaced ? process.pid + 1 : process.pid,
+										sessions: 0,
+										multiNode: { status: "off" },
+										protocol: { min: 1, max: 4 },
+									},
+								});
+							}
+							if (frame.type === "register_verified") {
+								registerAttempts += 1;
+								if (registerAttempts === 1) {
+									// Simulate broker 1 retiring and broker 2 already answering with a fresh broker.pid
+									// before the client's close handler classifies the dropped registration.
+									replaced = true;
+									writeFileSync(pidPath, String(process.pid));
+									const later = Date.now() / 1_000;
+									utimesSync(pidPath, later, later);
+									socket.destroy();
+									return;
+								}
+								writeMessage(socket, {
+									type: "registered",
+									sessionId: "successor-session-id",
+									multiNodeRouting: "off",
+									protocol: { min: 1, max: 4 },
+								});
+							}
+							if (frame.type === "list") {
+								writeMessage(socket, { type: "sessions", requestId: frame.requestId, sessions: [] });
+							}
+						},
+						() => {},
+					),
+				);
+			});
+			await new Promise<void>((listening) =>
+				server.listen(getBrokerSocketPath(process.platform, agentDir), listening),
+			);
+			cleanups.push(async () => {
+				for (const open of sockets) open.destroy();
+				if (server.listening) await new Promise<void>((closed) => server.close(() => closed()));
+			});
+
+			const current = await startCurrentSession("register-dropped-successor-up");
+			const status = await current.run({ action: "status" });
+			assert.equal(status.isError, false, status.content[0]?.text);
+			assert.equal(registerAttempts, 2);
+			assert.deepEqual(singleMachineWarnings(current.notices), []);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
 	test(
 		"concurrent replacements stop the older broker once and start one successor, holding the spawn lock throughout",
 		async () => {
@@ -675,8 +822,8 @@ describe("replacing an older broker (#4538)", () => {
 				false,
 				"no spawner starts a broker while the older one is still running",
 			);
-			process.kill(legacy.pid, "SIGKILL");
-			await vi.waitFor(() => assert.equal(isAlive(legacy.pid), false), WAIT);
+			await signalRecordedProcess(found, "SIGKILL");
+			await vi.waitFor(async () => assert.equal(await isGone(found), true), WAIT);
 			assert.equal(isSpawnLockStale(lockPath), true, "once it has gone, the next spawner takes the lock");
 			rmSync(lockPath, { force: true });
 		},
@@ -862,9 +1009,10 @@ describe("atomic intercom upgrade against a 0.9.71 broker (#4538)", () => {
 			const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 			const previous = await startPreviousSession("previous-installing");
 			const report = await runningBroker();
+			const reportProcess = await recordProcess(report.pid);
 			const deferred = await upgradeIntercomBroker(agentDir);
 			assert.deepEqual(deferred, { status: "deferred", pid: report.pid, sessions: 1, protocol: { min: 1, max: 1 } });
-			assert.equal(isAlive(report.pid), true);
+			assert.equal(await stillRuns(reportProcess), true);
 
 			// The idle broker retires on its own five seconds after its last session; fresh unregistered connections
 			// keep it up, without being sessions, until the upgrade has run.
@@ -885,7 +1033,7 @@ describe("atomic intercom upgrade against a 0.9.71 broker (#4538)", () => {
 				assert.deepEqual(progress, [
 					`Stopping the older Intercom broker (pid ${report.pid}); no session is connected.`,
 				]);
-				assert.equal(isAlive(report.pid), false);
+				assert.equal(await isGone(reportProcess), true);
 			} finally {
 				clearInterval(keepAlive);
 			}

@@ -139,10 +139,19 @@ export async function holdChildTargets(
 /** Intercom may still be starting when a session has just started; ask again shortly, for about 1.5 s in all. */
 const HOLD_RETRY_DELAYS_MS = [0, 25, 50, 100, 200, 400, 800];
 
-function pause(ms: number): Promise<void> {
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.resolve();
 	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			resolve();
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
 		timer.unref?.();
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -151,10 +160,11 @@ async function holdChildTargetsWhenReady(
 	record: SubagentChildRecord,
 	group: string | undefined,
 	isWanted: () => boolean,
+	signal?: AbortSignal,
 ): Promise<ChildTargetHold | undefined> {
 	for (const delay of HOLD_RETRY_DELAYS_MS) {
-		await pause(delay);
-		if (!isWanted()) return undefined;
+		await pause(delay, signal);
+		if (!isWanted() || signal?.aborted) return undefined;
 		try {
 			return await holdChildTargets(events, record, group);
 		} catch {
@@ -218,12 +228,14 @@ function endEarlyHold(key: string, early: EarlyChildHold): void {
  * Settles when every hold is in place; it never rejects.
  */
 export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx: ExtensionContext): Promise<void> {
+	const signal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const running = [...readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId).values()].filter(
 		(record) => isRestorableSubagentChild(record) && record.intercomTarget,
 	);
 	await Promise.all(
 		running.map(async (record) => {
+			if (signal?.aborted) return;
 			const key = childHoldKey(ownerSessionId, record.childId);
 			if (earlyHolds.has(key)) return;
 			const early: EarlyChildHold = {
@@ -234,6 +246,7 @@ export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx:
 					record,
 					record.intercomGroup ?? inheritedIntercomGroup(ctx),
 					() => early.wanted,
+					signal,
 				),
 			};
 			early.expire?.unref?.();
