@@ -1473,9 +1473,9 @@ async function unpushedHistory(root: string, head: string, signal?: AbortSignal)
 /**
  * Whether a snapshot's omission of the history of the checkout at `root`, `omission`, still holds for `unpushed` under
  * `settings`, exactly. A denied omission must name exactly the denied commits of `unpushed`: when the remote branch
- * moved back, more commits are unpushed, and any of them can be denied too. This process confirmed that already when
- * it last left out exactly these commits for the same reason ({@link leftOutHistory}); otherwise they are checked
- * against the deny-list again, and confirmed for later captures.
+ * moved back, more commits are unpushed, and any of them can be denied too. This process knows which of them are when
+ * it last left out exactly these commits, in any session ({@link leftOutHistory}): denied, it names them; over the cap,
+ * none is. Otherwise they are checked against the deny-list again, and remembered for later captures.
  */
 async function historyStillLeftOut(
 	root: string,
@@ -1490,7 +1490,8 @@ async function historyStillLeftOut(
 		if (!omission.commits.every((commit) => listed.has(commit))) return false;
 		const fingerprint = sha256Hex(unpushed.join("\n"));
 		const remembered = leftOutHistory.get(root);
-		if (remembered?.fingerprint === fingerprint && sameDenial(remembered.omission, omission)) return true;
+		// What this process last left out for exactly these commits, for either reason, says which of them are denied.
+		if (remembered?.fingerprint === fingerprint) return sameDenial(remembered.omission, omission);
 		const denied = await deniedHistory(root, unpushed, signal);
 		const now: HistoryOmission = { reason: "unpushed-history-denied", ...denied };
 		// Remembered as captureHistory remembers it, which a capture of these commits then takes as it is.
