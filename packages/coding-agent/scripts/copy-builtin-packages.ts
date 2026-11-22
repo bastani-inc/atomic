@@ -16,6 +16,7 @@ import {
 	INTERCOM_BROKER_BUNDLE_ENTRY,
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
+import { matchesSpecifierPattern, withHostImportGuard } from "./builtin-host-import-guard.js";
 import { codeStringLiteral } from "./code-string-literal.js";
 import {
 	deriveImportClosure,
@@ -40,6 +41,8 @@ const packageRoot = resolve(import.meta.dir, "..");
 const distDir = join(packageRoot, "dist");
 const distBuiltinDir = join(distDir, "builtin");
 const packagesRoot = resolve(packageRoot, "..");
+const atomicVersion = (JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf-8")) as { version: string })
+	.version;
 
 // Host-provided module specifiers that the extension loader resolves to live
 // in-process instances (jiti alias / virtualModules); they must stay external
@@ -232,7 +235,13 @@ async function bundleEntrypoint(
 		throw new Error(`Failed to bundle ${label}: ${result.logs.map((log) => log.message).join("\n")}`);
 	}
 	mkdirSync(join(outfile, ".."), { recursive: true });
-	writeFileSync(outfile, await output.text(), "utf-8");
+	// A process an in-place update left older than this bundle loads it on `/reload`: the bundle checks its host first.
+	const guarded = withHostImportGuard(await output.text(), {
+		label: dirName,
+		version: atomicVersion,
+		isHostSpecifier: (specifier) => matchesSpecifierPattern(specifier, HOST_PROVIDED_EXTERNALS),
+	});
+	writeFileSync(outfile, guarded, "utf-8");
 	recordBundledInputs(dirName, outfile, result.metafile);
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }

@@ -35,7 +35,6 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
-	SqliteStatement,
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
@@ -87,8 +86,13 @@ import {
 	type SequenceRequest,
 	ThreadConnection,
 } from "./node-sqlite-thread.js";
-import { offerSequences, type SqliteSequence } from "./statement-sequence.js";
-import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
+import {
+	MAX_SEQUENCE_REQUEST_STATEMENTS,
+	offerSequences,
+	type SequencedStatement,
+	type SqliteSequence,
+} from "./statement-sequence.js";
+import { configureConnection, isSqliteBusy, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** Loaded at the first degradation only, so opening a database does not load debug output. */
 let debugOutput: Promise<typeof import("../debug.ts")> | undefined;
@@ -631,12 +635,14 @@ class SqliteHolderRecord {
 
 	/**
 	 * Creates the record off the event loop as a writable connection opens, removing exited processes' records on the
-	 * way, so that taking the lock only writes to it in place.
+	 * way, so that taking the lock only writes to it in place. `prepared`, the directory prepared for this record's
+	 * database while the connection opened (`prepareHolderDirectory`), stands for those first steps.
 	 */
-	async open(): Promise<void> {
+	async open(prepared?: Promise<HolderDirectory>): Promise<void> {
 		try {
-			await mkdir(this.directory, { recursive: true });
-			await removeExitedHolderRecords(this.directory, this.unavailable);
+			const directory = await (prepared ?? prepareHolderDirectory(this.directory));
+			for (const cause of directory.removalFailures) this.unavailable(cause);
+			if (directory.failure !== undefined) throw directory.failure;
 			this.descriptor = await openFile(this.path, "w");
 		} catch (cause) {
 			this.unavailable(cause);
@@ -936,6 +942,28 @@ function holderPid(name: string): number | undefined {
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
+/** A holder records' directory as `prepareHolderDirectory` left it: why it could not be used, if it could not. */
+interface HolderDirectory {
+	readonly failure?: unknown;
+	/** The exited processes' records it could not remove, each failure as it came. */
+	readonly removalFailures: readonly unknown[];
+}
+
+/**
+ * The first steps of opening a holder record in `directory`, which need no record yet: the directory made, and the
+ * records of exited processes removed. Never rejects.
+ */
+async function prepareHolderDirectory(directory: string): Promise<HolderDirectory> {
+	const removalFailures: unknown[] = [];
+	try {
+		await mkdir(directory, { recursive: true });
+		await removeExitedHolderRecords(directory, (cause) => removalFailures.push(cause));
+		return { removalFailures };
+	} catch (failure) {
+		return { failure, removalFailures };
+	}
+}
+
 /**
  * Removes the records of exited processes, off the event loop. One another connection removed first is gone; any
  * other failure to remove one goes to `failed`, and the rest are still removed.
@@ -1090,8 +1118,6 @@ const LOCK_RELEASE_RETRY_MS = 16;
 const LOCK_RELEASE_RETRY_ATTEMPTS = 1_000;
 /** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
-/** Most statements one sequence request carries, so a message to the connection's thread stays small. */
-const MAX_SEQUENCE_REQUEST_STATEMENTS = 256;
 /**
  * Default for how long a group commit runs its members before it commits them and takes the lock again for the
  * rest: a batch of cheap transactions in a process starved of CPU still lets other processes' writers in between.
@@ -1368,8 +1394,8 @@ function sendable(value: SqliteValue): SqliteValue {
 	return new Uint8Array(value);
 }
 
-function sendableStatement({ sql, params }: SqliteStatement): SqliteStatement {
-	return { sql, params: params.map(sendable) };
+function sendableStatement({ sql, params, script }: SequencedStatement): SequencedStatement {
+	return { sql, params: params.map(sendable), ...(script === true ? { script } : {}) };
 }
 
 /** The index of the first text parameter holding NUL, which no statement may bind, or -1. */
@@ -1423,6 +1449,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private tail: Promise<void> = Promise.resolve();
 	/** Operations queued on this connection so far; a batch's `position` is the one that commits it. */
 	private enqueued = 0;
+	/**
+	 * The latest single statement queued on a connection thread: its `position`, and `sent`, which settles once its
+	 * request is on its way to the thread. A statement queued directly behind it is sent then (see `enqueueStatement`).
+	 */
+	private lastStatement?: { readonly position: number; readonly sent: Promise<void> };
 	/** Batches whose commit has not started, in order; the last one takes new transactions while it is open. */
 	private readonly waitingBatches: PendingBatch[] = [];
 	private closing = false;
@@ -1494,7 +1525,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 	supportsJsonbExtract(): Promise<boolean> {
 		// Bun on macOS loads the system SQLite. Its functions need not match the build-time version.
-		this.jsonbExtract ??= this.enqueueStatement(() => this.executor.checkJsonbExtract()).catch(() => {
+		this.jsonbExtract ??= this.enqueueStatement(() => this.executor.checkJsonbExtract(), true).catch(() => {
 			// A schema lock can also prevent preparation. Don't remember it as a missing function.
 			this.jsonbExtract = undefined;
 			return false;
@@ -1518,9 +1549,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	/** Creates this connection's write-lock record; see `SqliteHolderRecord`. */
-	async openHolderRecord(): Promise<void> {
-		await this.holderRecord?.open();
+	/**
+	 * Creates this connection's write-lock record; see `SqliteHolderRecord`. `prepared` is its directory, made ready
+	 * while the connection opened.
+	 */
+	async openHolderRecord(prepared?: Promise<HolderDirectory>): Promise<void> {
+		await this.holderRecord?.open(prepared);
 	}
 
 	writerQueueStats(): WriterQueueStats {
@@ -1579,12 +1613,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		let notices: ReleaseNotices | undefined;
 		let holding = false;
 		try {
-			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named.
-			await this.holderRecord?.trying();
-			// Writers already waiting in other processes go first.
+			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named. The writers'
+			// queue is looked at meanwhile, so the two file system calls cost one wait for its threads instead of two.
 			const queue = this.writeQueue;
 			queue?.observe();
-			if (queue !== undefined && (await queue.contendedOffLoop())) {
+			const [, contended] = await Promise.all([this.holderRecord?.trying(), queue?.contendedOffLoop()]);
+			// Writers already waiting in other processes go first.
+			if (queue !== undefined && contended === true) {
 				const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
 				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}
@@ -1845,7 +1880,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			let taken = false;
 			let repeated = 0;
 			for (let first = true; !taken || first; first = false) {
-				const batch: SqliteStatement[] = [];
+				const batch: SequencedStatement[] = [];
 				while (!taken && batch.length < MAX_SEQUENCE_REQUEST_STATEMENTS) {
 					const next = pending.next();
 					if (next.done === true) {
@@ -1897,41 +1932,79 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return result;
 	}
 
-	/** A statement queued after open transactions runs after them, so later transactions start a new batch. */
-	private enqueueStatement<T>(operation: () => Promise<T>): Promise<T> {
+	/**
+	 * A statement queued after open transactions runs after them, so later transactions start a new batch. A `single`
+	 * statement, one request to a connection thread, queued directly behind another is sent as soon as that one has
+	 * been sent rather than once it is answered: the thread runs requests in the order they arrive, so it runs the two
+	 * in the same order, but statements read together cost one wait for the thread instead of one each, which on a
+	 * loaded machine is most of what they cost. Anything else still waits until everything queued before it settled.
+	 */
+	private enqueueStatement<T>(operation: () => Promise<T>, single = false): Promise<T> {
 		const last = this.waitingBatches.at(-1);
 		if (last !== undefined) last.open = false;
-		return this.enqueue(operation);
+		if (!single || !(this.connection instanceof ThreadConnection) || this.closing) return this.enqueue(operation);
+		const previous = this.lastStatement;
+		const start = previous !== undefined && previous.position === this.enqueued ? previous.sent : this.tail;
+		this.enqueued += 1;
+		let markSent!: () => void;
+		const sent = new Promise<void>((resolve) => {
+			markSent = resolve;
+		});
+		const result = start.then(() => {
+			try {
+				return operation();
+			} finally {
+				markSent();
+			}
+		});
+		this.lastStatement = { position: this.enqueued, sent };
+		// Answered after every statement sent before it: the thread answers in the order it was sent.
+		this.tail = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
 	}
 
 	exec(sql: string): Promise<void> {
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "exec", sql }, false, () => this.executor.exec(sql)),
+		return this.enqueueStatement(
+			() => this.besideHolds(made, { kind: "exec", sql }, false, () => this.executor.exec(sql)),
+			true,
 		);
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "run", sql, params: bound }, true, () => this.executor.run(sql, ...bound)),
+		return this.enqueueStatement(
+			() =>
+				this.besideHolds(made, { kind: "run", sql, params: bound }, true, () => this.executor.run(sql, ...bound)),
+			true,
 		);
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "get", sql, params: bound }, true, () => this.executor.get<T>(sql, ...bound)),
+		return this.enqueueStatement(
+			() =>
+				this.besideHolds(made, { kind: "get", sql, params: bound }, true, () =>
+					this.executor.get<T>(sql, ...bound),
+				),
+			true,
 		);
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "all", sql, params: bound }, true, () => this.executor.all<T>(sql, ...bound)),
+		return this.enqueueStatement(
+			() =>
+				this.besideHolds(made, { kind: "all", sql, params: bound }, true, () =>
+					this.executor.all<T>(sql, ...bound),
+				),
+			true,
 		);
 	}
 
@@ -2345,9 +2418,15 @@ export async function openNodeSqliteDatabase(
 	const targetFile = sqliteTargetFilePath(path);
 	let heldOpenLock: HeldOpenLock | undefined;
 	let connection: SqliteConnection | undefined;
+	let opening: NodeSqliteDatabase | undefined;
 	try {
 		if (!readOnly && targetFile !== undefined) await mkdir(dirname(targetFile), { recursive: true });
 		heldOpenLock = await acquireOpenLock(targetFile, readOnly, busyTimeoutMs);
+		// The directory of this connection's write-lock record, made ready while the connection opens. It is named after
+		// the file the open lock names, which is the database's own unless a link takes the open elsewhere.
+		const likely = readOnly || isInMemoryDatabase(path) ? undefined : heldOpenLock?.target;
+		const holders =
+			likely === undefined ? undefined : { target: likely, ready: prepareHolderDirectory(holderDirectory(likely)) };
 		// A file-backed connection runs on a thread of its own, so opening it, waiting for its locks and its synced
 		// commits never hold this thread (#5376).
 		const opened = isInMemoryDatabase(path)
@@ -2356,12 +2435,14 @@ export async function openNodeSqliteDatabase(
 		const configured = opened.connection;
 		connection = configured;
 		const exec = (sql: string) => send(configured, { kind: "exec", sql });
-		await exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
-		if (!readOnly) {
-			// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
-			await switchToWriteAheadLog(exec, busyTimeoutMs);
-			await exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-		}
+		// The connection's settings, in one request where nothing refuses them, go to its thread while the rest of the
+		// open waits for the file system's threads: they need nothing of each other.
+		const settings = Promise.resolve(
+			readOnly
+				? exec(`PRAGMA busy_timeout=${busyTimeoutMs}`)
+				: configureConnection(exec, busyTimeoutMs, "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON"),
+		);
+		settings.catch(() => {});
 		const location = opened.location;
 		const identity =
 			location === null
@@ -2388,15 +2469,22 @@ export async function openNodeSqliteDatabase(
 			gateFile === undefined ? undefined : { file: gateFile, role: "holds" },
 		);
 		Object.defineProperty(database, "readOnly", { value: readOnly });
-		if (!readOnly) await database.openHolderRecord();
+		opening = database;
+		const [configuredSettings] = await Promise.allSettled([
+			settings,
+			readOnly ? undefined : database.openHolderRecord(holders?.target === identity ? holders.ready : undefined),
+		]);
+		if (configuredSettings.status === "rejected") throw configuredSettings.reason;
 		return database;
 	} catch (cause) {
 		try {
-			if (connection !== undefined) await send(connection, { kind: "close" });
+			// A database already made closes its connection, its write-lock record and its locks, as `close` does.
+			if (opening !== undefined) await opening.close();
+			else if (connection !== undefined) await send(connection, { kind: "close" });
 		} catch {
 			// Preserve the opening failure if cleanup also fails.
 		} finally {
-			await releaseOpenLock(heldOpenLock);
+			if (opening === undefined) await releaseOpenLock(heldOpenLock);
 		}
 		throw unavailable(descriptor, cause);
 	}
