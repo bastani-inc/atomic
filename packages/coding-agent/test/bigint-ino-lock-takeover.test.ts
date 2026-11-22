@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
+import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 
 /** Real 64-bit NTFS file reference numbers whose IEEE-754 Numbers collide (both 70087269201190380). */
@@ -376,7 +377,7 @@ describe("64-bit BigInt file identity in lock-takeover and lock-holder", () => {
 		mkdirSync(lockPath);
 		const realIno = statSync(lockPath, { bigint: true }).ino;
 		const child = spawnSync(
-			"bun",
+			bunExecutable(),
 			[
 				"--eval",
 				`import { recordLockHolder } from ${JSON.stringify(LOCK_HOLDER_MODULE)}; recordLockHolder(${JSON.stringify(lockPath)});`,
@@ -398,22 +399,89 @@ describe("64-bit BigInt file identity in lock-takeover and lock-holder", () => {
 				legacyLockToken(lockPath),
 				"real child record must carry legacy 2-field `lock` on safe inodes so OLD processes take it over",
 			);
+		} else {
+			assert.equal(
+				written.lock,
+				written.lockId,
+				"real child record above MAX_SAFE_INTEGER must write exact `lockId` into `lock` so older processes cannot collide",
+			);
 		}
 		assert.equal(takeOverDeadHolder(lockPath), true, "NEW immediately reclaims dead real child's dual-field lock");
 		assert.equal(existsSync(lockPath), false);
 
-		if (realIno <= MAX_SAFE_INO) {
-			mkdirSync(lockPath);
-			writeFileSync(
-				lockHolderPath(lockPath),
-				JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
-			);
-			const realManager = SettingsManager.create(directory, directory);
-			realManager.setTheme("light");
-			await realManager.flush();
+		// Measure the second lock directory's own inode after creating it: deleting the first
+		// directory can advance an NTFS MFT slot from sequence 31 (<= MAX_SAFE_INTEGER) to 32 (> MAX_SAFE_INTEGER).
+		mkdirSync(lockPath);
+		const secondRealIno = statSync(lockPath, { bigint: true }).ino;
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
+		);
+		const realManager = SettingsManager.create(directory, directory);
+		realManager.setTheme("light");
+		await realManager.flush();
+		if (secondRealIno <= MAX_SAFE_INO) {
 			assert.deepEqual(realManager.drainErrors(), [], "real SettingsManager save reclaims dead OLD lock");
 			assert.equal(existsSync(lockPath), false);
+		} else {
+			const errors = realManager.drainErrors();
+			assert.equal(errors.length, 1, "legacy 2-field lock above MAX_SAFE_INTEGER fails closed");
+			assert.equal((errors[0]?.error as NodeJS.ErrnoException | undefined)?.code, "ELOCKED");
+			assert.equal(existsSync(lockPath), true);
 		}
+	});
+
+	test("reusing a deleted NTFS MFT slot across sequence 31 -> 32 fails closed on legacy records and reclaims dual-field records", async () => {
+		const seq31Ino = 0x001f_0000_0005_33een;
+		const seq32Ino = 0x0020_0000_0005_33een;
+		assert.ok(seq31Ino <= MAX_SAFE_INO, "sequence 31 is within Number.MAX_SAFE_INTEGER");
+		assert.ok(seq32Ino > MAX_SAFE_INO, "sequence 32 exceeds Number.MAX_SAFE_INTEGER");
+
+		// First lock directory lands on sequence 31 (safe) and is reclaimed.
+		mkdirSync(lockPath);
+		fakeStats.overrides.set(resolve(lockPath), {
+			dev: COLLIDING_DEV,
+			ino: seq31Ino,
+			birthtimeNs: SAME_BIRTHTIME_NS,
+		});
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
+		);
+		assert.equal(takeOverDeadHolder(lockPath), true);
+		assert.equal(existsSync(lockPath), false);
+
+		// Second lock directory reuses the MFT slot at sequence 32 (unsafe): a legacy 2-field
+		// record without lockId fails closed conservatively, while a dual-field record is reclaimed.
+		mkdirSync(lockPath);
+		fakeStats.overrides.set(resolve(lockPath), {
+			dev: COLLIDING_DEV,
+			ino: seq32Ino,
+			birthtimeNs: SAME_BIRTHTIME_NS,
+		});
+		const dead = exitedProcess();
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...dead, lock: legacyLockToken(lockPath) }),
+		);
+		const legacyManager = SettingsManager.create(directory, directory);
+		legacyManager.setTheme("light");
+		await legacyManager.flush();
+		const legacyErrors = legacyManager.drainErrors();
+		assert.equal(legacyErrors.length, 1);
+		assert.equal((legacyErrors[0]?.error as NodeJS.ErrnoException | undefined)?.code, "ELOCKED");
+		assert.equal(existsSync(lockPath), true);
+
+		const exactId = lockHolder(lockPath)!;
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...dead, lock: exactId, lockId: exactId }),
+		);
+		const dualManager = SettingsManager.create(directory, directory);
+		dualManager.setTheme("dark");
+		await dualManager.flush();
+		assert.deepEqual(dualManager.drainErrors(), []);
+		assert.equal(existsSync(lockPath), false);
 	});
 
 	test("dual-field record with mismatched lock vs lockId or non-string lockId fails closed conservatively", async () => {
