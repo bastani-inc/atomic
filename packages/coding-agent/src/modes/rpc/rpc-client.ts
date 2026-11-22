@@ -284,9 +284,10 @@ export class RpcClient extends RpcClientApi {
 
 	/**
 	 * Tell the engine child the host is quitting on purpose, and wait (bounded) for it to
-	 * record that. Call it before `stop()` for a quit the user asked for: stopping closes
-	 * stdin and sends SIGTERM, which is also how the child is stopped when the host itself
-	 * was signalled, so only this announcement lets the child tell the two apart.
+	 * record that. Call it before `stop()` for a quit the user asked for: stopping sends a
+	 * signal on Linux and macOS and closes stdin on Windows, which is also how the child is
+	 * stopped when the host itself was signalled, so only this announcement lets the child
+	 * tell the two apart.
 	 * Resolves true only when the child acknowledged the quit, and false without waiting when
 	 * there is no live engine child, or when the child exits or misses the deadline first.
 	 */
