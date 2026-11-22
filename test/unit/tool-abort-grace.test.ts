@@ -212,21 +212,40 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 /**
  * For the tests whose first call must have detached before Esc: the agent's tool events and the test's own steps, in
  * milliseconds from when the timeline started, reported with a failure so it shows how far the call had come.
+ * Also lets the test wait directly for a call's `tool_execution_end` instead of racing a fixed sleep against another
+ * timer bucket.
  */
-function detachTimeline(session: AgentSession): { note(step: string): void; report(): string } {
+function detachTimeline(session: AgentSession): {
+	note(step: string): void;
+	waitForToolEnd(toolCallId: string): Promise<void>;
+	report(): string;
+} {
 	const origin = performance.now();
 	const steps: string[] = [];
+	const ended = new Set<string>();
+	const waiters = new Map<string, PromiseWithResolvers<void>>();
 	const at = () => Math.round(performance.now() - origin);
 	const unsubscribe = session.agent.subscribe((event) => {
 		if (event.type === "tool_execution_start" || event.type === "tool_execution_end")
 			steps.push(`${at()} ms ${event.type} ${event.toolCallId}`);
+		if (event.type === "tool_execution_end") {
+			ended.add(event.toolCallId);
+			waiters.get(event.toolCallId)?.resolve();
+		}
 	});
+	disposals.push(unsubscribe);
 	return {
 		note: (step) => steps.push(`${at()} ms ${step}`),
-		report: () => {
-			unsubscribe();
-			return steps.join("; ");
+		waitForToolEnd: (toolCallId) => {
+			if (ended.has(toolCallId)) return Promise.resolve();
+			let waiter = waiters.get(toolCallId);
+			if (waiter === undefined) {
+				waiter = Promise.withResolvers<void>();
+				waiters.set(toolCallId, waiter);
+			}
+			return waiter.promise;
 		},
+		report: () => steps.join("; "),
 	};
 }
 
@@ -550,10 +569,19 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 		const prompt = session.prompt("go");
 		await tool.started.promise;
 		timeline.note("the first call started");
-		// The first call's 50 ms deadline was set before it started, so it passes before this wait ends: the call detaches
-		// and keeps its exclusive place while it runs on, and the second call waits for that place.
-		await sleep(100);
+		// Wait for the first call to actually detach (keeping its exclusive place while it runs on) rather than sleeping
+		// a fixed duration: under load a sleep can share a timer bucket with an earlier runner timer and fire before the
+		// 50 ms detachment deadline.
+		assert.ok(
+			await settlesWithin(timeline.waitForToolEnd("stuck-1"), TURN_END_BUDGET_MS),
+			`the first call detached: ${timeline.report()}`,
+		);
 		timeline.note(`Esc, with the agent waiting for [${[...session.agent.state.pendingToolCalls].join(", ")}]`);
+		assert.deepEqual(
+			[...session.agent.state.pendingToolCalls],
+			["stuck-2"],
+			`the second call waits behind the detached call: ${timeline.report()}`,
+		);
 
 		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
 		await prompt.catch(() => {});
@@ -571,6 +599,7 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 			["stuck-1"],
 			"the call that detached before the interrupt is still the host's",
 		);
+		assert.equal(tool.signal?.aborted, false, "the interrupt does not reach the detached call");
 
 		tool.release.resolve("CI is green");
 		await detached[0]?.result;
@@ -589,9 +618,17 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 		const prompt = session.prompt("go");
 		await tool.started.promise;
 		timeline.note("the first call started");
-		// As above: the first call detaches before this wait ends, and the quick call waits for its exclusive place.
-		await sleep(100);
+		// As above: wait for the first call to detach while the quick call waits for its exclusive place.
+		assert.ok(
+			await settlesWithin(timeline.waitForToolEnd("stuck-1"), TURN_END_BUDGET_MS),
+			`the first call detached: ${timeline.report()}`,
+		);
 		timeline.note(`Esc, with the agent waiting for [${[...session.agent.state.pendingToolCalls].join(", ")}]`);
+		assert.deepEqual(
+			[...session.agent.state.pendingToolCalls],
+			["quick-2"],
+			`the quick call waits behind the detached call: ${timeline.report()}`,
+		);
 
 		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
 		await prompt.catch(() => {});
@@ -604,6 +641,12 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 			`${JSON.stringify(results)}: ${timeline.report()}`,
 		);
 		const detached = session.takeDetachedToolCalls();
+		assert.deepEqual(
+			detached.map((call) => call.toolCallId),
+			["stuck-1"],
+			"the call that detached before the interrupt is still the host's",
+		);
+		assert.equal(tool.signal?.aborted, false, "the interrupt does not reach the detached call");
 		tool.release.resolve("CI is green");
 		await detached[0]?.result;
 		await sleep(50);

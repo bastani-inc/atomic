@@ -8,6 +8,7 @@ import { promptHistoryFor } from "../components/agent-prompt-history.ts";
 import { AtomicWorkedStatusComponent, watchAtomicWorkingClock } from "../components/atomic-working-status.ts";
 import { keyText } from "../components/keybinding-hints.js";
 import { clickableKeyTextHint } from "../components/nav-keys.ts";
+import { isNavigationView } from "../components/prompt-slot.ts";
 import { WorkingStatusComponent } from "../components/working-status.ts";
 import { isPhysicalCtrlC, isPhysicalEscape } from "../interactive-key-identity.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
@@ -288,6 +289,15 @@ const heldForTask = new WeakMap<InteractiveModeBase, Map<TaskId, string>>();
  */
 function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher): () => void {
 	let held: { readonly taskId: TaskId; readonly keys: string[] } | undefined;
+	/** The closing navigation component (`/tasks`) mounted when a `keepScreen` open started pending, until it unmounts. */
+	let closingComponent: Component | undefined;
+	const isClosingTasksMounted = (): boolean => {
+		if (closingComponent === undefined || mode.ui.hasOverlay()) return false;
+		const top = mode.editorContainer.children.at(-1);
+		if (top === closingComponent && top !== mode.editor && isNavigationView(top)) return true;
+		closingComponent = undefined;
+		return false;
+	};
 	const keptFor = () => {
 		let map = heldForTask.get(mode);
 		if (map === undefined) {
@@ -321,7 +331,10 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 	};
 	const hold = (data: string) => {
 		const pending = switcher.pendingTaskId;
-		if (pending === undefined || isKeyRelease(data) || !promptTakesKeys(mode)) return undefined;
+		if (pending === undefined || isKeyRelease(data)) return undefined;
+		const promptActive = promptTakesKeys(mode);
+		const closingTasksActive = !promptActive && isClosingTasksMounted();
+		if (!promptActive && !closingTasksActive) return undefined;
 		// Ctrl+C and Ctrl+D act as they always do; Esc cancels the request and the screen stays as it is.
 		if (isPhysicalCtrlC(data) || mode.keybindings.matches(data, "app.clear")) return undefined;
 		if (mode.keybindings.matches(data, "app.exit")) return undefined;
@@ -329,6 +342,7 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 			switcher.cancelPending();
 			return { consume: true };
 		}
+		if (!promptActive) return undefined;
 		if (held === undefined || held.taskId !== pending) held = { taskId: pending, keys: [] };
 		held.keys.push(data);
 		return { consume: true };
@@ -336,7 +350,19 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 	// The keys are listened to from the first time a subagent is being opened.
 	let stopListening: (() => void) | undefined;
 	const stopPending = switcher.onPending((pending, settled) => {
-		if (pending !== undefined) stopListening ??= mode.addTuiInputListener(hold);
+		if (pending !== undefined) {
+			stopListening ??= mode.addTuiInputListener(hold);
+			if (
+				switcher.pendingKeepScreen &&
+				!mode.ui.hasOverlay() &&
+				!mode.editorContainer.children.includes(mode.editor)
+			) {
+				const top = mode.editorContainer.children.at(-1);
+				if (top !== undefined && top !== mode.editor && isNavigationView(top)) closingComponent = top;
+			}
+		} else {
+			closingComponent = undefined;
+		}
 		if (settled !== undefined) settle(settled.taskId, settled.outcome);
 	});
 	const stopChange = switcher.onChange(({ to }) => {
