@@ -91,8 +91,7 @@
     "docs",
     "examples",
     "schemas",
-    "CHANGELOG.md",
-    "npm-shrinkwrap.json"
+    "CHANGELOG.md"
   ],
   "scripts": {
     "clean": "node ../../scripts/package-files.mjs clean dist",
@@ -115,8 +114,7 @@
     "generate:schemas": "bun run scripts/generate-schemas.ts",
     "generate:references": "bun run scripts/generate-references.ts",
     "test": "vitest --run",
-    "shrinkwrap": "bun run ../../scripts/generate-coding-agent-shrinkwrap.mjs",
-    "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap",
+    "prepublishOnly": "bun run clean && bun run build",
     "prepack": "node -e \"require('node:fs').existsSync('scripts/split-dist.mjs') && import('./scripts/split-dist.mjs').then(() => import('./scripts/write-startup-files.mjs')).then(() => import('./scripts/write-startup-stages.mjs'))\""
   },
   "dependencies": {
@@ -146,7 +144,7 @@
     "quickjs-wasi": "3.6.3",
     "semver": "7.8.5",
     "stream-json": "3.9.0",
-    "turndown": "^7.2.5",
+    "turndown": "7.2.5",
     "typebox": "1.3.27",
     "undici": "8.12.3",
     "yaml": "2.9.0"
