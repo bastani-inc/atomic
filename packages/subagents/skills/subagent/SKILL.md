@@ -132,7 +132,7 @@ Useful override fields: `model`, `fallbackModels`, `thinking`, `systemPromptMode
 
 Agent files can live in:
 
-- `~/.atomic/agent/agents/**/*.md` for user scope (user discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set).
+- `~/.atomic/agent/agents/**/*.md` for user scope (user discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, with `~/.atomic/agent/agents/` winning user-scope conflicts).
 - `.atomic/agents/**/*.md` for project scope.
 - `.agents/**/*.md` and legacy `.pi/agents/**/*.md` for project compatibility, with `.atomic/agents/` winning project-scope conflicts.
 
@@ -280,7 +280,7 @@ subagent({
 
 ## Subagent + Intercom Coordination
 
-Atomic subagents work without Intercom. When Atomic's bundled `@bastani/intercom` extension is available, `intercomBridge.mode` is not `"off"` (default `"always"`, or `"fork-only"` for forked runs), and the parent session has an Intercom target, the bridge injects coordination guidance and adds `intercom` and `contact_supervisor` to eligible child tool allowlists. When the bridge is active, Atomic connects the parent Intercom client during launch to issue a child-bound supervisor capability whenever the child's tool policy permits `intercom` or `contact_supervisor`. The admitted child registers on Intercom at session start before its first turn, so the parent and siblings can list and message it right away.
+Atomic subagents work without Intercom. When Atomic's bundled `@bastani/intercom` extension is available, `intercomBridge.mode` is not `"off"` (default `"always"`, or `"fork-only"` for forked runs), and the parent session has an Intercom target, the bridge injects coordination guidance and adds `intercom` and `contact_supervisor` to eligible child tool allowlists. When the bridge is active, Atomic connects the parent Intercom client during launch to issue a child-bound supervisor capability whenever the child's tool policy permits `intercom` or `contact_supervisor`. The admitted child registers on Intercom at session start before its first turn, so sessions in its group, by default the parent's, can list and message it right away.
 
 All builtin specialists can coordinate through `intercom`, both upward to the supervisor and sideways to peers in the same Intercom group. `debugger` and `worker` also declare `contact_supervisor`; use it for supervisor requests when the bridge supplies it. Explicit parent tool allowlists, exclusions, `noTools`, and disabled builtins are never bypassed to restore coordination.
 

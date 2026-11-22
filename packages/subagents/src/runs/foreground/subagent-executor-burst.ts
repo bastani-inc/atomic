@@ -78,7 +78,6 @@ type SharedField =
 	| "concurrency"
 	| "worktree"
 	| "context"
-	| "share"
 	| "control"
 	| "sessionDir"
 	| "maxOutput"
@@ -90,7 +89,6 @@ const SHARED_FIELDS: readonly SharedField[] = [
 	"concurrency",
 	"worktree",
 	"context",
-	"share",
 	"control",
 	"sessionDir",
 	"maxOutput",
@@ -100,7 +98,7 @@ const SHARED_FIELDS: readonly SharedField[] = [
 ];
 
 /** Shared fields that are off unless set to `true`: `false` and leaving them out ask for the same. */
-const OFF_UNLESS_TRUE: ReadonlySet<SharedField> = new Set(["worktree", "share", "includeProgress"]);
+const OFF_UNLESS_TRUE: ReadonlySet<SharedField> = new Set(["worktree", "includeProgress"]);
 
 /**
  * The value a call gives a field its burst shares. A named worktree belongs to its call's own children (#5202); only

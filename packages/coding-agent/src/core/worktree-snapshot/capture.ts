@@ -1151,6 +1151,44 @@ async function verifiedBundle(
 	return bundled.length === checked.size && bundled.every((commit) => checked.has(commit)) ? named.data : null;
 }
 
+/** The commits of `head` no remote-tracking ref reaches, newest first, and the reached commits they start from. */
+interface UnpushedHistory {
+	readonly unpushed: readonly string[];
+	readonly boundary: readonly string[];
+}
+
+async function unpushedHistory(root: string, head: string, signal?: AbortSignal): Promise<UnpushedHistory> {
+	const listed = (await gitText(["rev-list", "--boundary", head, "--not", "--remotes"], { cwd: root, signal }))
+		.split("\n")
+		.filter(Boolean);
+	return {
+		unpushed: listed.filter((line) => !line.startsWith("-")),
+		boundary: listed.filter((line) => line.startsWith("-")).map((line) => line.slice(1)),
+	};
+}
+
+/** Whether a snapshot's omission of its checkout's history, `omission`, still holds for `unpushed` under `settings`. */
+function historyStillLeftOut(
+	omission: HistoryOmission,
+	unpushed: readonly string[],
+	settings: WorktreeSnapshotSettings,
+): boolean {
+	if (omission.reason === "unpushed-history-denied") {
+		// Pushing a denied commit makes it no longer the snapshot's to leave out.
+		const listed = new Set(unpushed);
+		return omission.commits.every((commit) => listed.has(commit));
+	}
+	return (
+		omission.bytes > settings.maxSnapshotBytes &&
+		omission.commits.length === unpushed.length &&
+		omission.commits.every((commit, index) => commit === unpushed[index])
+	);
+}
+
+function isHistoryOmission(omission: WorktreeSnapshotOmission): omission is HistoryOmission {
+	return omission.reason === "unpushed-history-denied" || omission.reason === "bundle-over-cap";
+}
+
 async function captureHistory(
 	checkout: Checkout,
 	gitDir: string,
@@ -1158,13 +1196,10 @@ async function captureHistory(
 	previous: WorktreeSnapshot | undefined,
 	scratch: string,
 	signal?: AbortSignal,
+	listed?: UnpushedHistory,
 ): Promise<HistoryCapture> {
 	const { root, head } = checkout;
-	const listed = (await gitText(["rev-list", "--boundary", head, "--not", "--remotes"], { cwd: root, signal }))
-		.split("\n")
-		.filter(Boolean);
-	const unpushed = listed.filter((line) => !line.startsWith("-"));
-	const boundary = listed.filter((line) => line.startsWith("-")).map((line) => line.slice(1));
+	const { unpushed, boundary } = listed ?? (await unpushedHistory(root, head, signal));
 	if (unpushed.length === 0) return { bundle: null, omitted: [] };
 	const sameHistory = (commits: readonly string[]) =>
 		previous?.head === head && commits.length === unpushed.length && commits.every((c, i) => c === unpushed[i]);
@@ -1205,8 +1240,8 @@ async function objectExists(root: string, object: string, signal?: AbortSignal):
 
 /**
  * The working-tree omissions of a snapshot as `reason path` keys, in the path order capture lists them. Sizes are left
- * out, so a file that keeps growing past a cap is the same omission; history omissions depend only on HEAD and are
- * compared through it.
+ * out, so a file that keeps growing past a cap is the same omission; history omissions are compared through HEAD and
+ * the unpushed commits ({@link historyStillLeftOut}).
  */
 function pathOmissionKeys(omitted: readonly WorktreeSnapshotOmission[]): string[] {
 	return omitted.flatMap((omission) => ("path" in omission ? [`${omission.reason}\0${omission.path}`] : []));
@@ -1234,7 +1269,8 @@ function snapshotId(
 /**
  * Records the state of the Git checkout containing `dir`. Resolves `unavailable` (with the typed reason) when Git is
  * missing, `dir` is outside a work tree, the repository has no commits, or a path the snapshot reads cannot be read,
- * and `unchanged` with `previous` when HEAD, the recomputed tree and the files it leaves out all equal it. Never
+ * and `unchanged` with `previous` when HEAD, the recomputed tree and the files it leaves out all equal it and the
+ * unpushed commits it left out, if any, are still left out ({@link historyStillLeftOut}). Never
  * changes the user's index, refs or files, apart from a temporary ref under `refs/atomic/capture/` that bundling unpushed
  * commits creates and removes.
  */
@@ -1334,13 +1370,20 @@ async function captureCheckout(
 	const state = { ...read.state, tree: modes.tree };
 	const pathOmissions = read.omitted;
 	const omissions = pathOmissionKeys(pathOmissions);
+	let listed: UnpushedHistory | undefined;
 	if (
 		previous &&
 		previous.head === head &&
 		previous.tree === state.tree &&
 		JSON.stringify(pathOmissionKeys(previous.omitted)) === JSON.stringify(omissions)
 	) {
-		return { status: "unchanged", snapshot: previous, binding: bindingOf(previous) };
+		const unchanged = { status: "unchanged", snapshot: previous, binding: bindingOf(previous) } as const;
+		// Unpushed history the previous snapshot left out may have been pushed since, or fit under the cap now.
+		const leftOut = previous.omitted.filter(isHistoryOmission);
+		if (leftOut.length === 0) return unchanged;
+		listed = await unpushedHistory(root, head, signal);
+		const { unpushed } = listed;
+		if (leftOut.every((omission) => historyStillLeftOut(omission, unpushed, settings))) return unchanged;
 	}
 	return withScratchDirectory(async (scratch) => {
 		const config = await readRepositoryConfig(root, signal);
@@ -1387,7 +1430,7 @@ async function captureCheckout(
 			bytes: patch?.data.byteLength ?? 0,
 		};
 		const chain = incremental ? [...previous.chain, link] : [link];
-		const history = await captureHistory(checkout, capture.gitDir, settings, previous, scratch, signal);
+		const history = await captureHistory(checkout, capture.gitDir, settings, previous, scratch, signal, listed);
 		if (history.blob) blobs.push(history.blob);
 		const fields = {
 			root,
