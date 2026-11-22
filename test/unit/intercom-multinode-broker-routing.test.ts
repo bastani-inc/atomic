@@ -2780,28 +2780,57 @@ test("a cross-node send whose routing queries consume part of the client respons
 	}
 });
 
-test("a cross-node send whose routing queries make slow progress past the receipt wait extends the sender, while a hung database does not", async () => {
+test("a cross-node send whose routing queries make slow progress past 18 s keeps extending the sender every saving-report interval and succeeds, while a hung database sends no holds", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");
 	const recipient = await b!.connect("recipient");
-	const leases = a!.opened.state.leases;
+	// Create an open ask so the reply walks leases.listLive -> knownSessions.binding -> outbox.read ->
+	// pendingAsks.matchesReply -> reserveAndEnqueue -> pendingAsks.markReplied (6 sequential store steps).
+	const ask = await savedAsk(a!, sender, b!, recipient);
+	const state = b!.opened.state;
+	const leases = state.leases;
+	const known = state.knownSessions;
+	const outbox = state.outbox;
+	const pendingAsks = state.pendingAsks;
 	const listLive = leases.listLive.bind(leases);
-	const outbox = a!.opened.state.outbox;
+	const binding = known.binding.bind(known);
 	const readOutbox = outbox.read.bind(outbox);
-	let mode: "slow-progress" | "hung" | "off" = "slow-progress";
+	const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
+	const markReplied = pendingAsks.markReplied.bind(pendingAsks);
+	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);
+	const STEP_MS = 3_500;
+	let mode: "slow-21s" | "hung" | "mid-hang" | "off" = "slow-21s";
+	const stepPause = () => new Promise<void>((resolve) => setTimeout(resolve, STEP_MS));
 	const leaseSpy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
-		if (mode === "hung" && kind === "presence") return new Promise<never>(() => {});
-		if (mode === "slow-progress" && kind === "presence") {
-			await new Promise((resolve) => setTimeout(resolve, 1_000));
+		if (kind === "presence") {
+			if (mode === "hung") return new Promise<never>(() => {});
+			if (mode === "slow-21s" || mode === "mid-hang") await stepPause();
 		}
 		return listLive(kind, staleAfterMs);
 	});
-	const outboxSpy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
-		if (mode === "slow-progress") {
+	const bindingSpy = vi.spyOn(known, "binding").mockImplementation(async (id, retentionMs) => {
+		if (mode === "mid-hang") return new Promise<never>(() => {});
+		if (mode === "slow-21s") await stepPause();
+		return binding(id, retentionMs);
+	});
+	const outboxSpy = vi.spyOn(outbox, "read").mockImplementation(async (id) => {
+		if (mode === "slow-21s") await stepPause();
+		return readOutbox(id);
+	});
+	const matchSpy = vi.spyOn(pendingAsks, "matchesReply").mockImplementation(async (route) => {
+		if (mode === "slow-21s") await stepPause();
+		return matchesReply(route);
+	});
+	const enqueueSpy = vi.spyOn(state, "reserveAndEnqueue").mockImplementation(async (reservation, req) => {
+		if (mode === "slow-21s") await stepPause();
+		return reserveAndEnqueue(reservation, req);
+	});
+	const markSpy = vi.spyOn(pendingAsks, "markReplied").mockImplementation(async (route) => {
+		if (mode === "slow-21s") {
+			await stepPause();
 			mode = "off";
-			await new Promise((resolve) => setTimeout(resolve, RECIPIENT_RECEIPT_TIMEOUT_MS));
 		}
-		return readOutbox(messageId);
+		return markReplied(route);
 	});
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
 	const now = performance.now.bind(performance);
@@ -2809,26 +2838,58 @@ test("a cross-node send whose routing queries make slow progress past the receip
 	const baseDate = Date.now();
 	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => basePerf + (Date.now() - baseDate));
 	try {
-		// Part 1: leases.listLive answers after 1 s, then outbox.read takes 8 s -> total routing = 9 s > 8 s.
-		const slow = message();
-		a!.send(sender, "recipient", slow);
-		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS + 500);
-		assert.ok(holdsOf(sender, slow.id).length >= 1, "slow-but-progressing routing sent send_held before 10 s");
-		await advance(2_000);
-		await waitFor(() => (messageFrames(recipient, slow.id).length === 1 ? true : undefined));
-		assert.equal(b!.router.received(recipient, slow.id), true);
-		const delivered = await advanceUntil(() => outcomeOf(sender, slow.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+		// Part 1: 6 steps * 3.5 s = 21 s (> 18 s) of continuous routing progress; simulate client deadline tracking.
+		const slow = message({ replyTo: ask.id, content: { text: "slow-reply" } });
+		let clientDeadline = Date.now() + SEND_RESPONSE_TIMEOUT_MS;
+		let seenHolds = 0;
+		const startedAt = Date.now();
+		b!.send(recipient, sender.info.id, slow, { requirePendingReply: true });
+		for (let elapsed = 0; elapsed < 22_000; elapsed += 500) {
+			await advance(500);
+			const holds = holdsOf(recipient, slow.id);
+			while (seenHolds < holds.length) {
+				const frame = holds[seenHolds++]!;
+				assert.equal(frame.type, "send_held");
+				assert.equal(frame.timeoutMs, RECIPIENT_RECEIPT_TIMEOUT_MS);
+				clientDeadline = Math.max(clientDeadline, Date.now() + frame.timeoutMs + 5_000);
+			}
+			assert.ok(Date.now() < clientDeadline, `client would have timed out at ${Date.now() - startedAt} ms`);
+		}
+		assert.ok(Date.now() - startedAt >= 21_000, "routing spanned past 18 s");
+		assert.ok(seenHolds >= 6, `expected periodic progress holds across 21 s, got ${seenHolds}`);
+		await waitFor(() => (messageFrames(sender, slow.id).length === 1 ? true : undefined));
+		assert.equal(a!.router.received(sender, slow.id), true);
+		const delivered = await advanceUntil(() => outcomeOf(recipient, slow.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
 		assert.equal(delivered?.value.type, "delivered", JSON.stringify(delivered));
 
-		// Part 2: permanently hung database (0 store answers) sends no send_held.
+		// Part 2: permanently hung database (store answers nothing) emits zero holds past SEND_RESPONSE_TIMEOUT_MS.
 		mode = "hung";
 		const hung = message();
-		a!.send(sender, "recipient", hung);
-		await advance(SEND_RESPONSE_TIMEOUT_MS + 1_000);
-		assert.deepEqual(holdsOf(sender, hung.id), [], "a hung database must not extend the sender");
+		b!.send(recipient, sender.info.id, hung);
+		await advance(SEND_RESPONSE_TIMEOUT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		assert.deepEqual(holdsOf(recipient, hung.id), [], "a hung database must not extend the sender");
+
+		// Part 3: database that answers step 1 then hangs stops emitting holds once RECIPIENT_RECEIPT_TIMEOUT_MS passes.
+		mode = "mid-hang";
+		const midHung = message();
+		b!.send(recipient, sender.info.id, midHung);
+		await advance(STEP_MS + RECIPIENT_RECEIPT_TIMEOUT_MS + 2 * RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		const holdsAfterStall = holdsOf(recipient, midHung.id).length;
+		assert.ok(holdsAfterStall >= 1, "progress on step 1 emitted at least one hold");
+		await advance(3 * RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		assert.equal(
+			holdsOf(recipient, midHung.id).length,
+			holdsAfterStall,
+			"no further holds once progress stops for RECIPIENT_RECEIPT_TIMEOUT_MS",
+		);
 	} finally {
+		mode = "off";
 		perfSpy.mockRestore();
+		markSpy.mockRestore();
+		enqueueSpy.mockRestore();
+		matchSpy.mockRestore();
 		outboxSpy.mockRestore();
+		bindingSpy.mockRestore();
 		leaseSpy.mockRestore();
 		vi.useRealTimers();
 	}
@@ -2844,7 +2905,7 @@ test("a slow sent-message acceptance near the client deadline extends the sender
 	const acceptSpy = vi.spyOn(sentMessages, "accept").mockImplementation(async (args) => {
 		if (stallAccept) {
 			stallAccept = false;
-			await new Promise((resolve) => setTimeout(resolve, 1_500));
+			await new Promise((resolve) => setTimeout(resolve, 3_000));
 		}
 		return accept(args);
 	});
@@ -2857,13 +2918,14 @@ test("a slow sent-message acceptance near the client deadline extends the sender
 		const sent = message();
 		a!.send(sender, "recipient", sent);
 		await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
-		// Advance to 7.5 s (within 2.5 s of 10 s deadline; waiter expires at 8 s).
+		// Advance to 7.5 s (2.5 s before 10 s deadline); sentMessages.accept stalls 3 s (past 10 s!).
 		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS - 500);
 		stallAccept = true;
 		assert.equal(b!.router.received(recipient, sent.id), true);
-		// Wait past HOLD_CHECK_GRACE_MS while sentMessages.accept is stalled (1.5 s).
-		await advance(1_000);
-		assert.ok(holdsOf(sender, sent.id).length >= 1, "slow sentMessages.accept emitted send_held");
+		// By 9.5 s (strictly before 10 s client deadline), the unified progress reporter must have emitted send_held.
+		await advance(2_000);
+		assert.ok(holdsOf(sender, sent.id).length >= 1, "slow sentMessages.accept emitted send_held before 10 s");
+		await advance(1_500);
 		const delivered = await advanceUntil(() => outcomeOf(sender, sent.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
 		assert.equal(delivered?.value.type, "delivered", JSON.stringify(delivered));
 	} finally {
