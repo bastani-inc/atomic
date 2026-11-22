@@ -152,7 +152,9 @@ pub(crate) fn sequence_number(buffer: &[u64], written: u32) -> Option<u64> {
 }
 
 #[cfg(windows)]
-pub(crate) use windows::{hold_below, process_table};
+pub(crate) use windows::hold_below;
+#[cfg(all(windows, test))]
+pub(crate) use windows::process_table;
 
 #[cfg(windows)]
 mod windows {

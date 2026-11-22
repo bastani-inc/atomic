@@ -166,6 +166,39 @@ mod tests {
 		}
 	}
 
+	#[cfg(windows)]
+	#[test]
+	fn ends_only_the_process_itself_without_its_descendants() {
+		use std::{process::Command, thread::sleep, time::Duration};
+		// cmd starts ping, which keeps both running for at most 30 seconds.
+		let mut parent =
+			Command::new("cmd").args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"]).spawn().unwrap();
+		let pid = parent.id();
+		let created = process_creation_time(pid).expect("the child's creation time");
+		let mut child = None;
+		for _ in 0..500 {
+			child = crate::process_tree::process_table()
+				.into_iter()
+				.find(|&(_, started_by)| started_by == pid)
+				.map(|(id, _)| id)
+				.and_then(|id| process_creation_time(id).map(|started| (id, started)));
+			if child.is_some() {
+				break;
+			}
+			sleep(Duration::from_millis(10));
+		}
+		let (child, child_created) = child.expect("the ping cmd started");
+
+		let ended = terminate_process_created_at(pid, created, false);
+		parent.wait().unwrap();
+		// Still the same process: the one created when it was, not a later one given its id.
+		let still_runs = process_creation_time(child).as_deref() == Some(child_created.as_str());
+		terminate_process_created_at(child, child_created, false);
+
+		assert_eq!(ended, Some(1), "ended more than the process itself");
+		assert!(still_runs, "the process it started was ended without descendants asked for");
+	}
+
 	#[cfg(not(windows))]
 	#[test]
 	fn reads_nothing_off_windows() {
