@@ -2,7 +2,7 @@
 
 `@bastani/intercom` is Atomic's bundled extension for direct messaging between Atomic sessions on one machine, or across machines that share storage. Send context, findings, or requests from one session to another, or let agents coordinate directly.
 
-See the [Intercom guide](../coding-agent/docs/intercom.md), [Intercom operations](../coding-agent/docs/intercom/operations.md), and [Intercom reference](../coding-agent/docs/intercom/reference.md) for full details.
+See the [Intercom guide](https://docs.bastani.ai/intercom), [Intercom operations](https://docs.bastani.ai/intercom/operations), and [Intercom reference](https://docs.bastani.ai/intercom/reference) for full details.
 
 ## Overview
 
@@ -16,7 +16,7 @@ When you run multiple Atomic sessions at the same time, such as one researching 
 
 Atomic bundles `@bastani/intercom` with `@bastani/atomic`. No separate installation is required.
 
-At startup, the extension registers the `intercom` tool, `/intercom` command, `Alt+M` shortcut, and bundled `intercom` skill (`/skill:intercom`). An interactive session connects to the local broker in the background a few seconds after startup, so other sessions in its group can list and message it right away. Print (`-p`), JSON, RPC, and SDK sessions connect on first use. Interactive sessions also wait for first use when `joinAtStartup` is `false` in config, `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` is set, or `intercom` is excluded from the session's tools. Admitted subagent children join at session start so peers and the parent can list and message them immediately.
+At startup, the extension registers the `intercom` tool, `/intercom` command, `Alt+M` shortcut, and bundled `intercom` skill (`/skill:intercom`). An interactive session connects to the local broker in the background a few seconds after startup, so other sessions in its group can list and message it right away. Print (`-p`), JSON, RPC, and SDK sessions connect on first use, or when they launch a subagent with Intercom. Interactive sessions also wait for first use when `intercom` is excluded from the session's tools, or when joining at startup is off. It is off when `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` is set, or when `joinAtStartup` is `false` in config and `ATOMIC_INTERCOM_JOIN_AT_STARTUP` is not `1`. A subagent launched with Intercom connects as soon as its session starts, so sessions in its group can list and message it right away. Its group is the group of the session that launched it, unless the launch passes `group`.
 
 You can add this snippet to your project's `AGENTS.md` to guide when agents should coordinate across sessions:
 
