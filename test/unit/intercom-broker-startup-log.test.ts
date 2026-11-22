@@ -178,23 +178,7 @@ describe("broker stderr capture shape", () => {
 		assert.deepEqual(spawnModule.getBrokerSpawnOptions("/extension").stdio, ["ignore", "ignore", "ignore"]);
 	});
 
-	test("the Windows launcher redirects the broker's own stderr to the same log", () => {
-		const inner = String.raw`"C:\Program Files\Atomic\node.exe" "C:\ext\cli.mjs" "C:\ext\broker.ts"`;
-		const commandLine = spawnModule.getWindowsStderrRedirectCommandLine(
-			inner,
-			String.raw`C:\agent\intercom\broker.log`,
-		);
-
-		// WshShell.Run gives the launched process no inherited handles, so the redirect has to be
-		// part of the command line itself rather than a descriptor passed to wscript.exe.
-		assert.equal(commandLine, String.raw`cmd.exe /s /c "${inner} 2>>"C:\agent\intercom\broker.log""`);
-
-		const script = spawnModule.getWindowsHiddenLauncherScript(commandLine);
-		assert.ok(script.includes(`2>>""C:\\agent\\intercom\\broker.log"""`));
-		assert.ok(script.includes(", 0, False"));
-	});
-
-	test("the Windows launch spec carries the redirect", () => {
+	test("the Windows launch spec starts the broker directly without wscript or cmd", () => {
 		const spec = spawnModule.getBrokerLaunchSpec(
 			String.raw`C:\ext\broker\broker.ts`,
 			"npx",
@@ -207,16 +191,14 @@ describe("broker stderr capture shape", () => {
 			String.raw`C:\agent\intercom\broker.log`,
 		);
 
-		assert.equal(spec.kind, "windows-launcher");
-		assert.ok(spec.kind === "windows-launcher" && spec.launcherCommandLine.startsWith("cmd.exe /s /c "));
-		assert.ok(
-			spec.kind === "windows-launcher" &&
-				spec.launcherCommandLine.includes(String.raw`2>>"C:\agent\intercom\broker.log"`),
-		);
+		assert.equal(spec.kind, "direct");
+		assert.equal(spec.command, String.raw`C:\node.exe`);
+		assert.doesNotMatch(spec.command, /wscript|cmd\.exe/iu);
+		assert.equal(spec.args.at(-1), String.raw`C:\ext\broker\broker.ts`);
 	});
 });
 
-describe("the Windows launcher chain does nothing after the broker ends", () => {
+describe("the Windows direct launch keeps startup files clean", () => {
 	const spec = () =>
 		spawnModule.getBrokerLaunchSpec(
 			String.raw`C:\ext\broker\broker.ts`,
@@ -230,28 +212,24 @@ describe("the Windows launcher chain does nothing after the broker ends", () => 
 			String.raw`C:\agent\intercom\broker.log`,
 		);
 
-	test("its only file I/O is the broker's own stderr log", () => {
+	test("invokes the runtime directly with no shell redirection or launcher script", () => {
 		const launch = spec();
-		assert.ok(launch.kind === "windows-launcher");
-		const line = launch.launcherCommandLine;
-
-		// A resident cmd.exe that writes a file when the broker's command returns (an earlier version appended
-		// `&& echo ... >file || echo ... >file`) creates that file in the intercom directory just as tests, `atomic
-		// intercom restart` and users remove it, which made every Windows test that killed a broker and removed its
-		// directory fail with ENOTEMPTY. The redirect is `2>>`, two `>`, and nothing may follow the broker.
-		assert.equal((line.match(/>/gu) ?? []).length, 2, line);
-		assert.match(line, /2>>"C:\\agent\\intercom\\broker\.log"/u);
-		assert.doesNotMatch(line, /&|\||\becho\b/u, line);
-		assert.ok(line.startsWith("cmd.exe /s /c "), line);
-
-		const script = spawnModule.getWindowsHiddenLauncherScript(line);
-		assert.equal((script.match(/WshShell\.Run/gu) ?? []).length, 1, script);
+		assert.equal(launch.kind, "direct");
+		assert.equal(launch.command, String.raw`C:\node.exe`);
+		assert.equal(launch.verbatimArguments, undefined);
+		assert.equal(
+			launch.args.some((arg) => />>|broker-launch\.vbs|wscript/iu.test(arg)),
+			false,
+		);
 	});
 
-	test("carries nothing of the broker's announcement, which is the broker's own business", () => {
+	test("carries nothing of the broker's announcement in launch arguments", () => {
 		const launch = spec();
-		assert.ok(launch.kind === "windows-launcher");
-		assert.doesNotMatch(launch.launcherCommandLine, /ANNOUNCE|broker\.starting/u);
+		assert.equal(launch.kind, "direct");
+		assert.equal(
+			launch.args.some((arg) => /ANNOUNCE|broker\.starting/u.test(arg)),
+			false,
+		);
 	});
 });
 
@@ -914,10 +892,7 @@ describe("broker startup failures name the log", () => {
 		assert.ok(readFileSync(logPath, "utf8").includes(marker));
 	});
 
-	test("the exit-code path names the code where the platform reports one", {
-		skip: process.platform === "win32",
-	}, async () => {
-		// Behind the Windows launcher the marker file says whether the broker's status was 0, not what it was.
+	test("the exit-code path names the code on every platform", async () => {
 		const marker = `EXIT-CODE-MARKER-${Date.now()}`;
 
 		const reported = await assertCrashReportedPromptly(marker, 3);

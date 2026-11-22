@@ -26,6 +26,7 @@ import {
 	decideBrokerProtocol,
 	protocolRangeOf,
 } from "./protocol-version.js";
+import { isUnansweredCloseFromRetiringBroker, snapshotBrokerPidBeforeRequest } from "./retiring-broker-check.js";
 import {
 	describeSharedStorage,
 	readSharedStorageSetting,
@@ -100,27 +101,35 @@ async function queryBroker(
 	agentDir: string,
 	timeoutMs: number = BROKER_CONTROL_TIMEOUT_MS,
 ): Promise<{ readonly query: BrokerQuery; readonly found?: BrokerProcess }> {
-	const answer = await controlRequest(
-		getBrokerSocketPath(process.platform, agentDir),
-		"broker_status",
-		"broker_status",
-		timeoutMs,
-	);
-	if (!answer.connected) return { query: { state: "stopped" } };
-	const reply = answer.reply;
-	if (typeof reply === "object" && reply !== null && !Array.isArray(reply) && isBrokerStatusReport(reply.report)) {
-		return { query: { state: "running", report: reply.report } };
+	const socketPath = getBrokerSocketPath(process.platform, agentDir);
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		const pidBefore = await snapshotBrokerPidBeforeRequest(agentDir);
+		const answer = await controlRequest(socketPath, "broker_status", "broker_status", timeoutMs);
+		if (!answer.connected) return { query: { state: "stopped" } };
+		const reply = answer.reply;
+		if (typeof reply === "object" && reply !== null && !Array.isArray(reply) && isBrokerStatusReport(reply.report)) {
+			return { query: { state: "running", report: reply.report } };
+		}
+	if (
+		reply === undefined &&
+		answer.timedOut !== true &&
+		(await isUnansweredCloseFromRetiringBroker(socketPath, agentDir, pidBefore))
+	) {
+		if (attempt === 0) continue;
+		return { query: { state: "stopped" } };
 	}
-	const pid = readBrokerPid(agentDir);
-	if (pid === undefined) return { query: { state: "legacy" } };
-	// Windows can briefly accept a named-pipe connection after its broker has terminated, and gives its pid to another
-	// process within seconds: a pid that names a process created well after broker.pid was written is no broker.
-	if (!isProcessAlive(pid)) return { query: { state: "stopped" } };
-	// Only Windows tells a later process by broker.pid's write time here; elsewhere a restart reads the start itself.
-	if (process.platform !== "win32") return { query: { state: "legacy", pid } };
-	const found = await identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
-	if (found.wroteBrokerPid === "no") return { query: { state: "stopped" } };
-	return { query: { state: "legacy", pid }, found };
+		const pid = readBrokerPid(agentDir);
+		if (pid === undefined) return { query: { state: "legacy" } };
+		// Windows can briefly accept a named-pipe connection after its broker has terminated, and gives its pid to another
+		// process within seconds: a pid that names a process created well after broker.pid was written is no broker.
+		if (!isProcessAlive(pid)) return { query: { state: "stopped" } };
+		// Only Windows tells a later process by broker.pid's write time here; elsewhere a restart reads the start itself.
+		if (process.platform !== "win32") return { query: { state: "legacy", pid } };
+		const found = await identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
+		if (found.wroteBrokerPid === "no") return { query: { state: "stopped" } };
+		return { query: { state: "legacy", pid }, found };
+	}
+	return { query: { state: "stopped" } };
 }
 
 /** The shared selection a broker started from this environment and agent directory would read, if any. */
