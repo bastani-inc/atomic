@@ -537,13 +537,13 @@ test("a call whose retry waited past the busy timeout on the server lock after a
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1);
 });
 
-test("a call whose first attempt waited past the busy timeout still stops retrying once the elapsed wall-clock cap passes", async () => {
+test("a call whose first attempt waited past the busy timeout still stops retrying once the 8 s call-start wall-clock cap passes", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	// Attempt 1 spends 5.5 s waiting for the lock; each subsequent busy reply advances the clock by 2.5 s so the
-	// 15 s post-refusal wall-clock cap ends the loop well before the 5 s sleep budget is spent.
-	advanceClockOnPipelines("INSERT INTO events", 5_500, 2_500);
+	// Attempt 1 spends 5.5 s waiting for the lock (within the 8 s cap -> gets one probe retry); Attempt 2 also
+	// spends 5.5 s (now 11 s >= 8 s cap), so the loop stops after 2 attempts instead of retrying for 20+ s.
+	advanceClockOnPipelines("INSERT INTO events", 5_500, 5_500);
 	fake.fail(...Array.from({ length: 100 }, () => BUSY));
 	const before = fake.pipelines.length;
 	const failure = await database.run("INSERT INTO events VALUES (1)").then(
@@ -552,9 +552,61 @@ test("a call whose first attempt waited past the busy timeout still stops retryi
 	);
 	assert.ok(failure instanceof StorageUnavailableError);
 	assert.equal((failure.cause as { code?: unknown }).code, "SQLITE_BUSY");
-	const runs = fake.pipelines.length - before;
-	// 1 initial slow refusal + ~6 slow retries across the 15 s post-refusal cap: bounded, never 1 and never runaway.
-	assert.ok(runs >= 5 && runs <= 10, `expected bounded retries across the 15 s post-refusal cap, got ${runs}`);
+	assert.equal(fake.pipelines.length - before, 2);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+});
+
+test("persistent busy refusals over 200-400 ms WAN RTT stay within the 5 s busy timeout plus one RTT", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	for (const rttMs of [200, 400]) {
+		const realNow = performance.now.bind(performance);
+		let offsetMs = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => realNow() + offsetMs);
+		const realFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			const body = await request.clone().text();
+			const hit = body.includes("INSERT INTO events");
+			const response = await realFetch(request);
+			if (hit) offsetMs += rttMs;
+			return response;
+		});
+		fake.fail(...Array.from({ length: 100 }, () => BUSY));
+		const started = performance.now();
+		const failure = await database.run("INSERT INTO events VALUES (1)").then(
+			() => assert.fail("the insert succeeded"),
+			(error: unknown) => error,
+		);
+		const elapsed = performance.now() - started;
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+		assert.ok(failure instanceof StorageUnavailableError);
+		assert.equal((failure.cause as { code?: unknown }).code, "SQLITE_BUSY");
+		assert.ok(
+			elapsed <= 5_000 + rttMs + 200,
+			`${rttMs} ms RTT took ${Math.round(elapsed)} ms, expected <= ${5_000 + rttMs + 200} ms`,
+		);
+		assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+	}
+});
+
+test("a slow busy refusal followed by schema-changed shares the 8 s wall-clock cap across the write-transaction fallback", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	advanceClockOnPipelines("INSERT INTO events", 5_000, 5_000);
+	fake.fail(BUSY, SCHEMA_CHANGED, ...Array.from({ length: 20 }, () => BUSY));
+	const before = fake.pipelines.length;
+	const failure = await database.run("INSERT INTO events VALUES (1)").then(
+		() => assert.fail("the insert succeeded"),
+		(error: unknown) => error,
+	);
+	assert.ok(failure instanceof StorageUnavailableError);
+	assert.equal((failure.cause as { code?: unknown }).code, "SQLITE_BUSY");
+	// 1 slow BUSY + 1 slow SCHEMA_CHANGED + 1 locked write-transaction attempt (then elapsed >= 8 s -> stops immediately).
+	assert.equal(fake.pipelines.length - before, 3);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
 
