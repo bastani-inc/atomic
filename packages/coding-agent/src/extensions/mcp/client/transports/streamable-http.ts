@@ -1,12 +1,11 @@
 import type { AuthProvider, McpFetch } from "../auth-provider.js";
 import {
-	extractHeaderSecrets,
-	isSensitiveKeyName,
-	looksLikeSecretValue,
+	collectSecretsForMasking,
+	NON_SECRET_HTTP_HEADERS,
 	redactOAuthErrorText,
 	redactOAuthErrorTextCapped,
 	redactWwwAuthenticateHeader,
-	SENSITIVE_QUERY_PARAM_NAMES,
+	scrubFetchError,
 	scrubUnknownErrorData,
 } from "../oauth/redact.js";
 import {
@@ -243,58 +242,57 @@ function discard(response: Response): Promise<void> {
 }
 
 /**
- * Reads a response body as text, decoding chunks as they arrive. Once the body exceeds `maxBytes`, the rest is
- * cancelled and the text holds only the first `maxBytes` bytes.
+ * Reads a response body as text, decoding chunks as they arrive. Reads up to `capBytes + lookaheadBytes`
+ * UTF-8 bytes and returns `capChars`: the exact UTF-16 code-unit offset matching `capBytes` UTF-8 bytes
+ * so redaction clips in the same byte coordinate space it read in.
  */
-async function readBodyText(response: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
-	if (!response.body) return { text: "", truncated: false };
+async function readBodyText(
+	response: Response,
+	capBytes: number,
+	lookaheadBytes = 0,
+): Promise<{ text: string; capChars: number; truncated: boolean }> {
+	if (!response.body) return { text: "", capChars: 0, truncated: false };
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let text = "";
-	let remaining = maxBytes;
+	let bytesRead = 0;
+	let capChars: number | undefined;
+	const maxBytes = capBytes + lookaheadBytes;
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
-			if (done) return { text: text + decoder.decode(), truncated: false };
-			if (value.byteLength > remaining) {
-				await reader.cancel().catch(() => {});
-				// Decoding a subarray copies only the kept bytes, so the result never references the dropped rest.
-				return { text: text + decoder.decode(value.subarray(0, remaining), { stream: true }), truncated: true };
+			if (done) {
+				text += decoder.decode();
+				return { text, capChars: capChars ?? text.length, truncated: false };
 			}
-			remaining -= value.byteLength;
-			text += decoder.decode(value, { stream: true });
+			const nextTotal = bytesRead + value.byteLength;
+			let chunk = value;
+			let exceededMax = false;
+			if (nextTotal > maxBytes) {
+				await reader.cancel().catch(() => {});
+				chunk = value.subarray(0, maxBytes - bytesRead);
+				exceededMax = true;
+			}
+			if (capChars === undefined && bytesRead + chunk.byteLength > capBytes) {
+				const splitAt = capBytes - bytesRead;
+				if (splitAt > 0) text += decoder.decode(chunk.subarray(0, splitAt), { stream: true });
+				capChars = text.length;
+				text += decoder.decode(chunk.subarray(splitAt), { stream: true });
+			} else {
+				text += decoder.decode(chunk, { stream: true });
+				if (capChars === undefined && bytesRead + chunk.byteLength === capBytes) {
+					capChars = text.length;
+				}
+			}
+			bytesRead += chunk.byteLength;
+			if (exceededMax) {
+				return { text, capChars: capChars ?? text.length, truncated: true };
+			}
 		}
 	} finally {
 		reader.releaseLock();
 	}
 }
-
-/** Standard non-secret HTTP headers that never carry credentials. */
-const NON_SECRET_HTTP_HEADERS = new Set([
-	"accept",
-	"accept-encoding",
-	"accept-language",
-	"cache-control",
-	"content-type",
-	"mcp-protocol-version",
-	"origin",
-	"pragma",
-	"referer",
-	"user-agent",
-	"x-env",
-	"x-environment",
-	"x-tenant",
-	"x-region",
-	"x-team",
-	"x-app",
-	"x-client",
-	"x-request-id",
-	"x-correlation-id",
-	"x-trace-id",
-	"x-forwarded-for",
-	"x-forwarded-proto",
-	"x-forwarded-host",
-]);
 
 function describeHttpFailure(status: number, body: string): string {
 	const text = body.trim();
@@ -321,6 +319,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	private getStreamStarted = false;
 	/** Access token of the latest request, which `close()` reuses instead of asking the auth provider. */
 	private lastToken: string | undefined;
+	/** Every access token seen on this connection (kept across rotations for the connection lifetime). */
+	private readonly seenTokens = new Set<string>();
 
 	constructor(options: StreamableHttpTransportOptions) {
 		super();
@@ -425,27 +425,21 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		// Aborting the request ends its fetch and response body, as closing the transport does.
 		const fetchSignal = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
 		for (let attempt = 0; ; attempt++) {
-			const { headers, token } = await this.headers(init.headers);
-			if (signal?.aborted) throw new McpAbortError();
+			let token: string | undefined;
 			let response: Response;
 			try {
+				const resolved = await this.headers(init.headers);
+				token = resolved.token;
+				if (signal?.aborted) throw new McpAbortError();
 				response = await this.fetch(this.url, {
 					method,
-					headers,
+					headers: resolved.headers,
 					body: init.body,
 					signal: fetchSignal,
 				});
 			} catch (error) {
-				const message = redactOAuthErrorText(
-					error instanceof Error ? error.message : String(error),
-					this.activeSecrets(token),
-				);
-				if (error instanceof TypeError) throw new TypeError(message);
-				if (error instanceof DOMException) throw new DOMException(message, error.name);
-				const scrubbed = new Error(message);
-				const code = (error as { code?: unknown } | undefined)?.code;
-				if (typeof code === "string") Object.assign(scrubbed, { code });
-				throw scrubbed;
+				if (error instanceof McpAbortError || error instanceof McpHttpError) throw error;
+				throw scrubFetchError(error, this.activeSecrets(token));
 			}
 			if (attempt > 0 || !onUnauthorized || !needsAuthorization(response)) return { response, token };
 			try {
@@ -456,9 +450,21 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		}
 	}
 
+	private recordSeenToken(token: string | undefined): void {
+		if (!token) return;
+		if (this.seenTokens.has(token)) {
+			this.seenTokens.delete(token);
+		} else if (this.seenTokens.size >= 64) {
+			const oldest = this.seenTokens.values().next().value;
+			if (oldest !== undefined) this.seenTokens.delete(oldest);
+		}
+		this.seenTokens.add(token);
+	}
+
 	private async headers(extra: Record<string, string> = {}): Promise<{ headers: Headers; token?: string }> {
 		const token = await this.options.authProvider?.token();
 		this.lastToken = token;
+		this.recordSeenToken(token);
 		return { headers: this.buildHeaders(extra, token), ...(token ? { token } : {}) };
 	}
 
@@ -482,19 +488,16 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		const token = requestToken ?? this.lastToken;
 		if (token) secrets.push(token);
 		if (this.lastToken && this.lastToken !== token) secrets.push(this.lastToken);
-		if (this.url.password) secrets.push(this.url.password);
-		for (const [key, value] of this.url.searchParams.entries()) {
-			if (value && SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase())) secrets.push(value);
+		for (const seen of this.seenTokens) {
+			if (seen !== token && seen !== this.lastToken) secrets.push(seen);
 		}
-		if (this.options.headers) {
-			for (const [name, value] of Object.entries(this.options.headers)) {
-				const lower = name.toLowerCase();
-				if (NON_SECRET_HTTP_HEADERS.has(lower)) continue;
-				if (isSensitiveKeyName(lower) || looksLikeSecretValue(value)) {
-					secrets.push(...extractHeaderSecrets(name, value));
-				}
-			}
-		}
+		secrets.push(
+			...collectSecretsForMasking({
+				url: this.url,
+				headers: this.options.headers,
+				nonSecretHeaders: NON_SECRET_HTTP_HEADERS,
+			}),
+		);
 		return secrets;
 	}
 
@@ -522,11 +525,12 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			if (encodedUpperBound > maxSecretBytes) maxSecretBytes = encodedUpperBound;
 		}
 		const lookahead = Math.max(ERROR_BODY_REDACTION_LOOKAHEAD_BYTES, Math.min(maxSecretBytes, MAX_ERROR_BODY_BYTES));
-		const { text: rawBody } = await readBodyText(response, MAX_ERROR_BODY_BYTES + lookahead).catch(() => ({
+		const { text: rawBody, capChars } = await readBodyText(response, MAX_ERROR_BODY_BYTES, lookahead).catch(() => ({
 			text: "",
+			capChars: 0,
 			truncated: false,
 		}));
-		const body = redactOAuthErrorTextCapped(rawBody, secrets, MAX_ERROR_BODY_BYTES);
+		const body = redactOAuthErrorTextCapped(rawBody, secrets, capChars);
 		if (response.status === 401) throw new McpAuthRequiredError(response, body, secrets);
 		if (response.status === 404 && this.sessionIdValue) throw new McpSessionExpiredError(body);
 		throw new McpHttpError(response.status, describeHttpFailure(response.status, body), body);

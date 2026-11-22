@@ -494,6 +494,38 @@ async function silentServers(): Promise<{ headers: string; body: string; close()
 	};
 }
 
+/** Starts `server` on 127.0.0.1, or `host`, at `port` (0: any free one); the error, if it cannot. */
+function listenAt(server: https.Server, port: number, host = "127.0.0.1"): Promise<https.Server> {
+	return new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(port, host, () => {
+			server.off("error", reject);
+			resolve(server);
+		});
+	});
+}
+
+/**
+ * Servers that answer on "localhost" wherever Bun connects to it: Bun tries ::1 before 127.0.0.1, so another program
+ * listening on the same port number at ::1 would answer a request meant for one that listens on 127.0.0.1 alone. The
+ * twin holds that port at ::1 too. Where the system has no ::1, nothing else can listen there either.
+ */
+async function listenAtLocalhost(create: () => https.Server): Promise<https.Server[]> {
+	for (;;) {
+		const ipv4 = await listenAt(create(), 0);
+		const port = (ipv4.address() as net.AddressInfo).port;
+		try {
+			return [ipv4, await listenAt(create(), port, "::1")];
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "EADDRNOTAVAIL" || code === "EAFNOSUPPORT") return [ipv4];
+			await new Promise<void>((resolve) => ipv4.close(() => resolve()));
+			// Another program holds this port number at ::1: take another one.
+			if (code !== "EADDRINUSE") throw error;
+		}
+	}
+}
+
 describe("the standalone binary's fetch (Bun)", () => {
 	it(
 		"ends a response that stays silent longer than httpIdleTimeoutMs, before its headers and between body chunks",
@@ -626,16 +658,18 @@ describe("the standalone binary's fetch (Bun)", () => {
 		"sends an https request through HTTP_PROXY when no https proxy is set, as on Node.js, keeping NO_PROXY, ALL_PROXY and HTTPS_PROXY",
 		async () => {
 			const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
-			const endpoints: https.Server[] = [];
-			for (let i = 0; i < 4; i++) {
-				const endpoint = https.createServer(
-					{ cert: certificate.cert, key: certificate.key },
-					(_request, response) => response.end("endpoint"),
+			const createEndpoint = () =>
+				https.createServer({ cert: certificate.cert, key: certificate.key }, (_request, response) =>
+					response.end("endpoint"),
 				);
-				await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
-				endpoints.push(endpoint);
+			const endpoints: https.Server[] = [];
+			const ports: number[] = [];
+			for (let i = 0; i < 4; i++) {
+				// The exempt request goes to "localhost" directly; the proxies reach the others at 127.0.0.1.
+				const servers = i === 1 ? await listenAtLocalhost(createEndpoint) : [await listenAt(createEndpoint(), 0)];
+				endpoints.push(...servers);
+				ports.push((servers[0]!.address() as net.AddressInfo).port);
 			}
-			const ports = endpoints.map((endpoint) => (endpoint.address() as net.AddressInfo).port);
 			const routes = (target: string) => ({ host: "127.0.0.1", port: Number(target.split(":")[1]) });
 			const proxies: ConnectProxy[] = [await startConnectProxy({ routes }), await startConnectProxy({ routes })];
 			const [httpProxy, otherProxy] = proxies as [ConnectProxy, ConnectProxy];

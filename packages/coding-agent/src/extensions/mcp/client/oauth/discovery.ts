@@ -7,7 +7,7 @@
 import type { McpFetch } from "../auth-provider.js";
 import { LATEST_PROTOCOL_VERSION } from "../protocol/types.js";
 import { OAuthIssuerMismatchError } from "./errors.js";
-import { redactUrlForDisplay } from "./redact.js";
+import { redactUrlForDisplay, scrubFetchError } from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	type OAuthChallenge,
@@ -62,10 +62,14 @@ async function fetchMetadata(
 	protocolVersion: string,
 	signal: AbortSignal | undefined,
 ): Promise<Response> {
-	return fetch(url, {
-		headers: { Accept: "application/json", "MCP-Protocol-Version": protocolVersion },
-		signal,
-	});
+	try {
+		return await fetch(url, {
+			headers: { Accept: "application/json", "MCP-Protocol-Version": protocolVersion },
+			signal,
+		});
+	} catch (error) {
+		throw scrubFetchError(error, [url.password || undefined]);
+	}
 }
 
 async function parseJsonBody(response: Response, label: string): Promise<unknown> {
