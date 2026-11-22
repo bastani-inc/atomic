@@ -349,6 +349,91 @@ describe.each(stores.filter(([name]) => name.startsWith("a SQLite")))("a restart
 		assert.equal(asksOf(again).answeredBy(peer, replyTo("ask-failed"))?.ask.question, "question ask-failed?");
 		assert.deepEqual(kept(reopened, "intercom_ask_settled"), []);
 	});
+
+	test("still replays unconsumed inbox arrivals whose ask is already settled or closed after compaction", async () => {
+		const store = await open();
+		const { manager } = store;
+		const stranger: SessionInfo = { ...peer, id: "stranger", name: "stranger" };
+
+		// Unconsumed arrival saved before an outbound ask is settled as answered (single askId).
+		await asked(manager, "ask-answered-before");
+		await arrived(manager, replyTo("ask-answered-before"));
+		await arrived(manager, replyTo("ask-answered-before", { id: "unshown-before-answered" }), stranger, false);
+		await asksOf(manager).recordAnswered("ask-answered-before");
+
+		// Unconsumed arrival saved before an outbound ask is cancelled (single askId).
+		await asked(manager, "ask-cancelled-before");
+		await arrived(manager, replyTo("ask-cancelled-before", { id: "unshown-before-cancelled" }), stranger, false);
+		assert.equal(await asksOf(manager).settle("ask-cancelled-before", "cancelled"), true);
+
+		// Unconsumed arrival saved after an outbound ask is settled as answered (single askId).
+		await asked(manager, "ask-answered-after");
+		await arrived(manager, replyTo("ask-answered-after"));
+		await asksOf(manager).recordAnswered("ask-answered-after");
+		await arrived(manager, replyTo("ask-answered-after", { id: "unshown-after-answered" }), peer, false);
+
+		// Unconsumed arrival saved after an outbound ask is cancelled (single askId).
+		await asked(manager, "ask-cancelled-after");
+		assert.equal(await asksOf(manager).settle("ask-cancelled-after", "cancelled"), true);
+		await arrived(manager, replyTo("ask-cancelled-after", { id: "unshown-after-cancelled" }), peer, false);
+
+		// Unconsumed arrivals saved before and after a batched settle record (askIds).
+		await asked(manager, "ask-batch");
+		await arrived(manager, replyTo("ask-batch"));
+		await arrived(manager, replyTo("ask-batch", { id: "unshown-before-batch" }), stranger, false);
+		await manager.appendCustomEntry("intercom_ask_settled", { askIds: ["ask-batch"], state: "answered" });
+		await arrived(manager, replyTo("ask-batch", { id: "unshown-after-batch" }), peer, false);
+
+		// Unconsumed inbound ask arrivals whose ask is closed (single messageId and batched messageIds).
+		await arrived(
+			manager,
+			{ id: "inbound-closed-single", timestamp: 2, expectsReply: true, content: { text: "single?" } },
+			peer,
+			false,
+		);
+		await manager.appendCustomEntry("intercom_ask_closed", {
+			messageId: "inbound-closed-single",
+			reason: "sender-ended",
+		});
+		await arrived(
+			manager,
+			{ id: "inbound-closed-batch", timestamp: 2, expectsReply: true, content: { text: "batch?" } },
+			peer,
+			false,
+		);
+		await manager.appendCustomEntry("intercom_ask_closed", {
+			messageIds: ["inbound-closed-batch"],
+			reason: "closed",
+		});
+
+		await compacted(manager);
+
+		const expectedIds = [
+			"unshown-before-answered",
+			"unshown-before-cancelled",
+			"unshown-after-answered",
+			"unshown-after-cancelled",
+			"unshown-before-batch",
+			"unshown-after-batch",
+			"inbound-closed-single",
+			"inbound-closed-batch",
+		];
+		for (const reopened of [await restarted(store), await restarted(store)]) {
+			assert.deepEqual(kept(reopened, "intercom_ask"), []);
+			assert.deepEqual(
+				unconsumedIntercomInbox(reopened.getBranch(), reopened.getSessionRecoveryState().intercomTakenIds).map(
+					(record) => record.message.id,
+				),
+				expectedIds,
+			);
+			assert.deepEqual(
+				kept(reopened, "intercom_inbox").map(
+					(entry) => (entry as { data: { message: { id: string } } }).data.message.id,
+				),
+				expectedIds,
+			);
+		}
+	});
 });
 
 test("a restart records many taken answers in one bounded entry, and the rest at the next restart", async () => {

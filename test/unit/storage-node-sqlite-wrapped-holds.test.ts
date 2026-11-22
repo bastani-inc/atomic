@@ -796,17 +796,38 @@ test("a wrapped statement whose text ends inside a quote, a `[` or a comment rea
 test("a read or a call SQLite cannot prepare does not wait behind calls still queued after a threaded transaction (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const { wrapped: writer } = await openWrapped(path);
+	const { wrapped: secondWriter } = await openWrapped(path);
 	const { wrapped: other } = await openWrapped(path);
 	const { committed } = await holdLock(threaded);
-	let written = 0;
-	const writes = Array.from({ length: 10 }, (_, index) =>
-		writer.run("INSERT INTO items VALUES (?)", `w${index}`).then(() => {
-			written++;
-		}),
+	const perWriter = 6;
+	const maxWrites = 500;
+	let commitSettled = false;
+	void committed.then(
+		() => {
+			commitSettled = true;
+		},
+		() => {
+			commitSettled = true;
+		},
 	);
+	let queued = 0;
+	let written = 0;
+	const writes: Promise<void>[] = [];
+	const queueOn = (target: SqliteDatabase, prefix: string) => {
+		const index = queued++;
+		const write = target.run("INSERT INTO items VALUES (?)", `${prefix}${index}`).then(() => {
+			written++;
+			if (!commitSettled && queued < maxWrites) queueOn(target, prefix);
+		});
+		writes.push(write);
+	};
+	for (let index = 0; index < perWriter; index++) {
+		queueOn(writer, "a");
+		queueOn(secondWriter, "b");
+	}
 	// The queued writes run one per turn from the moment the transaction lets go of the lock, before its answer reaches
-	// this thread, which takes file work on a loaded machine. Calls made once the first of them ran, while the others
-	// are still queued, need no lock and do not wait for them.
+	// this thread, which takes file work on a loaded machine. Calls made once the first of them ran, and again once the
+	// transaction's hold has closed while queued writes remain, need no lock and do not wait for them.
 	await writes[0];
 	const read = await other.get<{ n: number }>("SELECT count(*) AS n FROM items");
 	const failure = await other.all("SELECT * FROM nosuch").then(
@@ -814,12 +835,91 @@ test("a read or a call SQLite cannot prepare does not wait behind calls still qu
 		(error: unknown) => error,
 	);
 	const writtenMeanwhile = written;
-	await Promise.all(writes);
-	await committed;
-	assert.ok(writtenMeanwhile < 10, "the read and the failing call waited for the queued writes");
+	const queuedMeanwhile = queued;
+	assert.ok(writtenMeanwhile < queuedMeanwhile, "the read and the failing call waited for the queued writes");
 	assert.ok(Number(read?.n) >= 2 && Number(read?.n) <= 2 + writtenMeanwhile, `it read ${read?.n} rows`);
 	assert.ok(failure instanceof StorageUnavailableError);
 	assert.match((failure.cause as Error).message, /no such table: nosuch/);
+
+	await committed;
+	const afterCommitRead = await other.get<{ n: number }>("SELECT count(*) AS n FROM items");
+	const afterCommitFailure = await other.all("SELECT * FROM nosuch").then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	const writtenAfterCommit = written;
+	const queuedAfterCommit = queued;
+	assert.ok(
+		writtenAfterCommit < queuedAfterCommit,
+		`the post-commit read and failing call waited for the queued writes (${writtenAfterCommit}/${queuedAfterCommit})`,
+	);
+	assert.ok(
+		Number(afterCommitRead?.n) >= 2 && Number(afterCommitRead?.n) <= 2 + writtenAfterCommit,
+		`it read ${afterCommitRead?.n} rows after commit`,
+	);
+	assert.ok(afterCommitFailure instanceof StorageUnavailableError);
+	assert.match((afterCommitFailure.cause as Error).message, /no such table: nosuch/);
+
+	await Promise.all(writes);
+});
+
+test("wrapped writes queued after a threaded transaction commits while earlier writes remain still run one per turn (#6081)", async () => {
+	const { path, threaded } = await sharedFile();
+	const { wrapped: writer } = await openWrapped(path);
+	const { wrapped: secondWriter } = await openWrapped(path);
+	const { wrapped: lateWriter } = await openWrapped(path);
+	const { committed } = await holdLock(threaded);
+	const perWriter = 6;
+	const maxWrites = 500;
+	let commitSettled = false;
+	void committed.then(
+		() => {
+			commitSettled = true;
+		},
+		() => {
+			commitSettled = true;
+		},
+	);
+	let queued = 0;
+	const writes: Promise<void>[] = [];
+	const queueOn = (target: SqliteDatabase, prefix: string) => {
+		const index = queued++;
+		writes.push(
+			target.run("INSERT INTO items VALUES (?)", `${prefix}${index}`).then(() => {
+				if (!commitSettled && queued < maxWrites) queueOn(target, prefix);
+			}),
+		);
+	};
+	for (let index = 0; index < perWriter; index++) {
+		queueOn(writer, "a");
+		queueOn(secondWriter, "b");
+	}
+	await committed;
+	let turn = 0;
+	let counting = true;
+	const count = () => {
+		turn++;
+		if (counting) setImmediate(count);
+	};
+	setImmediate(count);
+	const completedIn: number[] = [];
+	let lateWrites: Promise<void>[];
+	try {
+		// Both earlier writers still have queued writes waiting for their turn after the hold closes; a longer burst
+		// queued now stays in the backlog and remains paced even after the earlier writers drain.
+		lateWrites = Array.from({ length: 24 }, (_, index) =>
+			lateWriter.run("INSERT INTO items VALUES (?)", `late${index}`).then(() => {
+				completedIn.push(turn);
+			}),
+		);
+		await Promise.all([...writes, ...lateWrites]);
+	} finally {
+		counting = false;
+	}
+	const perTurn = new Map<number, number>();
+	for (const each of completedIn) perTurn.set(each, (perTurn.get(each) ?? 0) + 1);
+	assert.ok(Math.max(...perTurn.values()) <= 2, `${Math.max(...perTurn.values())} post-commit writes ran in one turn`);
+	assert.equal((await values(threaded)).length, 2 + writes.length + lateWrites.length);
 });
 
 test("a wrapped script, or a statement that only lists a plan, during a threaded transaction runs as before (#6081)", async () => {

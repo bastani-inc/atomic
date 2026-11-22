@@ -43,6 +43,15 @@ export const pyyaml =
 	spawnSync(python, ["-c", "import yaml"], { env: { ...inheritedEnvironment(), PATH: process.env.PATH ?? "" } })
 		.status === 0;
 
+/**
+ * Whether that interpreter also imports PyYAML in isolated mode (`-I`), which ignores user site-packages even where
+ * POSIX still resolves the user's home directory without `HOME`.
+ */
+export const pyyamlIsolated =
+	python !== undefined &&
+	spawnSync(python, ["-I", "-c", "import yaml"], { env: { ...inheritedEnvironment(), PATH: process.env.PATH ?? "" } })
+		.status === 0;
+
 /** CI installs PyYAML and sets ATOMIC_REQUIRE_PYYAML=1: there, the tests that need it must run, never skip. */
 export const pyyamlRequired = process.env.ATOMIC_REQUIRE_PYYAML === "1";
 
