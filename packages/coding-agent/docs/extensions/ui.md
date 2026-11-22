@@ -216,7 +216,7 @@ Typical pattern:
 - Delegate `applyCompletion(...)` unless you need custom insertion behavior.
 
 ```typescript
-pi.on("session_start", (_event, ctx) => {
+atomic.on("session_start", (_event, ctx) => {
   ctx.ui.addAutocompleteProvider((current) => ({
     async getSuggestions(lines, cursorLine, cursorCol, options) {
       const line = lines[cursorLine] ?? "";
@@ -380,8 +380,8 @@ class VimEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+  atomic.on("session_start", (_event, ctx) => {
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new VimEditor(tui, theme, keybindings)
     );
@@ -417,7 +417,7 @@ Register a custom renderer for messages with your `customType`:
 ```typescript
 import { Text } from "@bastani/atomic-tui";
 
-pi.registerMessageRenderer("my-extension", (message, options, theme) => {
+atomic.registerMessageRenderer("my-extension", (message, options, theme) => {
   const { expanded, outputPad } = options;
   let text = theme.fg("accent", `[${message.customType}] `);
   text += message.content;
@@ -436,10 +436,10 @@ In fullscreen mode, clicking the message toggles `expanded` for that message alo
 
 When the main chat runs in the terminal UI process, a message, saved-entry, or tool renderer's component can handle a click first by returning `{ handled: true }` from `handleMouse`. Leave clicks outside the control unhandled to keep click-to-expand there. A tool's title row always toggles first. A separate engine sends rendered rows rather than mouse callbacks, and if your renderer draws the same rows either way, clicking leaves the message unchanged.
 
-Messages are sent via `pi.sendMessage()`:
+Messages are sent via `atomic.sendMessage()`:
 
 ```typescript
-pi.sendMessage({
+atomic.sendMessage({
   customType: "my-extension",  // Matches registerMessageRenderer
   content: "Status update",
   display: true,               // Show in TUI

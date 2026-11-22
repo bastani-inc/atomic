@@ -75,7 +75,7 @@ Only `compaction` entries with `details.strategy: "verbatim-lines"` affect activ
 Extensions can cancel compaction or provide custom replacement text before any compactor call runs:
 
 ```typescript
-pi.on("session_before_compact", async (event) => {
+atomic.on("session_before_compact", async (event) => {
   const { reason, parameters, preparation, branchEntries, signal } = event;
   if (signal.aborted) return { cancel: true };
 
@@ -98,7 +98,7 @@ Empty or whitespace-only text counts as no replacement, so the configured compac
 Emitted as an observe-only event after the boundary is saved:
 
 ```typescript
-pi.on("session_compact", async (event) => {
+atomic.on("session_compact", async (event) => {
   console.log(event.result.form, event.result.backend, event.result.model); // "cleared" | "compacted"
   console.log(event.result.fallbackReason);            // set when a configured compactor was not used
   console.log(event.result.history);                   // { sessionId, rangeUnit: "entries", entriesBefore, boundaryEntry, totalEntries }
@@ -114,7 +114,7 @@ pi.on("session_compact", async (event) => {
 Emitted as an observe-only event when a manual, threshold, or overflow compaction fails or is cancelled:
 
 ```typescript
-pi.on("session_compact_failed", async (event) => {
+atomic.on("session_compact_failed", async (event) => {
   console.log(event.reason, event.errorMessage);
   console.log(event.aborted, event.willRetry, event.fromExtension);
 });
@@ -220,7 +220,7 @@ Thinking blocks are omitted. Tool results longer than 2,000 characters are trunc
 Fired before `/tree` navigation regardless of whether the user requested a summary. Handlers can cancel navigation or supply a custom summary:
 
 ```typescript
-pi.on("session_before_tree", async (event, ctx) => {
+atomic.on("session_before_tree", async (event, ctx) => {
   const { preparation, signal } = event;
 
   // preparation.targetId - destination entry ID

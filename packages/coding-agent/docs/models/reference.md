@@ -379,7 +379,7 @@ Use `modelOverrides` to patch specific built-in or extension-registered models w
 Override rules:
 
 - Atomic reads a single `models.json` from the active agent directory and never merges `.pi` and `.atomic` model files.
-- Atomic retains parsed `modelOverrides` for models registered later by extensions through `pi.registerProvider()`; unknown IDs are ignored otherwise.
+- Atomic retains parsed `modelOverrides` for models registered later by extensions through `atomic.registerProvider()`; unknown IDs are ignored otherwise.
 - `modelOverrides` composes over built-in and extension models, with override fields winning and headers shallow-merged. A same-ID custom entry in `models` replaces the overridden built-in entry (including its headers) and is not modified by `modelOverrides`.
 - Provider-level headers stay separate and combine at request time.
 - Scalar `cost` overrides preserve inherited `tiers`; providing `cost.tiers` replaces the entire array (`[]` clears it).
