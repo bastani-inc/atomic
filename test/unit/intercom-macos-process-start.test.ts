@@ -52,9 +52,10 @@ describe.runIf(process.platform === "darwin")("a process's start on macOS", () =
 		assert.equal(await processStartAsync(pid), started);
 		assert.equal(await readProcessStart(pid), started);
 		assert.equal(await readProcessStartWithoutProcess(pid), started);
-		// launchd started at boot, long before.
-		assert.notEqual(processCreationTimeOf(1), started);
-		assert.ok(BigInt(processCreationTimeOf(1) ?? "0") < BigInt(started ?? "0"));
+		// This test's own process started before it.
+		const own = processCreationTimeOf(process.pid);
+		assert.match(own ?? "", /^[1-9]\d*$/u);
+		assert.ok(BigInt(own ?? "0") < BigInt(started ?? "0"));
 	});
 
 	test("is not read once the process has exited", async () => {
@@ -68,10 +69,12 @@ describe.runIf(process.platform === "darwin")("a process's start on macOS", () =
 	test("a broker that did not answer is ended while its pid names the process it was found as, and not once it names another", async () => {
 		const named = await sleeper();
 		const other = await sleeper();
+		const otherStarted = processCreationTimeOf(other.pid);
 
+		// Found as a process that started at another time: this test's own.
 		await endUnansweredBroker({
 			pid: other.pid,
-			started: processCreationTimeOf(1),
+			started: processCreationTimeOf(process.pid),
 			wroteBrokerPid: "unknown",
 		});
 		await endUnansweredBroker({
@@ -82,7 +85,8 @@ describe.runIf(process.platform === "darwin")("a process's start on macOS", () =
 		await Promise.race([named.exited, new Promise((resolve) => setTimeout(resolve, REAPED_WITHIN_MS))]);
 
 		assert.equal(named.child.signalCode, "SIGTERM", "the broker its pid names was ended");
-		assert.equal(other.child.exitCode === null && other.child.signalCode === null, true, "another process was not");
+		// A signal sent to it would have ended it by now, as it ended the other.
+		assert.equal(processCreationTimeOf(other.pid), otherStarted, "another process was not");
 	});
 
 	test("a spawn lock names its broker by pid and start: one an earlier version wrote by pid alone still holds", async () => {
@@ -96,7 +100,9 @@ describe.runIf(process.platform === "darwin")("a process's start on macOS", () =
 		assert.equal(isSpawnLockStale(lock), false, "an earlier version's lock, by pid alone");
 		write(`${broker.pid} ${processCreationTimeOf(broker.pid)}`);
 		assert.equal(isSpawnLockStale(lock), false, "this version's lock, while its broker runs");
-		write(`${broker.pid} ${processCreationTimeOf(1)}`);
+		const another = processCreationTimeOf(process.pid);
+		assert.ok(another !== undefined);
+		write(`${broker.pid} ${another}`);
 		assert.equal(isSpawnLockStale(lock), true, "its pid names a process started at another time");
 	});
 });

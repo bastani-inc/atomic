@@ -445,11 +445,11 @@ describe("a broker announces its own pid", () => {
 
 				assert.equal(code, 0, "the broker did not yield to the live one");
 				assert.equal(readBrokerStartAnnouncement(announced)?.pid, broker.pid);
-				// #6133: asked for it, a broker on Windows says when it was created, through the native module it loads from
-				// its own location; elsewhere it has nothing to say.
+				// #6133: asked for it, a broker on Windows or macOS says when it was created, through the native module it loads
+				// from its own location; elsewhere it has nothing to say.
 				assert.equal(
 					readBrokerStartAnnouncement(announced)?.started !== undefined,
-					process.platform === "win32",
+					process.platform === "win32" || process.platform === "darwin",
 					readFileSync(announced.path, "utf8"),
 				);
 				assert.equal(
