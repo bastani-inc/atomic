@@ -18,8 +18,10 @@ import { parseArgs } from "../src/cli/args.js";
 import { ENV_AGENT_DIR, ENV_SESSION_DIR } from "../src/config.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
+import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { resolveSessionStore, type SessionStorageOptions } from "../src/core/session-storage.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { SessionNotFoundError } from "../src/core/storage/session/errors.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "../src/core/storage/session/session-summary.ts";
@@ -445,6 +447,53 @@ describe("legacy JSONL sessions in the default store", () => {
 
 		assert.deepEqual(again, first);
 		assert.deepEqual(convertedIds(), [ids.v1]);
+	});
+
+	it("converts a legacy session whose first use is a write, and adds the write after its entries", async () => {
+		const { paths } = writeAllFormats();
+		const legacy = await JsonlSessionStore.withFileReader(
+			paths.v3,
+			async (store, id) => (await store.load(id)).entries,
+		);
+		const added: SessionEntry = {
+			type: "message",
+			id: "c0000001",
+			parentId: legacy.at(-1)?.id ?? null,
+			timestamp: "2025-08-02T10:00:00.000Z",
+			message: { role: "user", content: "written before it was opened", timestamp: 1 },
+		};
+
+		await withDefaultStore((store) => store.append(ids.v3, [added], { expectSeq: legacy.length }));
+
+		assert.deepEqual(convertedIds(), [ids.v3]);
+		const stored = await withDefaultStore(async (store) => (await store.load(ids.v3)).entries);
+		assert.deepEqual(stored.slice(0, -1), legacy);
+		assert.deepEqual(stored.at(-1), added);
+	});
+
+	it("refuses a write to a deleted legacy session as not found and converts nothing", async () => {
+		writeAllFormats();
+		await withDefaultStore((store) => store.delete(ids.v1));
+
+		await withDefaultStore((store) =>
+			assert.rejects(
+				store.append(
+					ids.v1,
+					[
+						{
+							type: "message",
+							id: "c0000002",
+							parentId: null,
+							timestamp: "2025-08-02T10:00:00.000Z",
+							message: { role: "user", content: "after delete", timestamp: 1 },
+						},
+					],
+					{ expectSeq: 0 },
+				),
+				SessionNotFoundError,
+			),
+		);
+		assert.deepEqual(convertedIds(), []);
 	});
 
 	it("does not list a legacy session again after it is deleted", async () => {

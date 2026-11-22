@@ -191,6 +191,13 @@ export class LegacySessionStore implements SessionStore {
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }> {
+		// Written at once to a session the database holds: only a write it refuses for a session it does not hold converts
+		// a legacy copy and is made again, so no write first waits to ask whether the database holds its session.
+		try {
+			return await this.inner.append(sessionId, entries, options);
+		} catch (error) {
+			if (!(error instanceof SessionNotFoundError)) throw error;
+		}
 		await this.convert(sessionId);
 		return this.inner.append(sessionId, entries, options);
 	}
