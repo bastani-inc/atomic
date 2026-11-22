@@ -1069,6 +1069,10 @@ test("redacts an email from its first word boundary to the end of its domain, an
 		["name+tag%x@sub.example.co.uk.", "[REDACTED].", 1],
 		["a@b.com.x@c.com", "[REDACTED][REDACTED]", 2],
 		["x@y.c no@tld u@@v.com @w.com", "x@y.c no@tld u@@v.com @w.com", 0],
+		// Ignoring case, "ſ" is the letter s, so it starts a word and an email.
+		["ſ@a.aa", "[REDACTED]", 1],
+		// A domain ends at a word boundary, so one that runs on into "_x" is no email.
+		["a@b.co_x", "a@b.co_x", 0],
 	] as const) {
 		const result = scrub(input);
 		assert.equal(result.text, text, input);
