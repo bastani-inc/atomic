@@ -134,6 +134,10 @@ interface RelayNativeBinding {
 	readonly processCreationTime?: (pid: number) => string | null;
 }
 
+type BrokerRelayResponse =
+	| { readonly ok: true; readonly pid: number | null; readonly creationTime: string | null }
+	| { readonly ok: false; readonly code: string; readonly message: string };
+
 /**
  * Short-lived Windows broker relay for standalone compiled binaries: reads one newline-delimited JSON launch request
  * from stdin, starts the detached broker directly (breaking away from the parent job object when allowed), reports its
@@ -150,7 +154,7 @@ export function runInternalIntercomBrokerRelay(): void {
 		} catch {}
 		process.exit(code);
 	};
-	const reply = (payload: Record<string, unknown>) => {
+	const reply = (payload: BrokerRelayResponse) => {
 		process.stdout.write(`${JSON.stringify(payload)}\n`);
 	};
 	const loadNative = (nativePath: string | undefined): RelayNativeBinding | null => {
