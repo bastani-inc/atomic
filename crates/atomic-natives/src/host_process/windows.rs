@@ -9,7 +9,8 @@
 //! starts every process with `CREATE_BREAKAWAY_FROM_JOB` when its job allows it. Then it ends what stayed in the job.
 //!
 //! The command line and environment block are built as libuv builds them for `child_process.spawn`, so the program
-//! sees what it saw before. One thread per output pipe reads it, one writes standard input, and one waits for the
+//! sees what it saw before. Output is read as libuv reads a pipe: one thread per output pipe waits until it holds data
+//! and tells the host, whose thread then reads what it holds. One thread writes standard input, and one waits for the
 //! exit; the host's release (after its `close`) stops them and closes this process's ends of the pipes.
 use super::*;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
@@ -34,6 +35,7 @@ use windows_sys::Win32::Globalization::{CSTR_GREATER_THAN, CSTR_LESS_THAN, Compa
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
 	FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, GetShortPathNameW, INVALID_FILE_ATTRIBUTES,
+	ReadFile,
 };
 use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
@@ -52,28 +54,26 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
+/// The most one read of a pipe takes, and the size of each pipe, as libuv's.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// The longest current directory `CreateProcessW` takes; libuv shortens a longer one.
 const MAX_PATH: usize = 260;
-/// How much of a stream's output may wait for the host: the reader waits while this much does, so a program that writes
-/// faster than the host handles its output waits on its pipe, as under `child_process`, instead of having all of it
-/// queued in memory and exiting before the host saw it.
-const PENDING_OUTPUT_BYTES: usize = 1024 * 1024;
 
-/// What a stream read and the host has not taken yet. Its bytes go as one event, taken when the host's thread gets to
-/// that event: what the stream reads until then joins it, as `child_process` reads everything a pipe holds once its
-/// loop gets to it. A program that writes a line in two writes, as PowerShell does, is delivered a line at a time.
+/// This process's end of an output pipe, and whether the host is to read it.
 #[derive(Default)]
 struct StreamOutput {
-	pending: Vec<u8>,
-	/// An event that takes `pending` is on its way to the host.
-	scheduled: bool,
+	/// Closed once the stream's thread finished, when the host released the process.
+	file: Option<File>,
+	/// What the host's thread reads the pipe into.
+	buffer: Vec<u8>,
+	/// The pipe holds data and the host's thread has not read it yet: the stream's thread waits until it has.
+	readable: bool,
 }
 
-/// What goes to the host: an event, or what a stream gathered, taken as the host's thread converts it.
+/// What goes to the host: an event, or a stream's data, read as the host's thread converts it.
 pub(super) enum Delivery {
 	Event(HostProcessEvent),
-	Gathered(Arc<Shared>, usize),
+	Readable(Arc<Shared>, usize),
 }
 
 impl napi::bindgen_prelude::ToNapiValue for Delivery {
@@ -83,7 +83,7 @@ impl napi::bindgen_prelude::ToNapiValue for Delivery {
 	) -> napi::Result<napi::sys::napi_value> {
 		let event = match delivery {
 			Delivery::Event(event) => event,
-			Delivery::Gathered(shared, index) => shared.take_gathered(index),
+			Delivery::Readable(shared, index) => shared.read_output(index),
 		};
 		unsafe { <HostProcessEvent as napi::bindgen_prelude::ToNapiValue>::to_napi_value(env, event) }
 	}
@@ -296,42 +296,48 @@ impl Shared {
 		}
 	}
 
-	/// Adds `bytes` that stream `index` read to what goes to the host, sending an event that takes them unless one is
-	/// on its way. Waits while [`PENDING_OUTPUT_BYTES`] wait. False once the host released the process.
-	fn gather_output(self: &Arc<Self>, index: usize, bytes: &[u8]) -> bool {
+	/// Tells the host that the pipe of stream `index` holds data, and waits until the host's thread read it. False once
+	/// the host released the process.
+	fn hand_readable(self: &Arc<Self>, index: usize) -> bool {
 		let mut outputs = locked(&self.outputs);
-		while outputs[index].pending.len() >= PENDING_OUTPUT_BYTES
-			&& !self.stopping.load(Ordering::Acquire)
-		{
-			outputs = self.outputs_changed.wait(outputs).unwrap_or_else(PoisonError::into_inner);
-		}
 		if self.stopping.load(Ordering::Acquire) {
 			return false;
 		}
-		let output = &mut outputs[index];
-		output.pending.extend_from_slice(bytes);
-		if output.scheduled {
-			return true;
-		}
-		output.scheduled = true;
+		outputs[index].readable = true;
 		drop(outputs);
 		let sent = locked(&self.callback).as_ref().is_some_and(|callback| {
 			callback
-				.call(Delivery::Gathered(self.clone(), index), ThreadsafeFunctionCallMode::NonBlocking)
+				.call(Delivery::Readable(self.clone(), index), ThreadsafeFunctionCallMode::NonBlocking)
 				== Status::Ok
 		});
+		let mut outputs = locked(&self.outputs);
 		if !sent {
-			self.take_gathered(index);
+			outputs[index].readable = false;
+			return false;
 		}
-		true
+		while outputs[index].readable && !self.stopping.load(Ordering::Acquire) {
+			outputs = self.outputs_changed.wait(outputs).unwrap_or_else(PoisonError::into_inner);
+		}
+		!self.stopping.load(Ordering::Acquire)
 	}
 
-	/// The event that takes what stream `index` gathered, as the host's thread converts it.
-	fn take_gathered(&self, index: usize) -> HostProcessEvent {
+	/// What the pipe of stream `index` holds, up to [`READ_CHUNK_BYTES`], read as the host's thread converts the event,
+	/// as libuv reads a pipe once its loop gets to it. The pipe holds data, so the read does not wait; nothing is
+	/// read once the host released the process.
+	fn read_output(&self, index: usize) -> HostProcessEvent {
 		let mut outputs = locked(&self.outputs);
 		let output = &mut outputs[index];
-		output.scheduled = false;
-		let data = std::mem::take(&mut output.pending);
+		let mut data = Vec::new();
+		if output.readable
+			&& !self.stopping.load(Ordering::Acquire)
+			&& let Some(mut file) = output.file.as_ref()
+		{
+			output.buffer.resize(READ_CHUNK_BYTES, 0);
+			if let Ok(count) = file.read(&mut output.buffer) {
+				data.extend_from_slice(&output.buffer[..count]);
+			}
+		}
+		output.readable = false;
 		drop(outputs);
 		self.outputs_changed.notify_all();
 		HostProcessEvent {
@@ -580,26 +586,26 @@ fn cancel_until_finished(thread: &JoinHandle<()>) {
 	}
 }
 
-fn read_output(shared: &Arc<Shared>, mut file: File, index: usize) {
-	let mut buffer = vec![0u8; READ_CHUNK_BYTES];
+/// Waits, as libuv does, with a read of no bytes until the pipe of stream `index` holds data, which the host's thread
+/// then reads; the pipe's end follows the last read.
+fn watch_output(shared: &Arc<Shared>, index: usize) {
+	// Valid while this thread runs: the file closes only after it finished.
+	let Some(pipe) = locked(&shared.outputs)[index].file.as_ref().map(raw) else { return };
 	loop {
 		if shared.stopping.load(Ordering::Acquire) {
 			return;
 		}
-		match file.read(&mut buffer) {
-			Ok(0) => break,
-			Ok(count) => {
-				if !shared.gather_output(index, &buffer[..count]) {
-					return;
-				}
-			},
-			Err(error)
-				if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
-					|| error.kind() == io::ErrorKind::Interrupted => {},
-			Err(_) => break,
+		let mut count = 0u32;
+		if unsafe { ReadFile(pipe, null_mut(), 0, &mut count, null_mut()) } == 0 {
+			if io::Error::last_os_error().raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
+				continue;
+			}
+			break;
+		}
+		if !shared.hand_readable(index) {
+			return;
 		}
 	}
-	// After the event that takes the stream's last bytes, if one is on its way: events reach the host in order.
 	shared.emit(HostProcessEvent::of(stream_kinds(index).1));
 }
 
@@ -685,6 +691,9 @@ fn supervise(shared: &Shared, readers: Vec<JoinHandle<()>>, writer: Option<JoinH
 	}
 	for thread in readers.into_iter().chain(writer) {
 		let _ = thread.join();
+	}
+	for output in locked(&shared.outputs).iter_mut() {
+		*output = StreamOutput::default();
 	}
 	drop(locked(&shared.callback).take());
 }
@@ -836,11 +845,12 @@ pub(super) fn start(
 		let mut readers = Vec::with_capacity(2);
 		for (index, output) in [stdout, stderr].into_iter().enumerate() {
 			if let Some(file) = output {
+				locked(&shared.outputs)[index].file = Some(file);
 				let worker = shared.clone();
 				readers.push(
 					std::thread::Builder::new()
 						.name("host-process-output".into())
-						.spawn(move || read_output(&worker, file, index))?,
+						.spawn(move || watch_output(&worker, index))?,
 				);
 			}
 		}
