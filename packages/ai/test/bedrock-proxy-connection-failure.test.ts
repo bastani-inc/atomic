@@ -7,7 +7,7 @@ import { type Server as NetServer, createServer as createNetServer, type Socket 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { createSecureContext, createServer as createTlsServer } from "node:tls";
+import { createSecureContext, createServer as createTlsServer, TLSSocket } from "node:tls";
 import { crc32 } from "node:zlib";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { afterEach, describe, it, vi } from "vitest";
@@ -179,11 +179,113 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 	it(
 		"fails as a connection reset that is retried under Bun, as the standalone binary runs it",
 		async () => {
-			// One proxy for the request to an HTTPS endpoint, whose tunnel Atomic opens, one for a plain-HTTP endpoint.
-			const proxies = [await closingProxy(), await closingProxy()];
+			// Closing proxies and endpoints covering every HTTP/1.1 TLS close path under Bun:
+			// 0: https:// endpoint through https:// proxy (tunnel closes before proxy TLS handshake)
+			// 1: plain-HTTP endpoint through https:// proxy (connection closes before proxy TLS handshake)
+			// 2: https:// endpoint through http:// proxy (tunnel closes after 200 CONNECT before endpoint TLS handshake)
+			// 3: direct https:// endpoint with AWS_BEDROCK_FORCE_HTTP1=1 (closes before endpoint TLS handshake)
+			const httpsTunnelProxy = await closingProxy();
+			const httpsForwardProxy = await closingProxy();
+			let httpAfter200Connections = 0;
+			const httpAfter200Proxy = createNetServer((socket: Socket) => {
+				httpAfter200Connections++;
+				socket.on("error", () => {});
+				socket.once("data", () => {
+					socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+					setTimeout(() => socket.destroy(), 15);
+				});
+			});
+			const httpAfter200Port = await listen(httpAfter200Proxy);
+			const directH1Endpoint = await closingProxy();
+
+			// Transient recovery: an https:// proxy that closes the first connection before TLS for a plain-HTTP endpoint,
+			// then completes TLS and answers with a valid Bedrock stream on the SDK retry.
+			const ca = createTestCertificate({ subject: "Bedrock Test CA", ca: true, keyUsage: ["keyCertSign"] });
+			const leaf = createTestCertificate({
+				subject: "localhost",
+				issuer: ca,
+				keyUsage: ["digitalSignature"],
+				extendedKeyUsage: ["serverAuth"],
+				altNames: ["localhost"],
+			});
+			const caDir = mkdtempSync(join(tmpdir(), "atomic-bedrock-ca-"));
+			tempDirs.push(caDir);
+			const caPath = join(caDir, "ca.pem");
+			writeFileSync(caPath, ca.cert);
+			const streamBody = bedrockEventStream("recovered");
+			let transientConnections = 0;
+			const transientProxy = createNetServer((socket: Socket) => {
+				transientConnections++;
+				socket.on("error", () => {});
+				if (transientConnections === 1) {
+					socket.destroy();
+					return;
+				}
+				const tlsSocket = new TLSSocket(socket, { isServer: true, cert: leaf.cert, key: leaf.key });
+				tlsSocket.on("error", () => {});
+				let received = Buffer.alloc(0);
+				let responded = false;
+				tlsSocket.on("data", (chunk: Buffer) => {
+					received = Buffer.concat([received, chunk]);
+					if (responded) return;
+					const headerEnd = received.indexOf("\r\n\r\n");
+					if (headerEnd === -1) return;
+					const headersText = received.subarray(0, headerEnd).toString("latin1");
+					const lengthMatch = headersText.match(/\r\ncontent-length:\s*(\d+)/i);
+					const contentLength = lengthMatch ? Number(lengthMatch[1]) : 0;
+					if (received.length < headerEnd + 4 + contentLength) return;
+					responded = true;
+					tlsSocket.end(
+						Buffer.concat([
+							Buffer.from(
+								`HTTP/1.1 200 OK\r\nContent-Type: application/vnd.amazon.eventstream\r\nContent-Length: ${streamBody.length}\r\nConnection: close\r\n\r\n`,
+								"latin1",
+							),
+							streamBody,
+						]),
+					);
+				});
+			});
+			const transientPort = await listen(transientProxy);
+
 			const cases = [
-				{ baseUrl: "https://localhost:9", proxyUrl: `https://localhost:${proxies[0]?.port}` },
-				{ baseUrl: "http://127.0.0.1:9", proxyUrl: `https://localhost:${proxies[1]?.port}` },
+				{
+					name: "httpsProxy_httpsEndpoint",
+					baseUrl: "https://localhost:9",
+					env: {
+						HTTPS_PROXY: `https://localhost:${httpsTunnelProxy.port}`,
+						HTTP_PROXY: `https://localhost:${httpsTunnelProxy.port}`,
+					},
+				},
+				{
+					name: "httpsProxy_plainEndpoint",
+					baseUrl: "http://127.0.0.1:9",
+					env: {
+						HTTPS_PROXY: `https://localhost:${httpsForwardProxy.port}`,
+						HTTP_PROXY: `https://localhost:${httpsForwardProxy.port}`,
+					},
+				},
+				{
+					name: "httpProxy_finAfter200_httpsEndpoint",
+					baseUrl: "https://localhost:9",
+					env: {
+						HTTPS_PROXY: `http://127.0.0.1:${httpAfter200Port}`,
+						HTTP_PROXY: `http://127.0.0.1:${httpAfter200Port}`,
+					},
+				},
+				{
+					name: "direct_h1_httpsEndpoint",
+					baseUrl: `https://localhost:${directH1Endpoint.port}`,
+					env: { AWS_BEDROCK_FORCE_HTTP1: "1" },
+				},
+				{
+					name: "httpsProxy_plainEndpoint_transientRecovery",
+					baseUrl: "http://127.0.0.1:9",
+					env: {
+						HTTPS_PROXY: `https://localhost:${transientPort}`,
+						HTTP_PROXY: `https://localhost:${transientPort}`,
+					},
+				},
 			];
 			const source = [
 				`const { stream } = await import(${JSON.stringify(new URL("../src/api/bedrock-converse-stream.ts", import.meta.url).href)});`,
@@ -193,11 +295,12 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 				`process.on("uncaughtException", (error) => uncaught.push(String(error)));`,
 				`const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0");`,
 				`const results = [];`,
-				`for (const { baseUrl, proxyUrl } of ${JSON.stringify(cases)}) {`,
-				`	const env = { AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1", HTTPS_PROXY: proxyUrl, HTTP_PROXY: proxyUrl, NO_PROXY: "none.invalid" };`,
-				`	const message = await stream({ ...model, baseUrl }, { messages: [{ role: "user", content: "hello", timestamp: 1 }] }, { cacheRetention: "none", maxRetries: ${SDK_RETRIES}, env }).result();`,
+				`for (const c of ${JSON.stringify(cases)}) {`,
+				`	const env = { AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1", NO_PROXY: "none.invalid", ...c.env };`,
+				`	const message = await stream({ ...model, baseUrl: c.baseUrl }, { messages: [{ role: "user", content: "hello", timestamp: 1 }] }, { cacheRetention: "none", maxRetries: ${SDK_RETRIES}, env }).result();`,
 				`	await new Promise((resolve) => setTimeout(resolve, 50));`,
-				`	results.push({ stopReason: message.stopReason, retryable: isRetryableAssistantError(message), message: message.errorMessage });`,
+				`	const text = message.content.filter((b) => b.type === "text").map((b) => b.text).join("");`,
+				`	results.push({ name: c.name, stopReason: message.stopReason, retryable: isRetryableAssistantError(message), message: message.errorMessage, text });`,
 				`}`,
 				`console.log(JSON.stringify({ results, uncaught }));`,
 			].join("\n");
@@ -205,21 +308,34 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 				execFile(
 					"bun",
 					["--eval", source],
-					{ cwd: new URL("..", import.meta.url), timeout: BUN_CHILD_TIMEOUT_MS, encoding: "utf8" },
+					{
+						cwd: new URL("..", import.meta.url),
+						env: { ...process.env, NODE_EXTRA_CA_CERTS: caPath },
+						timeout: BUN_CHILD_TIMEOUT_MS,
+						encoding: "utf8",
+					},
 					(error, stdout, stderr) => (error ? reject(new Error(`${error.message}\n${stderr}`)) : resolve(stdout)),
 				);
 			});
 			const { results, uncaught } = JSON.parse(printed) as {
-				results: { stopReason: string; retryable: boolean; message: string }[];
+				results: { name: string; stopReason: string; retryable: boolean; message?: string; text: string }[];
 				uncaught: string[];
 			};
 			assert.deepEqual(uncaught, []);
-			for (const result of results) {
-				assert.equal(result.stopReason, "error");
-				assert.equal(result.retryable, true, result.message);
+			for (const result of results.slice(0, 4)) {
+				assert.equal(result.stopReason, "error", result.name);
+				assert.equal(result.retryable, true, `${result.name}: ${result.message}`);
+				assert.equal(result.message?.includes("(ERR_SOCKET_CLOSED)"), false, `${result.name}: ${result.message}`);
 			}
-			// The tunnel's failure reads as a reset connection under Bun too, so the SDK retries it as on Node.js.
-			assert.equal(proxies[0]?.connections(), 1 + SDK_RETRIES, results[0]?.message);
+			// Every HTTP/1.1 TLS-close path reads as a reset connection under Bun too, so the SDK retries it as on Node.js.
+			assert.equal(httpsTunnelProxy.connections(), 1 + SDK_RETRIES, results[0]?.message);
+			assert.equal(httpsForwardProxy.connections(), 1 + SDK_RETRIES, results[1]?.message);
+			assert.equal(httpAfter200Connections, 1 + SDK_RETRIES, results[2]?.message);
+			assert.equal(directH1Endpoint.connections(), 1 + SDK_RETRIES, results[3]?.message);
+			// When the first connection closes before TLS and the retry succeeds, the SDK recovers transparently.
+			assert.equal(results[4]?.stopReason, "stop", results[4]?.message);
+			assert.equal(results[4]?.text, "recovered");
+			assert.equal(transientConnections, 2);
 		},
 		BUN_CHILD_TIMEOUT_MS,
 	);
@@ -358,6 +474,13 @@ describe("Bedrock's tunnel request and connection errors", () => {
 			[Object.assign(new Error("Transport stopped"), { code: "EPIPE" }), "Transport stopped (EPIPE)"],
 			[Object.assign(new Error("Transport stopped"), { code: "ECONNRESET" }), "Transport stopped (ECONNRESET)"],
 			[Object.assign(new Error("Transport stopped"), { code: "ERR_SOCKET_CLOSED" }), "Transport stopped (ECONNRESET)"],
+			[Object.assign(new Error(""), { code: "ERR_SOCKET_CLOSED" }), "ECONNRESET"],
+			[
+				Object.assign(new Error("Transport stopped", { cause: Object.assign(new Error("inner"), { code: "EPIPE" }) }), {
+					code: "ERR_SOCKET_CLOSED",
+				}),
+				"Transport stopped: inner (EPIPE) (ECONNRESET)",
+			],
 			// Node.js on Windows can report a refused connection to localhost with no message of its own.
 			[Object.assign(new AggregateError([], ""), { code: "ECONNREFUSED" }), "ECONNREFUSED"],
 		];
@@ -373,6 +496,135 @@ describe("Bedrock's tunnel request and connection errors", () => {
 				assert.equal(message.errorMessage, expected);
 				assert.equal(isRetryableAssistantError(message), true, expected);
 			}
+		} finally {
+			handle.mockRestore();
+		}
+	});
+
+	it("retries a closed-socket transport failure at the SDK level without mutating the original error or retrying hooks", async () => {
+		const shared = Object.assign(new Error("Socket is closed"), { code: "ERR_SOCKET_CLOSED" });
+		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle").mockRejectedValue(shared);
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		try {
+			const first = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+			}).result();
+			assert.equal(handle.mock.calls.length, 1 + SDK_RETRIES);
+			assert.equal(first.errorMessage, "Socket is closed (ECONNRESET)");
+			assert.equal(isRetryableAssistantError(first), true);
+			assert.equal(shared.code, "ERR_SOCKET_CLOSED");
+
+			// Re-throwing the same object from a hook in a later request keeps its message and is never retried.
+			const second = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				onPayload: async () => {
+					throw shared;
+				},
+			}).result();
+			assert.equal(handle.mock.calls.length, 1 + SDK_RETRIES);
+			assert.equal(second.errorMessage, "Socket is closed");
+			assert.equal(isRetryableAssistantError(second), false);
+
+			// Attempt 1 fails with shared ERR_SOCKET_CLOSED; Attempt 2 gets an answer and onResponse throws shared:
+			// Attempt 3 must never run because shared was not mutated to ECONNRESET.
+			handle.mockReset();
+			handle.mockRejectedValueOnce(shared).mockResolvedValueOnce({
+				response: { statusCode: 400, reason: "Bad Request", headers: {}, body: Readable.from([]) },
+			} as Awaited<ReturnType<NodeHttpHandler["handle"]>>);
+			const third = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				onResponse: async () => {
+					throw shared;
+				},
+			}).result();
+			assert.equal(handle.mock.calls.length, 2);
+			assert.equal(third.errorMessage, "Socket is closed");
+			assert.equal(isRetryableAssistantError(third), false);
+			assert.equal(shared.code, "ERR_SOCKET_CLOSED");
+		} finally {
+			handle.mockRestore();
+		}
+	});
+
+	it("never normalizes or SDK-retries ERR_SOCKET_CLOSED after response headers arrive, with response metadata, on abort, or for other codes", async () => {
+		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle");
+		try {
+			// 1. Mid-stream ERR_SOCKET_CLOSED after a 200 response's headers arrived: must never replay the request.
+			const midStreamBody = new Readable({
+				read() {
+					this.destroy(Object.assign(new Error("Socket is closed"), { code: "ERR_SOCKET_CLOSED" }));
+				},
+			});
+			handle.mockResolvedValueOnce({
+				response: {
+					statusCode: 200,
+					reason: "OK",
+					headers: { "content-type": "application/vnd.amazon.eventstream" },
+					body: midStreamBody,
+				},
+			} as Awaited<ReturnType<NodeHttpHandler["handle"]>>);
+			const midStream = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+			}).result();
+			assert.equal(handle.mock.calls.length, 1);
+			assert.equal(midStream.stopReason, "error");
+			assert.equal(isRetryableAssistantError(midStream), false, midStream.errorMessage);
+
+			// 2. Handler rejections carrying response metadata with ERR_SOCKET_CLOSED must never be wrapped or retried.
+			for (const responseTagged of [
+				Object.assign(new Error("Response closed"), { code: "ERR_SOCKET_CLOSED", $response: { statusCode: 400 } }),
+				Object.assign(new Error("Response closed"), { code: "ERR_SOCKET_CLOSED", statusCode: 400 }),
+				Object.assign(new Error("Response closed"), { code: "ERR_SOCKET_CLOSED", headers: {} }),
+			]) {
+				handle.mockReset();
+				handle.mockRejectedValue(responseTagged);
+				const message = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+					cacheRetention: "none",
+					maxRetries: SDK_RETRIES,
+					env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+				}).result();
+				assert.equal(handle.mock.calls.length, 1);
+				assert.equal(message.stopReason, "error");
+				assert.equal(isRetryableAssistantError(message), false, message.errorMessage);
+			}
+
+			// 3. An already-aborted request whose socket emits ERR_SOCKET_CLOSED must never be retried.
+			handle.mockReset();
+			const controller = new AbortController();
+			handle.mockImplementation(async () => {
+				controller.abort();
+				throw Object.assign(new Error("Socket is closed"), { code: "ERR_SOCKET_CLOSED" });
+			});
+			const aborted = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				signal: controller.signal,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+			}).result();
+			assert.equal(handle.mock.calls.length, 1);
+			assert.equal(aborted.stopReason, "aborted");
+			assert.equal(isRetryableAssistantError(aborted), false);
+
+			// 4. Non-ERR_SOCKET_CLOSED transport errors like EPROTO keep their code and are not retried by the SDK.
+			handle.mockReset();
+			handle.mockRejectedValue(Object.assign(new Error("wrong version number"), { code: "EPROTO" }));
+			const proto = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
+				cacheRetention: "none",
+				maxRetries: SDK_RETRIES,
+				env: { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" },
+			}).result();
+			assert.equal(handle.mock.calls.length, 1);
+			assert.equal(proto.errorMessage, "wrong version number (EPROTO)");
+			assert.equal(isRetryableAssistantError(proto), false);
 		} finally {
 			handle.mockRestore();
 		}

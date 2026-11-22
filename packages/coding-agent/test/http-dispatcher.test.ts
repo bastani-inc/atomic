@@ -33,14 +33,16 @@ describe("createHttpDispatcherOptions", () => {
 
 	it("strips only IP-literal servername values on https:// proxy connections in clientFactory", async () => {
 		const options = createHttpDispatcherOptions(10_000);
-		expect(typeof options.clientFactory).toBe("function");
+		const clientFactory = options.clientFactory;
+		expect(typeof clientFactory).toBe("function");
+		if (typeof clientFactory !== "function") throw new Error("Expected clientFactory");
 		const seen: Array<{ protocol: string; servername: string | undefined }> = [];
 		const connect: undici.buildConnector.connector = (connectOptions, callback) => {
 			seen.push({ protocol: connectOptions.protocol, servername: connectOptions.servername });
 			callback(new Error("stop"), null);
 		};
-		const httpsClient = options.clientFactory!(new URL("https://127.0.0.1:8443"), { connect }) as undici.Client;
-		const httpClient = options.clientFactory!(new URL("http://127.0.0.1:8080"), { connect }) as undici.Client;
+		const httpsClient = clientFactory(new URL("https://127.0.0.1:8443"), { connect }) as unknown as undici.Client;
+		const httpClient = clientFactory(new URL("http://127.0.0.1:8080"), { connect }) as unknown as undici.Client;
 		try {
 			for (const servername of ["proxy.corp.example", "127.0.0.1", "::1", "[::1]"]) {
 				await httpsClient.connect({ path: "example.com:443", servername }).catch(() => {});
@@ -473,7 +475,7 @@ describe("http dispatcher", () => {
 
 		const sendThrough = async (proxyUrl: string, servername?: string) => {
 			const dispatcher = new undici.EnvHttpProxyAgent({
-				...createHttpDispatcherOptions(10_000),
+				...(createHttpDispatcherOptions(10_000) as ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0]),
 				httpProxy: proxyUrl,
 				httpsProxy: proxyUrl,
 				noProxy: "none.invalid",
