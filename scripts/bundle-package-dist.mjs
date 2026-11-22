@@ -225,8 +225,10 @@ async function analyzeModules(esbuild, packageDir, dist, sources, isExternal) {
 	const imports = new Map();
 	for (const [path, input] of Object.entries(result.metafile.inputs)) {
 		const edges = { static: [], dynamic: [], staticExternal: [], dynamicExternal: [] };
+		const isInlinedInput = !join(packageDir, path).startsWith(dist + sep);
 		for (const edge of input.imports) {
-			if (edge.kind !== "import-statement" && edge.kind !== "dynamic-import") continue;
+			const isStaticRequire = isInlinedInput && edge.kind === "require-call";
+			if (edge.kind !== "import-statement" && edge.kind !== "dynamic-import" && !isStaticRequire) continue;
 			const dynamic = edge.kind === "dynamic-import";
 			if (edge.external) (dynamic ? edges.dynamicExternal : edges.staticExternal).push(edge.path);
 			else (dynamic ? edges.dynamic : edges.static).push(join(packageDir, edge.path));
@@ -348,7 +350,9 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			[...sources.keys()].map((file) => [toPosix(relative(dist, file)).replace(/\.js$/, ""), file]),
 		),
 		// Not "node": the shared helpers would import `node:module` for a `require` no module makes.
+		// Configure mainFields explicitly so CJS inlined packages without an `exports` map still resolve.
 		platform: "neutral",
+		resolve: { mainFields: ["module", "main"] },
 		external: isExternal,
 		makeAbsoluteExternalsRelative: true,
 		preserveEntrySignatures: "allow-extension",
@@ -414,10 +418,94 @@ export async function bundlePackageDist(packageDir, options = {}) {
 					// Every module of the package, its JSON files included; anything else it imports is another package.
 					const internal = [...this.getModuleIds()].map(normalizeId).filter(isBundled);
 					groups = assignGroups(internal, entries, importsOf);
-					// An inlined package's modules share files only with each other.
+					// An inlined package's modules share files only with each other. When all imports into an inlined
+					// package pass through a single entry module, every module in that package (and any inlined package
+					// reached solely through it) shares that entry's chunk, preserving exact per-entry external
+					// footprints while collapsing multi-hundred-file SDKs into a single shared file.
+					/** @type {Map<string, Set<string>>} */
+					const incomingStaticEntries = new Map();
+					/** @type {Map<string, Set<string>>} */
+					const incomingPackages = new Map();
+					for (const id of internal) {
+						const importerRoot = inlinedRootOf(id);
+						const edges = importsOf(id);
+						for (const target of edges.internal) {
+							const targetRoot = inlinedRootOf(target);
+							if (!targetRoot || targetRoot === importerRoot) continue;
+							let targetEntries = incomingStaticEntries.get(targetRoot.name);
+							if (!targetEntries) {
+								targetEntries = new Set();
+								incomingStaticEntries.set(targetRoot.name, targetEntries);
+							}
+							targetEntries.add(target);
+							let importers = incomingPackages.get(targetRoot.name);
+							if (!importers) {
+								importers = new Set();
+								incomingPackages.set(targetRoot.name, importers);
+							}
+							importers.add(importerRoot ? importerRoot.name : "");
+						}
+						for (const target of edges.dynamicInternal) {
+							const targetRoot = inlinedRootOf(target);
+							if (!targetRoot || targetRoot === importerRoot) continue;
+							let importers = incomingPackages.get(targetRoot.name);
+							if (!importers) {
+								importers = new Set();
+								incomingPackages.set(targetRoot.name, importers);
+							}
+							importers.add(importerRoot ? importerRoot.name : "");
+						}
+					}
+					/** @type {Map<string, string>} */
+					const coalescedPkgGroup = new Map();
+					/** @type {Map<string, string>} */
+					const coalescedEntry = new Map();
+					for (const root of inlinedRoots) {
+						const pkgEntries = incomingStaticEntries.get(root.name);
+						if (pkgEntries?.size !== 1) continue;
+						const [soleEntry] = pkgEntries;
+						const baseGroup = groups.get(soleEntry);
+						if (baseGroup !== undefined) {
+							coalescedPkgGroup.set(root.name, `${baseGroup}|${root.name}`);
+							coalescedEntry.set(root.name, soleEntry);
+						}
+					}
+					// If an inlined dependency is only imported statically by a single coalesced inlined package
+					// (e.g. standardwebhooks -> @anthropic-ai/sdk), merge its static closure into its owner's chunk.
+					for (let changed = true; changed; ) {
+						changed = false;
+						for (const root of inlinedRoots) {
+							const importers = incomingPackages.get(root.name);
+							if (importers?.size !== 1) continue;
+							const [soleImporter] = importers;
+							if (soleImporter === "" || !coalescedPkgGroup.has(soleImporter)) continue;
+							const ownerGroup = coalescedPkgGroup.get(soleImporter);
+							if (coalescedPkgGroup.get(root.name) !== ownerGroup) {
+								coalescedPkgGroup.set(root.name, ownerGroup);
+								changed = true;
+							}
+						}
+					}
+					// Only modules statically reachable from a package's sole entry join its coalesced chunk;
+					// dynamically imported submodules inside an SDK stay lazy and never hoist their externals.
+					const coalescedStaticModules = new Map();
+					for (const [pkgName, soleEntry] of coalescedEntry) {
+						const targetGroup = coalescedPkgGroup.get(pkgName);
+						const stack = [soleEntry];
+						const seen = new Set();
+						while (stack.length > 0) {
+							const current = stack.pop();
+							if (seen.has(current)) continue;
+							seen.add(current);
+							const currentRoot = inlinedRootOf(current);
+							if (!currentRoot || coalescedPkgGroup.get(currentRoot.name) !== targetGroup) continue;
+							coalescedStaticModules.set(current, targetGroup);
+							for (const dep of importsOf(current).internal) stack.push(dep);
+						}
+					}
 					for (const [id, group] of groups) {
 						const root = inlinedRootOf(id);
-						if (root) groups.set(id, `${group}|${root.name}`);
+						if (root) groups.set(id, coalescedStaticModules.get(id) ?? `${group}|${root.name}`);
 					}
 				},
 			},

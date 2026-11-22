@@ -386,3 +386,51 @@ test("the package ships each source map once, named by the file it describes, an
 	assert.ok(Object.keys(result.metafile.inputs).some((input) => input.endsWith("pkg/dist/_modules/deep/answer.js")));
 	assert.match(result.outputFiles[0]?.text ?? "", /answer: 42/);
 });
+
+test("single-entry inlined packages coalesce their static modules into one chunk while keeping dynamic submodules lazy", async () => {
+	const { root, pkg } = fixture();
+	// Multi-file inlined SDK with distinct Node builtins across its static modules + a dynamic-only submodule.
+	writeTree(root, {
+		"node_modules/fake-sdk/package.json": JSON.stringify({
+			name: "fake-sdk",
+			type: "module",
+			exports: { ".": "./index.mjs" },
+		}),
+		"node_modules/fake-sdk/index.mjs": `import { a } from "./a.mjs";\nimport { b } from "./b.mjs";\nexport class FakeClient { run() { return a() + ":" + b(); } }\nexport const loadDynamic = () => import("./dyn.mjs");\n`,
+		"node_modules/fake-sdk/a.mjs": `import { basename } from "node:path";\nexport function a() { return basename("/x/y"); }\n`,
+		"node_modules/fake-sdk/b.mjs": `import { platform } from "node:os";\nexport function b() { return typeof platform(); }\n`,
+		"node_modules/fake-sdk/dyn.mjs": `import { readFileSync } from "node:fs";\nexport const hasFs = typeof readFileSync === "function";\n`,
+		"pkg/dist/api-a.js": `import { FakeClient, loadDynamic } from "fake-sdk";\nexport { FakeClient, loadDynamic };\n`,
+		"pkg/dist/api-b.js": `import { FakeClient, loadDynamic } from "fake-sdk";\nexport { FakeClient, loadDynamic };\n`,
+	});
+	const manifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+	manifest.exports["./api-a"] = {
+		module: "./dist/_modules/api-a.js",
+		browser: "./dist/_modules/api-a.js",
+		import: "./dist/api-a.js",
+	};
+	manifest.exports["./api-b"] = {
+		module: "./dist/_modules/api-b.js",
+		browser: "./dist/_modules/api-b.js",
+		import: "./dist/api-b.js",
+	};
+	writeFileSync(join(pkg, "package.json"), JSON.stringify(manifest));
+
+	await bundlePackageDist(pkg, { inline: ["fake-sdk"], log: () => {} });
+	const sdkChunks = sharedFiles(pkg).filter((name) =>
+		readFileSync(join(pkg, "dist", name), "utf8").includes("FakeClient"),
+	);
+	assert.equal(sdkChunks.length, 1, `expected single coalesced fake-sdk chunk, got ${sdkChunks.join(", ")}`);
+	// Dynamic-only submodule stays out of the static chunk (never hoists node:fs into static imports).
+	assert.equal(
+		readFileSync(join(pkg, "dist", sdkChunks[0]), "utf8").includes("node:fs"),
+		false,
+		"dynamic submodule must not hoist node:fs into the static SDK chunk",
+	);
+	const result = inChild(
+		join(pkg, "dist/api-a.js"),
+		`const b = await import(${JSON.stringify(pathToFileURL(join(pkg, "dist/api-b.js")).href)});
+		process.stdout.write(JSON.stringify({ sameClass: m.FakeClient === b.FakeClient, out: new m.FakeClient().run() }));`,
+	);
+	assert.deepEqual(result, { sameClass: true, out: "y:string" });
+});
