@@ -391,6 +391,18 @@ export const LEGACY_CONFIG_DIR_NAME = ".pi";
 export const CONFIG_DIR_NAMES: readonly string[] =
 	CONFIG_DIR_NAME === LEGACY_CONFIG_DIR_NAME ? [CONFIG_DIR_NAME] : [CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME];
 export const VERSION: string = pkg.version || "0.0.0";
+/**
+ * The release of `@bastani/atomic-natives` this package pins, read with VERSION from the same package.json: the native
+ * module the running code was released with. Undefined when it pins none to an exact release, as an app that bundles the
+ * SDK does.
+ */
+export const NATIVES_VERSION: string | undefined = exactRelease(
+	(pkg.dependencies as Record<string, unknown> | undefined)?.["@bastani/atomic-natives"],
+);
+
+function exactRelease(range: unknown): string | undefined {
+	return typeof range === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(range) ? range : undefined;
+}
 export const CHANGELOG_URL: string | undefined = appConfig?.changelogUrl?.trim() || undefined;
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
