@@ -33,7 +33,8 @@ function copyTree(source: string, target: string): void {
 }
 
 /**
- * The built package, its build scripts and build state copied into a workspace of its own whose other packages link to
+ * The built package, its build scripts, the release records its split reads and its build state copied into a workspace
+ * of its own whose other packages link to
  * this one's: packing it runs the package's own lifecycle scripts without touching the repository's build.
  */
 function copiedPackage(root: string): string {
@@ -58,7 +59,8 @@ function copiedPackage(root: string): string {
 	const copy = join(root, "packages", "coding-agent");
 	fs.mkdirSync(copy, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(copy, "package.json"));
-	for (const directory of ["scripts", "dist", "node_modules"])
+	// The build's inputs besides the compiled files: its scripts and the records of earlier releases the split reads.
+	for (const directory of ["scripts", "in-place-update", "dist", "node_modules"])
 		copyTree(join(packageDir, directory), join(copy, directory));
 	return copy;
 }

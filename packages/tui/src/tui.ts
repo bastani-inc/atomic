@@ -621,8 +621,11 @@ export interface TUI extends Component {
 	gateScrollbackFrame?(container: Container, options: ScrollbackFrameGateOptions): ScrollbackFrameGate | undefined;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
-	/** Run the slash command a clicked hint names, such as `/tasks` in `/tasks to manage`. */
-	setHintCommandHandler?(handler: ((command: string) => void) | undefined): void;
+	/**
+	 * Run the slash command a clicked hint names, such as `/tasks` in `/tasks to manage`, with the route the hint names,
+	 * if any.
+	 */
+	setHintCommandHandler?(handler: ((command: string, route?: string) => void) | undefined): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
 	setTerminalColorSchemeNotifications(enabled: boolean): void;
 	queryTerminalColors(options: {
@@ -647,7 +650,7 @@ export abstract class TuiBase extends Container implements TUI {
 	public terminal: Terminal;
 	private focusedComponent: Component | null = null;
 	private inputListeners = new Set<TuiInputListener>();
-	private hintCommandHandler: ((command: string) => void) | undefined;
+	private hintCommandHandler: ((command: string, route?: string) => void) | undefined;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
@@ -1143,7 +1146,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.inputListeners.delete(listener);
 	}
 
-	setHintCommandHandler(handler: ((command: string) => void) | undefined): void {
+	setHintCommandHandler(handler: ((command: string, route?: string) => void) | undefined): void {
 		this.hintCommandHandler = handler;
 	}
 
@@ -1153,7 +1156,8 @@ export abstract class TuiBase extends Container implements TUI {
 	 */
 	protected runHintAction(action: HintAction): void {
 		if (action.kind === "command") {
-			this.hintCommandHandler?.(action.command);
+			if (action.route === undefined) this.hintCommandHandler?.(action.command);
+			else this.hintCommandHandler?.(action.command, action.route);
 			this.requestRender();
 			return;
 		}

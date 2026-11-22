@@ -755,6 +755,7 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 			return store?.getTask(taskId) ?? inherited?.getTaskRecord?.(taskId);
 		},
 		...(state.keptTaskAction === undefined ? {} : { keptTaskAction: state.keptTaskAction }),
+		...(state.keptTaskRoute === undefined ? {} : { keptTaskRoute: state.keptTaskRoute }),
 		hasTaskTranscript: (taskId: TaskId) => {
 			const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
 			const store = session === undefined ? undefined : getOwnerTaskStore(session);
