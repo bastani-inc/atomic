@@ -569,7 +569,7 @@ The publisher intentionally does not reconstruct the release tree, validate rele
 
 ## Versionless release bases
 
-`main` and supported workstream bases keep all versioned manifests at `0.0.0`. `scripts/cut-release.ts` resolves the selected remote branch SHA, creates a detached worktree, stamps the requested version, commits with subject `Release <version>`, tags that commit, removes the worktree, and pushes only the tag. The selected base never receives the version stamp. The stamp and the shrinkwrap generator run from the invoking checkout with `--root <worktree>`, so their imports resolve from that checkout's `node_modules`; the temporary worktree has none, and resolving from it would depend on whatever `node_modules` sits above the temp directory.
+`main` and supported workstream bases keep all versioned manifests at `0.0.0`. `scripts/cut-release.ts` resolves the selected remote branch SHA, creates a detached worktree, stamps the requested version, commits with subject `Release <version>`, tags that commit, removes the worktree, and pushes only the tag. The selected base never receives the version stamp. The stamp runs from the invoking checkout with `--root <worktree>`, so its imports resolve from that checkout's `node_modules`; the temporary worktree has none, and resolving from it would depend on whatever `node_modules` sits above the temp directory.
 
 ```sh
 bun run scripts/cut-release.ts 0.9.10 --base main --push
