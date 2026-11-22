@@ -10,7 +10,7 @@ import { availableParallelism } from "node:os";
 import { basename } from "node:path";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
-import { engineCompileCacheWarmupEnv } from "../../utils/compile-cache-deferral.ts";
+import { engineCompileCacheMatchHostEnv, engineCompileCacheWarmupEnv } from "../../utils/compile-cache-deferral.ts";
 import { INTERACTIVE_ENGINE_PREWARM_FLAG } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { isPlainInteractiveSessionInvocation } from "../../utils/interactive-invocation.ts";
@@ -82,13 +82,15 @@ export function startupBenchmarkEngineEnv(
 }
 
 /** Environment the interactive host adds for its engine child. */
-export function interactiveEngineEnvOverrides(): Record<string, string> {
+export function interactiveEngineEnvOverrides(engineRuntimeArgs: readonly string[] = []): Record<string, string> {
 	const explicitAgentDir = getEnvValue(ENV_AGENT_DIR);
 	return {
 		...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
 		...startupBenchmarkEngineEnv(),
 		// This host warms the engine's cold compile cache too, so the engine leaves it alone like the host.
 		...engineCompileCacheWarmupEnv(),
+		// When this host auto-sized the engine's heap, align the engine's Node 22 compile-cache tag with the host's.
+		...engineCompileCacheMatchHostEnv(engineRuntimeArgs),
 	};
 }
 
@@ -105,12 +107,13 @@ export function interactiveEngineClientOptions(cwd: string): {
 	const cliPath = launchedByRuntime ? process.argv[1] : "";
 	if (launchedByRuntime && !cliPath)
 		throw new Error("Cannot start isolated interactive engine: Atomic entrypoint is unavailable");
+	const runtimeArgs = engineHeapRuntimeArgsForHost(["node", "node.exe"].includes(executableName));
 	return {
 		runtimeExecutable: process.execPath,
-		runtimeArgs: engineHeapRuntimeArgsForHost(["node", "node.exe"].includes(executableName)),
+		runtimeArgs,
 		cliPath: cliPath ?? "",
 		cwd,
-		env: interactiveEngineEnvOverrides(),
+		env: interactiveEngineEnvOverrides(runtimeArgs),
 	};
 }
 
