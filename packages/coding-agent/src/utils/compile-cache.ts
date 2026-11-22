@@ -23,7 +23,7 @@ import { existsSync } from "node:fs";
 import nodeModule from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cachedDataVersionTag } from "node:v8";
+import { cachedDataVersionTag, setFlagsFromString } from "node:v8";
 import { splitNodeOptions } from "@bastani/atomic-codemode/node-options";
 
 interface CompileCacheApi {
@@ -81,8 +81,55 @@ export function isCiValue(value: string | undefined): boolean {
 
 /** The only runtime flag a helper keeps: the heap size, which the engine gets from its host. */
 const HEAP_SIZE_FLAG = /^--max[-_]old[-_]space[-_]size=\d+$/;
+/** Heap size option names recognized on Node's command line (mirroring `engine-heap.ts`). */
+const HEAP_SIZE_OPTION_NAMES: ReadonlySet<string> = new Set([
+	"--max-old-space-size",
+	"--max-old-space-size-percentage",
+	"--max-heap-size",
+]);
+/** V8 heap size option names that Node also forwards with a single leading dash. */
+const V8_HEAP_SIZE_OPTION_NAMES: ReadonlySet<string> = new Set(["--max-old-space-size", "--max-heap-size"]);
 /** Flags that load user code before Atomic does. A helper drops them with their values. */
 const PRELOAD_FLAGS = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+
+/** What decides whether the host aligns its V8 heap flag with the engine before enabling the compile cache. */
+export interface CompileCacheHeapAlignmentInput {
+	readonly runtimeIsBun: boolean;
+	readonly unsupported: boolean;
+	readonly alreadyEnabled: boolean;
+	readonly disabled: boolean;
+	readonly execArgv: readonly string[];
+	readonly targetEngineHeapArgs: readonly string[];
+}
+
+function execArgvSetsHeapSize(execArgv: readonly string[]): boolean {
+	for (const flag of execArgv) {
+		if (flag === "--") break;
+		if (!flag.startsWith("-")) continue;
+		const dashes = flag.startsWith("--") ? 2 : 1;
+		const equals = flag.indexOf("=");
+		const name = `--${(equals === -1 ? flag : flag.slice(0, equals)).slice(dashes).replaceAll("_", "-")}`;
+		if (!HEAP_SIZE_OPTION_NAMES.has(name)) continue;
+		if (dashes === 1 && !V8_HEAP_SIZE_OPTION_NAMES.has(name)) continue;
+		return true;
+	}
+	return false;
+}
+
+/**
+ * The `--max-old-space-size=<N>` flag the host should adopt via `v8.setFlagsFromString` before enabling the compile
+ * cache so host, engine and the Windows warmup helper share one cache tag and directory on Node 22 and one helper on
+ * Windows (#6222). Returns `undefined` when the cache is already enabled (`NODE_COMPILE_CACHE`), disabled, unsupported,
+ * running under Bun, or when the host command line already sets a heap size.
+ */
+export function compileCacheSharedHeapFlag(input: CompileCacheHeapAlignmentInput): string | undefined {
+	if (input.runtimeIsBun || input.unsupported || input.alreadyEnabled || input.disabled) return undefined;
+	if (execArgvSetsHeapSize(input.execArgv)) return undefined;
+	const added = input.targetEngineHeapArgs.filter(
+		(flag) => HEAP_SIZE_FLAG.test(flag) && !input.execArgv.includes(flag),
+	);
+	return added.length === 1 ? added[0] : undefined;
+}
 
 /** Runtime flags and `NODE_OPTIONS` for a helper, or undefined when these cannot be repeated without side effects. */
 export interface CompileCacheHelperRuntime {
@@ -106,14 +153,16 @@ function keptFlags(flags: readonly string[]): string[] | undefined {
 }
 
 /**
- * The runtime a helper repeats: this process's heap size, without the preloads (`--require`, `--import`, loaders)
- * that would run user code a second time. Anything else on the command line or in `NODE_OPTIONS` (an inspector, a
- * profiler, coverage, other V8 flags that would give the helper a different cache), and a `NODE_OPTIONS` value Node
- * refuses, with which a helper would not start, leaves the cache as it always was.
+ * The runtime a helper repeats: this process's heap size (including any engine heap flag adopted before enabling the
+ * compile cache), without the preloads (`--require`, `--import`, loaders) that would run user code a second time.
+ * Anything else on the command line or in `NODE_OPTIONS` (an inspector, a profiler, coverage, other V8 flags that
+ * would give the helper a different cache), and a `NODE_OPTIONS` value Node refuses, with which a helper would not
+ * start, leaves the cache as it always was.
  */
 export function compileCacheHelperRuntime(
 	execArgv: readonly string[],
 	env: NodeJS.ProcessEnv,
+	adoptedExecArgv: readonly string[] = [],
 ): CompileCacheHelperRuntime | undefined {
 	if (env.NODE_V8_COVERAGE !== undefined) return undefined;
 	const words = splitNodeOptions(env.NODE_OPTIONS ?? "");
@@ -121,7 +170,8 @@ export function compileCacheHelperRuntime(
 	const command = keptFlags(execArgv);
 	const options = keptFlags(words);
 	if (!command || !options) return undefined;
-	return { execArgv: command, nodeOptions: options.join(" ") };
+	if (!adoptedExecArgv.every((flag) => HEAP_SIZE_FLAG.test(flag))) return undefined;
+	return { execArgv: [...command, ...adoptedExecArgv], nodeOptions: options.join(" ") };
 }
 
 /** FNV-1a: a short, stable name for this Atomic build, without loading a hash library at startup. */
@@ -181,19 +231,44 @@ export interface CompileCacheDeferral {
 let deferral: CompileCacheDeferral | undefined;
 
 /**
- * Enable the compile cache for this process. An `interactive` process on Windows whose cache is cold for `build`
- * runs without it instead, and its host starts a helper that writes it.
+ * Enable the compile cache for this process. When `sharedHeapFlags` names the engine's `--max-old-space-size=<N>`
+ * flag and the cache is not already enabled or disabled, the host adopts that V8 flag before enabling the cache so
+ * host and engine share one V8 compile-cache tag and directory (#6222). An `interactive` process on Windows whose
+ * cache is cold for `build` runs without it instead, and its host starts a helper that writes it.
  */
-export function enablePersistentCompileCache(options: { interactive?: boolean; build?: string } = {}): void {
+export function enablePersistentCompileCache(
+	options: { interactive?: boolean; build?: string; sharedHeapFlags?: readonly string[] } = {},
+): void {
 	try {
-		const runtime = compileCacheHelperRuntime(process.execArgv, process.env);
+		const runtimeIsBun = "bun" in process.versions;
+		const unsupported = typeof compileCacheApi.enableCompileCache !== "function";
+		const alreadyEnabled = compileCacheApi.getCompileCacheDir?.() !== undefined;
+		const disabled = process.env.NODE_DISABLE_COMPILE_CACHE !== undefined;
+		const adoptedFlag = compileCacheSharedHeapFlag({
+			runtimeIsBun,
+			unsupported,
+			alreadyEnabled,
+			disabled,
+			execArgv: process.execArgv,
+			targetEngineHeapArgs: options.sharedHeapFlags ?? [],
+		});
+		let adoptedExecArgv: string[] = [];
+		if (adoptedFlag !== undefined) {
+			try {
+				setFlagsFromString(adoptedFlag);
+				adoptedExecArgv = [adoptedFlag];
+			} catch {
+				// Best effort: keep the runtime's existing flags if V8 rejects the flag.
+			}
+		}
+		const runtime = compileCacheHelperRuntime(process.execArgv, process.env, adoptedExecArgv);
 		const buildId = compileCacheBuildId(`${import.meta.url}\0${options.build ?? ""}`);
 		const mode = compileCacheStartMode({
 			platform: process.platform,
-			runtimeIsBun: "bun" in process.versions,
-			unsupported: typeof compileCacheApi.enableCompileCache !== "function",
-			alreadyEnabled: compileCacheApi.getCompileCacheDir?.() !== undefined,
-			disabled: process.env.NODE_DISABLE_COMPILE_CACHE !== undefined,
+			runtimeIsBun,
+			unsupported,
+			alreadyEnabled,
+			disabled,
 			interactive: options.interactive === true && options.build !== undefined,
 			helperRuntime: runtime !== undefined,
 			warm: () => existsSync(currentCompileCacheWarmMarker(buildId)),

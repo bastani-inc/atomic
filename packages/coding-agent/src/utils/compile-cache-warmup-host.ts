@@ -84,6 +84,18 @@ export function startCompileCacheHelper(launch: CompileCacheHelperLaunch): boole
 
 let warmupStarted = false;
 
+/** Helper runtimes to run in sequence: one when host and engine share flags, else engine first then host. */
+export function compileCacheWarmupRuntimes(
+	own: CompileCacheHelperRuntime,
+	engineExecArgv: readonly string[],
+): readonly CompileCacheHelperRuntime[] {
+	const engine: CompileCacheHelperRuntime = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };
+	const same =
+		engine.execArgv.length === own.execArgv.length &&
+		engine.execArgv.every((arg, index) => arg === own.execArgv[index]);
+	return same ? [own] : [engine, own];
+}
+
 /**
  * Warm the cache this session left cold: first for the engine's runtime flags (`engineExecArgv`), then for this
  * process's own. Called once the session is on screen, and when it exits before that, so even a session that ends at
@@ -94,12 +106,7 @@ export function warmCompileCache(engineExecArgv: readonly string[]): void {
 	const deferral = processCompileCacheDeferral();
 	if (!deferral?.helper || warmupStarted) return;
 	warmupStarted = true;
-	const own = deferral.runtime;
-	const engine = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };
-	const same =
-		engine.execArgv.length === own.execArgv.length &&
-		engine.execArgv.every((arg, index) => arg === own.execArgv[index]);
-	const [first, ...next] = same ? [own] : [engine, own];
+	const [first, ...next] = compileCacheWarmupRuntimes(deferral.runtime, engineExecArgv);
 	startCompileCacheHelper(
 		compileCacheHelperLaunch(first!, deferral.buildId, undefined, undefined, { next, required: [] }),
 	);

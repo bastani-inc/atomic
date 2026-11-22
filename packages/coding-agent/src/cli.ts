@@ -37,21 +37,26 @@ markLifecycleTiming("process-entry");
 const args = process.argv.slice(2);
 // A prewarmed engine child loads the application now and learns its arguments from its host afterwards.
 const prewarmedEngine = args[0] === INTERACTIVE_ENGINE_PREWARM_FLAG;
+const engineChild = prewarmedEngine || hasInteractiveEngineBootstrapArg(args);
+const versionOnly = args[0] === "--version" || args[0] === "-v";
 const terminal = { stdinIsTTY: process.stdin.isTTY === true, stdoutIsTTY: process.stdout.isTTY === true };
 
 const engineCacheWarmedByHost = process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV] === "1";
 delete process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV];
+// Align the host's V8 heap flag with the interactive engine before enabling the compile cache so both processes share
+// one compile-cache directory on Node 22 and one warmup helper on Windows (#6222). Skip on Bun (no V8 compile cache,
+// and reading Bun heap statistics costs ~14 ms).
+const sharedHeapFlags =
+	engineChild || versionOnly || "bun" in process.versions ? [] : engineHeapRuntimeArgsForHost(true);
 // An interactive session, and the engine of one that warms the engine's cache, leave a cold compile cache to a helper
 // instead of writing it when they exit.
 enablePersistentCompileCache({
-	interactive:
-		prewarmedEngine || hasInteractiveEngineBootstrapArg(args)
-			? engineCacheWarmedByHost
-			: isPlainInteractiveSessionInvocation(args, terminal),
+	interactive: engineChild ? engineCacheWarmedByHost : isPlainInteractiveSessionInvocation(args, terminal),
 	build: VERSION,
+	sharedHeapFlags,
 });
 // A session that ends before it starts its compile-cache helpers starts them as it exits; they outlive it.
-if (compileCacheDeferral() && !prewarmedEngine && !hasInteractiveEngineBootstrapArg(args)) {
+if (compileCacheDeferral() && !engineChild) {
 	process.once("exit", () => warmCompileCache(engineHeapRuntimeArgsForHost(true)));
 }
 
