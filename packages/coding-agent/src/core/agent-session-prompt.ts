@@ -163,11 +163,7 @@ export async function normalizeQueuedMessageImages(session: AgentSession, messag
 }
 
 export function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
-	return holdToolAbortGraceWhenObserved(
-		this,
-		runPrompt.call(this, text, options),
-		() => this.agent.signal?.aborted === true,
-	);
+	return holdToolAbortGraceWhenObserved(this, runPrompt.call(this, text, options));
 }
 
 async function runPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {

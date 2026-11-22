@@ -121,7 +121,14 @@ function exitLingerMs(run: {
 function sdkStuckAbortScript(options: {
 	readonly runtime: "node" | "bun";
 	readonly detachable: boolean;
-	readonly mode: "abort-stuck" | "prompt-agent-abort" | "clean-abort" | "idle";
+	readonly mode:
+		| "abort-stuck"
+		| "prompt-agent-abort"
+		| "observe-then-abort"
+		| "observe-catch-then-abort"
+		| "void-prompt-then-abort"
+		| "clean-abort"
+		| "idle";
 }): string {
 	// Node detects an unsettled top-level await with exit code 13; Bun keeps TLA alive while exiting early from an
 	// awaited async main() call. Running TLA on Node and async main() on Bun tests the real failure mode on each.
@@ -183,11 +190,42 @@ const { session } = await createAgentSession({
 	resourceLoader: createTestResourceLoader(),
 	customTools: [stuck],
 });
-${options.detachable ? `session.setToolDetachment({ afterMs: ${SHORT_DETACH_MS} });` : ""}
+${
+	options.detachable
+		? `session.setToolDetachment({ afterMs: ${
+				options.mode === "observe-then-abort" || options.mode === "observe-catch-then-abort" ? 100 : SHORT_DETACH_MS
+			} });`
+		: ""
+}
 
 if (${JSON.stringify(options.mode)} === "idle") {
 	// Deliberately do not call session.dispose(): an idle session with no abort pending must let the process exit.
 	console.log("IDLE_EXITED");
+} else if (${JSON.stringify(options.mode)} === "void-prompt-then-abort") {
+	void session.prompt("go");
+	await started.promise;
+	void session.abort();
+	console.log("EXIT_AT:" + Date.now());
+} else if (
+	${JSON.stringify(options.mode)} === "observe-then-abort" ||
+	${JSON.stringify(options.mode)} === "observe-catch-then-abort"
+) {
+	// Schedule agent.abort() AFTER the caller has already awaited session.prompt(), once the stuck tool starts.
+	void started.promise.then(() => {
+		setTimeout(() => session.agent.abort(), 50);
+	});
+	if (${JSON.stringify(options.mode)} === "observe-catch-then-abort") {
+		await session.prompt("go").catch(() => {});
+	} else {
+		await session.prompt("go");
+	}
+	const result = session.messages.find((message) => message.role === "toolResult");
+	const text =
+		result && Array.isArray(result.content)
+			? result.content.map((part) => part.text ?? "").join("\\n")
+			: "";
+	await session.dispose();
+	console.log("ABORT_SETTLED:" + text);
 } else {
 	const prompt = session.prompt("go");
 	await started.promise;
@@ -309,6 +347,75 @@ describe("awaited abort-grace and teardown timers keep standalone SDK scripts al
 					/ABORT_SETTLED:Operation aborted: stuck did not stop within 0\.2 seconds/,
 					`stderr:\n${run.stderr}\nstdout:\n${run.stdout}`,
 				);
+			},
+			CHILD_PROCESS_TIMEOUT_MS,
+		);
+
+		test(
+			`${runtime} SDK script awaiting prompt() before a later agent.abort() settles and exits 0 (detachable=false, #5486)`,
+			async () => {
+				const run = await runScript(
+					runtime,
+					sdkStuckAbortScript({ runtime, detachable: false, mode: "observe-then-abort" }),
+					{ ATOMIC_TOOL_ABORT_GRACE_MS: String(ABORT_GRACE_MS) },
+				);
+				assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+				assert.match(
+					run.stdout,
+					/ABORT_SETTLED:Operation aborted: stuck did not stop within 0\.2 seconds/,
+					`stderr:\n${run.stderr}\nstdout:\n${run.stdout}`,
+				);
+			},
+			CHILD_PROCESS_TIMEOUT_MS,
+		);
+
+		test(
+			`${runtime} SDK script awaiting prompt() before a later agent.abort() settles and exits 0 (detachable=true, #5486)`,
+			async () => {
+				const run = await runScript(
+					runtime,
+					sdkStuckAbortScript({ runtime, detachable: true, mode: "observe-then-abort" }),
+					{ ATOMIC_TOOL_ABORT_GRACE_MS: String(ABORT_GRACE_MS) },
+				);
+				assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+				assert.match(
+					run.stdout,
+					/ABORT_SETTLED:Operation aborted: stuck did not stop within 0\.2 seconds/,
+					`stderr:\n${run.stderr}\nstdout:\n${run.stdout}`,
+				);
+			},
+			CHILD_PROCESS_TIMEOUT_MS,
+		);
+
+		test(
+			`${runtime} SDK script awaiting prompt().catch() before a later agent.abort() settles and exits 0 (#5486)`,
+			async () => {
+				const run = await runScript(
+					runtime,
+					sdkStuckAbortScript({ runtime, detachable: false, mode: "observe-catch-then-abort" }),
+					{ ATOMIC_TOOL_ABORT_GRACE_MS: String(ABORT_GRACE_MS) },
+				);
+				assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+				assert.match(
+					run.stdout,
+					/ABORT_SETTLED:Operation aborted: stuck did not stop within 0\.2 seconds/,
+					`stderr:\n${run.stderr}\nstdout:\n${run.stdout}`,
+				);
+			},
+			CHILD_PROCESS_TIMEOUT_MS,
+		);
+
+		test(
+			`${runtime} bare void session.prompt() with void session.abort() exits promptly without lingering for grace (#5486)`,
+			async () => {
+				const run = await runScript(
+					runtime,
+					sdkStuckAbortScript({ runtime, detachable: false, mode: "void-prompt-then-abort" }),
+					{ ATOMIC_TOOL_ABORT_GRACE_MS: String(LINGER_GRACE_MS) },
+				);
+				assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+				const lingerMs = exitLingerMs(run);
+				assert.ok(lingerMs < MAX_EXIT_LINGER_MS, `${runtime} bare void session.prompt() lingered ${lingerMs} ms`);
 			},
 			CHILD_PROCESS_TIMEOUT_MS,
 		);

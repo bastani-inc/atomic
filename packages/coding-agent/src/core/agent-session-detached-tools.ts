@@ -21,6 +21,7 @@ import {
 	abandonedToolResult,
 	armToolAbortGraceTimer,
 	clearToolAbortGraceTimer,
+	holdToolAbortGraceWhenObserved,
 	toolAbortGraceMs,
 } from "./tools/tool-abort-grace.ts";
 import {
@@ -1067,7 +1068,15 @@ function recordWithoutContinuing(session: AgentSession, answers: readonly Answer
  * `onRecorded` is told the ids of the results it recorded as soon as they are saved, before the turn continues, so a
  * caller that holds them elsewhere can let them go even if the continued turn never ends.
  */
-export async function resumeDetachedTurn(
+export function resumeDetachedTurn(
+	this: AgentSession,
+	results: readonly DetachedToolResult[],
+	onRecorded?: (toolCallIds: readonly string[]) => void,
+): Promise<void> {
+	return holdToolAbortGraceWhenObserved(this, runResumeDetachedTurn.call(this, results, onRecorded));
+}
+
+async function runResumeDetachedTurn(
 	this: AgentSession,
 	results: readonly DetachedToolResult[],
 	onRecorded?: (toolCallIds: readonly string[]) => void,
