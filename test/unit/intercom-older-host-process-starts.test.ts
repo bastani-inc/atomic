@@ -54,12 +54,17 @@ test("with a host older than Intercom, a session takes the spawn lock, which nam
 	assert.equal(owner.split("\n")[0], String(process.pid));
 });
 
-test("with a host older than Intercom, a lock naming a live process stays held whatever start it records", async () => {
-	const pid = await liveProcess();
-	const path = join(tempDir, "broker.spawn.lock-live");
-	writeTextSync(path, `${pid} another-start\n${Date.now()}\n`);
-	assert.equal(isSpawnLockStale(path), false);
-});
+// On macOS the start is read by the native module that ships beside the broker, not by the host.
+test.skipIf(process.platform === "darwin")(
+	"with a host older than Intercom, a lock naming a live process stays held whatever start it records",
+	async () => {
+		const pid = await liveProcess();
+		const path = join(tempDir, "broker.spawn.lock-live");
+		// A start in the form a reader records, of a process other than this one: only a reader could tell them apart.
+		writeTextSync(path, `${pid} 1\n${Date.now()}\n`);
+		assert.equal(isSpawnLockStale(path), false);
+	},
+);
 
 test("with a host older than Intercom, a broker is found by its pid alone", async () => {
 	const pid = await liveProcess();
