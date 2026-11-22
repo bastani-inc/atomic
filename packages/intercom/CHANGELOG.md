@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- On Windows, the Intercom broker now starts as a hidden detached process without `wscript.exe`, `cmd.exe`, or `broker-launch.vbs`, staying outside the launching engine's process tree and breaking away from breakaway-allowing parent job objects. Broker startup now works when Windows Script Host is disabled, preserves startup error logs and exit codes even when paths or arguments contain `%`, and keeps `broker.log` appending and capped at 8 KiB.
+
 ### Fixed
 
 - With multi-node routing, a session that reconnects to the same broker while that broker is still recording the departure of its earlier connection keeps its Intercom ID. Before, when the shared database also answered the ID claim late, the broker waited for that departure to finish before it checked the claim, and the session could get a fresh ID instead.

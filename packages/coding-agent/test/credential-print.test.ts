@@ -2011,6 +2011,8 @@ describe("credential egress chokepoint", () => {
 	 * has to be reviewed here before it ships.
 	 */
 	const RAW_STDOUT_EGRESS = [
+		// Runs only in the internal Windows broker relay process; writes only { ok, pid, creationTime } (or spawn error code/message), never credentials or user data.
+		`bun/internal-intercom-broker.ts: process.stdout.write(\`\${JSON.stringify(payload)}\\n\`)`,
 		`cli/auth-cli.ts: writeRawStdout(\`\${output}\\n\`)`,
 		`cli/auth-terminal.ts: process.stdout.write(\`\${line}\\n\`)`,
 		`cli/auth-terminal.ts: process.stdout.write(message)`,

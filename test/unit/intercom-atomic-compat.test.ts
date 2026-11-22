@@ -24,7 +24,6 @@ import {
 } from "../../packages/intercom/broker/paths.js";
 import {
 	getBrokerLaunchSpec,
-	getWindowsBrokerCommandLine,
 	INTERNAL_INTERCOM_BROKER_ARG as SPAWN_INTERNAL_INTERCOM_BROKER_ARG,
 } from "../../packages/intercom/broker/spawn.js";
 import intercom from "../../packages/intercom/index.js";
@@ -297,43 +296,52 @@ describe("intercom default broker runtime", () => {
 		assert.deepEqual(launch.args, [brokerPath]);
 	});
 
-	test("uses the current runtime and jiti in the Windows default launcher command line", () => {
+	test("uses the current runtime and jiti directly on Windows for the default sentinel", () => {
 		const extensionDir = tempDir("atomic-intercom-extension-");
+		const intercomDir = tempDir("atomic-intercom-runtime-");
 		const brokerPath = join(extensionDir, "broker", "broker.ts");
 		const nodePath = String.raw`C:\Program Files\Atomic\node.exe`;
 		const bundledJiti = createBundledJitiCli(extensionDir);
 
-		const commandLine = getWindowsBrokerCommandLine(
+		const launch = getBrokerLaunchSpec(
 			brokerPath,
-			extensionDir,
-			nodePath,
 			"npx",
 			["--no-install", "tsx"],
+			extensionDir,
+			"win32",
+			intercomDir,
+			nodePath,
 			"node",
 		);
 
-		assert.ok(commandLine.startsWith(`"${nodePath}" `));
-		assert.ok(commandLine.includes(`"${bundledJiti.replace(/"/g, '""')}"`));
-		assert.ok(commandLine.endsWith(` "${brokerPath.replace(/"/g, '""')}"`));
-		assert.equal(commandLine.includes('"npx"'), false);
-		assert.equal(commandLine.includes('"bun"'), false);
-		assert.equal(commandLine.includes(`${sep}tsx${sep}`), false);
+		assert.equal(launch.kind, "direct");
+		assert.equal(launch.command, nodePath);
+		assert.deepEqual(launch.args, [bundledJiti, brokerPath]);
+		assert.equal(
+			launch.args.some((arg) => arg.includes(`${sep}tsx${sep}`)),
+			false,
+		);
 	});
 
-	test("preserves Windows custom broker override command line", () => {
+	test("preserves Windows custom broker overrides directly", () => {
 		const extensionDir = tempDir("atomic-intercom-extension-");
+		const intercomDir = tempDir("atomic-intercom-runtime-");
 		const brokerPath = join(extensionDir, "broker", "broker.ts");
 
-		const commandLine = getWindowsBrokerCommandLine(
+		const launch = getBrokerLaunchSpec(
 			brokerPath,
-			extensionDir,
-			String.raw`C:\Program Files\Atomic\node.exe`,
 			"bun",
 			["--smol"],
+			extensionDir,
+			"win32",
+			intercomDir,
+			String.raw`C:\Program Files\Atomic\node.exe`,
 			"node",
 		);
 
-		assert.equal(commandLine, `"bun" "--smol" "${brokerPath.replace(/"/g, '""')}"`);
+		assert.equal(launch.kind, "direct");
+		assert.equal(launch.command, "bun");
+		assert.deepEqual(launch.args, ["--smol", brokerPath]);
 	});
 });
 
