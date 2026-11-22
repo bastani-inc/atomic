@@ -2,6 +2,7 @@ import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { stripSystemPromptEnvironmentPaths } from "../../../test/helpers/system-prompt-paths.js";
 import { parseSkillBlock } from "../src/core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import type { AgentSessionServices } from "../src/core/agent-session-services.ts";
@@ -64,9 +65,13 @@ describe("issue #2328 exact skill command resolution", () => {
 		});
 		expect(parsed?.content).toContain("Builtin body");
 		expect(parsed?.content).not.toContain("User body");
-		expect(harness.session.systemPrompt).toContain("<name>tdd@user</name>");
-		expect(harness.session.systemPrompt).toContain("<name>tdd@builtin</name>");
-		expect(harness.session.systemPrompt).not.toContain("skill_");
+		const prompt = stripSystemPromptEnvironmentPaths(harness.session.systemPrompt, {
+			cwd: harness.tempDir,
+			extraPaths: [tempDir],
+		});
+		expect(prompt).toContain("<name>tdd@user</name>");
+		expect(prompt).toContain("<name>tdd@builtin</name>");
+		expect(prompt).not.toContain("skill_");
 	});
 
 	it("represents a configured winner that was not in the discovered candidates", () => {
