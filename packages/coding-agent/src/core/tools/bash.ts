@@ -243,7 +243,7 @@ export function createLocalBashOperations(options?: {
 			const shellEnv = env ?? (await getShellEnvAsync());
 			if (signal?.aborted) throw new Error("aborted");
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const shellProcess = spawnShellProcess(
+			const shellProcess = await spawnShellProcess(
 				shellConfig.shell,
 				commandFromStdin ? shellConfig.args : [...shellConfig.args, command],
 				{

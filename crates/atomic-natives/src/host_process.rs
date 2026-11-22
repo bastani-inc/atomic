@@ -19,13 +19,8 @@ use linux as platform;
 use windows as platform;
 
 /// Delivers a process's events to the host, keeping its event loop alive until the process has ended.
-#[cfg(not(windows))]
 type EventCallback =
 	ThreadsafeFunction<HostProcessEvent, Unknown<'static>, HostProcessEvent, Status, false>;
-/// On Windows an output event takes its bytes only when the host's thread gets to it (see `windows::Delivery`).
-#[cfg(windows)]
-type EventCallback =
-	ThreadsafeFunction<windows::Delivery, Unknown<'static>, windows::Delivery, Status, false>;
 
 #[napi(object)]
 pub struct HostProcessOptions {
@@ -44,6 +39,12 @@ pub struct HostProcessOptions {
 	/// Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
 	/// detached process.
 	pub end_with_parent: Option<bool>,
+	/// On Windows, the name of a pipe server the host listens on: each piped stream is a connection to it, which the
+	/// host reads and writes itself. Required there when a stream is piped.
+	pub pipe: Option<String>,
+	/// Written first into each connection to `pipe`, followed by one byte, the stream's number (0 standard
+	/// input, 1 output, 2 error), so the host knows its connections and which stream each is.
+	pub pipe_prefix: Option<Buffer>,
 }
 
 #[napi(string_enum = "kebab-case")]
@@ -92,7 +93,7 @@ impl HostProcess {
 	}
 
 	/// Queues `chunk` for the process's standard input. False once input can no longer be written: it was ended, or
-	/// the process's output thread finished.
+	/// the process's output thread finished. On Windows always false: standard input is the host's connection.
 	#[napi]
 	pub fn write(&self, chunk: Buffer) -> bool {
 		#[cfg(any(target_os = "linux", windows))]
@@ -104,7 +105,7 @@ impl HostProcess {
 		}
 	}
 
-	/// Closes standard input once everything queued was written.
+	/// Closes standard input once everything queued was written. Nothing on Windows.
 	#[napi]
 	pub fn end(&self) {
 		#[cfg(any(target_os = "linux", windows))]
@@ -139,8 +140,7 @@ impl HostProcess {
 	}
 
 	/// Says the host has handled the process's `close`, after which it never signals it again: the process is reaped
-	/// once it has exited and this was called, or the handle was dropped. On Windows nothing more of its output is
-	/// read: this process's ends of its pipes close.
+	/// once it has exited and this was called, or the handle was dropped. On Windows nothing more is reported.
 	#[napi]
 	pub fn release(&self) {
 		#[cfg(any(target_os = "linux", windows))]
@@ -186,11 +186,10 @@ impl Drop for HostProcess {
 
 /// Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A
 /// failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. On Windows the
-/// process starts suspended in a job of its own, and a start that cannot put it there throws `ENOTSUP` before the
-/// program ran. Off Linux and Windows it always refuses with `ENOSYS`.
+/// process starts suspended in a job of its own, its piped streams are connections to the host's pipe server
+/// `options.pipe`, and `on_event` gets only its exit; a start that cannot put it in the job or connect its streams
+/// throws `ENOTSUP` before the program ran. Off Linux and Windows it always refuses with `ENOSYS`.
 #[napi(js_name = "startHostProcess")]
-// On Windows the callback's events are a type of the Windows module, which converts them to `HostProcessEvent`.
-#[cfg_attr(windows, allow(private_interfaces))]
 pub fn start_host_process(
 	options: HostProcessOptions,
 	#[napi(ts_arg_type = "(event: HostProcessEvent) => void")] on_event: EventCallback,

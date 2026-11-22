@@ -12,7 +12,9 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createServer, type Server, type Socket } from "node:net";
 import { constants as osConstants } from "node:os";
 import { Readable, Writable } from "node:stream";
 import type * as native from "@bastani/atomic-natives";
@@ -164,19 +166,20 @@ function hasNul(text: string): boolean {
 
 /**
  * On Windows, starts `file` (a full path) with `args` as `child_process.spawn(file, args, { ...options,
- * windowsHide: true })` would, with the same command line and environment, but suspended and in a job of its own,
- * which holds it before its first instruction and every process it starts after, unless one asks to leave it:
+ * windowsHide: true })` would, with the same command line, environment and pipes, but suspended and in a job of its
+ * own, which holds it before its first instruction and every process it starts after, unless one asks to leave it:
  * {@link ContainedChildProcess.endTree} ends, while `file` runs, it and the processes below it through handles, and
  * then those in the job, by no process ID, also once `file` exited. While the job is held, this process's exit ends
- * those in it too; {@link ContainedChildProcess.releaseTree} lets them run on. Undefined elsewhere, with {@link HOST_SPAWN_ENV} set to `child-process`, without a native module that can
- * contain it, for a `file` that is not a full path, and for a NUL in the input, which `child_process` refuses itself:
- * the caller then starts it through `child_process`.
+ * those in it too; {@link ContainedChildProcess.releaseTree} lets them run on. Its streams are this process's own
+ * sockets on a pipe server it listens on, as `child_process`'s are. Undefined elsewhere, with {@link HOST_SPAWN_ENV}
+ * set to `child-process`, without a native module that can contain it, for a `file` that is not a full path, and for a
+ * NUL in the input, which `child_process` refuses itself: the caller then starts it through `child_process`.
  */
-export function spawnContainedProcess(
+export async function spawnContainedProcess(
 	file: string,
 	args: readonly string[],
 	options: HostSpawnOptions = {},
-): ContainedChildProcess | undefined {
+): Promise<ContainedChildProcess | undefined> {
 	if (process.platform !== "win32" || process.env[HOST_SPAWN_ENV] === "child-process") return undefined;
 	if (!FULL_WINDOWS_PATH.test(file) || options.detached === true) return undefined;
 	const environment = options.env ?? process.env;
@@ -188,14 +191,109 @@ export function spawnContainedProcess(
 	}
 	const start = loadNativeStart();
 	if (start === null) return undefined;
+	const piped = stdioOf(options).map((stdio) => stdio === "pipe");
+	const prefix = randomBytes(STREAM_PREFIX_BYTES);
+	const name = `\\\\.\\pipe\\atomic-host-process-${process.pid}-${randomBytes(16).toString("hex")}`;
+	const server = piped.some(Boolean) ? createServer() : undefined;
+	// A server that cannot listen leaves the native start nothing to connect to: it refuses, and the caller falls back.
+	server?.on("error", () => {});
+	const streams = server === undefined ? undefined : acceptStreams(server, prefix, piped);
+	server?.listen(name);
+	const child = new ContainedProcess();
+	let started: native.HostProcess;
 	try {
-		return new NativeChildProcess(start, file, args, options);
-	} catch (error) {
-		// A native module that cannot start one here (ENOSYS) or cannot contain it (ENOTSUP) ran nothing.
-		const code = (error as NodeJS.ErrnoException).code;
+		started = start(
+			{
+				file,
+				args: [...args],
+				cwd: options.cwd,
+				env: environmentOf(options.env),
+				pipeStdin: piped[0] === true,
+				pipeStdout: piped[1] === true,
+				pipeStderr: piped[2] === true,
+				detached: false,
+				pipe: server === undefined ? undefined : name,
+				pipePrefix: server === undefined ? undefined : prefix,
+			},
+			(event) => child.event(event),
+		);
+	} catch (failure) {
+		server?.close();
+		streams?.cancel();
+		// A native module that cannot start one here (ENOSYS), cannot contain it or connect its streams (ENOTSUP) ran
+		// nothing.
+		const code = (failure as NodeJS.ErrnoException).code ?? "EIO";
 		if (code === "ENOSYS" || code === "ENOTSUP") return undefined;
-		throw error;
+		const error = spawnError(code, file, args);
+		if (!ASYNC_SPAWN_ERRORS.has(code)) throw error;
+		child.failedStart(error, piped);
+		return child;
 	}
+	child.pid = started.pid;
+	const sockets = streams === undefined ? [] : await streams.accepted;
+	server?.close();
+	child.attach(started, sockets);
+	return child;
+}
+
+/** How many random bytes the native start writes first into each of a contained process's streams. */
+const STREAM_PREFIX_BYTES = 16;
+
+/**
+ * The connections to `server` that carry `prefix` and the number of a stream `piped` names, one per stream, in stream
+ * order; any other connection is closed. A connection's bytes after its prefix and number stay in it.
+ */
+function acceptStreams(
+	server: Server,
+	prefix: Buffer,
+	piped: readonly boolean[],
+): { readonly accepted: Promise<(Socket | undefined)[]>; cancel(): void } {
+	const sockets: (Socket | undefined)[] = piped.map(() => undefined);
+	const open = new Set<Socket>();
+	let resolveAccepted: (sockets: (Socket | undefined)[]) => void = () => {};
+	const accepted = new Promise<(Socket | undefined)[]>((resolve) => {
+		resolveAccepted = resolve;
+	});
+	server.on("connection", (socket: Socket) => {
+		open.add(socket);
+		// Until it is known as a stream: a connection that fails is only closed.
+		const ignoreError = () => {};
+		socket.on("error", ignoreError);
+		const head = prefix.length + 1;
+		const onReadable = () => {
+			const bytes: Buffer | null = socket.read(head);
+			if (bytes === null) return;
+			socket.removeListener("readable", onReadable);
+			socket.removeListener("end", onEnd);
+			const stream = bytes.length === head ? bytes[prefix.length] : undefined;
+			const own =
+				stream !== undefined &&
+				piped[stream] === true &&
+				sockets[stream] === undefined &&
+				timingSafeEqual(bytes.subarray(0, prefix.length), prefix);
+			if (!own) {
+				open.delete(socket);
+				socket.destroy();
+				return;
+			}
+			socket.removeListener("error", ignoreError);
+			sockets[stream] = socket;
+			if (piped.every((wanted, index) => !wanted || sockets[index] !== undefined)) resolveAccepted(sockets);
+		};
+		const onEnd = () => {
+			socket.removeListener("readable", onReadable);
+			open.delete(socket);
+			socket.destroy();
+		};
+		socket.on("readable", onReadable);
+		socket.once("end", onEnd);
+	});
+	return {
+		accepted,
+		cancel: () => {
+			for (const socket of open) socket.destroy();
+		},
+	};
 }
 
 /** Start failures `child_process` reports through an `error` event rather than by throwing, as libuv sorts them. */
@@ -253,7 +351,7 @@ function environmentOf(env: NodeJS.ProcessEnv | undefined): Record<string, strin
 }
 
 /** A process started through the native module, with the events and streams `child_process` gives one. */
-class NativeChildProcess extends EventEmitter implements ContainedChildProcess {
+class NativeChildProcess extends EventEmitter implements HostChildProcess {
 	pid: number | undefined;
 	readonly stdin: Writable | null;
 	readonly stdout: Readable | null;
@@ -368,6 +466,117 @@ class NativeChildProcess extends EventEmitter implements ContainedChildProcess {
 			this.emit("close", this.exitCode, this.signalCode);
 			// Reaped only now: until `close` was handled, the process's ID and its group's could not name another
 			// process, so a signal sent to either before it reached only what this process started.
+			this.#process?.release();
+		});
+	}
+
+	kill(signal?: NodeJS.Signals | number): boolean {
+		const number = signalNumber(signal);
+		if (this.#process === undefined || this.#exited) return false;
+		const sent = this.#process.kill(number, false);
+		if (sent) this.killed = true;
+		return sent;
+	}
+
+	ref(): void {
+		this.#process?.ref();
+	}
+
+	unref(): void {
+		this.#process?.unref();
+	}
+}
+
+/**
+ * A process {@link spawnContainedProcess} started, with the events `child_process` gives one and its streams as
+ * `child_process` gives them: sockets of this process on pipes whose other ends are the program's. Its exit comes from
+ * the native module, after its `spawn`.
+ */
+class ContainedProcess extends EventEmitter implements ContainedChildProcess {
+	pid: number | undefined;
+	stdin: Writable | null = null;
+	stdout: Readable | null = null;
+	stderr: Readable | null = null;
+	exitCode: number | null = null;
+	signalCode: NodeJS.Signals | null = null;
+	killed = false;
+	#process: native.HostProcess | undefined;
+	#spawned = false;
+	#heldExit: native.HostProcessEvent | undefined;
+	#exited = false;
+	#openOutputs = 0;
+	#closed = false;
+
+	/** The native module's events: only the exit, held until `spawn` was emitted. */
+	event(event: native.HostProcessEvent): void {
+		if (event.kind !== "exit") return;
+		if (this.#spawned) this.#exit(event);
+		else this.#heldExit = event;
+	}
+
+	/** The started process and its streams' sockets, in stream order; `spawn` follows once the caller has the child. */
+	attach(started: native.HostProcess, sockets: readonly (Socket | undefined)[]): void {
+		this.#process = started;
+		const [input, output, error] = sockets;
+		if (input !== undefined) {
+			// As `child_process`'s, which can only write: once its writes are done, the program reads to its end.
+			input.pause();
+			input.once("finish", () => input.destroy());
+			this.stdin = input;
+		}
+		this.stdout = output === undefined ? null : this.#output(output);
+		this.stderr = error === undefined ? null : this.#output(error);
+		setImmediate(() => {
+			this.#spawned = true;
+			this.emit("spawn");
+			if (this.#heldExit !== undefined) this.#exit(this.#heldExit);
+		});
+	}
+
+	#output<T extends Readable>(stream: T): T {
+		this.#openOutputs++;
+		stream.once("close", () => {
+			this.#openOutputs--;
+			this.#maybeClose();
+		});
+		return stream;
+	}
+
+	/** As `child_process` reports a failed start: `error`, then `close` once its streams closed. */
+	failedStart(error: NodeJS.ErrnoException, piped: readonly boolean[]): void {
+		this.exitCode = error.errno ?? -1;
+		this.stdin = piped[0] === true ? new Writable({ write: (_chunk, _encoding, done) => done(error) }) : null;
+		const empty = () => {
+			const stream = this.#output(new Readable({ read() {} }));
+			stream.push(null);
+			stream.resume();
+			return stream;
+		};
+		this.stdout = piped[1] === true ? empty() : null;
+		this.stderr = piped[2] === true ? empty() : null;
+		// After the caller, which gets the child asynchronously, has listened for it.
+		setImmediate(() => {
+			this.#exited = true;
+			this.emit("error", error);
+			this.stdin?.destroy();
+			this.#maybeClose();
+		});
+	}
+
+	#exit(event: native.HostProcessEvent): void {
+		this.#exited = true;
+		this.exitCode = event.code ?? null;
+		this.signalCode = event.signal === undefined ? null : (SIGNAL_NAMES.get(event.signal) ?? null);
+		this.stdin?.destroy();
+		this.emit("exit", this.exitCode, this.signalCode);
+		this.#maybeClose();
+	}
+
+	#maybeClose(): void {
+		if (this.#closed || !this.#exited || this.#openOutputs > 0) return;
+		this.#closed = true;
+		process.nextTick(() => {
+			this.emit("close", this.exitCode, this.signalCode);
 			this.#process?.release();
 		});
 	}

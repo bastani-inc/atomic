@@ -457,13 +457,13 @@ export interface ShellProcess {
  * job, so what the command left running outlives Atomic. Otherwise it is `child_process.spawn` (detached on POSIX),
  * stopped with {@link killProcessTree}.
  */
-export function spawnShellProcess(
+export async function spawnShellProcess(
 	shell: string,
 	args: readonly string[],
 	options: { cwd: string; env: NodeJS.ProcessEnv; stdin: "pipe" | "ignore" },
-): ShellProcess {
+): Promise<ShellProcess> {
 	const stdio = [options.stdin, "pipe", "pipe"] as const;
-	const contained = spawnContainedProcess(shell, args, { cwd: options.cwd, env: options.env, stdio });
+	const contained = await spawnContainedProcess(shell, args, { cwd: options.cwd, env: options.env, stdio });
 	if (contained !== undefined) {
 		const endTree = () => {
 			contained.endTree();

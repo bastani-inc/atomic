@@ -9,201 +9,52 @@
 //! starts every process with `CREATE_BREAKAWAY_FROM_JOB` when its job allows it. Then it ends what stayed in the job.
 //!
 //! The command line and environment block are built as libuv builds them for `child_process.spawn`, so the program
-//! sees what it saw before. Output pipes are made and read as libuv makes and reads them for `child_process`: a
-//! named pipe whose end here is overlapped, with a read of no bytes pending until it holds data; then the host's thread
-//! reads what it holds and starts the next such read. A thread per output pipe waits for that read and tells the host.
-//! One thread writes standard input, and one waits for the exit; the host's release (after its `close`) stops them
-//! and closes this process's ends of the pipes.
+//! sees what it saw before. Its piped standard streams are the client ends of a pipe server the host listens on, opened
+//! as libuv opens a child's ends of its pipes, so the host's runtime reads and writes them as it does a
+//! `child_process`'s: each is checked to lead to a server of this process, and the host's prefix and the stream's
+//! number are written into it first, by which the host tells its own connections from any other. A thread waits for
+//! the exit and reports it, until the host's release.
 use super::*;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
-use std::cell::UnsafeCell;
 use std::cmp::Ordering as Order;
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows_sys::Win32::Foundation::{
-	ERROR_ACCESS_DENIED, ERROR_BAD_EXE_FORMAT, ERROR_BROKEN_PIPE, ERROR_DIRECTORY,
+	DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_BAD_EXE_FORMAT, ERROR_DIRECTORY,
 	ERROR_ELEVATION_REQUIRED, ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_DRIVE,
-	ERROR_INVALID_NAME, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING,
-	ERROR_NO_DATA, ERROR_NOT_ENOUGH_MEMORY, ERROR_OPERATION_ABORTED, ERROR_OUTOFMEMORY,
-	ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_TOO_MANY_OPEN_FILES, GENERIC_WRITE, HANDLE,
+	ERROR_INVALID_NAME, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY,
+	ERROR_PATH_NOT_FOUND, ERROR_TOO_MANY_OPEN_FILES, GENERIC_READ, GENERIC_WRITE, HANDLE,
 	HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Globalization::{CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-	CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-	FILE_READ_ATTRIBUTES, GetFileAttributesW, GetShortPathNameW, INVALID_FILE_ATTRIBUTES,
-	OPEN_EXISTING, PIPE_ACCESS_INBOUND, ReadFile,
+	CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES,
+	GetFileAttributesW, GetShortPathNameW, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
-use windows_sys::Win32::System::IO::{
-	CancelIoEx, CancelSynchronousIo, GetOverlappedResult, OVERLAPPED,
-};
 use windows_sys::Win32::System::JobObjects::{
 	AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
 	JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
 	JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::{
-	CreateNamedPipeW, CreatePipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-	PIPE_WAIT,
-};
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
 	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
-	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
-	InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-	ResetEvent, ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent,
-	TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects, WaitForSingleObject,
+	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+	GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
+	PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESHOWWINDOW,
+	STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent, TerminateProcess, UpdateProcThreadAttribute,
+	WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
-/// The most one read of a pipe takes, and the size of each pipe, as libuv's.
-const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// The longest current directory `CreateProcessW` takes; libuv shortens a longer one.
 const MAX_PATH: usize = 260;
-
-/// An overlapped operation's state, which the system writes while the operation is pending, with its event.
-struct Overlapped {
-	state: UnsafeCell<OVERLAPPED>,
-	event: OwnedHandle,
-}
-
-// The system writes `state` only while an operation is pending; this module starts an operation and reads its result
-// only while holding the lock of the stream it belongs to, or, for the watch, from the stream's thread once the event
-// says it finished.
-unsafe impl Send for Overlapped {}
-unsafe impl Sync for Overlapped {}
-
-impl Overlapped {
-	fn new() -> io::Result<Self> {
-		let event = unsafe { CreateEventW(null(), 1, 0, null()) };
-		if event.is_null() {
-			return Err(io::Error::last_os_error());
-		}
-		let state = OVERLAPPED { hEvent: event, ..Default::default() };
-		Ok(Self {
-			state: UnsafeCell::new(state),
-			event: unsafe { OwnedHandle::from_raw_handle(event) },
-		})
-	}
-
-	fn get(&self) -> *mut OVERLAPPED {
-		self.state.get()
-	}
-
-	/// The finished operation's byte count, or its error.
-	fn result(&self, pipe: HANDLE, wait: bool) -> io::Result<u32> {
-		let mut count = 0;
-		if unsafe { GetOverlappedResult(pipe, self.get(), &mut count, i32::from(wait)) } == 0 {
-			return Err(io::Error::last_os_error());
-		}
-		Ok(count)
-	}
-}
-
-/// This process's end of an output pipe and its two operations: the read of no bytes that waits for data (the watch),
-/// and the host's read of what the pipe holds.
-struct StreamOutput {
-	/// Closed once the stream's thread finished.
-	file: Option<File>,
-	watch: Box<Overlapped>,
-	/// The watch failed as it started, so nothing will report it: the stream's thread takes this instead.
-	watch_failed: Option<i32>,
-	read: Box<Overlapped>,
-	/// What the host's thread reads the pipe into.
-	buffer: Vec<u8>,
-}
-
-impl StreamOutput {
-	fn new(file: Option<File>) -> io::Result<Self> {
-		Ok(Self {
-			file,
-			watch: Box::new(Overlapped::new()?),
-			watch_failed: None,
-			read: Box::new(Overlapped::new()?),
-			buffer: Vec::new(),
-		})
-	}
-
-	/// Starts the read of no bytes that finishes once the pipe holds data, as libuv's zero read does.
-	fn start_watch(&mut self) {
-		let Some(file) = self.file.as_ref() else { return };
-		if unsafe { ReadFile(raw(file), null_mut(), 0, null_mut(), self.watch.get()) } != 0 {
-			// Finished at once: the pipe holds data.
-			unsafe {
-				SetEvent(raw(&self.watch.event));
-			}
-			return;
-		}
-		let error = io::Error::last_os_error();
-		if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
-			self.watch_failed = Some(error.raw_os_error().unwrap_or(ERROR_BROKEN_PIPE as i32));
-			unsafe {
-				SetEvent(raw(&self.watch.event));
-			}
-		}
-	}
-
-	/// What the pipe holds, up to [`READ_CHUNK_BYTES`]; a read that would wait is cancelled, as libuv cancels one.
-	fn read_available(&mut self) -> usize {
-		let Some(file) = self.file.as_ref() else { return 0 };
-		let pipe = raw(file);
-		self.buffer.resize(READ_CHUNK_BYTES, 0);
-		let started = unsafe {
-			ReadFile(
-				pipe,
-				self.buffer.as_mut_ptr(),
-				READ_CHUNK_BYTES as u32,
-				null_mut(),
-				self.read.get(),
-			)
-		} != 0;
-		if !started {
-			if io::Error::last_os_error().raw_os_error() != Some(ERROR_IO_PENDING as i32) {
-				return 0;
-			}
-			unsafe {
-				CancelIoEx(pipe, self.read.get());
-			}
-		}
-		self.read.result(pipe, true).map_or(0, |count| count as usize)
-	}
-}
-
-/// What goes to the host: an event, or a stream's data, read as the host's thread converts it.
-pub(super) enum Delivery {
-	Event(HostProcessEvent),
-	Readable(Arc<Shared>, usize),
-}
-
-impl napi::bindgen_prelude::ToNapiValue for Delivery {
-	unsafe fn to_napi_value(
-		env: napi::sys::napi_env,
-		delivery: Self,
-	) -> napi::Result<napi::sys::napi_value> {
-		let event = match delivery {
-			Delivery::Event(event) => event,
-			Delivery::Readable(shared, index) => shared.read_output(index),
-		};
-		unsafe { <HostProcessEvent as napi::bindgen_prelude::ToNapiValue>::to_napi_value(env, event) }
-	}
-}
-
-/// The data and end events of stream `index` (0 standard output, 1 standard error).
-fn stream_kinds(index: usize) -> (HostProcessEventKind, HostProcessEventKind) {
-	if index == 0 {
-		(HostProcessEventKind::Stdout, HostProcessEventKind::StdoutEnd)
-	} else {
-		(HostProcessEventKind::Stderr, HostProcessEventKind::StderrEnd)
-	}
-}
 
 fn raw(handle: &impl AsRawHandle) -> HANDLE {
 	handle.as_raw_handle()
@@ -261,110 +112,72 @@ impl Job {
 	}
 }
 
-/// An anonymous pipe: its read end and its write end, neither inheritable.
-fn pipe() -> io::Result<(File, File)> {
-	let mut read = null_mut();
-	let mut write = null_mut();
+/// The program's end of its piped standard stream `index` (0 input, 1 output, 2 error): the client end of the host's
+/// pipe server `name`, opened as libuv opens a child's end of its pipe (writing and reading its attributes for output,
+/// reading and writing its attributes for input, not overlapped), after `prefix` and the stream's number were written
+/// into it. Refused when the server is not this process's, so the stream cannot lead elsewhere.
+fn connect_stream(name: &[u16], index: u8, prefix: &[u8]) -> io::Result<File> {
 	let attributes = SECURITY_ATTRIBUTES {
 		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
 		lpSecurityDescriptor: null_mut(),
 		bInheritHandle: 0,
 	};
-	if unsafe { CreatePipe(&mut read, &mut write, &attributes, 65536) } == 0 {
+	let input = index == 0;
+	// Input's end writes once, for the prefix, and then keeps only the access libuv gives it.
+	let access = if input {
+		GENERIC_READ | GENERIC_WRITE | FILE_WRITE_ATTRIBUTES
+	} else {
+		GENERIC_WRITE | FILE_READ_ATTRIBUTES
+	};
+	let opened =
+		unsafe { CreateFileW(name.as_ptr(), access, 0, &attributes, OPEN_EXISTING, 0, null_mut()) };
+	if opened == INVALID_HANDLE_VALUE {
 		return Err(io::Error::last_os_error());
 	}
-	Ok(unsafe { (File::from_raw_handle(read), File::from_raw_handle(write)) })
-}
-
-/// An output pipe as libuv makes one for `child_process`: a named pipe whose end here is overlapped and reads, and
-/// whose other end, for the program, writes and is not overlapped; 64 KB, neither end inheritable.
-fn output_pipe() -> io::Result<(File, File)> {
-	static PIPES: AtomicU64 = AtomicU64::new(0);
-	let attributes = SECURITY_ATTRIBUTES {
-		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-		lpSecurityDescriptor: null_mut(),
-		bInheritHandle: 0,
-	};
-	let mut attempts = 0;
-	loop {
-		attempts += 1;
-		let name: Vec<u16> = format!(
-			r"\\.\pipe\atomic-host-process-{}-{}-{:x}",
-			std::process::id(),
-			PIPES.fetch_add(1, Ordering::Relaxed),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.map_or(0, |elapsed| elapsed.as_nanos())
-		)
-		.encode_utf16()
-		.chain([0])
-		.collect();
-		let server = unsafe {
-			CreateNamedPipeW(
-				name.as_ptr(),
-				PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-				PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-				1,
-				65536,
-				65536,
-				0,
-				&attributes,
-			)
-		};
-		if server == INVALID_HANDLE_VALUE {
-			let error = io::Error::last_os_error();
-			// The name is taken: take another.
-			if attempts < 16
-				&& matches!(
-					error.raw_os_error().map(|code| code as u32),
-					Some(ERROR_ACCESS_DENIED | ERROR_PIPE_BUSY)
-				) {
-				continue;
-			}
-			return Err(error);
-		}
-		let server = unsafe { File::from_raw_handle(server) };
-		let client = unsafe {
-			CreateFileW(
-				name.as_ptr(),
-				GENERIC_WRITE | FILE_READ_ATTRIBUTES,
-				0,
-				&attributes,
-				OPEN_EXISTING,
-				0,
-				null_mut(),
-			)
-		};
-		if client == INVALID_HANDLE_VALUE {
-			return Err(io::Error::last_os_error());
-		}
-		return Ok((server, unsafe { File::from_raw_handle(client) }));
+	let mut file = unsafe { File::from_raw_handle(opened) };
+	let mut server = 0u32;
+	if unsafe { GetNamedPipeServerProcessId(raw(&file), &mut server) } == 0 {
+		return Err(io::Error::last_os_error());
 	}
+	if server != std::process::id() {
+		return Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32));
+	}
+	file.write_all(prefix)?;
+	file.write_all(&[index])?;
+	if !input {
+		return Ok(file);
+	}
+	let mut reduced = null_mut();
+	let process = unsafe { GetCurrentProcess() };
+	if unsafe {
+		DuplicateHandle(
+			process,
+			raw(&file),
+			process,
+			&mut reduced,
+			GENERIC_READ | FILE_WRITE_ATTRIBUTES,
+			0,
+			0,
+		)
+	} == 0
+	{
+		return Err(io::Error::last_os_error());
+	}
+	Ok(unsafe { File::from_raw_handle(reduced) })
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 	mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-struct Input {
-	chunks: VecDeque<Vec<u8>>,
-	ended: bool,
-	/// Set once standard input is closed: by its end, a failed write, the process's exit or the host's release.
-	closed: bool,
-}
-
-/// What the host and the process's threads share.
+/// What the host and the thread that waits for the process's exit share.
 pub(super) struct Shared {
 	pid: u32,
 	/// Held until this is dropped, so `pid` names the process all along.
 	process: OwnedHandle,
 	/// The job, until the host released the processes in it.
 	job: Mutex<Option<Job>>,
-	input: Mutex<Input>,
-	input_changed: Condvar,
 	callback: Mutex<Option<EventCallback>>,
-	/// Standard output's and standard error's way to the host.
-	outputs: Mutex<[StreamOutput; 2]>,
 	/// A manual-reset event set by the host's release.
 	stop: OwnedHandle,
 	stopping: AtomicBool,
@@ -373,29 +186,12 @@ pub(super) struct Shared {
 }
 
 impl Shared {
-	pub(super) fn write(&self, chunk: Vec<u8>) -> bool {
-		let mut input = locked(&self.input);
-		if input.ended || input.closed {
-			return false;
-		}
-		input.chunks.push_back(chunk);
-		drop(input);
-		self.input_changed.notify_all();
-		true
+	/// Standard input is the host's own end of its pipe here: nothing goes through this.
+	pub(super) fn write(&self, _chunk: Vec<u8>) -> bool {
+		false
 	}
 
-	pub(super) fn end(&self) {
-		locked(&self.input).ended = true;
-		self.input_changed.notify_all();
-	}
-
-	fn close_input(&self) {
-		let mut input = locked(&self.input);
-		input.closed = true;
-		input.chunks.clear();
-		drop(input);
-		self.input_changed.notify_all();
-	}
+	pub(super) fn end(&self) {}
 
 	fn exited(&self) -> bool {
 		(unsafe { WaitForSingleObject(raw(&self.process), 0) }) == WAIT_OBJECT_0
@@ -458,43 +254,11 @@ impl Shared {
 		unsafe {
 			SetEvent(raw(&self.stop));
 		}
-		self.input_changed.notify_all();
 	}
 
 	fn emit(&self, event: HostProcessEvent) {
 		if let Some(callback) = locked(&self.callback).as_ref() {
-			callback.call(Delivery::Event(event), ThreadsafeFunctionCallMode::NonBlocking);
-		}
-	}
-
-	/// Tells the host that the pipe of stream `index` holds data. False once the host released the process.
-	fn hand_readable(self: &Arc<Self>, index: usize) -> bool {
-		if self.stopping.load(Ordering::Acquire) {
-			return false;
-		}
-		locked(&self.callback).as_ref().is_some_and(|callback| {
-			callback
-				.call(Delivery::Readable(self.clone(), index), ThreadsafeFunctionCallMode::NonBlocking)
-				== Status::Ok
-		})
-	}
-
-	/// What the pipe of stream `index` holds, up to [`READ_CHUNK_BYTES`], read as the host's thread converts the event,
-	/// as libuv reads a pipe once its loop gets to it; then the next wait for data starts. Nothing is read once the host
-	/// released the process.
-	fn read_output(&self, index: usize) -> HostProcessEvent {
-		let mut outputs = locked(&self.outputs);
-		let output = &mut outputs[index];
-		let mut data = Vec::new();
-		if !self.stopping.load(Ordering::Acquire) {
-			let count = output.read_available();
-			data.extend_from_slice(&output.buffer[..count]);
-			output.start_watch();
-		}
-		drop(outputs);
-		HostProcessEvent {
-			data: Some(Buffer::from(data)),
-			..HostProcessEvent::of(stream_kinds(index).0)
+			callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
 		}
 	}
 }
@@ -727,121 +491,11 @@ fn null_device(write: bool) -> io::Result<File> {
 	std::fs::OpenOptions::new().read(!write).write(write).open("NUL")
 }
 
-/// Cancels the synchronous read or write `thread` is blocked in until it has finished; it checks `stopping` before
-/// each, so a cancel that came before it blocked is followed by another.
-fn cancel_until_finished(thread: &JoinHandle<()>) {
-	while !thread.is_finished() {
-		unsafe {
-			CancelSynchronousIo(thread.as_raw_handle());
-		}
-		std::thread::sleep(Duration::from_millis(1));
-	}
-}
-
-/// Waits for the pipe of stream `index` to hold data and tells the host, whose thread reads it and starts the next
-/// wait; the pipe's end follows its last data. The host's release cancels the wait.
-fn watch_output(shared: &Arc<Shared>, index: usize) {
-	let (pipe, event) = {
-		let mut outputs = locked(&shared.outputs);
-		let output = &mut outputs[index];
-		let Some(file) = output.file.as_ref() else { return };
-		let pipe = raw(file);
-		output.start_watch();
-		(pipe, raw(&output.watch.event))
-	};
-	let waited = [event, raw(&shared.stop)];
-	let ended = loop {
-		let woke = unsafe { WaitForMultipleObjects(2, waited.as_ptr(), 0, INFINITE) };
-		if woke != WAIT_OBJECT_0 {
-			break false;
-		}
-		unsafe {
-			ResetEvent(event);
-		}
-		let mut outputs = locked(&shared.outputs);
-		let output = &mut outputs[index];
-		let result = match output.watch_failed.take() {
-			Some(error) => Err(io::Error::from_raw_os_error(error)),
-			None => output.watch.result(pipe, false),
-		};
-		match result {
-			Ok(_) => {
-				drop(outputs);
-				if !shared.hand_readable(index) {
-					break false;
-				}
-			},
-			// Not finished after all: wait on.
-			Err(error) if error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) => {},
-			Err(error) if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) => {
-				if shared.stopping.load(Ordering::Acquire) {
-					break false;
-				}
-				// The thread that started the wait exited, which cancels what it started: wait again from here.
-				output.start_watch();
-			},
-			// The pipe's end; nothing is reported once the host released the process.
-			Err(_) => break !shared.stopping.load(Ordering::Acquire),
-		}
-	};
-	if ended {
-		shared.emit(HostProcessEvent::of(stream_kinds(index).1));
-		return;
-	}
-	// Released: no wait may be pending once this thread is gone, as the pipe closes then.
-	let outputs = locked(&shared.outputs);
-	let output = &outputs[index];
-	unsafe {
-		CancelIoEx(pipe, output.watch.get());
-	}
-	let _ = output.watch.result(pipe, true);
-}
-
-fn write_input(shared: &Shared, mut file: File) {
-	loop {
-		let chunk = {
-			let mut input = locked(&shared.input);
-			loop {
-				if input.closed || shared.stopping.load(Ordering::Acquire) {
-					return;
-				}
-				if let Some(chunk) = input.chunks.pop_front() {
-					break chunk;
-				}
-				if input.ended {
-					input.closed = true;
-					return;
-				}
-				input = shared.input_changed.wait(input).unwrap_or_else(PoisonError::into_inner);
-			}
-		};
-		if let Err(error) = file.write_all(&chunk) {
-			let mut input = locked(&shared.input);
-			let closed_meanwhile = input.closed;
-			input.closed = true;
-			input.chunks.clear();
-			drop(input);
-			if !closed_meanwhile && !shared.stopping.load(Ordering::Acquire) {
-				let errno = match error.raw_os_error().map(|code| code as u32) {
-					Some(ERROR_BROKEN_PIPE | ERROR_NO_DATA) => "EPIPE".to_string(),
-					_ => "EIO".to_string(),
-				};
-				shared.emit(HostProcessEvent {
-					errno: Some(errno),
-					..HostProcessEvent::of(HostProcessEventKind::StdinError)
-				});
-			}
-			return;
-		}
-	}
-}
-
-/// Waits for the exit and reports it, closes standard input as `child_process` does then, and waits for the output
-/// to end, or for the host's release, after which nothing more is reported and the pipes are let go.
-fn supervise(shared: &Shared, readers: Vec<JoinHandle<()>>, writer: Option<JoinHandle<()>>) {
+/// Waits for the exit and reports it, or for the host's release, after which nothing more is reported.
+fn supervise(shared: &Shared) {
 	let waited = [raw(&shared.process), raw(&shared.stop)];
 	let woke = unsafe { WaitForMultipleObjects(2, waited.as_ptr(), 0, INFINITE) };
-	if woke == WAIT_OBJECT_0 {
+	if woke == WAIT_OBJECT_0 && !shared.stopping.load(Ordering::Acquire) {
 		let mut status = 0u32;
 		let read = unsafe { GetExitCodeProcess(raw(&shared.process), &mut status) } != 0;
 		let signal = shared.killed_with.load(Ordering::Acquire);
@@ -850,57 +504,21 @@ fn supervise(shared: &Shared, readers: Vec<JoinHandle<()>>, writer: Option<JoinH
 			signal: (signal != 0).then_some(signal),
 			..HostProcessEvent::of(HostProcessEventKind::Exit)
 		});
-		shared.close_input();
-		if let Some(writer) = &writer {
-			cancel_until_finished(writer);
-		}
-		loop {
-			let mut handles = vec![raw(&shared.stop)];
-			handles.extend(
-				readers
-					.iter()
-					.filter(|reader| !reader.is_finished())
-					.map(|reader| reader.as_raw_handle()),
-			);
-			if handles.len() == 1 {
-				break;
-			}
-			let woke =
-				unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE) };
-			if woke == WAIT_OBJECT_0 || woke >= WAIT_OBJECT_0 + handles.len() as u32 {
-				break;
-			}
-		}
-	}
-	shared.stopping.store(true, Ordering::Release);
-	shared.close_input();
-	for thread in readers.iter().chain(writer.iter()) {
-		cancel_until_finished(thread);
-	}
-	for thread in readers.into_iter().chain(writer) {
-		let _ = thread.join();
-	}
-	for output in locked(&shared.outputs).iter_mut() {
-		output.file = None;
-		output.buffer = Vec::new();
 	}
 	drop(locked(&shared.callback).take());
 }
 
-/// The child's end of a standard stream and this process's end, if it is a pipe.
-type Stream = (File, Option<File>);
-
-fn stream(piped: bool, child_writes: bool) -> io::Result<Stream> {
+/// The program's standard stream `index`: the client end of the host's pipe server when piped, else the null device.
+fn stream(options: &HostProcessOptions, piped: bool, index: u8) -> napi::Result<File, String> {
 	if !piped {
-		return Ok((null_device(child_writes)?, None));
+		return null_device(index != 0).map_err(os_error);
 	}
-	Ok(if child_writes {
-		let (read, write) = output_pipe()?;
-		(write, Some(read))
-	} else {
-		let (read, write) = pipe()?;
-		(read, Some(write))
-	})
+	let (Some(name), Some(prefix)) = (options.pipe.as_deref(), options.pipe_prefix.as_deref())
+	else {
+		return Err(code_error("EINVAL", "a piped stream needs the host's pipe and prefix"));
+	};
+	// A pipe that is not there, is busy or is not this process's: nothing ran, and `child_process` can start it.
+	connect_stream(&terminated(wide(name)?), index, prefix).map_err(unsupported)
 }
 
 pub(super) fn start(
@@ -929,14 +547,9 @@ pub(super) fn start(
 		return Err(code_error("ENOENT", format!("spawn {} ENOENT", options.file)));
 	};
 	let job = Job::create().map_err(unsupported)?;
-	let (stdin_child, stdin) = stream(options.pipe_stdin, false).map_err(os_error)?;
-	let (stdout_child, stdout) = stream(options.pipe_stdout, true).map_err(os_error)?;
-	let (stderr_child, stderr) = stream(options.pipe_stderr, true).map_err(os_error)?;
-	let outputs = [StreamOutput::new(stdout), StreamOutput::new(stderr)];
-	let [Ok(stdout), Ok(stderr)] = outputs else {
-		let [stdout, stderr] = outputs;
-		return Err(os_error(stdout.and(stderr).err().unwrap_or_else(io::Error::last_os_error)));
-	};
+	let stdin_child = stream(&options, options.pipe_stdin, 0)?;
+	let stdout_child = stream(&options, options.pipe_stdout, 1)?;
+	let stderr_child = stream(&options, options.pipe_stderr, 2)?;
 	let inherited = [raw(&stdin_child), raw(&stdout_child), raw(&stderr_child)];
 	for handle in inherited {
 		if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
@@ -1031,44 +644,15 @@ pub(super) fn start(
 		pid: info.dwProcessId,
 		process,
 		job: Mutex::new(Some(job)),
-		input: Mutex::new(Input { chunks: VecDeque::new(), ended: false, closed: stdin.is_none() }),
-		input_changed: Condvar::new(),
 		callback: Mutex::new(Some(on_event)),
-		outputs: Mutex::new([stdout, stderr]),
 		stop: unsafe { OwnedHandle::from_raw_handle(stop) },
 		stopping: AtomicBool::new(false),
 		killed_with: AtomicI32::new(0),
 	});
-	let threads = (|| -> io::Result<()> {
-		let mut readers = Vec::with_capacity(2);
-		for index in 0..2 {
-			if locked(&shared.outputs)[index].file.is_some() {
-				let worker = shared.clone();
-				readers.push(
-					std::thread::Builder::new()
-						.name("host-process-output".into())
-						.spawn(move || watch_output(&worker, index))?,
-				);
-			}
-		}
-		let writer = match stdin {
-			Some(file) => {
-				let worker = shared.clone();
-				Some(
-					std::thread::Builder::new()
-						.name("host-process-input".into())
-						.spawn(move || write_input(&worker, file))?,
-				)
-			},
-			None => None,
-		};
-		let worker = shared.clone();
-		std::thread::Builder::new()
-			.name("host-process".into())
-			.spawn(move || supervise(&worker, readers, writer))?;
-		Ok(())
-	})();
-	if let Err(error) = threads {
+	let worker = shared.clone();
+	if let Err(error) =
+		std::thread::Builder::new().name("host-process".into()).spawn(move || supervise(&worker))
+	{
 		// No thread can report it: end it and what it started rather than leave them running unowned.
 		shared.end_tree();
 		shared.release_by_host();

@@ -77,8 +77,12 @@ async function waitGone(pid: number): Promise<void> {
 }
 
 /** The Windows start in a job of its own; it fails the test where it does not start the process. */
-function contained(file: string, args: readonly string[], options?: HostSpawnOptions): ContainedChildProcess {
-	const child = spawnContainedProcess(file, args, options);
+async function contained(
+	file: string,
+	args: readonly string[],
+	options?: HostSpawnOptions,
+): Promise<ContainedChildProcess> {
+	const child = await spawnContainedProcess(file, args, options);
 	assert.ok(child, "the process did not start in a job of its own");
 	return child;
 }
@@ -107,7 +111,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	});
 
 	test("delivers input, output, the exit code and the events in child_process's order", async () => {
-		const child = start(node, [
+		const child = await start(node, [
 			"-e",
 			"let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{process.stdout.write(s.toUpperCase());process.stderr.write('err');process.exit(3)})",
 		]);
@@ -125,7 +129,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	});
 
 	test("runs in the directory and with exactly the environment it is given", async () => {
-		const child = start(
+		const child = await start(
 			node,
 			["-e", "process.stdout.write(JSON.stringify([process.cwd(), process.env.ATOMIC_PROBE, process.env.HOME]))"],
 			{ cwd: directory, env: { ATOMIC_PROBE: "probe", PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } },
@@ -136,7 +140,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 
 	test("a program that is missing fails with child_process's ENOENT error, then closes", async () => {
 		const missing = join(directory, "atomic-no-such-program");
-		const child = start(missing, ["--flag"]);
+		const child = await start(missing, ["--flag"]);
 		const errors: NodeJS.ErrnoException[] = [];
 		child.on("error", (error: NodeJS.ErrnoException) => errors.push(error));
 		const result = await ended(child);
@@ -148,12 +152,12 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	});
 
 	test("a working directory that is missing fails with ENOENT", async () => {
-		const child = start(node, ["-e", ""], { cwd: join(directory, "missing") });
+		const child = await start(node, ["-e", ""], { cwd: join(directory, "missing") });
 		assert.ok((await ended(child)).events.includes("error ENOENT"));
 	});
 
 	test("kill ends the process with the signal, and closes with it", async () => {
-		const child = start(node, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000)"]);
+		const child = await start(node, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000)"]);
 		const result = ended(child);
 		await new Promise<void>((resolve) => child.stdout?.once("data", () => resolve()));
 		assert.equal(child.kill("SIGKILL"), true);
@@ -165,7 +169,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	});
 
 	test("a process is reaped once its close was handled, and leaves no zombie", async () => {
-		const child = start(node, ["-e", "process.stdout.write('x')"]);
+		const child = await start(node, ["-e", "process.stdout.write('x')"]);
 		await ended(child);
 		await waitGone(child.pid!);
 		assert.equal(running(child.pid!), false);
@@ -173,7 +177,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	});
 
 	test("ignored streams are null, and the process still runs to its end", async () => {
-		const child = start(node, ["-e", "process.stdout.write('lost');process.exit(5)"], { stdio: "ignore" });
+		const child = await start(node, ["-e", "process.stdout.write('lost');process.exit(5)"], { stdio: "ignore" });
 		assert.equal(child.stdin, null);
 		assert.equal(child.stdout, null);
 		const result = await ended(child);
@@ -183,7 +187,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 	test.skipIf(process.platform === "win32")(
 		"a detached process leads its own process group, which one signal ends with its children",
 		async () => {
-			const child = start(
+			const child = await start(
 				node,
 				[
 					"-e",
@@ -204,7 +208,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 
 	test("output larger than a pipe's buffer arrives whole, while input is still being written", async () => {
 		const bytes = 4 * 1024 * 1024;
-		const child = start(node, ["-e", "process.stdin.pipe(process.stdout)"]);
+		const child = await start(node, ["-e", "process.stdin.pipe(process.stdout)"]);
 		const result = ended(child);
 		child.stdin?.end(Buffer.alloc(bytes, "x"));
 		const { stdout, code } = await result;
@@ -278,7 +282,7 @@ describe("a host process started in a job of its own", () => {
 		const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-contained-")));
 		try {
 			const pidFile = join(directory, "program.pid");
-			const child = contained(
+			const child = await contained(
 				node,
 				[
 					"-e",
@@ -298,15 +302,19 @@ describe("a host process started in a job of its own", () => {
 		}
 	}
 
-	test("is started only on Windows, for a full program path and text child_process accepts, unless child_process is asked for", () => {
+	test("is started only on Windows, for a full program path and text child_process accepts, unless child_process is asked for", async () => {
 		if (process.platform !== "win32") {
-			assert.equal(spawnContainedProcess(node, ["-e", ""]), undefined);
+			assert.equal(await spawnContainedProcess(node, ["-e", ""]), undefined);
 			return;
 		}
-		assert.equal(spawnContainedProcess("node.exe", ["-e", ""]), undefined, "a program name is looked up as before");
-		assert.equal(spawnContainedProcess(node, ["-e", "\0"]), undefined, "child_process reports a NUL itself");
+		assert.equal(
+			await spawnContainedProcess("node.exe", ["-e", ""]),
+			undefined,
+			"a program name is looked up as before",
+		);
+		assert.equal(await spawnContainedProcess(node, ["-e", "\0"]), undefined, "child_process reports a NUL itself");
 		vi.stubEnv(HOST_SPAWN_ENV, "child-process");
-		assert.equal(spawnContainedProcess(node, ["-e", ""]), undefined);
+		assert.equal(await spawnContainedProcess(node, ["-e", ""]), undefined);
 	});
 
 	test.runIf(process.platform === "win32")(
@@ -359,7 +367,7 @@ describe("a host process started in a job of its own", () => {
 					ATOMIC_PROBE_EMPTY: "",
 				};
 				const expected = await ended(spawn(node, args, { cwd: directory, env, windowsHide: true }));
-				const actual = await ended(contained(node, args, { cwd: directory, env }));
+				const actual = await ended(await contained(node, args, { cwd: directory, env }));
 				assert.equal(expected.code, 0, expected.stderr);
 				assert.equal(actual.stdout, expected.stdout);
 			} finally {

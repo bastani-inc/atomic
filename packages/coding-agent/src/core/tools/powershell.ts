@@ -75,7 +75,7 @@ export function createLocalPowerShellOperations(binding?: {
 			}
 			const shellEnv = options.env ?? (await getShellEnvAsync());
 			if (options.signal?.aborted) throw new Error("aborted");
-			const shellProcess = spawnShellProcess(shell, [...args, script], {
+			const shellProcess = await spawnShellProcess(shell, [...args, script], {
 				cwd,
 				env: createChildProcessEnvironment(undefined, shellEnv),
 				stdin: "pipe",
