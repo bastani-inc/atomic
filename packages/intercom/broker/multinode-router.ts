@@ -5,8 +5,10 @@ import { normalizeGroup } from "../group.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import {
 	DELIVERED_MESSAGE_TTL_MS,
+	HELD_SEND_GRACE_MS,
 	RECIPIENT_RECEIPT_TIMEOUT_MS,
 	RECIPIENT_SAVE_MAX_WAIT_MS,
+	RECIPIENT_SAVING_REPORT_INTERVAL_MS,
 	SEND_RESPONSE_TIMEOUT_MS,
 } from "../retry-policy.js";
 import {
@@ -85,7 +87,12 @@ import {
 	restoringRecipientRetryReason,
 	unrestoredReasonCode,
 } from "./restoring-recipients.js";
-import { SendOrderGate, type SendOrderTicket, type TargetMatchInfo } from "./send-order-gate.js";
+import {
+	SendOrderGate,
+	type SendOrderTicket,
+	type TargetMatchInfo,
+	type WaitForEarlierOptions,
+} from "./send-order-gate.js";
 import {
 	answerAs,
 	type BrokerConnectedSession,
@@ -141,6 +148,11 @@ const MAX_HELD_SENDS = 256;
  * `RECIPIENT_RECEIPT_TIMEOUT_MS`).
  */
 const HOLD_CHECK_GRACE_MS = 500;
+/**
+ * Minimum client-deadline margin past a receipt wait so `expireWaiter` and its provisional hold still land strictly
+ * before the sender's client times out (`SEND_RESPONSE_TIMEOUT_MS`).
+ */
+const MIN_WAIT_CLIENT_MARGIN_MS = 2 * HOLD_CHECK_GRACE_MS;
 /** A session that moved here may find its presence lease still held by the broker it just left. */
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
@@ -519,6 +531,8 @@ interface Waiter {
 	timer: ReturnType<typeof setTimeout> | undefined;
 	/** When, by `performance.now()`, the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
 	readonly waitingSince: number;
+	/** Monotonic time when the sender's client would time out unless extended with `send_held`. */
+	clientDeadlineAt: number;
 	/** Ends the wait as uncertain at the save cap, whatever the store does (#3983). */
 	capTimer?: ReturnType<typeof setTimeout>;
 	/** The hold check whose outbox read is in flight; a wait that ends meanwhile reuses it (#3983). */
@@ -529,6 +543,21 @@ interface Waiter {
 	 * wait as uncertain (#4443).
 	 */
 	missedSavingReport?: boolean;
+}
+
+interface SendProgress {
+	readonly startedAt: number;
+	clientDeadlineAt: number;
+	hadProgress: boolean;
+	lastProgressAt: number;
+	reportingEnabled: boolean;
+	readonly socket: BrokerConnectedSession["socket"];
+	readonly messageId: string;
+	readonly attemptId?: string;
+	readonly ticket?: SendOrderTicket;
+	waitingOnReplyKey?: string;
+	scheduledFireAt?: number;
+	stopReporting?: () => void;
 }
 
 interface TrackedHold {
@@ -1040,6 +1069,19 @@ export class MultiNodeRouter {
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
 	private readonly inflight = new Map<string, Inflight>();
 	private readonly waiters = new Map<string, Waiter>();
+	/** Monotonic start, store-progress, and client-deadline state for each in-flight send routed through this router. */
+	private readonly sendProgress = new WeakMap<SendClientMessage, SendProgress>();
+	/** Associates each `SendOrderTicket` with its `SendProgress` so queued sends can track their blocker's progress. */
+	private readonly ticketProgress = new WeakMap<SendOrderTicket, SendProgress>();
+	/** Active and most-recent reply progress per sender reply lane (`serial("reply:...")`). */
+	private readonly replyLanes = new Map<
+		string,
+		{ active?: SendOrderTicket; lastProgress?: SendProgress; queued: number }
+	>();
+	/** Sends currently waiting on an earlier send in `SendOrderGate` or `serial("reply:...")`, by `senderKey`. */
+	private readonly queuedProgress = new Map<string, Set<SendProgress>>();
+	/** Active progress-reporting timer disposers, cancelled in `close()`. */
+	private readonly progressStops = new Set<() => void>();
 	private readonly holds = new Map<string, TrackedHold>();
 	private readonly mirrored = new Map<string, MirroredReservation>();
 	/** Reservations with a backup-poll wake check queued or running: one each while the store stalls, not a backlog. */
@@ -3502,6 +3544,8 @@ export class MultiNodeRouter {
 			this.activeLocalCommit.reentrant = request;
 			return;
 		}
+		const startedAt = performance.now();
+		const senderKey = deliveryTargetIdentity(request.from);
 		let pendingLocalTargetIdentities: Set<string> | undefined;
 		if (
 			request.localTarget === undefined &&
@@ -3526,25 +3570,72 @@ export class MultiNodeRouter {
 		const ticket = this.sendOrder.begin(
 			request.localTarget === undefined
 				? {
-						senderKey: deliveryTargetIdentity(request.from),
+						senderKey,
 						rawTarget: request.target,
 						arrivedRegSeq: this.registrationSeq,
 						isLocal: false,
 						...(pendingLocalTargetIdentities === undefined ? {} : { pendingLocalTargetIdentities }),
 					}
 				: {
-						senderKey: deliveryTargetIdentity(request.from),
+						senderKey,
 						rawTarget: request.target,
 						arrivedRegSeq: this.registrationSeq,
 						isLocal: true,
 						targetIdentity: deliveryTargetIdentity(request.localTarget),
 					},
 		);
+		const existingProgress = this.sendProgress.get(request.clientMessage);
+		const progress: SendProgress = {
+			startedAt: existingProgress?.startedAt ?? startedAt,
+			clientDeadlineAt: existingProgress?.clientDeadlineAt ?? startedAt + SEND_RESPONSE_TIMEOUT_MS,
+			hadProgress: false,
+			lastProgressAt: startedAt,
+			reportingEnabled: request.localTarget === undefined,
+			socket: request.socket,
+			messageId: request.message.id,
+			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
+			ticket,
+		};
+		this.sendProgress.set(request.clientMessage, progress);
+		this.ticketProgress.set(ticket, progress);
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
 		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
 		if (isReleasedReplyCandidate(request)) {
+			const replyKey = `reply:${request.from.info.id}`;
+			let lane = this.replyLanes.get(replyKey);
+			if (lane === undefined) {
+				lane = { queued: 0 };
+				this.replyLanes.set(replyKey, lane);
+			}
+			lane.queued += 1;
 			if (request.localTarget !== undefined) this.sendOrder.markUnbounded(ticket);
-			this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request, ticket, true));
+			const queuedBehind = lane.queued > 1;
+			if (queuedBehind) {
+				progress.waitingOnReplyKey = replyKey;
+				progress.reportingEnabled = true;
+				this.trackQueuedProgress(senderKey, progress);
+				this.syncProgressFromBlocker(progress, this.resolveBlockerProgress(progress, ticket));
+				this.scheduleProgressHold(progress, startedAt);
+			}
+			this.serial(replyKey, async () => {
+				if (queuedBehind) this.untrackQueuedProgress(senderKey, progress);
+				this.syncProgressFromBlocker(progress, lane.lastProgress);
+				progress.waitingOnReplyKey = undefined;
+				if (request.localTarget !== undefined) {
+					this.stopProgress(progress);
+				} else if (progress.hadProgress) {
+					this.scheduleProgressHold(progress);
+				}
+				lane.active = ticket;
+				lane.lastProgress = progress;
+				try {
+					await this.routeSendSafely(request, ticket, true);
+				} finally {
+					if (lane.active === ticket) lane.active = undefined;
+					lane.queued -= 1;
+					if (lane.queued <= 0 && this.replyLanes.get(replyKey) === lane) this.replyLanes.delete(replyKey);
+				}
+			});
 		} else {
 			void this.routeSendSafely(request, ticket, true);
 		}
@@ -3559,8 +3650,11 @@ export class MultiNodeRouter {
 			if (this.closed) return;
 			if (request.localTarget !== undefined)
 				await this.answerLocalRetry(request, request.localTarget, owners, ticket, openingDeadlineAt);
-			else if (owners === undefined || (await this.senderOwns(request, owners)))
+			else if (owners === undefined) await this.route(request, ticket, openingDeadlineAt);
+			else if (await this.senderOwns(request, owners)) {
+				this.markRoutingProgress(request);
 				await this.route(request, ticket, openingDeadlineAt);
+			}
 		} catch (error) {
 			this.report(error);
 			if (this.closed) return;
@@ -3572,15 +3666,19 @@ export class MultiNodeRouter {
 			}
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
 		} finally {
+			const progress = this.sendProgress.get(request.clientMessage);
+			if (progress !== undefined) this.stopProgress(progress);
 			if (ownsTicket) this.sendOrder.finish(ticket);
 		}
 	}
 
 	private returnPathOpeningDeadlineAt(request: RemoteSendRequest, startedAt: number): number {
-		const clientDeadline = startedAt + SEND_RESPONSE_TIMEOUT_MS;
+		const progress = this.sendProgress.get(request.clientMessage);
+		const clientDeadline = progress?.clientDeadlineAt ?? startedAt + SEND_RESPONSE_TIMEOUT_MS;
+		const capDeadline = (progress?.startedAt ?? startedAt) + RECIPIENT_SAVE_MAX_WAIT_MS;
 		const defaultDeadline = this.host.returnPaths?.openingWaitDeadline() ?? startedAt + RETURN_PATH_OPENING_WAIT_MS;
 		const base = request.returnPathDeadlineAt ?? defaultDeadline;
-		return Math.min(base, clientDeadline);
+		return Math.min(base, clientDeadline, capDeadline);
 	}
 
 	private trackOpening(session: BrokerConnectedSession, finish: (() => void) | undefined): (() => void) | undefined {
@@ -3594,6 +3692,217 @@ export class MultiNodeRouter {
 		};
 		this.activeOpenings.set(release, session);
 		return release;
+	}
+
+	private stopProgress(progress: SendProgress): void {
+		progress.reportingEnabled = false;
+		progress.stopReporting?.();
+	}
+
+	private trackQueuedProgress(senderKey: string, progress: SendProgress): void {
+		let set = this.queuedProgress.get(senderKey);
+		if (set === undefined) {
+			set = new Set();
+			this.queuedProgress.set(senderKey, set);
+		}
+		set.add(progress);
+	}
+
+	private untrackQueuedProgress(senderKey: string, progress: SendProgress): void {
+		const set = this.queuedProgress.get(senderKey);
+		if (set === undefined) return;
+		set.delete(progress);
+		if (set.size === 0) this.queuedProgress.delete(senderKey);
+	}
+
+	/**
+	 * Event-driven horizon progress reporter: never arms a timer when there is no store progress or while
+	 * `desired = min(startedAt + RECIPIENT_SAVE_MAX_WAIT_MS, lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS)` still
+	 * fits inside `clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS`. When an actual store answer advances `desired`
+	 * past that margin, schedules at most one timer (bounded by `RECIPIENT_SAVING_REPORT_INTERVAL_MS` and
+	 * `clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS`) to extend the sender without ever shrinking an existing hold.
+	 */
+	private scheduleProgressHold(progress: SendProgress, now = performance.now()): void {
+		if (!progress.reportingEnabled || !progress.hadProgress || this.closed) return;
+		if (progress.socket.destroyed === true || progress.socket.writableEnded === true) {
+			this.stopProgress(progress);
+			return;
+		}
+		const capAt = progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
+		if (now >= capAt || now >= progress.clientDeadlineAt) {
+			this.stopProgress(progress);
+			return;
+		}
+		const desired = Math.min(capAt, progress.lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS);
+		if (now >= desired || desired + MIN_WAIT_CLIENT_MARGIN_MS <= progress.clientDeadlineAt) return;
+		const guardAt = progress.clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS;
+		if (now >= guardAt) {
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, desired - now);
+			if (timeoutMs > 0) {
+				progress.stopReporting?.();
+				this.sendHoldFrame(progress.socket, progress.messageId, progress.attemptId, timeoutMs, progress);
+			}
+			return;
+		}
+		const delayMs = Math.min(RECIPIENT_SAVING_REPORT_INTERVAL_MS, guardAt - now);
+		const fireAt = now + delayMs;
+		if (progress.scheduledFireAt !== undefined && progress.scheduledFireAt <= fireAt) return;
+		progress.stopReporting?.();
+		let active = true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const stop = (): void => {
+			active = false;
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			if (progress.stopReporting === stop) {
+				progress.stopReporting = undefined;
+				progress.scheduledFireAt = undefined;
+			}
+			this.progressStops.delete(stop);
+		};
+		progress.stopReporting = stop;
+		progress.scheduledFireAt = fireAt;
+		this.progressStops.add(stop);
+		timer = setTimeout(() => {
+			if (!active || !progress.reportingEnabled || this.closed) {
+				stop();
+				return;
+			}
+			stop();
+			if (progress.socket.destroyed === true || progress.socket.writableEnded === true) {
+				progress.reportingEnabled = false;
+				return;
+			}
+			const tickNow = performance.now();
+			const tickCapAt = progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
+			if (tickNow >= tickCapAt || tickNow >= progress.clientDeadlineAt) {
+				progress.reportingEnabled = false;
+				return;
+			}
+			const tickDesired = Math.min(tickCapAt, progress.lastProgressAt + RECIPIENT_RECEIPT_TIMEOUT_MS);
+			if (tickNow >= tickDesired || tickDesired + MIN_WAIT_CLIENT_MARGIN_MS <= progress.clientDeadlineAt) return;
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, tickDesired - tickNow);
+			if (timeoutMs > 0) {
+				this.sendHoldFrame(progress.socket, progress.messageId, progress.attemptId, timeoutMs, progress);
+			}
+		}, delayMs);
+		timer.unref?.();
+	}
+
+	private resolveBlockerProgress(progress: SendProgress, ticket?: SendOrderTicket): SendProgress | undefined {
+		let curProgress: SendProgress | undefined = progress;
+		let curTicket: SendOrderTicket | undefined = ticket;
+		let blocker: SendProgress | undefined;
+		for (let hops = 0; hops < 64 && curProgress !== undefined; hops++) {
+			let nextTicket: SendOrderTicket | undefined;
+			if (curProgress.waitingOnReplyKey !== undefined) {
+				const lane = this.replyLanes.get(curProgress.waitingOnReplyKey);
+				if (lane?.active !== undefined) {
+					nextTicket = lane.active;
+				} else {
+					return lane?.lastProgress ?? blocker;
+				}
+			} else if (curTicket !== undefined) {
+				nextTicket = this.sendOrder.blockingTicket(curTicket);
+			}
+			if (nextTicket === undefined || (curTicket !== undefined && nextTicket.seq >= curTicket.seq)) {
+				return blocker;
+			}
+			curTicket = nextTicket;
+			curProgress = this.ticketProgress.get(nextTicket);
+			if (curProgress !== undefined) blocker = curProgress;
+		}
+		return blocker;
+	}
+
+	private syncProgressFromBlocker(progress: SendProgress, blocker: SendProgress | undefined): void {
+		if (blocker === undefined || !blocker.hadProgress) return;
+		progress.hadProgress = true;
+		if (blocker.lastProgressAt > progress.lastProgressAt) {
+			progress.lastProgressAt = blocker.lastProgressAt;
+		}
+	}
+
+	private notifyQueuedProgress(senderKey: string, source: SendProgress, now: number): void {
+		const queued = this.queuedProgress.get(senderKey);
+		if (queued === undefined) return;
+		for (const waiting of queued) {
+			if (!waiting.reportingEnabled) continue;
+			const blocker = this.resolveBlockerProgress(waiting, waiting.ticket);
+			if (blocker !== source) continue;
+			this.syncProgressFromBlocker(waiting, source);
+			this.scheduleProgressHold(waiting, now);
+		}
+	}
+
+	private markRoutingProgress(request: RemoteSendRequest): void {
+		this.storeAnswered();
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined) {
+			const now = performance.now();
+			progress.hadProgress = true;
+			if (now > progress.lastProgressAt) progress.lastProgressAt = now;
+			this.scheduleProgressHold(progress, now);
+			this.notifyQueuedProgress(deliveryTargetIdentity(request.from), progress, now);
+		}
+	}
+
+	private sendHoldFrame(
+		socket: BrokerConnectedSession["socket"],
+		messageId: string,
+		attemptId: string | undefined,
+		timeoutMs: number,
+		deadline: { clientDeadlineAt: number },
+	): void {
+		const nextDeadline = performance.now() + timeoutMs + HELD_SEND_GRACE_MS;
+		if (nextDeadline > deadline.clientDeadlineAt) deadline.clientDeadlineAt = nextDeadline;
+		this.host.write(socket, {
+			type: "send_held",
+			messageId,
+			...(attemptId === undefined ? {} : { attemptId }),
+			timeoutMs,
+		});
+	}
+
+	private extendBeforeLocalReceiptWait(request: RemoteSendRequest, target: BrokerConnectedSession): void {
+		if (target.acknowledgesReceipt !== true || !this.sameLocalTarget(target)) return;
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress === undefined) return;
+		const now = performance.now();
+		const remaining = Math.max(0, progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS - now);
+		const waitMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
+		if (waitMs > 0 && progress.clientDeadlineAt - (now + waitMs) < MIN_WAIT_CLIENT_MARGIN_MS) {
+			this.sendHoldFrame(request.socket, request.message.id, request.attemptId, waitMs, progress);
+		}
+	}
+
+	/** Wait for strictly earlier remote/local sends to `options.targetIdentity`, inheriting blocker store progress. */
+	private async waitForEarlierRemote(
+		request: RemoteSendRequest,
+		ticket: SendOrderTicket,
+		options: WaitForEarlierOptions,
+	): Promise<void> {
+		const wait = this.sendOrder.waitForEarlier(ticket, options);
+		if (wait === undefined) return;
+		const senderKey = ticket.senderKey;
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined) {
+			this.trackQueuedProgress(senderKey, progress);
+			this.syncProgressFromBlocker(progress, this.resolveBlockerProgress(progress, ticket));
+			this.scheduleProgressHold(progress);
+		}
+		try {
+			await wait;
+		} finally {
+			if (progress !== undefined) this.untrackQueuedProgress(senderKey, progress);
+		}
+		const lastBlocker = this.sendOrder.lastBlockingTicket(ticket);
+		if (progress !== undefined && lastBlocker !== undefined) {
+			this.syncProgressFromBlocker(progress, this.ticketProgress.get(lastBlocker));
+			this.scheduleProgressHold(progress);
+		}
 	}
 
 	/** Wait for strictly earlier sends from the same sender to `target` before performing a local commit. */
@@ -3663,6 +3972,7 @@ export class MultiNodeRouter {
 		if (request.localTarget !== undefined && openingDeadlineAt !== undefined) {
 			await this.awaitLocalReturnPathIfRefused(request, request.localTarget, ticket, openingDeadlineAt);
 			if (this.closed) return;
+			this.extendBeforeLocalReceiptWait(request, request.localTarget);
 		}
 		const frame: { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest } = {
 			clientMessage: request.clientMessage,
@@ -3676,6 +3986,11 @@ export class MultiNodeRouter {
 		}
 		if (frame.reentrant !== undefined && !this.closed) {
 			this.sendOrder.reenterRemote(ticket);
+			const progress = this.sendProgress.get(frame.reentrant.clientMessage);
+			if (progress !== undefined && frame.reentrant.localTarget === undefined) {
+				progress.reportingEnabled = true;
+				if (progress.hadProgress) this.scheduleProgressHold(progress);
+			}
 			await this.routeSendSafely(frame.reentrant, ticket, false);
 		}
 	}
@@ -3765,17 +4080,22 @@ export class MultiNodeRouter {
 		const replyTo = request.message.replyTo;
 		const alias = this.replyAlias(request);
 		const pending = this.host.pendingQuestions;
-		if (replyTo === undefined || alias === undefined || pending.matchesReply(request.from.info.id, target.info.id, replyTo))
+		if (replyTo === undefined || alias === undefined || pending.matchesReply(request.from.info.id, target.info.id, replyTo)) {
+			this.extendBeforeLocalReceiptWait(request, target);
 			return this.commitLocalNotFound(request, ticket, openingDeadlineAt);
+		}
 		// Only the database that failed could show an ask to the alias that no route here names: a reply that must answer
 		// an open ask is refused as retryable, not for good.
-		if (!pending.matchesReply(alias.id, target.info.id, replyTo))
-			return request.requirePendingReply
-				? this.refuseRouteUnavailable(request)
-				: this.commitLocalNotFound(request, ticket, openingDeadlineAt);
+		if (!pending.matchesReply(alias.id, target.info.id, replyTo)) {
+			if (request.requirePendingReply) return this.refuseRouteUnavailable(request);
+			this.extendBeforeLocalReceiptWait(request, target);
+			return this.commitLocalNotFound(request, ticket, openingDeadlineAt);
+		}
 		const sending = this.answeringAsHeld(request, alias);
 		if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-		await this.commitLocalNotFound(sending ?? request, ticket, openingDeadlineAt);
+		const chosen = sending ?? request;
+		this.extendBeforeLocalReceiptWait(chosen, target);
+		await this.commitLocalNotFound(chosen, ticket, openingDeadlineAt);
 	}
 
 	/** Whether this broker's own routes authorize `request`'s reply to `target`. */
@@ -3839,6 +4159,7 @@ export class MultiNodeRouter {
 					!this.host.sessions.has(lease.subject.session.id),
 			);
 			if (this.closed) return;
+			this.markRoutingProgress(request);
 			const presenceOf = (lease: LeaseState) => lease.subject as RecipientPresenceSubject;
 			// #5607: a plain send to an id a session holds as an alias reaches that session.
 			const plain = isPlainSend(request);
@@ -3911,16 +4232,15 @@ export class MultiNodeRouter {
 			}
 			// A presence whose id is bound to another session's return address (from a broker that grants ids without
 			// binding them) is not that session: what is addressed to the id waits for the session it is bound to.
-			if (
-				resolved !== undefined &&
-				!(await this.holdsSessionId(
+			if (resolved !== undefined) {
+				const holds = await this.holdsSessionId(
 					presenceOf(resolved).session.id,
 					returnAddressOf(presenceOf(resolved).targetIdentity),
-				))
-			) {
-				resolved = undefined;
+				);
+				if (this.closed) return;
+				this.markRoutingProgress(request);
+				if (!holds) resolved = undefined;
 			}
-			if (this.closed) return;
 			if (resolved !== undefined) {
 				const subject = presenceOf(resolved);
 				await this.deliverThroughOutbox(
@@ -3950,9 +4270,11 @@ export class MultiNodeRouter {
 			if (!request.supervisorSend && !request.requirePendingReply && request.expectedRecipientId === undefined) {
 				if (await this.holdForRemoteReservation(request, ticket)) return;
 				if (this.closed) return;
+				this.markRoutingProgress(request);
 			}
 			const known = await this.resolveKnownSession(request);
 			if (this.closed) return;
+			this.markRoutingProgress(request);
 			if (known === "answered") return;
 			if (known !== undefined) {
 				await this.deliverThroughOutbox(
@@ -4002,6 +4324,7 @@ export class MultiNodeRouter {
 						if (localSession !== undefined) {
 							await this.waitForEarlierLocal(ticket, localSession);
 							if (this.closed) return;
+							this.extendBeforeLocalReceiptWait(request, localSession);
 							request.notFound();
 							return;
 						}
@@ -4363,6 +4686,12 @@ export class MultiNodeRouter {
 
 	/** Enqueue the owner's frame; a same-id retry is answered from the row it already has, exactly as any send. */
 	private async sendReleasedReply(request: RemoteSendRequest, decision: ReleasedReplyDelivery): Promise<void> {
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined && performance.now() >= progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS) {
+			await this.reopenQuestion(decision);
+			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+			return;
+		}
 		const { owner, frame } = decision;
 		const digest = crossNodeDigest(request.signature);
 		const enqueued = await this.state.outbox
@@ -4374,6 +4703,7 @@ export class MultiNodeRouter {
 				...offlineHost(owner.hostBrokerId),
 			})
 			.catch((error: Error) => this.reopenAfter(decision, error));
+		this.markRoutingProgress(request);
 		if (enqueued.status === "conflict") {
 			await this.reopenQuestion(decision);
 			this.failConflict(request);
@@ -4503,6 +4833,7 @@ export class MultiNodeRouter {
 				}
 				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 				await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
+				this.extendBeforeLocalReceiptWait(sending, target);
 				await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 				return;
 			}
@@ -4541,6 +4872,7 @@ export class MultiNodeRouter {
 			}
 			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 			await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
+			this.extendBeforeLocalReceiptWait(sending, target);
 			await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 		} finally {
 			clearTimeout(bound);
@@ -4672,24 +5004,29 @@ export class MultiNodeRouter {
 		}
 		const digest = crossNodeDigest(request.signature);
 		const existing = await this.state.outbox.read(message.id);
+		this.markRoutingProgress(request);
 		if (existing.status === "found") {
-			const wait = this.sendOrder.waitForEarlier(ticket, {
+			await this.waitForEarlierRemote(request, ticket, {
 				targetIdentity: target.identity,
 				...(targetMatch === undefined ? {} : { targetMatch }),
 			});
-			if (wait !== undefined) await wait;
 			if (this.closed) return;
+			if (existing.row.state === "delivered" || existing.row.state === "failed") {
+				// Already settled earlier: release its order ticket before post-settlement store writes
+				// (`sentMessages.accept`) so later sends to this target never wait on them.
+				this.sendOrder.finish(ticket);
+			}
 			await this.answerExistingRow(request, target, digest, existing.row);
 			return;
 		}
 		if (this.answerLocalDelivery(request, target)) return;
 		const answering = await this.correlatedReply(request, target.sessionId);
+		if (message.replyTo !== undefined) this.markRoutingProgress(request);
 		if (answering === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-		const wait = this.sendOrder.waitForEarlier(ticket, {
+		await this.waitForEarlierRemote(request, ticket, {
 			targetIdentity: target.identity,
 			...(targetMatch === undefined ? {} : { targetMatch }),
 		});
-		if (wait !== undefined) await wait;
 		if (this.closed) return;
 		// #5607: a reply to an ask its sender's alias received goes out as from that alias.
 		await this.enqueueThroughOutbox(answering ?? request, target, digest, answering !== undefined, openingDeadlineAt);
@@ -4715,6 +5052,11 @@ export class MultiNodeRouter {
 		correlatedReply: boolean,
 		openingDeadlineAt: number,
 	): Promise<void> {
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined && performance.now() >= progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS) {
+			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+			return;
+		}
 		const { message, from } = request;
 		if (request.requirePendingReply && !correlatedReply) {
 			await this.refuseUnauthorizedReply(request, { sessionId: target.sessionId, identity: target.identity });
@@ -4752,10 +5094,18 @@ export class MultiNodeRouter {
 			crossesGroups =
 				!request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups);
 			if (!crossesGroups) break;
+			if (progress !== undefined && performance.now() >= progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS) {
+				this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+				return;
+			}
 			returnPath =
 				this.host.returnPaths?.use(from, answered, message.id, request.returnPathArrivalSeq) === true;
 		}
 		if (this.closed) return;
+		if (progress !== undefined && performance.now() >= progress.startedAt + RECIPIENT_SAVE_MAX_WAIT_MS) {
+			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+			return;
+		}
 		if (crossesGroups && !returnPath) {
 			this.fail(
 				request,
@@ -4794,6 +5144,7 @@ export class MultiNodeRouter {
 			},
 			{ targetIdentity: target.identity, originBrokerId: this.brokerId, digest, frame, ...offlineHost(target.hostBrokerId) },
 		);
+		this.markRoutingProgress(request);
 		if (enqueued.status === "conflict") {
 			this.failConflict(request);
 			return;
@@ -4813,6 +5164,7 @@ export class MultiNodeRouter {
 				replyTargetSessionId: target.sessionId,
 				replyTo: message.replyTo!,
 			});
+			this.markRoutingProgress(request);
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
 	}
@@ -4911,6 +5263,8 @@ export class MultiNodeRouter {
 		row: OutboxRow,
 	): Promise<void> {
 		const { message } = request;
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined) this.stopProgress(progress);
 		if (row.digest !== digest || row.targetIdentity !== target.identity) {
 			this.failConflict(request);
 			return;
@@ -4921,7 +5275,23 @@ export class MultiNodeRouter {
 		}
 		const asksTarget = message.expectsReply === true && request.resolveReplyTarget && request.attemptId !== undefined;
 		if (row.state === "delivered") {
-			await this.state.sentMessages.accept({ messageId: message.id, digest });
+			const now = performance.now();
+			const acceptance: SendProgress = {
+				startedAt: progress?.startedAt ?? now,
+				clientDeadlineAt: progress?.clientDeadlineAt ?? now + SEND_RESPONSE_TIMEOUT_MS,
+				hadProgress: true,
+				lastProgressAt: now,
+				reportingEnabled: true,
+				socket: request.socket,
+				messageId: message.id,
+				...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
+			};
+			this.scheduleProgressHold(acceptance, now);
+			try {
+				await this.state.sentMessages.accept({ messageId: message.id, digest });
+			} finally {
+				this.stopProgress(acceptance);
+			}
 			if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
 			this.host.write(request.socket, { type: "delivered", messageId: message.id, attemptId: request.attemptId });
 			return;
@@ -4929,6 +5299,9 @@ export class MultiNodeRouter {
 		const offline = target.hostBrokerId === undefined;
 		const previous = this.waiters.get(message.id);
 		if (previous !== undefined) this.dropWaiter(previous);
+		const now = performance.now();
+		const waitingSince = progress?.startedAt ?? now;
+		const clientDeadlineAt = progress?.clientDeadlineAt ?? now + SEND_RESPONSE_TIMEOUT_MS;
 		const waiter: Waiter = {
 			messageId: message.id,
 			digest,
@@ -4943,13 +5316,26 @@ export class MultiNodeRouter {
 			targetIdentity: target.identity,
 			queued: offline,
 			timer: undefined,
-			waitingSince: performance.now(),
+			waitingSince,
+			clientDeadlineAt,
 		};
-		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
-		this.setWaiter(waiter);
 		if (offline) {
+			this.armWaiter(waiter, DELIVERED_MESSAGE_TTL_MS);
+			this.setWaiter(waiter);
 			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
 			return;
+		}
+		const remaining = this.capRemaining(waiter);
+		if (remaining === 0) {
+			this.setWaiter(waiter);
+			this.expireUncertain(waiter);
+			return;
+		}
+		const receiptWaitMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
+		this.armWaiter(waiter, receiptWaitMs);
+		this.setWaiter(waiter);
+		if (waiter.clientDeadlineAt - (now + receiptWaitMs) < MIN_WAIT_CLIENT_MARGIN_MS) {
+			this.holdSender(waiter, receiptWaitMs);
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
 		await this.bus.publish({ brokerId: target.hostBrokerId!, reason: "outbox", version: row.sequence });
@@ -5070,15 +5456,16 @@ export class MultiNodeRouter {
 			this.fail(request, reservation.gone ?? restoringRecipientRetryReason(reservation.childName));
 			return true;
 		}
+		this.markRoutingProgress(request);
 		const reservationTarget = `reservation:${reservation.reservationKey}`;
 		const reservationNames = [reservation.childName, ...reservation.targets];
-		const wait = this.sendOrder.waitForEarlier(ticket, {
+		await this.waitForEarlierRemote(request, ticket, {
 			targetIdentity: reservationTarget,
 			targetMatch: { names: reservationNames },
 		});
-		if (wait !== undefined) await wait;
 		if (this.closed) return true;
 		const listed = await this.state.heldSends.list(reservation.reservationKey);
+		this.markRoutingProgress(request);
 		const count = listed.status === "listed" ? listed.sends.length : 0;
 		const reasonCode = unrestoredReasonCode(reservation.reservationKey, reservation.wake);
 		if (!request.awaitRestoringRecipient || count >= MAX_HELD_SENDS) {
@@ -5095,12 +5482,14 @@ export class MultiNodeRouter {
 		if (result.status === "duplicate" && (await this.state.heldSends.drop(message.id)).status === "dropped") {
 			result = await this.state.heldSends.hold(held);
 		}
+		this.markRoutingProgress(request);
 		if (result.status !== "held") return true;
 		// #4488: a released child is parked while its owner releases it, then made wakeable, and its owner's broker looks
 		// for held sends as it makes it wakeable. When that look came before this send was written and this send found it
 		// still parked, only a read made now that the send is written sees it wakeable: one of the two asks for the wake.
 		const current =
 			reservation.wake || count > 0 ? reservation : await this.activeReservation(reservation.reservationKey);
+		if (!reservation.wake && count === 0) this.markRoutingProgress(request);
 		const wake = current?.wake === true;
 		const previous = this.holds.get(message.id);
 		if (previous !== undefined) clearTimeout(previous.timer);
@@ -5117,6 +5506,13 @@ export class MultiNodeRouter {
 			reasonCode: wake ? unrestoredReasonCode(reservation.reservationKey, true) : reasonCode,
 			timer,
 		});
+		// Stop routing progress reporting before writing the 20 s hold so no 8 s routing hold can shrink it during `requestWake`.
+		const progress = this.sendProgress.get(request.clientMessage);
+		if (progress !== undefined) {
+			this.stopProgress(progress);
+			const holdDeadline = performance.now() + RESTORING_RECIPIENT_HOLD_MS + HELD_SEND_GRACE_MS;
+			if (holdDeadline > progress.clientDeadlineAt) progress.clientDeadlineAt = holdDeadline;
+		}
 		this.host.write(request.socket, {
 			type: "send_held",
 			messageId: message.id,
@@ -5523,19 +5919,41 @@ export class MultiNodeRouter {
 
 	private async finishDelivered(waiter: Waiter): Promise<void> {
 		this.dropWaiter(waiter);
-		await this.state.sentMessages.accept({ messageId: waiter.messageId, digest: waiter.digest });
-		if (waiter.expectsReply && waiter.resolveReplyTarget && waiter.attemptId !== undefined) {
-			// #3777: a recipient that reconnected before confirming answers under its new session id.
-			const current = await this.state.leases.read({ kind: "presence", targetIdentity: waiter.targetIdentity });
-			if (
-				current.status === "found" &&
-				current.lease.subject.kind === "presence" &&
-				current.lease.subject.session.id !== waiter.targetSessionId
-			) {
-				await this.writeQuestionTarget(waiter.socket, waiter.messageId, waiter.attemptId, {
-					sessionId: current.lease.subject.session.id,
-				});
+		const now = performance.now();
+		const acceptance: SendProgress = {
+			startedAt: waiter.waitingSince,
+			clientDeadlineAt: waiter.clientDeadlineAt,
+			hadProgress: true,
+			lastProgressAt: now,
+			reportingEnabled: true,
+			socket: waiter.socket,
+			messageId: waiter.messageId,
+			...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
+		};
+		this.scheduleProgressHold(acceptance, now);
+		try {
+			await this.state.sentMessages.accept({ messageId: waiter.messageId, digest: waiter.digest });
+			const afterAccept = performance.now();
+			acceptance.lastProgressAt = afterAccept;
+			this.scheduleProgressHold(acceptance, afterAccept);
+			if (waiter.expectsReply && waiter.resolveReplyTarget && waiter.attemptId !== undefined) {
+				// #3777: a recipient that reconnected before confirming answers under its new session id.
+				const current = await this.state.leases.read({ kind: "presence", targetIdentity: waiter.targetIdentity });
+				const afterLease = performance.now();
+				acceptance.lastProgressAt = afterLease;
+				this.scheduleProgressHold(acceptance, afterLease);
+				if (
+					current.status === "found" &&
+					current.lease.subject.kind === "presence" &&
+					current.lease.subject.session.id !== waiter.targetSessionId
+				) {
+					await this.writeQuestionTarget(waiter.socket, waiter.messageId, waiter.attemptId, {
+						sessionId: current.lease.subject.session.id,
+					});
+				}
 			}
+		} finally {
+			this.stopProgress(acceptance);
 		}
 		this.host.write(waiter.socket, { type: "delivered", messageId: waiter.messageId, attemptId: waiter.attemptId });
 	}
@@ -5641,12 +6059,7 @@ export class MultiNodeRouter {
 
 	private holdSender(waiter: Waiter, timeoutMs: number): void {
 		if (this.waiters.get(waiter.messageId) !== waiter) return;
-		this.host.write(waiter.socket, {
-			type: "send_held",
-			messageId: waiter.messageId,
-			...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
-			timeoutMs,
-		});
+		this.sendHoldFrame(waiter.socket, waiter.messageId, waiter.attemptId, timeoutMs, waiter);
 	}
 
 	private expireUncertain(waiter: Waiter): void {
@@ -5954,6 +6367,10 @@ export class MultiNodeRouter {
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		for (const stop of [...this.progressStops]) stop();
+		this.progressStops.clear();
+		this.queuedProgress.clear();
+		this.replyLanes.clear();
 		this.sendOrder.close();
 		// Release every pending return-path opening (both `inflight` and `settleDelivered`) before awaiting `serials`,
 		// so a serialized reply waiting on a pending opening wakes immediately and never deadlocks shutdown.

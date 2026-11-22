@@ -226,6 +226,7 @@ export interface AwaitIntercomPeerRequest {
 	readonly name: string;
 	readonly group?: string;
 	readonly timeoutMs: number;
+	readonly signal?: AbortSignal;
 	completion?: Promise<boolean>;
 }
 
@@ -417,18 +418,61 @@ export function hasIntercomHistory(entries: readonly SessionEntry[]): boolean {
 	);
 }
 
+function raceWithAbort<T>(
+	promise: Promise<T>,
+	signal: AbortSignal | undefined,
+): Promise<{ readonly aborted: true } | { readonly aborted: false; readonly value: T }> {
+	if (signal === undefined) return promise.then((value) => ({ aborted: false as const, value }));
+	if (signal.aborted) {
+		void promise.catch(() => undefined);
+		return Promise.resolve({ aborted: true as const });
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => resolve({ aborted: true as const });
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve({ aborted: false as const, value });
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				if (signal.aborted) resolve({ aborted: true as const });
+				else reject(error);
+			},
+		);
+	});
+}
+
+function waitPollInterval(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+	if (signal?.aborted) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			resolve(true);
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve(false);
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 /** Poll the broker until a peer with this name is registered, or report that it never came back. */
 export async function waitForIntercomPeer(
 	client: Pick<IntercomClient, "listSessions">,
-	request: Pick<AwaitIntercomPeerRequest, "name" | "group" | "timeoutMs">,
+	request: Pick<AwaitIntercomPeerRequest, "name" | "group" | "timeoutMs" | "signal">,
 ): Promise<boolean> {
 	const name = request.name.trim().toLowerCase();
 	const deadline = Date.now() + request.timeoutMs;
 	for (;;) {
-		const sessions = await client.listSessions(request.group);
-		if (sessions.some((session) => session.name?.trim().toLowerCase() === name)) return true;
+		if (request.signal?.aborted) return false;
+		const listed = await raceWithAbort(client.listSessions(request.group), request.signal);
+		if (listed.aborted) return false;
+		if (listed.value.some((session) => session.name?.trim().toLowerCase() === name)) return true;
 		if (Date.now() + PEER_POLL_INTERVAL_MS > deadline) return false;
-		await new Promise((resolve) => setTimeout(resolve, PEER_POLL_INTERVAL_MS));
+		if (await waitPollInterval(PEER_POLL_INTERVAL_MS, request.signal)) return false;
 	}
 }
 

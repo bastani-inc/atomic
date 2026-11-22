@@ -677,6 +677,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 		});
 
 		atomic.on("session_recovery_restore", async (event, ctx) => {
+			if (event.engineRestart === true) return undefined;
 			let needsIntercom = false;
 			try {
 				needsIntercom = hasIntercomHistory(ctx.sessionManager.getEntries());

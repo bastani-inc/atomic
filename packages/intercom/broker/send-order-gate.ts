@@ -44,6 +44,8 @@ export interface SendOrderTicket {
 interface InternalTicket extends SendOrderTicket {
 	previousTargetIdentity?: string;
 	readonly pendingLocalTargetIdentities?: ReadonlySet<string>;
+	waitingOn?: InternalTicket;
+	lastBlocker?: InternalTicket;
 	targetKnownWait?: DeferredWait;
 	unboundedWait?: DeferredWait;
 	finishedWait?: DeferredWait;
@@ -208,11 +210,28 @@ export class SendOrderGate {
 		return this.waitLoop(internal, options);
 	}
 
+	/** Return the in-flight earlier ticket currently blocking `ticket` (following any wait chain), or `undefined`. */
+	blockingTicket(ticket: SendOrderTicket): SendOrderTicket | undefined {
+		let cursor = (ticket as InternalTicket).waitingOn;
+		let head: InternalTicket | undefined;
+		while (cursor !== undefined && cursor.phase !== "done") {
+			head = cursor;
+			cursor = cursor.waitingOn;
+		}
+		return head;
+	}
+
+	/** Return the most recent earlier ticket that `ticket` waited on (even if it just finished). */
+	lastBlockingTicket(ticket: SendOrderTicket): SendOrderTicket | undefined {
+		return (ticket as InternalTicket).lastBlocker;
+	}
+
 	/** Mark a ticket done, wake any waiting later sends, and prune empty sender entries. */
 	finish(ticket: SendOrderTicket): void {
 		const internal = ticket as InternalTicket;
 		if (internal.phase === "done") return;
 		internal.phase = "done";
+		internal.waitingOn = undefined;
 		const targetWait = internal.targetKnownWait;
 		internal.targetKnownWait = undefined;
 		targetWait?.resolve();
@@ -237,6 +256,7 @@ export class SendOrderGate {
 		for (const list of this.bySender.values()) {
 			for (const ticket of list) {
 				ticket.phase = "done";
+				ticket.waitingOn = undefined;
 				ticket.targetKnownWait?.resolve();
 				ticket.targetKnownWait = undefined;
 				ticket.unboundedWait?.resolve();
@@ -315,24 +335,31 @@ export class SendOrderGate {
 					localBoundExpired = true;
 				});
 		const hasBound = localBoundExpired || boundPromise !== undefined;
-		while (!this.closed && current.phase !== "done") {
-			const list = this.bySender.get(current.senderKey);
-			if (list === undefined) return;
-			let waited = false;
-			for (const earlier of list) {
-				if (earlier.seq >= current.seq) break;
-				const kind = this.waitKind(earlier, current, options);
-				if (kind === "skip") continue;
-				const bounded = this.isBounded(current, earlier, hasBound);
-				if (bounded && localBoundExpired) continue;
-				const wait = kind === "target" ? this.awaitTargetKnown(earlier) : this.awaitFinished(earlier);
-				if (bounded && boundPromise !== undefined) await Promise.race([wait, boundPromise]);
-				else if (current.isLocal && hasBound) await Promise.race([wait, this.awaitUnbounded(earlier)]);
-				else await wait;
-				waited = true;
-				break;
+		try {
+			while (!this.closed && current.phase !== "done") {
+				const list = this.bySender.get(current.senderKey);
+				if (list === undefined) return;
+				let waited = false;
+				for (const earlier of list) {
+					if (earlier.seq >= current.seq) break;
+					const kind = this.waitKind(earlier, current, options);
+					if (kind === "skip") continue;
+					const bounded = this.isBounded(current, earlier, hasBound);
+					if (bounded && localBoundExpired) continue;
+					const wait = kind === "target" ? this.awaitTargetKnown(earlier) : this.awaitFinished(earlier);
+					current.waitingOn = earlier;
+					current.lastBlocker = earlier;
+					if (bounded && boundPromise !== undefined) await Promise.race([wait, boundPromise]);
+					else if (current.isLocal && hasBound) await Promise.race([wait, this.awaitUnbounded(earlier)]);
+					else await wait;
+					current.waitingOn = undefined;
+					waited = true;
+					break;
+				}
+				if (!waited) return;
 			}
-			if (!waited) return;
+		} finally {
+			current.waitingOn = undefined;
 		}
 	}
 }

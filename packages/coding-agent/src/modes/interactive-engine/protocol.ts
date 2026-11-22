@@ -113,6 +113,16 @@ export type InteractiveEngineMessage =
 	| { type: "engine_deprecation_warning"; message: string; once?: string }
 	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
 	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
+	/**
+	 * A subagent's session was stopped, cleared, ended non-resumably, or received input by another path, so any
+	 * pending lost-queue restore held by the host for that child is dropped.
+	 */
+	| {
+			type: "engine_agent_queue_invalidated";
+			sessionId: string;
+			sessionFile?: string;
+			reason: "stopped" | "cleared" | "session-ended" | "sent-elsewhere";
+	  }
 	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
 	| {
 			type: "engine_view_agent";
@@ -593,6 +603,23 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			const status = parseAgentViewStatus(value.status);
 			return typeof value.viewId === "string" && status !== undefined
 				? { type: value.type, viewId: value.viewId, status }
+				: undefined;
+		}
+		case "engine_agent_queue_invalidated": {
+			const reason = value.reason;
+			const validReason =
+				reason === "stopped" || reason === "cleared" || reason === "session-ended" || reason === "sent-elsewhere";
+			return typeof value.sessionId === "string" &&
+				value.sessionId.length > 0 &&
+				(value.sessionFile === undefined ||
+					(typeof value.sessionFile === "string" && value.sessionFile.length > 0)) &&
+				validReason
+				? {
+						type: value.type,
+						sessionId: value.sessionId,
+						...(value.sessionFile === undefined ? {} : { sessionFile: value.sessionFile }),
+						reason,
+					}
 				: undefined;
 		}
 		case "engine_view_agent":
@@ -1107,12 +1134,22 @@ function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | u
 		isStringList(queued.followUp) &&
 		(value.unsaved === undefined || isStringList(value.unsaved));
 	if (!valid) return undefined;
+	let result: Record<string, JsonValue> = value;
 	// Receipts that are not as an engine writes them are left out: its messages are then reported as unconfirmed.
-	if (value.receipts !== undefined && !isAgentViewReceipts(value.receipts)) {
-		const { receipts: _receipts, ...status } = value;
-		return status as unknown as AgentViewStatus;
+	if (result.receipts !== undefined && !isAgentViewReceipts(result.receipts)) {
+		const { receipts: _receipts, ...rest } = result;
+		result = rest;
 	}
-	return value as unknown as AgentViewStatus;
+	// Malformed session identity fields are left out so the host safely falls back to notice-only.
+	const badSessionId =
+		result.sessionId !== undefined && (typeof result.sessionId !== "string" || result.sessionId.length === 0);
+	const badSessionFile =
+		result.sessionFile !== undefined && (typeof result.sessionFile !== "string" || result.sessionFile.length === 0);
+	if (badSessionId || badSessionFile) {
+		const { sessionId: _sessionId, sessionFile: _sessionFile, ...rest } = result;
+		result = rest;
+	}
+	return result as unknown as AgentViewStatus;
 }
 
 function isAgentViewReceipts(value: JsonValue): boolean {
