@@ -72,7 +72,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 	};
 	try {
 		const changelogPreload = needsChangelogPreload(
-			(this.session.state?.messages?.length ?? 0) > 0,
+			(this.session?.state?.messages?.length ?? 0) > 0,
 			this.settingsManager?.getLastChangelogVersion?.(),
 			VERSION,
 		)
@@ -133,7 +133,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 			await changelogPreload;
 		} else if (
 			needsChangelogPreload(
-				(this.session.state?.messages?.length ?? 0) > 0,
+				(this.session?.state?.messages?.length ?? 0) > 0,
 				this.settingsManager?.getLastChangelogVersion?.(),
 				VERSION,
 			)

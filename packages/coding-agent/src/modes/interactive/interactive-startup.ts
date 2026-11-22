@@ -461,7 +461,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	const eagerChangelogPreload =
 		!this.deferredStartupPending &&
 		needsChangelogPreload(
-			(this.session.state?.messages?.length ?? 0) > 0,
+			(this.session?.state?.messages?.length ?? 0) > 0,
 			this.settingsManager?.getLastChangelogVersion?.(),
 			VERSION,
 		)
@@ -508,7 +508,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 			await eagerChangelogPreload;
 		} else if (
 			needsChangelogPreload(
-				(this.session.state?.messages?.length ?? 0) > 0,
+				(this.session?.state?.messages?.length ?? 0) > 0,
 				this.settingsManager?.getLastChangelogVersion?.(),
 				VERSION,
 			)
