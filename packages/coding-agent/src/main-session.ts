@@ -312,13 +312,13 @@ async function createProvisionalSession(store: SessionStore, cwd: string, id?: s
 	return manager;
 }
 
-/** Finalize a CLI-owned provisional store after trusted settings become available. */
-export async function refreshSessionStorage(
+/** The store `refreshSessionStorage` would move a session to with these settings, and the key it records for it. */
+async function plannedSessionStorage(
 	manager: SessionManager,
 	parsed: Args,
 	settingsManager: SettingsManager,
 	sessionStore?: SessionStore | StorageSelection,
-): Promise<SessionStore | undefined> {
+) {
 	// An opened conversation belongs to the store that supplied it, even when its
 	// project's newly trusted settings select a different store for new sessions.
 	if (!provisionalSessions.has(manager) || manager.getEntries().length > 0) return undefined;
@@ -335,6 +335,29 @@ export async function refreshSessionStorage(
 	const key = storageSelectionKey(selection, getAgentDir());
 	const initialKey = initialStorageKeys.get(manager);
 	if (initialKey === undefined || key === initialKey) return undefined;
+	return { options, key };
+}
+
+/** Whether `refreshSessionStorage` would move the session to another store with these settings. Changes nothing. */
+export async function sessionStorageWouldMove(
+	manager: SessionManager,
+	parsed: Args,
+	settingsManager: SettingsManager,
+	sessionStore?: SessionStore | StorageSelection,
+): Promise<boolean> {
+	return (await plannedSessionStorage(manager, parsed, settingsManager, sessionStore)) !== undefined;
+}
+
+/** Finalize a CLI-owned provisional store after trusted settings become available. */
+export async function refreshSessionStorage(
+	manager: SessionManager,
+	parsed: Args,
+	settingsManager: SettingsManager,
+	sessionStore?: SessionStore | StorageSelection,
+): Promise<SessionStore | undefined> {
+	const planned = await plannedSessionStorage(manager, parsed, settingsManager, sessionStore);
+	if (planned === undefined) return undefined;
+	const { options, key } = planned;
 	const previous = manager.getSessionStore();
 	const next = await resolveSessionStore(manager.getCwd(), options);
 	try {

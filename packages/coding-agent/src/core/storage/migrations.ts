@@ -159,6 +159,45 @@ export async function applyStorageMigrations(
 	);
 }
 
+/** One domain's migration for {@link applyStorageMigrationsTogether}: the arguments of {@link applyStorageMigrations}. */
+export interface StorageDomainMigration {
+	readonly domain: string;
+	readonly steps: readonly StorageMigrationStep[];
+	readonly options?: StorageMigrationOptions;
+}
+
+/**
+ * Migrates each of `migrations` in order, as {@link applyStorageMigrations} would, and resolves with each one's result.
+ * Where the dialect records no versions (SQLite), every step runs every time, so the domains share one transaction: one
+ * turn of the write lock for all of them, and a failure rolls back all of them. Elsewhere each domain migrates in a
+ * transaction of its own, as `applyStorageMigrations` runs it.
+ */
+export async function applyStorageMigrationsTogether(
+	database: SqliteDatabase,
+	migrations: readonly StorageDomainMigration[],
+): Promise<StorageMigrationResult[]> {
+	const dialect = dialectOf(database);
+	if (dialect.versionedMigrations) {
+		const results: StorageMigrationResult[] = [];
+		for (const { domain, steps, options } of migrations)
+			results.push(await applyStorageMigrations(database, domain, steps, options));
+		return results;
+	}
+	for (const { steps } of migrations) checkSteps(steps);
+	const table = migrations[0]?.options?.table ?? DEFAULT_MIGRATION_TABLE;
+	return database.transaction(
+		async (transaction) => {
+			const results: StorageMigrationResult[] = [];
+			for (const { steps } of migrations) {
+				for (const step of steps) await step.up(transaction, dialect);
+				results.push({ applied: steps.map((step) => step.version), version: steps.at(-1)?.version ?? 0 });
+			}
+			return results;
+		},
+		{ retryTransientFailures: true, concurrency: { kind: "serial", domain: table } },
+	);
+}
+
 /** How long one schema setup statement waits for a table lock before the setup backs off and tries again (#5218). */
 export const SCHEMA_SETUP_LOCK_WAIT_MS = 1_000;
 /** How many times a schema setup runs before a lock it keeps waiting for fails it. */

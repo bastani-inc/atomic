@@ -1,9 +1,9 @@
 import { Worker } from "node:worker_threads";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { EVAL_WORKER_BUILTIN } from "../../utils/worker-threads.js";
-import type { SqliteRow, SqliteStatement, SqliteValue } from "./database.js";
+import type { SqliteRow, SqliteValue } from "./database.js";
 import { sqliteDialect } from "./dialect.js";
-import type { SqliteSequence } from "./statement-sequence.js";
+import type { SequencedStatement, SqliteSequence } from "./statement-sequence.js";
 
 /**
  * A node:sqlite connection that runs on a worker thread of its own (#5376). The thread owns the `DatabaseSync`; the
@@ -149,9 +149,10 @@ const handlers = {
 				repeated++;
 			}
 		}
-		for (const { sql, params } of request.statements) {
+		for (const { sql, params, script } of request.statements) {
 			if (aborted()) return { aborted: true };
-			statement(sql).run(...bind(params));
+			if (script === true) database.exec(sql);
+			else statement(sql).run(...bind(params));
 		}
 		return { repeated };
 	},
@@ -216,7 +217,7 @@ parentPort.on("message", (request) => {
 export interface SequenceRequest {
 	readonly kind: "sequence";
 	readonly repeat?: SqliteSequence["repeat"];
-	readonly statements: readonly SqliteStatement[];
+	readonly statements: readonly SequencedStatement[];
 	readonly abort?: SharedArrayBuffer;
 }
 
