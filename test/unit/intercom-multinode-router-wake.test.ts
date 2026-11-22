@@ -2578,6 +2578,28 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		await flush();
 	}
 
+	/**
+	 * `target` registered as the broker registers a named session without a supervisor: its name is offered as a
+	 * reservation it may consume (`broker.ts`).
+	 */
+	function registeredAsNamed(
+		node: Node,
+		target: BrokerConnectedSession,
+		grant?: SessionIdGrant,
+		awaits?: string,
+		recovery?: string,
+	): Promise<void> {
+		node.sessions.set(target.info.id, target);
+		return node.router.sessionRegistered(
+			target,
+			{ childName: target.info.name!, groups: new Set([CREW]) },
+			undefined,
+			grant,
+			awaits,
+			recovery,
+		);
+	}
+
 	/** A send from `from` to the session `to` registered on the same broker; `local` counts its local-path answers. */
 	function localSend(from: BrokerConnectedSession, to: BrokerConnectedSession) {
 		const send = remoteSend(from, to.info.id, false);
@@ -3071,14 +3093,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
 		const otherGrant = await otherClaim;
 		assert.ok(otherGrant.status === "granted" && otherGrant.grant.alias === undefined, JSON.stringify(otherGrant));
-		// Registered as the broker registers a top-level session: its name is offered as a reservation it may consume.
-		here.sessions.set(other.info.id, other);
-		const otherRegistered = here.router.sessionRegistered(
-			other,
-			{ childName: other.info.name!, groups: new Set([CREW]) },
-			undefined,
-			otherGrant.grant,
-		);
+		const otherRegistered = registeredAsNamed(here, other, otherGrant.grant);
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await otherRegistered;
 		const reply = (from: BrokerConnectedSession) => {
@@ -3106,6 +3121,19 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		const refused = await outcome(other, reply(other));
 		assert.equal(refused.routeUnavailable, undefined, JSON.stringify(refused));
 		assert.equal(refused.reason, UNAUTHORIZED_REPLY_REASON);
+		// Only an ask whose route is to the fresh id is answered so: a reply to an ask this broker cannot place is still told
+		// to retry while the stopped broker may keep its route.
+		const unplaced = remoteSend(other, asker.info.id, false);
+		const unplacedMessage = { ...unplaced.request.message, replyTo: randomUUID() };
+		here.router.routeSend({
+			...unplaced.request,
+			message: unplacedMessage,
+			clientMessage: { ...unplaced.request.clientMessage, message: unplacedMessage },
+			requirePendingReply: true,
+			expectedRecipientId: asker.info.id,
+		});
+		const unplacedRefusal = await outcome(other, unplaced.id);
+		assert.equal(unplacedRefusal.routeUnavailable, true, JSON.stringify(unplacedRefusal));
 
 		// The registration that presents the hand-over awaits the id with it, and takes the fresh id back once it has the id:
 		// its answer meanwhile is still refused as retryable.
@@ -3124,14 +3152,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			info: { ...fresh.info, id: randomUUID() },
 		};
 		here.sessions.set(again.info.id, again);
-		const registered = here.router.sessionRegistered(
-			again,
-			undefined,
-			undefined,
-			undefined,
-			live.info.id,
-			held.recovery,
-		);
+		const registered = registeredAsNamed(here, again, undefined, live.info.id, held.recovery);
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await registered;
 		const retry = await outcome(again, reply(again));
@@ -3175,7 +3196,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		const claim = await claimed;
 		assert.ok(claim.status === "granted" && claim.grant.alias === fresh.info.id, JSON.stringify(claim));
 		const back = registeringAs(fresh, live.info.id);
-		const registered = registeredOn(here, back, claim.grant);
+		const registered = registeredAsNamed(here, back, claim.grant);
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await registered;
 		assert.ok(release !== undefined, "the registration's binding write is on its way");
@@ -3351,7 +3372,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		const claim = await claimed;
 		assert.ok(claim.status === "granted" && claim.grant.alias === fresh.info.id, JSON.stringify(claim));
 		const back = registeringAs(fresh, live.info.id);
-		const registered = registeredOn(here, back, claim.grant);
+		const registered = registeredAsNamed(here, back, claim.grant);
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await registered;
 		assert.equal(aliasWriteFails, false, "the write taking the fresh id failed");
