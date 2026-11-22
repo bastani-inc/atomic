@@ -14,11 +14,13 @@ import {
 	taggedUserMessagesShownCount,
 } from "./interactive-render-chat.ts";
 import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
+import { beginPostStartupPromptTurn } from "./post-startup-highlight.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	this: InteractiveModeBase,
 	input: InteractiveSubmission | string,
 ): Promise<void> {
+	const endPostStartupPromptTurn = beginPostStartupPromptTurn(this);
 	const { text: userInput, draft, echo: submittedEcho } = toInteractiveSubmission(input);
 	const originSendId = randomUUID();
 	if (submittedEcho !== undefined) noteDeferredEchoOrigin(this, userInput, submittedEcho, originSendId);
@@ -127,5 +129,6 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 		}
+		endPostStartupPromptTurn();
 	}
 };
