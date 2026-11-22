@@ -31,7 +31,8 @@ test("the generated shrinkwrap matches the committed one", async () => {
 test("the published tree keeps coding-agent dependencies on satisfying versions", async () => {
 	const generated = await generateShrinkwrap();
 	assert.equal(generated.packages["node_modules/chalk"]?.version, "6.0.0");
-	assert.equal(generated.packages["node_modules/markit-ai/node_modules/chalk"]?.version, "5.6.2");
+	assert.equal(generated.packages["node_modules/retry"]?.version, "0.13.1");
+	assert.equal(generated.packages["node_modules/proper-lockfile/node_modules/retry"]?.version, "0.12.0");
 });
 
 test("the published tree preserves internal workspace-local dependencies and their nested tree", async () => {
