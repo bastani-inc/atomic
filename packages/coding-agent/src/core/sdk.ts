@@ -77,6 +77,7 @@ import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
+import { notifySessionProviderRequestDispatched } from "./provider-request-dispatch.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
@@ -765,6 +766,7 @@ async function constructAgentSession(
 		}
 		const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
 		markLifecycleTiming("before-provider-request");
+		notifySessionProviderRequestDispatched(session);
 		return sanitizedPayload;
 	};
 	const onPayload: NonNullable<ModelRuntimeSimpleStreamOptions["onPayload"]> = (payload, model) =>
@@ -893,9 +895,10 @@ async function constructAgentSession(
 							: undefined,
 					},
 				};
-				return { authResult, requestModel, fastRouteStreamOptions, requestOptions };
+				return { authResult, requestModel, fastRouteStreamOptions, requestOptions, usesExtensionStream };
 			};
-			const { authResult, requestModel, fastRouteStreamOptions, requestOptions } = await prepare();
+			const { authResult, requestModel, fastRouteStreamOptions, requestOptions, usesExtensionStream } =
+				await prepare();
 			if (streamOptions?.sessionId === requestSessionId()) {
 				// The conversation's first request after a resume that sends the session's prompt as it is now is on its
 				// way: a later run is no longer the first. A summary request (it has its own session id), a provider setup
@@ -962,7 +965,10 @@ async function constructAgentSession(
 					throw error;
 				}
 			}
-			return modelRuntime.streamSimple(requestModel, context, requestOptions);
+			const stream = modelRuntime.streamSimple(requestModel, context, requestOptions);
+			// Extension-streamed providers bypass `onPayload`, so notify dispatch directly here.
+			if (usesExtensionStream) notifySessionProviderRequestDispatched(session);
+			return stream;
 		},
 		onPayload,
 		onResponse: async (response, _model) => {

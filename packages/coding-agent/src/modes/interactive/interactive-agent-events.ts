@@ -56,6 +56,7 @@ import {
 } from "./interactive-render-chat.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
+import { notifyPostStartupPromptStreaming } from "./post-startup-highlight.ts";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
 /** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
@@ -453,6 +454,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 			} else if (event.message.role === "assistant") {
+				notifyPostStartupPromptStreaming(this);
 				this.streamingComponent = new AssistantMessageComponent(
 					undefined,
 					this.hideThinkingBlock,
@@ -471,6 +473,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			break;
 
 		case "message_update": {
+			notifyPostStartupPromptStreaming(this);
 			// `message_start` seeds the stream, ordered deltas build it, and
 			// `message_end` supplies the authoritative final message.
 			if (this.streamingMessage) {
