@@ -25,6 +25,10 @@ export const GATE_FILE_MARK = "// Written by the build (scripts/in-place-update-
 /** The file next to a gated module's path that holds its code. */
 export const gatedImplementation = (path) => path.replace(/\.js$/, ".impl.js");
 
+/** The module path whose gate puts its code at `path`, or `undefined` when `path` is not one. */
+export const gatedModuleOf = (path) =>
+	path.endsWith(".impl.js") ? `${path.slice(0, -".impl.js".length)}.js` : undefined;
+
 /**
  * The module of each recorded release that tells which release a process runs: a file every process of that release
  * loaded (its record's `running` files, those its CLI loaded at start first) that exports `VERSION` and `APP_NAME`.

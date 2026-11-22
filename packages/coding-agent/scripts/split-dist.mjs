@@ -34,6 +34,7 @@ import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } fro
 import {
 	GATE_FILE_MARK,
 	gatedImplementation,
+	gatedModuleOf,
 	gateSource,
 	RELEASE_MODULE_STUB,
 	releaseVersionModules,
@@ -41,6 +42,9 @@ import {
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
+const sourceDir = join(packageDir, "src");
+const compiledFromSource = (path) =>
+	!path.startsWith(`${SHARED_DIRECTORY}/`) && existsSync(join(sourceDir, path.replace(/\.js$/, ".ts")));
 /** The entries that are bundled: the bin, `main.js` (which the CLI imports), and the SDK's other export paths. */
 const BUNDLED_ENTRIES = ["cli", "main", "index", "rpc-entry"];
 /**
@@ -382,6 +386,14 @@ if (!existsSync(RELEASE_RECORDS))
 		`split-dist: ${RELEASE_RECORDS} is missing; the split keeps the modules the releases recorded there import on demand`,
 	);
 const releasedLazyTargets = new Set();
+/**
+ * Gate implementation paths (`<module>.impl.js`) a recorded release imports on demand, mapped to the compiled module
+ * path they stand for and the export names recorded there. Each keeps its module at `<module>.js` (still failing when
+ * no module compiles to it) and, if this build does not gate `<module>.js`, receives a re-export file at
+ * `<module>.impl.js` so that release's processes still find the module at the path they import.
+ * @type {Map<string, { target: string, names: Set<string> }>}
+ */
+const releasedImplTargets = new Map();
 /** The shared files a recorded release imports on demand, with the names it exported: see `compatSharedFiles`. */
 const releasedSharedTargets = [];
 const releaseRecords = readdirSync(RELEASE_RECORDS)
@@ -397,12 +409,22 @@ for (const record of releaseRecords) {
 			releasedSharedTargets.push({ version: record.version, path, names: atomic.files?.[`dist/${path}`] ?? [] });
 			continue;
 		}
-		if (!existsSync(join(dist, path)) && !existsSync(join(COMPILED_ENTRIES, path)))
+		const implOf = compiledFromSource(path) ? undefined : gatedModuleOf(path);
+		const target = implOf ?? path;
+		if (!existsSync(join(dist, target)) && !existsSync(join(COMPILED_ENTRIES, target)))
 			throw new Error(
-				`split-dist: ${record.version} imports dist/${path} on demand, and no module of this package compiles to it; keep a module at that path`,
+				`split-dist: ${record.version} imports dist/${path} on demand, and no module of this package compiles to ${implOf === undefined ? "it" : `dist/${target}`}; keep a module at that path`,
 			);
-		releasedLazyTargets.add(path);
-		visitBundled(path);
+		if (implOf !== undefined) {
+			let entry = releasedImplTargets.get(path);
+			if (entry === undefined) {
+				entry = { target, names: new Set() };
+				releasedImplTargets.set(path, entry);
+			}
+			for (const name of atomic.files?.[`dist/${path}`] ?? []) entry.names.add(name);
+		}
+		releasedLazyTargets.add(target);
+		visitBundled(target);
 	}
 }
 const SPLIT_ENTRIES = [
@@ -932,9 +954,6 @@ for (const { path, contents } of compatFiles) {
 // and, as the leftovers loop finds them, those that import a removed one. A file an earlier build left in `dist` (a shared
 // file it wrote, the startup stages, a compiled file whose source is gone) decides nothing: a build over it decides as a
 // build of a clean `dist` does.
-const sourceDir = join(packageDir, "src");
-const compiledFromSource = (path) =>
-	!path.startsWith(`${SHARED_DIRECTORY}/`) && existsSync(join(sourceDir, path.replace(/\.js$/, ".ts")));
 const kept = new Set([
 	...outputFiles.map((file) => toPosix(relative(dist, file.path))).filter((file) => file.endsWith(".js")),
 	...compatFiles.map((file) => file.path).filter((file) => file.endsWith(".js")),
@@ -1034,6 +1053,31 @@ for (const path of gated) {
 	const gate = `${gateSource({ path, exports: entryExports.get(path), probes, version: buildVersion })}//# sourceMappingURL=${base}.map\n`;
 	writeFileSync(join(dist, path), gate);
 	writeFileSync(map, emptyMap(base));
+}
+// A gate implementation path (`<module>.impl.js`) a recorded release imports on demand whose module is not gated in
+// this build (for example, once the package imports it statically or loads it at startup): keep a re-export file at
+// that path so the release's process still finds this build's single copy of the module.
+for (const [implementation, { target, names }] of releasedImplTargets) {
+	if (gated.has(target)) continue;
+	if (kept.has(implementation) || compiledFromSource(implementation))
+		throw new Error(`split-dist: dist/${implementation}, kept for a recorded release, is taken`);
+	const base = target.slice(target.lastIndexOf("/") + 1);
+	const implementationBase = implementation.slice(implementation.lastIndexOf("/") + 1);
+	const targetExports = entryExports.get(target);
+	const hasDefault =
+		targetExports !== undefined
+			? targetExports.includes("default")
+			: names.has("default") ||
+				/\bexport\s+default\b|\bas\s+default\b/.test(readFileSync(join(dist, target), "utf8"));
+	const lines = [
+		`${GATE_FILE_MARK}: keeps a gate implementation path a recorded release imports on demand when its module is not gated here.`,
+		`export * from ${JSON.stringify(`./${base}`)};`,
+		...(hasDefault ? [`export { default } from ${JSON.stringify(`./${base}`)};`] : []),
+		`//# sourceMappingURL=${implementationBase}.map`,
+		"",
+	];
+	writeGateFile(implementation, lines.join("\n"));
+	writeGateFile(`${implementation}.map`, emptyMap(implementationBase));
 }
 writeFileSync(
 	join(dist, "THIRD_PARTY_NOTICES.md"),

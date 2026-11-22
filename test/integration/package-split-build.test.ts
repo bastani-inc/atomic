@@ -938,6 +938,61 @@ test(
 );
 
 test(
+	"a gate implementation path an earlier release imported on demand stays, also when this build does not gate its module",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "released-impl-paths");
+		compiledPackage(build);
+		const split = () => spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		// The recorded 0.10.4 release imports its gated modules through `<module>.impl.js` paths.
+		assert.ok(fs.existsSync(join(build, "in-place-update", "0.10.4.json")), "0.10.4 is recorded");
+		const withRecorded = split();
+		assert.equal(withRecorded.status, 0, withRecorded.stderr);
+		// A release that imported a gate implementation path whose module is now statically imported (not gated).
+		const record = (path: string) =>
+			fs.writeFileSync(
+				join(build, "in-place-update", "0.0.1.json"),
+				JSON.stringify({
+					version: "0.0.1",
+					packages: { "@bastani/atomic": { lazy: { [`@bastani/atomic:dist/${path}`]: ["dist/main.js"] } } },
+				}),
+			);
+		record("core/agent-session.impl.js");
+		const kept = split();
+		assert.equal(kept.status, 0, kept.stderr);
+		const implPath = join(build, "dist", "core", "agent-session.impl.js");
+		const modulePath = join(build, "dist", "core", "agent-session.js");
+		assert.ok(fs.existsSync(implPath), "the gate implementation path stays as a re-export file");
+		assert.ok(fs.existsSync(`${implPath}.map`), "the re-export file ships with a source map");
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`const impl = await import(${JSON.stringify(pathToFileURL(implPath).href)});
+const current = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
+process.stdout.write(JSON.stringify({ same: impl.AgentSession === current.AgentSession, hasClass: typeof impl.AgentSession === "function" }));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		assert.deepEqual(JSON.parse(probe.stdout), { same: true, hasClass: true });
+		// Running the split again over the shim succeeds cleanly.
+		const again = split();
+		assert.equal(again.status, 0, again.stderr);
+		// When the underlying module no longer compiles, the build still fails.
+		record("core/a-module-this-package-never-had.impl.js");
+		const failed = split();
+		assert.notEqual(failed.status, 0);
+		assert.match(
+			failed.stderr,
+			/0\.0\.1 imports dist\/core\/a-module-this-package-never-had\.impl\.js on demand, and no module of this package compiles to dist\/core\/a-module-this-package-never-had\.js/,
+		);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
 	"a shared file an earlier release imported on demand stays, holding this build's code of its module",
 	() => {
 		const { nodeModules } = installedLayout();
