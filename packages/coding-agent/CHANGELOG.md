@@ -21,6 +21,7 @@
 - Fixed `/tasks` on the isolated host so cancelling or failing a subagent open with `Esc` never leaves a speculative agent-panel preview painted or lands the next `/tasks` on the cancelled subagent, while staying compatible with older hosts and engines across in-place updates.
 - Inside a Herdr pane, a session status update that arrives just as the previous Herdr report finishes is now sent right away instead of leaving Herdr showing the older status until the next activity event.
 - Restored interrupted running subagents in `/tasks` and the agent panel automatically after an isolated-engine crash without showing user-facing resume prompts or replaying interrupted deliveries.
+- On Windows, closing an MCP stdio server and reaping processes from the parent-process guardian now use breakaway-allowing Job objects and handle/creation-time-verified native termination instead of bare-PID `taskkill /T`, so orphaned MCP grandchildren end before `close()` returns, explicit breakaway helpers continue to work, and unrelated processes given a reused PID are never terminated (including across asynchronous safe-cwd retries and when the native module is unavailable).
 
 ## [0.10.4] - 2026-11-22
 

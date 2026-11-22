@@ -31,14 +31,17 @@ const hiddenPaths = vi.hoisted(() => new Set<string>());
 const heldRealpaths = vi.hoisted(() => new Set<string>());
 /** Every process started through `node:child_process` while a test ran, and the folder it started in. */
 const startedProcesses = vi.hoisted(() => [] as { child: ChildProcess; cwd: string }[]);
-/** Forces `holdProcessDescendantsResult` unavailable to exercise the non-native `taskkill` fallback. */
+/** Forces native containment/hold unavailable to exercise the non-native `taskkill` fallback. */
 const forceNativeHoldUnavailable = vi.hoisted(() => ({ value: false }));
 vi.mock("../src/core/process-tree-containment.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/core/process-tree-containment.ts")>();
 	return {
 		...actual,
+		containProcessTreeAllowingBreakaway: (pid: number) =>
+			forceNativeHoldUnavailable.value ? undefined : actual.containProcessTreeAllowingBreakaway(pid),
 		holdProcessDescendantsResult: (pid: number) =>
 			forceNativeHoldUnavailable.value ? { kind: "unavailable" as const } : actual.holdProcessDescendantsResult(pid),
+		hasNativeProcessHold: () => (forceNativeHoldUnavailable.value ? false : actual.hasNativeProcessHold()),
 	};
 });
 vi.mock("node:child_process", async (importOriginal) => {
@@ -410,8 +413,27 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 		plantProgram(bin, "atomic-test-mcp-server");
 		vi.stubEnv("PATH", bin);
 		const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
-		// A server that does not exit when its input closes: the close ends it. The close waits for the command that ends
-		// it as long as the server is given to exit, set here past how long that command takes on a loaded machine.
+
+		// Native path: ends the stubborn server via Job/handles without spawning any external kill command.
+		const nativeTransport = new StdioTransport({
+			command: "atomic-test-mcp-server",
+			args: ["-e", "setTimeout(() => {}, 5000)"],
+			cwd: project,
+			projectCwd: project,
+			closeTimeoutMs: PROCESS_EXIT_BUDGET_MS,
+		});
+		await nativeTransport.start();
+		const nativeServer = await recordProcess(nativeTransport.pid!);
+		servers.push(nativeServer);
+		const beforeNative = startedProcesses.length;
+
+		await nativeTransport.close();
+
+		assert.deepEqual(startedProcesses.slice(beforeNative), [], "native close spawns no external kill command");
+		assert.equal(await waitUntilGone(nativeServer, PROCESS_EXIT_BUDGET_MS), true, "native close ended the server");
+
+		// Non-native fallback: spawns taskkill outside the project folder and waits for it to exit.
+		forceNativeHoldUnavailable.value = true;
 		const transport = new StdioTransport({
 			command: "atomic-test-mcp-server",
 			args: ["-e", "setTimeout(() => {}, 5000)"],
@@ -426,7 +448,7 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 		await transport.close();
 
 		const commands = startedProcesses.slice(before);
-		assert.ok(commands.length > 0, "the close started a command to end the server");
+		assert.ok(commands.length > 0, "the fallback close started a command to end the server");
 		for (const { child, cwd } of commands) {
 			assert.ok(
 				child.exitCode !== null || child.signalCode !== null,
@@ -467,6 +489,7 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 	});
 
 	test("closing an MCP server never runs taskkill inside a junction pointing into the project folder", async () => {
+		forceNativeHoldUnavailable.value = true;
 		const realSystemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 		const realTaskkill = join(realSystemRoot, "System32", "taskkill.exe");
 		const cmdExe = join(realSystemRoot, "System32", "cmd.exe");
@@ -608,6 +631,7 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 	});
 
 	test("closing an MCP server still kills its whole tree after a SystemRoot junction is retargeted and its old target deleted", async () => {
+		forceNativeHoldUnavailable.value = true;
 		const realSystemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 		const realSystem32 = join(realSystemRoot, "System32");
 		const cmdExe = join(realSystem32, "cmd.exe");

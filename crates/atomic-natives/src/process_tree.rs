@@ -39,6 +39,19 @@ impl HeldProcessDescendants {
 		ended
 	}
 
+	/// Ends only the held descendants (leaving the root handle intact) and releases their handles.
+	/// Used when the root is the current process itself so verified descendants end before the process exits.
+	#[napi(js_name = "endDescendants")]
+	pub fn end_descendants(&mut self) -> u32 {
+		let mut ended = 0u32;
+		for process in self.held.drain(..) {
+			if end(&process) {
+				ended += 1;
+			}
+		}
+		ended
+	}
+
 	/// Lets go of the processes it holds without ending them.
 	#[napi]
 	pub fn release(&mut self) {
@@ -436,6 +449,15 @@ mod tests {
 			*process != 1
 		}));
 		assert_eq!(*ended.borrow(), vec![1]);
+	}
+
+	#[test]
+	fn ends_descendants_without_dropping_root_handle() {
+		let mut held = super::HeldProcessDescendants { root: Some(()), held: vec![(), ()] };
+		assert_eq!(held.count(), 2);
+		assert_eq!(held.end_descendants(), 0);
+		assert_eq!(held.count(), 0);
+		assert!(held.root.is_some());
 	}
 
 	#[test]
