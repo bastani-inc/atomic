@@ -500,6 +500,11 @@ interface PresenceEntry {
 	 * it may take that hand-over's alias back once its writes answer, however long they take.
 	 */
 	presented?: string;
+	/**
+	 * #4386: a released subagent registering again, from the moment it registers: the asks parked for it are moved to this
+	 * registration once its store steps run, however long they take.
+	 */
+	releasedChild?: true;
 }
 
 /**
@@ -872,8 +877,9 @@ export class MultiNodeRouter {
 	/**
 	 * #5607: whether the ask `replyTo` went to the id that its replier's session had before it moved back to its own, which
 	 * only the registration presenting that move's lapsed hand-over takes back (`lapsedHandoffs`), and this registration
-	 * cannot: it holds no such alias, has none pending, does not await its id with that hand-over, and presented no
-	 * hand-over as it registered (whose writes may still be on their way). The ask's route
+	 * cannot: it holds no such alias, has none pending, does not await its id with that hand-over, presented no hand-over
+	 * as it registered, and is not a released subagent whose parked asks are moved to it (writes that may still be on
+	 * their way). The ask's route
 	 * is to that id, so no route a stopped broker may keep authorizes this registration's reply either.
 	 */
 	private async askedOfAliasItCannotTake(
@@ -893,6 +899,7 @@ export class MultiNodeRouter {
 			entry?.pendingAlias?.alias === alias ||
 			entry?.awaits?.recovery === lapsed.recovery ||
 			entry?.presented !== undefined ||
+			entry?.releasedChild === true ||
 			entry?.handsOver === true ||
 			this.reservedIds.has(identity)
 		)
@@ -1965,6 +1972,7 @@ export class MultiNodeRouter {
 		const entry: PresenceEntry = {};
 		const presented = grant?.recovery ?? reclaim?.recovery ?? recovery;
 		if (presented !== undefined) entry.presented = presented;
+		if (consumed?.childName !== undefined) entry.releasedChild = true;
 		// An unanswered claim's registration awaits the id only once its binding write did not keep it (below).
 		if (
 			awaits !== undefined &&

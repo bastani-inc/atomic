@@ -3212,6 +3212,101 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			);
 		});
 	});
+	test("a released subagent registering again without the hand-over, whose parked asks to the fresh id are rebound to it once its rebind write answers, is told to retry its answer meanwhile (#5607, #4386)", async () => {
+		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
+		const third = await startNode(shared, { process: { home: "third-home" } });
+		const asker = session("asker");
+		await registeredOn(third, asker);
+		const ask = randomUUID();
+		await third.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: fresh.info.id,
+			messageId: ask,
+		});
+		const parent = randomUUID();
+		const childName = "child";
+		const parked = await third.state.pendingAsks.parkForTarget(fresh.info.id, {
+			ownerSessionId: parent,
+			reservationKey: releasedReservationKey(childName),
+		});
+		assert.ok(parked.status === "parked" && parked.parked === 1, JSON.stringify(parked));
+		await untilMovedBack(here, fresh);
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		const other = twinOf(registeringAs(fresh, live.info.id), "other");
+		const otherClaim = here.router.claimSessionId(
+			live.info.id,
+			other.registrationReturnAddress!,
+			deliveryTargetIdentity(other),
+		);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const otherGrant = await otherClaim;
+		assert.ok(otherGrant.status === "granted" && otherGrant.grant.alias === undefined, JSON.stringify(otherGrant));
+		const pendingAsks = here.state.pendingAsks;
+		const realRebind = pendingAsks.rebindParked.bind(pendingAsks);
+		let rebindFails = true;
+		vi.spyOn(pendingAsks, "rebindParked").mockImplementation((...args: Parameters<typeof realRebind>) => {
+			if (rebindFails) {
+				rebindFails = false;
+				return Promise.reject(new Error("the database failed"));
+			}
+			return realRebind(...args);
+		});
+		here.sessions.set(other.info.id, other);
+		const registered = here.router.sessionRegistered(
+			other,
+			{ childName, authorizedBy: parent, groups: new Set([CREW]) },
+			undefined,
+			otherGrant.grant,
+		);
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
+		await registered;
+		assert.equal(rebindFails, false, "the rebind write failed once");
+
+		const reply = () => {
+			const send = remoteSend(other, asker.info.id, false);
+			const message = { ...send.request.message, replyTo: ask };
+			here.router.routeSend({
+				...send.request,
+				message,
+				clientMessage: { ...send.request.clientMessage, message },
+				requirePendingReply: true,
+				expectedRecipientId: asker.info.id,
+			});
+			return send.id;
+		};
+		const firstId = reply();
+		const first = await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			const found = framesOf(other).find(
+				(frame) => (frame.type === "delivery_failed" || frame.type === "delivered") && frame.messageId === firstId,
+			);
+			assert.ok(found !== undefined, "no outcome yet");
+			return found;
+		});
+		assert.ok(first.type === "delivery_failed" && first.routeUnavailable === true, JSON.stringify(first));
+		// A renewal runs the rebind again: the parked ask now names this registration's id.
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS + 1_000);
+		const rebound = await here.state.pendingAsks.matchesReply({
+			replySenderSessionId: other.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask,
+		});
+		assert.equal(rebound.status, "match", "the parked ask names this registration");
+		const retried = reply();
+		const answers = () =>
+			framesOf(asker).flatMap((frame) =>
+				frame.type === "message" ? [[frame.from.id, frame.message.id, frame.message.replyTo]] : [],
+			);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			assert.ok(
+				answers().some((answer) => answer[1] === retried),
+				JSON.stringify(framesOf(other)),
+			);
+		});
+	});
+
 	test("a registration that presented a lapsed hand-over but could not take the fresh id back yet is told to retry its answer to an ask to that id, while a broker is down (#5607)", async () => {
 		const { shared, here, live, fresh } = await awaitingWhileStopped(true);
 		const third = await startNode(shared, { process: { home: "third-home" } });
