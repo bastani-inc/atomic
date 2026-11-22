@@ -132,7 +132,7 @@ The `subagent` tool's `control` options select which control events notify the p
 
 Run results report each child's Intercom target as "Run intercom target" or "Previous intercom target"; a target may be inactive after completion. Use `intercom({ action: "status" })` to inspect connection state and memberships.
 
-For live peer coordination, call `intercom({ action: "status" })` in the parent before launching. Children connect on first use. Fresh children receive Intercom even when an extension allowlist omits it.
+For live peer coordination, call `intercom({ action: "status" })` in the parent before launching. A child launched with Intercom connects as soon as its session starts, before its first turn, so the parent and its peers can list it and message it right away; if the broker is unavailable at that moment, it connects on its next Intercom use (see [How Connection Works](#how-connection-works)). Fresh children receive Intercom even when an extension allowlist omits it.
 
 ### Delivery Ordering
 
@@ -252,7 +252,7 @@ When a whole machine or its broker stops, its sessions still look connected for 
 
 - Run `atomic storage status` on both machines. Both must use the same storage selection and the same `prefix`, from settings or from the process that started each broker, and the broker must report `storage: matches the selection above`. A broker started before you changed the selection keeps the old one until `atomic intercom restart` replaces it.
 - Check that each broker reports multi-node routing `on` with the other broker live, in `atomic intercom status` or in `broker.log`. `Intercom multi-node routing is off: <reason>` or `Intercom multi-node routing is unavailable: <reason>` there gives the cause. A `path` selection reaches only brokers on the same machine, and a machine whose broker is not running is not live.
-- A session appears only after it connects to Intercom. An interactive session connects when it starts; any other session connects on its first Intercom use. Ask it to use Intercom once, for example `intercom({ action: "status" })`.
+- A session appears only after it connects to Intercom. An interactive session connects a few seconds after it starts, and a subagent launched with Intercom connects as soon as its session starts; any other session connects on its first Intercom use. Ask it to use Intercom once, for example `intercom({ action: "status" })`.
 - Both sessions must share a group.
 - When the database is slow to answer, `intercom list` shows only local sessions. Try again.
 
