@@ -27,7 +27,25 @@ function getSupervisedOwner(): SupervisedOwner {
 	return sharedOwner;
 }
 
+/**
+ * Runs `git worktree add` with `args` in `repo`. Git before 2.33 has no `--reason` for it and stops at its usage text
+ * (exit code 129): the add then runs again without `--lock --reason <text>`. Git marks a worktree it adds that way
+ * `initializing` until it is checked out and unlocks it then, so a later launch reads an add underway as it reads any
+ * other Git's, not as one of its own.
+ */
 export async function addNamedWorktree(
+	repo: string,
+	args: string[],
+	env: NodeJS.ProcessEnv,
+	signal?: AbortSignal,
+): Promise<{ status: number; stdout: string; stderr: string }> {
+	const added = await runWorktreeAdd(repo, args, env, signal);
+	const reason = args.indexOf("--reason");
+	if (added.status !== 129 || reason < 0 || args[reason - 1] !== "--lock") return added;
+	return runWorktreeAdd(repo, [...args.slice(0, reason - 1), ...args.slice(reason + 2)], env, signal);
+}
+
+async function runWorktreeAdd(
 	repo: string,
 	args: string[],
 	env: NodeJS.ProcessEnv,

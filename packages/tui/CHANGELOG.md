@@ -4,6 +4,15 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `slashCommandHint(text, route)` and `commandHintAction(command, route)` take an optional route: a click on the hint hands the command to the `setHintCommandHandler` handler with that route as its second argument, so the handler can run it where the hint was drawn. A renderer from an earlier version draws a routed hint as text.
+- `Editor.setTextAsTyped(text)` puts text in the prompt as `setText` does and starts the completion lookup that typing its last character would start: at once, or when the editor gets a provider if the prompt still holds that text and cursor ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+
+### Fixed
+
+- A click that places the cursor drops a completion lookup typed before the editor had a provider, as a key that starts no lookup does, so clicking away and back no longer starts it when the provider arrives ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added
