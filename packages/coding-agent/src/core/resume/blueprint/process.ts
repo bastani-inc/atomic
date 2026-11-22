@@ -42,7 +42,7 @@ export interface LoggedProcessOptions {
  * Told of each process a step starts (`running` true) and of its end, for the build that runs the step: a build records
  * them so a later process can stop them when this one dies without stopping them (#4748).
  */
-export const stepProcessWatcher = asyncScope<(pid: number, running: boolean) => void>();
+export const stepProcessWatcher = asyncScope<(pid: number, running: boolean, stillRunning?: () => boolean) => void>();
 
 export const stepStartingWatcher = asyncScope<() => void>();
 
@@ -210,7 +210,9 @@ export async function runLoggedProcess(
 	return new Promise<ProcessExit>((resolveExit, reject) => {
 		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
 		const watch = stepProcessWatcher.getStore();
-		if (child.pid !== undefined) watch?.(child.pid, true);
+		if (child.pid !== undefined) {
+			watch?.(child.pid, true, () => child.exitCode === null && child.signalCode === null);
+		}
 		let timedOut = false;
 		let stopped = false;
 		let treeTerminated = false;
