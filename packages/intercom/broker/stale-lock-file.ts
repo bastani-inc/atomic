@@ -23,6 +23,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { hostname } from "os";
 import { basename, dirname, join } from "path";
 import { renameWithRetry, renameWithRetryAsync } from "./rename-retry.js";
@@ -360,7 +361,40 @@ export function pidOf(content: string | undefined): number | undefined {
   return Number.isFinite(pid) ? pid : undefined;
 }
 
+/** The pattern of a Windows process creation time: a count of 100-nanosecond intervals since 1601-01-01 UTC. */
+const CREATION_TIME_PATTERN = /^[1-9]\d*$/u;
+
+type NativeProcessStart = { readonly processCreationTime?: (pid: number) => string | null };
+let nativeProcessStart: NativeProcessStart | null | undefined;
+
+/**
+ * When Windows process `pid` was created, read by Atomic's native module without starting a process; undefined where it
+ * cannot be read (the module is missing, the process is gone or may not be queried). Windows gives the pid of an exited
+ * process to another within seconds, so a pid alone names a holder only while it runs.
+ */
+function windowsCreationTime(pid: number): string | undefined {
+  if (nativeProcessStart === undefined) {
+    try {
+      nativeProcessStart = createRequire(import.meta.url)("@bastani/atomic-natives") as NativeProcessStart;
+    } catch {
+      nativeProcessStart = null;
+    }
+  }
+  try {
+    const created = nativeProcessStart?.processCreationTime?.(pid);
+    return typeof created === "string" && CREATION_TIME_PATTERN.test(created) ? created : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * When process `pid` started, as a lock records its holder: its `/proc` start on Linux, its creation time on Windows;
+ * undefined elsewhere, or where it cannot be read, so the holder's pid decides alone. Holders of earlier versions record
+ * none on Windows, and earlier versions read none there, so either judges the other by its pid, as before.
+ */
 export function processStart(pid: number): string | undefined {
+  if (process.platform === "win32") return windowsCreationTime(pid);
   if (process.platform !== "linux") return undefined;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
@@ -374,6 +408,7 @@ export function processStart(pid: number): string | undefined {
 }
 
 export async function processStartAsync(pid: number): Promise<string | undefined> {
+  if (process.platform === "win32") return windowsCreationTime(pid);
   if (process.platform !== "linux") return undefined;
   try {
     const statText = await readFile(`/proc/${pid}/stat`, "utf-8");
