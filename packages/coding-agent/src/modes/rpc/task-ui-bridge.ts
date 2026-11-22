@@ -17,14 +17,26 @@ import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { launchedTaskViewSource, ownerTaskViewSource, type TaskViewSource } from "../../core/tasks/task-view-source.js";
 import { agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
+import { AgentViewSwitcher } from "../interactive/agent-view/agent-view-switcher.ts";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
 import { taskDisplayText } from "../interactive/components/task-row.js";
+import {
+	clearTasksReturnAnchor,
+	type ListSelectionAnchor,
+	resolveStoreTaskKey,
+	saveTasksReturnAnchor,
+	stagePendingTasksReturn,
+	taskStableKey,
+	tasksReturnAnchor,
+	tasksReturnRecord,
+} from "../interactive/components/task-selection-state.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
 import { hideAgentPanelFor } from "./agent-panel-bridge.ts";
+import { engineAgentViewSettlementSeq } from "./agent-view-rpc-panel.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
@@ -126,6 +138,8 @@ export async function showTaskInspector(
 		readonly board?: TaskBoardSource;
 		/** The tasks it lists, when not the session's own: a subagent's, through its launched view of `store`. */
 		readonly source?: TaskViewSource;
+		/** Saved list anchor when returning from an item that closed `/tasks`. */
+		readonly returnAnchor?: ListSelectionAnchor;
 	} = {},
 ): Promise<"back" | "closed"> {
 	let requestRender = () => {};
@@ -134,7 +148,19 @@ export async function showTaskInspector(
 	let fullscreen = false;
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
-	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
+	let requestedAgentId: TaskId | undefined;
+	let engineSeqAtRequest: number | undefined;
+	const trackReturn = !options.chat && options.source === undefined;
+	const session = options.board ? boardSessions.get(options.board) : undefined;
+	const bridge = session === undefined ? undefined : agentViewBridge(session);
+	const panelTarget = session ?? store;
+	const priorRecord = trackReturn ? tasksReturnRecord(store) : undefined;
+	const priorViewedId = bridge?.viewedTaskId();
+	const priorSaved = trackReturn
+		? priorViewedId !== undefined && priorRecord?.anchor !== undefined
+			? priorRecord.anchor
+			: tasksReturnAnchor(store)
+		: undefined;
 	/** The agent panel this view takes the place of: hidden once the view is mounted, back in the step it closes. */
 	const panel = hideAgentPanelFor(panelTarget);
 	const inspector = new TaskInspector(
@@ -153,13 +179,19 @@ export async function showTaskInspector(
 	if (options.board) {
 		inspector.setBoardSource(options.board);
 		// On the single chat screen a subagent opens there, where the main chat was, and /tasks closes.
-		const session = boardSessions.get(options.board);
-		const bridge = session === undefined ? undefined : agentViewBridge(session);
-		if (bridge !== undefined) inspector.setAgentView((id) => bridge.requestView(id, { keepScreen: true }));
+		if (bridge !== undefined)
+			inspector.setAgentView((id) => {
+				requestedAgentId = id;
+				engineSeqAtRequest = engineAgentViewSettlementSeq(bridge);
+				bridge.requestView(id, { keepScreen: true });
+			});
 
 		const reopenOptions = { board: options.board };
-		inspector.setReopen((id) => {
-			void showTaskInspector(ui, store, id, reopenOptions).catch((error: unknown) => {
+		inspector.setReopen((id, anchor) => {
+			void showTaskInspector(ui, store, id, {
+				...reopenOptions,
+				...(anchor === undefined ? {} : { returnAnchor: anchor }),
+			}).catch((error: unknown) => {
 				try {
 					ui.notify?.(taskDisplayText(error instanceof Error ? error.message : String(error)), "error");
 				} catch {}
@@ -168,7 +200,35 @@ export async function showTaskInspector(
 	}
 	if (options.chat && taskId !== undefined) {
 		pendingChat = taskId as TaskId;
-	} else inspector.open(taskId as TaskId | undefined);
+	} else if (options.returnAnchor !== undefined) {
+		inspector.restoreAnchor(options.returnAnchor);
+	} else if (taskId !== undefined) {
+		inspector.open(taskId as TaskId);
+	} else if (trackReturn) {
+		const viewedId = priorViewedId;
+		const listedViewed =
+			viewedId === undefined
+				? undefined
+				: (latestSubagentAttempt(store.backgroundTasks, viewedId) ?? store.taskRecord?.(viewedId));
+		const viewedKey = listedViewed === undefined ? undefined : taskStableKey(listedViewed);
+		const sameAsSaved = priorSaved !== undefined && viewedKey !== undefined && priorSaved.selectedKey === viewedKey;
+		// Only synthesize a fresh viewed-agent anchor when that subagent is actually present in `store`;
+		// if a resumed viewed attempt was already evicted, keep `priorSaved` so nearest-neighbour fallback uses
+		// the departure order instead of an empty order.
+		if (viewedId !== undefined && listedViewed !== undefined && viewedKey !== undefined && !sameAsSaved) {
+			inspector.restoreAnchor({
+				selectedKey: viewedKey,
+				orderKeys: [],
+				scroll: 0,
+			});
+		} else if (priorSaved !== undefined) {
+			inspector.restoreAnchor(priorSaved);
+		} else {
+			inspector.open(undefined);
+		}
+	} else {
+		inspector.open(undefined);
+	}
 	try {
 		while (!closed) {
 			fullscreen = inspector.fullscreen || pendingChat !== undefined;
@@ -201,6 +261,7 @@ export async function showTaskInspector(
 						}
 					}
 					// Elapsed times and the stop notice's window advance while the view is shown.
+					const mountFullscreen = fullscreen;
 					const tick = setInterval(() => tui.requestRender(), 1000);
 					tick.unref?.();
 					return {
@@ -208,7 +269,11 @@ export async function showTaskInspector(
 						invalidate: () => inspector.invalidate(),
 						render: (width: number) => {
 							const height = Math.max(1, tui.terminal.rows);
-							if (!fullscreen) return inspector.renderPicker(width, height);
+							if (!mountFullscreen) return inspector.renderPicker(width, height);
+							// A closing fullscreen mount (after `←` returned to the inline picker) must not
+							// repaint: rendering the board at full terminal height would clamp scroll to 0, and
+							// painting a stale fullscreen frame would bleed beneath the inline picker.
+							if (!inspector.fullscreen) return [];
 							const lines = inspector.renderViewport(width, height);
 							// Fullscreen detail pages cover all parent chat and prompt cells.
 							return Array.from({ length: height }, (_, row) => {
@@ -218,9 +283,9 @@ export async function showTaskInspector(
 						},
 						// A full-screen page draws from the top row, so the click's row is the page's.
 						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
-							fullscreen ? inspector.handleMouse(event) : undefined,
+							mountFullscreen && inspector.fullscreen ? inspector.handleMouse(event) : undefined,
 						paintedRowKey: (row: number): string | undefined =>
-							fullscreen ? inspector.paintedRowKey(row) : undefined,
+							mountFullscreen && inspector.fullscreen ? inspector.paintedRowKey(row) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							// Ctrl+C closes the view: what it shows here (lists, details, a shell's output) has no prompt.
@@ -254,6 +319,49 @@ export async function showTaskInspector(
 			if (inspector.fullscreen === fullscreen) closed = true;
 		}
 	} finally {
+		if (trackReturn) {
+			if (inspector.closeReason === "navigated-agent" && inspector.returnAnchor !== undefined) {
+				const anchor = inspector.returnAnchor;
+				const currentViewed = bridge?.viewedTaskId();
+				if (
+					bridge === undefined ||
+					requestedAgentId === undefined ||
+					(currentViewed !== undefined &&
+						(currentViewed === requestedAgentId ||
+							resolveStoreTaskKey(store, currentViewed) === anchor.selectedKey))
+				) {
+					saveTasksReturnAnchor(store, anchor, currentViewed ?? requestedAgentId);
+				} else {
+					const priorViewedKey =
+						priorViewedId === undefined ? undefined : resolveStoreTaskKey(store, priorViewedId);
+					const priorFallbackAnchor =
+						priorViewedId !== undefined && priorViewedKey !== undefined && anchor.selectedKey !== priorViewedKey
+							? priorSaved !== undefined && priorSaved.selectedKey === priorViewedKey
+								? priorSaved
+								: {
+										selectedKey: priorViewedKey,
+										orderKeys: anchor.orderKeys,
+										scroll: anchor.scroll,
+									}
+							: undefined;
+					const awaitingAsyncSettlement =
+						(bridge instanceof AgentViewSwitcher && bridge.pendingTaskId !== undefined) ||
+						(engineSeqAtRequest !== undefined && engineAgentViewSettlementSeq(bridge) === engineSeqAtRequest);
+					if (awaitingAsyncSettlement) {
+						stagePendingTasksReturn(store, requestedAgentId, anchor, priorFallbackAnchor, priorViewedId);
+					} else if (priorViewedId !== undefined && currentViewed === priorViewedId) {
+						if (priorFallbackAnchor !== undefined)
+							saveTasksReturnAnchor(store, priorFallbackAnchor, priorViewedId);
+					} else {
+						clearTasksReturnAnchor(store);
+					}
+				}
+			} else if (inspector.closeReason === "navigated-item" && inspector.returnAnchor !== undefined) {
+				saveTasksReturnAnchor(store, inspector.returnAnchor);
+			} else if (bridge?.viewedTaskId() === undefined) {
+				clearTasksReturnAnchor(store, { keepPending: true });
+			}
+		}
 		inspector?.dispose();
 		panel.show();
 	}
