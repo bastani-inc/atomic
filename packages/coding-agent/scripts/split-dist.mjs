@@ -25,6 +25,7 @@
  */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
@@ -67,35 +68,151 @@ export const SHARED_DIRECTORY = "_shared";
 /**
  * Dependencies bundled into the shared files instead of loaded from `node_modules`: packages only this package's own
  * code imports by name (the extension loader hands none of them to extensions, and Atomic's other packages do not import
- * them), with no state another copy would need to share, that read no file beside their own. The build checks that each
- * one's own dependencies are bundled too. Kept out: `highlight.js` (code that registers a language or plugin in the
- * installed package changes what the SDK's `highlightCode` does), `undici` (its fetch tells its own frames in error
- * stacks by its file name) and `chalk` (it reads the terminal's color support when it loads).
+ * them), with no state another copy would need to share, that read no file beside their own. The build checks that what
+ * each one's bundled code imports is bundled too, or is one of `INLINED_PACKAGE_EXTERNALS`. Kept out: `highlight.js`
+ * (code that registers a language or plugin in the installed package changes what the SDK's `highlightCode` does),
+ * `undici` (its fetch tells its own frames in error stacks by its file name) and `chalk` (it reads the terminal's color
+ * support when it loads).
  */
 export const INLINED_PACKAGES = [
+	"@borewit/text-codec",
 	"@isaacs/nonrecursive-glob-match",
 	"@mixmark-io/domino",
+	"@nodable/entities",
+	"@tokenizer/inflate",
+	"@xmldom/xmldom",
+	"anynum",
 	"balanced-match",
+	"base64-js",
 	"brace-expansion",
+	"content-type",
+	"core-util-is",
 	"cross-spawn",
+	"debug",
 	"diff",
+	"dingbat-to-unicode",
+	"exifr",
 	"fast-sha256",
+	"fast-xml-builder",
+	"fast-xml-parser",
+	"file-type",
 	"hosted-git-info",
+	"ieee754",
 	"ignore",
+	"immediate",
+	"inherits",
+	"is-unsafe",
+	"isarray",
 	"isexe",
+	"jszip",
+	"lie",
+	"lop",
 	"lovely-mermaid",
 	"lru-cache",
+	"mammoth",
+	"markit-ai",
+	"media-typer",
 	"minimatch",
+	"ms",
+	"music-metadata",
+	"option",
+	"pako",
+	"path-expression-matcher",
 	"path-key",
+	"process-nextick-args",
+	"readable-stream",
+	"safe-buffer",
 	"semver",
+	"setimmediate",
 	"shebang-command",
 	"shebang-regex",
 	"stream-chain",
 	"stream-json",
+	"string_decoder",
+	"strnum",
+	"strtok3",
+	"token-types",
 	"turndown",
+	"turndown-plugin-gfm",
+	"uint8array-extras",
+	"underscore",
+	"util-deprecate",
 	"which",
+	"win-guid",
+	"xml-naming",
+	"xmlbuilder",
 	"yaml",
 ];
+/**
+ * Packages an inlined package may import that stay in `node_modules`: `mupdf` loads its WebAssembly file from beside its
+ * own module (`@bastani/atomic` declares it at the version markit-ai requires), and `debug` only probes for the optional
+ * `supports-color`, which no install has, so the probe fails as before.
+ */
+export const INLINED_PACKAGE_EXTERNALS = ["mupdf", "supports-color"];
+/** Computed imports in inlined packages that never run in Atomic, by the file that makes them, and why. */
+const UNFOLLOWED_INLINED_IMPORTS = {
+	"node_modules/markit-ai/dist/plugins/api.js": "markit-ai loads plugins only for its own CLI; Atomic loads none",
+};
+/**
+ * The license section of a package's README, for a package that ships its license there instead of in a file of its
+ * own: from its heading to the next heading of the same or a higher level.
+ */
+function readmeLicense(directory, files) {
+	const readme = files.find((file) => /^readme(\.|$)/i.test(file));
+	if (readme === undefined) return undefined;
+	const lines = readFileSync(join(directory, readme), "utf8").split(/\r?\n/);
+	const start = lines.findIndex((line) => /^#{1,6}\s+licen[cs]e\b/i.test(line));
+	if (start === -1) return undefined;
+	const level = /^#+/.exec(lines[start] ?? "")?.[0].length ?? 1;
+	const end = lines.findIndex((line, index) => index > start && (/^#+/.exec(line)?.[0].length ?? 7) <= level);
+	const section = lines.slice(start + 1, end === -1 ? undefined : end).join("\n").trim();
+	return section === "" ? undefined : section;
+}
+/** The terms of the licenses a bundled package declares without shipping their text, by SPDX identifier. */
+const LICENSE_TERMS = {
+	MIT: `Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`,
+	"BSD-2-Clause": `Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+   disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following
+   disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`,
+};
+/**
+ * A package's license text when it ships none: the license section of its README, unless that only names the license
+ * its manifest declares; else that license's terms with the manifest's author, or, for a license without terms here,
+ * its name.
+ */
+function declaredLicense(directory, files, manifest) {
+	const section = readmeLicense(directory, files);
+	if (section !== undefined && section !== manifest.license) return section;
+	const terms = LICENSE_TERMS[manifest.license];
+	if (terms === undefined) return `License: ${manifest.license}`;
+	const author = typeof manifest.author === "string" ? manifest.author : manifest.author?.name;
+	const copyright = author ? `\n\nCopyright (c) ${author}` : "";
+	return `${manifest.license} License (declared in its package.json; the package ships no license text)${copyright}\n\n${terms}`;
+}
 /** The package a bare specifier names: `name` of `name/sub` or `@scope/name` of `@scope/name/sub`. */
 const packageOf = (specifier) => specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
 /**
@@ -408,17 +525,37 @@ for (const input of Object.keys(result.metafile.inputs)) {
 	if (!INLINED_PACKAGES.includes(match[1])) throw new Error(`split-dist: ${input} is bundled, but ${match[1]} is not inlined`);
 	inlined.set(match[1], join(packageDir, input.slice(0, input.lastIndexOf(`node_modules/${match[1]}/`) + `node_modules/${match[1]}`.length)));
 }
+// The bundle cannot follow an import or require of a computed name. In an inlined package that would run, it would
+// resolve from the shared file at run time: only the ones known never to run are allowed.
+for (const warning of result.warnings) {
+	const file = warning.location?.file ?? "";
+	if (!/(?:^|\/)node_modules\//.test(file) || !/will not be bundled|cannot be analyzed/i.test(warning.text)) continue;
+	if (!Object.keys(UNFOLLOWED_INLINED_IMPORTS).some((suffix) => file.endsWith(suffix)))
+		throw new Error(`split-dist: ${file}: ${warning.text}`);
+}
+// What an inlined package's bundled code imports is bundled too, or one of the few packages that stay external: an
+// external import would resolve from the shared file, not from the package that made it. A dependency its bundled code
+// never imports (markit-ai's command line's) does not count.
+for (const [input, { imports }] of Object.entries(result.metafile.inputs)) {
+	if (!/(?:^|\/)node_modules\//.test(input)) continue;
+	for (const { path, external } of imports) {
+		if (!external || path.startsWith("<") || isBuiltin(path) || INLINED_PACKAGE_EXTERNALS.includes(packageOf(path)))
+			continue;
+		throw new Error(`split-dist: ${input} imports ${path}, which is neither inlined nor allowed to stay external`);
+	}
+}
 const notices = [];
 for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1))) {
 	const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-	for (const dependency of Object.keys(manifest.dependencies ?? {})) {
-		if (!INLINED_PACKAGES.includes(dependency))
-			throw new Error(`split-dist: ${name} is inlined, but its dependency ${dependency} is not`);
-	}
-	// LICENSE, LICENSE.md, LICENSE-MIT, COPYING and the like.
-	const licenseFile = readdirSync(directory).find((file) => /^(licen[sc]e|copying)([.-]|$)/i.test(file));
-	const license = licenseFile ? readFileSync(join(directory, licenseFile), "utf8").trim() : `License: ${manifest.license}`;
-	notices.push(`## ${name} ${manifest.version}\n\n${license}\n`);
+	const files = readdirSync(directory);
+	// LICENSE, LICENSE.md, LICENSE-MIT, COPYING and the like, else the README's license section.
+	const licenseFile = files.find((file) => /^(licen[sc]e|copying)([.-]|$)/i.test(file));
+	const noticeFile = files.find((file) => /^notice(\.|$)/i.test(file));
+	const license = licenseFile
+		? readFileSync(join(directory, licenseFile), "utf8").trim()
+		: declaredLicense(directory, files, manifest);
+	const notice = noticeFile ? `\n\n${readFileSync(join(directory, noticeFile), "utf8").trim()}` : "";
+	notices.push(`## ${name} ${manifest.version}\n\n${license}${notice}\n`);
 }
 
 // Each shared file is named by its first module and its exports (see `split-dist-names.mjs`).
