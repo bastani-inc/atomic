@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- The notice shown when an ended subagent is woken by an Intercom message now renders as a compact one-line notice card (`↻ Woke <subagent> for a message from <sender> · result arrives here`) with shortened readable IDs instead of a generic `[intercom_subagent_wake]` box. Press Ctrl+O or click anywhere on the notice to expand full subagent and sender IDs; it renders consistently before and after Intercom finishes loading and when resuming sessions.
+
 ### Fixed
 
 - With multi-node routing, a session answering a sender outside its groups can no longer send a fourth answer after that sender's latest message when the shared database failed to record that message as delivered and it was handed to the session again. Answers the session sent since the message first reached it now count toward that message's 3.
@@ -12,6 +16,8 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 - The Intercom broker drops the reply routes it keeps for a released subagent's unanswered asks once the session that launched the subagent has been gone for a week, as it drops the asks it keeps for any session that has been away that long. Before, a broker kept them for as long as it ran, and enough of them made later released subagents' asks fail at once with "the Intercom broker's released-subagent reply routes are full".
 - An Intercom broker no longer creates its directory again after the agent directory was deleted while it still ran, as when a session was killed and its agent directory removed at once. It recreated the directory when a session registered, when it opened its store of messages for subagents that ended, or, with multi-node routing on macOS and Windows, when it saved an id for this machine, and then took its socket lock there as it shut down. It now keeps what it would have written in memory, and writes nothing into a directory created after it by a later broker.
 - With multi-node routing, a session that its broker moved back to its earlier Intercom ID keeps the ID it had meanwhile as a second ID when that broker restarts before the session registers again, as it does without the restart. Before, the restart lost that ID. The broker now keeps these moves, for up to about 7 days, with the asks it keeps for away sessions.
+- The lightweight `intercom` and `contact_supervisor` tool registrations now share the same parameter schemas, descriptions, and shortcut metadata as the loaded implementation, including `delivery`, the `groups` action, and the full `contact_supervisor` schema.
+- With multi-node routing, a session whose Intercom broker stopped (for example, it crashed) now gets its Intercom ID back on another broker of the same machine when the shared database answers slowly. Taking the ID from the stopped broker takes four database round trips, and the claim gave up after 2.5 s, so with round trips of about 0.7 s or more the session came back under a fresh ID. The claim now gets up to 2.5 s more while it is taking the ID from a broker that has stopped, and the registration's later wait for the database is shortened by the same time, so the session's connection attempt is not kept waiting any longer.
 - On macOS, an Intercom broker's spawn and socket locks now record their holder's start beside its process ID, as on Windows and Linux, so a lock whose holder exited while macOS gave its ID to another process is taken over at once rather than when it ages out. A broker found stopped is now checked by that start, read without starting `ps`. A lock written by an earlier version still goes by the process ID alone.
 
 ## [0.10.4-alpha.1] - 2026-11-22

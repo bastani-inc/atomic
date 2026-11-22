@@ -24,7 +24,7 @@ async function createWaitingHarness(
 		tools?: AgentTool[];
 		extensionFactories?: Harness["session"]["extensionRunner"] extends never
 			? never
-			: Array<(pi: ExtensionAPI) => void>;
+			: Array<(atomic: ExtensionAPI) => void>;
 	} = {},
 ): Promise<{
 	harness: Harness;
@@ -84,8 +84,8 @@ describe("AgentSession queue characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(atomic) => {
+					atomic.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
 							commandRuns.push(args);
@@ -107,8 +107,8 @@ describe("AgentSession queue characterization", () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const waiting = await createWaitingHarness({
 			extensionFactories: [
-				(pi) => {
-					extensionApi = pi;
+				(atomic) => {
+					extensionApi = atomic;
 				},
 			],
 		});
@@ -526,8 +526,8 @@ describe("AgentSession queue characterization", () => {
 			const releaseDeliveredTurn = Promise.withResolvers<void>();
 			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = await createWaitingHarness({
 				extensionFactories: [
-					(pi) => {
-						pi.on("input", (event) =>
+					(atomic) => {
+						atomic.on("input", (event) =>
 							event.text.startsWith("typed")
 								? { action: "transform", text: "expanded" }
 								: { action: "continue" },
@@ -596,8 +596,8 @@ describe("AgentSession queue characterization", () => {
 	it("throws when queueing an extension command with steer", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(atomic) => {
+					atomic.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async () => {},
 					});
@@ -614,8 +614,8 @@ describe("AgentSession queue characterization", () => {
 	it("throws when queueing an extension command with followUp", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
+				(atomic) => {
+					atomic.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async () => {},
 					});
@@ -633,11 +633,11 @@ describe("AgentSession queue characterization", () => {
 		let sent = false;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi: ExtensionAPI) => {
-					pi.on("agent_end", async () => {
+				(atomic: ExtensionAPI) => {
+					atomic.on("agent_end", async () => {
 						if (sent) return;
 						sent = true;
-						pi.sendUserMessage("conflict report", { deliverAs: "followUp" });
+						atomic.sendUserMessage("conflict report", { deliverAs: "followUp" });
 					});
 				},
 			],
@@ -677,8 +677,8 @@ describe("AgentSession queue characterization", () => {
 			let extensionSettles = 0;
 			const harness = await createHarness({
 				extensionFactories: [
-					(pi) => {
-						pi.on("agent_settled", () => {
+					(atomic) => {
+						atomic.on("agent_settled", () => {
 							extensionSettles += 1;
 						});
 					},

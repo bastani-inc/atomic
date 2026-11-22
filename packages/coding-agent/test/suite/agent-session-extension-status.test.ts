@@ -13,8 +13,8 @@ describe("extension status writes of a session with no UI of its own (#4103)", (
 		let context!: ExtensionContext;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", (_event, ctx) => {
+				(atomic) => {
+					atomic.on("session_start", (_event, ctx) => {
 						context = ctx;
 					});
 				},

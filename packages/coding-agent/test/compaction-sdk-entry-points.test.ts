@@ -24,7 +24,7 @@ const RESERVE_TOKENS = 20_000;
 const LARGE_PROMPT = `long task\n${"word ".repeat(148_000)}`;
 const COMPACTOR = "morph/morph-compactor";
 
-type Factory = (pi: ExtensionAPI) => void;
+type Factory = (atomic: ExtensionAPI) => void;
 
 interface Opened {
 	readonly session: AgentSession;
@@ -196,8 +196,8 @@ describe("compaction through the public SDK entry points", () => {
 
 	it("a session_before_compact handler can cancel a compaction", async () => {
 		const opened = await open({
-			extension: (pi) => {
-				pi.on("session_before_compact", async () => ({ cancel: true }));
+			extension: (atomic) => {
+				atomic.on("session_before_compact", async () => ({ cancel: true }));
 			},
 		});
 		await opened.session.prompt("do the task");
@@ -209,8 +209,8 @@ describe("compaction through the public SDK entry points", () => {
 
 	it("a session_before_compact handler can supply the replacement text", async () => {
 		const opened = await open({
-			extension: (pi) => {
-				pi.on("session_before_compact", async () => ({ compactedText: "notes from the extension" }));
+			extension: (atomic) => {
+				atomic.on("session_before_compact", async () => ({ compactedText: "notes from the extension" }));
 			},
 		});
 		await opened.session.prompt("do the task");

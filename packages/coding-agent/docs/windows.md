@@ -1,4 +1,9 @@
-# Windows Setup
+---
+title: "Windows"
+description: "Install, configure, and troubleshoot Atomic on Windows and WSL."
+---
+
+# Windows setup
 
 ## Install
 
@@ -8,42 +13,42 @@ Install the self-contained Windows release archive with Windows PowerShell 5.1 o
 irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
-This path does not require Node.js or a package manager. To pin an exact release:
+This path does not require Node.js or a package manager. To pin an exact release (`MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION`):
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Ref 0.9.11
 ```
 
-The installer verifies `SHA256SUMS` before changing an existing install. By default, it stores versioned payloads under `%LOCALAPPDATA%\atomic` and places an ASCII-only `atomic.cmd` plus an `atomic-current` junction in `%LOCALAPPDATA%\atomic\bin`. The relative shim supports Unicode install paths and a bin directory elsewhere.
+By default, the installer verifies `SHA256SUMS`, stores versioned payloads under `%LOCALAPPDATA%\atomic`, and places an ASCII-only `atomic.cmd` plus an `atomic-current` junction in `%LOCALAPPDATA%\atomic\bin`. The relative shim supports Unicode install paths and custom bin directories.
 
-Set `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, or `ATOMIC_VERSION` to override those values. Rerunning the installer when that release is already installed and healthy skips the download and only restores a missing User PATH entry; pass `-Force` or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway. A missing or mismatched `atomic.cmd` shim or `atomic-current` junction, a `current` junction that points outside the install root, or an installed payload that lost `app.js` or another startup file counts as unhealthy and is repaired by a normal rerun. `GITHUB_TOKEN` or `GH_TOKEN` is optional: a pinned or latest release is confirmed through github.com, and the token only raises GitHub API limits when the installer has to fall back to the API. Exact pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form.
+Override defaults with `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `ATOMIC_VERSION`, or optional `GITHUB_TOKEN`/`GH_TOKEN` (used only if release resolution falls back to the GitHub API). See [Installation](/getting-started/installation#release-archive) for cross-platform archive options and [Package managers](/getting-started/installation#package-managers) if you install with Node.js.
 
-The installer removes its `atomic-install-*` staging directory before finishing. If cleanup fails, it reports the path and Windows error. An installation failure remains the primary error; incomplete cleanup appears as a warning.
+### Windows installer behavior and constraints
 
-After the script is fetched, it enables TLS 1.2 for its own GitHub requests and restores the caller's prior protocol setting. A downloaded script cannot repair the connection used to fetch itself: on a legacy Windows PowerShell 5.1 host where the literal `irm` command cannot reach GitHub, enable TLS 1.2 in that shell before rerunning the same one-liner.
+- **Reruns and repair:** When the requested release is already installed and healthy, rerunning skips the download and restores a missing User PATH entry; pass `-Force` or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway. A missing or mismatched `atomic.cmd` shim or `atomic-current` junction, a `current` junction that points outside the install root, or an installed payload that lost `app.js` or another startup file triggers a repair install.
+- **PATH and `PATHEXT`:** The installer adds the bin directory to User PATH and the current PowerShell process, then asks you to open a new terminal when User PATH changed. A custom `ATOMIC_BIN_DIR` containing `;` cannot be one Windows PATH entry, so the installer leaves PATH untouched and prints a direct-run command for `atomic.cmd`. `PATHEXT` must include `.CMD` for bare `atomic` to resolve, or installation stops with an error.
+- **Existing launchers and directories:** A same-stem launcher that `PATHEXT` resolves before `atomic.cmd`, such as a stale `atomic.exe`, stops installation before download until you remove it. An unexpected regular `current` entry under `ATOMIC_INSTALL_DIR`, or regular `atomic-current` entry under `ATOMIC_BIN_DIR`, is reported and left untouched instead of being moved or deleted.
+- **Pinned versions:** A pinned `-Ref` is honored literally. If GitHub returns a different release tag, installation stops before download.
+- **TLS 1.2 on legacy PowerShell 5.1:** Once fetched, the script enables TLS 1.2 for its own GitHub requests and restores your previous protocol setting. Because a downloaded script cannot repair the connection used to fetch itself, enable TLS 1.2 in your shell first if `irm` cannot reach GitHub.
+- **Output and cleanup:** Set `NO_COLOR=1` for plain text output without colors, progress bar, or logo (output is also plain under `CI` or redirected stdout; legacy console windows draw `#`/`-` bars without the logo). The installer removes its `atomic-install-*` staging directory when done and prints a warning if cleanup fails.
 
-While it runs, the installer prints the release and platform, a live download progress bar with the percentage and megabytes received, one-line phase confirmations, the Atomic logo in Windows Terminal, and a `To start:` block. It then prints `Installed to <path>` and adds the bin directory to the User PATH and the current PowerShell process; when it changed the User PATH it says so and asks you to open a new terminal so other processes see the new PATH. Set `NO_COLOR=1` for plain text without colours, the progress bar, or the logo; output is also plain when `CI` is set or standard output is redirected. Legacy console windows outside Windows Terminal draw the bar with `#` and `-` and skip the logo.
+## Shell discovery
 
-Check these installation constraints:
+Atomic uses Bash for the `bash` tool and checks these locations in order:
 
-- A custom `ATOMIC_BIN_DIR` containing `;` cannot be one Windows PATH entry. The installer leaves PATH untouched and prints a direct-run command for `atomic.cmd` instead.
-- A same-stem launcher that `PATHEXT` resolves before `atomic.cmd`, such as a stale `atomic.exe`, stops installation before download. Remove that entry and rerun.
-- `PATHEXT` must include `.CMD` for bare `atomic` to resolve. Otherwise, the installer reports the problem and stops.
-- An unexpected regular `current` entry under `ATOMIC_INSTALL_DIR`, or regular `atomic-current` entry under `ATOMIC_BIN_DIR`, is reported and left untouched instead of being moved or deleted.
-- A pinned `-Ref` is honored literally. If GitHub returns a different release tag, installation stops before download.
-
-Package-manager installation remains available but requires Node.js; see the [Quickstart](/getting-started/installation#package-managers).
-
-Atomic uses a Bash shell for the `bash` tool. For that tool, Atomic checks these locations in order:
-
-1. Custom path from `~/.atomic/agent/settings.json` (legacy `~/.pi/agent/settings.json` also supported)
+1. Custom `shellPath` in `~/.atomic/agent/settings.json` (legacy `~/.pi/agent/settings.json` is also read)
 2. Git Bash at `%ProgramFiles%\Git\bin\bash.exe`
 3. Git Bash at `%ProgramFiles(x86)%\Git\bin\bash.exe`
-4. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
+4. `bash.exe` on `PATH` (Cygwin, MSYS2, or WSL)
 
-Windows Store app aliases, such as those in `%LOCALAPPDATA%\Microsoft\WindowsApps`, are accepted wherever Atomic looks for a shell. When Atomic uses the legacy WSL `bash.exe` launcher from `%SystemRoot%\System32`, it sends commands over stdin to avoid command-line quoting problems.
+Windows Store app aliases (such as those in `%LOCALAPPDATA%\Microsoft\WindowsApps`) are accepted wherever Atomic checks for a shell.
 
-For the Bash tool, [Git for Windows](https://git-scm.com/download/win) is sufficient. Native Windows `!`/`!!` shortcuts instead use PowerShell. They do not use `shellPath`; any `shellCommandPrefix` must use PowerShell syntax. WSL remains Bash-based.
+For legacy WSL `bash.exe` from `%SystemRoot%\System32`:
+
+- Ownerless `bash` tool calls send commands over stdin to avoid command-line quoting issues.
+- Supervised and background shell tasks reject legacy WSL `bash.exe` with `ContainmentUnavailable`. Run Atomic inside WSL for supervised POSIX shells.
+
+For the `bash` tool, [Git for Windows](https://git-scm.com/download/win) is sufficient. Native Windows `!` and `!!` commands use PowerShell instead of `shellPath`, so any `shellCommandPrefix` for interactive commands must use PowerShell syntax. Inside WSL, `!` and `!!` remain Bash-based.
 
 PowerShell discovery checks these locations in order:
 
@@ -52,9 +57,9 @@ PowerShell discovery checks these locations in order:
 3. `powershell.exe` on `PATH`
 4. `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 
-Atomic looks only in the absolute directories on `PATH`, in order. Unlike Windows itself it does not search the current directory first, so a shell a project contains never runs in place of yours. Empty and relative `PATH` entries are skipped; an absolute `PATH` entry is searched wherever it points, the project folder included. A directory never counts as a shell executable, including at a configured path or a known installation location. The selected match is absolute so commands can run from a different directory.
+Atomic searches only absolute directories on `PATH`, in order, and never searches the current working directory first. Empty and relative `PATH` entries are skipped, and directory entries never count as executables.
 
-## Custom Shell Path
+## Custom shell path
 
 ```json
 {
@@ -62,54 +67,78 @@ Atomic looks only in the absolute directories on `PATH`, in order. Unlike Window
 }
 ```
 
-Paths copied from Git Bash, MSYS2, Cygwin, or WSL are accepted anywhere Atomic resolves a file path. For example, `/c/Users/name/project/file.ts`, `/cygdrive/c/Users/name/project/file.ts`, and `/mnt/c/Users/name/project/file.ts` resolve as the matching Windows drive path.
+Paths copied from Git Bash, MSYS2, Cygwin, or WSL work anywhere Atomic resolves a file path. For example, `/c/Users/name/project/file.ts`, `/cygdrive/c/Users/name/project/file.ts`, and `/mnt/c/Users/name/project/file.ts` resolve to the matching Windows drive path.
 
 ## Choose a terminal
 
-Windows terminals run Atomic through a console host (conhost). Some bundle an up-to-date copy; others use the older one built into Windows, which has bugs that affect Atomic.
-
-We recommend [Windows Terminal](https://aka.ms/terminal). It always ships an up-to-date conhost.
-
-Last updated: October 2026.
+Windows terminals run Atomic through a console host (conhost). Terminals that rely on the older built-in Windows conhost have bugs that affect Atomic. Use [Windows Terminal](https://aka.ms/terminal), which ships a current conhost.
 
 | Terminal | Conhost | Status |
-|---|---|---|
+| --- | --- | --- |
 | [Windows Terminal](https://aka.ms/terminal) | Bundled, current | Recommended |
 | [VS Code](https://code.visualstudio.com), [Tabby](https://tabby.sh), [WezTerm](https://wezterm.org) nightly | Bundled, current | Works |
-| [Alacritty](https://alacritty.org) | Built-in, unless `conpty.dll` and `OpenConsole.exe` from Windows Terminal are next to `alacritty.exe` | Works only with those files |
+| [Alacritty](https://alacritty.org) | Built-in, unless `conpty.dll` and `OpenConsole.exe` from Windows Terminal sit next to `alacritty.exe` | Works only with those files |
 | WezTerm 20240203 and older | Bundled, old | [Known issues](#known-issues) |
 | Classic console (`cmd.exe` or PowerShell without Windows Terminal), mintty (Git Bash), ConEmu, Cmder, [Hyper](https://hyper.is), Windows OpenSSH | Built-in | [Known issues](#known-issues) |
 
-## Interactive Startup
+## Windows and WSL keybindings
 
-You can type while Atomic finishes startup. Submitting shows the working indicator; Escape cancels a submission still waiting for resources. If loading fails before the prompt is sent, Atomic restores your exact draft and sends no provider request. Use `/reload` to retry resource loading.
+Atomic adjusts several default shortcuts on native Windows and WSL to avoid terminal conflicts:
 
-## Filesystem Watchers
+| Action | Native Windows | WSL |
+| --- | --- | --- |
+| Queue follow-up message | `Ctrl+Q` | `Ctrl+Q` |
+| Dequeue messages / move model up | `Alt+Q` | `Alt+Q` |
+| Cycle scoped models backward | `Alt+P` | `Alt+P` |
+| Undo in editor | `Ctrl+Z` | `Alt+Z` |
+| Open interactive PowerShell subshell | `Alt+Z` | Not used (`Ctrl+Z` suspends) |
+| Paste image or clipboard text | `Alt+V` or `Ctrl+V` | `Alt+V` or `Ctrl+V` |
+| Jump to previous / next prompt | `Ctrl+Up` / `Ctrl+Down` | `Ctrl+Up` / `Ctrl+Down` |
 
-Atomic uses polling where supported when a Windows path cannot be watched safely. Theme reloads and Git status updates may therefore arrive through polling rather than native filesystem notifications.
+On native Windows (outside VS Code's integrated terminal), pressing the unmodified secondary mouse button pastes clipboard text into the focused input. See [Keybindings](/keybindings) for the complete shortcut reference.
 
-## Self-Update Behavior
+## Interactive startup
 
-`atomic update --self` can update Windows installations that Atomic can identify as writable global package-manager installs. `atomic update` includes the same self-update step before updating packages unless you pass `--extensions`.
+On eligible interactive starts, Atomic opens the prompt editor immediately so you can start typing right away, and your text is kept while the session finishes loading. See [Startup typing](/usage#startup-typing) for which keys apply immediately and which wait in order.
 
-Atomic handles loaded native add-ons during package-manager self-update so Windows file locks do not prevent their replacement.
+Submitting before loading finishes shows the working indicator, and pressing Escape cancels a queued submission. If resource loading fails before a prompt sends, Atomic restores your draft without sending a model request; run `/reload` to retry.
 
-If Atomic cannot safely self-update the current installation, it exits with a clear message instead of guessing. The message explains that the install is unsupported, unmanaged, or not writable; prints the detected executable path when available; and tells you to update Atomic with the package manager, wrapper, source checkout, or release artifact that originally installed it. Archive installs are not managed by `atomic update`; rerun the PowerShell installer to replace `current` with the requested release. Standalone Bun binaries direct users to the current [Atomic releases](https://github.com/bastani-inc/atomic/releases/latest), never upstream Pi artifacts.
+## Shutdown and shell process cleanup
 
-### PowerShell tool
+- **Graceful shutdown:** Quitting Atomic gives the interactive engine up to 5 seconds to run `session_shutdown` handlers.
+- **Console close and Windows sign-out:** Closing the console window (exit code `0xC000013A`) and signing out, restarting, or shutting down Windows also run `session_shutdown` handlers with `fromSignal: true` for up to about 4 seconds before Windows terminates the process.
+- **Shell process-tree cleanup:** On native Windows, `!` commands and ownerless `bash` or `powershell` tool calls start in their own Windows Job object, so pressing Escape, hitting a timeout, or aborting stops the shell and the processes it started. Because Git Bash starts child processes with `CREATE_BREAKAWAY_FROM_JOB`, processes left running after `bash` exits cannot be stopped by that job. Set `ATOMIC_HOST_SPAWN=child-process` to revert to `child_process`.
 
-On native Windows, Atomic registers the `powershell` tool by default when PowerShell 7 (`pwsh.exe`) or Windows PowerShell (`powershell.exe`) is found in one of the PowerShell discovery locations above. If neither executable is available, the tool is omitted so the agent is not offered a command that cannot run. Add `powershell` to `defaultTools` to enable it explicitly when you want it active alongside a narrower built-in selection. The `bash` tool continues to use Bash; `!`/`!!` use PowerShell. Both `ATOMIC_*` and legacy `PI_*` session variables are available.
+## Headless skill commands
 
-PowerShell calls are rendered in the transcript with a `PS>` prompt so they are never mistaken for Bash, and truncated PowerShell output is spilled to its own `atomic-powershell-*` temp file rather than the Bash one.
+Skills such as `/skill:skill-creator` run evaluation queries in a hidden Windows console that cannot answer interactive credential prompts. Configure an API key, an environment variable, or a credential command that reads a cached token without prompting.
 
-The package root exports `createPowerShellTool()`, `createPowerShellToolDefinition()`, `createLocalPowerShellOperations()`, their public option/input/detail types, and `getPowerShellConfig()` for SDK integrations. Factory-created tools expose the current `ATOMIC_*` and legacy `PI_*` session snapshot by default; set `exposeSessionEnvironment: false` to opt out. Executing the default local operations remains Windows-only and requires a resolvable PowerShell executable.
+## Filesystem watchers
+
+When a Windows path cannot be watched reliably with native filesystem events, Atomic falls back to polling where supported. Theme reloads and Git status updates may therefore arrive after a short polling delay.
+
+## Self-update behavior
+
+`atomic update` and `atomic update --self` update Atomic only. Pass `atomic update --all` to update both Atomic and installed packages, or `atomic update --extensions` to update installed packages only.
+
+For writable global package-manager installs on Windows, Atomic handles loaded native add-ons during self-update so Windows file locks do not block replacement.
+
+If Atomic cannot safely self-update an installation, it exits with an explanation naming the detected executable path when available and tells you to update through the package manager, wrapper, source checkout, or release artifact that installed it. Release archive installs are not updated by `atomic update`; rerun `install.ps1` instead. Standalone Bun binaries point you to the latest [Atomic releases](https://github.com/bastani-inc/atomic/releases/latest).
+
+## PowerShell tool
+
+On native Windows, Atomic enables the `powershell` tool by default whenever `pwsh.exe` or `powershell.exe` is found in the discovery order above. If neither is found, Atomic omits the tool. Add `powershell` to `defaultTools` if you want it alongside a narrower built-in tool list. Both `ATOMIC_*` and legacy `PI_*` session environment variables are available inside PowerShell calls.
+
+PowerShell calls render with a `PS>` prompt in the transcript, and truncated output spills to an `atomic-powershell-*` temporary file separate from Bash spill files.
+
+For SDK integrations, `@bastani/atomic` exports `createPowerShellTool()`, `createPowerShellToolDefinition()`, `createLocalPowerShellOperations()`, their public types, and `getPowerShellConfig()`. Factory-created tools expose the `ATOMIC_*` and legacy `PI_*` session snapshot by default; pass `exposeSessionEnvironment: false` to opt out. Default local execution is Windows-only and requires a resolvable PowerShell executable.
 
 ## Known issues
 
-These issues come from conhost. Microsoft has fixed them in its source, but has not said when the built-in conhost will get the fixes.
+These issues come from older versions of Windows conhost:
 
 | Issue | Affects | Remedy |
-|---|---|---|
+| --- | --- | --- |
 | Opening the external editor (`Ctrl+G`) crashes the session ([microsoft/terminal#17515](https://github.com/microsoft/terminal/issues/17515)) | Built-in conhost | Use a terminal with a current conhost |
-| Text such as `;0;rgb:0000/0000/0000` appears in the prompt, and BEL opens the external editor | Built-in conhost behind another terminal: mintty, Windows OpenSSH | Use a terminal with a current conhost |
+| Text such as `;0;rgb:0000/0000/0000` appears in the prompt, and BEL opens the external editor | Built-in conhost behind mintty or Windows OpenSSH | Use a terminal with a current conhost |
 | Fragments such as `79` or `55` appear in the prompt | WezTerm 20240203 | Use WezTerm nightly |

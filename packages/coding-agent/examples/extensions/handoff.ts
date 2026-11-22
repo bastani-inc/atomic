@@ -39,8 +39,8 @@ Files involved:
 ## Task
 [Clear description of what to do next based on user's goal]`;
 
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("handoff", {
+export default function (atomic: ExtensionAPI) {
+	atomic.registerCommand("handoff", {
 		description: "Transfer context to a new focused session",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {

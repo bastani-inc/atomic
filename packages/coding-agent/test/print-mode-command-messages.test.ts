@@ -25,21 +25,21 @@ afterEach(async () => {
 });
 
 /** Commands that answer the way `/curator` and `/google-account` do: with a message they send and do not await. */
-function answeringCommands(pi: ExtensionAPI): void {
-	pi.registerCommand("toggle", {
+function answeringCommands(atomic: ExtensionAPI): void {
+	atomic.registerCommand("toggle", {
 		description: "Confirms with a message that starts no turn",
 		handler: async () => {
-			void pi.sendMessage(
+			void atomic.sendMessage(
 				{ customType: "toggle", content: [{ type: "text", text: "Toggle disabled" }], display: true },
 				{ triggerTurn: false, deliverAs: "followUp" },
 			);
 		},
 	});
-	pi.registerCommand("account", {
+	atomic.registerCommand("account", {
 		description: "Answers with a message that starts a turn",
 		handler: async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
-			void pi.sendMessage(
+			void atomic.sendMessage(
 				{
 					customType: "account",
 					content: [{ type: "text", text: "Active account: a@example.com" }],
@@ -49,77 +49,80 @@ function answeringCommands(pi: ExtensionAPI): void {
 			);
 		},
 	});
-	pi.registerCommand("broken", {
+	atomic.registerCommand("broken", {
 		description: "Confirms with a message that cannot be saved",
 		handler: async () => {
-			void pi.sendMessage(
+			void atomic.sendMessage(
 				{ customType: "broken", content: "Toggle disabled", display: true, details: { size: 1n } },
 				{ triggerTurn: false, deliverAs: "followUp" },
 			);
 		},
 	});
-	pi.registerCommand("quiet", {
+	atomic.registerCommand("quiet", {
 		description: "Catches the failure of a message that cannot be saved and answers nothing else",
 		handler: async () => {
 			try {
-				await pi.sendMessage({ customType: "broken", content: "first", display: true, details: { size: 1n } });
+				await atomic.sendMessage({ customType: "broken", content: "first", display: true, details: { size: 1n } });
 			} catch {}
 		},
 	});
-	pi.registerCommand("recover", {
+	atomic.registerCommand("recover", {
 		description: "Answers again when its first message cannot be saved",
 		handler: async () => {
 			try {
-				await pi.sendMessage({ customType: "broken", content: "first", display: true, details: { size: 1n } });
+				await atomic.sendMessage({ customType: "broken", content: "first", display: true, details: { size: 1n } });
 			} catch {
-				await pi.sendMessage({ customType: "recovered", content: "Recovered", display: true });
+				await atomic.sendMessage({ customType: "recovered", content: "Recovered", display: true });
 			}
 		},
 	});
 	const settledWaiters: Array<() => void> = [];
-	pi.on("agent_settled", () => {
+	atomic.on("agent_settled", () => {
 		for (const settled of settledWaiters.splice(0)) settled();
 	});
-	pi.registerCommand("summary", {
+	atomic.registerCommand("summary", {
 		description: "Starts a turn, waits until it settles, then adds a hidden note",
 		handler: async () => {
 			const settled = new Promise<void>((resolve) => settledWaiters.push(resolve));
-			await pi.sendMessage({ customType: "summary", content: "Summarize", display: true }, { triggerTurn: true });
+			await atomic.sendMessage(
+				{ customType: "summary", content: "Summarize", display: true },
+				{ triggerTurn: true },
+			);
 			await settled;
-			await pi.sendMessage({ customType: "summary-note", content: "noted", display: false });
+			await atomic.sendMessage({ customType: "summary-note", content: "noted", display: false });
 		},
 	});
-	pi.registerCommand("noop", { description: "Answers nothing", handler: async () => {} });
+	atomic.registerCommand("noop", { description: "Answers nothing", handler: async () => {} });
 	// Preparing the user message's turn takes a moment, as a hook that reads a file does.
-	pi.on("before_agent_start", async (event) => {
+	atomic.on("before_agent_start", async (event) => {
 		if (event.messageType === "user") await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	pi.registerCommand("ask", {
+	atomic.registerCommand("ask", {
 		description: "Asks the model as the user would",
 		handler: async () => {
-			pi.sendUserMessage("Which account am I using?", { deliverAs: "followUp" });
+			atomic.sendUserMessage("Which account am I using?", { deliverAs: "followUp" });
 		},
 	});
-	pi.registerCommand("urgent", {
+	atomic.registerCommand("urgent", {
 		description: "Answers with a message that interrupts",
 		handler: async () => {
-			void pi.sendMessage(
+			void atomic.sendMessage(
 				{ customType: "urgent", content: "Check the account now", display: true },
 				{ triggerTurn: true, deliverAs: "interrupt" },
 			);
 		},
 	});
-	pi.registerCommand("ticker", {
+	atomic.registerCommand("ticker", {
 		description: "Confirms, and leaves a timer that keeps sending messages that start turns",
 		handler: async () => {
-			void pi.sendMessage(
+			void atomic.sendMessage(
 				{ customType: "toggle", content: [{ type: "text", text: "Ticker started" }], display: true },
 				{ triggerTurn: false, deliverAs: "followUp" },
 			);
 			const timer = setInterval(() => {
 				try {
 					void Promise.resolve(
-						pi.sendMessage(
+						atomic.sendMessage(
 							{ customType: "tick", content: "tick", display: true },
 							{ triggerTurn: true, deliverAs: "followUp" },
 						),
@@ -129,10 +132,10 @@ function answeringCommands(pi: ExtensionAPI): void {
 			timers.add(timer);
 		},
 	});
-	pi.registerCommand("later", {
+	atomic.registerCommand("later", {
 		description: "Adds context to the next turn only",
 		handler: async () => {
-			void pi.sendMessage(
+			void atomic.sendMessage(
 				{ customType: "later", content: [{ type: "text", text: "Use the staging account" }], display: true },
 				{ deliverAs: "nextTurn" },
 			);

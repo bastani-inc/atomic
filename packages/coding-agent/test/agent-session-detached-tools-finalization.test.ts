@@ -93,8 +93,8 @@ interface FinalizedCall {
 /** The result one `wait_for_ci` call is saved with once `output` is its work's outcome. */
 async function finalizedCall(route: Route, call: FinalizedCall): Promise<Outcome> {
 	const seen: SeenToolResult[] = [];
-	const extension: ExtensionFactory = (pi) => {
-		pi.on("tool_result", (event) => {
+	const extension: ExtensionFactory = (atomic) => {
+		atomic.on("tool_result", (event) => {
 			seen.push({
 				type: event.type,
 				toolName: event.toolName,

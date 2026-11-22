@@ -24,7 +24,7 @@ test("builtin extension paths remain synthetic and explicit loading overrides no
 				{
 					name: "fixture",
 					builtin: true,
-					factory: (pi) => pi.registerCommand("fixture", { handler: async () => {} }),
+					factory: (atomic) => atomic.registerCommand("fixture", { handler: async () => {} }),
 				},
 			],
 		});
@@ -103,9 +103,12 @@ test("replacing an opt-in builtin reports the owner and Atomic recovery command"
 					name: "fixture",
 					builtin: true,
 					replaceable: true,
-					factory: (pi) => pi.registerCommand("fixture", { handler: async () => {} }),
+					factory: (atomic) => atomic.registerCommand("fixture", { handler: async () => {} }),
 				},
-				{ name: "replacement", factory: (pi) => pi.registerCommand("fixture", { handler: async () => {} }) },
+				{
+					name: "replacement",
+					factory: (atomic) => atomic.registerCommand("fixture", { handler: async () => {} }),
+				},
 			],
 		});
 		await loader.reload();

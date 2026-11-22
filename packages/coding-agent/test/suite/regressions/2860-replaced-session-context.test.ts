@@ -65,8 +65,8 @@ describe("regression #2860: replaced session callbacks", () => {
 				resourceLoaderOptions: {
 					builtinPackagePaths: [],
 					extensionFactories: [
-						(pi: ExtensionAPI) => {
-							pi.registerProvider(faux.getModel().provider, {
+						(atomic: ExtensionAPI) => {
+							atomic.registerProvider(faux.getModel().provider, {
 								baseUrl: faux.getModel().baseUrl,
 								apiKey: "faux-key",
 								api: faux.api,
@@ -81,7 +81,7 @@ describe("regression #2860: replaced session callbacks", () => {
 									maxTokens: registeredModel.maxTokens,
 								})),
 							});
-							extensionFactory(pi);
+							extensionFactory(atomic);
 						},
 					],
 					noSkills: true,
@@ -161,19 +161,19 @@ describe("regression #2860: replaced session callbacks", () => {
 		let replacementSessionFile: string | undefined;
 		let instanceId = 0;
 		const { runtime } = await createRuntimeForTest(
-			(pi) => {
+			(atomic) => {
 				const currentInstance = ++instanceId;
-				pi.on("session_start", () => {
+				atomic.on("session_start", () => {
 					events.push(`start:${currentInstance}`);
 				});
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					events.push(`shutdown:${currentInstance}`);
 				});
-				pi.registerCommand("repro", {
+				atomic.registerCommand("repro", {
 					description: "repro",
 					handler: async (_args, ctx) => {
 						oldCtx = ctx;
-						oldPi = pi;
+						oldPi = atomic;
 						oldSessionFile = ctx.sessionManager.getSessionFile();
 						await ctx.newSession({
 							parentSession: oldSessionFile,
@@ -222,8 +222,8 @@ describe("regression #2860: replaced session callbacks", () => {
 
 	it("supports withSession for fork", async () => {
 		const { runtime } = await createRuntimeForTest(
-			(pi) => {
-				pi.registerCommand("fork-it", {
+			(atomic) => {
+				atomic.registerCommand("fork-it", {
 					description: "fork-it",
 					handler: async (_args, ctx) => {
 						const leafId = ctx.sessionManager.getLeafId();
@@ -257,8 +257,8 @@ describe("regression #2860: replaced session callbacks", () => {
 	it("supports withSession for switchSession", async () => {
 		let targetSessionId = "";
 		const { runtime } = await createRuntimeForTest(
-			(pi) => {
-				pi.registerCommand("switch-it", {
+			(atomic) => {
+				atomic.registerCommand("switch-it", {
 					description: "switch-it",
 					handler: async (_args, ctx) => {
 						await ctx.switchSession(targetSessionId, {

@@ -75,8 +75,8 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("applies top-level registerProvider overrides to the active model", async () => {
 		const session = await createSession([
-			(pi) => {
-				pi.registerProvider("anthropic", { baseUrl: "http://localhost:8080/top-level" });
+			(atomic) => {
+				atomic.registerProvider("anthropic", { baseUrl: "http://localhost:8080/top-level" });
 			},
 		]);
 
@@ -88,9 +88,9 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("applies session_start registerProvider overrides to the active model", async () => {
 		const session = await createSession([
-			(pi) => {
-				pi.on("session_start", () => {
-					pi.registerProvider("anthropic", { baseUrl: "http://localhost:8080/session-start" });
+			(atomic) => {
+				atomic.on("session_start", () => {
+					atomic.registerProvider("anthropic", { baseUrl: "http://localhost:8080/session-start" });
 				});
 			},
 		]);
@@ -105,11 +105,11 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("applies command-time registerProvider overrides without reload", async () => {
 		const session = await createSession([
-			(pi) => {
-				pi.registerCommand("use-proxy", {
+			(atomic) => {
+				atomic.registerCommand("use-proxy", {
 					description: "Use proxy",
 					handler: async () => {
-						pi.registerProvider("anthropic", { baseUrl: "http://localhost:8080/command" });
+						atomic.registerProvider("anthropic", { baseUrl: "http://localhost:8080/command" });
 					},
 				});
 			},

@@ -3,36 +3,22 @@ title: "TUI components"
 description: "Build custom terminal UI for extensions."
 ---
 
-> Atomic can create TUI components. Ask it to build one for your use case.
+# TUI components
 
-# TUI Components
+Extensions and custom tools can render custom TUI components for interactive user interfaces. This page covers the component system and common interaction patterns.
 
-Extensions and custom tools can render custom TUI components for interactive user interfaces. This page covers the component system and available building blocks.
-
-**Source:** TUI components are provided by Atomic's installed `@bastani/atomic-tui` runtime dependency (`node_modules/@bastani/atomic-tui/dist/`). The [`@bastani/atomic-tui` library page](/libraries/tui) documents its full API, including standalone use outside Atomic.
+**Source:** TUI components come from Atomic's `@bastani/atomic-tui` runtime dependency. The [`@bastani/atomic-tui` library page](/libraries/tui) documents its full API, including standalone use outside Atomic.
 
 ## On this page and its reference
 
-This page covers writing your first component and the common interaction patterns. The component and focusable interfaces, host terminal modes, the host-native session picker and input form, keyboard input, line width, invalidation, debug logging, and performance contracts live in the [TUI API reference](/tui/reference).
+This page covers writing your first component and common interaction patterns. The component and focusable interfaces, host terminal modes, the host-native session picker and input form, keyboard input, line width, invalidation, debug logging, and performance contracts live in the [TUI API reference](/tui/reference).
 
-## Component Interface
-
-Moved to [TUI API reference](/tui/reference#component-interface).
-
-## Focusable Interface (IME Support)
-
-Moved to [TUI API reference](/tui/reference#focusable-interface-ime-support).
-
-### Container Components with Embedded Inputs
-
-Moved to [TUI API reference](/tui/reference#container-components-with-embedded-inputs).
-
-## Using Components
+## Using components
 
 Use `ctx.ui.custom()` with a component factory. The factory receives `done(result)`, and `ctx.ui.custom()` resolves with that result when the component finishes:
 
 ```typescript
-pi.on("session_start", async (_event, ctx) => {
+atomic.on("session_start", async (_event, ctx) => {
   const result = await ctx.ui.custom((tui, theme, keybindings, done) => {
     return new MyComponent(done);
   });
@@ -42,29 +28,21 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. Aborting a mounted custom UI dismisses it and releases its input ownership. In-process mode rejects the returned promise with the signal reason; isolated mode resolves it with `undefined`, like host-side cancellation. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
-For inspection or navigation, pass `{ purpose: "navigation" }`. Atomic then mounts the component without emitting `ui_prompt_start` / `ui_prompt_end`, so a persistent viewer does not falsely report the Atomic session as blocked. Inline navigation temporarily hides all `ctx.ui.setWidget()` widgets above and below the editor, including the agent panel, along with queued-message and pending-shell previews. They return with their latest content after the last inline navigation view closes. Overlays do not hide them. The default is `"prompt"`; keep it for approvals and required user decisions. Separate prompts opened while a navigation view is mounted still emit their own lifecycle events.
+For inspection or navigation, pass `{ purpose: "navigation" }` so Atomic mounts the component without emitting `ui_prompt_start` or `ui_prompt_end` (preventing persistent viewers from reporting the session as blocked). Inline navigation temporarily hides all `ctx.ui.setWidget()` widgets above and below the editor, including the agent panel, plus queued-message and pending-shell previews, restoring them when the last inline navigation view closes. Overlays do not hide them. The default purpose is `"prompt"` (for approvals and required user decisions); prompts opened during navigation still emit their own lifecycle events.
 
-Navigation still owns keyboard focus. In `getHostCustomUiState()` and its change listener, `blockingInlineCustomUiActive` counts all inline mounts. When navigation is present, `blockingInlineCustomUiNeedsInput` distinguishes real pending prompts from navigation-only mounts; when omitted, use `blockingInlineCustomUiActive`. This distinction is preserved across the isolated-engine bridge.
+Navigation still owns keyboard focus. In `getHostCustomUiState()` and its change listener, `blockingInlineCustomUiActive` counts all inline mounts, while `blockingInlineCustomUiNeedsInput` distinguishes real pending prompts from navigation-only mounts (preserved across the isolated-engine bridge).
 
-Custom components do not report Atomic as waiting for you through [program status](/terminal-setup#program-status), because `ctx.ui.custom()` also hosts loaders and other non-blocking UI. When a component waits for an answer, pass `blocked: { kind: "question", message: "Pick a color" }` so supporting terminals show Atomic as blocked. `kind` is `"question"`, `"permission"`, or `"auth"`. An inline component reports blocked while it is visible: a newer dialog or component shown in its place reports its own status instead. An overlay reports blocked from when it is shown until it calls `done()` or its `signal` aborts, also while it is hidden with `setHidden()` or covered by another overlay. When several blocking prompts are open, the most recently shown one supplies `kind` and `message`.
+Custom components do not report Atomic as waiting through [program status](/terminal-setup#program-status) by default, because `ctx.ui.custom()` also hosts loaders and non-blocking UI. When a component waits for an answer, pass `blocked: { kind, message }` (`kind` is `"question"`, `"permission"`, or `"auth"`):
 
-Main-chat inline custom UIs share the editor slot. Completing or canceling an older mount leaves the current one visible; closing the current mount restores the most recently mounted UI that is still pending, including task navigation or an approval. The main editor returns only after the last inline owner closes.
+- Inline components report blocked while visible; a newer dialog shown in their place reports its own status.
+- Overlays report blocked from mount until `done()` or `signal` abort, even while hidden with `setHidden()` or covered by another overlay.
+- When several blocking prompts are open, the most recently shown one supplies `kind` and `message`.
 
-Reserving bottom prompts (`reserveTranscriptRows`, including `ask_user_question`) also wait out of view while inline navigation or an overlay's `deferInlineCustomUiFocus` owns input. Leaving navigation restores the same pending prompt, not a new questionnaire. Escape belongs exclusively to the active navigation view until then; once the questionnaire returns, its ordinary Escape cancellation applies.
+Main-chat inline custom UIs share the editor slot. Completing an older mount leaves the current one visible; closing the current mount restores the most recent pending inline UI, and the main editor returns only after the last inline owner closes.
 
-In the default isolated interactive mode, do not access host process objects from `render()` or `handleInput()`. Return JSON-safe values to `done()`. Return `true` for consumed viewport keys or overlay mouse events and `false` to let the transcript handle them. Set `wantsKeyRelease = true` only when your component needs release events. Non-overlay components leave mouse scrolling and selection with the transcript.
+Reserving bottom prompts (`reserveTranscriptRows`, including `ask_user_question`) wait out of view while inline navigation or an overlay with `deferInlineCustomUiFocus` owns input. Leaving navigation restores the same pending prompt, and `Escape` belongs exclusively to the active navigation view until then.
 
-### Host terminal modes from an isolated component
-
-Moved to [TUI API reference](/tui/reference#host-terminal-modes-from-an-isolated-component).
-
-### Host-native session picker
-
-Moved to [TUI API reference](/tui/reference#host-native-session-picker).
-
-### Host-native input form
-
-Moved to [TUI API reference](/tui/reference#host-native-input-form).
+In isolated interactive mode, do not access host process objects from `render()` or `handleInput()`. Return JSON-safe values to `done()`. Return `true` for consumed viewport keys or overlay mouse events and `false` to let the transcript handle them. Set `wantsKeyRelease = true` only when your component needs release events. Non-overlay components leave mouse scrolling and selection with the transcript.
 
 ## Overlays
 
@@ -117,15 +95,15 @@ const result = await ctx.ui.custom<string | null>(
 );
 ```
 
-### Overlay Focus
+### Overlay focus
 
-A focused visible overlay keeps input ownership across temporary non-overlay UI. If an overlay opens another `ctx.ui.custom()` component without `{ overlay: true }`, that replacement UI receives input while it is active; when it closes, the focused overlay can reclaim input.
+A focused visible overlay keeps input ownership across temporary non-overlay UI. If an overlay opens another `ctx.ui.custom()` component without `{ overlay: true }`, that replacement UI receives input while active; when it closes, the focused overlay reclaims input.
 
-Use `handle.unfocus()` when a visible overlay should stop owning input and let TUI fall back to another visible capturing overlay or the previous focus target. Use `handle.unfocus({ target })` when a specific component should receive input while the overlay stays visible. Passing `{ target: null }` intentionally leaves no focused component until focus is set again.
+Use `handle.unfocus()` to release input to another visible capturing overlay or the previous focus target. Use `handle.unfocus({ target })` to focus a specific component while keeping the overlay visible, or `{ target: null }` to leave no focused component until focus is set again.
 
-### Overlay Lifecycle
+### Overlay lifecycle
 
-Overlay components are disposed when closed. Don't reuse references - create fresh instances:
+Overlay components are disposed when closed. Create fresh instances rather than reusing references:
 
 ```typescript
 // Wrong - stale reference
@@ -144,9 +122,9 @@ await showMenu();  // First show
 await showMenu();  // "Back" = just call again
 ```
 
-See [overlay-qa-tests.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for comprehensive examples covering anchors, margins, stacking, responsive visibility, and animation.
+See [overlay-qa-tests.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for examples covering anchors, margins, stacking, responsive visibility, and animation.
 
-## Built-in Components
+## Built-in components
 
 Import from `@bastani/atomic-tui`:
 
@@ -228,15 +206,7 @@ const image = new Image(
 );
 ```
 
-## Keyboard Input
-
-Moved to [TUI API reference](/tui/reference#keyboard-input).
-
-## Line Width
-
-Moved to [TUI API reference](/tui/reference#line-width).
-
-## Creating Custom Components
+## Creating custom components
 
 Example: Interactive selector
 
@@ -301,7 +271,7 @@ class MySelector {
 Usage in an extension:
 
 ```typescript
-pi.registerCommand("pick", {
+atomic.registerCommand("pick", {
   description: "Pick an item",
   handler: async (args, ctx) => {
     const items = ["Option A", "Option B", "Option C"];
@@ -376,41 +346,13 @@ interface MyTheme {
 }
 ```
 
-## Debug logging
+## Common patterns
 
-Moved to [TUI API reference](/tui/reference#debug-logging).
+These patterns cover the most common UI needs in extensions. Copy these patterns instead of building from scratch.
 
-## Performance
+### Pattern 1: Selection dialog (`Selector`)
 
-Moved to [TUI API reference](/tui/reference#performance).
-
-## Invalidation and Theme Changes
-
-Moved to [TUI API reference](/tui/reference#invalidation-and-theme-changes).
-
-### The Problem
-
-Moved to [TUI API reference](/tui/reference#the-problem).
-
-### The Solution
-
-Moved to [TUI API reference](/tui/reference#the-solution).
-
-### Pattern: Rebuild on Invalidate
-
-Moved to [TUI API reference](/tui/reference#pattern-rebuild-on-invalidate).
-
-### When This Matters
-
-Moved to [TUI API reference](/tui/reference#when-this-matters).
-
-## Common Patterns
-
-These patterns cover the most common UI needs in extensions. **Copy these patterns instead of building from scratch.**
-
-### Pattern 1: Selection Dialog (Selector)
-
-For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker behind `/model`, `/login`, `/logout`, `/thinking`, `/trust`, `/scoped-models` and extension `select` and `confirm` dialogs, so your dialog looks and behaves like them: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It powers `/model`, `/login`, `/logout`, `/thinking`, `/trust`, `/scoped-models`, and extension `select` and `confirm` dialogs, with a title, optional search box, one- or two-line rows with dim descriptions and right-aligned tags, scroll indicators, an empty state, and a key hint line.
 
 ```typescript
 import { DynamicBorder, Selector } from "@bastani/atomic";
@@ -433,47 +375,49 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
     handleInput: (data) => {
       selector.handleInput(data);
       tui.requestRender();
+      return true;
     },
   };
 });
 ```
 
-Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when there is no search box, enter choose, → choose when the search is empty, esc clears the search before it cancels, and ctrl+c always cancels. With mouse reporting, a click chooses a row (toggles it in a multi-select) and the wheel moves the selection, stopping at the ends. Options worth knowing:
+Keys: Up/Down select (wrapping), PageUp/PageDown page, Home/End jump when search is off, Enter confirms, Right confirms when search is empty, Esc clears search before cancelling, and Ctrl+C always cancels. Mouse click chooses a row (or toggles in multi-select) and wheel input scrolls to the ends. Key options:
 
 | Option | Effect |
 | --- | --- |
-| `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
-| `wrap: true` | Wrap long titles and option labels instead of truncating them. Extension `select` and `confirm` dialogs enable this automatically. |
-| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. Confirming always stops the picker, whatever `closeOnSelect` says. |
-| `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker live, so enter or a click can choose again, for a picker that applies each choice and stays open. Default `true`. |
-| `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
+| `layout: "two-line"` | Places each description on the line under its label, for rows like sessions or runs. |
+| `wrap: true` | Wraps long titles and option labels instead of truncating. Extension `select` and `confirm` dialogs enable this automatically. |
+| `mode: "multi"` | Checkboxes: Space toggles, Enter calls `onConfirm` with checked rows and stops the picker regardless of `closeOnSelect`. |
+| `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker open so Enter or a click can choose again. Default `true`. |
+| `numbered: true` | Numbers rows; without a search box, digits 1 to 9 choose a row directly (or toggle with `mode: "multi"`). |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
-| `rightConfirms: false` | Disable the `app.list.open` shortcut, Right by default, for a picker where only Enter should choose. The default allows it when search is empty. |
-| `minDescriptionWidth` | Reserve this many columns for a one-line row's description, shortening its label before the value or right-hand tag. Fractions round down; non-finite values use the default. Use this for values that must stay visible on narrow terminals. |
-| `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
-| `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
-| `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
-| `disabled` on items | Drawn dim, skipped by ↑↓ and the wheel, and refused by enter and clicks. |
-| `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
-| `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
-| `searchText` on items | Extra text that type-to-search matches. By default it is matched with the label, description and tag. |
-| `searchTextMode: "replace"` on items | Search matches only the item's `searchText`, not its label, description or tag. Use it when the shown text holds words a search should not find, such as a reasoning level. The default is `"extend"`. |
-| `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
+| `rightConfirms: false` | Disables the `app.list.open` shortcut (Right by default) when only Enter should confirm. |
+| `minDescriptionWidth` | Reserves columns for a one-line row's description, shortening its label before the value or right-hand tag. |
+| `onSelectionChange` | Fires when navigation or filtering changes the selected row's identity, or `undefined` when no enabled row matches. |
+| `extraKeys` | Custom keys with hints and `enabled(item)` checks so unavailable keys stay hidden. |
+| `group` on items | Groups rows under section labels (hidden while searching). |
+| `disabled` on items | Drawn dim, skipped by navigation and wheel, and ignored by Enter and clicks. |
+| `mark` on items | `"on"`/`"off"` draw `●`/`○`; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]`. |
+| `labelStyle` on items | Custom label styling callback receiving whether the row is selected. |
+| `searchText` on items | Extra text matched by type-to-search (combined with label, description, and tag by default). |
+| `searchTextMode: "replace"` on items | Matches search only against `searchText` instead of label, description, and tag (default `"extend"`). |
+| `subtitle` | Dim text under the title; `\n` starts new lines and long lines wrap. |
 
-Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+Without a search box, `?` opens key help (ignoring mouse input while open) and `j`/`k` navigate down/up. `setNotice({ text, tone })` displays a one-line status under the list.
 
-A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
+A picker stops accepting input once it invokes `onCancel`, `onConfirm`, or `onSelect` (unless `closeOnSelect` is `false`), so repeated keypresses or clicks run callbacks once. If an async callback fails (for example while saving), call `selector.retrySelection()` to resume input and pair it with `setNotice()` to display the error.
 
-Use `setItems()` to replace row data. It keeps the selected enabled row by ID, then tries `preferId` if that row disappeared. If neither remains enabled, it scans forward from the previous list position, clamped to the new list, then backward if no enabled row follows. `onSelectionChange` fires only when the selected ID changes, so its callback can refresh the same rows without calling itself again. `SelectorState.items` and its list snapshots are read-only and frozen; replace direct assignments and mutations with `state.setItems(rows)`. Copy a snapshot with `[...state.items]` before editing the array. For persistent or multi-stage single-select pickers that replace rows after `onSelect`, pass `closeOnSelect: false` so subsequent navigation and cancellation remain available.
+`setItems()` replaces rows while keeping the selected enabled row by ID, then tries `preferId`, then scans forward (clamped) and backward for an enabled row. `onSelectionChange` fires only when the selected ID changes. `SelectorState.items` is read-only and frozen; use `state.setItems(rows)` or copy with `[...state.items]`. For persistent single-select pickers that replace rows after `onSelect`, set `closeOnSelect: false`.
 
-When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
+Call `selector.invalidate()` before `tui.requestRender()` when external data used by a custom `style` or `extraKeys` `enabled` callback changes. A row's `labelStyle` runs on every render.
 
-`SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
+`SelectorState` holds search, selection, and checked rows headless for testing, and `selectorHintEntries(state, options)` returns its hint keys. `themeSelectorStyle()` returns themed colors; pass `style: PLAIN_SELECTOR_STYLE` for unstyled output.
 
-For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
-`UserMessageSelectorComponent` is the `/fork` picker built on the same `Selector`. `new UserMessageSelectorComponent(messages, onSelect, onCancel, initialSelectedId?)` takes the session's user messages oldest first as `{ id, text }`, shows each as a two-line row, selects `initialSelectedId` or else the newest message, and filters by message text as you type. It is a selector component rather than a `Container` holding a list, so focus the component itself. `getMessageList()` returns the component, and `onSelect` and `onCancel` are assignable properties that Enter and Esc call.
+For live lists, call `selector.setItems(nextItems)` and `tui.requestRender()`. Selection stays on the same `id` when still enabled and matching, otherwise moves to the first enabled match, and removed checked items are dropped.
 
-### Pattern 1b: Selection Dialog (SelectList)
+`UserMessageSelectorComponent` implements the `/fork` picker on `Selector`: `new UserMessageSelectorComponent(messages, onSelect, onCancel, initialSelectedId?)` accepts user messages oldest first (`{ id, text }`), renders two-line rows, selects `initialSelectedId` or the newest message, and filters as you type. Focus the component directly; `getMessageList()` returns the component, and `onSelect`/`onCancel` are assignable properties.
+
+### Pattern 1b: Selection dialog (`SelectList`)
 
 The lower-level `SelectList` from `@bastani/atomic-tui` is still available when you need a bare list inside your own layout, such as autocomplete rows. Frame it with `DynamicBorder`.
 
@@ -482,7 +426,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { DynamicBorder } from "@bastani/atomic";
 import { Container, type SelectItem, SelectList, Text } from "@bastani/atomic-tui";
 
-pi.registerCommand("pick", {
+atomic.registerCommand("pick", {
   handler: async (_args, ctx) => {
     const items: SelectItem[] = [
       { value: "opt1", label: "Option 1", description: "First option" },
@@ -544,7 +488,7 @@ For operations that take time and should be cancellable. `BorderedLoader` shows 
 ```typescript
 import { BorderedLoader } from "@bastani/atomic";
 
-pi.registerCommand("fetch", {
+atomic.registerCommand("fetch", {
   handler: async (_args, ctx) => {
     const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
       const loader = new BorderedLoader(tui, theme, "Fetching data...");
@@ -577,7 +521,7 @@ For toggling multiple settings. Use `SettingsList` from `@bastani/atomic-tui` wi
 import { getSettingsListTheme } from "@bastani/atomic";
 import { Container, type SettingItem, SettingsList, Text } from "@bastani/atomic-tui";
 
-pi.registerCommand("settings", {
+atomic.registerCommand("settings", {
   handler: async (_args, ctx) => {
     const items: SettingItem[] = [
       { id: "verbose", label: "Verbose mode", currentValue: "off", values: ["on", "off"] },
@@ -630,7 +574,7 @@ ctx.ui.setStatus("my-ext", undefined);
 
 **Examples:** [status-line.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/status-line.ts), [plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts), [preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts)
 
-### Pattern 4b: Working Indicator Customization
+### Pattern 4b: Working indicator customization
 
 Customize the inline Working indicator shown from accepted interactive prompt submission through the active agent turn.
 
@@ -660,7 +604,7 @@ This affects the normal Working indicator from accepted prompt submission throug
 
 Working appears during prompt startup and response streaming, then disappears on completion, failure, or a no-turn result. Manual retry clears stale status; automatic retry and fallback messages take precedence.
 
-The default is a one-cell `∀` pulse beside a message selected once per turn. Theme `workingIndicator` tones customize its colors. `NO_COLOR` uses weight changes without foreground colors; `ATOMIC_REDUCED_MOTION=1` makes it static. Custom frames and intervals render unchanged.
+The default is a one-cell `∀` pulse beside a message selected once per turn. Theme `workingIndicator` tones customize its colors. `NO_COLOR` disables foreground and background colors and text styles (bold, italic, dim, underline, inverse, and strikethrough), rendering the indicator unstyled. `ATOMIC_REDUCED_MOTION=1` makes it static. Custom frames and intervals render unchanged.
 
 Compaction and retry loaders use their own factual text and the built-in indicator, not extension frames. Successful mid-turn compaction restores Working without another user submission. Cancelled or failed compaction stops activity; errors appear when supplied by the compaction event.
 
@@ -829,8 +773,8 @@ class VimEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+  atomic.on("session_start", (_event, ctx) => {
     // Factory receives the TUI, theme, and keybindings from the app
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new VimEditor(tui, theme, keybindings)
@@ -876,8 +820,8 @@ class ReviewerEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+  atomic.on("session_start", (_event, ctx) => {
     ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
       const editor = new ReviewerEditor(tui, editorTheme, keybindings);
       editor.appTheme = ctx.ui.theme;
@@ -889,26 +833,46 @@ export default function (pi: ExtensionAPI) {
 
 It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N more`: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
 
-## Key Rules
+## Key rules
 
-1. **Always use theme from callback** - Don't import theme directly. Use `theme` from the `ctx.ui.custom((tui, theme, keybindings, done) => ...)` callback.
+1. **Always use theme from callback.** Do not import theme directly; use `theme` passed to `ctx.ui.custom((tui, theme, keybindings, done) => ...)`.
 
-2. **Always type DynamicBorder color param** - Write `(s: string) => theme.fg("accent", s)`, not `(s) => theme.fg("accent", s)`.
+2. **Always type `DynamicBorder` color parameters.** Write `(s: string) => theme.fg("accent", s)`, not `(s) => theme.fg("accent", s)`.
 
-3. **Call tui.requestRender() after state changes** - In `handleInput`, call `tui.requestRender()` after updating state.
+3. **Call `tui.requestRender()` after state changes.** In `handleInput`, call `tui.requestRender()` after updating state.
 
-4. **Return the three-method object** - Custom components need `{ render, invalidate, handleInput }`.
+4. **Return the three-method object.** Custom components need `{ render, invalidate, handleInput }`.
 
-5. **Use existing components** - `SelectList`, `SettingsList`, `BorderedLoader` cover 90% of cases. Don't rebuild them.
+5. **Use existing components.** `Selector`, `SelectList`, `SettingsList`, and `BorderedLoader` cover most interactive UI cases.
 
 ## Examples
 
-- **Selection UI**: [examples/extensions/preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts) - SelectList with DynamicBorder framing
-- **Async with cancel**: [examples/extensions/qna.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts) - BorderedLoader for LLM calls
-- **Settings toggles**: [examples/extensions/tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts) - SettingsList for tool enable/disable
-- **Status indicators**: [examples/extensions/plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts) - setStatus and setWidget
-- **Working indicator**: [examples/extensions/working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts) - setWorkingIndicator
-- **Custom footer**: [examples/extensions/custom-footer.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts) - setFooter with stats
-- **Custom editor**: [examples/extensions/modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts) - Vim-like modal editing
-- **Snake game**: [examples/extensions/snake.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/snake.ts) - Full game with keyboard input, game loop
-- **Custom tool rendering**: [examples/extensions/todo.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/todo.ts) - renderCall and renderResult
+- **Selection UI**: [examples/extensions/preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts): `SelectList` with `DynamicBorder` framing.
+- **Async with cancel**: [examples/extensions/qna.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts): `BorderedLoader` for LLM calls.
+- **Settings toggles**: [examples/extensions/tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts): `SettingsList` for tool enable/disable.
+- **Status indicators**: [examples/extensions/plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts): `setStatus` and `setWidget`.
+- **Working indicator**: [examples/extensions/working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts): `setWorkingIndicator`.
+- **Custom footer**: [examples/extensions/custom-footer.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts): `setFooter` with stats.
+- **Custom editor**: [examples/extensions/modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts): Vim-like modal editing.
+- **Snake game**: [examples/extensions/snake.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/snake.ts): game with keyboard input and game loop.
+- **Custom tool rendering**: [examples/extensions/todo.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/todo.ts): `renderCall` and `renderResult`.
+
+## Moved sections
+
+<a id="component-interface" />
+<a id="focusable-interface-ime-support" />
+<a id="container-components-with-embedded-inputs" />
+<a id="host-terminal-modes-from-an-isolated-component" />
+<a id="host-native-session-picker" />
+<a id="host-native-input-form" />
+<a id="keyboard-input" />
+<a id="line-width" />
+<a id="debug-logging" />
+<a id="performance" />
+<a id="invalidation-and-theme-changes" />
+<a id="the-problem" />
+<a id="the-solution" />
+<a id="pattern-rebuild-on-invalidate" />
+<a id="when-this-matters" />
+
+These component, input, invalidation, logging, performance, and host-integration contracts moved to [TUI API reference](/tui/reference).

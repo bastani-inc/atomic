@@ -859,9 +859,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	it("keeps the mcp_servers section in the turns of an interrupt's run after a tool call", async () => {
 		const fixture = await createFixture();
 		let interrupt = (): Promise<void> => Promise.resolve();
-		const interrupting: ExtensionFactory = (pi) => {
+		const interrupting: ExtensionFactory = (atomic) => {
 			interrupt = () =>
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ customType: "ping", content: "Interrupting.", display: true },
 					{ deliverAs: "interrupt", triggerTurn: true },
 				);
@@ -899,9 +899,9 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	it("follows the prompt's own options again in an interrupt's run after a reload replaced the extensions", async () => {
 		const fixture = await createFixture();
 		let interrupt = (): Promise<void> => Promise.resolve();
-		const interrupting: ExtensionFactory = (pi) => {
+		const interrupting: ExtensionFactory = (atomic) => {
 			interrupt = () =>
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ customType: "ping", content: "Interrupting.", display: true },
 					{ deliverAs: "interrupt", triggerTurn: true },
 				);
@@ -1503,11 +1503,11 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	it("records a summary for the server that showed it, not for one registered under its name meanwhile (#6108)", async () => {
 		const fixture = await createFixture();
 		const registration = { command: "docs-a", replaceWith: undefined as string | undefined };
-		const registering: ExtensionFactory = (pi) => {
-			pi.registerMcpServer("docs", { command: registration.command, exposure: "codemode" });
-			pi.on("before_agent_start", () => {
+		const registering: ExtensionFactory = (atomic) => {
+			atomic.registerMcpServer("docs", { command: registration.command, exposure: "codemode" });
+			atomic.on("before_agent_start", () => {
 				if (registration.replaceWith)
-					pi.registerMcpServer("docs", { command: registration.replaceWith, exposure: "codemode" });
+					atomic.registerMcpServer("docs", { command: registration.replaceWith, exposure: "codemode" });
 			});
 		};
 		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
@@ -1539,8 +1539,8 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 
 	it("records no summary the conversation never showed (#6108)", async () => {
 		const fixture = await createFixture();
-		const replaceSection: ExtensionFactory = (pi) => {
-			pi.on("before_agent_start", (event) => {
+		const replaceSection: ExtensionFactory = (atomic) => {
+			atomic.on("before_agent_start", (event) => {
 				event.systemPromptOptions.sections[MCP_SERVERS_SECTION] = "The application lists its own servers.";
 			});
 		};
@@ -1558,8 +1558,8 @@ describe("MCP tools of a resumed session while their server reconnects", () => {
 	it("records no summary of a prompt that ended before it sent anything (#6108)", async () => {
 		const fixture = await createFixture();
 		const gate = { held: undefined as ReturnType<typeof held> | undefined, entered: held() };
-		const holdPrompt: ExtensionFactory = (pi) => {
-			pi.on("before_agent_start", async () => {
+		const holdPrompt: ExtensionFactory = (atomic) => {
+			atomic.on("before_agent_start", async () => {
 				if (!gate.held) return;
 				gate.entered.release();
 				await gate.held.ready;

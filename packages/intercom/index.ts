@@ -1,10 +1,10 @@
 import { forwardReleaseObservation } from "./broker/released-child-receipts.js";
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
-import { Type } from "@bastani/atomic-ai";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderContactSupervisorCall, renderIntercomCall, renderIntercomToolResult } from "./result-renderers.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "./ui/wake-notice.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
@@ -50,8 +50,15 @@ import {
 import type { SessionInfo } from "./types.js";
 import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
 import { intercomScriptAccess } from "./codemode-access.js";
-import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
-import { RETURN_PATH_TOOL_NOTE } from "./group.js";
+import {
+	CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+	CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+	CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+	createContactSupervisorToolParameters,
+	createIntercomToolParameters,
+	INTERCOM_TOOL_DESCRIPTION,
+	INTERCOM_TOOL_PROMPT_SNIPPET,
+} from "./tool-metadata.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import { closeFinishedChildAsks } from "./finished-asks.js";
 import { OutboundAsks } from "./outbound-asks.js";
@@ -168,7 +175,7 @@ type ActiveLifecycleState = {
 	modelSelect: LifecycleSnapshot<"model_select"> | null;
 };
 interface LightweightIntercomOptions {
-	importHeavy?: () => Promise<{ default: (pi: ExtensionAPI) => void | Promise<void> }>;
+	importHeavy?: () => Promise<{ default: (atomic: ExtensionAPI) => void | Promise<void> }>;
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -289,7 +296,7 @@ class BrokerOutage {
 	}
 }
 
-export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
+export default function intercom(atomic: ExtensionAPI, options: LightweightIntercomOptions = {}) {
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
   let heavyAttempt: HeavyAttempt | null = null;
   let loadedHeavy: IntercomHeavyHandle | null = null;
@@ -422,7 +429,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			try {
 				const mod = await (options.importHeavy?.() ?? import("./index-heavy.js"));
 				assertLease(lease);
-				await mod.default(createHeavyProxy(pi, captured));
+				await mod.default(createHeavyProxy(atomic, captured));
 				assertLease(lease);
 				if (!sessionSnapshot && ctx) {
 					sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration, lease };
@@ -505,25 +512,22 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	}
   let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
   const activateTypedContactSupervisor = (): void => {
-    const activeTools = pi.getActiveTools();
-    if (!activeTools.includes("contact_supervisor")) pi.setActiveTools([...activeTools, "contact_supervisor"]);
+    const activeTools = atomic.getActiveTools();
+    if (!activeTools.includes("contact_supervisor")) atomic.setActiveTools([...activeTools, "contact_supervisor"]);
   };
   const registerTypedContactSupervisor = (): void => {
     if (!typedContactSupervisorRegistered) {
       typedContactSupervisorRegistered = true;
-      pi.registerTool({
+      atomic.registerTool({
         name: "contact_supervisor",
         exposure: "model-only",
         detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
         detachmentRequiresReady: true,
         label: "Contact Supervisor",
-        description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
-        promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
-        parameters: Type.Object({
-          reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
-          message: Type.Optional(Type.String()),
-          interview: Type.Optional(Type.Unknown()),
-        }),
+        description: CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+        promptSnippet: CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+        promptGuidelines: CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+        parameters: createContactSupervisorToolParameters(),
         execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
         renderCall: renderContactSupervisorCall,
         renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
@@ -600,13 +604,13 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		}, attempt === 0 ? STARTUP_JOIN_DELAY_MS : reconnectDelayMs(attempt - 1));
 		join.timer.unref?.();
 	}
-  pi.on("session_start", async (event, ctx) => {
+  atomic.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;
     if (typedIdentity) {
-      if (typedIdentity.sessionName && typeof pi.setSessionName === "function") await pi.setSessionName(typedIdentity.sessionName);
+      if (typedIdentity.sessionName && typeof atomic.setSessionName === "function") await atomic.setSessionName(typedIdentity.sessionName);
       registerTypedContactSupervisor();
-    } else if (inheritedDelegatedSessionName && typeof pi.setSessionName === "function") {
-      await pi.setSessionName(inheritedDelegatedSessionName);
+    } else if (inheritedDelegatedSessionName && typeof atomic.setSessionName === "function") {
+      await atomic.setSessionName(inheritedDelegatedSessionName);
     }
     if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
     const lease = activeLease;
@@ -629,12 +633,12 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
       startupJoinFromEnv() !== false &&
       !hasSubagentIntercomEnv() &&
       !inheritedDelegatedSessionName &&
-      joinsIntercomAtStartup(ctx, () => (typeof pi.getActiveTools === "function" ? pi.getActiveTools() : []))
+      joinsIntercomAtStartup(ctx, () => (typeof atomic.getActiveTools === "function" ? atomic.getActiveTools() : []))
     ) {
       scheduleStartupJoin(ctx, lease, generation);
     }
   });
-	pi.on("session_shutdown", async (event, ctx) => {
+	atomic.on("session_shutdown", async (event, ctx) => {
 		cancelStartupJoin();
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;
@@ -663,13 +667,13 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await retainedCleanup;
 		}
 	});
-	pi.on("turn_start", async (event, ctx) => {
+	atomic.on("turn_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.turnStart = { event, ctx };
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "turn_start", event, ctx));
 	});
-	pi.on("turn_end", async (event, ctx) => {
+	atomic.on("turn_end", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.turnStart = null;
 		activeLifecycle.agentStart = null;
@@ -677,7 +681,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "turn_end", event, ctx));
 	});
-	pi.on("agent_start", async (event, ctx) => {
+	atomic.on("agent_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		const pending = startupJoin;
 		if (pending && !pending.settled && pending.lease === activeLease && sessionSnapshot?.generation === pending.generation) {
@@ -689,7 +693,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_start", event, ctx));
 	});
-	pi.on("agent_end", async (event, ctx) => {
+	atomic.on("agent_end", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.agentStart = null;
 		activeLifecycle.activeTools.clear();
@@ -697,30 +701,30 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_end", event, ctx));
 	});
 	// The heavy lifecycle binds a reply context when its intercom message enters the model's context.
-	pi.on("message_start", async (event, ctx) => {
+	atomic.on("message_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "message_start", event, ctx));
 	});
-	pi.on("tool_execution_start", async (event, ctx) => {
+	atomic.on("tool_execution_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_start", event, ctx));
 	});
-	pi.on("tool_execution_end", async (event, ctx) => {
+	atomic.on("tool_execution_end", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.activeTools.delete(event.toolCallId);
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_end", event, ctx));
 	});
-	pi.on("model_select", async (event, ctx) => {
+	atomic.on("model_select", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.modelSelect = { event, ctx };
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "model_select", event, ctx));
 	});
-	pi.registerShortcut("alt+m", {
+	atomic.registerShortcut("alt+m", {
 		description: "Open session intercom overlay",
 		handler: async (ctx) => {
 			const handle = await loadHeavy(ctx);
@@ -743,7 +747,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			?? [...activeLifecycle.activeTools.values()].at(-1)?.ctx
 			?? activeLifecycle.modelSelect?.ctx;
 	}
-	pi.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
+	atomic.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
 		const request = payload as IntercomStartupJoinRequest | null;
 		if (!request || typeof request !== "object" || request.completion) return;
 		const ctx = latestLifecycleContext();
@@ -751,7 +755,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		cancelStartupJoin();
 		request.completion = joinAtStartup(ctx);
 	});
-	pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
 		const request = payload as SupervisorAuthorizationRequest;
 		if (typeof request.childName !== "string" || !request.childName.trim() || request.completion) return;
@@ -777,7 +781,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				throw error;
 			});
 	});
-	pi.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
 		const forwarded: AwaitIntercomPeerRequest = {
 			name: payload.name,
@@ -793,7 +797,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			.catch(() => false);
 	});
 	// #3760: a resume restoring a child asks the broker, through this session's connection, to hold its sends.
-	pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
 		if (!isReserveRestoringChildRequest(payload) || payload.completion) return;
 		const forwarded: ReserveRestoringChildRequest = {
 			capability: payload.capability,
@@ -809,9 +813,9 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await forwarded.completion;
 		});
 	});
-	answerReleasedReplyFormatRequests(pi.events);
+	answerReleasedReplyFormatRequests(atomic.events);
 	// #4326: the owner reserves its released children by name, in bulk, on its own broker connection.
-	pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
 		if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
 		const forwarded: ReserveReleasedChildrenRequest = { children: payload.children };
 		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
@@ -829,7 +833,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		[SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, isAcknowledgeReleasedChildWakeRequest],
 		[SUBAGENT_MARK_ENDED_CHILDREN_EVENT, isMarkEndedChildrenRequest],
 	] as const) {
-		pi.events.on(eventName, (payload) => {
+		atomic.events.on(eventName, (payload) => {
 			if (!isRequest(payload) || payload.completion) return;
 			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest | MarkEndedChildrenRequest = {
 				...payload,
@@ -855,7 +859,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 					})();
 		});
 	}
-	pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
 		if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
 		const forwarded: ReleaseRestoringChildRequest = {
 			capability: payload.capability,
@@ -899,7 +903,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		peers: readonly SessionInfo[] | undefined,
 	): Promise<readonly string[]> {
 		try {
-			const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
+			const restored = await awaitRestoredIntercomPeers(atomic.events, ctx.sessionManager.getSessionId());
 			const handle = await loadHeavy(ctx);
 			handle.assertCurrent();
 			const forwarded: IntercomInboxReplayRequest = { peers, restored };
@@ -910,8 +914,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			return [];
 		}
 	}
-	pi.on("session_recovery_restore", async (_event, ctx) => {
-		const closed = await closeFinishedChildAsks(pi, ctx);
+	atomic.on("session_recovery_restore", async (_event, ctx) => {
+		const closed = await closeFinishedChildAsks(atomic, ctx);
 		const usedIntercom = hasIntercomHistory(ctx.sessionManager.getEntries());
 		const peers = usedIntercom ? await recoveryPeers(ctx) : undefined;
 		const taken = ctx.sessionManager.getSessionRecoveryState?.().intercomTakenIds;
@@ -924,19 +928,19 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		if (usedIntercom)
 			await new OutboundAsks({
 				entries: () => ctx.sessionManager.getBranch(),
-				append: (customType, data) => pi.appendEntry(customType, data),
+				append: (customType, data) => atomic.appendEntry(customType, data),
 				sessionId: () => ctx.sessionManager.getSessionId(),
 			}).recordTakenAnswers(taken);
 		return closed.length + notices.length > 0 ? { notices: [...closed, ...notices] } : undefined;
 	});
-	pi.on("session_recovery_replay", async (event, ctx) => {
+	atomic.on("session_recovery_replay", async (event, ctx) => {
 		if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;
 		const peers = await recoveryPeers(ctx);
-		const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
+		const restored = await awaitRestoredIntercomPeers(atomic.events, ctx.sessionManager.getSessionId());
 		return planIntercomRecoveryReplay(event.pending, peers, restored);
 	});
 	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
-		pi.events.on(eventName, (payload) => {
+		atomic.events.on(eventName, (payload) => {
 			const ctx = latestLifecycleContext();
 			const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
 			const loaded = loadHeavy(ctx);
@@ -950,7 +954,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			void completion.then(
 				() => brokerOutage.recovered(),
 				(error) => {
-					rejectLazyResultRelay(pi, eventName, payload, error);
+					rejectLazyResultRelay(atomic, eventName, payload, error);
 					reportBackgroundRelayFailure(diagnosticRoute, eventName, error);
 				},
 			);
@@ -958,50 +962,16 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	}
 	// Heavy Intercom state stays unloaded until the model or user invokes an
 	// Intercom tool, command, shortcut, or relay that needs it.
-	pi.registerTool({
+	atomic.registerTool({
 		name: "intercom",
 		exposure: "model-only",
 		scriptAccess: intercomScriptAccess,
 		detachable: (params) => intercomCallMayDetach(params) && heavyReplyWaitMayDetach("intercom", params),
 		detachmentRequiresReady: true,
 		label: "Intercom",
-		description: `Send a message to another local agent session running on this machine.
-Use this to communicate findings, request help, or coordinate work with other sessions.
-Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
-For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this session launched) or \`subagents:<runId>/*\` (those of one run); each recipient gets its own direct send, the result lists every recipient's outcome, a glob matching no session is an error naming close names, a name glob (\`*\` included) matching more than one session needs \`broadcast: true\` (without it the send is refused with the list of matches; \`subagents:\` targets broadcast without it), and patterns never reach outside your groups.
-${ASK_DESCRIPTION}
-For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
-Usage:
-  intercom({ action: "list" })                    → List sessions in your group
-  intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
-  intercom({ action: "join", group: "name" })     → Join or create a named group
-  intercom({ action: "leave" })                   → Return to your resolved home group
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
-  intercom({ action: "send", to: "subagent-worker-*", message: "...", broadcast: true }) → Send to every matching session
-  intercom({ action: "send", to: "subagents:*", message: "..." })   → Send to every subagent you launched
-${ASK_USAGE}
-  intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
-  intercom({ action: "pending" })                                      → List unresolved inbound asks and your pending asks
-  intercom({ action: "status" })                  → Show connection status and your group
-
-"default" is the shared group; "true" and "auto" are reserved for subagent auto-groups. Joining does not grant cross-group access; contact_supervisor remains the only cross-group path.`,
-		promptSnippet: `Use to coordinate with other local agent sessions in your intercom group. ${ASK_PROMPT_SNIPPET} Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.`,
-		parameters: Type.Object({
-			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', 'cancel', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, or unique 8-hex session UUID prefix. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target (for 'send', 'ask', or targeted 'reply')" })),
-			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
-			broadcast: Type.Optional(Type.Boolean({ description: "For 'send' to a session-name glob: true to reach every match. Without it, a glob that matches more than one session is refused with the list of matches. `subagents:` targets broadcast without it." })),
-			attachments: Type.Optional(Type.Array(Type.Object({
-				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
-				name: Type.String(),
-				content: Type.String(),
-				language: Type.Optional(Type.String()),
-			}))),
-			wait: Type.Optional(askWaitSchema),
-			askId: Type.Optional(askIdSchema),
-			replyTo: Type.Optional(Type.String({ description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender. With 'cancel', closes that ask sent to you without replying" })),
-			group: Type.Optional(Type.String({ description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group." })),
-		}),
+		description: INTERCOM_TOOL_DESCRIPTION,
+		promptSnippet: INTERCOM_TOOL_PROMPT_SNIPPET,
+		parameters: createIntercomToolParameters(),
 		execute: (...args) => {
 			const invocationLease = activeLease;
 			return executeHeavyTool((ctx) => {
@@ -1013,8 +983,9 @@ ${ASK_USAGE}
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 		renderCall: renderIntercomCall,
 	});
-	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
-	pi.registerToolRenderer?.((toolName, next) => {
+	atomic.registerMessageRenderer?.(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
+	atomic.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
+	atomic.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
 		if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self") return registered;
 		if (toolName === "contact_supervisor") {
@@ -1034,47 +1005,23 @@ ${ASK_USAGE}
 		return registered;
 	});
 	if (hasSubagentIntercomEnv()) {
-		pi.registerTool({
+		atomic.registerTool({
 			name: "contact_supervisor",
 			exposure: "model-only",
 			detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
 			detachmentRequiresReady: true,
 			label: "Contact Supervisor",
-			description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
-			promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",
-			promptGuidelines: [
-				"Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision before continuing.",
-				"Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers from the supervisor in one blocking exchange.",
-				"Use contact_supervisor with reason='progress_update' only for meaningful progress or unexpected discoveries that change the plan.",
-				"Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
-			],
-			parameters: Type.Object({
-				reason: Type.String({
-					enum: ["need_decision", "progress_update", "interview_request"],
-					description: "Contact reason: 'need_decision' waits for a reply; 'interview_request' sends structured questions and waits for a reply; 'progress_update' sends a non-blocking update",
-				}),
-				message: Type.Optional(Type.String({
-					description: "Decision request, optional interview note, or meaningful progress update for the supervisor",
-				})),
-				interview: Type.Optional(Type.Object({
-					title: Type.Optional(Type.String()),
-					description: Type.Optional(Type.String()),
-					questions: Type.Array(Type.Object({
-						id: Type.String(),
-						type: Type.String({ description: "Question type: single, multi, text, image, or info" }),
-						question: Type.String(),
-						options: Type.Optional(Type.Array(Type.Unknown())),
-						context: Type.Optional(Type.String()),
-					})),
-				}, { description: "Structured interview request for reason='interview_request'" })),
-			}),
+			description: CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+			promptSnippet: CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+			promptGuidelines: CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+			parameters: createContactSupervisorToolParameters(),
 			execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
 			renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
 			renderCall: renderContactSupervisorCall,
 		});
 	}
 
-	pi.registerCommand("intercom", {
+	atomic.registerCommand("intercom", {
 		description: "Open session intercom overlay",
 		handler: (args, ctx) => runHeavyCommand(loadHeavy, args, ctx),
 	});

@@ -346,7 +346,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 			}
 		},
 	};
-	const pi = {
+	const atomic = {
 		events,
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
 			await sessionManager.appendCustomEntry(customType, data);
@@ -429,7 +429,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 					orchestratorIntercomTarget: "parent",
 					...extra,
 				},
-				recordChild: createSubagentChildRecordSink(pi, state.ctx),
+				recordChild: createSubagentChildRecordSink(atomic, state.ctx),
 				runtime: { runSync: runtime },
 				...(state.launchHeartbeatMs === undefined ? {} : { heartbeatMs: state.launchHeartbeatMs }),
 				...(state.wakeDispatcher ? { wakeDispatcher: state.wakeDispatcher } : {}),
@@ -522,7 +522,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 		return !original && state.settleAs === "error" ? { ...result, status: "error", error: "boom" } : result;
 	};
 	const deps: ExecutorDeps = {
-		pi,
+		pi: atomic,
 		state: {
 			baseCwd: cwd,
 			currentSessionId: "parent",
@@ -572,6 +572,21 @@ function discoverInScope(agents: readonly AgentConfig[], scope: AgentScope): Age
 
 function text(result: SubagentToolResult): string {
 	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+function extractRunningTaskId(message: string): string | undefined {
+	const prefix = "already running as task ";
+	let searchFrom = 0;
+	while (searchFrom < message.length) {
+		const start = message.indexOf(prefix, searchFrom);
+		if (start === -1) return undefined;
+		const idStart = start + prefix.length;
+		const end = message.indexOf(";", idStart);
+		if (end === -1) return undefined;
+		if (end > idStart) return message.slice(idStart, end);
+		searchFrom = end + 1;
+	}
+	return undefined;
 }
 
 function transcript(record: SubagentChildRecord): string {
@@ -1224,7 +1239,13 @@ test("two resumes of one paused child at once: one resumes it, the other is refu
 	);
 	const refused = answers.filter((answer) => answer?.isError === true);
 	assert.equal(refused.length, 1, answers.map((answer) => (answer ? text(answer) : "none")).join("\n"));
-	assert.match(text(refused[0]!), /already running as task .*; pause or quit it first/);
+	const refusedMessage = text(refused[0]!);
+	const refusedTaskId = extractRunningTaskId(refusedMessage);
+	assert.ok(
+		refusedTaskId !== undefined &&
+			refusedMessage.includes(`already running as task ${refusedTaskId}; pause or quit it first`),
+		refusedMessage,
+	);
 	assert.equal(
 		h.runs.filter((run) => readsOf(run).includes("first note") || readsOf(run).includes("second note")).length,
 		1,
@@ -6168,7 +6189,7 @@ for (const ownerless of [false, true]) {
 			assert.equal(h.latest(childId)?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
 			// Reopening the owner's view still sees the old durable row. It must not hide the admitted task.
 			bindSubagentChildCards(h.ctx);
-			const newTaskId = /already running as task ([^;]+);/.exec(text(result))?.[1];
+			const newTaskId = extractRunningTaskId(text(result));
 			assert.ok(newTaskId);
 			const byTask = await h.call({ action: "resume", id: newTaskId });
 			assert.equal(text(byTask), text(result), "the task ID is addressable before its first durable record");

@@ -550,8 +550,8 @@ describe("compaction with a configured compactor model", () => {
 	it("the extension hook can still cancel or supply the replacement context", async () => {
 		const replaced = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", (event) =>
+				(atomic) => {
+					atomic.on("session_before_compact", (event) =>
 						event.reason === "manual" && event.preparation.parameters.query.includes("cancel")
 							? { cancel: true }
 							: { compactedText: "extension summary" },

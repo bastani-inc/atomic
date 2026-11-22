@@ -155,8 +155,8 @@ describe("session-aware bash environment", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) =>
-					pi.registerTool(
+				(atomic) =>
+					atomic.registerTool(
 						Object.assign(
 							createBashTool(cwd, {
 								operations,

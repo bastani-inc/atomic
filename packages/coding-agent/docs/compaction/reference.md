@@ -8,27 +8,27 @@ description: Compaction parameters, saved boundaries, extension hooks, exports, 
 
 ## Parameters
 
-Extension events and results carry one parameter:
+Extension events and compaction results carry one parameter:
 
 | Parameter | Default | Meaning |
-|---|---|---|
-| `query` | The latest user request | The `/compact` instructions when you gave them, otherwise the text of the latest user request. A compactor model receives it as its query. |
+| --- | --- | --- |
+| `query` | Latest user request | Your `/compact` instructions when provided, otherwise the text of the latest user request. A compactor model receives it as its query. |
 
-Instructions given to `/compact`, `session.compact({ query })`, `ctx.compact({ query })` or RPC `compact` are also added to the boundary message, after the recovery steps. Automatic compaction has no instructions.
+Instructions passed to `/compact`, `session.compact({ query })`, `ctx.compact({ query })`, or RPC `compact` are also appended to the boundary message after the recovery steps. Automatic compaction passes no custom instructions.
 
-`compression_ratio` and `preserve_recent` are no longer compaction options. A caller that still passes them has them ignored. The compactor's ratio, request timeout and output limit are fixed:
+`compression_ratio` and `preserve_recent` are no longer compaction options and are ignored if supplied. The compactor ratio, request timeout, and output cap are fixed constants exported from `@bastani/atomic`:
 
 | Value | Export | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `0.5` | `COMPACTOR_COMPRESSION_RATIO` | Share of the conversation the compactor is asked to keep |
 | `120000` | `COMPACTOR_REQUEST_TIMEOUT_MS` | Wall-clock limit on one compactor request, in milliseconds |
-| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | Largest compacted text, in estimated tokens. On a small context window the limit is half of the context the automatic trigger allows |
+| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | Largest allowed compacted text in estimated tokens (or half of the automatic trigger budget on small context windows) |
 
-Compaction resets Claude's signed reasoning chain: `thinking` and `redacted_thinking` blocks do not survive the boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
+Compaction resets Claude's signed reasoning chain, so `thinking` and `redacted_thinking` blocks do not survive a boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
 
 ## Persistence and resume
 
-A successful run appends a `type:"compaction"` entry:
+A successful compaction appends a `type: "compaction"` entry:
 
 ```json
 {
@@ -36,7 +36,7 @@ A successful run appends a `type:"compaction"` entry:
   "id": "c1",
   "parentId": "m9",
   "timestamp": "2026-11-17T10:00:00.000Z",
-  "summary": "Context cleared. Your earlier conversation (51,234 tokens) is no longer in your context window. …",
+  "summary": "Context cleared. Your earlier conversation (51,234 tokens) is no longer in your context window. ...",
   "firstKeptEntryId": null,
   "tokensBefore": 51234,
   "details": {
@@ -45,39 +45,37 @@ A successful run appends a `type:"compaction"` entry:
     "parameters": {"query": "fix the failing test"},
     "stats": {"linesBefore": 812, "linesDeleted": 812, "linesKept": 0, "rangeCount": 0, "tokensBefore": 51234, "tokensAfter": 2210, "percentReduction": 95.7},
     "form": "cleared",
-    "history": {"sessionId": "019f6a2e-…", "rangeUnit": "entries", "entriesBefore": 4210, "boundaryEntry": 4211, "totalEntries": 4211}
+    "history": {"sessionId": "019f6a2e-...", "rangeUnit": "entries", "entriesBefore": 4210, "boundaryEntry": 4211, "totalEntries": 4211}
   }
 }
 ```
 
 | Field | Meaning |
-|---|---|
-| `summary` | The whole boundary message the model sees: the `Context cleared` or `Context compacted` text, any compacted text, the recovery instructions, and any `/compact` instructions |
-| `firstKeptEntryId` | Always `null`: no earlier message stays in context |
-| `tokensBefore` | The provider-aware whole-context count before the boundary, used for budgeting and the boundary line |
-| `coveredThroughEntryId` | Written only by earlier versions, while a tool call was still waiting for its result: the waiting call's turn replays after the boundary. A boundary is no longer written while a call waits |
-| `usage` | The compactor endpoint's usage, when it reported any |
-| `details.form` | `cleared` (no model call) or `compacted` (a compactor or an extension supplied text) |
-| `details.backend` | `compactor` or `extension`; present only on a `compacted` boundary |
-| `details.model` | The compactor as `provider/model`, when one produced the text |
-| `details.fallbackReason` | Why the configured compactor was not used and the context was cleared instead |
-| `details.history` | Where the boundary sits in `history://sessions/<sessionId>`: `rangeUnit` is `"entries"`, `entriesBefore` is the last saved position before the boundary, `boundaryEntry` is the boundary's saved position, and `totalEntries` is the history's entry count right after the boundary was written |
-| `details.historyAccess` | How the boundary told the agent to reach its history: `read-search` (its own `read` and `search` tools) or `session-history-tool`. A resumed session after a boundary gets `session_history` whenever its resumed tools leave out `read` or `search` |
-| `details.stats` | Heuristic estimates. `tokensAfter` counts the system prompt and the boundary message. `linesBefore` counts the serialized lines of the replaced context and `linesKept` the lines of compacted text, `0` on a clear. `rangeCount` is always `0` |
-| `details.backupPath` | The pre-compaction backup, when it could be written |
+| --- | --- |
+| `summary` | Full boundary message shown to the model: `Context cleared` or `Context compacted` text, any compacted text, recovery instructions, and any `/compact` instructions |
+| `firstKeptEntryId` | Always `null` on new boundaries because no earlier message stays in context |
+| `tokensBefore` | Provider-aware whole-context token count before the boundary, used for budgeting and the chat boundary line |
+| `coveredThroughEntryId` | Written only by earlier versions while a tool call waited for its result; new boundaries are never written while a call waits |
+| `usage` | Compactor endpoint usage when reported |
+| `details.form` | `"cleared"` (no model call) or `"compacted"` (compactor or extension supplied replacement text) |
+| `details.backend` | `"compactor"` or `"extension"`, present only on `"compacted"` boundaries |
+| `details.model` | Compactor ID as `provider/model` when a compactor produced the text |
+| `details.fallbackReason` | Reason a configured compactor was not used and context was cleared instead |
+| `details.history` | Boundary location in `history://sessions/<sessionId>`: `rangeUnit: "entries"`, `entriesBefore`, `boundaryEntry`, and `totalEntries` |
+| `details.historyAccess` | `"read-search"` or `"session-history-tool"`. Resumed sessions receive `session_history` whenever `read` or `search` is absent from resumed tools |
+| `details.stats` | Heuristic estimates: `tokensAfter` counts the system prompt and boundary message, `linesBefore` counts replaced context lines, `linesKept` counts compacted lines (`0` on a clear), and `rangeCount` is `0` |
+| `details.backupPath` | Path to the pre-compaction backup when written |
 
-`details.strategy` stays `"verbatim-lines"`, and only entries with that strategy affect active context. The display count is not stored again under `details.tokensBefore`.
-
-Resume uses the saved boundary text without another request. New messages after the boundary remain ordinary messages. Old inactive formats do not reapply their historical omissions, so content they once hid can return on resume.
+Only `compaction` entries with `details.strategy: "verbatim-lines"` affect active context. Resuming uses the saved boundary text directly without another model request, and messages appended after the boundary stay ordinary messages. Inactive legacy formats do not reapply historical omissions, so content they previously hid may reappear on resume.
 
 ## Extension hooks
 
 ### `session_before_compact`
 
-Extensions may cancel a compaction or supply their own replacement text:
+Extensions can cancel compaction or provide custom replacement text before any compactor call runs:
 
 ```typescript
-pi.on("session_before_compact", async (event) => {
+atomic.on("session_before_compact", async (event) => {
   const { reason, parameters, preparation, branchEntries, signal } = event;
   if (signal.aborted) return { cancel: true };
 
@@ -89,56 +87,58 @@ pi.on("session_before_compact", async (event) => {
 });
 ```
 
-`preparation` is a deep-frozen clone. `preparation.region.lines` holds everything in context since the last boundary, serialized as role-tagged lines (`[User]: `, `[Assistant]: `, `[Assistant tool calls]: `, `[Tool result]: `), with the previous boundary's text first. Nothing in it is protected: `firstKeptEntryId` is `null` and `keptTailMessageCount` is `0`. `parameters.query` is the `/compact` instructions or the latest user request.
+`preparation` is a deep-frozen clone. `preparation.region.lines` holds the entire active context since the last boundary serialized as role-tagged lines (`[User]: `, `[Assistant]: `, `[Assistant tool calls]: `, `[Tool result]: `), starting with any previous boundary text. `firstKeptEntryId` is `null`, `keptTailMessageCount` is `0`, and `parameters.query` holds the `/compact` instructions or latest user request.
 
-Returning `{ cancel: true }` cancels the compaction. Returning `compactedText` writes a `Context compacted` boundary without calling the configured compactor: the model sees the text in a `<compacted-context>` block, followed by the recovery instructions. Empty or whitespace text is no replacement; the configured form runs as if the handler had returned nothing. Text over the compactor's output limit, or that would not fit below the automatic trigger together with the system prompt and the recovery instructions, is refused like a compactor's: the context is cleared instead, with the fallback reason `extension failed: output too long (…)`. A replacement needs no provider credentials. The hook runs before any compactor request and receives the compaction's abort signal.
+Return `{ cancel: true }` to cancel compaction. Return `{ compactedText }` to write a `Context compacted` boundary offline without provider credentials; the model sees your text in a `<compacted-context>` block followed by recovery instructions.
+
+Empty or whitespace-only text counts as no replacement, so the configured compaction form runs normally. Replacement text exceeding the compactor output cap or automatic trigger budget is rejected and falls back to context clearing with fallback reason `extension failed: output too long (...)`.
 
 ### `session_compact`
 
-After the boundary is saved, Atomic emits an observe-only event:
+Emitted as an observe-only event after the boundary is saved:
 
 ```typescript
-pi.on("session_compact", async (event) => {
+atomic.on("session_compact", async (event) => {
   console.log(event.result.form, event.result.backend, event.result.model); // "cleared" | "compacted"
-  console.log(event.result.fallbackReason);    // set when a configured compactor was not used
-  console.log(event.result.history);           // { sessionId, rangeUnit: "entries", entriesBefore, boundaryEntry, totalEntries }
+  console.log(event.result.fallbackReason);            // set when a configured compactor was not used
+  console.log(event.result.history);                   // { sessionId, rangeUnit: "entries", entriesBefore, boundaryEntry, totalEntries }
   console.log(event.compactionEntry.details.strategy); // "verbatim-lines"
   console.log(event.fromExtension);
 });
 ```
 
-`event.result.compactedText` is the whole boundary message, the same text as the entry's `summary`. Observer errors are isolated and cannot roll back the saved boundary.
+`event.result.compactedText` matches the saved entry's `summary`. Observer errors are isolated and cannot roll back the saved boundary.
 
 ### `session_compact_failed`
 
-A failed or cancelled manual, threshold, or overflow compaction emits an observe-only failure event:
+Emitted as an observe-only event when a manual, threshold, or overflow compaction fails or is cancelled:
 
 ```typescript
-pi.on("session_compact_failed", async (event) => {
+atomic.on("session_compact_failed", async (event) => {
   console.log(event.reason, event.errorMessage);
   console.log(event.aborted, event.willRetry, event.fromExtension);
 });
 ```
 
-`errorMessage` is absent for cancellation. `fromExtension` identifies failures after a `session_before_compact` handler supplied replacement text; no compaction boundary is saved. A compactor failure is not a compaction failure: the context is cleared instead and `session_compact` reports the `fallbackReason`.
+`errorMessage` is absent when cancelled. `fromExtension` marks failures after a `session_before_compact` handler supplied replacement text, and no boundary is saved. A compactor failure is not a compaction failure because Atomic falls back to clearing context and reports `fallbackReason` on `session_compact`.
 
 ## Package exports
 
-`@bastani/atomic` exports the pieces compaction is built from:
+`@bastani/atomic` exports these compaction helpers and types:
 
 | Export | Use |
-|---|---|
-| `buildBoundaryText(input, totalEntries)` | The boundary message for a session, its history location, and optional instructions or compacted text |
-| `buildCompactorMessages(messages, isBoundary)` | Frame a context's messages the way the compactor receives them |
-| `requestCompactorOutput(request)` | Send one `CompactorRequest` to a compactor endpoint; resolves with `{ text, usage? }` and throws `CompactorFailure` with the reason on any failure |
-| `resolveCompactionModel(configured, models)` | Resolve a `compactionModel` value to a `CompactionModelSelection`: `auto`, with the reason a chat, classifier or unknown value was ignored, or a compactor |
-| `SESSION_HISTORY_TOOL_NAME` | `"session_history"`, the tool an agent without `read` or `search` gets after its first clear |
+| --- | --- |
+| `buildBoundaryText(input, totalEntries)` | Build the boundary message for a session, history location, and optional instructions or compacted text |
+| `buildCompactorMessages(messages, isBoundary)` | Frame active context messages in the format sent to a compactor |
+| `requestCompactorOutput(request)` | Send one `CompactorRequest` to a compactor endpoint; resolves `{ text, usage? }` or throws `CompactorFailure` |
+| `resolveCompactionModel(configured, models)` | Resolve `compactionModel` to a `CompactionModelSelection` (`auto` with any fallback reason, or a compactor) |
+| `SESSION_HISTORY_TOOL_NAME` | `"session_history"`, the read-only history tool granted after clearing when `read` or `search` is absent |
 
-The types `CompactionForm`, `CompactionBackend`, `CompactionHistoryLocation`, `CompactionModelSelection`, `CompactorMessage` and `CompactorRequest` are exported with them.
+The types `CompactionForm`, `CompactionBackend`, `CompactionHistoryLocation`, `CompactionModelSelection`, `CompactorMessage`, `CompactorRequest`, and `BranchSummaryEntry` are exported alongside them.
 
-## Branch Summary Format
+## Branch summary format
 
-Branch summarization uses a structured format:
+Branch summarization writes structured Markdown:
 
 ```markdown
 ## Goal
@@ -176,9 +176,33 @@ path/to/changed.ts
 </modified-files>
 ```
 
-### Message Serialization for Branch Summaries
+### `BranchSummaryEntry` structure
 
-Branch-summary input uses role-labelled text:
+`BranchSummaryEntry` is exported from `@bastani/atomic`. Default branch summarization stores cumulative file lists in `details`, while extensions can store custom metadata:
+
+```typescript
+interface BranchSummaryEntry<T = unknown> {
+  type: "branch_summary";
+  id: string;
+  parentId: string | null;
+  timestamp: string; // ISO timestamp
+  fromId: string;    // Entry we navigated from
+  summary: string;
+  details?: T;       // Implementation-specific data (not sent to LLM)
+  usage?: Usage;     // Usage from the summary model call
+  fromHook?: boolean; // true if supplied by an extension
+}
+
+// Default branch summarization stores this shape in details:
+interface BranchSummaryDetails {
+  readFiles: string[];
+  modifiedFiles: string[];
+}
+```
+
+### Message serialization for branch summaries
+
+Branch-summary prompts serialize conversation messages with role labels so the model summarizes rather than continuing the conversation:
 
 ```text
 [User]: What they said
@@ -187,44 +211,40 @@ Branch-summary input uses role-labelled text:
 [Tool result]: Output from tool
 ```
 
-This prevents the model from treating it as a conversation to continue.
+Thinking blocks are omitted. Tool results longer than 2,000 characters are truncated with a marker stating how many characters were removed.
 
-Thinking blocks are omitted.
+## Extension hooks for branch summarization
 
-Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated.
+### `session_before_tree`
 
-## Extension Hooks for Branch Summarization
-
-### session_before_tree
-
-Fired before `/tree` navigation. Always fires regardless of whether user chose to summarize. Can cancel navigation or provide custom summary.
+Fired before `/tree` navigation regardless of whether the user requested a summary. Handlers can cancel navigation or supply a custom summary:
 
 ```typescript
-pi.on("session_before_tree", async (event, ctx) => {
+atomic.on("session_before_tree", async (event, ctx) => {
   const { preparation, signal } = event;
 
-  // preparation.targetId - where we're navigating to
-  // preparation.oldLeafId - current position (being abandoned)
-  // preparation.commonAncestorId - shared ancestor
-  // preparation.entriesToSummarize - entries that would be summarized
-  // preparation.userWantsSummary - whether user chose to summarize
+  // preparation.targetId - destination entry ID
+  // preparation.oldLeafId - current leaf being abandoned
+  // preparation.commonAncestorId - shared ancestor entry ID
+  // preparation.entriesToSummarize - entries in the abandoned branch
+  // preparation.userWantsSummary - whether the user requested a summary
 
-  // Cancel navigation entirely:
+  // Cancel navigation:
   return { cancel: true };
 
-  // Provide custom summary (only used if userWantsSummary is true):
+  // Provide a custom summary (applied only when userWantsSummary is true):
   if (preparation.userWantsSummary) {
     return {
       summary: {
         summary: "Your summary...",
         details: { /* custom data */ },
-      }
+      },
     };
   }
 });
 ```
 
-See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
+`SessionBeforeTreeEvent` and `SessionBeforeTreeResult` are exported from `@bastani/atomic`.
 
 ## Settings
 
@@ -240,20 +260,14 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `compaction.enabled` | `true` | Enable automatic compaction. |
-| `compaction.reserveTokens` | `16384` | Tokens to reserve for the next response. Automatic compaction starts when completed-response usage or the context after tool results exceeds the model's context window minus this reserve. |
-| `compactionModel` | `"auto"` | `auto` or an empty value clears the context; an exact registered compactor ID, such as `morph/morph-compactor`, compacts with that model. See [Compaction model](/compaction#compaction-model). |
+See [Compaction settings](/settings#compaction) for the complete `compaction` and `branchSummary` settings table, and [Compaction model](/compaction#compaction-model) for selecting `auto` or a registered compactor. Setting `"compaction": { "enabled": false }` turns off automatic compaction while keeping manual `/compact` available.
 
-Disable automatic compaction with `"enabled": false`. You can still compact manually with `/compact`.
-
-These settings were removed. Atomic ignores them when they are present, and settings load without an error: `compaction.compression_ratio`, `compaction.preserve_recent`, `compaction.keepContextShare`, `compaction.query`, `compaction.planningTimeoutMs`, `compaction.modelOverrides`, `compaction.background`, `compaction.backgroundThresholdPercent` and `compaction.historyRecall`.
+These removed compaction settings are ignored without error if still present in `settings.json`: `compaction.compression_ratio`, `compaction.preserve_recent`, `compaction.keepContextShare`, `compaction.query`, `compaction.planningTimeoutMs`, `compaction.modelOverrides`, `compaction.background`, `compaction.backgroundThresholdPercent`, and `compaction.historyRecall`.
 
 ## Historical formats
 
-Older formats remain parseable:
+Older compaction records remain parseable:
 
-- `type:"compaction"` entries with `details.strategy: "verbatim-lines"` written by earlier versions have no `details.form`. They kept part of the conversation verbatim, with `(filtered N lines)` markers and a kept tail, or held a summary. They stay active and replay as they were written. The chat shows them as `Context compacted`, or as `Context cleared` for an older boundary that started a fresh context window.
-- `type:"context_compaction"` records store logical entry/content-block deletion targets from older versions. Those records are inert, so content they once hid can re-enter context when an old session resumes.
-- `type:"compaction"` without `details.strategy: "verbatim-lines"` stored generated summary prose. Those records also remain inert.
+- Earlier `type: "compaction"` entries with `details.strategy: "verbatim-lines"` and no `details.form` kept filtered conversation lines or a summary. They remain active and replay as written, displaying as `Context compacted` (or `Context cleared` for boundaries that started a fresh window).
+- Retired `type: "context_compaction"` records stored logical entry and content-block deletions. They are inert, so previously hidden content may reappear when an old session resumes.
+- Older `type: "compaction"` entries without `details.strategy: "verbatim-lines"` stored summary prose and are also inert.

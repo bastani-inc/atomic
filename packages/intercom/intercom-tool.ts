@@ -8,7 +8,6 @@ import {
   isRetryableIntercomRoutingError,
   sliceHead,
 } from "@bastani/atomic";
-import { Type } from "@bastani/atomic-ai";
 import { type IntercomClient, sameReachPolicy, type SendOptions, type SendResult } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
@@ -18,7 +17,12 @@ import {
   PAUSED_RECIPIENT_TARGET,
   RESUMING_RECIPIENT_TARGET,
 } from "./broker/ended-child-wakes.js";
-import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
+import { parseAskWait } from "./ask-wait.js";
+import {
+  createIntercomToolParameters,
+  INTERCOM_TOOL_DESCRIPTION,
+  INTERCOM_TOOL_PROMPT_SNIPPET,
+} from "./tool-metadata.js";
 import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
@@ -38,7 +42,7 @@ import { awaitSubagentChildRestoration } from "./session-recovery.js";
 import { closeInboundAsk, closeRefusedAsk } from "./finished-asks.js";
 import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn, sessionTargetFailureReason } from "./session-target.js";
 import { createConcurrencyGate } from "./route-connect-gate.js";
-import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, RETURN_PATH_TOOL_NOTE, validateRuntimeGroup } from "./group.js";
+import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
 import { canJoin, canLeave, canPeek, type IntercomReachPolicy } from "./reach-policy.js";
 import { isWorkflowTarget, workflowTargetFailure } from "./broker/legacy-workflow-frames.js";
@@ -245,7 +249,7 @@ function toolReachRefusal(reach: IntercomReachPolicy, action: string, group: str
 	return undefined;
 }
 
-export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
+export function registerIntercomTool(atomic: ExtensionAPI, deps: IntercomToolDeps): void {
   const retryIdentities = new RetryIdentityReservations({ maxEntries: deps.retryIdentityMaxEntries });
   const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
@@ -278,7 +282,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   const ownOutboundAsks = deps.outboundAsks === undefined
     ? new OutboundAsks({
         entries: () => [],
-        append: (customType, data) => pi.appendEntry(customType, data),
+        append: (customType, data) => atomic.appendEntry(customType, data),
         sessionId: () => null,
       })
     : undefined;
@@ -342,7 +346,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
             return patternError(multipleMatchesRefusal(pattern.pattern, recipients));
           }
         } else {
-          const children = await listIntercomChildren(pi.events, request.toolSessionId, pattern.runId);
+          const children = await listIntercomChildren(atomic.events, request.toolSessionId, pattern.runId);
           if (children.length === 0) {
             return patternError(`This session has no running, released or paused subagents${
               pattern.runId === undefined ? "" : ` in run ${pattern.runId}`
@@ -395,86 +399,16 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     }));
     return patternSendResult(target, outcomes);
   };
-  pi.registerTool({
+  atomic.registerTool({
     name: "intercom",
     exposure: "model-only",
     scriptAccess: intercomScriptAccess,
     detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && intercomCallMayDetach(params),
     detachmentRequiresReady: true,
     label: "Intercom",
-    description: `Send a message to another local agent session running on this machine.
-Use this to communicate findings, request help, or coordinate work with other sessions.
-
-Sessions belong to an intercom group and can ONLY message sessions in the same group;
-cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
-
-For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes
-remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session
-visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this
-session launched) or \`subagents:<runId>/*\` (those of one run). Each recipient gets its own direct send,
-and the result lists every recipient's outcome; a glob that matches no session is an error naming close
-names. A name glob (\`*\` included) that matches more than one session needs \`broadcast: true\`; without it
-the send is refused with the list of matches, so pick one. \`subagents:\` targets broadcast without it.
-Patterns never reach outside your groups.
-${ASK_DESCRIPTION}
-Choose \`delivery\` per send/ask by urgency. The default "steer" arrives after the recipient's current
-tool calls finish and never cancels its work. Use "interrupt" when it must stop now (an urgent correction
-or a stop order); it cancels the current model call or tool call. Use "followUp" when the message can wait
-until the recipient finishes (low priority, "after you're done"). An idle recipient starts a turn.
-For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
-
-Usage:
-  intercom({ action: "list" })                    → List sessions visible through your groups
-  intercom({ action: "list", group: "name" })     → Read-only peek at one group's sessions
-  intercom({ action: "groups" })                  → Discover every available group and your memberships
-  intercom({ action: "join", group: "name" })     → Add a named group membership
-  intercom({ action: "leave", group: "name" })    → Leave one named group
-  intercom({ action: "leave" })                   → Return to your resolved home group
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
-  intercom({ action: "send", to: "subagent-worker-*", message: "...", broadcast: true }) → Send to every matching session
-  intercom({ action: "send", to: "subagents:*", message: "..." })   → Send to every subagent you launched
-${ASK_USAGE}
-  intercom({ action: "send", to: "session-name", message: "...", delivery: "interrupt" }) → Cancel the recipient's current work
-  intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
-  intercom({ action: "pending" })                                      → List unresolved inbound asks and your pending asks
-  intercom({ action: "status" })                  → Show connection status and all your groups
-
-The "join" action is additive. "default" is the shared default group; "true" and
-"auto" are reserved for subagent auto-groups. Ordinary delivery requires at least
-one shared membership; contact_supervisor remains the only cross-group path.`,
-    promptSnippet:
-      `Use to coordinate with other local agent sessions that share an intercom group. ${ASK_PROMPT_SNIPPET} Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.`,
-    parameters: Type.Object({
-      action: Type.String({
-        description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', 'cancel', or 'status'",
-      }),
-      to: Type.Optional(Type.String({
-        description: "Live session name, exact full session ID, or unique 8-hex session UUID prefix. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target (for 'send', 'ask', or targeted 'reply')",
-      })),
-      message: Type.Optional(Type.String({
-        description: "Message to send (for 'send', 'ask', or 'reply' action)",
-      })),
-      broadcast: Type.Optional(Type.Boolean({
-        description: "For 'send' to a session-name glob: true to reach every match. Without it, a glob that matches more than one session is refused with the list of matches. `subagents:` targets broadcast without it.",
-      })),
-      attachments: Type.Optional(Type.Array(Type.Object({
-        type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
-        name: Type.String(),
-        content: Type.String(),
-        language: Type.Optional(Type.String()),
-      }))),
-      delivery: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp"), Type.Literal("interrupt")], {
-        description: "For 'send'/'ask'; choose per message by urgency. 'steer' (default): arrives after the recipient's current tool calls, never cancelling work. 'interrupt': the recipient must stop now (urgent correction, stop order); cancels its current model call or tool call. 'followUp': can wait until the recipient finishes (low priority, after you're done).",
-      })),
-      wait: Type.Optional(askWaitSchema),
-      askId: Type.Optional(askIdSchema),
-      replyTo: Type.Optional(Type.String({
-        description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender. With 'cancel', closes that ask sent to you without replying",
-      })),
-      group: Type.Optional(Type.String({
-        description: "Group name for 'join' or optional targeted 'leave'; read-only group filter for 'list'/'status'. 'send'/'ask' use shared memberships.",
-      })),
-    }),
+    description: INTERCOM_TOOL_DESCRIPTION,
+    promptSnippet: INTERCOM_TOOL_PROMPT_SNIPPET,
+    parameters: createIntercomToolParameters(),
 
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       if ("retryToken" in params) {
@@ -803,7 +737,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               replyTo,
               expectsReply: false,
             }, retryToken);
-            const goneChild = await awaitSubagentChildRestoration(pi.events, toolSessionId, to);
+            const goneChild = await awaitSubagentChildRestoration(atomic.events, toolSessionId, to);
             if (goneChild !== undefined) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
@@ -851,7 +785,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: result.id,
@@ -895,7 +829,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: result.id,
@@ -996,7 +930,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const claimParentAsk = (resolvedTargetId: string): boolean =>
               Boolean(
                 metadata &&
-                requestParentAskHandoff(pi.events, metadata, {
+                requestParentAskHandoff(atomic.events, metadata, {
                   kind: "intercom",
                   question: typeof message === "string" ? message : "",
                   attachments: params.attachments,
@@ -1017,7 +951,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
 
-            const goneChild = await awaitSubagentChildRestoration(pi.events, toolSessionId, to);
+            const goneChild = await awaitSubagentChildRestoration(atomic.events, toolSessionId, to);
             if (goneChild !== undefined) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
@@ -1139,7 +1073,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               wait?.cancel(new Error(`Ask queued for ${to}, which had ended`));
               wait = null;
               await outboundAsks().persist(questionId);
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: sendResult.id,
@@ -1164,7 +1098,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
               wait?.cancel(new Error(`Message queued for ${to}`));
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: sendResult.id,
@@ -1201,7 +1135,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
             outboundAsks().open({ askId: questionId, to, recipientId: replyFrom, question });
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: sendResult.id,
@@ -1221,7 +1155,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const activeWait: ReplyWait = wait;
             if (budgetMs !== undefined) {
               await prepareReleasedReplyWait(
-                pi,
+                atomic,
                 activeWait,
                 signal,
                 { toolCallId, questionId, from: replyFrom, retryCount: retries },
@@ -1250,7 +1184,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
               : "";
-            const receipt = await appendEntryUnlessReleased(pi, "intercom_received", {
+            const receipt = await appendEntryUnlessReleased(atomic, "intercom_received", {
               from: to,
               message: { text: replyText, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,
@@ -1413,7 +1347,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to: displayTarget,
                 message: { text: message, attachments, replyTo: route.messageId },
                 messageId: result.id,
@@ -1448,7 +1382,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 : {};
               // #6168: an ask no reply can reach any more is closed, so it does not stay pending for good.
               const closed = route.expectsReply
-                ? await closeRefusedAsk(pi, activeReplyTracker(), toolSessionId, route.messageId, result)
+                ? await closeRefusedAsk(atomic, activeReplyTracker(), toolSessionId, route.messageId, result)
                 : undefined;
               return {
                 content: [{
@@ -1469,7 +1403,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to: displayTarget,
               message: { text: message, attachments, replyTo: route.messageId },
               messageId: result.id,
@@ -1572,7 +1506,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             const sender = context.from.name || context.from.id;
-            if (!(await closeInboundAsk(pi, activeReplyTracker(), context.message.id, "closed"))) {
+            if (!(await closeInboundAsk(atomic, activeReplyTracker(), context.message.id, "closed"))) {
               return {
                 content: [{ type: "text", text: `Ask ${context.message.id} from ${sender} was not closed: its close could not be saved to the session. It is still pending; try again.` }],
                 isError: true,

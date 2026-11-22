@@ -35,10 +35,8 @@ export function runWebFixture<T>(heavySource: string, scriptBody: string): T {
 	const tempDir = createRepositoryFixtureDir("web-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
-		writeFileSync(
-			join(tempDir, "index.ts"),
-			readFileSync(resolve(repoRoot, "packages/web-access/index.ts"), "utf-8"),
-		);
+		const indexSource = readFileSync(resolve(repoRoot, "packages/web-access/index.ts"), "utf-8");
+		writeFileSync(join(tempDir, "index.ts"), indexSource);
 		// #3105: the lightweight wrapper now routes owner diagnostics through this sibling.
 		writeFileSync(
 			join(tempDir, "diagnostics.ts"),
@@ -52,7 +50,16 @@ export function runWebFixture<T>(heavySource: string, scriptBody: string): T {
 			join(tempDir, "result-renderers.ts"),
 			"export function renderWebAccessToolResult() { return undefined; }\n",
 		);
+		writeFileSync(
+			join(tempDir, "message-renderers.ts"),
+			readFileSync(resolve(repoRoot, "packages/web-access/message-renderers.ts"), "utf-8"),
+		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
+		for (const [, specifier] of indexSource.matchAll(/from "\.\/([\w./-]+)\.js"/g)) {
+			if (!existsSync(join(tempDir, `${specifier}.ts`))) {
+				throw new Error(`lazy-tool web-access fixture is missing packages/web-access/${specifier}.ts`);
+			}
+		}
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `
 ${waitForGateSource}
@@ -152,6 +159,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"reply-tracker.ts",
 			"session-identity.ts",
 			"session-target.ts",
+			"tool-metadata.ts",
 		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });
@@ -189,6 +197,10 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 		writeFileSync(
 			join(tempDir, "ui", "inline-message.ts"),
 			"export function renderIntercomCustomMessage() { return undefined; }\n",
+		);
+		writeFileSync(
+			join(tempDir, "ui", "wake-notice.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/ui/wake-notice.ts"), "utf-8"),
 		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
 		// This list is hand-maintained, and a lightweight module added to the wrapper

@@ -30,7 +30,7 @@ export const mcpLazyBuiltinSpec: LazyBuiltinSpec = {
 	label: "mcp",
 	managedEvents: ["before_agent_start"],
 	interceptsMcpContributions: true,
-	register(pi, controller) {
+	register(atomic, controller) {
 		let checkedGlobalConfig = false;
 		let checkedProjectConfig = false;
 		let pendingContributionActivation: Promise<unknown> | null = null;
@@ -50,7 +50,7 @@ export const mcpLazyBuiltinSpec: LazyBuiltinSpec = {
 				await pendingContributionActivation;
 				if (controller.active) return;
 			}
-			const hasRegisteredServers = (pi.getMcpServerContributions?.().length ?? 0) > 0;
+			const hasRegisteredServers = (atomic.getMcpServerContributions?.().length ?? 0) > 0;
 			let hasRecordedTools = false;
 			try {
 				hasRecordedTools = hasMcpSessionHistory(ctx.sessionManager.getBranch());
@@ -91,7 +91,7 @@ export const mcpLazyBuiltinSpec: LazyBuiltinSpec = {
 			}
 		});
 
-		pi.on("before_agent_start", async (event, ctx) => {
+		atomic.on("before_agent_start", async (event, ctx) => {
 			if (!controller.active) {
 				await checkAndActivateForContext(ctx, false);
 			}
@@ -103,7 +103,7 @@ export const mcpLazyBuiltinSpec: LazyBuiltinSpec = {
 
 		// Register as an MCP consumer immediately so reportUnhandledMcpServers does not report
 		// false positives while MCP is dormant, and activate on demand when an extension registers a server.
-		pi.onMcpServerContributionsChanged?.(() => {
+		atomic.onMcpServerContributionsChanged?.(() => {
 			const active = controller.active;
 			if (active) {
 				for (const listener of [...active.captured.mcpContributionListeners]) {
@@ -125,7 +125,7 @@ export const mcpLazyBuiltinSpec: LazyBuiltinSpec = {
 		});
 
 		// Fallback renderer for resumed mcp__* calls while dormant; once active, defer to MCP's own renderer.
-		pi.registerToolRenderer((toolName, next) => {
+		atomic.registerToolRenderer((toolName, next) => {
 			if (controller.active) return next();
 			const registered = next();
 			if (registered) return registered;
@@ -139,7 +139,7 @@ export const mcpLazyBuiltinSpec: LazyBuiltinSpec = {
 			};
 		});
 
-		pi.registerCommand("mcp", {
+		atomic.registerCommand("mcp", {
 			description: "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure",
 			getArgumentCompletions: (prefix) => {
 				const loaded = controller.active?.captured.commands.get("mcp")?.getArgumentCompletions;

@@ -5,9 +5,9 @@ import { main } from "../../packages/coding-agent/dist/index.js";
 const [root, ...args] = process.argv.slice(2);
 const outbox = [];
 const flushed = Promise.withResolvers();
-const listener = (pi) => {
-	pi.on("session_start", () => { outbox.push("accepted before quit"); });
-	pi.on("session_shutdown", async ({ reason }) => {
+const listener = (atomic) => {
+	atomic.on("session_start", () => { outbox.push("accepted before quit"); });
+	atomic.on("session_shutdown", async ({ reason }) => {
 		if (reason !== "quit") return;
 		writeFileSync(join(root, "quitting"), "");
 		let timer;

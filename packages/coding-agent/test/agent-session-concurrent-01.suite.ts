@@ -190,8 +190,8 @@ describe("AgentSession concurrent prompt guard", () => {
 	it("queued inputs run transformations and handled inputs are not queued", async () => {
 		// Queue hooks run before admission, including RPC-originated messages.
 		await createSession([
-			(pi) => {
-				pi.on("input", (event) =>
+			(atomic) => {
+				atomic.on("input", (event) =>
 					event.text === "consume"
 						? { action: "handled" }
 						: { action: "transform", text: `${event.source}:${event.text}` },
@@ -293,11 +293,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const extensionsResult = await createTestExtensionsResult([
-			(pi) => {
-				(globalThis as typeof globalThis & { testExtensionApi?: unknown }).testExtensionApi = pi;
+			(atomic) => {
+				(globalThis as typeof globalThis & { testExtensionApi?: unknown }).testExtensionApi = atomic;
 			},
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					lastInputSource = event.source;
 				});
 			},

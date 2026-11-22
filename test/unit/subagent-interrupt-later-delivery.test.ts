@@ -116,8 +116,8 @@ async function interruptedChild(name: string, responses: Parameters<typeof fauxA
 			signal: stop.signal,
 			resourceLoaderInheritanceSnapshot: {
 				extensionFactories: [
-					(pi) => {
-						extension = pi;
+					(atomic) => {
+						extension = atomic;
 					},
 				],
 			},

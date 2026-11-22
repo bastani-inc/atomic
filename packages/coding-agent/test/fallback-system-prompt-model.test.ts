@@ -83,8 +83,8 @@ async function fallbackPrompts(transform: boolean, appendInHandler: boolean): Pr
 	cleanups.push(() => runtime.unregisterProvider(PROVIDER));
 	const extensionsResult = appendInHandler
 		? await createTestExtensionsResult([
-				(pi) => {
-					pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n${APPENDED}` }));
+				(atomic) => {
+					atomic.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n${APPENDED}` }));
 				},
 			])
 		: undefined;

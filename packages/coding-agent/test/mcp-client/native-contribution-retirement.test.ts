@@ -46,12 +46,12 @@ describe("native MCP contribution retirement", () => {
 					createTransport: (entry) =>
 						new ServerTransport("command" in entry.config ? entry.config.command : "unexpected"),
 				}),
-				(pi) => {
-					pi.registerCommand("replace", {
+				(atomic) => {
+					atomic.registerCommand("replace", {
 						description: "Replace an MCP contribution twice in one turn",
 						handler: async () => {
-							pi.registerMcpServer("race", { command: "retired", exposure: "direct" });
-							pi.registerMcpServer("race", { command: "current", exposure: "direct" });
+							atomic.registerMcpServer("race", { command: "retired", exposure: "direct" });
+							atomic.registerMcpServer("race", { command: "current", exposure: "direct" });
 						},
 					});
 				},
@@ -111,7 +111,7 @@ describe("native MCP contribution retirement", () => {
 		});
 		const extensionsResult = await createTestExtensionsResult([
 			extension,
-			(pi) => pi.registerMcpServer("file_name", { command: "file-collision", exposure: "direct" }),
+			(atomic) => atomic.registerMcpServer("file_name", { command: "file-collision", exposure: "direct" }),
 		]);
 		extensionsResult.runtime.mcpServerRegistry.addPackageSource({
 			getMcpServers: () =>

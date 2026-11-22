@@ -22,8 +22,8 @@ import { createHarness, getMessageText } from "./suite/harness.js";
 
 /** An extension whose `message_start` hook waits on `gate` for the user message `text`. */
 function holdMessageStart(text: string, gate: Gate): ExtensionFactory {
-	return (pi) => {
-		pi.on("message_start", async (event) => {
+	return (atomic) => {
+		atomic.on("message_start", async (event) => {
 			if (event.message.role !== "user" || getMessageText(event.message) !== text) return;
 			gate.entered.resolve();
 			await gate.release.promise;

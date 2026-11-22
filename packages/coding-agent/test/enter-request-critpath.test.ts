@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { getApiProvider, registerApiProvider, resetApiProviders } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { afterEach, describe, it, vi } from "vitest";
-import { prewarmDefaultModelApi, prewarmModelApi } from "../src/core/model-api-prewarm.ts";
+import { prewarmHostDefaultModelApi } from "../src/core/default-model-api-prewarm.ts";
+import { prewarmModelApi } from "../src/core/model-api-prewarm.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { setTerminalColorScheme, setTerminalColors } from "../src/modes/interactive/theme/terminal-colors.js";
@@ -70,11 +71,11 @@ describe("PR 1 enter-to-request critical path", () => {
 		await assert.doesNotReject(() => prewarmModelApi(undefined));
 	});
 
-	it("prewarmDefaultModelApi warms only the configured default model API from settings/models.json and ignores missing/corrupt files", async () => {
+	it("prewarmHostDefaultModelApi warms only the configured default model API from settings/models.json and ignores missing/corrupt files", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-prewarm-default-"));
 		try {
 			// Missing settings.json is a silent no-op.
-			await assert.doesNotReject(() => prewarmDefaultModelApi(dir));
+			await assert.doesNotReject(() => prewarmHostDefaultModelApi([], dir, dir));
 
 			let warmed = 0;
 			let otherWarmed = 0;
@@ -107,17 +108,22 @@ describe("PR 1 enter-to-request critical path", () => {
 				join(dir, "models.json"),
 				JSON.stringify({
 					providers: {
-						loop: { api: otherApi, models: [{ id: "m1", api: targetApi }] },
+						loop: {
+							baseUrl: "http://127.0.0.1:9",
+							apiKey: "test",
+							api: otherApi,
+							models: [{ id: "m1", api: targetApi }],
+						},
 					},
 				}),
 			);
-			await prewarmDefaultModelApi(dir);
+			await prewarmHostDefaultModelApi([], dir, dir);
 			assert.equal(warmed, 1);
 			assert.equal(otherWarmed, 0);
 
 			// Corrupt settings.json is swallowed cleanly.
 			writeFileSync(join(dir, "settings.json"), "{invalid json");
-			await assert.doesNotReject(() => prewarmDefaultModelApi(dir));
+			await assert.doesNotReject(() => prewarmHostDefaultModelApi([], dir, dir));
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

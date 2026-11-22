@@ -20,7 +20,7 @@ type GlimpseOpen = (html: string, opts: Record<string, unknown>) => GlimpseWindo
 let glimpseOpen: GlimpseOpen | null | undefined;
 let glimpseOpenPromise: Promise<GlimpseOpen | null> | undefined;
 
-async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
+async function openInBrowser(atomic: ExtensionAPI, url: string): Promise<void> {
 	const plat = platform();
 	const [name, args]: [string, string[]] = plat === "darwin"
 		? ["open", [url]]
@@ -30,7 +30,7 @@ async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
 	// Only from PATH's absolute directories, never from the working directory.
 	const file = await findHelperExecutableAsync(name);
 	if (file === undefined) throw new Error(`spawn ${name} ENOENT`);
-	const result = await pi.exec(file, args);
+	const result = await atomic.exec(file, args);
 	if (result.code !== 0) {
 		throw new Error(result.stderr || `Failed to open browser (exit code ${result.code})`);
 	}
@@ -108,7 +108,7 @@ function openInGlimpse(open: GlimpseOpen, url: string, title: string): GlimpseWi
 }
 
 export async function openCuratorWindow(
-	pi: ExtensionAPI,
+	atomic: ExtensionAPI,
 	url: string,
 	title: string,
 	setGlimpseWindow: (win: GlimpseWindow | null) => void,
@@ -127,5 +127,5 @@ export async function openCuratorWindow(
 			setGlimpseWindow(null);
 		}
 	}
-	await openInBrowser(pi, url);
+	await openInBrowser(atomic, url);
 }

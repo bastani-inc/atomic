@@ -182,7 +182,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 				markEventLoopStartupComplete();
 				engineLiveness.resourcesReady();
 				setImmediate(() => {
-					void prewarmModelApi(sessionBinding.currentSession.model);
+					void prewarmModelApi(sessionBinding.currentSession.model, sessionBinding.currentSession.modelRuntime);
 				});
 			} catch (error) {
 				const resourceError = error instanceof Error ? error : new Error(String(error));
@@ -412,11 +412,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		markEventLoopStartupComplete();
 		engineLiveness.resourcesReady();
 		setImmediate(() => {
-			void prewarmModelApi(sessionBinding.currentSession.model);
+			void prewarmModelApi(sessionBinding.currentSession.model, sessionBinding.currentSession.modelRuntime);
 		});
 	} else {
 		setImmediate(() => {
-			void prewarmModelApi(sessionBinding.currentSession.model);
+			void prewarmModelApi(sessionBinding.currentSession.model, sessionBinding.currentSession.modelRuntime);
 		});
 	}
 	inputReady = true;

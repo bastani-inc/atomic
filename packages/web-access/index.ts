@@ -14,12 +14,13 @@ import { join } from "node:path";
 import { type KeyId, Text } from "@bastani/atomic-tui";
 import { Type } from "@bastani/atomic-ai";
 import { renderWebAccessToolResult } from "./result-renderers.js";
+import { registerWebAccessMessageRenderers } from "./message-renderers.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";
 
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
-/** A handler the heavy module registers with `pi.on`, replayed for the events this file forwards. */
+/** A handler the heavy module registers with `atomic.on`, replayed for the events this file forwards. */
 type HandlerFn = ExtensionHandler<unknown, unknown>;
 type CapturedHeavy = {
 	tools: Map<string, ToolDefinition>;
@@ -52,8 +53,8 @@ async function dispatchHandlers(captured: CapturedHeavy, eventName: string, even
 	}
 }
 
-function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionAPI {
-	return new Proxy(pi, {
+function createHeavyProxy(atomic: ExtensionAPI, captured: CapturedHeavy): ExtensionAPI {
+	return new Proxy(atomic, {
 		get(target, prop, receiver) {
 			if (prop === "registerTool") {
 				return (tool: ToolDefinition) => {
@@ -76,7 +77,7 @@ function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionA
 				};
 			}
 			if (prop === "registerMessageRenderer") {
-				return (customType: string, renderer: MessageRenderer) => pi.registerMessageRenderer(customType, renderer);
+				return (customType: string, renderer: MessageRenderer) => atomic.registerMessageRenderer(customType, renderer);
 			}
 			return Reflect.get(target, prop, receiver);
 		},
@@ -162,7 +163,7 @@ function isAllFailedWebResult(toolName: string, details: unknown): boolean {
 	return Reflect.get(details, "outcome") === "all_failed";
 }
 
-export default function webAccess(pi: ExtensionAPI) {
+export default function webAccess(atomic: ExtensionAPI) {
 	let heavyAttempt: HeavyAttempt | null = null;
 	let loadedHeavy: HeavyHandle | null = null;
 	let sessionSnapshot: SessionSnapshot | null = null;
@@ -246,7 +247,7 @@ export default function webAccess(pi: ExtensionAPI) {
 			try {
 				const mod = await import("./index-heavy.js");
 				assertLease(lease);
-				await mod.default(createHeavyProxy(pi, captured));
+				await mod.default(createHeavyProxy(atomic, captured));
 				assertLease(lease);
 				await ensureCurrentSessionReplayed(captured, lease, (ctx) => { replayCtx = ctx; });
 				assertLease(lease);
@@ -266,7 +267,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		return promise;
 	}
 
-	pi.on("session_start", async (event, ctx) => {
+	atomic.on("session_start", async (event, ctx) => {
 		if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
 		const lease = activeLease;
 		await waitForPriorCleanup(lease);
@@ -275,7 +276,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		if (loadedHeavy) await ensureCurrentSessionReplayed(loadedHeavy.heavy, lease);
 	});
 
-	pi.on("session_tree", async (event, ctx) => {
+	atomic.on("session_tree", async (event, ctx) => {
 		const lease = activeLease;
 		if (lease.retired) return;
 		await lease.priorCleanup;
@@ -285,7 +286,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		if (loadedHeavy) await ensureCurrentSessionReplayed(loadedHeavy.heavy, lease);
 	});
 
-	pi.on("session_shutdown", async (event, ctx) => {
+	atomic.on("session_shutdown", async (event, ctx) => {
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;
 		const shutdown = { event, ctx, generation };
@@ -309,15 +310,15 @@ export default function webAccess(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("tool_result", (event) => {
+	atomic.on("tool_result", (event) => {
 		if (isAllFailedWebResult(event.toolName, event.details)) return { isError: true };
 	});
 
 	const shortcuts = getInitialShortcutConfig();
 	for (const [shortcut, name] of [[shortcuts.curate, "curate"], [shortcuts.activity, "activity"]] as const) {
 		// A key from the user's web-search config, as configured: the host matches it like any other key id.
-		pi.registerShortcut(shortcut as KeyId, {
-			description: name === "curate" ? "Open web search curator" : "Show web search activity",
+		atomic.registerShortcut(shortcut as KeyId, {
+			description: name === "curate" ? "Review search results" : "Toggle web search activity",
 			handler: async (ctx) => {
 				const handle = await loadHeavy();
 				handle.assertCurrent();
@@ -329,14 +330,14 @@ export default function webAccess(pi: ExtensionAPI) {
 		});
 	}
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "web_search",
 		label: "Web Search",
 		description: "Search the web using Perplexity AI, Exa, or Gemini. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches return raw results by default. Enable the interactive browser curator with /curator on or by setting workflow to \"summary-review\" in web-search config. Provider auto-selects: Exa (direct API with key, MCP fallback without), else Perplexity (needs key), else Gemini API (needs key), else Gemini Web (needs a supported Chromium-based browser login).",
 		promptSnippet: "Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
-			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage." })),
+			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
 			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content (async)" })),
 			recencyFilter: Type.Optional(Type.String({ enum: ["day", "week", "month", "year"], description: "Filter by recency" })),
@@ -357,7 +358,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "code_search",
 		label: "Code Search",
 		description: "Ask DeepWiki about code, architecture, and APIs in a public GitHub repository. Requires repoName in owner/repo format. No API key required; no web-search fallback.",
@@ -378,7 +379,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "fetch_content",
 		label: "Fetch Content",
 		description: 'Fetch webpages, PDFs, GitHub repositories, YouTube videos, or local video files. For ordinary pages, pass only {"urls":["https://example.com"]}; readable content is returned as markdown. For video analysis, include the user\'s question in prompt. Optional frames and timestamp extract images only from YouTube or local videos and are ignored for other inputs, including in mixed batches. Content is stored for get_search_content. Blocked or unreadable pages use extraction fallbacks.',
@@ -411,7 +412,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "get_search_content",
 		label: "Get Search Content",
 		description: "Retrieve full content from a previous web_search or fetch_content call.",
@@ -428,14 +429,15 @@ export default function webAccess(pi: ExtensionAPI) {
 	});
 
 	for (const [name, description] of [
-		["websearch", "Configure web search"],
-		["curator", "Configure web search curator"],
+		["websearch", "Open web search curator"],
+		["curator", "Toggle or configure the search curator workflow"],
 		["google-account", "Show the active Google account for Gemini Web"],
 		["search", "Browse stored web search results"],
 	] as const) {
-		pi.registerCommand(name, {
+		atomic.registerCommand(name, {
 			description,
 			handler: (args, ctx) => runHeavyCommand(loadHeavy, name, args, ctx),
 		});
 	}
+	registerWebAccessMessageRenderers(atomic);
 }

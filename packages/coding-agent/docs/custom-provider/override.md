@@ -1,34 +1,34 @@
 ---
 title: Override an existing provider
-description: Change the behavior of a provider Atomic already ships.
+description: Change the base URL or request headers of a built-in provider while keeping its models.
 ---
 
 # Override an existing provider
 
-## Override Existing Provider
+## Override existing provider
 
-The simplest use case: redirect an existing provider through a proxy.
+Redirect an existing built-in provider through a proxy or attach custom headers without redefining its models:
 
 ```typescript
-// All Anthropic requests now go through your proxy
-await pi.registerProvider("anthropic", {
+// Route all Anthropic requests through a proxy
+await atomic.registerProvider("anthropic", {
   baseUrl: "https://proxy.example.com"
 });
 
 // Add custom headers to OpenAI requests
-await pi.registerProvider("openai", {
+await atomic.registerProvider("openai", {
   headers: {
     "X-Custom-Header": "value"
   }
 });
 
-// Both baseUrl and headers
-await pi.registerProvider("google", {
+// Override both baseUrl and headers
+await atomic.registerProvider("google", {
   baseUrl: "https://ai-gateway.corp.com/google",
   headers: {
-    "X-Corp-Auth": "$CORP_AUTH_TOKEN"  // resolves from env; omit $ for a literal
+    "X-Corp-Auth": "$CORP_AUTH_TOKEN" // resolves from env; omit $ for a literal
   }
 });
 ```
 
-When only `baseUrl` and/or `headers` are provided (no `models`), all existing models for that provider are preserved with the new endpoint.
+When you pass only `baseUrl` or `headers` (with no `models`), Atomic keeps all existing models and authentication for that provider. To register new models or a new provider, see [Register a provider](/custom-provider/registration).

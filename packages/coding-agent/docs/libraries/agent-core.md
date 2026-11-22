@@ -4,7 +4,7 @@ sidebarTitle: "Agent core"
 description: "Stateful agent loop with tool execution, event streaming, steering and follow-up messages."
 ---
 
-Stateful agent with tool execution and event streaming, built on [`@bastani/atomic-ai`](/libraries/ai). It is the agent loop Atomic's sessions run on; use it directly to build your own agent. Atomic's [SDK](/sdk) wraps it with sessions, tools, extensions and compaction, so prefer the SDK when you want Atomic's behaviour.
+Stateful agent with tool execution and event streaming, built on [`@bastani/atomic-ai`](/libraries/ai). Atomic's sessions run on this agent loop, and you can use it directly to build your own agent. Atomic's [SDK](/sdk) wraps it with sessions, tools, extensions, and compaction, so prefer the SDK when you want Atomic's built-in behavior.
 
 ## Installation
 
@@ -12,7 +12,7 @@ Stateful agent with tool execution and event streaming, built on [`@bastani/atom
 npm install @bastani/atomic-agent-core
 ```
 
-## Quick Start
+## Quick start
 
 ```typescript
 import { Agent } from "@bastani/atomic-agent-core";
@@ -42,31 +42,32 @@ agent.subscribe((event) => {
 await agent.prompt("Hello!");
 ```
 
-## Core Concepts
+## Core concepts
 
 ### AgentMessage vs LLM Message
 
-The agent works with `AgentMessage`, a flexible type that can include:
-- Standard LLM messages (`user`, `assistant`, `toolResult`)
-- Custom app-specific message types via declaration merging
+The agent works with `AgentMessage`, which can include:
 
-LLMs only understand `user`, `assistant`, and `toolResult`. The `convertToLlm` function bridges this gap by filtering and transforming messages before each LLM call.
+- Standard LLM messages (`system`, `user`, `assistant`, and `toolResult`)
+- Custom app-specific message types added through declaration merging
 
-### Message Flow
+LLMs accept only `system`, `user`, `assistant`, and `toolResult` messages. `convertToLlm` filters and transforms custom message types before each LLM call.
 
-```
-AgentMessage[] → transformContext() → AgentMessage[] → convertToLlm() → Message[] → LLM
+### Message flow
+
+```text
+AgentMessage[] -> transformContext() -> AgentMessage[] -> convertToLlm() -> Message[] -> LLM
                     (optional)                           (required)
 ```
 
-1. **transformContext**: Prune old messages, inject external context
-2. **convertToLlm**: Filter out UI-only messages, convert custom types to LLM format
+1. **`transformContext`.** Prune old messages or inject external context.
+2. **`convertToLlm`.** Filter out UI-only messages and convert custom types to LLM messages.
 
-## Event Flow
+## Event flow
 
-The agent emits events for UI updates. Understanding the event sequence helps build responsive interfaces.
+The agent emits events as turns run so your interface can update incrementally.
 
-### prompt() Event Sequence
+### `prompt()` event sequence
 
 When you call `prompt("Hello")`:
 
@@ -84,11 +85,11 @@ prompt("Hello")
 └─ agent_end       { messages: [...] }
 ```
 
-### With Tool Calls
+### With tool calls
 
 If the assistant calls tools, the loop continues:
 
-```
+```text
 prompt("Read config.json")
 ├─ agent_start
 ├─ turn_start
@@ -112,18 +113,18 @@ prompt("Read config.json")
 
 Tool execution mode is configurable:
 
-- `parallel` (default): preflight tool calls sequentially, execute allowed tools concurrently, emit `tool_execution_end` as soon as each tool is finalized, then emit toolResult messages and `turn_end.toolResults` in assistant source order
-- `sequential`: execute tool calls one by one, matching the historical behavior
+- `parallel` (default): preflight tool calls sequentially, run allowed tools concurrently, emit `tool_execution_end` as each tool finishes, then emit `toolResult` messages and `turn_end.toolResults` in assistant source order.
+- `sequential`: run tool calls one at a time in assistant source order.
 
-In parallel mode, tool completion events follow tool completion order, but persisted toolResult messages still follow assistant source order.
+In parallel mode, `tool_execution_end` events follow tool completion order, while persisted `toolResult` messages still follow assistant source order.
 
-The mode can be set globally via `toolExecution` in the agent config, or per-tool via `executionMode` on `AgentTool`. If any tool call in a batch targets a tool with `executionMode: "sequential"`, the entire batch executes sequentially regardless of the global setting.
+Set the mode globally through `toolExecution` in `AgentOptions`, or per tool through `executionMode` on `AgentTool`. If any tool call in a batch targets a tool with `executionMode: "sequential"`, the entire batch runs sequentially regardless of the global setting.
 
-The `beforeToolCall` hook runs after `tool_execution_start` and validated argument parsing. It can block execution and attach `terminate: true` to the blocked result. The `afterToolCall` hook runs after tool execution finishes and before `tool_execution_end` and final tool result message events are emitted.
+`beforeToolCall` runs after `tool_execution_start` and argument validation. It can block execution and attach `terminate: true` to the blocked result. `afterToolCall` runs after tool execution finishes and before `tool_execution_end` and the final tool result message events are emitted.
 
-Tools, blocked `beforeToolCall` results, and `afterToolCall` overrides can return `terminate: true` to hint that the automatic follow-up LLM call should be skipped. The loop only stops early when every finalized tool result in that batch sets `terminate: true`. Mixed batches continue normally.
+Tools, blocked `beforeToolCall` results, and `afterToolCall` overrides can return `terminate: true` to skip the automatic follow-up LLM call. The loop stops early only when every finalized tool result in that batch sets `terminate: true`. Mixed batches continue normally.
 
-When you use the `Agent` class, assistant `message_end` processing is treated as a barrier before tool preflight begins. That means `beforeToolCall` sees agent state that already includes the assistant message that requested the tool call.
+With the `Agent` class, assistant `message_end` processing finishes before tool preflight begins. That guarantees `beforeToolCall` sees agent state that already includes the assistant message requesting the tool call.
 
 ### Request preparation and turn finalization
 
@@ -135,9 +136,9 @@ agent.prepareRequest = async ({ context }) => ({
 });
 ```
 
-`prepareRequest` does not poll queues. Steering queued while it runs waits for the next normal steering poll.
+`prepareRequest` does not poll queues. Steering messages queued while it runs wait for the next normal steering poll.
 
-`finishTurn` runs after the assistant and all tool results are finalized, but before `turn_end`. It runs for normal, error, and aborted responses:
+`finishTurn` runs after the assistant message and all tool results are finalized, before `turn_end`. It runs for normal, error, and aborted responses:
 
 ```typescript
 agent.finishTurn = async ({ message }) => {
@@ -147,9 +148,11 @@ agent.finishTurn = async ({ message }) => {
 };
 ```
 
-Returning `undefined` preserves normal scheduling. `{ action: "end" }` stops immediately after `turn_end`, before polling steering or follow-up queues or preparing another request. On a normal response, `{ action: "continue" }` ensures one next provider request. If tool results, steering, or a follow-up already cause that request, they satisfy the decision and no additional request is made; otherwise the loop makes one context-only request. Error and aborted responses remain hard exits, so their decisions are ignored. `finishTurn` runs again after the next request, so returning `{ action: "continue" }` unconditionally creates an endless loop.
+Returning `undefined` keeps normal scheduling. Returning `{ action: "end" }` stops immediately after `turn_end` without polling steering or follow-up queues or starting another request.
 
-To migrate from the removed `shouldStopAfterTurn`, return `{ action: "end" }`. Guard error and aborted responses to preserve the old hook's normal-response-only invocation, especially when the predicate has side effects or assumes a successful response:
+On a normal response, returning `{ action: "continue" }` guarantees one more provider request. If tool results, steering messages, or follow-up messages already schedule that request, no extra request is sent; otherwise the loop sends one context-only request. Error and aborted responses remain hard exits whose decisions are ignored. Because `finishTurn` runs again after the next request, returning `{ action: "continue" }` unconditionally creates an infinite loop.
+
+To migrate from the removed `shouldStopAfterTurn` hook, return `{ action: "end" }`. Guard error and aborted responses so your predicate runs only on successful turns:
 
 ```typescript
 finishTurn: async (turn, signal) => {
@@ -158,35 +161,35 @@ finishTurn: async (turn, signal) => {
 },
 ```
 
-Each provider turn follows this lifecycle:
+Each provider turn follows this order:
 
 ```text
 selected input events
-→ prepareRequest
-→ provider response
-→ tool results
-→ finishTurn
-→ turn_end
-→ existing continuation scheduling or agent_end
+-> prepareRequest
+-> provider response
+-> tool results
+-> finishTurn
+-> turn_end
+-> continuation scheduling or agent_end
 ```
 
-### continue() and queued input
+### `continue()` and queued input
 
-`continue()` retains its existing queue behavior. Empty and system-only transcripts reject without consuming queues. A non-assistant tail continues from existing context: steering is polled at startup, while follow-up input waits until the response naturally stops.
+Empty and system-only transcripts reject `continue()` without consuming queues. A non-assistant tail continues from existing context. Steering is polled at startup, while follow-up input waits until the response stops naturally.
 
 ```typescript
 agent.followUp({ role: "user", content: "After the retry", timestamp: Date.now() });
 await agent.continue(); // The first request retries the existing user/toolResult tail.
 ```
 
-An assistant tail cannot be sent directly, so `continue()` falls back to one queued steering batch, then one queued follow-up batch. Queue mode still controls whether that selected batch contains one message or all messages:
+An assistant tail cannot be sent directly, so `continue()` falls back to one queued steering batch, or else one queued follow-up batch. Queue mode still determines whether that batch takes one message or all queued messages:
 
 ```typescript
 agent.steer({ role: "user", content: "Continue from here", timestamp: Date.now() });
 await agent.continue(); // Uses the queued message only because the tail is assistant.
 ```
 
-### Event Types
+### Event types
 
 | Event | Description |
 |-------|-------------|
@@ -203,7 +206,7 @@ await agent.continue(); // Uses the queued message only because the tail is assi
 
 `Agent.subscribe()` listeners are awaited in registration order. `agent_end` means no more loop events will be emitted, but `await agent.waitForIdle()` and `await agent.prompt(...)` only settle after awaited `agent_end` listeners finish.
 
-## Agent Options
+## Agent options
 
 ```typescript
 const agent = new Agent({
@@ -238,7 +241,7 @@ const agent = new Agent({
 
   // How requests identify the app to providers (a ClientIdentity from @bastani/atomic-ai), merged over
   // DEFAULT_AGENT_IDENTITY ({ attribution: ATOMIC_ATTRIBUTION }: attribution headers name Atomic).
-  // Pass your app's attribution, or null to send none.
+  // Pass { attribution: null } to send no attribution headers.
   identity: { attribution: { name: "my-app", url: "https://my-app.example" } },
 
   // Dynamic API key resolution (for expiring OAuth tokens)
@@ -286,10 +289,11 @@ const agent = new Agent({
 });
 ```
 
-## Agent State
+## Agent state
 
 ```typescript
 interface AgentState {
+  readonly systemPrompt: string;
   model: Model<any>;
   thinkingLevel: ThinkingLevel;
   tools: AgentTool<any>[];
@@ -301,11 +305,11 @@ interface AgentState {
 }
 ```
 
-Access state via `agent.state`.
+Access state through `agent.state`. Assigning `agent.state.tools = [...]` or `agent.state.messages = [...]` copies the top-level array before storing it, while mutating the returned array mutates current agent state.
 
-Assigning `agent.state.tools = [...]` or `agent.state.messages = [...]` copies the top-level array before storing it. Mutating the returned array mutates the current agent state.
+The transcript owns the system prompt and tool declarations. The leading system message sets the prompt, and later system messages patch it (see `SystemMessage` in [`@bastani/atomic-ai`](/libraries/ai)). `agent.state.systemPrompt` is read-only and replays the transcript.
 
-The transcript owns the system prompt and tool declarations: the leading system message is the prompt, later system messages patch it (see `SystemMessage` in `@bastani/atomic-ai`). `agent.state.systemPrompt` is read-only and replays the transcript. `agent.state.tools` is the executable loadout; before every request the loop diffs it against the tools the transcript declares and, if they differ, announces the change in a system message (merged into a pending system message when one exists). `@bastani/atomic-ai`'s `getCurrentSystemMessage(messages)` returns the replayed head, including declared tools, for any message array, including agent transcripts with custom message roles.
+`agent.state.tools` holds the executable tools. Before every request, the loop compares `agent.state.tools` against the tools declared in the transcript and announces any difference in a system message, merging into a pending system message when one exists. `getCurrentSystemMessage(messages)` from `@bastani/atomic-ai` returns the replayed head, including declared tools, for any message array including agent transcripts with custom message roles.
 
 To change the prompt mid-conversation, append a system message with `content` (added instructions) or `sections` (named replacements):
 
@@ -340,10 +344,11 @@ await agent.prompt({ role: "user", content: "Hello", timestamp: Date.now() });
 await agent.continue();
 ```
 
-### State Management
+### State management
 
 ```typescript
-agent.state.model = getModel("openai", "gpt-4o");
+const nextModel = models.getModel("openai", "gpt-4o");
+if (nextModel) agent.state.model = nextModel;
 agent.state.thinkingLevel = "medium";
 agent.state.tools = [myTool];
 agent.toolExecution = "sequential";
@@ -359,7 +364,7 @@ const nextQueuedMessages = agent.peekQueuedMessages(); // respects queue modes; 
 agent.reset();
 ```
 
-### Session and Thinking Budgets
+### Session and thinking budgets
 
 ```typescript
 agent.sessionId = "session-123";
@@ -391,7 +396,7 @@ const unsubscribe = agent.subscribe(async (event, signal) => {
 unsubscribe();
 ```
 
-## Steering and Follow-up
+## Steering and follow-up
 
 Steering messages let you interrupt the agent while tools are running. Follow-up messages let you queue work after the agent would otherwise stop.
 
@@ -421,18 +426,19 @@ agent.clearFollowUpQueue();
 agent.clearAllQueues();
 ```
 
-Use clearSteeringQueue, clearFollowUpQueue, or clearAllQueues to drop queued messages.
+Use `clearSteeringQueue()`, `clearFollowUpQueue()`, or `clearAllQueues()` to drop queued messages.
 
 When steering messages are detected after a turn completes:
-1. All tool calls from the current assistant message have already finished
-2. Steering messages are injected
-3. The LLM responds on the next turn
+
+1. All tool calls from the current assistant message have already finished.
+2. Steering messages are injected.
+3. The LLM responds on the next turn.
 
 Follow-up messages are checked only when there are no more tool calls and no steering messages. If any are queued, they are injected and another turn runs.
 
-## Custom Message Types
+## Custom message types
 
-Extend `AgentMessage` via declaration merging:
+Extend `AgentMessage` through declaration merging:
 
 ```typescript
 declare module "@bastani/atomic-agent-core" {
@@ -459,7 +465,7 @@ const agent = new Agent({
 
 ## Tools
 
-Define tools using `AgentTool`. `parameters` is any JSON Schema object; built with `@bastani/atomic-schema`'s builders, it also types `params` (other schemas give `unknown`, `AgentTool<any>` gives `any`):
+Define tools with `AgentTool`. `parameters` is any JSON Schema object. When built with `@bastani/atomic-schema` builders, it also types `params` (other schemas produce `unknown`, and `AgentTool<any>` produces `any`):
 
 ```typescript
 import { obj, str } from "@bastani/atomic-schema";
@@ -496,9 +502,9 @@ const readFileTool: AgentTool<typeof readFileParameters> = {
 agent.state.tools = [readFileTool];
 ```
 
-### Error Handling
+### Error handling
 
-**Throw an error** when a tool fails. Do not return error messages as content.
+Throw an error or return a result with `isError: true` when a tool fails. Do not only describe the failure in `content`.
 
 ```typescript
 execute: async (toolCallId, params, signal, onUpdate) => {
@@ -506,21 +512,21 @@ execute: async (toolCallId, params, signal, onUpdate) => {
     throw new Error(`File not found: ${params.path}`);
   }
   // Return content only on success
-  return { content: [{ type: "text", text: "..." }] };
+  return { content: [{ type: "text", text: "..." }], details: {} };
 }
 ```
 
-Thrown errors are caught by the agent and reported to the LLM as tool errors with `isError: true`.
+The agent catches thrown errors and reports them to the LLM as tool errors with `isError: true`. Returning `{ content, details, structuredContent, isError: true }` reports the same error status to the model while keeping `details` and `structuredContent` for UI and programmatic callers.
 
-Return `terminate: true` from `execute()`, a blocked `beforeToolCall`, or `afterToolCall` to hint that the agent should stop after the current tool batch. This only takes effect when every finalized tool result in the batch is terminating. The hint is runtime-only; emitted `toolResult` transcript messages remain standard LLM tool results.
+Return `terminate: true` from `execute()`, a blocked `beforeToolCall`, or `afterToolCall` to skip the follow-up LLM call after the current tool batch. This takes effect only when every finalized tool result in the batch sets `terminate: true`. The hint is runtime-only, so emitted `toolResult` transcript messages remain standard LLM tool results.
 
 ### MCP and Codemode
 
-[`@bastani/atomic-codemode`](/libraries/codemode) runs model-written JavaScript that calls tools. Wrap it as an `AgentTool` named `codemode` whose scripts call the agent's tools through `runToolCall()`, so `beforeToolCall` and `afterToolCall` apply to those nested calls too; see [Using with agent-core](/libraries/codemode#using-with-agent-core). Tools that wrap an MCP server's tools work the same way. Atomic's own MCP support is the [MCP servers](/mcp-servers) extension.
+[`@bastani/atomic-codemode`](/libraries/codemode) runs model-written JavaScript that calls tools. Wrap it as an `AgentTool` named `codemode` whose scripts call the agent's tools through `runToolCall()` so `beforeToolCall` and `afterToolCall` apply to nested calls too. See [Using with agent-core](/libraries/codemode#using-with-agent-core). Tools that wrap an MCP server's tools work the same way. Atomic's own MCP support lives in the [MCP servers](/mcp-servers) extension.
 
-## Proxy Usage
+## Proxy usage
 
-For browser apps that proxy through a backend:
+For browser apps that proxy requests through a backend:
 
 ```typescript
 import { Agent, streamProxy } from "@bastani/atomic-agent-core";
@@ -535,12 +541,24 @@ const agent = new Agent({
 });
 ```
 
-## Low-Level API
+## Low-level API
 
-For direct control without the Agent class:
+For direct control without the `Agent` class:
 
 ```typescript
-import { agentLoop, agentLoopContinue } from "@bastani/atomic-agent-core";
+import {
+  type AgentContext,
+  type AgentLoopConfig,
+  agentLoop,
+  agentLoopContinue,
+} from "@bastani/atomic-agent-core";
+import { createModels } from "@bastani/atomic-ai";
+import { openaiProvider } from "@bastani/atomic-ai/providers/openai";
+
+const models = createModels();
+models.setProvider(openaiProvider());
+const model = models.getModel("openai", "gpt-4o");
+if (!model) throw new Error("Model not found");
 
 const context: AgentContext = {
   messages: [{ role: "system", content: "You are helpful.", timestamp: Date.now() }],
@@ -548,8 +566,9 @@ const context: AgentContext = {
 };
 
 const config: AgentLoopConfig = {
-  model: getModel("openai", "gpt-4o"),
-  convertToLlm: (msgs) => msgs.filter(m => ["user", "assistant", "toolResult"].includes(m.role)),
+  model,
+  convertToLlm: (msgs) =>
+    msgs.filter((m) => ["system", "user", "assistant", "toolResult"].includes(m.role)),
   toolExecution: "parallel",  // overridden by per-tool executionMode if set
   beforeToolCall: async ({ toolCall, args, context }) => undefined,
   afterToolCall: async ({ toolCall, result, isError, context }) => undefined,
@@ -568,4 +587,4 @@ for await (const event of agentLoopContinue(context, config, undefined, streamFn
 }
 ```
 
-These low-level streams are observational. They preserve event order, but they do not wait for your async event handling to settle before later producer phases continue. If you need message processing to act as a barrier before tool preflight, use the `Agent` class instead of raw `agentLoop()` or `agentLoopContinue()`.
+These low-level streams are observational. They preserve event order, but they do not wait for your async event handling to settle before later producer phases continue. If message processing must act as a barrier before tool preflight, use the `Agent` class instead of raw `agentLoop()` or `agentLoopContinue()`.

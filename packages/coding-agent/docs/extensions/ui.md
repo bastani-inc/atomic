@@ -7,17 +7,18 @@ description: Render custom UI from an extension.
 
 ## Custom UI
 
-Extensions can interact with users via `ctx.ui` methods and customize how messages/tools render.
+Extensions interact with users through `ctx.ui` methods and customize how messages and tools render.
 
-**For custom components, see [TUI components](/tui)** which has copy-paste patterns for:
-- Selection dialogs (SelectList)
-- Async operations with cancel (BorderedLoader)
-- Settings toggles (SettingsList)
-- Status indicators (setStatus)
+For custom components, see [TUI components](/tui), which provides copy-paste patterns for:
+
+- Selection dialogs (`SelectList`)
+- Async operations with cancellation (`BorderedLoader`)
+- Settings toggles (`SettingsList`)
+- Status indicators (`setStatus`)
 - Working message, visibility, and indicator from accepted prompt startup through active turns (`setWorkingMessage`, `setWorkingVisible`, `setWorkingIndicator`)
-- Widgets above/below editor (setWidget)
-- Autocomplete providers layered on top of built-in slash/path completion (addAutocompleteProvider)
-- Custom footers (setFooter)
+- Widgets above and below the editor (`setWidget`)
+- Autocomplete providers layered on top of built-in slash and path completion (`addAutocompleteProvider`)
+- Custom footers (`setFooter`)
 
 ### Dialogs
 
@@ -40,12 +41,12 @@ ctx.ui.notify("Done!", "info");  // "info" | "warning" | "error"
 
 Notifications emitted while extensions load or startup is in progress always appear below the startup `RESOURCES` disclosure line, never above it.
 
-#### Timed Dialogs with Countdown
+#### Timed dialogs with countdown
 
 Dialogs support a `timeout` option that auto-dismisses with a live countdown display:
 
 ```typescript
-// Dialog shows "Title (5s)" → "Title (4s)" → ... → auto-dismisses at 0
+// Dialog shows "Title (5s)", then "Title (4s)", and auto-dismisses at 0
 const confirmed = await ctx.ui.confirm(
   "Timed Confirmation",
   "This dialog will auto-cancel in 5 seconds. Confirm?",
@@ -59,16 +60,17 @@ if (confirmed) {
 }
 ```
 
-**Return values on timeout or caller abort:**
+Return values on timeout or caller abort:
+
 - `select()` returns `undefined`
 - `confirm()` returns `false`
 - `input()` and `editor()` return `undefined`
 
-The dialog closes without requiring an answer. These defaults apply to the request's `timeout` and `signal`; cancelling all pending human input, closing the session, or replacing its input host can still reject with `HumanInputCancelled`.
+The dialog closes without requiring an answer. These defaults apply to the request's `timeout` and `signal`. Cancelling all pending human input, closing the session, or replacing its input host can still reject with `HumanInputCancelled`.
 
-#### Manual Dismissal with AbortSignal
+#### Manual dismissal with AbortSignal
 
-For more control (e.g., to distinguish timeout from user cancel), use `AbortSignal`:
+For finer control, such as distinguishing a timeout from a user cancel, pass an `AbortSignal`:
 
 ```typescript
 const controller = new AbortController();
@@ -93,9 +95,9 @@ if (confirmed) {
 
 See [examples/extensions/timed-confirm.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/timed-confirm.ts) for complete examples.
 
-### Widgets, Status, and Footer
+### Widgets, status, and footer
 
-Inline custom UIs opened with `{ purpose: "navigation" }`, temporarily hide every `setWidget()` widget above and below the editor, including the agent panel. Queued-message and pending-shell previews also stay hidden. The widgets and previews continue to update and return with their latest content after the last inline navigation view closes. Overlays and the default `"prompt"` custom UIs do not hide them.
+Inline custom UIs opened with `{ purpose: "navigation" }` temporarily hide every `setWidget()` widget above and below the editor, including the agent panel. Queued-message and pending-shell previews also stay hidden. The widgets and previews keep updating and return with their latest content after the last inline navigation view closes. Overlays and the default `"prompt"` custom UIs do not hide them.
 
 ```typescript
 // Status in footer (persistent until cleared)
@@ -105,7 +107,7 @@ ctx.ui.setStatus("my-ext", undefined);  // Clear
 // Working loader customization (active from accepted prompt startup through the agent turn)
 ctx.ui.setWorkingMessage("Thinking deeply...");
 ctx.ui.setWorkingMessage();  // Restore default
-ctx.ui.setWorkingVisible(false);  // Hide the built-in working indicator entirely; the compaction indicator stays visible
+ctx.ui.setWorkingVisible(false);  // Hide the built-in working indicator; the compaction indicator stays visible
 ctx.ui.setWorkingVisible(true);   // Show the built-in working indicator
 
 // Working indicator customization (same lifecycle; see TUI Pattern 4b)
@@ -131,7 +133,7 @@ ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"], { placement: "belowEditor" }
 ctx.ui.setWidget("my-widget", (tui, theme) => new Text(theme.fg("accent", "Custom"), 0, 0));
 ctx.ui.setWidget("my-widget", undefined);  // Clear
 
-// Custom footer (replaces built-in footer entirely)
+// Custom footer (replaces built-in footer)
 ctx.ui.setFooter((tui, theme) => ({
   render(width) { return [theme.fg("dim", "Custom footer")]; },
   invalidate() {},
@@ -159,7 +161,7 @@ ctx.ui.addAutocompleteProvider((current) => ({
 
     return {
       prefix: `#${match[1] ?? ""}`,
-      items: [{ value: "#2983", label: "#2983", description: "Extension API for autocomplete" }],
+      items: [{ value: "#42", label: "#42", description: "Fix login redirect" }],
     };
   },
   applyCompletion(lines, line, col, item, prefix) {
@@ -183,7 +185,7 @@ ctx.ui.setEditorComponent((tui, theme, keybindings) =>
 );
 ctx.ui.setEditorComponent(undefined);  // Restore default editor
 
-// Theme management (see themes.md for creating themes)
+// Theme management (see Themes for creating custom themes)
 const themes = ctx.ui.getAllThemes();  // [{ name: "dark", path: "/..." | undefined }, ...]
 const lightTheme = ctx.ui.getTheme("light");  // Load without switching
 const result = ctx.ui.setTheme("light");  // Switch by name
@@ -198,9 +200,9 @@ Calling `setToolsExpanded()` with the current value is a no-op.
 
 The default indicator is `∀`. `ATOMIC_REDUCED_MOTION=1` makes it static, and `NO_COLOR` disables foreground colors. Custom frames and intervals render as supplied; add colors with `ctx.ui.theme.fg(...)` if wanted.
 
-These APIs customize presentation only; they do not start work or emit an extension stream event before prompt startup. See [Working Indicator Customization](/tui#pattern-4b-working-indicator-customization) for accepted-prompt, pre-stream, and agent-turn handoff timing.
+These APIs customize presentation only; they do not start work or emit an extension stream event before prompt startup. See [Working indicator customization](/tui#pattern-4b-working-indicator-customization) for accepted-prompt, pre-stream, and agent-turn handoff timing.
 
-### Autocomplete Providers
+### Autocomplete providers
 
 Use `ctx.ui.addAutocompleteProvider()` to stack custom autocomplete logic on top of the built-in slash-command and path provider.
 
@@ -208,13 +210,13 @@ Return the complete result from a provider you wrap, including its metadata. Sla
 
 Typical pattern:
 
-- inspect the text before the cursor
-- return your own suggestions when your extension-specific syntax matches
-- otherwise delegate to `current.getSuggestions(...)`
-- delegate `applyCompletion(...)` unless you need custom insertion behavior
+- Inspect the text before the cursor.
+- Return your own suggestions when your extension-specific syntax matches.
+- Delegate to `current.getSuggestions(...)` otherwise.
+- Delegate `applyCompletion(...)` unless you need custom insertion behavior.
 
 ```typescript
-pi.on("session_start", (_event, ctx) => {
+atomic.on("session_start", (_event, ctx) => {
   ctx.ui.addAutocompleteProvider((current) => ({
     async getSuggestions(lines, cursorLine, cursorCol, options) {
       const line = lines[cursorLine] ?? "";
@@ -227,8 +229,8 @@ pi.on("session_start", (_event, ctx) => {
       return {
         prefix: `#${match[1] ?? ""}`,
         items: [
-          { value: "#2983", label: "#2983", description: "Extension API for registering custom @ autocomplete providers" },
-          { value: "#2753", label: "#2753", description: "Reload stale resource settings" },
+          { value: "#42", label: "#42", description: "Fix login redirect" },
+          { value: "#57", label: "#57", description: "Add retry backoff" },
         ],
       };
     },
@@ -244,9 +246,9 @@ pi.on("session_start", (_event, ctx) => {
 });
 ```
 
-See [github-issue-autocomplete.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/github-issue-autocomplete.ts) for a complete example that preloads the latest open GitHub issues with `gh issue list` and filters them locally for fast `#...` completion. It requires GitHub CLI (`gh`) and a GitHub repository checkout.
+See [github-issue-autocomplete.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/github-issue-autocomplete.ts) for a complete example that preloads the latest open GitHub issues with `gh issue list` and filters them locally for `#...` completion. It requires GitHub CLI (`gh`) and a GitHub repository checkout.
 
-### Custom Components
+### Custom components
 
 For complex UI, use `ctx.ui.custom()`. This temporarily replaces the editor with your component until `done()` is called:
 
@@ -284,23 +286,24 @@ if (result) {
 }
 ```
 
-The callback receives:
-- `tui` - TUI instance (for screen dimensions, focus management)
-- `theme` - Current theme for styling
-- `keybindings` - App keybinding manager (for checking shortcuts)
-- `done(value)` - Call to close component and return value
+The callback receives four arguments:
 
-Pass `{ signal }` to dismiss the custom UI if an operation is aborted; the returned promise rejects with the signal reason.
+- `tui`. The TUI instance for screen dimensions and focus management.
+- `theme`. The current theme for styling.
+- `keybindings`. The app keybinding manager for checking shortcuts.
+- `done(value)`. Call to close the component and return a value.
+
+Pass `{ signal }` to dismiss the custom UI when an operation aborts. In-process mode rejects the returned promise with the signal reason; isolated interactive mode resolves it with `undefined`, like host-side cancellation.
 
 Custom component `handleInput` methods must return `true` when they consume an input and `false` or `undefined` when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply. Return `true` for a handled key so it is not applied twice.
 
-A handler that returns a promise is judged when it settles: only a resolved `true` consumes the key, while `false`, `undefined`, and a rejection fall through to the viewport. A component with no `handleInput` declines everything, so viewport keys still scroll the transcript behind it.
+A handler that returns a promise is judged when it settles. Only a resolved `true` consumes the key, while `false`, `undefined`, and a rejection fall through to the viewport. A component with no `handleInput` declines everything, so viewport keys still scroll the transcript behind it.
 
-Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so that a component which never resolves cannot trap the keyboard. See [Interactive callback isolation](/extensions#interactive-callback-isolation).
+Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, or close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so a component that never resolves cannot trap the keyboard. See [Interactive callback isolation](/extensions#interactive-callback-isolation).
 
 See [TUI components](/tui) for the full component API.
 
-#### Overlay Mode (Experimental)
+#### Overlay mode (experimental)
 
 Pass `{ overlay: true }` to render the component as a floating modal on top of existing content, without clearing the screen:
 
@@ -311,7 +314,7 @@ const result = await ctx.ui.custom<string | null>(
 );
 ```
 
-For advanced positioning (anchors, margins, percentages, responsive visibility), pass `overlayOptions`. Use `onHandle` to control visibility programmatically:
+For positioning (anchors, margins, percentages, and responsive visibility), pass `overlayOptions`. Use `onHandle` to control visibility programmatically:
 
 ```typescript
 const result = await ctx.ui.custom<string | null>(
@@ -339,9 +342,9 @@ const result = await ctx.ui.custom<string | null>(
 );
 ```
 
-A component mounted with `reserveTranscriptRows` always releases configured fullscreen transcript actions and vertical wheel input to the host viewport, including while a nested input has focus. The component keeps all other keyboard and mouse input, including text editing, arrows, confirmation, cancellation, and clicks. This rule applies only to reserving overlays; other focused overlays still receive page and wheel input first and can keep it by returning `true`.
+A component mounted with `reserveTranscriptRows` always releases configured fullscreen transcript actions and vertical wheel input to the host viewport, including while a nested input has focus. The component keeps all other keyboard and mouse input, including text editing, arrows, confirmation, cancellation, and clicks. This rule applies only to reserving overlays. Other focused overlays still receive page and wheel input first and can keep it by returning `true`.
 
-Embed `OVERLAY_ACTIVE_ROW_MARKER` once per frame on the line that should stay visible when the dialog is cropped, usually the selected row. The first marked line wins, even with `maxHeight: 1`; the marker has zero visible width and is removed before terminal output. Focused inputs also keep their cursor row visible.
+Embed `OVERLAY_ACTIVE_ROW_MARKER` once per frame on the line that should stay visible when the dialog is cropped, usually the selected row. The first marked line wins, even with `maxHeight: 1`. The marker has zero visible width and is removed before terminal output. Focused inputs also keep their cursor row visible.
 
 ```typescript
 import { OVERLAY_ACTIVE_ROW_MARKER } from "@bastani/atomic";
@@ -353,9 +356,9 @@ render(width: number): string[] {
 }
 ```
 
-### Custom Editor
+### Custom editor
 
-Replace the main input editor with a custom implementation (vim mode, emacs mode, etc.):
+Replace the main input editor with a custom implementation (such as vim or emacs mode):
 
 ```typescript
 import { CustomEditor, type ExtensionAPI } from "@bastani/atomic";
@@ -377,8 +380,8 @@ class VimEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+  atomic.on("session_start", (_event, ctx) => {
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new VimEditor(tui, theme, keybindings)
     );
@@ -386,13 +389,14 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-**Key points:**
-- Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
-- Call `super.handleInput(data)` for keys you don't handle. A key you pass on keeps its prompt behavior: ↓ (`app.agents.focus`) on an empty prompt focuses the agent panel, and ← (`app.nav.back`) on an empty prompt returns from a subagent's chat to `main`
-- Editors keep the standalone working row by default. Pass `{ embedWorkingStatus: true }` as the fourth `CustomEditor` constructor argument to opt into the editor-border spinner.
-- Factory receives `tui`, `theme`, and `keybindings` from the app
-- Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
-- Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`
+Key points:
+
+- Extend `CustomEditor` (not base `Editor`) to get app keybindings such as Escape to abort, Ctrl+D, and model switching.
+- Call `super.handleInput(data)` for keys you do not handle. A passed-through key keeps its prompt behavior: Down (`app.agents.focus`) on an empty prompt focuses the agent panel, and Left (`app.nav.back`) on an empty prompt returns from a subagent's chat to `main`.
+- Editors keep the standalone working row by default. Pass `{ embedWorkingStatus: true }` as the fourth `CustomEditor` constructor argument to place the spinner in the editor border.
+- The factory receives `tui`, `theme`, and `keybindings` from the app.
+- Call `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap a previously configured custom editor.
+- Pass `undefined` to restore the default editor: `ctx.ui.setEditorComponent(undefined)`.
 - When a custom editor installed through `ctx.ui.setEditorComponent()` exposes `setAutocompleteMaxVisible()`, Atomic initializes it from the active `autocompleteMaxVisible` setting.
 
 To compose with another extension that already replaced the editor, capture the previous factory before setting yours:
@@ -404,16 +408,16 @@ ctx.ui.setEditorComponent((tui, theme, keybindings) =>
 );
 ```
 
-See [TUI components](/tui) Pattern 7 for a complete example with mode indicator.
+See [TUI components](/tui) Pattern 7 for a complete example with a mode indicator.
 
-### Message Rendering
+### Message rendering
 
 Register a custom renderer for messages with your `customType`:
 
 ```typescript
 import { Text } from "@bastani/atomic-tui";
 
-pi.registerMessageRenderer("my-extension", (message, options, theme) => {
+atomic.registerMessageRenderer("my-extension", (message, options, theme) => {
   const { expanded, outputPad } = options;
   let text = theme.fg("accent", `[${message.customType}] `);
   text += message.content;
@@ -428,12 +432,14 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
-In fullscreen mode a click on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. When the main chat runs in the terminal UI process, a message, saved-entry or tool renderer’s component can take a click first by returning `{ handled: true }` from `handleMouse`. Leave clicks outside the control unhandled to keep click-to-expand there. A tool’s title row always toggles first. A separate engine sends rendered rows rather than mouse callbacks. If your renderer draws the same rows either way, the click leaves the message as it is.
+In fullscreen mode, clicking the message toggles `expanded` for that message alone (just as Ctrl+O does for every block) and Atomic calls your renderer again.
 
-Messages are sent via `pi.sendMessage()`:
+When the main chat runs in the terminal UI process, a message, saved-entry, or tool renderer's component can handle a click first by returning `{ handled: true }` from `handleMouse`. Leave clicks outside the control unhandled to keep click-to-expand there. A tool's title row always toggles first. A separate engine sends rendered rows rather than mouse callbacks, and if your renderer draws the same rows either way, clicking leaves the message unchanged.
+
+Messages are sent via `atomic.sendMessage()`:
 
 ```typescript
-pi.sendMessage({
+atomic.sendMessage({
   customType: "my-extension",  // Matches registerMessageRenderer
   content: "Status update",
   display: true,               // Show in TUI
@@ -441,7 +447,7 @@ pi.sendMessage({
 });
 ```
 
-### Theme Colors
+### Theme colors
 
 All render functions receive a `theme` object. See [Themes](/themes) for creating custom themes and the full color palette.
 
@@ -474,7 +480,7 @@ const lang = getLanguageFromPath("/path/to/file.rs");  // "rust"
 const highlighted = highlightCode(code, lang, theme);
 ```
 
-To label a `read` call's line range from `offset`/`limit` arguments, use `formatReadLineRange`. It accepts numbers, numeric strings, and `null`, and returns an empty string for missing or malformed ranges:
+To label a `read` call's line range from `offset` and `limit` arguments, use `formatReadLineRange`. It accepts numbers, numeric strings, and `null`, and returns an empty string for missing or malformed ranges:
 
 ```typescript
 import { formatReadLineRange } from "@bastani/atomic";

@@ -5,7 +5,7 @@ description: Runnable extension examples shipped with Atomic.
 
 # Extension examples
 
-## Examples Reference
+## Examples reference
 
 All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions).
 
@@ -57,7 +57,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `rainbow-editor.ts` | Custom editor styling | `setEditorComponent` |
 | `widget-placement.ts` | Widget above/below editor | `setWidget` |
 | `overlay-test.ts` | Overlay components | `ui.custom` with overlay options |
-| `overlay-qa-tests.ts` | Comprehensive overlay tests | `ui.custom`, all overlay options |
+| `overlay-qa-tests.ts` | Overlay positioning, visibility, and resize tests | `ui.custom`, all overlay options |
 | `notify.ts` | Simple notifications | `ui.notify` |
 | `timed-confirm.ts` | Dialogs with timeout | `ui.confirm` with timeout/signal |
 | `mac-system-theme.ts` | Auto-switch theme | `setTheme`, `exec` |
@@ -69,7 +69,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `ssh.ts` | SSH remote execution | `registerFlag`, `on("user_bash")`, `on("before_agent_start")`, tool operations |
 | `interactive-shell.ts` | Persistent shell session | `on("user_bash")` |
 | `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM | Tool operations, built-in tool overrides, `on("user_bash")` |
-| `subagent/` | Spawn sub-agents | `registerTool`, `exec` |
+| `subagent/` | Spawn subagents | `registerTool`, `exec` |
 | **Games** |||
 | `snake.ts` | Snake game | `registerCommand`, `ui.custom`, keyboard handling |
 | `space-invaders.ts` | Space Invaders game | `registerCommand`, `ui.custom` |
@@ -80,7 +80,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | **Messages & Communication** |||
 | `message-renderer.ts` | Custom message rendering | `registerMessageRenderer`, `sendMessage` |
 | `debug-provider.ts` | Capture raw provider stream events per assistant message with `/debug-provider` | `on("provider_stream_event")`, `registerEntryRenderer`, `appendEntry` |
-| `event-bus.ts` | Inter-extension events | `pi.events` |
+| `event-bus.ts` | Inter-extension events | `atomic.events` |
 | **Session Metadata** |||
 | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
 | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |

@@ -35,11 +35,11 @@ function settledHandlerSends(
 ): ExtensionFactory {
 	const wait = gateOnce(gate);
 	let armed = true;
-	return (pi) => {
-		pi.on("agent_settled", async () => {
+	return (atomic) => {
+		atomic.on("agent_settled", async () => {
 			if (!armed) return;
 			armed = false;
-			const send = () => pi.sendUserMessage("EXT", deliverAs ? { deliverAs } : undefined);
+			const send = () => atomic.sendUserMessage("EXT", deliverAs ? { deliverAs } : undefined);
 			if (sendBeforeWaiting) send();
 			await wait();
 			if (!sendBeforeWaiting) send();
@@ -264,14 +264,14 @@ describe.each(["local", "isolated"] as const)("interactive submissions while the
 		test("the run that delivers a message typed while agent_settled handlers run settles like any other run", async () => {
 			const settled = createGate();
 			const extensionLifecycle: string[] = [];
-			const recordLifecycle: ExtensionFactory = (pi) => {
-				pi.on("agent_start", () => {
+			const recordLifecycle: ExtensionFactory = (atomic) => {
+				atomic.on("agent_start", () => {
 					extensionLifecycle.push("agent_start");
 				});
-				pi.on("agent_end", () => {
+				atomic.on("agent_end", () => {
 					extensionLifecycle.push("agent_end");
 				});
-				pi.on("agent_settled", () => {
+				atomic.on("agent_settled", () => {
 					extensionLifecycle.push("agent_settled");
 				});
 			};

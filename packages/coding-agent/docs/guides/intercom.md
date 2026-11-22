@@ -5,20 +5,20 @@ description: "What Intercom is, when sessions should talk to each other, and whe
 
 # Intercom
 
-Intercom is a message channel between agent sessions running on the same machine, or on several machines that share a storage database ([Running Intercom across machines](/intercom/operations#running-intercom-across-machines)). Sessions in the same group can send each other messages, ask questions and wait for an answer, and coordinate without going through you.
+Intercom is a message channel between agent sessions running on the same machine, or on several machines that share a storage database ([Running Intercom across machines](/intercom/operations#running-intercom-across-machines)). Sessions in the same group send messages, ask questions, and coordinate directly without routing everything through you.
 
-## When to use one
+## When to use Intercom
 
-Use it when two sessions are working on related things and one knows something the other needs: a planner handing work to a worker, a long-running session reporting a finding, or steering a subagent while it runs. You do not need it for a single session working alone.
+Use Intercom when two or more sessions work on related tasks and share context: a planner handing work to a worker, a long-running session reporting a finding, or an orchestrator steering a subagent while it runs. You do not need Intercom for a single session working alone.
 
 ## What you get
 
-- Send, ask-and-wait, and reply between live sessions in your group.
-- Groups that keep unrelated sessions isolated from each other.
-- Delivery to subagents, including ones that are starting, released or being restored.
+- Direct sends, non-blocking asks with replies, and group broadcasts between live sessions.
+- Named groups that isolate unrelated sessions from each other.
+- Delivery to subagents, including ones that are starting, released, paused, finished, or being restored.
 
 ## Next steps
 
-- [Intercom](/intercom) — the full guide, including groups and addressing.
-- [Operations](/intercom/operations) — observable states and recovery actions.
-- [Subagents](/guides/subagents) — when delegation is a better fit than coordination.
+- Read [Intercom](/intercom) for the quick start, coordination patterns, and supervisor escalation.
+- Read [Intercom operations](/intercom/operations) for connection states, multi-machine routing, and recovery actions.
+- Read [Subagents](/guides/subagents) when delegation fits better than session-to-session coordination.

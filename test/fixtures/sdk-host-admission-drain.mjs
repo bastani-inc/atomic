@@ -22,12 +22,12 @@ let factories = 0;
 const resourceLoader = new DefaultResourceLoader({
 	cwd: root, agentDir: join(root, "agent"), settingsManager,
 	noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
-	extensionFactories: [(pi) => {
+	extensionFactories: [(atomic) => {
 		const id = ++factories;
-		pi.on("session_start", () => { active.add(id); history.push(["start", id]); });
-		pi.on("session_shutdown", () => { active.delete(id); history.push(["stop", id]); });
-		if (scenario === "prompt") pi.on("before_agent_start", async () => { entered.resolve(); await release.promise; });
-		if (scenario === "compact") pi.on("session_before_compact", async () => { entered.resolve(); await release.promise; return { compactedText: "retained" }; });
+		atomic.on("session_start", () => { active.add(id); history.push(["start", id]); });
+		atomic.on("session_shutdown", () => { active.delete(id); history.push(["stop", id]); });
+		if (scenario === "prompt") atomic.on("before_agent_start", async () => { entered.resolve(); await release.promise; });
+		if (scenario === "compact") atomic.on("session_before_compact", async () => { entered.resolve(); await release.promise; return { compactedText: "retained" }; });
 	}],
 });
 const { session } = await createAgentSession({

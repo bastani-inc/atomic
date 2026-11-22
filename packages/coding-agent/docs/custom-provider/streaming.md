@@ -5,9 +5,9 @@ description: "Implement a custom streaming API: events, content blocks, tool cal
 
 # Provider streaming API
 
-## Custom Streaming API
+## Custom streaming API
 
-For providers with non-standard APIs, implement `streamSimple`. Study the existing API implementations before writing your own:
+For providers with non-standard APIs, implement `streamSimple`. Study the existing API implementations before writing your own.
 
 **Reference implementations:**
 
@@ -22,11 +22,9 @@ Per-vendor provider configurations (base URLs, auth, model catalogs) live under 
 
 ### Stream Pattern
 
-All providers follow the same pattern:
-
 Return a stream from `createAssistantMessageEventStream()` or construct `AssistantMessageEventStream` directly. A plain `EventStream` subclass does not satisfy the response stream type.
 
-The stream sets optional `durationMs` on the final assistant message using a monotonic clock. Set `timestamp` when the request starts. Existing durations are preserved; messages whose timestamps predate the stream, such as fetched deferred results, remain untimed.
+The stream records optional `durationMs` on the final assistant message using a monotonic clock. Set `timestamp` when the request starts. Existing durations stay intact, and messages whose timestamps predate the stream (such as fetched deferred results) remain untimed.
 
 ```typescript
 import {
@@ -53,7 +51,6 @@ function streamMyProvider(
     const systemPrompt = getCurrentSystemPrompt(context.messages);
     const tools = getCurrentTools(context.messages);
     // Initialize output message
-    // Initialize output message
     const output: AssistantMessage = {
       role: "assistant",
       content: [],
@@ -76,10 +73,9 @@ function streamMyProvider(
       // Push start event
       stream.push({ type: "start", partial: output });
 
-      // Make API request and process response...
-      // Push content events as they arrive, and set output.stopReason from the
-      // terminal event. A reason your provider sends that you do not map must
-      // become an error, not a silent "stop".
+      // Send API request, push content events, and set output.stopReason from
+      // the terminal event. Throw on any unmapped stop reason instead of falling
+      // back to "stop".
       if (output.stopReason === "pending") {
         throw new Error("Provider stream ended without a stop reason");
       }
@@ -106,65 +102,63 @@ function streamMyProvider(
 }
 ```
 
-### Event Types
+### Event types
 
-Push events via `stream.push()` in this order:
+Push events with `stream.push()` in this order:
 
-1. `{ type: "start", partial: output }` - Stream started
+1. `{ type: "start", partial: output }`: stream started.
+2. Content events (repeatable; track `contentIndex` for each block):
+   - `{ type: "text_start", contentIndex, partial }`: text block started.
+   - `{ type: "text_delta", contentIndex, delta, partial }`: text chunk.
+   - `{ type: "text_end", contentIndex, content, partial }`: text block ended.
+   - `{ type: "thinking_start", contentIndex, partial }`: thinking block started.
+   - `{ type: "thinking_delta", contentIndex, delta, partial }`: thinking chunk.
+   - `{ type: "thinking_end", contentIndex, content, partial }`: thinking block ended.
+   - `{ type: "toolcall_start", contentIndex, partial }`: tool call started.
+   - `{ type: "toolcall_delta", contentIndex, delta, partial }`: tool call JSON chunk.
+   - `{ type: "toolcall_end", contentIndex, toolCall, partial }`: tool call ended.
+3. `{ type: "done", reason, message }` or `{ type: "error", reason, error }`: stream ended.
 
-2. Content events (repeatable, track `contentIndex` for each block):
-   - `{ type: "text_start", contentIndex, partial }` - Text block started
-   - `{ type: "text_delta", contentIndex, delta, partial }` - Text chunk
-   - `{ type: "text_end", contentIndex, content, partial }` - Text block ended
-   - `{ type: "thinking_start", contentIndex, partial }` - Thinking started
-   - `{ type: "thinking_delta", contentIndex, delta, partial }` - Thinking chunk
-   - `{ type: "thinking_end", contentIndex, content, partial }` - Thinking ended
-   - `{ type: "toolcall_start", contentIndex, partial }` - Tool call started
-   - `{ type: "toolcall_delta", contentIndex, delta, partial }` - Tool call JSON chunk
-   - `{ type: "toolcall_end", contentIndex, toolCall, partial }` - Tool call ended
+`partial` holds the current `AssistantMessage` state. Update `output.content` as chunks arrive, then pass `output` as `partial`.
 
-3. `{ type: "done", reason, message }` or `{ type: "error", reason, error }` - Stream ended
+### Stop reasons
 
-The `partial` field in each event contains the current `AssistantMessage` state. Update `output.content` as you receive data, then include `output` as the `partial`.
+`StopReason` is `"pending" | "stop" | "length" | "toolUse" | "error" | "aborted" | "deferred"` (`"deferred"` is for deferred batch APIs).
 
-### Stop Reasons
+Initialize every in-flight message to `"pending"`. When the provider emits its terminal event, assign the mapped reason before pushing `done`.
 
-`StopReason` is `"pending" | "stop" | "length" | "toolUse" | "error" | "aborted"`.
+Run two checks before `done`:
 
-Start every in-flight partial message at `"pending"`. This means the terminal event has not arrived, not that the turn ended with `"stop"`. When the provider reports the end of the turn, set the real reason and push `done` with it.
+- If `output.stopReason` is still `"pending"`, throw an error so a stream without a terminal event does not appear complete.
+- If `output.stopReason` is `"error"` or `"aborted"`, throw `output.errorMessage` so the `catch` block emits an `error` event.
 
-Two checks belong immediately before `done`:
+`done` accepts only `"stop"`, `"length"`, and `"toolUse"`, which matches what remains after those two checks.
 
-- a stream that reached the end while still `"pending"` never received a terminal event, so raise rather than report a stop that did not happen;
-- `"error"` and `"aborted"` are failures, so raise them with `output.errorMessage` and let the `catch` push an `error` event.
+Map every raw stop reason your provider sends onto one of the terminal values, and **throw on any unrecognized reason** instead of falling back to `"stop"`. Store the provider's original string in `rawStopReason` when needed.
 
-`done` accepts only `"stop"`, `"length"`, and `"toolUse"`, which is exactly what those two checks leave, so the `as "stop" | "length" | "toolUse"` cast older implementations used is no longer needed.
+### Content blocks
 
-Map each raw reason your provider can send onto one of the five terminal values, and **raise on one you do not recognise** rather than falling back to `"stop"`. This is what the built-in providers do: an unmapped reason becomes a provider error naming the raw value, so a new truncation or safety signal is visible instead of arriving as a turn that looks like it finished normally. The optional `rawStopReason` field on `AssistantMessage` is where the provider's own string belongs when you want to keep it.
-
-### Content Blocks
-
-Add content blocks to `output.content` as they arrive:
+Append content blocks to `output.content` as they arrive:
 
 ```typescript
-// Text block
+// Start text block
 output.content.push({ type: "text", text: "" });
 stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 
-// As text arrives
+// Append text delta
 const block = output.content[contentIndex];
 if (block.type === "text") {
   block.text += delta;
   stream.push({ type: "text_delta", contentIndex, delta, partial: output });
 }
 
-// When block completes
+// Complete text block
 stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
 ```
 
-### Tool Calls
+### Tool calls
 
-Tool calls stream their arguments as JSON text. `ToolCallArgumentsStream` from `@bastani/atomic-ai` reads each delta once and returns the arguments parsed so far, so large tool calls do not re-parse the whole text on every delta:
+Tool call arguments stream as JSON text. `ToolCallArgumentsStream` from `@bastani/atomic-ai` parses each delta incrementally instead of re-parsing the full text on every chunk:
 
 ```typescript
 // Start tool call
@@ -178,41 +172,44 @@ stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, p
 
 const args = new ToolCallArgumentsStream();
 
-// Each JSON delta
+// Append each JSON delta
 block.arguments = args.append(jsonDelta);
 stream.push({ type: "toolcall_delta", contentIndex, delta: jsonDelta, partial: output });
 
-// Complete: one full parse; malformed arguments are reported in `argumentsError`
+// Finalize: full parse; malformed arguments record `argumentsError`
 Object.assign(block, args.finish());
 stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
 ```
 
-### Usage and Cost
+### Usage and cost
 
-Update usage from API response and calculate cost:
+Populate `output.usage` from the provider response and call `calculateCost()`:
 
 ```typescript
 output.usage.input = response.usage.input_tokens;
 output.usage.output = response.usage.output_tokens;
 output.usage.cacheRead = response.usage.cache_read_tokens ?? 0;
 output.usage.cacheWrite = response.usage.cache_write_tokens ?? 0;
-output.usage.totalTokens = output.usage.input + output.usage.output +
-                           output.usage.cacheRead + output.usage.cacheWrite;
+output.usage.totalTokens =
+  output.usage.input +
+  output.usage.output +
+  output.usage.cacheRead +
+  output.usage.cacheWrite;
 calculateCost(model, output.usage);
 ```
 
-`calculateCost()` selects one rate set for the whole request. Aggregate input is `usage.input + usage.cacheRead + usage.cacheWrite`; a tier applies only when that sum is strictly greater than `inputTokensAbove`, and the matching tier with the highest threshold wins. Every tier must provide complete `input`, `output`, `cacheRead`, and `cacheWrite` rates. Extension-registered models preserve these tiers, and matching `models.json` `modelOverrides` use the same replacement rules described in [Custom Models](/models/reference#request-wide-cost-tiers).
+`calculateCost()` applies one rate set to the whole request. Aggregate input is `usage.input + usage.cacheRead + usage.cacheWrite`; a tier applies only when that total strictly exceeds `inputTokensAbove`, and the highest matching threshold wins. Every tier must define `input`, `output`, `cacheRead`, and `cacheWrite`. Extension-registered models keep these tiers, and `models.json` `modelOverrides` follow the rules in [Request-wide cost tiers](/models/reference#request-wide-cost-tiers).
 
 ### Registration
 
-Register your stream function:
+Register your stream handler with `atomic.registerProvider()`:
 
 ```typescript
-await pi.registerProvider("my-provider", {
+await atomic.registerProvider("my-provider", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
   api: "my-custom-api",
-  models: [...],
+  models: [],
   streamSimple: streamMyProvider
 });
 ```

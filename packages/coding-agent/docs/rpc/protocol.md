@@ -42,7 +42,7 @@ With images:
 
 If the agent is streaming and no `streamingBehavior` is specified, the command returns an error.
 
-**Extension commands**: If the message is an extension command (e.g., `/mycommand`), it executes immediately even during streaming. Extension commands manage their own LLM interaction via `pi.sendMessage()`.
+**Extension commands**: If the message is an extension command (e.g., `/mycommand`), it executes immediately even during streaming. Extension commands manage their own LLM interaction via `atomic.sendMessage()`.
 
 **Input expansion**: Skill commands (`/skill:name`) and prompt templates (`/template`) are expanded before sending/queueing.
 
@@ -51,7 +51,10 @@ Response:
 {"id": "req-1", "type": "response", "command": "prompt", "success": true, "data": {"disposition": "started"}}
 ```
 
-`data.disposition` is `"handled"` if an extension command or input handler consumed the prompt, `"queued"` if Atomic queued it during a run, held it because the message queue was paused before its run began, or held it because the session is compacting, or `"started"` if Atomic started a run for it. A prompt held during compaction is sent once compaction ends. If its turn then fails to start, for example because credentials were removed, Atomic keeps the message queued and emits an `agent_continue_error` event with `source: "post_compaction"`. This describes the submitted prompt, not independent work started by an extension or a guarantee of completion. If it is `"handled"`, no run started for this prompt, so don't wait for `agent_end` or `agent_settled`.
+`data.disposition` reports how Atomic accepted the prompt:
+- `"handled"`: an extension command or input handler consumed it; no turn started, so do not wait for `agent_end` or `agent_settled`.
+- `"queued"`: queued during a run, held while the queue was paused, or held while compacting. A prompt held during compaction runs once compaction ends; if that turn fails to start (for example, missing credentials), the message stays queued and Atomic emits `agent_continue_error` with `source: "post_compaction"`.
+- `"started"`: Atomic started a run for this prompt (not a guarantee of completion or independent extension work).
 
 `success: true` means the prompt was accepted, queued, or handled immediately. `success: false` means the prompt was rejected before acceptance. Failures after acceptance are reported through the normal event and message stream, not as a second `response` for the same request id.
 
@@ -59,7 +62,9 @@ The `images` field is optional. Each image uses `ImageContent` format: `{"type":
 
 #### steer
 
-Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. If no run is active when it arrives and the session already has messages, Atomic starts a turn to deliver it, so a `prompt` sent while that turn runs needs `streamingBehavior`. On a session with no messages yet, or after a run was stopped with `abort`, it stays queued until the next `prompt`. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a steering message while the agent is running. Atomic delivers it after the current assistant turn finishes its tool calls, before the next LLM call.
+
+If no run is active and the session already has messages, Atomic starts a turn to deliver it (so a `prompt` sent during that turn needs `streamingBehavior`). On an empty session, or after `abort`, it stays queued until the next `prompt`. Skill commands and prompt templates expand; extension commands are rejected (use `prompt` instead).
 
 ```json
 {"type": "steer", "message": "Stop and do this instead"}
@@ -83,7 +88,9 @@ See [set_steering_mode](#set_steering_mode) for controlling how steering message
 
 #### follow_up
 
-Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. If no run is active when it arrives and the session already has messages, Atomic starts a turn to deliver it, so a `prompt` sent while that turn runs needs `streamingBehavior`. On a session with no messages yet, or after a run was stopped with `abort`, it stays queued until the next `prompt`. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a follow-up message to run after the agent finishes, once no tool calls or steering messages remain.
+
+If no run is active and the session already has messages, Atomic starts a turn to deliver it (so a `prompt` sent during that turn needs `streamingBehavior`). On an empty session, or after `abort`, it stays queued until the next `prompt`. Skill commands and prompt templates expand; extension commands are rejected (use `prompt` instead).
 
 ```json
 {"type": "follow_up", "message": "After you're done, also do this"}
@@ -109,7 +116,9 @@ See [set_follow_up_mode](#set_follow_up_mode) for controlling how follow-up mess
 
 Abort the current operation and wait for the session to become idle before responding.
 
-Like Esc in the TUI, `abort` first holds queued messages: queued steering and follow-up messages, and notices that arrive afterwards, such as a background command's completion, wait instead of starting a turn. The next `prompt` releases the hold and starts its turn with them. If the client had already paused the queue with `pause_queued_messages`, or pauses it after the abort, the hold stays until `resume_queued_messages`. When the process shuts down while a notice is held, the notice is saved, and the session shows it once when it is opened again.
+Like `Esc` in the TUI, `abort` first holds queued messages: queued steering and follow-up messages, plus notices that arrive afterward (such as background command completions), wait instead of starting a new turn.
+
+The next `prompt` releases the hold and includes them in its turn. If the client paused the queue with `pause_queued_messages` before or after `abort`, the hold stays until `resume_queued_messages`. If the process shuts down while a notice is held, the notice is saved and shown once when the session reopens.
 
 ```json
 {"type": "abort"}
@@ -149,7 +158,7 @@ Response:
 
 `steering` and `followUp` list each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` lists the same messages, in the same order, as they were submitted. A client that gives the messages back to the user to send again should restore `typed`, so those steps run once more and not twice. `typed` is left out when every message was queued as submitted, and by sessions from before it was added; restore `steering` and `followUp` then.
 
-To implement interactive Esc behavior, send `clear_queue` before `abort`, then restore the returned text in the client editor. `abort` continues queued messages when they remain in the session.
+To implement interactive `Esc` behavior, send `clear_queue` before `abort`, then restore the returned text in the client editor. `abort` holds any remaining queued messages (`pauseQueuedMessages: true`) so they wait instead of starting a new turn, and `clear_queue` removes them so you can return them to the editor.
 
 #### new_session
 
@@ -234,7 +243,9 @@ Response:
 
 `resourceErrors` lists the extensions that failed to load in the last startup or reload, and `resourceWarnings` lists their load warnings, such as an extension registering the same tool name twice.
 
-While the session waits to retry or switch models, `retryStatus` carries the `auto_retry_start` or `model_fallback_start` event. For a retry, `retryAt` gives the countdown deadline in Unix epoch milliseconds. Use this field rather than `isStreaming` to show a wait: a session can remain streaming throughout a backoff. The field is absent once the next request starts or the wait ends. `turnStartedAt` is the Unix epoch time in milliseconds of the current turn's first request. It stays the same through retries and fallback switches, and is absent when there is no active turn.
+While the session waits to retry or switch models, `retryStatus` carries the `auto_retry_start` or `model_fallback_start` event, and for a retry `retryAt` gives the countdown deadline in Unix epoch milliseconds. Use `retryStatus` rather than `isStreaming` to display a wait, because a session can stay streaming across backoff; it clears once the next request starts or the wait ends.
+
+`turnStartedAt` gives the Unix epoch timestamp in milliseconds of the current turn's first request, stays unchanged across retries and fallbacks, and is absent when idle.
 
 When `isCompacting` is `true`, `compactionReason` identifies the compaction. The optional `compactionStartedAt` gives its start time in Unix epoch milliseconds, so an attaching client can show elapsed time. These fields are absent when no compaction is active.
 
@@ -450,7 +461,7 @@ Response:
 }
 ```
 
-### Queue Modes
+### Queue modes
 
 #### set_steering_mode
 
@@ -509,7 +520,7 @@ Response:
     "promptVersion": 7,
     "parameters": {"query": "keep the migration plan"},
     "form": "cleared",
-    "history": {"sessionId": "abc123", "linesBefore": 4210, "boundaryLine": 4211, "totalLines": 4232},
+    "history": {"sessionId": "abc123", "rangeUnit": "entries", "entriesBefore": 42, "boundaryEntry": 43, "totalEntries": 44},
     "stats": {
       "linesBefore": 812,
       "linesDeleted": 812,
@@ -657,7 +668,7 @@ While the command runs, Atomic emits ordered deltas correlated by the command `i
 
 Request ownership survives `new_session`, `switch_session`, `import_session`, fork, and clone while the command runs. Later deltas keep the original ID and do not contaminate the replacement session. Exactly one ordinary `response` is the terminal record for completion, cancellation, or error.
 
-If output was truncated, includes `fullOutputPath`. Persisted bash output lives in the owner- and session-scoped temp tree (`<tmpdir>/atomic-<uid>/<session-id>/`), not at the temp root — see [Tools](/tools#persisted-tool-output) for the layout, permissions, size cap, and retention:
+If output was truncated, the response includes `fullOutputPath`. Persisted bash output lives in the owner- and session-scoped temp tree (`<tmpdir>/atomic-<uid>/<session-id>/`), not at the temp root (see [Tools](/tools#persisted-tool-output) for layout, permissions, size cap, and retention):
 ```json
 {
   "type": "response",
@@ -865,7 +876,9 @@ Response:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false, "notices": []}}
 ```
 
-`notices` lists the warnings the resume earned, such as a [blueprint](/guides/resume-on-any-machine) build that was Partial, each as `{"type": "warning", "message": "..."}`. A client that shows resume warnings shows them once. A switch that restores a worktree answers once the worktree is restored. Its blueprint build goes on behind the first turn: every tool call and `bash` command in that worktree, also those of a later `new_session` there, waits for it, the first such tool call reports how the build went to the agent, and a `blueprint_build_finished` event tells the client, with the build's warnings. Closing stdin stops a build that is still running; the next resume builds the worktree again. Set `resume.waitForBlueprint` to `"prompt"` to answer only after the build ([details](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
+`notices` lists warnings produced during resume (such as a partial [blueprint](/guides/resume-on-any-machine) build) as `{"type": "warning", "message": "..."}` entries.
+
+A switch that restores a worktree responds once the worktree is ready while the blueprint build continues in the background behind the first turn. Tool calls and `bash` commands in that worktree (including those of a later `new_session` there) wait for the build, the first tool call reports build results to the agent, and `blueprint_build_finished` delivers any warnings to the client. Closing stdin cancels an in-progress build so the next resume builds again. Set `resume.waitForBlueprint` to `"prompt"` to wait for the build before responding ([details](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
 
 If an extension cancelled the switch:
 ```json
@@ -1134,7 +1147,7 @@ Each command has:
 - `name`: Command name (invoke with `/name`)
 - `description`: Human-readable description (optional for extension commands)
 - `source`: What kind of command:
-  - `"extension"`: Registered via `pi.registerCommand()` in an extension
+  - `"extension"`: Registered via `atomic.registerCommand()` in an extension
   - `"prompt"`: Loaded from a prompt template `.md` file
   - `"skill"`: Loaded from a skill directory (name is prefixed with `skill:`)
 - `location`: Where it was loaded from (optional, not present for extensions):
@@ -1149,7 +1162,7 @@ Each command has:
 
 Events are streamed to stdout as JSON lines. Most events do not include an `id`; `bash_execution_update` is the deliberate exception and uses the originating bash request ID.
 
-### Event Types
+### Event types
 
 | Event | Description |
 |-------|-------------|
@@ -1226,17 +1239,13 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
 When the session saved the message before ending it, `message_end` also carries the saved entry's `entryId` and its
 sequence `seq` in the session's history. Both are absent for a message the session did not save.
 
-### message_update (Streaming)
+### message_update (streaming)
 
 Emitted during streaming of assistant messages. Carries the streaming delta plus the latest cumulative usage.
 
 `message_update` has no cumulative `message`, and `assistantMessageEvent` has no `partial`. Build your message from `message_start` and deltas, then use `message_end` as the final authoritative message.
 
-The top-level `usage` field carries the latest cumulative provider-reported usage; it may
-remain zero until completion when a provider does not report usage during streaming. When
-the provider reports an explicit end-of-turn signal (pi-ai's `AssistantMessage.endTurn`,
-for example OpenAI Codex `end_turn`), the update carries it as a top-level `endTurn`
-boolean — present only when the provider reported one.
+The top-level `usage` field carries the latest cumulative provider-reported usage; it may remain zero until completion when a provider does not report usage during streaming. When the provider reports an explicit end-of-turn signal (`AssistantMessage.endTurn` from `@bastani/atomic-ai`, for example OpenAI Codex `end_turn`), the update carries it as a top-level `endTurn` boolean, present only when the provider reported one.
 
 ```json
 {
@@ -1366,7 +1375,7 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
     "form": "compacted",
     "backend": "compactor",
     "model": "morph/morph-compactor",
-    "history": {"sessionId": "abc123", "linesBefore": 4210, "boundaryLine": 4211, "totalLines": 4890},
+    "history": {"sessionId": "abc123", "rangeUnit": "entries", "entriesBefore": 42, "boundaryEntry": 43, "totalEntries": 48},
     "stats": {
       "linesBefore": 812,
       "linesDeleted": 406,
@@ -1498,7 +1507,7 @@ The last line an RPC process writes when disposing its session failed during shu
 }
 ```
 
-## Error Handling
+## Error handling
 
 Failed commands return a response with `success: false`:
 
@@ -1524,11 +1533,10 @@ Parse errors:
 
 ## Types
 
-Source files and installed definitions:
-- `node_modules/@bastani/atomic-ai/dist/types.d.ts` - `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
-- `node_modules/@bastani/atomic-agent-core/dist/types.d.ts` - `AgentMessage`, `AgentEvent`
-- [`src/core/messages.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/messages.ts) - `BashExecutionMessage`
-- [`src/modes/rpc/rpc-types.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
+Exported TypeScript definitions:
+- `@bastani/atomic-ai`: `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`.
+- `@bastani/atomic-agent-core`: `AgentMessage`, `AgentEvent`.
+- `@bastani/atomic`: augments `AgentMessage` with `BashExecutionMessage`, `CustomMessage`, and `BranchSummaryMessage`, and exports `RpcClient`, `RpcEvent`, and `ModelInfo`.
 
 ### Model
 
@@ -1591,7 +1599,7 @@ The `content` field can be a string or an array of `TextContent`/`ImageContent` 
 }
 ```
 
-Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A streaming message carries `"pending"` until the terminal event replaces it, so a client that switches on the reason needs that case; a completed message never carries it. On the wire the pending reason appears on the `message_start` message — `message_update` frames carry no message at all — and `message_end` carries the terminal reason. A provider that reports an explicit end-of-turn signal (pi-ai's `AssistantMessage.endTurn`, for example OpenAI Codex `end_turn`) sets `endTurn: true` on the assistant message; `message_update` frames echo it as a top-level boolean only when the provider reported one.
+Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A streaming message carries `"pending"` until the terminal event replaces it, so clients switching on `stopReason` should handle `"pending"`; completed messages never carry it. On the wire, `"pending"` appears on `message_start` (`message_update` frames carry no `message` object), and `message_end` carries the terminal reason. A provider that reports an explicit end-of-turn signal (`AssistantMessage.endTurn` from `@bastani/atomic-ai`, for example OpenAI Codex `end_turn`) sets `endTurn: true` on the assistant message, and `message_update` frames echo it as a top-level boolean only when reported.
 
 ### ToolResultMessage
 

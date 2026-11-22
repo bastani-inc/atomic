@@ -14,13 +14,15 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
 	process.env.ATOMIC_WEB_ACCESS_HEAVY_IMPORTED = "1";
 }
 import { registerWebSearchFeatures } from "./web-search-features.js";
+import { registerWebAccessMessageRenderers } from "./message-renderers.js";
 
-export default async function (pi: ExtensionAPI) {
+export default async function (atomic: ExtensionAPI) {
+	registerWebAccessMessageRenderers(atomic);
 	const storage = createResultStorage();
 	const { deleteResult, getAllResults } = storage;
 	const initConfig = await loadConfigForExtensionInit();
-	registerWebSearchFeatures(pi, initConfig, storage);
-	pi.registerCommand("curator", {
+	registerWebSearchFeatures(atomic, initConfig, storage);
+	atomic.registerCommand("curator", {
 		description: "Toggle or configure the search curator workflow",
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
@@ -51,7 +53,7 @@ export default async function (pi: ExtensionAPI) {
 			const label = newWorkflow === "none"
 				? "Curator disabled — web_search will return raw results"
 				: "Curator enabled — web_search will open curator and auto-generate a summary draft";
-			pi.sendMessage({
+			atomic.sendMessage({
 				customType: "curator-config",
 				content: [{ type: "text", text: label }],
 				display: true,
@@ -60,11 +62,11 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("google-account", {
+	atomic.registerCommand("google-account", {
 		description: "Show the active Google account for Gemini Web",
 		handler: async () => {
 			if (!(await isBrowserCookieAccessAllowed())) {
-				pi.sendMessage({
+				atomic.sendMessage({
 					customType: "google-account",
 					content: [{ type: "text", text: `Gemini Web browser cookie access is disabled. Set allowBrowserCookies: true in ~/${CONFIG_DIR_NAME}/web-search.json to enable it.` }],
 					display: true,
@@ -75,7 +77,7 @@ export default async function (pi: ExtensionAPI) {
 
 			const cookies = await isGeminiWebAvailable();
 			if (!cookies) {
-				pi.sendMessage({
+				atomic.sendMessage({
 					customType: "google-account",
 					content: [{ type: "text", text: "Gemini Web is unavailable. Sign into gemini.google.com in a supported Chromium-based browser." }],
 					display: true,
@@ -89,7 +91,7 @@ export default async function (pi: ExtensionAPI) {
 				? `Active Google account: ${email}`
 				: "Gemini Web is available, but the active Google account could not be determined.";
 
-			pi.sendMessage({
+			atomic.sendMessage({
 				customType: "google-account",
 				content: [{ type: "text", text }],
 				display: true,
@@ -98,7 +100,7 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("search", {
+	atomic.registerCommand("search", {
 		description: "Browse stored web search results",
 		handler: async (_args, ctx) => {
 			const results = getAllResults();

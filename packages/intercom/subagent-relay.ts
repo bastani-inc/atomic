@@ -34,7 +34,7 @@ interface SubagentRelayDeps {
 }
 
 async function dispatchRelayFallback(
-  pi: ExtensionAPI,
+  atomic: ExtensionAPI,
   prefix: Array<{ customType: string; content: string; display: boolean; details?: unknown }>,
   terminalMessage: { customType: string; content: string; display: boolean; details?: unknown },
   stageAdmissionKey: string,
@@ -42,10 +42,10 @@ async function dispatchRelayFallback(
   let delivered = 0;
   try {
     for (const message of prefix) {
-      await pi.sendMessage(message, { deliverAs: "steer" });
+      await atomic.sendMessage(message, { deliverAs: "steer" });
       delivered += 1;
     }
-    await pi.sendMessage(terminalMessage, { triggerTurn: true, stageAdmissionKey });
+    await atomic.sendMessage(terminalMessage, { triggerTurn: true, stageAdmissionKey });
   } catch (error) {
     const failure = new Error(error instanceof Error ? error.message : String(error), { cause: error });
     Object.assign(failure, { terminalPreludeDelivered: delivered });
@@ -53,7 +53,7 @@ async function dispatchRelayFallback(
   }
 }
 
-export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps): void {
+export function registerSubagentRelay(atomic: ExtensionAPI, deps: SubagentRelayDeps): void {
   const { getLiveContext, currentSessionTargetMatches, sendIncomingMessage, ensureConnected, resolveSessionTarget } = deps;
   const localDeliveries = deps.localDeliveryAuthority ?? new InMemoryDeliveredMessageCache();
   function deliverLocalSubagentRelayMessage(
@@ -88,15 +88,15 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
             details: entry,
           };
           const stageAdmissionKey = `intercom:${requestId ?? entry.message.id}`;
-          if (typeof pi.sendMessages === "function") {
-            return pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true, stageAdmissionKey });
+          if (typeof atomic.sendMessages === "function") {
+            return atomic.sendMessages([...prefix, terminalMessage], { triggerTurn: true, stageAdmissionKey });
           }
-          return dispatchRelayFallback(pi, prefix, terminalMessage, stageAdmissionKey);
+          return dispatchRelayFallback(atomic, prefix, terminalMessage, stageAdmissionKey);
         },
       };
-      Object.defineProperty(payload, "terminalOwner", { value: pi });
+      Object.defineProperty(payload, "terminalOwner", { value: atomic });
       try {
-        pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+        atomic.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
       } catch (error) {
         if (!isStaleExtensionContextError(error) || dispatched) throw error;
       }
@@ -110,7 +110,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
   async function recordSubagentDeliveryError(
     entryType: string, to: string, message: string, error: Parameters<typeof getErrorMessage>[0],
   ): Promise<void> {
-    await pi.appendEntry(entryType, {
+    await atomic.appendEntry(entryType, {
       to,
       message,
       error: getErrorMessage(error),
@@ -129,7 +129,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
   function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown, unconfirmed = false): void {
     if (!requestId) return;
     try {
-      pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
+      atomic.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
         requestId,
         delivered,
         ...(error ? { error: getErrorMessage(error) } : {}),
@@ -304,21 +304,21 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       }
     });
   }
-  pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
     const request = payload as { childName?: unknown; completion?: Promise<unknown> };
     const childName = typeof request.childName === "string" ? request.childName.trim() : "";
     if (!childName || request.completion || !deps.authorizeSupervisorChild) return;
     request.completion = deps.authorizeSupervisorChild(childName);
   });
-  pi.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
     relaySubagentIntercomPayload(payload, {
       sender: "subagent-control",
       status: "needs_attention",
       errorEntryType: "intercom_control_error",
     });
   });
-  pi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
     const finished = parseSubagentResultBarrier(payload);
     if (finished) deps.forgetSupervisedChildren?.(finished.sourceSessionTargets);
     relaySubagentIntercomPayload(payload, {

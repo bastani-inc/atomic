@@ -1,21 +1,21 @@
 ---
 title: Provider OAuth
-description: OAuth login callbacks, credential storage, and dynamic catalog refresh.
+description: OAuth login callbacks, credential storage, rejected logins, and dynamic catalog refresh.
 ---
 
 # Provider OAuth
 
-## OAuth Support
+## OAuth support
 
-Add OAuth/SSO authentication that integrates with `/login`:
+Add OAuth or SSO login integrated with `/login`:
 
 ```typescript
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/atomic-ai";
 
-await pi.registerProvider("corporate-ai", {
+await atomic.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
   api: "openai-responses",
-  models: [...],
+  models: [],
   oauth: {
     name: "Corporate AI (SSO)",
 
@@ -32,8 +32,7 @@ await pi.registerProvider("corporate-ai", {
       // Option 3: Prompt for token/code
       const code = await callbacks.onPrompt({ message: "Enter SSO code:" });
 
-      // Exchange for tokens (your implementation). Forward `signal` so
-      // cancelling /login aborts the in-flight network request.
+      // Forward `signal` so cancelling /login aborts the in-flight network request.
       const tokens = await exchangeCodeForTokens(code, { signal });
 
       return {
@@ -45,7 +44,7 @@ await pi.registerProvider("corporate-ai", {
 
     async refreshToken(
       credentials: OAuthCredentials,
-      signal: AbortSignal | undefined
+      signal: AbortSignal
     ): Promise<OAuthCredentials> {
       const tokens = await refreshAccessToken(credentials.refresh, { signal });
       return {
@@ -59,11 +58,11 @@ await pi.registerProvider("corporate-ai", {
       return credentials.access;
     },
 
-    // Optional: modify models based on user's subscription
+    // Optional: adjust models based on the user's token
     modifyModels(models, credentials) {
       const region = decodeRegionFromToken(credentials.access);
-      return models.map(m => ({
-        ...m,
+      return models.map((model) => ({
+        ...model,
         baseUrl: `https://${region}.ai.corp.com/v1`
       }));
     }
@@ -71,29 +70,33 @@ await pi.registerProvider("corporate-ai", {
 });
 ```
 
-After registration, users can authenticate via `/login corporate-ai`.
+Users can then sign in with `/login corporate-ai`.
 
-Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials. Atomic never aborts the `signal` passed to `refreshToken` on a timeout, because the provider may already have rotated the refresh token; a late result is saved, and a normal exit waits up to three seconds for it. Do not add your own timeout or abort to the token request.
+Atomic serializes OAuth refreshes so concurrent sessions do not overwrite each other's credentials. Atomic never aborts the `signal` passed to `refreshToken` on timeout because the provider may have already rotated the refresh token; a late response still saves, and normal exit waits up to three seconds for it. Do not add a shorter abort timeout to your token refresh call.
 
-OAuth callbacks run in the engine in isolated interactive mode. Use the provided callbacks for user interaction rather than relying on terminal-process state.
+OAuth callbacks run in the engine process in isolated interactive mode. Use the provided callbacks for all prompts and notices instead of reading terminal process state.
 
-`loginLabel` sets the dialog title. `usesCallbackServer: true` offers a redirect-URL paste field alongside the browser callback.
+Set `loginLabel` to customize the login dialog title. Set `usesCallbackServer: true` to show a redirect-URL paste field alongside the local callback server.
 
-For the native `pi.registerProvider(provider)` form, set `provider.auth.oauth.usesCallbackServer: true` when the flow races a callback server against `interaction.prompt({ type: "manual_code", message: "Paste redirect URL:" })`. This shows the paste field even under a custom provider ID. The built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth objects already carry this flag; preserve it when cloning or wrapping them. Set it explicitly to `false` for a replacement flow that does not use a callback server. Legacy `pi.registerProvider(id, config)` registrations continue to use `config.oauth.usesCallbackServer`.
+For a native `atomic.registerProvider(provider)` registration, set `provider.auth.oauth.usesCallbackServer: true` when your flow races a local callback server against `interaction.prompt({ type: "manual_code", message: "Paste redirect URL:" })`. The built-in Anthropic, OpenAI, OpenAI Codex, and OpenRouter OAuth objects already set this flag; keep it when wrapping them, or set `false` for a replacement flow without a callback server. `atomic.registerProvider(id, config)` reads `config.oauth.usesCallbackServer`.
 
-Successful login persists credentials before refreshing the catalog. Logout removes stored credentials without calling `refreshModels`. Escape or Ctrl+C cancels the matching login and preserves the previous credentials and catalog. Later registrations still override earlier providers by ID.
+Successful login saves credentials before refreshing the model catalog. Logout removes stored credentials without calling `refreshModels`. Pressing Escape or Ctrl+C cancels login cleanly and keeps prior credentials and models unchanged. Later registrations override earlier ones by provider ID.
 
-Intentional cancellation is quiet, including native `AbortError`, an aborted signal or its exact reason, nested abort causes, and the legacy exact `Login cancelled` error. Provider denial, timeout, network/protocol errors, malformed responses, token exchange failures, and storage failures remain visible. Catalog-refresh failures are reported by `/model` while cached models remain selectable; they do not turn a persisted login into a failed transaction.
+Intentional cancellation (native `AbortError`, an aborted `signal`, nested abort causes, or the legacy exact `Login cancelled` error) stays quiet. Provider denials, timeouts, network errors, malformed responses, token exchange failures, and storage errors remain visible. Catalog-refresh errors appear in `/model` while keeping cached models usable and never roll back a saved login.
 
 ## Rejected logins
 
-When the provider rejects the stored refresh token, for example because the user revoked access or the login expired, throw `OAuthRefreshRejectedError` from `refreshToken`:
+When the provider rejects a stored refresh token (revoked access or expired login), throw `OAuthRefreshRejectedError` from `refreshToken`:
 
 ```typescript
 import { OAuthRefreshRejectedError } from "@bastani/atomic";
 
 async refreshToken(credentials, signal) {
-  const response = await fetch("https://sso.corp.com/token", { method: "POST", body: refreshBody(credentials), signal });
+  const response = await fetch("https://sso.corp.com/token", {
+    method: "POST",
+    body: refreshBody(credentials),
+    signal,
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     if (response.status === 401 || body.error === "invalid_grant") {
@@ -105,50 +108,51 @@ async refreshToken(credentials, signal) {
     }
     throw new Error(`Token refresh failed (${response.status})`);
   }
-  // ...
+  // Return refreshed credentials
 }
 ```
 
-Atomic then handles the refresh as it does for a built-in provider. It first uses a newer login that another session saved, if there is one. Otherwise the request fails with:
+Atomic checks whether another session saved a newer login first. If not, the request fails with:
 
-```
+```text
 OAuth refresh failed for corporate-ai: invalid_grant (Refresh token expired). The provider rejected the stored login; run /login corporate-ai to sign in again.
 ```
 
-The message shows only the provider ID, the error code (or `HTTP <status>` when there is none), and the description. Pass the stored tokens as the third argument: a description that contains one of them, contains a URL, or is too long is left out. Never put tokens or request bodies in the code or description.
+The message displays only the provider ID, error code (or `HTTP <status>`), and description. Pass stored tokens as the third argument so Atomic strips any description that leaks a token, contains a URL, or is too long.
 
-Atomic also treats these errors from `refreshToken` as a rejected login, including when they are the `cause` of the error you throw. The rejected-login codes are the ones the built-in providers use: `invalid_grant`, `refresh_token_expired`, `refresh_token_reused`, and `refresh_token_invalidated`.
+Atomic also recognizes rejected logins thrown as plain errors or wrapped in `cause` when they match built-in rejection codes (`invalid_grant`, `refresh_token_expired`, `refresh_token_reused`, `refresh_token_invalidated`) or HTTP 401:
 
-- an error whose `error` or `code` property is a rejected-login code, such as openid-client's response errors; an `error_description` property supplies the description
-- an error whose `body`, `data`, `response.data`, or `response.body` holds an OAuth error response with a rejected-login code in `error`, `error.code`, or `code`, as an object or JSON text, as HTTP clients such as axios attach it; `error_description` or `error.message` supplies the description
-- an error whose `status`, `statusCode`, `response.status`, or `response.statusCode` is 401, as HTTP clients such as axios and got report it
-- an error message that contains a rejected-login code, alone or in an OAuth error response, as the built-in providers report it
+- Errors with `error` or `code` set to a rejected-login code (`error_description` supplies the description).
+- Errors whose `body`, `data`, `response.data`, or `response.body` carries a rejected-login code in `error`, `error.code`, or `code` (object or JSON string).
+- Errors with `status`, `statusCode`, `response.status`, or `response.statusCode` equal to `401`.
+- Error messages containing a rejected-login code.
 
-Other failures are reported as `OAuth refresh failed for <provider>: <message>` without asking the user to sign in again, because a retry may succeed. These include a 5xx status, a network error, and other OAuth error codes such as `invalid_client`, `invalid_request`, or `server_error`.
+Other failures (HTTP 5xx, network failures, or OAuth errors such as `invalid_client`, `invalid_request`, or `server_error`) report `OAuth refresh failed for <provider>: <message>` without prompting for re-login.
 
 ## Dynamic model catalog refresh
 
-Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the model picker's bounded asynchronous refresh, independently of authentication completion:
+Providers whose model lists change at runtime can implement `refreshModels(context)`. Atomic calls it during the model picker's bounded asynchronous refresh independently of login completion:
 
 ```typescript
-await pi.registerProvider("corporate-ai", {
+await atomic.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
   api: "openai-responses",
   apiKey: "$CORPORATE_AI_KEY",
   models: cachedModels,
-  async refreshModels({ signal, force, credential, store }) {
-    const models = await fetchCorporateModels({ signal, force, credential });
-    await store.write({ models, checkedAt: Date.now() });
-    return models;
+  async refreshModels({ allowNetwork, signal, force, credential }) {
+    if (!allowNetwork) return cachedModels;
+    return await fetchCorporateModels({ signal, force, credential });
   }
 });
 ```
 
-The current catalog stays readable while refresh is pending. Successful provider results are applied independently; a provider that fails, times out, or observes an aborted `signal` retains its previous list. Use the provider-scoped `store` only when the catalog should persist across sessions.
+Legacy `ProviderConfig.refreshModels(context)` returns mixed-operation `ProviderModelConfig[]` definitions that replace that registration's live models. A native `Provider` registered with `atomic.registerProvider(provider)` calls `await context.publish({ persist, update })` to persist an optional `ModelsStoreEntry` and install provider-owned model state, then returns the latest list from `getModels()` (or `getAllModels()` for mixed-operation providers).
+
+The existing catalog stays usable while a refresh runs. Each provider's refresh settles independently; if one fails, times out, or sees an aborted `signal`, it keeps its previous list. Pass `persist` to `context.publish()` only when the catalog should persist across sessions in `models-store.json`.
 
 ### OAuthLoginCallbacks
 
-The `callbacks` object provides three ways to authenticate:
+`callbacks` exposes three user-interaction methods:
 
 ```typescript
 interface OAuthLoginCallbacks {
@@ -168,16 +172,16 @@ interface OAuthLoginCallbacks {
 }
 ```
 
-In `/login`, press Enter (`tui.select.confirm`) to open the device-login URL and copy the code, or log in manually. Providers can disable either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false` in `onDeviceCode` or native `AuthEvent` notifications.
+In `/login`, pressing Enter (`tui.select.confirm`) opens the device verification URL and copies the code by default. Disable either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false` in `onDeviceCode` or native `AuthEvent` notifications.
 
 ### OAuthCredentials
 
-Credentials are persisted in `~/.atomic/agent/auth.json` (legacy `~/.pi/agent/auth.json` may be read for compatibility):
+OAuth credentials save to `~/.atomic/agent/auth.json` (Atomic may also read legacy `~/.pi/agent/auth.json`):
 
 ```typescript
 interface OAuthCredentials {
-  refresh: string;   // Refresh token (for refreshToken())
-  access: string;    // Access token (returned by getApiKey())
+  refresh: string;   // Refresh token passed to refreshToken()
+  access: string;    // Access token returned by getApiKey()
   expires: number;   // Expiration timestamp in milliseconds
 }
 ```
