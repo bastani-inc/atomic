@@ -20,7 +20,11 @@ import TurndownService from "turndown";
 import { Agent, type Dispatcher, request as undiciRequest } from "undici";
 import { getArtifactManager } from "./artifacts.ts";
 import { extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
+import { isReadableUrlPath, repairCollapsedScheme } from "./readable-url-path.ts";
 import type { TruncationResult } from "./truncate.ts";
+
+export { isReadableUrlPath, repairCollapsedScheme } from "./readable-url-path.ts";
+
 import { ipFamily, isPrivateIpAddress, normalizeIpLiteralHost } from "./url-ip-guards.ts";
 
 export const FETCH_DEFAULT_MAX_LINES = 300;
@@ -73,15 +77,6 @@ function getTurndown(): TurndownService {
 	if (!turndown)
 		turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
 	return turndown;
-}
-
-export function repairCollapsedScheme(url: string): string {
-	return url.replace(/^(https?):\/([^/])/i, "$1://$2");
-}
-
-export function isReadableUrlPath(readPath: string): boolean {
-	const repaired = repairCollapsedScheme(readPath);
-	return /^https?:\/\//i.test(repaired) || /^www\./i.test(readPath);
 }
 
 function normalizeUrlForCache(url: string): string {
