@@ -55,13 +55,14 @@ type NativeProcessStart = { readonly processCreationTime?: (pid: number) => stri
 let nativeProcessStart: NativeProcessStart | null | undefined;
 
 /**
- * When Windows process `pid` was created, read by Atomic's native module without starting a process; undefined elsewhere,
- * or where that module cannot be loaded or the process cannot be read (it is gone, or this process may not query it).
- * The native module is the one package the broker loads: it ships beside the broker in every layout, and is loaded only
- * here, inside a `try`. Read synchronously: the broker announces itself before it loads anything else.
+ * When process `pid` was created, read by Atomic's native module without starting a process: on Windows its creation
+ * time, on macOS its start to the microsecond, both as 100-nanosecond intervals since 1601. Undefined elsewhere, or where
+ * that module cannot be loaded or does not read it, or the process cannot be read (it is gone, or this process may not
+ * query it). The native module is the one package the broker loads: it ships beside the broker in every layout, and is
+ * loaded only here, inside a `try`. Read synchronously: the broker announces itself before it loads anything else.
  */
-export function windowsProcessCreationTime(pid: number): string | undefined {
-	if (process.platform !== "win32") return undefined;
+export function processCreationTimeOf(pid: number): string | undefined {
+	if (process.platform !== "win32" && process.platform !== "darwin") return undefined;
 	if (nativeProcessStart === undefined) {
 		try {
 			nativeProcessStart = createRequire(import.meta.url)("@bastani/atomic-natives") as NativeProcessStart;
@@ -77,9 +78,9 @@ export function windowsProcessCreationTime(pid: number): string | undefined {
 	}
 }
 
-/** When this process was created, as Windows records it; undefined elsewhere, or where it cannot be read. */
+/** When this process was created, as {@link processCreationTimeOf} reads it. */
 function ownCreationTime(): string | undefined {
-	return windowsProcessCreationTime(process.pid);
+	return processCreationTimeOf(process.pid);
 }
 
 /**
