@@ -11,7 +11,6 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - With multi-node routing, a session that took back its own Intercom ID without the hand-over its broker gave it for the move (for example, after Atomic restarted during the move) is now told at once that its answer to an ask sent to its earlier ID cannot be delivered. It was told to try again shortly for as long as 10 minutes after any broker went down, although no retry could succeed. The refusal is the final one (`Pending question route does not authorize this public reply`), so the ask also leaves `pending`.
 - The Intercom broker drops the reply routes it keeps for a released subagent's unanswered asks once the session that launched the subagent has been gone for a week, as it drops the asks it keeps for any session that has been away that long. Before, a broker kept them for as long as it ran, and enough of them made later released subagents' asks fail at once with "the Intercom broker's released-subagent reply routes are full".
 
-
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added
