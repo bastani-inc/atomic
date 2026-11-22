@@ -18,9 +18,13 @@ import { parseArgs } from "../src/cli/args.js";
 import { ENV_AGENT_DIR, ENV_SESSION_DIR } from "../src/config.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
+import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { resolveSessionStore, type SessionStorageOptions } from "../src/core/session-storage.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { StorageSchemaVersionError } from "../src/core/storage/errors.js";
+import { SessionConflictError, SessionNotFoundError } from "../src/core/storage/session/errors.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "../src/core/storage/session/session-summary.ts";
 import type { SessionStore } from "../src/core/storage/session/types.js";
@@ -445,6 +449,103 @@ describe("legacy JSONL sessions in the default store", () => {
 
 		assert.deepEqual(again, first);
 		assert.deepEqual(convertedIds(), [ids.v1]);
+	});
+
+	it("converts a legacy session whose first use is a write, and adds the write after its entries", async () => {
+		const { paths } = writeAllFormats();
+		const legacy = await JsonlSessionStore.withFileReader(
+			paths.v3,
+			async (store, id) => (await store.load(id)).entries,
+		);
+		const added: SessionEntry = {
+			type: "message",
+			id: "c0000001",
+			parentId: legacy.at(-1)?.id ?? null,
+			timestamp: "2025-08-02T10:00:00.000Z",
+			message: { role: "user", content: "written before it was opened", timestamp: 1 },
+		};
+
+		await withDefaultStore((store) => store.append(ids.v3, [added], { expectSeq: legacy.length }));
+
+		assert.deepEqual(convertedIds(), [ids.v3]);
+		const stored = await withDefaultStore(async (store) => (await store.load(ids.v3)).entries);
+		assert.deepEqual(stored.slice(0, -1), legacy);
+		assert.deepEqual(stored.at(-1), added);
+	});
+
+	it("refuses a write to a deleted legacy session as not found and converts nothing", async () => {
+		writeAllFormats();
+		await withDefaultStore((store) => store.delete(ids.v1));
+
+		await withDefaultStore((store) =>
+			assert.rejects(
+				store.append(
+					ids.v1,
+					[
+						{
+							type: "message",
+							id: "c0000002",
+							parentId: null,
+							timestamp: "2025-08-02T10:00:00.000Z",
+							message: { role: "user", content: "after delete", timestamp: 1 },
+						},
+					],
+					{ expectSeq: 0 },
+				),
+				SessionNotFoundError,
+			),
+		);
+		assert.deepEqual(convertedIds(), []);
+	});
+
+	/** Saves to a session the wrapped store holds, as `refuse` makes the wrapped store fail that save, and counts its calls. */
+	async function refusedSave(refuse: (inner: MemorySessionStore) => void) {
+		const inner = new MemorySessionStore();
+		const store = new LegacySessionStore(inner, { legacyDirectory, databasePath: join(root, "deletions.sqlite") });
+		try {
+			const created = await inner.create({ id: "held", version: 4, cwd, createdAt: "2025-08-02T10:00:00.000Z" }, []);
+			refuse(inner);
+			const appends = vi.spyOn(inner, "append");
+			const headerReads = vi.spyOn(inner, "readHeader");
+			const failure = await store
+				.append(
+					"held",
+					[
+						{
+							type: "message",
+							id: "c0000003",
+							parentId: null,
+							timestamp: "2025-08-02T10:00:01.000Z",
+							message: { role: "user", content: "refused", timestamp: 1 },
+						},
+					],
+					{ expectSeq: created.lastSeq + 1 },
+				)
+				.then(
+					() => undefined,
+					(error: Error) => error,
+				);
+			return { failure, appends: appends.mock.calls.length, headerReads: headerReads.mock.calls.length };
+		} finally {
+			await store.close();
+		}
+	}
+
+	it("fails a conflicting write to a session the database holds with its conflict, at once", async () => {
+		const { failure, appends, headerReads } = await refusedSave(() => {});
+
+		assert.ok(failure instanceof SessionConflictError, String(failure));
+		assert.deepEqual({ appends, headerReads }, { appends: 1, headerReads: 0 });
+	});
+
+	it("fails a write the database refuses for its schema with that refusal, at once", async () => {
+		const newer = new StorageSchemaVersionError("sessions", 99, 2);
+		const { failure, appends, headerReads } = await refusedSave((inner) => {
+			vi.spyOn(inner, "append").mockRejectedValueOnce(newer);
+		});
+
+		assert.equal(failure, newer);
+		assert.deepEqual({ appends, headerReads }, { appends: 1, headerReads: 0 });
 	});
 
 	it("does not list a legacy session again after it is deleted", async () => {
