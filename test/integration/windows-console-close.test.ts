@@ -23,6 +23,16 @@ const ENDLESS_HANDLER_WORK_MS = 10 * CLI_TIMEOUT_MS;
 const CONSOLE_CLOSED_EXIT_CODE = 0xc000013a;
 /** How long Windows lets a process run after its console was closed before it ends the process itself. */
 const WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS = 5_000;
+/** Atomic's own bound on its shutdown once it has proof the console closed, inside Windows' timeout. */
+const CONSOLE_CLOSED_SHUTDOWN_MS = WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS - 1_000;
+/**
+ * The exit's own work after that bound on a loaded runner: ending what Atomic started, then its exit handlers. The exit
+ * is measured from Atomic's first proof of the close, the start of its shutdown phase, by its own clock. Measured from
+ * the harness's close, a starved runner also counts the time until Atomic was scheduled and read its console's end,
+ * which no bound of Atomic's can cover; Windows itself counts from each process's own notice, which reaches the host
+ * after the engine's.
+ */
+const EXIT_HEADROOM_MS = 3_000;
 /** Longer than a killed process takes to be gone, however loaded the machine. */
 const PROCESS_GONE_MS = 5_000;
 
@@ -128,6 +138,22 @@ export default (pi) => {
 	}
 }
 
+/**
+ * Atomic ended itself, as its record of its shutdown phase, written as it exits, shows, within its console-close bound
+ * and the exit's headroom from its first proof of the close.
+ */
+function assertExitedWithinBound(closed: {
+	readonly records: readonly LogRecord[];
+	readonly run: ClosedConsoleRun;
+}): void {
+	const shutdown = delayOf(closed.records, "host", "shutdown");
+	assert.ok(shutdown, `Atomic did not end itself (it exited ${closed.run.exitedAfterMs} ms after the close)`);
+	assert.ok(
+		shutdown.durationMs < CONSOLE_CLOSED_SHUTDOWN_MS + EXIT_HEADROOM_MS,
+		`Atomic exited ${shutdown.durationMs} ms after it learned the console closed, ${closed.run.exitedAfterMs} ms after the close`,
+	);
+}
+
 // Only Windows has a console that is closed this way; Linux and macOS are covered by the terminal tests (#6104).
 describe.skipIf(process.platform !== "win32")("closing the Windows console", () => {
 	test(
@@ -144,10 +170,7 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 				`the handler ran once, in the engine, told that the session was ended for it\n${closed.run.screen}`,
 			);
 			assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
-			assert.ok(
-				closed.run.exitedAfterMs !== undefined && closed.run.exitedAfterMs < WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS,
-				`Atomic exited ${closed.run.exitedAfterMs} ms after the close`,
-			);
+			assertExitedWithinBound(closed);
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
 			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 			assert.ok(delayOf(closed.records, "engine", "shutdown"), "the engine wrote its shutdown record");
@@ -162,6 +185,7 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 
 			assert.deepEqual(closed.calls, [{ pid: closed.enginePid, reason: "quit", fromSignal: true, finished: false }]);
 			assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
+			assertExitedWithinBound(closed);
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
 			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 		},
