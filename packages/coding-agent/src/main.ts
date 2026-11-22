@@ -188,6 +188,7 @@ import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./
 import { NativeModuleUnavailableError, nativeModuleProblem, nativeModuleUnavailable } from "./utils/native-module.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
+export { prewarmDefaultModelApi } from "./core/model-api-prewarm.ts";
 export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
