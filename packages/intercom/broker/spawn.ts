@@ -1271,9 +1271,10 @@ function foundBrokerStart(found: BrokerProcess): string | undefined {
 function lockProcessGone(line: string, readStart: (pid: number) => string | undefined): boolean {
   const pid = Number.parseInt(line, 10);
   if (!isProcessAlive(pid)) return true;
+  if (!line.includes(" ")) return false;
   // A start in a form this reader does not recognise is read as none recorded: the pid alone decides.
   const recorded = recognisedProcessStart(line.slice(line.indexOf(" ") + 1));
-  if (!line.includes(" ") || recorded === undefined || recorded === "") return false;
+  if (recorded === undefined || recorded === "") return false;
   const current = readStart(pid);
   return current !== undefined && current !== recorded;
 }

@@ -90,7 +90,10 @@ const MAX_CREATION_TIME = 18_446_744_073_709_551_615n;
  */
 export function recognisedProcessStart(recorded: string | undefined): string | undefined {
 	if (recorded === undefined || (process.platform !== "win32" && process.platform !== "darwin")) return recorded;
-	return CREATION_TIME_PATTERN.test(recorded) && BigInt(recorded) <= MAX_CREATION_TIME ? recorded : undefined;
+	// At most 20 digits, as 2^64 - 1 has, before it is parsed: a longer one is never a start.
+	return recorded.length <= 20 && CREATION_TIME_PATTERN.test(recorded) && BigInt(recorded) <= MAX_CREATION_TIME
+		? recorded
+		: undefined;
 }
 
 /**

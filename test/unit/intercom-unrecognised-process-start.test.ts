@@ -14,7 +14,7 @@ import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helper
  * start in any other form, which no version writes there, proves nothing: the holder is judged as one recorded with no
  * start, by its pid alone, and never taken over or signalled because of it.
  */
-const UNRECOGNISED = ["Sun Nov 22 07:05:57 2026", "zz-9", "0133998", "18446744073709551616"];
+const UNRECOGNISED = ["Sun Nov 22 07:05:57 2026", "zz-9", "0133998", "18446744073709551616", "9".repeat(100_000)];
 
 const tempDir = makeTempDirectory("unrecognised-start-");
 afterAll(() => removeTempDirectory(tempDir));
