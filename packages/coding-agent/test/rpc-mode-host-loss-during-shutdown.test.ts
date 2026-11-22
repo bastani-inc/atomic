@@ -10,6 +10,10 @@ const rpcIo = vi.hoisted(() => ({
 	watchesHostLoss: true,
 	/** The channel state the exit's check for the host's loss reads, once installed. */
 	channelClosed: undefined as (() => boolean) | undefined,
+	/** What the engine wrote to its host. */
+	written: [] as string[],
+	/** Its input's line readers: each hands on a line only while attached, as the real reader's listener does. */
+	readers: [] as { onLine: (line: string) => void; attached: boolean }[],
 }));
 
 vi.mock("../src/core/output-guard.js", () => ({
@@ -17,7 +21,9 @@ vi.mock("../src/core/output-guard.js", () => ({
 	rawStdoutWriteFailed: () => false,
 	takeOverStdout: vi.fn(),
 	waitForRawStdoutBackpressure: vi.fn(async () => {}),
-	writeRawStdout: () => {},
+	writeRawStdout: (line: string) => {
+		rpcIo.written.push(line);
+	},
 }));
 
 vi.mock("../src/utils/interactive-engine-env.ts", async (importOriginal) => {
@@ -56,9 +62,25 @@ vi.mock("../src/modes/interactive-engine/engine-quit-intent.ts", async (importOr
 }));
 
 vi.mock("../src/modes/rpc/jsonl.js", () => ({
-	attachJsonlLineReader: vi.fn(() => () => {}),
+	attachJsonlLineReader: vi.fn((_stream: NodeJS.ReadableStream, onLine: (line: string) => void) => {
+		const reader = { onLine, attached: true };
+		rpcIo.readers.push(reader);
+		return () => {
+			reader.attached = false;
+		};
+	}),
 	serializeJsonLine: (value: unknown) => `${JSON.stringify(value)}\n`,
 }));
+
+/** A line of input arriving now. */
+function deliver(line: string): void {
+	for (const reader of rpcIo.readers) if (reader.attached) reader.onLine(line);
+}
+
+/** Whether the engine took the command with `id`: an engine child tells its host at once. */
+function accepted(id: string): boolean {
+	return rpcIo.written.some((line) => line.includes(`"requestId":"${id}"`));
+}
 
 type Listener = (...args: never[]) => void;
 
@@ -67,6 +89,8 @@ async function signalledEngine(options: { engineChild?: boolean; watchesHostLoss
 	rpcIo.engineChild = options.engineChild ?? true;
 	rpcIo.watchesHostLoss = options.watchesHostLoss ?? true;
 	rpcIo.channelClosed = undefined;
+	rpcIo.written = [];
+	rpcIo.readers = [];
 	const harness: Harness = await createHarness();
 	let finishDisposal!: () => void;
 	const disposal = new Promise<void>((resolve) => {
@@ -108,6 +132,11 @@ async function signalledEngine(options: { engineChild?: boolean; watchesHostLoss
 
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => assert.ok(bound.mock.calls.length > 0 && signalHandlers.has("SIGTERM")));
+	if (options.engineChild ?? true) {
+		// The engine takes commands until its shutdown begins.
+		deliver(JSON.stringify({ id: "before-shutdown", type: "get_state" }));
+		await vi.waitFor(() => assert.ok(accepted("before-shutdown")));
+	}
 	signalHandlers.get("SIGTERM")?.();
 	await vi.waitFor(() => assert.equal(dispose.mock.calls.length, 1));
 
@@ -137,6 +166,20 @@ describe("an engine child stopped by its host's signal", () => {
 			engine.hostKilled();
 			await engine.exited();
 			assert.equal(rpcIo.channelClosed?.(), true, "the exit takes the channel to the host for open");
+		} finally {
+			engine.cleanup();
+		}
+	});
+
+	test("never handles a command that arrives after its shutdown began, though it reads its input to its end", async () => {
+		const engine = await signalledEngine();
+		try {
+			deliver(JSON.stringify({ id: "after-shutdown", type: "get_state" }));
+			engine.hostKilled();
+			await engine.exited();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(accepted("after-shutdown"), false, "the engine handled a command after its shutdown began");
+			assert.equal(engine.resumed(), true, "the engine stopped reading its input");
 		} finally {
 			engine.cleanup();
 		}
