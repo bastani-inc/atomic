@@ -687,7 +687,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (!header) throw new Error(`Session not found: ${id}`);
 		if (id === sources.currentSessionId) return { id, header };
 		const { cwd } = projectScope(target);
-		if (cwd === undefined || (await createSessionCwdMatcherAsync(cwd)(header.cwd))) return { id, header };
+		if (cwd === undefined || (await budget.race(createSessionCwdMatcherAsync(cwd)(header.cwd))))
+			return { id, header };
 		throw new Error(
 			`Session ${id} belongs to another project. History is limited to the current project unless the user asks for other projects.`,
 		);
