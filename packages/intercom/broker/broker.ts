@@ -514,6 +514,7 @@ class IntercomBroker {
     this.releasedAskerReplies.persistWith({
       kept: (question) => this.pendingQuestions.writeLive(question),
       removed: (question) => this.pendingQuestions.forgetLive([question]),
+      batch: (work) => this.pendingQuestions.batch(work),
     });
     this.releasedAskerReplies.refuseWith((route) => this.failRefusedReleasedRoute(route));
   }
