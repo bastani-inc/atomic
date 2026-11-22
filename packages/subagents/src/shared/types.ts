@@ -41,7 +41,8 @@ export interface TaskExecutionHooks {
 		leafId: string | null;
 		leafSeq?: number;
 	}): void;
-	toolResultsSaved?(toolCallIds: readonly string[]): void;
+	/** `late`: they were read in the notice of results that came after their calls were answered. */
+	toolResultsSaved?(toolCallIds: readonly string[], late?: boolean): void;
 	/** The child's session saved the notices of these finished background tasks held for it. */
 	noticesSaved?(completionIds: readonly string[]): void;
 	/**
