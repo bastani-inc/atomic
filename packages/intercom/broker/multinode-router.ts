@@ -1159,10 +1159,9 @@ export class MultiNodeRouter {
 			const now = elapsed();
 			// A broker that stalled past the claim's bound before its timer could fire moves it on no more.
 			if (expired || now >= deadline) return;
-			const next = Math.min(SESSION_ID_CLAIM_PROGRESS_CAP_MS, Math.max(deadline, now + SESSION_ID_CLAIM_BOUND_MS));
-			if (next <= deadline) return;
-			deadline = next;
+			deadline = Math.min(SESSION_ID_CLAIM_PROGRESS_CAP_MS, Math.max(deadline, now + SESSION_ID_CLAIM_BOUND_MS));
 			extended = true;
+			// Armed again even when the clocks read no time passed: the timers may follow other clocks than they do.
 			arm(Math.max(0, deadline - now));
 		};
 		const attempts = (async (): Promise<SessionIdClaim> => {

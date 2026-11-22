@@ -4242,6 +4242,11 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		contended = false,
 		/** The clocks the fake timers move besides themselves: a test may fake either, both or neither. */
 		clocks: FakeClocks = "performance",
+		/**
+		 * With neither clock faked: both read as when the claim started, but the wall clock reads one millisecond on from
+		 * when the exited broker's membership is read, as a real clock can tick between two steps and not the next.
+		 */
+		wallTicksOnRead = false,
 	) {
 		vi.useFakeTimers({ toFake: [...FAKE_TIMERS, ...FAKE_CLOCKS[clocks]] });
 		const shared = await cluster();
@@ -4256,11 +4261,18 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
 		});
 		const calls = { bind: 0, read: 0, retireBroker: 0 };
+		let wallTick = 0;
 		const slowly =
 			<A extends unknown[], R>(call: keyof typeof calls, answer: (...args: A) => Promise<R>) =>
 			(...args: A): Promise<R> =>
 				new Promise<R>((resolve, reject) => {
-					setTimeout(() => answer(...args).then(resolve, reject), latencies(call, calls[call]++));
+					setTimeout(
+						() => {
+							if (call === "read" && wallTicksOnRead) wallTick = 1;
+							answer(...args).then(resolve, reject);
+						},
+						latencies(call, calls[call]++),
+					);
 				});
 		const knownSessions = here.state.knownSessions;
 		const owners = knownSessions.owners!;
@@ -4285,6 +4297,12 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		vi.spyOn(owners, "retireBroker").mockImplementation(retireBroker);
 		let answered: SessionIdClaim | undefined;
 		const progress = { extendedMs: 0 };
+		if (wallTicksOnRead) {
+			const wall = Date.now();
+			const monotonic = performance.now();
+			vi.spyOn(Date, "now").mockImplementation(() => wall + wallTick);
+			vi.spyOn(performance, "now").mockReturnValue(monotonic);
+		}
 		void here.router
 			.claimSessionId(twin.info.id, twin.registrationReturnAddress!, undefined, undefined, progress)
 			.then((claim) => {
@@ -4335,6 +4353,25 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
 		},
 	);
+
+	test("a claim timed by neither clock keeps to its cap when the wall clock ticks once between two of its steps and not after (#5607)", async () => {
+		const step = SESSION_ID_CLAIM_BOUND_MS - 100;
+		const { calls, answer, progress } = await claimAfterExitWithSlowDatabase(
+			(call, nth) => (call === "bind" && nth === 0 ? 0 : step),
+			false,
+			"neither",
+			true,
+		);
+
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS - 1);
+		assert.equal(answer(), undefined, "giving the exited broker's ids up earned the claim a bound of its own");
+		await vi.advanceTimersByTimeAsync(1);
+
+		assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
+		assert.equal(progress.extendedMs, SESSION_ID_CLAIM_PROGRESS_CAP_MS - SESSION_ID_CLAIM_BOUND_MS);
+		await vi.advanceTimersByTimeAsync(4 * step);
+		assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
+	});
 
 	test.each(["performance", "date", "both"] as const)(
 		"a claim whose id a live broker took once the exited broker's ids were given up is answered held at once, not tried again past its bound, timed by %s (#5607)",
