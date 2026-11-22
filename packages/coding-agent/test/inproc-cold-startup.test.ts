@@ -477,35 +477,74 @@ describe("in-process cold startup highlight scheduling and API prewarm", () => {
 		}
 	});
 
-	it("enforces a hard max-deferral cap when the first provider request takes a long time to answer", async () => {
+	it("enforces a hard max-deferral cap only AFTER the first provider request has dispatched, never during slow deferred startup or slow pre-request hooks/OAuth/discovery", async () => {
 		vi.useFakeTimers();
-		const loadHighlightSpy = vi.spyOn(syntaxHighlight, "loadAllHighlightLanguages").mockResolvedValue();
-		const deferredGate = Promise.withResolvers<void>();
-		const neverResolves = new Promise<void>(() => {});
-		const { mode } = createInprocRunHarness({
-			deferredStartupGate: deferredGate.promise,
-			promptGate: neverResolves,
-			initialSubmission: { text: "slow provider" },
+		// Part A: slow deferred startup / trust dialog (> 2.2s) must NEVER trigger the deferral cap.
+		const loadHighlightSpyA = vi.spyOn(syntaxHighlight, "loadAllHighlightLanguages").mockResolvedValue();
+		const slowDeferredA = Promise.withResolvers<void>();
+		const harnessA = createInprocRunHarness({
+			deferredStartupGate: slowDeferredA.promise,
+			promptGate: Promise.resolve(),
+		});
+		void InteractiveMode.prototype.run.call(harnessA.mode as unknown as InteractiveMode);
+		await vi.advanceTimersByTimeAsync(2500);
+		assert.equal(
+			loadHighlightSpyA.mock.calls.length,
+			0,
+			"deferral cap must never fire while deferredStartupPending is true",
+		);
+		slowDeferredA.resolve();
+		await vi.advanceTimersByTimeAsync(200);
+		assert.equal(loadHighlightSpyA.mock.calls.length, 1, "warmup must run once slow deferred startup completes");
+		harnessA.mode.isShuttingDown = true;
+		InteractiveMode.prototype.stop.call(harnessA.mode as unknown as InteractiveMode);
+		loadHighlightSpyA.mockRestore();
+
+		// Part B: 2.2s pre-request phase (before_agent_start / OAuth / discovery / before_provider_request hook)
+		// must NEVER trigger the deferral cap before provider request dispatch; once dispatched, a slow 3s TTFT
+		// provider DOES trigger the hard cap within 1,200ms after dispatch.
+		const loadHighlightSpyB = vi.spyOn(syntaxHighlight, "loadAllHighlightLanguages").mockResolvedValue();
+		const deferredB = Promise.withResolvers<void>();
+		const dispatchGate = Promise.withResolvers<void>();
+		const neverResponds = new Promise<void>(() => {});
+		const harnessB = createInprocRunHarness({
+			deferredStartupGate: deferredB.promise,
+			promptGate: neverResponds,
+			initialSubmission: { text: "slow prereq then slow ttft" },
+			onPrompt: async () => {
+				// Simulate 2.2s before_agent_start / OAuth / before_provider_request hook before dispatch.
+				await dispatchGate.promise;
+				// Signal before-provider-request dispatch (fetch() just sent HTTP POST), then server stalls 3s+!
+				const { notifySessionProviderRequestDispatched } = await import("../src/core/provider-request-dispatch.ts");
+				notifySessionProviderRequestDispatched(harnessB.mode.session as object);
+				await neverResponds;
+			},
 		});
 
-		void InteractiveMode.prototype.run.call(mode as unknown as InteractiveMode);
-		// Cold deferred startup finishes at 600ms, then provider stalls silently for >2s.
+		void InteractiveMode.prototype.run.call(harnessB.mode as unknown as InteractiveMode);
 		await vi.advanceTimersByTimeAsync(600);
-		assert.equal(loadHighlightSpy.mock.calls.length, 0);
-		deferredGate.resolve();
-		await vi.advanceTimersByTimeAsync(200);
-		assert.equal(loadHighlightSpy.mock.calls.length, 0, "must still wait briefly after deferred startup");
-
-		// Advance past 500ms + hard max-deferral cap (total <= 1800ms after init) -> MUST fire!
-		await vi.advanceTimersByTimeAsync(1100);
+		deferredB.resolve();
+		// Advance 2,200ms while pre-request hook is still running -> MUST stay 0!
+		await vi.advanceTimersByTimeAsync(2200);
 		assert.equal(
-			loadHighlightSpy.mock.calls.length,
-			1,
-			"hard max-deferral cap must fire even if the first turn never emits streaming events",
+			loadHighlightSpyB.mock.calls.length,
+			0,
+			"warmup must never fire during a 2.2s pre-request hook before provider request dispatch",
 		);
 
-		mode.isShuttingDown = true;
-		InteractiveMode.prototype.stop.call(mode as unknown as InteractiveMode);
+		// Provider request now dispatches (before-provider-request -> fetch()), then provider stalls silently (slow TTFT).
+		dispatchGate.resolve();
+		await vi.advanceTimersByTimeAsync(200);
+		assert.equal(loadHighlightSpyB.mock.calls.length, 0, "must not fire synchronously on dispatch tick");
+		await vi.advanceTimersByTimeAsync(1100);
+		assert.equal(
+			loadHighlightSpyB.mock.calls.length,
+			1,
+			"hard max-deferral cap must fire within 1,200ms after provider request dispatch on a slow-TTFT provider",
+		);
+
+		harnessB.mode.isShuttingDown = true;
+		InteractiveMode.prototype.stop.call(harnessB.mode as unknown as InteractiveMode);
 	});
 
 	it("does not invoke the warmup runner when stop() is called synchronously before its microtask drains", async () => {

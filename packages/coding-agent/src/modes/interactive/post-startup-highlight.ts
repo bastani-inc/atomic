@@ -1,10 +1,12 @@
 /**
  * Typed state machine that schedules post-startup background work (such as
  * loading non-eager highlight.js grammars and cold compile-cache warmup) so it
- * never fires while deferred startup or the first prompt's request dispatch is
- * in flight, while guaranteeing bounded deferral across long streaming turns
- * and back-to-back turns on both isolated and in-process hosts.
+ * never fires while deferred startup or any pre-request phase of the first turn
+ * is in flight, while guaranteeing bounded deferral once the first provider
+ * request has dispatched or streaming has started.
  */
+import { onSessionProviderRequestDispatched } from "../../core/provider-request-dispatch.ts";
+import { runsInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 
 export type PostStartupHighlightState =
 	| "idle"
@@ -19,10 +21,10 @@ export type PostStartupHighlightState =
 export const POST_STARTUP_HIGHLIGHT_QUIET_MS = 150;
 
 /**
- * Hard upper bound on deferral from the moment the 500 ms post-startup timer enters
- * `waiting_for_gate`. Anchored once and never reset by later turns, so slow provider
- * TTFT or repeated rapid turns can never starve background highlight loading or
- * compile-cache warmup on either host.
+ * Hard upper bound on deferral once the first provider request has actually been
+ * dispatched (at `before-provider-request`) or streaming has started, and deferred
+ * startup is complete. Never armed while `deferredStartupPending` is set or any
+ * pre-request phase (hooks, OAuth refresh, model discovery, trust dialog) is running.
  */
 export const POST_STARTUP_MAX_DEFERRAL_MS = 1_200;
 
@@ -35,6 +37,7 @@ export interface PostStartupHighlightHost {
 	readonly isShuttingDown?: boolean;
 	readonly deferredStartupPending?: boolean;
 	readonly deferredStartupPromise?: Promise<void> | undefined;
+	readonly runtimeHost?: unknown;
 	readonly session?: {
 		subscribe?(listener: (event: StreamEventLike) => void): () => void;
 	};
@@ -45,10 +48,12 @@ type BackgroundWarmupRunner = (signal: AbortSignal) => Promise<void> | void;
 interface PostStartupHighlightController {
 	state: PostStartupHighlightState;
 	firstPromptPreflightDepth: number;
+	firstRequestDispatched: boolean;
 	firstPromptSettled: boolean;
 	quietTimer: ReturnType<typeof setTimeout> | undefined;
 	maxDeferralTimer: ReturnType<typeof setTimeout> | undefined;
 	unsubscribeStreaming: (() => void) | undefined;
+	unsubscribeDispatch: (() => void) | undefined;
 	abortController: AbortController | undefined;
 	runner: BackgroundWarmupRunner | undefined;
 }
@@ -61,10 +66,12 @@ function getOrCreateController(host: PostStartupHighlightHost): PostStartupHighl
 		controller = {
 			state: "idle",
 			firstPromptPreflightDepth: 0,
+			firstRequestDispatched: false,
 			firstPromptSettled: false,
 			quietTimer: undefined,
 			maxDeferralTimer: undefined,
 			unsubscribeStreaming: undefined,
+			unsubscribeDispatch: undefined,
 			abortController: undefined,
 			runner: undefined,
 		};
@@ -98,11 +105,37 @@ function clearStreamingSubscription(controller: PostStartupHighlightController):
 	}
 }
 
+function clearDispatchSubscription(controller: PostStartupHighlightController): void {
+	if (controller.unsubscribeDispatch) {
+		try {
+			controller.unsubscribeDispatch();
+		} catch {
+			// Best-effort cleanup.
+		}
+		controller.unsubscribeDispatch = undefined;
+	}
+}
+
+function isIsolatedHost(host: PostStartupHighlightHost): boolean {
+	return runsInteractiveEngine(host.runtimeHost as Parameters<typeof runsInteractiveEngine>[0]);
+}
+
+function isDeferredStartupActive(host: PostStartupHighlightHost): boolean {
+	return host.deferredStartupPending === true || host.deferredStartupPromise !== undefined;
+}
+
 function isGateBlocked(host: PostStartupHighlightHost, controller: PostStartupHighlightController): boolean {
+	// Isolated hosts run pre-request work and provider fetches in a separate engine process;
+	// keep their host postStartupTimer firing at 500 ms just as before.
+	if (isIsolatedHost(host)) return false;
+	return (!controller.firstPromptSettled && controller.firstPromptPreflightDepth > 0) || isDeferredStartupActive(host);
+}
+
+function canArmMaxDeferralCap(host: PostStartupHighlightHost, controller: PostStartupHighlightController): boolean {
 	return (
-		(!controller.firstPromptSettled && controller.firstPromptPreflightDepth > 0) ||
-		host.deferredStartupPending === true ||
-		host.deferredStartupPromise !== undefined
+		!host.isShuttingDown &&
+		!isDeferredStartupActive(host) &&
+		(controller.firstRequestDispatched || controller.firstPromptSettled)
 	);
 }
 
@@ -119,6 +152,7 @@ function startBackgroundWarmup(host: PostStartupHighlightHost, controller: PostS
 	clearQuietTimer(controller);
 	clearMaxDeferralTimer(controller);
 	clearStreamingSubscription(controller);
+	clearDispatchSubscription(controller);
 	if (host.isShuttingDown) {
 		controller.state = "stopped";
 		return;
@@ -157,9 +191,10 @@ function startBackgroundWarmup(host: PostStartupHighlightHost, controller: PostS
 		);
 }
 
-function armMaxDeferralCap(host: PostStartupHighlightHost, controller: PostStartupHighlightController): void {
-	// Anchor the hard deferral cap once on entering waiting_for_gate; never reset it on later turns.
-	if (controller.maxDeferralTimer !== undefined) return;
+function maybeArmMaxDeferralCap(host: PostStartupHighlightHost, controller: PostStartupHighlightController): void {
+	// Anchor the hard deferral cap at most once, and ONLY after deferred startup has finished
+	// and the first provider request has dispatched or streaming/settlement has occurred.
+	if (controller.maxDeferralTimer !== undefined || !canArmMaxDeferralCap(host, controller)) return;
 	const timer = setTimeout(() => {
 		if (controller.maxDeferralTimer === timer) controller.maxDeferralTimer = undefined;
 		if (host.isShuttingDown) {
@@ -177,6 +212,7 @@ function armMaxDeferralCap(host: PostStartupHighlightHost, controller: PostStart
 function scheduleQuietRearm(host: PostStartupHighlightHost, controller: PostStartupHighlightController): void {
 	clearQuietTimer(controller);
 	controller.state = "quiet_rearm";
+	maybeArmMaxDeferralCap(host, controller);
 	const timer = setTimeout(() => {
 		if (controller.quietTimer === timer) controller.quietTimer = undefined;
 		if (controller.state !== "quiet_rearm") return;
@@ -186,7 +222,7 @@ function scheduleQuietRearm(host: PostStartupHighlightHost, controller: PostStar
 		}
 		if (isGateBlocked(host, controller)) {
 			controller.state = "waiting_for_gate";
-			armMaxDeferralCap(host, controller);
+			maybeArmMaxDeferralCap(host, controller);
 			return;
 		}
 		startBackgroundWarmup(host, controller);
@@ -200,8 +236,12 @@ function maybeRearmFromGate(host: PostStartupHighlightHost, controller: PostStar
 		stopPostStartupHighlightWarmup(host);
 		return;
 	}
-	if (controller.state === "waiting_for_gate" && !isGateBlocked(host, controller)) {
-		scheduleQuietRearm(host, controller);
+	if (controller.state === "waiting_for_gate") {
+		if (!isGateBlocked(host, controller)) {
+			scheduleQuietRearm(host, controller);
+		} else {
+			maybeArmMaxDeferralCap(host, controller);
+		}
 	}
 }
 
@@ -215,9 +255,11 @@ export function armPostStartupHighlightWarmup(host: PostStartupHighlightHost, ru
 	clearQuietTimer(controller);
 	clearMaxDeferralTimer(controller);
 	clearStreamingSubscription(controller);
+	clearDispatchSubscription(controller);
 	controller.abortController?.abort();
 	controller.abortController = undefined;
 	controller.firstPromptPreflightDepth = 0;
+	controller.firstRequestDispatched = false;
 	controller.firstPromptSettled = false;
 	controller.runner = runner;
 	controller.state = host.isShuttingDown ? "stopped" : "timer_armed";
@@ -234,10 +276,26 @@ export function onPostStartupTimerFired(host: PostStartupHighlightHost): void {
 	if (controller.state !== "timer_armed") return;
 	if (isGateBlocked(host, controller)) {
 		controller.state = "waiting_for_gate";
-		armMaxDeferralCap(host, controller);
+		maybeArmMaxDeferralCap(host, controller);
 		return;
 	}
 	startBackgroundWarmup(host, controller);
+}
+
+/**
+ * Called when the first provider request has reached the `before-provider-request`
+ * dispatch point (all pre-request phases — deferred startup, hooks, OAuth refresh,
+ * model discovery — are done and the transport request is leaving). Now it is safe
+ * to arm the hard deferral cap for slow-TTFT providers.
+ */
+export function notifyPostStartupProviderRequestDispatched(host: PostStartupHighlightHost): void {
+	const controller = controllers.get(host);
+	if (!controller || controller.firstRequestDispatched) return;
+	controller.firstRequestDispatched = true;
+	clearDispatchSubscription(controller);
+	if (controller.state === "waiting_for_gate" || controller.state === "quiet_rearm") {
+		maybeArmMaxDeferralCap(host, controller);
+	}
 }
 
 /**
@@ -248,18 +306,23 @@ export function onPostStartupTimerFired(host: PostStartupHighlightHost): void {
 export function notifyPostStartupPromptStreaming(host: PostStartupHighlightHost): void {
 	const controller = controllers.get(host);
 	if (!controller || controller.firstPromptSettled) return;
+	controller.firstRequestDispatched = true;
 	controller.firstPromptSettled = true;
 	controller.firstPromptPreflightDepth = 0;
 	clearStreamingSubscription(controller);
+	clearDispatchSubscription(controller);
 	maybeRearmFromGate(host, controller);
 }
 
 /**
  * Marks the start of a prompt turn; returns an idempotent release function to call in `finally`.
- * Only the first turn's request dispatch (before assistant streaming starts or the turn finishes)
- * holds the gate; subsequent turns never block warmup or reset the quiet timer.
+ * On isolated hosts and on turns after the first turn settles, this is a no-op so subsequent
+ * turns never block warmup or reset the quiet timer.
  */
 export function beginPostStartupPromptTurn(host: PostStartupHighlightHost): () => void {
+	if (isIsolatedHost(host)) {
+		return () => {};
+	}
 	const controller = getOrCreateController(host);
 	if (controller.firstPromptSettled) {
 		return () => {};
@@ -268,13 +331,22 @@ export function beginPostStartupPromptTurn(host: PostStartupHighlightHost): () =
 	if (controller.state === "quiet_rearm") {
 		clearQuietTimer(controller);
 		controller.state = "waiting_for_gate";
-		armMaxDeferralCap(host, controller);
+		maybeArmMaxDeferralCap(host, controller);
 	}
 	if (controller.unsubscribeStreaming === undefined && typeof host.session?.subscribe === "function") {
 		controller.unsubscribeStreaming = host.session.subscribe((event) => {
 			if (isPromptStreamingEvent(event)) {
 				notifyPostStartupPromptStreaming(host);
 			}
+		});
+	}
+	if (
+		controller.unsubscribeDispatch === undefined &&
+		host.session !== undefined &&
+		!controller.firstRequestDispatched
+	) {
+		controller.unsubscribeDispatch = onSessionProviderRequestDispatched(host.session, () => {
+			notifyPostStartupProviderRequestDispatched(host);
 		});
 	}
 	let released = false;
@@ -284,6 +356,7 @@ export function beginPostStartupPromptTurn(host: PostStartupHighlightHost): () =
 		controller.firstPromptSettled = true;
 		controller.firstPromptPreflightDepth = 0;
 		clearStreamingSubscription(controller);
+		clearDispatchSubscription(controller);
 		maybeRearmFromGate(host, controller);
 	};
 }
@@ -302,6 +375,7 @@ export function stopPostStartupHighlightWarmup(host: PostStartupHighlightHost): 
 	clearQuietTimer(controller);
 	clearMaxDeferralTimer(controller);
 	clearStreamingSubscription(controller);
+	clearDispatchSubscription(controller);
 	controller.abortController?.abort();
 	controller.abortController = undefined;
 	controller.state = "stopped";
