@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- With multi-node routing, a session answering a sender outside its groups can no longer send a fourth answer after that sender's latest message when the shared database failed to record that message as delivered and it was handed to the session again. Answers the session sent since the message first reached it now count toward that message's 3.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added
