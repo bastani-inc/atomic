@@ -12,6 +12,7 @@
 - With Git 2.30 to 2.32, a named worktree (`worktree: { branch }`) is created instead of failing with `unknown option 'reason'`. With those versions, one whose creation was cut off, for example by a killed Atomic, is reported as busy after a 30-second wait rather than at once.
 - The feedback skill's privacy scrub no longer takes seconds, or minutes on a busy machine, on long text that alternates letters or digits with `.`, `-`, `%` or `+`, such as `a-a-a-...`: 64 KiB took 4 s. It finds the same emails as before, in one pass.
 - Creating a named worktree (`worktree: { branch }`) on a busy machine no longer fails with `failed to read .../worktrees/<name>/commondir` while Git is still registering another worktree. The add makes up to five attempts, and its own Git commands no longer use up the time it waits for that registration.
+- Long subagent task prompts with repeated `[Write to:` markers or shell commands with repeated `sed`, `perl`, `open(` or blank lines no longer slow the status display or command progress checks. Output targets, prompt wrappers and in-place file-edit commands are read in one pass with the same results as before.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
