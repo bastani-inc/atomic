@@ -1459,6 +1459,91 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * #5607: the binding write of a registration and what it decides for the session: false when it takes nothing more
+	 * (its id is another session's across nodes, or another live registration of it owns it).
+	 */
+	private async bindRegistration(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		owner: KnownSessionOwner,
+		reclaim: SessionIdReclaimRequest | undefined,
+		grant: SessionIdGrant | undefined,
+	): Promise<boolean> {
+		// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
+		const confirmed = clockMark();
+		let binding: KnownSessionBindResult;
+		if (reclaim !== undefined) this.decidingTokens.add(reclaim.token);
+		try {
+			binding =
+				reclaim === undefined
+					? await this.state.knownSessions.bind(
+							session.info.id,
+							session.registrationReturnAddress ?? "",
+							KNOWN_SESSION_RETENTION_MS,
+							undefined,
+							owner,
+						)
+					: await this.reclaimOrBind(session, reclaim, owner);
+		} catch (error) {
+			// #5607: the id this session was given (and answered under) is not confirmed its own: it takes it at the
+			// next check, as a session registered while routing was opening does.
+			if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry) {
+				entry.adoption = adoption(owner.token);
+				if (grant?.alias !== undefined)
+					entry.pendingAlias = {
+						alias: grant.alias,
+						...(grant.aliasToken === undefined ? {} : { aliasToken: grant.aliasToken }),
+						...(grant.recovery === undefined ? {} : { recovery: grant.recovery }),
+					};
+				// A lapsed hand-over whose id its binding write did not keep leaves it awaiting that id all the same.
+				if (reclaim?.recovery !== undefined && session.info.id !== reclaim.sessionId)
+					entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
+			}
+			throw error;
+		} finally {
+			if (reclaim !== undefined) this.decidingTokens.delete(reclaim.token);
+		}
+		if (binding.status === "refused") {
+			entry.unbound = true;
+			return false;
+		}
+		// #5607: another live registration of the same session owns the id (it took it once this registration's
+		// went unrenewed): that registration keeps it, and this one reconnects for a fresh id.
+		if (binding.status === "held") {
+			this.lostSessionId(session, entry);
+			return false;
+		}
+		if (binding.status === "bound" && this.state.knownSessions.owners !== undefined) {
+			entry.owner = {
+				intercomSessionId: session.info.id,
+				token: owner.token,
+				confirmed: laterMark(entry.owner?.confirmed, confirmed),
+			};
+			// #5607: the id it had while it awaited this one stays an alias of it, owned the same way.
+			const alias = grant?.alias ?? reclaim?.alias;
+			const aliasToken = grant?.alias === undefined ? reclaim?.aliasToken : grant.aliasToken;
+			if (alias !== undefined && (reclaim === undefined || session.info.id === reclaim.sessionId)) {
+				const recovery = grant?.alias === undefined ? reclaim?.recovery : grant.recovery;
+				entry.pendingAlias = {
+					alias,
+					...(aliasToken === undefined ? {} : { aliasToken }),
+					...(recovery === undefined ? {} : { recovery }),
+				};
+				await this.takePendingAlias(session, entry);
+			}
+		}
+		// #5607: a hand-over whose id its binding write did not keep gives its alias back too, unless a lapsed
+		// hand-over still keeps it: the session then awaits the id with it, as one whose claim was held does.
+		if (reclaim !== undefined && session.info.id !== reclaim.sessionId) {
+			if (reclaim.recovery !== undefined && this.state.knownSessions.owners !== undefined)
+				entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
+			else if (reclaim.alias !== undefined && reclaim.aliasToken !== undefined)
+				await this.releaseOwner({ intercomSessionId: reclaim.alias, token: reclaim.aliasToken });
+		}
+		return true;
+	}
+
+	/**
 	 * #5607: the binding write of a registration whose claim of its preferred id went unanswered, in the slot today's
 	 * fresh-id binding takes. One write keeps the preferred id when the binding is still the one that claim wrote, no
 	 * other broker presents a session of its return address, in any group, and no other live registration owns it;
@@ -2247,6 +2332,15 @@ export class MultiNodeRouter {
 			entry.adoption = adoption(owner.token);
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
+		// #5607: an unanswered claim's binding write decides the session's id as the registration begins, not behind the
+		// departure of the session's earlier connection here, which may outlast the presence wait: what it decides from
+		// (its claim's own write, the presence of the session on other brokers, the id's owner) is none of that departure's
+		// to change. What the registration records of the session, and its presence, still follow the departure (below).
+		const decided =
+			reclaim === undefined || entry.adoption !== undefined
+				? undefined
+				: this.bindRegistration(session, entry, owner, reclaim, grant);
+		decided?.catch(() => {});
 		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
 		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
 		insertedBy?.catch(() => {});
@@ -2257,84 +2351,16 @@ export class MultiNodeRouter {
 				try {
 					// #5607: a session registered while routing was opening takes its id now, or reconnects for a fresh one. A
 					// write that fails leaves it to take the id at the next check (`renewOwners`).
-					if (entry.adoption !== undefined) {
+					if (decided === undefined && entry.adoption !== undefined) {
 						// Decided by whichever write answers first with the id taken or lost; the first write failing leaves it to
 						// the next renewal.
 						const pending = entry.adoption;
 						const first = this.adoptionCheck(session, entry).answered();
 						if ((await Promise.race([pending.decided.promise, first])) !== "own") return;
 					} else {
-						// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
-						const confirmed = clockMark();
-						let binding: KnownSessionBindResult;
-						if (reclaim !== undefined) this.decidingTokens.add(reclaim.token);
-						try {
-							binding =
-								reclaim === undefined
-									? await this.state.knownSessions.bind(
-											session.info.id,
-											session.registrationReturnAddress ?? "",
-											KNOWN_SESSION_RETENTION_MS,
-											undefined,
-											owner,
-										)
-									: await this.reclaimOrBind(session, reclaim, owner);
-						} catch (error) {
-							// #5607: the id this session was given (and answered under) is not confirmed its own: it takes it at the
-							// next check, as a session registered while routing was opening does.
-							if (this.state.knownSessions.owners !== undefined && this.presence.get(session) === entry) {
-								entry.adoption = adoption(owner.token);
-								if (grant?.alias !== undefined)
-									entry.pendingAlias = {
-										alias: grant.alias,
-										...(grant.aliasToken === undefined ? {} : { aliasToken: grant.aliasToken }),
-										...(grant.recovery === undefined ? {} : { recovery: grant.recovery }),
-									};
-								// A lapsed hand-over whose id its binding write did not keep leaves it awaiting that id all the same.
-								if (reclaim?.recovery !== undefined && session.info.id !== reclaim.sessionId)
-									entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
-							}
-							throw error;
-						} finally {
-							if (reclaim !== undefined) this.decidingTokens.delete(reclaim.token);
-						}
-						if (binding.status === "refused") {
-							entry.unbound = true;
-							return;
-						}
-						// #5607: another live registration of the same session owns the id (it took it once this registration's
-						// went unrenewed): that registration keeps it, and this one reconnects for a fresh id.
-						if (binding.status === "held") {
-							this.lostSessionId(session, entry);
-							return;
-						}
-						if (binding.status === "bound" && this.state.knownSessions.owners !== undefined) {
-							entry.owner = {
-								intercomSessionId: session.info.id,
-								token: owner.token,
-								confirmed: laterMark(entry.owner?.confirmed, confirmed),
-							};
-							// #5607: the id it had while it awaited this one stays an alias of it, owned the same way.
-							const alias = grant?.alias ?? reclaim?.alias;
-							const aliasToken = grant?.alias === undefined ? reclaim?.aliasToken : grant.aliasToken;
-							if (alias !== undefined && (reclaim === undefined || session.info.id === reclaim.sessionId)) {
-								const recovery = grant?.alias === undefined ? reclaim?.recovery : grant.recovery;
-								entry.pendingAlias = {
-									alias,
-									...(aliasToken === undefined ? {} : { aliasToken }),
-									...(recovery === undefined ? {} : { recovery }),
-								};
-								await this.takePendingAlias(session, entry);
-							}
-						}
-						// #5607: a hand-over whose id its binding write did not keep gives its alias back too, unless a lapsed
-						// hand-over still keeps it: the session then awaits the id with it, as one whose claim was held does.
-						if (reclaim !== undefined && session.info.id !== reclaim.sessionId) {
-							if (reclaim.recovery !== undefined && this.state.knownSessions.owners !== undefined)
-								entry.awaits = { id: reclaim.sessionId, token: randomUUID(), recovery: reclaim.recovery };
-							else if (reclaim.alias !== undefined && reclaim.aliasToken !== undefined)
-								await this.releaseOwner({ intercomSessionId: reclaim.alias, token: reclaim.aliasToken });
-						}
+						if (!(await (decided ?? this.bindRegistration(session, entry, owner, reclaim, grant)))) return;
+						// A registration whose id was decided early, and that lost it while it waited here, takes nothing more.
+						if (decided !== undefined && entry.fenced === true) return;
 					}
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
