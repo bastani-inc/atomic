@@ -19,6 +19,10 @@
 - Installed builtin extensions (`intercom`, `subagents`, `mcp`, `web-access`) now load natively under Node and Bun without loading `jiti`, resolving extension aliases, or eagerly importing unused host virtual modules (`@bastani/atomic-telemetry`, `@bastani/atomic-ai/oauth`, `@bastani/atomic-ai/models`), reducing startup module-loading overhead on both the interactive host and isolated engine.
 - Startup refreshes the model catalog once instead of three times and checks each provider's auth configuration once per availability pass instead of twice, cutting model-registry startup overhead on both the host and engine processes while preserving externally supplied runtimes, credential mutations, and missing-catalog recovery.
 - Built-in Intercom now registers its tool, command, and shortcut from a static description at startup and loads the Intercom extension bundle on first use or when the background startup join runs, reducing time to first prompt in both the host and engine processes.
+- Built-in Web Access now registers its tools, commands, and shortcuts from a static description at startup and loads the 4.9 MB Web Access bundle only on first tool, command, or shortcut use.
+- Built-in Subagents now registers its tool, `/agents` command, argument validation, and message renderers from a static description at startup and loads the 1.9 MB Subagents bundle on first use or when resuming a session with existing subagent history.
+- Built-in MCP now registers `/mcp` and its MCP contribution consumer statically at startup and loads the MCP extension only when `mcp.json` exists, an extension registers an MCP server, a resumed session has recorded MCP tools, or `/mcp` is invoked.
+- Built-in Codemode now defers loading its rich result renderer and syntax highlighter until first script execution or when resuming a TUI session with existing `codemode` history, keeping the tool definition and headless engine startup lighter.
 
 ### Fixed
 
@@ -28,6 +32,7 @@
 - Worktree snapshots work with Git 2.30 to 2.35, as Debian 11 and Ubuntu 22.04 install it. Before Git 2.36, restoring a session's checkout into a new worktree failed with `unknown switch 'z'`; before Git 2.31, a turn whose checkout had unpushed commits recorded no snapshot (`Refusing to create empty bundle`), and a restore could read a wrong path for its store.
 - Resuming or going back in a session kept in a database (SQLite, libSQL or PostgreSQL) no longer fails with a `SyntaxError`, or takes an extension's text for one of Atomic's lists, when an extension's custom entry has text that looks like JSON under `owner`, `tasks` or `groups`, such as `"[draft"`: the session reads that text as text, as a session kept in JSONL files does.
 - After you change a Git packing setting, such as `core.compression` or `pack.window`, unpushed commits that a worktree snapshot left out because their bundle was over `snapshots.maxSnapshotBytes` are bundled again, and recorded when they now fit. Atomic kept leaving them out until the commits or the repository's packs changed.
+- A line written straight to standard output while Atomic starts, for example by an extension as it loads, is no longer lost when the editor shown before the session is ready gives way to it: it shows once, where it would without that editor, whether Atomic then exits or the session goes on ([#6344](https://github.com/bastani-inc/atomic/pull/6344))
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

@@ -4,14 +4,17 @@ import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import type { CodemodeJsonSchema, CodemodeTool } from "@bastani/atomic-codemode";
 import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@bastani/atomic-codemode/declarations";
 import { CODEMODE_SOURCE_GRAMMAR } from "@bastani/atomic-codemode/source";
+import { type Component, Text, truncateToWidth } from "@bastani/atomic-tui";
 import { getDocsPath } from "../../config.js";
 import type { ToolDefinition, ToolInfo, ToolLoadout, ToolNamespace } from "../../core/extensions/types.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
 import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
+import { str } from "../../core/tools/render-utils.ts";
 import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts";
+import type { Theme } from "../../modes/interactive/theme/theme.js";
 import { resolveSchemaRef } from "../../utils/json-schema-ref.ts";
-import { codemodeRenderers } from "./renderer.js";
+import { singleLineDisplayText } from "../../utils/terminal-text.ts";
 
 export const CODEMODE_TOOL_NAME = "codemode";
 export const CODEMODE_DOCS_PATH = join(getDocsPath(), "codemode.md");
@@ -293,6 +296,53 @@ function prepareLoadout(loadout: ToolLoadout, options: CodemodeToolOptions) {
 			: [],
 	};
 }
+type CodemodeRenderersModule = typeof import("./renderer.js")["codemodeRenderers"];
+
+let loadedCodemodeRenderers: CodemodeRenderersModule | undefined;
+let loadingCodemodeRenderers: Promise<CodemodeRenderersModule> | undefined;
+
+/** Load the rich codemode result renderer (syntax highlighter + nested ToolBlock group) on first use. */
+export function loadCodemodeRenderers(): Promise<CodemodeRenderersModule> {
+	if (loadedCodemodeRenderers) return Promise.resolve(loadedCodemodeRenderers);
+	loadingCodemodeRenderers ??= import("./renderer.js").then(
+		(mod) => {
+			loadedCodemodeRenderers = mod.codemodeRenderers;
+			return mod.codemodeRenderers;
+		},
+		(error: unknown) => {
+			loadingCodemodeRenderers = undefined;
+			throw error;
+		},
+	);
+	return loadingCodemodeRenderers;
+}
+
+export function isCodemodeRendererLoadedForTest(): boolean {
+	return loadedCodemodeRenderers !== undefined;
+}
+
+export function resetCodemodeRendererForTest(): void {
+	loadedCodemodeRenderers = undefined;
+	loadingCodemodeRenderers = undefined;
+}
+
+class LightweightCodemodeCall implements Component {
+	private readonly code: string | null;
+	private readonly theme: Theme;
+	constructor(code: string | null, theme: Theme) {
+		this.code = code;
+		this.theme = theme;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		if (width < 1) return [];
+		const code = this.code === null ? "[invalid arg]" : singleLineDisplayText(this.code.split("\n")[0]);
+		const summary = `${code}${this.code?.includes("\n") ? "…" : ""}`;
+		const name = this.theme.fg("toolTitle", this.theme.bold("codemode"));
+		return [truncateToWidth(`${name}(${truncateToWidth(summary, Math.max(0, width - 10), "…")})`, width, "…")];
+	}
+}
+
 export function createCodemodeToolDefinition(
 	options: CodemodeToolOptions = {},
 ): ToolDefinition<typeof codemodeSchema, CodemodeToolDetails> {
@@ -313,9 +363,25 @@ export function createCodemodeToolDefinition(
 		],
 		prepareLoadout: (loadout) => prepareLoadout(loadout, options),
 		constrainedSampling: { type: "grammar", variants: { openai_lark: CODEMODE_SOURCE_GRAMMAR } },
-		execute: async (id, input, signal, update, ctx) =>
-			(await import("./execute.js")).executeCodemode(id, input, signal, update, ctx, options),
-		...codemodeRenderers,
+		execute: async (id, input, signal, update, ctx) => {
+			const [{ executeCodemode }] = await Promise.all([
+				import("./execute.js"),
+				ctx?.hasUI ? loadCodemodeRenderers().catch(() => undefined) : Promise.resolve(undefined),
+			]);
+			return executeCodemode(id, input, signal, update, ctx, options);
+		},
+		renderCall(args, theme, context) {
+			if (loadedCodemodeRenderers?.renderCall) return loadedCodemodeRenderers.renderCall(args, theme, context);
+			return new LightweightCodemodeCall(str(args?.code), theme);
+		},
+		renderResult(result, renderOptions, theme, context) {
+			if (loadedCodemodeRenderers?.renderResult) {
+				return loadedCodemodeRenderers.renderResult(result, renderOptions, theme, context);
+			}
+			void loadCodemodeRenderers().catch(() => undefined);
+			const text = result.content.find((block) => block.type === "text")?.text ?? "";
+			return new Text(theme.fg(context.isError ? "error" : "toolOutput", text), 0, 0);
+		},
 	};
 }
 export function createCodemodeTool(
