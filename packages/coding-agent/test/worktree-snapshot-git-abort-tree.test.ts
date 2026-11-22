@@ -17,11 +17,12 @@ afterEach(() => {
 
 const HOLDER = `
 const { spawn } = require("node:child_process");
-const { openSync, writeFileSync } = require("node:fs");
+const { openSync, renameSync, writeFileSync } = require("node:fs");
 const [script, pidFile, role] = process.argv.slice(1);
 if (role === "held") {
 	openSync("held.txt", "w");
-	writeFileSync(pidFile, String(process.pid));
+	writeFileSync(pidFile + ".tmp", String(process.pid));
+	renameSync(pidFile + ".tmp", pidFile);
 	setInterval(() => {}, 1000);
 } else if (role === "starter") {
 	spawn(process.execPath, [script, pidFile, "held"], { detached: true, stdio: "ignore" }).unref();

@@ -5,7 +5,7 @@ description: Theme file format, every color token, and accepted color values.
 
 # Theme reference
 
-## Theme Format
+## Theme format
 
 ```json
 {
@@ -40,11 +40,11 @@ description: Theme file format, every color token, and accepted color values.
   - When an index from 0 through 15 seeds an omitted tone, Atomic mixes from its built-in approximation of the common ANSI RGB value. The terminal still controls the explicit index's actual appearance.
   - Both explicit and derived tones update on theme hot reload.
 
-The `$schema` field enables editor auto-completion and validation against the [theme JSON schema](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/schemas/theme.schema.json). Atomic itself rejects theme files with unknown top-level fields or unknown properties under `colors`, `workingIndicator`, or `export`; define reusable custom colors under `vars` instead.
+The `$schema` field enables editor auto-completion and validation against the [theme JSON schema](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/schemas/theme.schema.json). Atomic rejects theme files with unknown top-level fields or unknown properties under `colors`, `workingIndicator`, or `export`. Define reusable custom colors under `vars` instead.
 
-## Color Tokens
+## Color tokens
 
-Every theme must define all 51 required color tokens. The optional tokens preserve compatibility with themes written before they existed: `scrollbarThumb` and unused `searchMatchBg` fall back to `selectedBg`, and unused `searchMatchText` falls back to `text`.
+Every theme must define all 51 required color tokens. The optional tokens preserve compatibility with older theme files: `scrollbarThumb` and unused `searchMatchBg` fall back to `selectedBg`, and unused `searchMatchText` falls back to `text`.
 
 ### Core UI (11 colors)
 
@@ -62,7 +62,7 @@ Every theme must define all 51 required color tokens. The optional tokens preser
 | `text` | Default text (usually `""`) |
 | `thinkingText` | Thinking block text |
 
-### Backgrounds & Content (11 required, 3 optional)
+### Backgrounds & content (11 required, 3 optional)
 
 | Token | Purpose |
 |-------|---------|
@@ -96,7 +96,7 @@ Every theme must define all 51 required color tokens. The optional tokens preser
 | `mdHr` | Horizontal rule |
 | `mdListBullet` | List bullets |
 
-### Tool Diffs (3 colors)
+### Tool diffs (3 colors)
 
 | Token | Purpose |
 |-------|---------|
@@ -104,7 +104,7 @@ Every theme must define all 51 required color tokens. The optional tokens preser
 | `toolDiffRemoved` | Removed lines |
 | `toolDiffContext` | Context lines |
 
-### Syntax Highlighting (9 colors)
+### Syntax highlighting (9 colors)
 
 | Token | Purpose |
 |-------|---------|
@@ -118,9 +118,9 @@ Every theme must define all 51 required color tokens. The optional tokens preser
 | `syntaxOperator` | Operators |
 | `syntaxPunctuation` | Punctuation |
 
-### Thinking Level Borders (6 colors)
+### Thinking level borders (6 colors)
 
-Editor border colors indicating thinking level (visual hierarchy from subtle to prominent):
+Editor border colors indicating thinking level (from subtle to prominent):
 
 | Token | Purpose |
 |-------|---------|
@@ -129,15 +129,15 @@ Editor border colors indicating thinking level (visual hierarchy from subtle to 
 | `thinkingLow` | Low thinking |
 | `thinkingMedium` | Medium thinking |
 | `thinkingHigh` | High thinking |
-| `thinkingXhigh` | Extra high thinking |
+| `thinkingXhigh` | Extra high and `max` thinking |
 
-### Bash Mode (1 color)
+### Bash mode (1 color)
 
 | Token | Purpose |
 |-------|---------|
 | `bashMode` | Editor border in bash mode (`!` prefix) |
 
-### HTML Export (optional)
+### HTML export (optional)
 
 The `export` section controls colors for `/export` HTML output. If omitted, colors are derived from `userMessageBg`.
 
@@ -151,29 +151,29 @@ The `export` section controls colors for `/export` HTML output. If omitted, colo
 }
 ```
 
-## Color Values
+## Color values
 
 Five formats are supported:
 
 | Format | Example | Description |
 |--------|---------|-------------|
 | Hex | `"#ff0000"` | 6-digit hex RGB |
-| OKHSL | `"okhsl(295 0.6 0.5)"` | Hue in degrees, saturation and lightness from 0 to 1. Converted to hex for HTML export. |
-| 256-color | `39` | xterm 256-color palette index (0-255) |
+| OKHSL | `"okhsl(295 0.6 0.5)"` or `"okhsl(295deg 60% 50%)"` | Hue in degrees (optional `deg`), saturation and lightness as 0 to 1 decimals or 0% to 100% percentages. Converted to hex for rendering and HTML export. |
+| 256-color | `39` | xterm 256-color palette index (0 to 255) |
 | Variable | `"primary"` | Reference to a `vars` entry |
 | Default | `""` | Terminal's default color |
 
-### 256-Color Palette
+### 256-color palette
 
-- `0-15`: Basic ANSI colors (terminal-dependent)
-- `16-231`: 6×6×6 RGB cube (`16 + 36×R + 6×G + B` where R,G,B are 0-5)
-- `232-255`: Grayscale ramp
+- `0` to `15`: Basic ANSI colors (terminal-dependent)
+- `16` to `231`: 6×6×6 RGB cube (`16 + 36×R + 6×G + B` where `R`, `G`, and `B` are 0 to 5)
+- `232` to `255`: Grayscale ramp
 
-### Terminal Compatibility
+### Terminal compatibility
 
 Atomic uses 24-bit RGB colors. Most modern terminals support this (iTerm2, Kitty, WezTerm, Windows Terminal, VS Code). For older terminals with only 256-color support, Atomic falls back to the nearest palette color, which turns a slightly tinted background into a gray.
 
-The tool status backgrounds `toolPendingBg`, `toolSuccessBg`, and `toolErrorBg` keep their hue instead: each uses the nearest palette color whose strongest RGB channel is the same, so a green-tinted success background stays green. Give these three tokens different strongest channels (for example blue, green, and red tints) to keep them distinguishable in 256-color terminals, or set a palette index directly.
+The tool status backgrounds `toolPendingBg`, `toolSuccessBg`, and `toolErrorBg` keep their hue instead. Each uses the nearest palette color whose strongest RGB channel is the same, so a green-tinted success background stays green. Give these three tokens different strongest channels (for example blue, green, and red tints) to keep them distinguishable in 256-color terminals, or set a palette index directly.
 
 Check truecolor support:
 
@@ -183,6 +183,6 @@ echo $COLORTERM  # Should output "truecolor" or "24bit"
 
 Turning colors off:
 
-- `NO_COLOR` (any value) turns off every theme color, foreground and background, and text styles such as bold, italic and dim. Layout and text stay the same.
-- `FORCE_COLOR=0` does the same. `FORCE_COLOR=1` or `2` limits colors to the 256-color palette, and `FORCE_COLOR=3` keeps the terminal's own color mode. `NO_COLOR` wins when both are set.
+- `NO_COLOR` (any value) turns off every theme color, foreground and background, and text styles such as bold, italic, underline, inverse, strikethrough, and dim. Layout and text stay the same.
+- `FORCE_COLOR=0` (or `FORCE_COLOR=false`) does the same. `FORCE_COLOR=1` (or `true` or empty) and `FORCE_COLOR=2` limit truecolor themes to the 256-color palette, and `FORCE_COLOR=3` keeps the terminal's own color mode. `NO_COLOR` wins when both are set.
 - An extension that paints its own `#rrggbb` colors can call `hexColorAnsi(hex, "fg")` or `hexColorAnsi(hex, "bg")` from `@bastani/atomic` to get the escape sequence for the current settings, which is empty when colors are off.

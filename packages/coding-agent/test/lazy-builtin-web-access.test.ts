@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import webAccessEagerFactory from "../../../packages/web-access/index.js";
+import webAccessHeavyFactory from "../../../packages/web-access/index-heavy.js";
 import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.js";
 import { hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
@@ -63,29 +64,61 @@ describe("lazy builtin web-access", () => {
 			createExtensionRuntime(),
 			entryPath,
 		);
+		const heavyExt = await loadExtensionFromFactory(
+			webAccessHeavyFactory,
+			dir,
+			createEventBus(),
+			createExtensionRuntime(),
+			entryPath,
+		);
 		const lazyExt = lazyLoaded.extensions[0]!;
 
-		assert.deepEqual([...lazyExt.tools.keys()], [...eagerExt.tools.keys()]);
-		for (const toolName of eagerExt.tools.keys()) {
+		assert.deepEqual([...lazyExt.tools.keys()].sort(), [...eagerExt.tools.keys()].sort());
+		assert.deepEqual([...lazyExt.tools.keys()].sort(), [...heavyExt.tools.keys()].sort());
+		for (const toolName of heavyExt.tools.keys()) {
+			const heavySurface = serializeToolSurface(heavyExt.tools.get(toolName)?.definition);
 			assert.equal(
 				serializeToolSurface(lazyExt.tools.get(toolName)?.definition),
+				heavySurface,
+				`lazy vs heavy tool surface mismatch for ${toolName}`,
+			);
+			assert.equal(
 				serializeToolSurface(eagerExt.tools.get(toolName)?.definition),
-				`tool surface mismatch for ${toolName}`,
+				heavySurface,
+				`light vs heavy tool surface mismatch for ${toolName}`,
 			);
 		}
 
-		assert.deepEqual([...lazyExt.commands.keys()], [...eagerExt.commands.keys()]);
-		for (const cmdName of eagerExt.commands.keys()) {
+		assert.deepEqual([...lazyExt.commands.keys()].sort(), [...eagerExt.commands.keys()].sort());
+		assert.deepEqual([...lazyExt.commands.keys()].sort(), [...heavyExt.commands.keys()].sort());
+		for (const cmdName of heavyExt.commands.keys()) {
+			const heavyDesc = heavyExt.commands.get(cmdName)?.description;
 			assert.equal(
 				lazyExt.commands.get(cmdName)?.description,
+				heavyDesc,
+				`lazy vs heavy command description mismatch for ${cmdName}`,
+			);
+			assert.equal(
 				eagerExt.commands.get(cmdName)?.description,
-				`command description mismatch for ${cmdName}`,
+				heavyDesc,
+				`light vs heavy command description mismatch for ${cmdName}`,
 			);
 		}
 
-		assert.deepEqual([...lazyExt.shortcuts.keys()], [...eagerExt.shortcuts.keys()]);
-		for (const key of eagerExt.shortcuts.keys()) {
-			assert.equal(lazyExt.shortcuts.get(key)?.description, eagerExt.shortcuts.get(key)?.description);
+		assert.deepEqual([...lazyExt.shortcuts.keys()].sort(), [...eagerExt.shortcuts.keys()].sort());
+		assert.deepEqual([...lazyExt.shortcuts.keys()].sort(), [...heavyExt.shortcuts.keys()].sort());
+		for (const key of heavyExt.shortcuts.keys()) {
+			const heavyDesc = heavyExt.shortcuts.get(key)?.description;
+			assert.equal(
+				lazyExt.shortcuts.get(key)?.description,
+				heavyDesc,
+				`lazy vs heavy shortcut description mismatch for ${key}`,
+			);
+			assert.equal(
+				eagerExt.shortcuts.get(key)?.description,
+				heavyDesc,
+				`light vs heavy shortcut description mismatch for ${key}`,
+			);
 		}
 	});
 

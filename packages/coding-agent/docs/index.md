@@ -3,7 +3,7 @@ title: "Overview"
 description: "Atomic documentation overview"
 ---
 
-# Atomic Documentation
+# Atomic documentation
 
 Atomic is a terminal coding-agent runtime with built-in file, shell, search, codemode, subagent, MCP, web access, and Intercom tools. Extend it with TypeScript extensions, skills, prompt templates, themes, and Atomic packages.
 
@@ -43,9 +43,9 @@ Authenticate with `/login` for a subscription provider, or export an API key suc
 
 ## Documentation paths
 
-- **[Learn](/guides)** — install Atomic, complete your first session, and learn interactive commands, sessions, compaction, and providers.
-- **[Build](/build)** — extend Atomic with prompt templates, skills, subagents, Intercom, codemode, extensions, and packages, or embed it via the [SDK, RPC, or JSON mode](/programmatic).
-- **[Reference](/reference)** — look up CLI flags, settings, environment variables, keybindings, tools, storage, and API contracts.
+- **[Learn](/guides).** Install Atomic, complete your first session, and learn interactive commands, sessions, compaction, and providers.
+- **[Build](/build).** Extend Atomic with prompt templates, skills, subagents, Intercom, codemode, extensions, and packages, or embed it through the [SDK, RPC, or JSON mode](/programmatic).
+- **[Reference](/reference).** Look up CLI flags, settings, environment variables, keybindings, tools, storage, and API contracts.
 
 ### First successful session
 

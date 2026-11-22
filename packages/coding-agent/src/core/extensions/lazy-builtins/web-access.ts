@@ -81,7 +81,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			[shortcuts.activity, "activity"],
 		] as const) {
 			atomic.registerShortcut(shortcut as KeyId, {
-				description: name === "curate" ? "Open web search curator" : "Show web search activity",
+				description: name === "curate" ? "Review search results" : "Toggle web search activity",
 				handler: (ctx) => controller.runShortcut(shortcut, ctx),
 			});
 		}
@@ -103,7 +103,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 				queries: Type.Optional(
 					Type.Array(Type.String(), {
 						description:
-							"Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage.",
+							"Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results).",
 					}),
 				),
 				numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
@@ -254,8 +254,8 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 		});
 
 		for (const [name, description] of [
-			["websearch", "Configure web search"],
-			["curator", "Configure web search curator"],
+			["websearch", "Open web search curator"],
+			["curator", "Toggle or configure the search curator workflow"],
 			["google-account", "Show the active Google account for Gemini Web"],
 			["search", "Browse stored web search results"],
 		] as const) {

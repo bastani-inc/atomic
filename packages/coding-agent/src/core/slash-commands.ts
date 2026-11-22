@@ -89,11 +89,11 @@ export const BUILTIN_SLASH_COMMANDS = commandList(CORE_COMMAND_NAMES, [
 
 export const BUNDLED_EXTENSION_SLASH_COMMANDS = commandList(BUNDLED_COMMAND_NAMES, [
 	{ name: "agents", description: "Browse available subagents and inspect their configuration" },
-	{ name: "mcp", description: "Show MCP server status" },
-	{ name: "mcp-auth", description: "Authenticate with an MCP server (OAuth)" },
+	{ name: "mcp", description: "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure" },
 	{ name: "curator", description: "Toggle or configure the search curator workflow" },
 	{ name: "google-account", description: "Show the active Google account for Gemini Web" },
 	{ name: "search", description: "Browse stored web search results" },
 	{ name: "websearch", description: "Open web search curator" },
 	{ name: "intercom", description: "Open session intercom overlay" },
+	{ name: "llama", description: "Manage llama.cpp router models" },
 ]);

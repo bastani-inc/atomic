@@ -1,6 +1,6 @@
 ---
 title: Guides
-description: "Task guides for everyday work with Atomic: interactive use, sessions, context, providers, local models, security, and containers."
+description: "Task guides for everyday work with Atomic: interactive use, non-interactive runs, sessions, compaction, subagents, providers, local models, security, and containers."
 ---
 
 # Guides
@@ -11,25 +11,33 @@ New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, ru
 
 Looking to extend or embed Atomic? Go to [Build with Atomic](/build). Looking up an exact flag, setting, event, or type? Go to the [Reference index](/reference).
 
-## Recommended order
+## Everyday use
 
-1. [Interactive use](/usage) — the interactive loop, slash commands, and context files.
-2. [Configure Atomic](/guides/configuration) — write a settings file and override it per project.
-3. [Sessions](/sessions) — save, resume, name, and branch sessions.
-4. [Resume on any machine](/guides/resume-on-any-machine) — continue a session on another machine that shares your storage.
-5. [Context and compaction](/compaction) — keep long sessions inside the context window.
-6. [Providers](/providers) — subscription logins, API keys, and provider-specific setup.
-7. [Local models](/llama-cpp) — run models locally with llama.cpp.
-8. [Security](/security) — project trust and sandbox boundaries.
-9. [Containerization](/containerization) — run Atomic inside a container.
+1. **[Interactive use](/usage).** Learn the interactive loop, slash commands, startup typing, and context files.
+2. **[Non-interactive use](/guides/non-interactive).** Run one-shot prompts with `-p`, stream JSON events, or drive Atomic over RPC.
+3. **[Configure Atomic](/guides/configuration).** Write a global settings file and override settings per project.
+4. **[Sessions](/sessions).** Save, resume, name, search, and branch sessions.
+5. **[Worktree snapshots](/worktree-snapshots).** Capture and restore repository state alongside your session history.
+6. **[Resume on any machine](/guides/resume-on-any-machine).** Continue a session on another machine that shares your storage.
+7. **[Context and compaction](/compaction).** Keep long sessions inside the model's context window.
 
-For work that continues while you chat, follow [Background tasks](/background-tasks) to launch, inspect, and stop agents or shells. If you use Herdr panes, [Herdr](/herdr) explains Atomic's status indicators and troubleshooting.
+## Running work for you
 
-## More guides and references
+- **[Plan a task with subagents](/guides/orchestration).** Distribute multi-step work across subagents and verify the results.
+- **[Subagents](/guides/subagents).** Delegate independent tasks to fresh or forked subagents in the background.
+- **[Background tasks](/background-tasks).** Launch, inspect, steer, and stop background subagents and shells.
+- **[Intercom](/guides/intercom).** Coordinate live sessions and subagents on one machine or across a shared database.
+- **[Team and CI setup](/guides/team-setup).** Share Intercom with a team through one database while sessions stay private, and configure CI runners from environment variables.
+- **[Computer use](/computer-use).** Automate desktop apps, browsers, and terminals across macOS, Linux, and Windows.
+- **[Verification](/verification).** Reproduce bugs and collect verifiable evidence across terminal, browser, and desktop environments.
 
-- [Plan a task with subagents](/guides/orchestration) shows how the parent can distribute a review and verify the results.
-- [Team and CI setup](/guides/team-setup) shares Intercom with a team through one database while sessions stay private, and sets up CI runners from environment variables.
-- [Computer use](/computer-use) covers desktop apps, browsers, and terminals across macOS, Linux, and Windows.
-- [Environment variables](/environment-variables) lists Atomic/Pi aliases, provider credentials, and bash session metadata.
-- [Settings](/settings) lists global and project settings.
-- [Keybindings](/keybindings) lists default shortcuts and custom actions.
+## Models, safety, and references
+
+- **[Providers](/providers).** Configure subscription logins, API keys, and cloud providers.
+- **[Local models](/llama-cpp).** Run local models with llama.cpp.
+- **[Security](/security).** Review project trust, sandbox boundaries, and credential export guarantees.
+- **[Containerization](/containerization).** Run Atomic or its tools inside Gondolin, Docker, or OpenShell.
+- **[Herdr](/herdr).** Configure status indicators and session restore inside Herdr panes.
+- **[Environment variables](/environment-variables).** Look up Atomic variables, legacy aliases, and provider credentials.
+- **[Settings](/settings).** Browse the full settings reference.
+- **[Keybindings](/keybindings).** Look up default shortcuts and custom bindings.

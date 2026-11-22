@@ -1,6 +1,9 @@
-> Atomic can create prompt templates. Ask it to build one for your workflow.
+---
+title: Prompt templates
+description: Create reusable Markdown prompts that expand from slash commands with argument substitution.
+---
 
-# Prompt Templates
+# Prompt templates
 
 Prompt templates are Markdown snippets that expand into full prompts. Type `/name` in the editor to invoke a template, where `name` is the filename without `.md`.
 
@@ -18,7 +21,7 @@ Atomic loads prompt templates from:
 - Settings: `prompts` array with files or directories
 - CLI: `--prompt-template <path>` (repeatable)
 
-Disable discovery with `--no-prompt-templates`.
+Disable default discovery with `--no-prompt-templates`. Explicit `--prompt-template` paths still load.
 
 ## Format
 
@@ -33,11 +36,11 @@ Review the staged changes (`git diff --cached`). Focus on:
 ```
 
 - The filename becomes the command name. `review.md` becomes `/review`.
-- `description` is optional. If missing, the first non-empty line is used.
-- `argument-hint` is optional. When set, the hint is displayed before the description in the autocomplete dropdown.
-- Invalid YAML frontmatter (for example an unquoted `description: Broken: value`) skips only that template and reports a warning naming the file and the parse position; valid sibling templates still load.
+- `description` is optional. If missing, the first non-empty line is used (truncated to 60 characters).
+- `argument-hint` is optional. When set, the hint appears before the description in the autocomplete dropdown.
+- Invalid YAML frontmatter (for example an unquoted `description: Broken: value`) skips only that template and reports a warning naming the file and the parse position. Valid sibling templates still load.
 
-### Argument Hints
+### Argument hints
 
 Use `argument-hint` in frontmatter to show expected arguments in autocomplete. Use `<angle brackets>` for required arguments and `[square brackets]` for optional ones:
 
@@ -67,18 +70,18 @@ Type `/` followed by the template name in the editor. Autocomplete shows availab
 /component Button "click handler" # Multiple arguments
 ```
 
-The template name ends at the first space, tab or line break, so arguments can also start on a new line (Shift+Enter). Line breaks inside the arguments are kept. The same applies to extension commands and `/skill:name` commands.
+The template name ends at the first space, tab, or line break, so arguments can also start on a new line with Shift+Enter. Line breaks inside the arguments are kept. The same rule applies to extension commands and `/skill:name` commands.
 
 ## Arguments
 
-Templates support positional arguments, defaults, and simple slicing:
+Templates support positional arguments, defaults, and simple slicing. Substitution is not recursive, so argument values containing `$1` or `$@` stay as literal text:
 
-- `$1`, `$2`, ... positional args
-- `$@` or `$ARGUMENTS` for all args joined
-- `${1:-default}` uses arg 1 when present/non-empty, otherwise `default`
-- `${@:-default}` or `${ARGUMENTS:-default}` uses all arguments when present/non-empty, otherwise `default`
-- `${@:N}` for args from the Nth position (1-indexed)
-- `${@:N:L}` for `L` args starting at N
+- `$1`, `$2`, ... for positional arguments
+- `$@` or `$ARGUMENTS` for all arguments joined with spaces
+- `${1:-default}` uses argument 1 when present and non-empty, otherwise `default` (up to 1,024 characters)
+- `${@:-default}` or `${ARGUMENTS:-default}` uses all arguments when present and non-empty, otherwise `default`
+- `${@:N}` for arguments from the Nth position (1-indexed)
+- `${@:N:L}` for `L` arguments starting at N
 
 Example:
 
@@ -89,7 +92,7 @@ description: Create a component
 Create a React component named $1 with features: $@
 ```
 
-Default values are useful for optional arguments:
+Default values help with optional arguments:
 
 ```markdown
 Summarize the current state in ${1:-7} bullet points.
@@ -99,16 +102,16 @@ Usage: `/component Button "onClick handler" "disabled support"`
 
 Use `""` or `''` to pass an empty argument without shifting later positions. For a template containing `Review $2. Focus: ${1:-correctness}.`, `/review "" src/index.ts` expands to `Review src/index.ts. Focus: correctness.`
 
-A quote only starts quoting at the beginning of an argument, so apostrophes inside words such as `doesn't` stay as text, and a quote with no closing match is kept as text. Inside a quoted argument, a backslash before the same quote character keeps it as text, so `/review "the \"fast\" path"` supplies `the "fast" path`; other backslashes are kept as typed.
+A quote only starts quoting at the beginning of an argument, so apostrophes inside words such as `doesn't` stay as text, and a quote with no closing match is kept as text. Inside a quoted argument, a backslash before the same quote character keeps it as text, so `/review "the \"fast\" path"` supplies `the "fast" path`. Other backslashes stay as typed.
 
-## Loading Rules
+## Loading rules
 
 - Template discovery in `prompts/` is non-recursive.
 - If you want templates in subdirectories, add them explicitly via `prompts` settings or a package manifest.
 
 ## Next steps
 
-- [Skills](/skills) — instructions the agent loads on its own when a task matches, instead of on an explicit slash command.
-- [Subagents](/subagents) — delegate a focused, bounded task to a child agent.
-- [Atomic packages](/packages) — bundle your prompt templates with skills, themes, and extensions and share them.
-- [Build with Atomic](/build) — compare every customization mechanism.
+- [Skills](/skills). Provide instructions the agent loads on its own when a task matches, instead of requiring an explicit slash command.
+- [Subagents](/subagents). Delegate a focused, bounded task to a child agent.
+- [Atomic packages](/packages). Bundle your prompt templates with skills, themes, and extensions to share them.
+- [Build with Atomic](/build). Compare every customization option.

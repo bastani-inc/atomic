@@ -5,7 +5,7 @@ description: Skill directory structure and a complete worked example.
 
 # Writing skills
 
-## Skill Structure
+## Skill structure
 
 A skill is a directory with a `SKILL.md` file. Everything else is freeform.
 
@@ -20,7 +20,7 @@ my-skill/
     └── template.json
 ```
 
-### SKILL.md Format
+### SKILL.md format
 
 ````markdown
 ---
@@ -34,7 +34,7 @@ description: What this skill does and when to use it. Be specific.
 
 Run once before first use:
 ```bash
-cd /path/to/skill && bun install
+cd /path/to/skill && npm install
 ```
 
 ## Usage
@@ -54,7 +54,7 @@ Keep instructions concise and lead with the intended outcome:
 
 - State observable completion and stop conditions.
 - Give a short reason for material constraints.
-- Use decision rules for judgment calls instead of `ALWAYS`/`NEVER` language.
+- Use decision rules for judgment calls instead of `ALWAYS` or `NEVER` language.
 - Put detailed or model-specific material in `references/` so it loads only when needed.
 - Require evidence or validation results where correctness matters. Do not ask models to reproduce private reasoning or repeatedly verify their own work.
 
@@ -79,7 +79,7 @@ description: Web search and content extraction via Brave Search API. Use for sea
 ## Setup
 
 ```bash
-cd /path/to/brave-search && bun install
+cd /path/to/brave-search && npm install
 ```
 
 ## Search
@@ -89,7 +89,7 @@ cd /path/to/brave-search && bun install
 ./search.js "query" --content    # Include page content
 ```
 
-## Extract Page Content
+## Extract page content
 
 ```bash
 ./content.js https://example.com

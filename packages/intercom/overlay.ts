@@ -97,7 +97,7 @@ export function registerIntercomOverlay(atomic: ExtensionAPI, deps: OverlayDeps)
   });
 
   atomic.registerShortcut("alt+m", {
-    description: "Open session intercom",
+    description: "Open session intercom overlay",
     handler: async (ctx) => openIntercomOverlay(ctx),
   });
 }
