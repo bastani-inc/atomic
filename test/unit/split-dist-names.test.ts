@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { sharedFileName } from "../../packages/coding-agent/scripts/split-dist-names.mjs";
+import { compatSharedFiles, sharedFileName } from "../../packages/coding-agent/scripts/split-dist-names.mjs";
 
 const output = "dist/_shared/chunk-ABCDEFGH.js";
 const meta = (inputs: string[], exports: string[], entryPoint?: string) => ({
@@ -36,4 +36,63 @@ test("a shared file that only re-exports a dynamically imported module is named 
 	const first = sharedFileName("lazy", meta([], ["run"], "dist/core/a.js"), output);
 	assert.notEqual(sharedFileName("lazy", meta([], ["run"], "dist/core/b.js"), output), first);
 	assert.equal(sharedFileName("lazy", meta([], ["run"], "dist/core/a.js"), output), first);
+});
+
+/** A shared file an earlier release imports on demand: the module's file before its exports grew. */
+const released = {
+	version: "0.10.4-alpha.1",
+	path: "_shared/compile-cache-warmup-host-OQZHHQ2Z.js",
+	names: ["warmCompileCache", "startCompileCacheHelper"],
+};
+
+test("a shared file an earlier release imports on demand stays, re-exporting what it had from this split's file of the module", () => {
+	const outputs = [
+		{
+			file: "compile-cache-warmup-host-RU5L7I7A.js",
+			stem: "compile-cache-warmup-host",
+			exports: ["compileCacheWarmupRuntimes", "startCompileCacheHelper", "warmCompileCache"],
+		},
+		{ file: "chunk-HPXIRGJN.js", stem: "chunk", exports: ["warmCompileCache", "startCompileCacheHelper"] },
+	];
+	assert.deepEqual(compatSharedFiles([released, released], outputs, "_shared"), [
+		{
+			path: "_shared/compile-cache-warmup-host-OQZHHQ2Z.js",
+			contents:
+				'export { startCompileCacheHelper, warmCompileCache } from "./compile-cache-warmup-host-RU5L7I7A.js";\n',
+		},
+	]);
+	// Still written by this split: nothing to add.
+	assert.deepEqual(
+		compatSharedFiles(
+			[released],
+			[
+				{
+					file: "compile-cache-warmup-host-OQZHHQ2Z.js",
+					stem: "compile-cache-warmup-host",
+					exports: released.names,
+				},
+			],
+			"_shared",
+		),
+		[],
+	);
+});
+
+test("the build fails when no file of this split, or more than one, can stand for a shared file an earlier release imports", () => {
+	const lacking = [
+		{
+			file: "compile-cache-warmup-host-RU5L7I7A.js",
+			stem: "compile-cache-warmup-host",
+			exports: ["warmCompileCache"],
+		},
+	];
+	assert.throws(
+		() => compatSharedFiles([released], lacking, "_shared"),
+		/0\.10\.4-alpha\.1 imports dist\/_shared\/compile-cache-warmup-host-OQZHHQ2Z\.js on demand, and no shared file of this build holds its module with its exports \(warmCompileCache, startCompileCacheHelper\)/,
+	);
+	const twice = [
+		{ file: "compile-cache-warmup-host-AAAAAAAA.js", stem: "compile-cache-warmup-host", exports: released.names },
+		{ file: "compile-cache-warmup-host-BBBBBBBB.js", stem: "compile-cache-warmup-host", exports: released.names },
+	];
+	assert.throws(() => compatSharedFiles([released], twice, "_shared"), /more than one shared file/);
 });

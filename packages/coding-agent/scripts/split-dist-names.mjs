@@ -35,3 +35,38 @@ export function sharedFileName(stem, meta, output) {
 	const first = members.length > 0 ? `module:${members[0]}` : `entry:${meta.entryPoint ?? output}`;
 	return `${stem}-${groupName(`${first}\0${[...meta.exports].sort().join(",")}`)}.js`;
 }
+
+/**
+ * The files to write so that each shared file `released` names, which a recorded earlier release imports on demand,
+ * is still there when this split does not write it: one that re-exports the names that release's file exported from the
+ * shared file this split writes for the same module (the same stem, esbuild's name for the module or package the file
+ * holds), which exports every one of them. A process of that release imports such a file by its name, and must find
+ * this build's code of that module, not a second copy. Fails, naming the file, when no shared file of this split, or
+ * more than one, can stand for it.
+ *
+ * @param {readonly { version: string, path: string, names: readonly string[] }[]} released
+ * @param {readonly { file: string, stem: string, exports: readonly string[] }[]} outputs
+ * @param {string} directory the shared files' directory below `dist`
+ * @returns {{ path: string, contents: string }[]}
+ */
+export function compatSharedFiles(released, outputs, directory) {
+	const written = new Set(outputs.map((output) => `${directory}/${output.file}`));
+	/** @type {Map<string, { path: string, contents: string }>} */
+	const files = new Map();
+	for (const { version, path, names } of released) {
+		if (written.has(path) || files.has(path)) continue;
+		const stem = new RegExp(`^${directory}/([^/]+)-[A-Z2-7]{8}\\.js$`).exec(path)?.[1];
+		const candidates = outputs.filter(
+			(output) => output.stem === stem && names.every((name) => output.exports.includes(name)),
+		);
+		if (candidates.length !== 1)
+			throw new Error(
+				`split-dist: ${version} imports dist/${path} on demand, and ${candidates.length === 0 ? "no" : "more than one"} shared file of this build holds its module with its exports (${names.join(", ")})`,
+			);
+		files.set(path, {
+			path,
+			contents: `export { ${[...names].sort().join(", ")} } from "./${candidates[0].file}";\n`,
+		});
+	}
+	return [...files.values()];
+}
