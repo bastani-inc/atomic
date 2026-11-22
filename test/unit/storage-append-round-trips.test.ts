@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -87,6 +89,31 @@ test("creating a session and appending to it each wait for the connection's thre
 			entry.type === "message" && "content" in entry.message ? entry.message.content : "",
 		),
 		["first", "second", "third"],
+	);
+});
+
+test("an append to a session of the default store waits for the connection's thread as often as on its database alone", async () => {
+	const root = makeTempDirectory("atomic-append-round-trips-default-");
+	const cwd = join(root, "project");
+	mkdirSync(cwd);
+	const store = await resolveSessionStore(cwd, { agentDir: join(root, "agent"), settings: {} });
+	cleanups.push(async () => {
+		await store.close();
+		removeTempDirectory(root);
+	});
+	const created = await store.create(header("s1"), []);
+	const waits = countWaits();
+	const first = message("first", null);
+	await store.append("s1", [first], { expectSeq: created.lastSeq, epoch: created.epoch });
+	// The write lock, the version check with the session's row, its rows with their search texts, the commit.
+	assert.equal(waits.take(), 4);
+	await store.append("s1", [message("second", first.id)], { expectSeq: created.lastSeq + 1 });
+	assert.equal(waits.take(), 4);
+	assert.deepEqual(
+		(await store.load("s1")).entries.map((entry) =>
+			entry.type === "message" && "content" in entry.message ? entry.message.content : "",
+		),
+		["first", "second"],
 	);
 });
 
