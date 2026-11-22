@@ -215,11 +215,14 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 		throw new Error(`Invalid HTTP idle timeout: ${String(timeoutMs)}`);
 	}
 
-	const dispatcher = withUndiciErrorListener(
-		new undici.EnvHttpProxyAgent(createHttpDispatcherOptions(normalizedTimeoutMs)),
-	);
-	undici.setGlobalDispatcher(dispatcher);
 	bunIdleTimeoutMs = normalizedTimeoutMs;
+	const isBun = typeof process.versions.bun === "string";
+	if (!isBun) {
+		const dispatcher = withUndiciErrorListener(
+			new undici.EnvHttpProxyAgent(createHttpDispatcherOptions(normalizedTimeoutMs)),
+		);
+		undici.setGlobalDispatcher(dispatcher);
+	}
 
 	// Keep fetch and the dispatcher on the same undici implementation. Some Node
 	// releases use a bundled fetch that can ignore the npm undici dispatcher or
@@ -231,9 +234,13 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 			? globalThis.fetch === originalGlobalFetch
 			: globalThis.fetch === installedGlobalFetch;
 	if (shouldInstallGlobals) {
-		installUndiciGlobals();
-		// Bun's `undici` stand-in ignores the dispatcher just configured: its fetch is given the same settings itself.
-		if (typeof process.versions.bun === "string") globalThis.fetch = createBunFetch(globalThis.fetch);
+		if (isBun) {
+			// Bun's native fetch ignores npm undici's dispatcher: wrap Bun's fetch directly so
+			// `httpIdleTimeoutMs` and HTTP fallback proxies apply even when npm `undici` is bundled.
+			globalThis.fetch = createBunFetch(originalGlobalFetch);
+		} else {
+			installUndiciGlobals();
+		}
 		installedGlobalFetch = globalThis.fetch;
 		// Undici replaces the WebSocket constructor pi-ai caches on first use.
 		// The wrapper only rewrites a shared Codex request carrying Atomic's

@@ -3,34 +3,7 @@ import { drainPendingOAuthRotations, normalizeProviderId } from "@bastani/atomic
 import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
-import {
-	type AuthCheckResult,
-	checkProviderAuth,
-	createAuthCheckModelRuntime,
-	getProviderCredential,
-	hasExplicitCredentialExportTarget,
-} from "./cli/auth-check.ts";
-import {
-	type AuthCommand,
-	AuthCommandError,
-	getAuthCommandName,
-	getAuthCommandUsage,
-	isAuthCommandHelp,
-	parseAuthCommand,
-	printAuthCommandHelp,
-	validateAuthCheckArgs,
-} from "./cli/auth-command.ts";
-import { runAuthLogin } from "./cli/auth-login.js";
-import { runAuthLogout } from "./cli/auth-logout.js";
-import { createProcessLoginTerminal } from "./cli/auth-terminal.js";
-import {
-	CredentialPrintError,
-	emitCredential,
-	resolveCredentialForPrint,
-	toCredentialPrintError,
-	validateCredentialPrintArgs,
-} from "./cli/credential-print.ts";
-import { listModels } from "./cli/list-models.ts";
+import { shouldRunFirstTimeSetup } from "./cli/first-time-setup-check.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
 import {
 	ENV_DEBUG,
@@ -58,7 +31,6 @@ import {
 	prepareAgentSessionServices,
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
-import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import { startEventLoopMonitor, waitForEventLoopMonitorReady } from "./core/event-loop-monitor.ts";
@@ -71,8 +43,7 @@ import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.t
 import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { findInitialModel, resolveModelScopeWithDiagnostics, uncachedCopilotModelHint } from "./core/model-resolver.ts";
-import { ModelRuntime } from "./core/model-runtime.js";
-import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { engineExtensionsCanDecide, extensionsCanDecideProjectTrust } from "./core/project-trust-electorate.js";
@@ -109,6 +80,7 @@ import {
 } from "./core/storage/process-selection.js";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, hasProjectTrustInputsAsync, ProjectTrustStore } from "./core/trust-manager.ts";
+import { isUnknownModel } from "./core/unknown-model.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import {
 	type AppMode,
@@ -129,7 +101,6 @@ import {
 	resolveDeferredStartupModel,
 } from "./main-deferred-startup.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
-import { runFirstTimeSetup } from "./main-first-time-setup.ts";
 import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
 	createResumeProgress,
@@ -167,17 +138,14 @@ import {
 	runMigrationsAsync,
 	showDeprecationWarnings,
 } from "./migrations.ts";
-import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { shouldUseFullscreenTui } from "./modes/interactive/fullscreen-environment.ts";
-import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
-import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
+import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/global-theme.ts";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
 import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.js";
-import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { ENGINE_SHUTDOWN_GRACE_MS } from "./modes/rpc/rpc-client-process.js";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
-import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { handlePackageCommandParseOutcome, parsePackageCommand } from "./package-manager-cli-parser.ts";
 import { canonicalizePath, canonicalizePathAsync } from "./utils/canonical-path.ts";
 import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
@@ -225,199 +193,8 @@ function collectExtensionLoadDiagnostics(
 	];
 }
 
-function authCheckErrorMessage(error: unknown): string {
-	// Provider and credential-store errors can quote a live credential. Model
-	// resolution errors are made only from the named CLI values, so they remain
-	// actionable without letting provider-generated text reach stderr.
-	return error instanceof AuthCommandError ? error.message : "Failed to check provider readiness";
-}
+const PACKAGE_COMMAND_NAMES = new Set(["install", "remove", "uninstall", "update", "list"]);
 
-/**
- * `atomic auth …` owns provider-readiness checks and the credential-export
- * door. Its stdout guard routes all ordinary writes to stderr while a command
- * resolves. A readiness result reaches real stdout only as a status record;
- * the opt-in credential branch passes a Secret to emitCredential, the sole
- * code path that can open it and write it to stdout.
- */
-async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<void> {
-	validateAuthCheckArgs(parsed);
-	let result: AuthCheckResult;
-	let credentials: AuthStorage | ReadOnlyAuthStorage | undefined;
-	let modelRuntime: ModelRuntime | undefined;
-	try {
-		credentials = command.noRefresh ? new ReadOnlyAuthStorage() : AuthStorage.create();
-		modelRuntime = await createAuthCheckModelRuntime(credentials);
-		result = await checkProviderAuth(parsed, modelRuntime, { refresh: !command.noRefresh, credentials });
-	} catch (error) {
-		console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
-		result = { status: "invalid", reason: "invalid_state" };
-	}
-
-	let credentialEmitted = false;
-	if (command.credentials && result.status === "ready" && credentials && modelRuntime) {
-		const readyResult = result;
-		if (!hasExplicitCredentialExportTarget(parsed, modelRuntime, readyResult.provider)) {
-			console.error(chalk.red("Error: Credential export requires --provider or an exact --model target"));
-			result = { status: "invalid", provider: readyResult.provider, reason: "invalid_state" };
-		} else {
-			try {
-				const credential = await getProviderCredential(readyResult.provider, modelRuntime, credentials, {
-					refresh: !command.noRefresh,
-				});
-				if (credential) {
-					await emitCredential(
-						credential,
-						command.json
-							? {
-									status: readyResult.status,
-									provider: readyResult.provider,
-									authType: readyResult.authType,
-								}
-							: undefined,
-					);
-					credentialEmitted = true;
-				} else {
-					result = { status: "not_ready", provider: readyResult.provider, reason: "credential_not_available" };
-				}
-			} catch (error) {
-				if (error instanceof CredentialPrintError) throw error;
-				// Provider text can quote a credential. Explain the export failure with a
-				// constant diagnostic rather than carrying that text into stderr.
-				console.error(chalk.red("Error: Failed to resolve credential for export"));
-				result = { status: "invalid", provider: readyResult.provider, reason: "invalid_state" };
-			}
-		}
-	}
-
-	if (!credentialEmitted) {
-		if (command.credentials && !command.json) {
-			// The explicit credential stream is credential-only. A caller assigning
-			// it to a shell variable receives no status word on a non-zero exit.
-			console.error(result.status);
-		} else {
-			const output = command.json ? JSON.stringify(result) : result.status;
-			writeRawStdout(`${output}\n`);
-			await flushRawStdout();
-		}
-	}
-	process.exitCode = result.status === "ready" ? 0 : result.status === "not_ready" ? 1 : 2;
-}
-async function runAuthLoginCommand(args: string[]): Promise<number> {
-	const settingsManager = SettingsManager.create(process.cwd(), getAgentDir(), { projectTrusted: false });
-	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
-
-	const controller = new AbortController();
-	const interrupt = () => controller.abort();
-	process.on("SIGINT", interrupt);
-	try {
-		return await runAuthLogin(args, {
-			modelRuntime,
-			terminal: createProcessLoginTerminal(interrupt),
-			getDeviceId: () => settingsManager.getOrCreateDeviceId(),
-			signal: controller.signal,
-		});
-	} finally {
-		process.off("SIGINT", interrupt);
-	}
-}
-
-async function runAuthLogoutCommand(args: string[]): Promise<number> {
-	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
-	return runAuthLogout(args, {
-		modelRuntime,
-		terminal: { write: (line) => console.log(line), error: (line) => console.error(line) },
-		signal: AbortSignal.timeout(15_000),
-	});
-}
-
-async function runAuthCommand(args: string[]): Promise<boolean> {
-	if (isAuthCommandHelp(args)) {
-		printAuthCommandHelp();
-		return true;
-	}
-	if (args[0] === "auth" && args[1] === "login") {
-		// main() already applied --offline.
-		process.exitCode = await runAuthLoginCommand(args.slice(2).filter((arg) => arg !== "--offline"));
-		return true;
-	}
-	if (args[0] === "auth" && args[1] === "logout") {
-		process.exitCode = await runAuthLogoutCommand(args.slice(2).filter((arg) => arg !== "--offline"));
-		return true;
-	}
-
-	let command: AuthCommand | undefined;
-	try {
-		command = parseAuthCommand(args);
-	} catch (error) {
-		const failure = error instanceof AuthCommandError ? error : new AuthCommandError("Failed to parse auth command");
-		console.error(chalk.red(`Error: ${failure.message}`));
-		process.exitCode = failure.exitCode;
-		return true;
-	}
-	if (!command) return false;
-
-	takeOverStdout();
-	try {
-		const parsed = parseArgs(command.args);
-		if (parsed.debug) setEnvValue(ENV_DEBUG, "1");
-		if (command.kind === "check") {
-			if (parsed.unknownFlags.size > 0) {
-				const option = parsed.unknownFlags.keys().next().value;
-				console.error(chalk.red(`Unknown option --${option} for "${getAuthCommandName(command.kind)}".`));
-				console.error(chalk.dim(`Use "${getAuthCommandUsage(command.kind)}".`));
-				process.exitCode = 2;
-				return true;
-			}
-			const errors = parsed.diagnostics.filter((diagnostic) => diagnostic.type === "error");
-			if (errors.length > 0) {
-				for (const error of errors) console.error(chalk.red(`Error: ${error.message}`));
-				process.exitCode = 2;
-				return true;
-			}
-		} else if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
-			// Preserve the print commands' established parser behavior: any error
-			// prints every diagnostic, warnings included, as a guarded stderr error.
-			for (const diagnostic of parsed.diagnostics) console.error(chalk.red(`Error: ${diagnostic.message}`));
-			process.exitCode = 1;
-			return true;
-		}
-
-		if (command.kind === "check") {
-			try {
-				await runAuthCheckCommand(command, parsed);
-			} catch (error) {
-				if (error instanceof CredentialPrintError) {
-					console.error(chalk.red(`Error: ${error.message}`));
-					process.exitCode = error.exitCode;
-				} else {
-					console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
-					process.exitCode = 2;
-				}
-			}
-			return true;
-		}
-
-		try {
-			validateCredentialPrintArgs(parsed);
-			const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
-			const secret = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
-			// The Secret arrives unreadable here; emitCredential routes it through
-			// credentialPayload, the only source function that can open it.
-			await emitCredential(secret, undefined);
-		} catch (error) {
-			// Every code toCredentialPrintError can produce belongs to a failure
-			// that emitted nothing, so the exit code set here never contradicts
-			// an empty stdout; a genuinely unclassified error is reported as a
-			// credential-resolution failure.
-			const failure = toCredentialPrintError(error);
-			console.error(chalk.red(`Error: ${failure.message}`));
-			process.exitCode = failure.exitCode;
-		}
-	} finally {
-		restoreStdout();
-	}
-	return true;
-}
 /**
  * Ends a one-shot command. A model refresh or credential print may have started an OAuth token exchange whose caller
  * already gave up; the provider may have rotated the login, so its result is persisted if it arrives within the bound.
@@ -477,16 +254,30 @@ export async function main(argv: string[], options?: MainOptions) {
 	if (!inheritsDebugSetting()) setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
-	if (await handlePackageCommand(args, { extensionFactories })) {
-		await exitAfterCommand();
-		return;
+	if (args[0] !== undefined && PACKAGE_COMMAND_NAMES.has(args[0])) {
+		const parsedPackageCommand = parsePackageCommand(args);
+		if (parsedPackageCommand && handlePackageCommandParseOutcome(parsedPackageCommand)) {
+			await exitAfterCommand();
+			return;
+		}
+		const { handlePackageCommand } = await import("./package-manager-cli.js");
+		if (await handlePackageCommand(args, { extensionFactories })) {
+			await exitAfterCommand();
+			return;
+		}
 	}
-	if (await handleConfigCommand(args, { extensionFactories })) {
-		return;
+	if (args[0] === "config") {
+		const { handleConfigCommand } = await import("./package-manager-cli.js");
+		if (await handleConfigCommand(args, { extensionFactories })) {
+			return;
+		}
 	}
-	if (await runAuthCommand(args)) {
-		await exitAfterCommand();
-		return;
+	if (args[0] === "auth") {
+		const { runAuthCommand } = await import("./cli/auth-cli.js");
+		if (await runAuthCommand(args)) {
+			await exitAfterCommand();
+			return;
+		}
 	}
 	if (args[0] === "mcp") {
 		const { loadMcpCommand } = await import("./extensions/mcp/cli.lazy.js");
@@ -733,6 +524,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				resourceLoader.getExtensions().extensions.flatMap((extension) => Array.from(extension.flags.values())),
 			);
 		} else {
+			const { listModels } = await import("./cli/list-models.js");
 			await listModels(
 				modelRuntime,
 				typeof parsed.listModels === "string" ? parsed.listModels : undefined,
@@ -1513,7 +1305,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// Without a UI, a resume that waits for another build of its worktree says so while it waits (#4748).
 	const stopAnnouncingWaits =
 		appMode !== "interactive" && engineEnv.child !== "1"
-			? announceBlueprintBuildWaits(appMode !== "print")
+			? (await import("./modes/print-mode.ts")).announceBlueprintBuildWaits(appMode !== "print")
 			: undefined;
 	try {
 		const opened = await openCliSession(parsed, cwd, startupSettingsManager, {
@@ -1642,7 +1434,10 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, stdinContent);
 	time("prepareInitialMessage");
-	startupEarlyInputCapture = await runFirstTimeSetup(appMode, settingsManager, startupEarlyInputCapture);
+	if (appMode === "interactive" && shouldRunFirstTimeSetup()) {
+		const { runFirstTimeSetup } = await import("./main-first-time-setup.ts");
+		startupEarlyInputCapture = await runFirstTimeSetup(appMode, settingsManager, startupEarlyInputCapture);
+	}
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 
@@ -1687,6 +1482,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			void modelRuntime.refresh().catch(() => {});
 		}
 		printTimings();
+		const { runRpcMode } = await import("./modes/rpc/rpc-mode.ts");
 		await runRpcMode(runtime, {
 			deferInteractiveEngineResources: deferredExtensionLoad,
 			onStartupReload: deferredExtensionLoad
@@ -1721,6 +1517,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			storedProjectTrust: projectTrustStore.get(sessionCwd),
 			defaultProjectTrust: startupDefaultProjectTrust,
 		});
+		const { InteractiveMode } = await import("./modes/interactive/interactive-mode.ts");
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
@@ -1776,6 +1573,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		}
 	} else {
 		printTimings();
+		const { runPrintMode } = await import("./modes/print-mode.ts");
 		const exitCode = await runPrintMode(runtime, {
 			mode: toPrintOutputMode(appMode),
 			messages: parsed.messages,

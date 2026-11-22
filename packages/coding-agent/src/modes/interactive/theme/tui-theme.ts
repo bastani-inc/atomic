@@ -1,14 +1,9 @@
-import {
-	type EditorAutocompleteHintEntry,
-	type EditorTheme,
-	getKeybindings,
-	type MarkdownTheme,
-	type SelectListTheme,
-} from "@bastani/atomic-tui";
+import type { MarkdownTheme } from "@bastani/atomic-tui";
 import { getHighlightLanguageCount, highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
-import { type NavKeybindings, type NavKeyStyle, renderAutocompleteHintLine } from "../components/nav-keys.ts";
 import { getGlobalTheme, theme } from "./global-theme.ts";
 import type { Theme } from "./theme-class.ts";
+
+export { getEditorTheme, getSelectListTheme, renderAutocompleteHint } from "./editor-theme.ts";
 
 type CliHighlightTheme = Record<string, (s: string) => string>;
 
@@ -190,43 +185,6 @@ export function getMarkdownTheme(): MarkdownTheme {
 				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
 			}
 		},
-	};
-}
-
-export function getSelectListTheme(): SelectListTheme {
-	return {
-		selectedPrefix: (text: string) => theme.fg("accent", text),
-		selectedText: (text: string) => theme.fg("accent", text),
-		description: (text: string) => theme.fg("muted", text),
-		scrollInfo: (text: string) => theme.fg("muted", text),
-		noMatch: (text: string) => theme.fg("muted", text),
-	};
-}
-
-export function renderAutocompleteHint(
-	entries: readonly EditorAutocompleteHintEntry[],
-	width: number,
-	keybindings: NavKeybindings = getKeybindings(),
-	style: NavKeyStyle = themeNavKeyStyle(),
-): string {
-	return renderAutocompleteHintLine(entries, width, keybindings, style);
-}
-
-function themeNavKeyStyle(): NavKeyStyle {
-	return {
-		dim: (text: string) => theme.fg("dim", text),
-		text: (text: string) => theme.fg("text", text),
-		muted: (text: string) => theme.fg("muted", text),
-		border: (text: string) => theme.fg("borderMuted", text),
-		bold: (text: string) => theme.bold(text),
-	};
-}
-
-export function getEditorTheme(): EditorTheme {
-	return {
-		borderColor: (text: string) => theme.fg("borderMuted", text),
-		selectList: getSelectListTheme(),
-		autocompleteHint: (entries, width) => renderAutocompleteHint(entries, width),
 	};
 }
 

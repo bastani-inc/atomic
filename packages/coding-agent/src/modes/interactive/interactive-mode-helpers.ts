@@ -1,14 +1,16 @@
 import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
 import { pathExists } from "../../core/tools/path-utils.ts";
+import { isUnknownModel } from "../../core/unknown-model.ts";
+
+export { isUnknownModel };
+
 import { quoteForShell } from "./chat-input-actions.ts";
 import { type RowRange, rowsFrom } from "./components/transcript-block-clicks.ts";
 import {
 	APP_NAME,
-	type Api,
 	BUILTIN_SLASH_COMMANDS,
 	defaultModelPerProvider,
-	type Model,
 	type SessionManager,
 	Text,
 } from "./interactive-mode-deps.ts";
@@ -114,10 +116,6 @@ export const BUILTIN_SLASH_COMMAND_NAMES = new Set(BUILTIN_SLASH_COMMANDS.map((c
 
 export function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
-}
-
-export function isUnknownModel(model: Model<Api> | undefined): boolean {
-	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
 
 /** The command that resumes this session, quoted for the shell people use on `platform`. */

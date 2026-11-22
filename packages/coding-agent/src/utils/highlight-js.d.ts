@@ -9,6 +9,7 @@ interface HighlightJsOptions {
 
 interface HighlightJsLanguageDefinition {
 	readonly name?: string;
+	aliases?: readonly string[];
 }
 
 type HighlightJsLanguageFactory = (hljs: HighlightJsApi) => HighlightJsLanguageDefinition;
@@ -19,6 +20,7 @@ interface HighlightJsApi {
 	getLanguage(name: string): HighlightJsLanguageDefinition | undefined;
 	listLanguages(): string[];
 	registerLanguage(name: string, language: HighlightJsLanguageFactory): void;
+	registerAliases(aliasList: string | readonly string[], options: { languageName: string }): void;
 }
 
 declare module "highlight.js/lib/core.js" {
