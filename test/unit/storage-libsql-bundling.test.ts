@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { getAllBuiltinPackageLocations } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { EXPECTED_BUILTIN_DIRECTORY_NAMES } from "../../scripts/assert-builtin-set.js";
-import type { CodingAgentShrinkwrap as Shrinkwrap } from "../../scripts/generate-coding-agent-shrinkwrap.mjs";
+import { codingAgentDependencyClosure } from "../helpers/coding-agent-dependency-closure.js";
 import {
 	makeTempDirectory,
 	moduleDir,
@@ -25,7 +25,7 @@ interface PackageManifest {
 	bundledDependencies?: string[];
 }
 
-test("the libSQL adapter and its driver stay out of the Atomic package, its shrinkwrap, and the builtin set (#3857)", async () => {
+test("the libSQL adapter and its driver stay out of the Atomic package, its dependency tree, and the builtin set (#3857)", async () => {
 	const codingAgent = await readJson<PackageManifest>("packages/coding-agent/package.json");
 	for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
 		const names = Object.keys(codingAgent[field] ?? {});
@@ -37,11 +37,12 @@ test("the libSQL adapter and its driver stay out of the Atomic package, its shri
 	}
 	assert.deepEqual(codingAgent.bundledDependencies ?? [], []);
 
-	const shrinkwrap = await readJson<Shrinkwrap>("packages/coding-agent/npm-shrinkwrap.json");
 	assert.deepEqual(
-		Object.keys(shrinkwrap.packages).filter((path) => /libsql/i.test(path)),
+		codingAgentDependencyClosure()
+			.map(({ name }) => name)
+			.filter((name) => /libsql/i.test(name)),
 		[],
-		"the published shrinkwrap must not install libSQL",
+		"an install of Atomic must not install libSQL",
 	);
 
 	assert.ok(!(EXPECTED_BUILTIN_DIRECTORY_NAMES as readonly string[]).includes("storage-libsql"));

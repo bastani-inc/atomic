@@ -29,11 +29,9 @@
     "test:mcp-conformance": "bun run packages/coding-agent/test/mcp-conformance/run.ts",
     "typecheck": "node scripts/refresh-package-dist.mjs packages/schema packages/telemetry packages/ai && npm --workspace=@bastani/atomic-ai run typecheck && node scripts/refresh-package-dist.mjs packages/tui packages/agent packages/codemode && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
     "format": "biome format --write .",
-    "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap && npm run check:event-loop",
+    "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:event-loop",
     "lint": "npm run check",
-    "check:shrinkwrap": "node scripts/generate-coding-agent-shrinkwrap.mjs --check",
-    "check:event-loop": "node scripts/event-loop/check-event-loop.ts",
-    "shrinkwrap:coding-agent": "node scripts/generate-coding-agent-shrinkwrap.mjs"
+    "check:event-loop": "node scripts/event-loop/check-event-loop.ts"
   },
   "devDependencies": {
     "@babel/parser": "8.1.2",
