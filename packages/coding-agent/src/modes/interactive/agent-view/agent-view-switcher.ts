@@ -8,7 +8,7 @@ export type PendingOutcome = "shown" | "failed" | "superseded";
 
 export type PendingListener = (
 	pending: TaskId | undefined,
-	settled?: { readonly taskId: TaskId; readonly outcome: PendingOutcome },
+	settled?: { readonly taskId: TaskId; readonly outcome: PendingOutcome; readonly requestId?: number },
 ) => void;
 
 /** Why the screen still shows what it showed after a request for a subagent. */
@@ -39,7 +39,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	private readonly changeListeners = new Set<(change: AgentViewChange) => void>();
 	private readonly listeners = new Set<() => void>();
 	private readonly pendingListeners = new Set<PendingListener>();
-	private pending: TaskId | undefined;
+	private pendingRequest: { readonly id: number; readonly taskId: TaskId; readonly keepScreen: boolean } | undefined;
 	private readonly openPort: OpenAgentViewPort;
 	private readonly notify: (message: string) => void;
 	private readonly holdScreen: HoldAgentViewScreen | undefined;
@@ -61,7 +61,17 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	 * is meant for it, so the prompt holds it back until then.
 	 */
 	get pendingTaskId(): TaskId | undefined {
-		return this.pending;
+		return this.pendingRequest?.taskId;
+	}
+
+	/** Monotonic host request id of the currently pending open, or undefined when idle. */
+	get pendingRequestId(): number | undefined {
+		return this.pendingRequest?.id;
+	}
+
+	/** Whether the currently pending open was started with `keepScreen: true` (closing `/tasks`). */
+	get pendingKeepScreen(): boolean {
+		return this.pendingRequest?.keepScreen === true;
 	}
 
 	/**
@@ -95,7 +105,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 			this.setPending(undefined, "superseded");
 			return true;
 		}
-		this.setPending(taskId, "superseded");
+		this.setPending({ id: request, taskId, keepScreen: options?.keepScreen === true }, "superseded");
 		if (options?.keepScreen === true && this.releaseScreen === undefined) this.releaseScreen = this.holdScreen?.();
 		let landed = false;
 		try {
@@ -108,7 +118,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 
 	/** Esc while a subagent is opening: it is not shown, and the screen keeps what it shows. */
 	cancelPending(): void {
-		if (this.pending === undefined) return;
+		if (this.pendingRequest === undefined) return;
 		this.request++;
 		this.setPending(undefined, "superseded");
 	}
@@ -170,15 +180,20 @@ export class AgentViewSwitcher implements AgentViewBridge {
 	}
 
 	/** `outcome` is how the request pending until now ended, when one was. */
-	private setPending(taskId: TaskId | undefined, outcome: PendingOutcome): void {
-		const previous = this.pending;
-		if (previous === taskId) return;
-		this.pending = taskId;
+	private setPending(
+		next: { readonly id: number; readonly taskId: TaskId; readonly keepScreen: boolean } | undefined,
+		outcome: PendingOutcome,
+	): void {
+		const previous = this.pendingRequest;
+		if (previous === undefined && next === undefined) return;
+		if (previous !== undefined && next !== undefined && previous.id === next.id) return;
+		this.pendingRequest = next;
+		const taskId = next?.taskId;
 		// The screen held for the request that stops pending is shown live again once the listeners ran: a request
 		// that landed has its subagent laid out by then, so the next paint shows it with its prompt and panel.
 		const releaseScreen = this.releaseScreen;
 		this.releaseScreen = undefined;
-		const settled = previous === undefined ? undefined : { taskId: previous, outcome };
+		const settled = previous === undefined ? undefined : { taskId: previous.taskId, outcome, requestId: previous.id };
 		if (settled !== undefined && (taskId === undefined || settled.outcome === "superseded")) {
 			settleStoreTasksReturn(ownerTaskStoreForBridge(this), this.viewedTaskId());
 		}
