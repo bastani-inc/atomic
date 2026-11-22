@@ -92,6 +92,26 @@ describe("canonicalizePath", () => {
 		expect(await matches(undefined)).toBe(false);
 	});
 
+	it("matches string-identical cwds asynchronously without touching the filesystem", async () => {
+		const dir = createTempDir();
+		const targetDir = join(dir, "identical-cwd");
+		mkdirSync(targetDir);
+		const cjsFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+		const originalLstat = cjsFs.lstat;
+		let lstatCalls = 0;
+		cjsFs.lstat = ((...args: Parameters<typeof originalLstat>) => {
+			if (String(args[0]).includes("identical-cwd")) lstatCalls += 1;
+			return Reflect.apply(originalLstat, cjsFs, args);
+		}) as typeof originalLstat;
+		try {
+			const matches = createSessionCwdMatcherAsync(targetDir);
+			expect(await matches(targetDir)).toBe(true);
+			expect(lstatCalls).toBe(0);
+		} finally {
+			cjsFs.lstat = originalLstat;
+		}
+	});
+
 	it("uses non-native fs.realpath in canonicalizePathAsync to match canonicalizePath", async () => {
 		const dir = createTempDir();
 		const target = join(dir, "RUNNER~1");
