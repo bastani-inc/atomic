@@ -59,6 +59,7 @@ function copiedPackage(root: string): string {
 	}
 	const copy = join(root, "packages", "coding-agent");
 	fs.mkdirSync(copy, { recursive: true });
+	fs.copyFileSync(join(repoRoot, ".npmrc"), join(root, ".npmrc"));
 	fs.copyFileSync(join(packageDir, "package.json"), join(copy, "package.json"));
 	// The build's inputs besides the compiled files: its scripts and the records of earlier releases the split reads.
 	for (const directory of ["scripts", "in-place-update", "dist", "node_modules"])
@@ -125,14 +126,18 @@ function packedPackage(): Packed {
 		}),
 	);
 	fs.writeFileSync(join(copy, "dist", "startup-stages", "0.js"), 'import "../compiled-before-the-split.js";\n');
-	const out = join(workspace, "packed");
+	const out = join(workspace, "npm-packages");
 	fs.mkdirSync(out);
 	const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
-	const result = spawnSyncCollect([...npmSpawnPrefix(), "pack", copy, "--json", "--pack-destination", out], {
-		cwd: workspace,
-		env,
-		timeout: PACK_TIMEOUT_MS,
-	});
+	// Same relative command publish.yml runs from the repository root: `npm pack ./packages/coding-agent --pack-destination npm-packages`.
+	const result = spawnSyncCollect(
+		[...npmSpawnPrefix(), "pack", "./packages/coding-agent", "--json", "--pack-destination", "npm-packages"],
+		{
+			cwd: workspace,
+			env,
+			timeout: PACK_TIMEOUT_MS,
+		},
+	);
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	const stdout = result.stdout.toString();
 	const [{ filename, files }] = JSON.parse(stdout.slice(stdout.indexOf("[\n"))) as [

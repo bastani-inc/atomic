@@ -1062,10 +1062,18 @@ export class MultiNodeRouter {
 	private readonly claimingHandoffs = new ReportingMap<string, ReservedId>();
 	/** #5607: the identities whose kept hand-over is to be written at the end of this turn (`saveHandoffsSoon`). */
 	private readonly unsavedHandoffs = new Set<string>();
-	/** #5607: tokens of held ids that a registration coming back is taking, until it is registered here. */
-	private readonly consumingTokens = new Set<string>();
-	/** #5607: tokens of unanswered claims whose registration's binding write has not decided yet. */
-	private readonly decidingTokens = new Set<string>();
+	/**
+	 * #5607: tokens of held ids that a registration coming back is taking, until it is registered here, by claim: two
+	 * registrations of a session can take the same hold, and each stops taking it on its own.
+	 */
+	private readonly consumingClaims = new Map<string, string>();
+	/** #5607: tokens of unanswered claims whose registration's binding write has not decided yet, by claim. */
+	private readonly decidingClaims = new Map<string, string>();
+	/**
+	 * #5607: the unanswered claims whose binding write may still bind their id, by claim, each told whether its
+	 * registration uses that id (`claimLanding`).
+	 */
+	private readonly unansweredClaims = new Map<string, PromiseWithResolvers<"kept" | "unused">>();
 	/** #5607: when the shared store last answered one of this broker's statements. */
 	private storeAnsweredAt = Number.NEGATIVE_INFINITY;
 	/** #5607: what the instance key of every broker on this host starts with, when this host can be told apart. */
@@ -1288,7 +1296,7 @@ export class MultiNodeRouter {
 						};
 		const owner = this.newOwner(reserved?.token);
 		if (reserved !== undefined) {
-			this.consumingTokens.add(reserved.token);
+			this.consumingClaims.set(claim, reserved.token);
 			// Saved as held until the claim decides: a broker that stops meanwhile leaves it for the next one.
 			if (identity !== undefined) this.claimingHandoffs.set(identity, reserved);
 		}
@@ -1390,6 +1398,8 @@ export class MultiNodeRouter {
 			if (claimed.status === "unanswered") {
 				expired = true;
 				attempts.catch(() => {});
+				// #5607: an id the attempt binds after this is given back once the registration does not use it (`claimLanding`).
+				this.claimLanding({ intercomSessionId: sessionId, token: owner.token }, claim, attempts);
 				// #5607: held for the session until that write decides: kept, it is the registration's; not kept, the session
 				// awaits it with the hand-over's recovery, and is handed it again (`claimAwaitedIds`).
 				if (reserved !== undefined) this.holdAgain(identity, reserved);
@@ -1419,7 +1429,7 @@ export class MultiNodeRouter {
 				progress.extendedMs = Math.max(0, (gaveUpAt ?? Math.min(deadline, elapsed())) - retryDeadline);
 			// A held token stays in use until the registration that took it is registered here, which its broker does as
 			// it reads this answer.
-			if (reserved !== undefined) setImmediate(() => this.consumingTokens.delete(reserved.token));
+			if (reserved !== undefined) setImmediate(() => this.consumingClaims.delete(claim));
 			if (identity !== undefined && this.claimingHandoffs.get(identity) === reserved)
 				this.claimingHandoffs.delete(identity);
 		}
@@ -1454,8 +1464,44 @@ export class MultiNodeRouter {
 	 * #5607: give an owned id back; a store without owners has nothing to give back. A failure is reported: the id is free
 	 * again once its owner is no longer renewed.
 	 */
-	async releaseOwner(ownership: KnownSessionOwnership): Promise<void> {
+	async releaseOwner(ownership: KnownSessionOwnership, claim?: string): Promise<void> {
+		// #5607: given back by the registration of the unanswered `claim` that took it (`claimLanding`).
+		if (claim !== undefined) this.claimDecided(claim, "unused");
 		await this.state.knownSessions.owners?.release(ownership).catch((error: Error) => this.report(error));
+	}
+
+	/**
+	 * #5607: the binding write of a claim that gave up before it answered may still bind the id with the claim's token, in
+	 * the database, after the registration decided it does not use that id: a pooled database may run it after the
+	 * registration's own writes. Once both the write has bound the id and the registration has decided so
+	 * (`claimDecided`), whichever comes first, the id is given back, unless something here still holds it with that token:
+	 * a hand-over's claim writes with its hold's token, which another registration of the session may be taking the id
+	 * with, and that hold gives the id back as it ends (`lapse`).
+	 */
+	private claimLanding(ownership: KnownSessionOwnership, claim: string, attempts: Promise<SessionIdClaim>): void {
+		const use = Promise.withResolvers<"kept" | "unused">();
+		this.unansweredClaims.set(claim, use);
+		void attempts
+			.then(
+				async (landed) => {
+					if (landed.status !== "granted" || (await use.promise) !== "unused") return;
+					const { token } = ownership;
+					if (this.tokenClaimedOrDeciding(token) || this.holdsPair(ownership)) return;
+					await this.state.knownSessions.owners?.release(ownership).catch((error: Error) => this.report(error));
+				},
+				() => {},
+			)
+			.finally(() => {
+				if (this.unansweredClaims.get(claim) === use) this.unansweredClaims.delete(claim);
+			});
+	}
+
+	/** #5607: the registration of the unanswered `claim` uses its id, or does not (`claimLanding`). */
+	private claimDecided(claim: string, use: "kept" | "unused"): void {
+		const pending = this.unansweredClaims.get(claim);
+		if (pending === undefined) return;
+		this.unansweredClaims.delete(claim);
+		pending.resolve(use);
 	}
 
 	/**
@@ -1472,7 +1518,7 @@ export class MultiNodeRouter {
 		// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
 		const confirmed = clockMark();
 		let binding: KnownSessionBindResult;
-		if (reclaim !== undefined) this.decidingTokens.add(reclaim.token);
+		if (reclaim !== undefined) this.decidingClaims.set(reclaim.claim, reclaim.token);
 		try {
 			binding =
 				reclaim === undefined
@@ -1501,7 +1547,7 @@ export class MultiNodeRouter {
 			}
 			throw error;
 		} finally {
-			if (reclaim !== undefined) this.decidingTokens.delete(reclaim.token);
+			if (reclaim !== undefined) this.decidingClaims.delete(reclaim.claim);
 		}
 		if (binding.status === "refused") {
 			entry.unbound = true;
@@ -1559,8 +1605,14 @@ export class MultiNodeRouter {
 		const { knownSessions } = this.state;
 		const returnAddress = session.registrationReturnAddress ?? "";
 		const freshId = session.info.id;
+		// #5607: the claim's id is not this registration's: its token is no longer deciding it (`claimLanding`).
+		const unused = () => {
+			this.decidingClaims.delete(reclaim.claim);
+			this.claimDecided(reclaim.claim, "unused");
+		};
 		const bindFresh = async () => {
 			reclaim.settle(false);
+			unused();
 			// A grant its claim's own write made, which this registration does not use, is given back. A hand-over's hold
 			// that loses its id this way lapses at the next renewal, keeping its alias (`renewOwners`).
 			await this.releaseOwner({ intercomSessionId: reclaim.sessionId, token: owner.token });
@@ -1581,13 +1633,18 @@ export class MultiNodeRouter {
 			});
 		} catch (error) {
 			reclaim.settle(false);
+			unused();
 			throw error;
 		}
 		if (reclaimed.status === "fresh") {
 			reclaim.settle(false);
+			unused();
 			return reclaimed.binding;
 		}
-		if (reclaimed.status === "kept" && reclaim.settle(true)) return { status: "bound" };
+		if (reclaimed.status === "kept" && reclaim.settle(true)) {
+			this.claimDecided(reclaim.claim, "kept");
+			return { status: "bound" };
+		}
 		return bindFresh();
 	}
 
@@ -2032,7 +2089,10 @@ export class MultiNodeRouter {
 	 * that presents the hand-over, and the move back of a session that awaits the id with its `recovery` carries it).
 	 */
 	private lapse(identity: string, reserved: ReservedId): void {
-		if (!this.tokenInUse(reserved.token)) void this.releaseOwner({ intercomSessionId: reserved.id, token: reserved.token });
+		// The id only: the token may own the fresh id of a registration that did not keep this one.
+		const held = { intercomSessionId: reserved.id, token: reserved.token };
+		if (!this.tokenClaimedOrDeciding(held.token) && !this.holdsPair(held))
+			void this.releaseOwner(held);
 		const earlier = this.lapsedHandoffs.get(identity);
 		if (reserved.alias === reserved.id) {
 			if (reserved.aliasToken !== undefined && !this.tokenInUse(reserved.aliasToken))
@@ -2095,13 +2155,20 @@ export class MultiNodeRouter {
 		}
 	}
 
+	/** #5607: whether a claim here is taking a hold with `token`, or a registration's binding write deciding with it. */
+	private tokenClaimedOrDeciding(token: string): boolean {
+		for (const claimed of this.consumingClaims.values()) if (claimed === token) return true;
+		for (const deciding of this.decidingClaims.values()) if (deciding === token) return true;
+		return false;
+	}
+
 	/**
 	 * #5607: whether an owner token still serves a registration here: one held for a session that awaited its id, one a
 	 * registration that comes back is taking, or one a live registration owns its id or an alias with. A late answer of an
 	 * earlier write never gives such a token's id back.
 	 */
 	private tokenInUse(token: string): boolean {
-		if (this.consumingTokens.has(token) || this.decidingTokens.has(token)) return true;
+		if (this.tokenClaimedOrDeciding(token)) return true;
 		for (const reserved of this.reservedIds.values())
 			if (reserved.token === token || reserved.aliasToken === token) return true;
 		for (const lapsed of this.lapsedHandoffs.values()) if (lapsed.aliasToken === token) return true;
@@ -2111,6 +2178,27 @@ export class MultiNodeRouter {
 				entry.alias?.token === token ||
 				entry.awaits?.token === token ||
 				entry.pendingAlias?.aliasToken === token
+			)
+				return true;
+		return false;
+	}
+
+	/**
+	 * #5607: whether something here holds `intercomSessionId` with `token`: a hold or a claim taking one, a lapsed
+	 * hand-over's alias, or a registration that owns it, holds it as an alias, is taking it as one or awaits it. Unlike
+	 * `tokenInUse`, the token holding another id does not count.
+	 */
+	private holdsPair({ intercomSessionId, token }: KnownSessionOwnership): boolean {
+		const same = (id: string | undefined, held: string | undefined) => id === intercomSessionId && held === token;
+		for (const reserved of [...this.reservedIds.values(), ...this.claimingHandoffs.values()])
+			if (same(reserved.id, reserved.token) || same(reserved.alias, reserved.aliasToken)) return true;
+		for (const lapsed of this.lapsedHandoffs.values()) if (same(lapsed.alias, lapsed.aliasToken)) return true;
+		for (const entry of this.presence.values())
+			if (
+				same(entry.owner?.intercomSessionId, entry.owner?.token) ||
+				same(entry.alias?.intercomSessionId, entry.alias?.token) ||
+				same(entry.awaits?.id, entry.awaits?.token) ||
+				same(entry.pendingAlias?.alias, entry.pendingAlias?.aliasToken ?? entry.owner?.token)
 			)
 				return true;
 		return false;
@@ -5259,6 +5347,9 @@ export class MultiNodeRouter {
 		if (this.closed) return;
 		this.closed = true;
 		for (const timer of this.timers) clearInterval(timer);
+		// #5607: the ids an unanswered claim may still bind are given up with all of this broker's (`retireBroker`).
+		for (const use of this.unansweredClaims.values()) use.resolve("kept");
+		this.unansweredClaims.clear();
 		for (const waiter of [...this.waiters.values()]) this.dropWaiter(waiter);
 		for (const hold of this.holds.values()) clearTimeout(hold.timer);
 		this.holds.clear();

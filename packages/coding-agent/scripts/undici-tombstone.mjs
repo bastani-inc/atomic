@@ -18,6 +18,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { codeStringLiteral } from "./code-string-literal.mjs";
 
 const defaultPackageDir = fileURLToPath(new URL("..", import.meta.url));
 
@@ -72,7 +73,7 @@ export function undiciTombstoneEntries() {
 			const helper = `${"../".repeat(depth)}restart-notice.js`;
 			return {
 				path: `node_modules/undici/${shim}`,
-				contents: `import { throwUndiciRestartError } from ${JSON.stringify(helper)};\nthrowUndiciRestartError();\n`,
+				contents: `import { throwUndiciRestartError } from ${codeStringLiteral(helper)};\nthrowUndiciRestartError();\n`,
 			};
 		}),
 	];
