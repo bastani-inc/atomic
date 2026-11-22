@@ -9,6 +9,7 @@ import {
 	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
@@ -34,7 +35,7 @@ import {
 	type TaskViewSource,
 } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
-import { AGENT_PANEL_MODEL_MIN_WIDTH } from "./agent-panel.ts";
+import { AGENT_PANEL_MODEL_MIN_WIDTH, formatPanelElapsed } from "./agent-panel.ts";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
 import { ModelColumn } from "./model-column.ts";
@@ -43,12 +44,20 @@ import {
 	isNavHelpKey,
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
+	type NavKeybindings,
+	type NavKeyStyle,
 	navActionText,
 	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
 import { wrapNotes } from "./note-rows.ts";
+import {
+	formatShellViewerNote,
+	shellScrollRange,
+	shellViewerBoxGeometry,
+	stepShellStopConfirm,
+} from "./shell-viewer-layout.js";
 import {
 	type BoardRowModel,
 	boardModelFits,
@@ -207,6 +216,37 @@ export const TASK_CHAT_OVERLAY_KEYS: readonly NavKey[] = [
 	{ action: "app.thinking.toggle", label: "show or hide thinking" },
 	{ action: "app.agents.chord", label: "then the stop-all key: stop all background work" },
 ];
+
+export const SHELL_VIEWER_OVERLAY_KEYS: readonly NavKey[] = [
+	{ action: "app.nav.back", label: "back" },
+	{ keys: "pgup/pgdn", label: "scroll" },
+	{ action: "tui.altScreen.top", label: "jump to the top" },
+	{ action: "tui.altScreen.bottom", label: "jump to the bottom" },
+	{ action: "app.list.stop", label: "stop the shell" },
+	{ action: "app.agents.chord", label: "then the stop-all key: stop all background work" },
+];
+
+const SHELL_META_LABEL_WIDTH = 10;
+
+function formatShellMetaRows(
+	label: string,
+	value: string,
+	maxLines: number,
+	contentWidth: number,
+	lead: string,
+	styleValue: (text: string) => string = (text) => text,
+): string[] {
+	const valueWidth = Math.max(1, contentWidth - SHELL_META_LABEL_WIDTH);
+	const paddedLabel = theme.bold(`${label}:`.padEnd(SHELL_META_LABEL_WIDTH));
+	const continuation = " ".repeat(SHELL_META_LABEL_WIDTH);
+	const wrapped = wrapTextWithAnsi(value, valueWidth);
+	const lines = wrapped.length > 0 ? wrapped : [""];
+	const clipped =
+		lines.length > maxLines
+			? [...lines.slice(0, maxLines - 1), truncateToWidth(`${lines[maxLines - 1]!}…`, valueWidth, "…")]
+			: lines;
+	return clipped.map((line, index) => `${lead}${index === 0 ? paddedLabel : continuation}${styleValue(line)}`);
+}
 
 /** The host owns thinking display; only its default physical key, as a remap may reuse an editor key. */
 function isHostThinkingToggle(data: string): boolean {
@@ -424,6 +464,21 @@ export class TaskInspector implements Component {
 				const latest = selected === undefined ? undefined : latestSubagentAttempt(tasks, selected);
 				if (this.navigation.focus.kind === "detail" && latest !== undefined && latest.ref.taskId !== selected)
 					this.navigation.selectedTaskId = latest.ref.taskId;
+			}
+			if (this.transcript instanceof TaskCommandOutputPage) {
+				const pending = this.navigation.stopConfirm.pending();
+				if (pending !== undefined) {
+					const target =
+						this.store.tasks.find((candidate) => candidate.ref.taskId === pending) ??
+						this.waitedShellRecord(pending as TaskId);
+					if (
+						target === undefined ||
+						target.execution.kind === "settled" ||
+						target.execution.kind === "cancelling"
+					) {
+						this.navigation.stopConfirm.reset();
+					}
+				}
 			}
 			if (this.transcript) this.transcript.refresh();
 			else if (this.navigation.focus.kind === "detail") void this.loadDetail();
@@ -1124,13 +1179,56 @@ export class TaskInspector implements Component {
 	 */
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
+		const keys = getKeybindings();
+		if (transcript instanceof TaskCommandOutputPage) {
+			if (keys.matches(data, "app.list.stop")) {
+				const waited = this.waitedShell;
+				const shell = waited === undefined ? this.selected() : this.waitedShellRecord(waited.taskId);
+				const isRunning =
+					shell !== undefined && shell.execution.kind !== "settled" && shell.execution.kind !== "cancelling";
+				const step = stepShellStopConfirm(isRunning, this.navigation.stopConfirm.pending() === shell?.ref.taskId);
+				if (step === "arm" && shell !== undefined) {
+					this.navigation.stopConfirm.press(shell.ref.taskId);
+					this.requestRender();
+					const timer = setTimeout(() => this.requestRender(), NAV_CONFIRM_WINDOW_MS + 50);
+					timer.unref?.();
+					return true;
+				}
+				if (step === "confirm" && shell !== undefined) {
+					this.navigation.stopConfirm.press(shell.ref.taskId);
+					const environment = this.transcriptEnvironment();
+					void this.store
+						.cancelTask(shell.ref.taskId)
+						.then((result) => {
+							if (result.ok) {
+								this.failureNotice = "";
+								this.requestRender();
+							} else {
+								this.reportLate(
+									`Could not stop the task: ${taskDisplayText(result.error.message)}`,
+									environment,
+								);
+							}
+						})
+						.catch((error) => {
+							const message = error instanceof Error ? error.message : String(error);
+							this.reportLate(`Could not stop the task: ${taskDisplayText(message)}`, environment);
+						});
+					this.requestRender();
+					return true;
+				}
+				this.navigation.stopConfirm.reset();
+				this.requestRender();
+				return true;
+			}
+			this.navigation.stopConfirm.reset();
+		}
 		if (matchesKey(data, "escape")) {
 			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
 			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
 			return true;
 		}
-		const keys = getKeybindings();
 		if (keys.matches(data, "app.tasks.openWaited") && this.waitedShell === undefined && this.openWaitedShell())
 			return true;
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
@@ -1139,6 +1237,7 @@ export class TaskInspector implements Component {
 			keys.matches(data, "app.nav.back") &&
 			(transcript.cursorAtStart() || isHintActivation())
 		) {
+			this.navigation.stopConfirm.reset();
 			if (this.waitedShell !== undefined) {
 				this.leaveWaitedShell();
 				return true;
@@ -1590,7 +1689,10 @@ export class TaskInspector implements Component {
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";
 		const row = this.rowsById.get(pending);
-		const task = this.tasksById.get(pending as TaskId);
+		const task =
+			this.tasksById.get(pending as TaskId) ??
+			this.store.tasks.find((candidate) => candidate.ref.taskId === pending) ??
+			this.waitedShellRecord(pending as TaskId);
 		if (row === undefined && task === undefined) return "";
 		const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 		const name = task ? taskDisplayText(task.title || taskLabel(task)) : row ? rowName(row) : "the task";
@@ -1602,6 +1704,190 @@ export class TaskInspector implements Component {
 	render(width: number): string[] {
 		return this.renderViewport(width, Math.max(3, (process.stdout.rows || 24) - 5));
 	}
+	private renderShellPage(
+		width: number,
+		budget: number,
+		transcript: TaskCommandOutputPage,
+		task: TaskRecord | undefined,
+		back: string,
+		style: NavKeyStyle,
+		chatKeybindings: NavKeybindings,
+		backKeys: string,
+	): string[] {
+		const safeWidth = Math.max(1, width);
+		const safeBudget = Math.max(1, budget);
+		const fitWidth = (line: string) => truncateToWidth(line, safeWidth);
+		const geometry = shellViewerBoxGeometry(safeWidth);
+		const { gutter, lead, contentWidth, framed, boxWidth, innerWidth } = geometry;
+		const liveTask = task ? this.withLiveElapsed(task) : undefined;
+		const commandText = liveTask ? taskDisplayText(liveTask.title || taskLabel(liveTask)) : "Shell";
+		const isActive =
+			liveTask !== undefined && liveTask.execution.kind !== "settled" && liveTask.execution.kind !== "cancelling";
+		const topRule = safeBudget >= 10 ? [theme.fg("borderMuted", "▔".repeat(safeWidth))] : [];
+		const fullLayout = framed && safeBudget >= 18;
+		const titleLines = wrapTextWithAnsi(commandText, contentWidth);
+		const maxTitleLines = fullLayout ? 2 : 1;
+		const titleRows = (
+			titleLines.length > maxTitleLines
+				? [
+						...titleLines.slice(0, maxTitleLines - 1),
+						truncateToWidth(`${titleLines[maxTitleLines - 1]!}…`, contentWidth, "…"),
+					]
+				: titleLines.length > 0
+					? titleLines
+					: ["Shell"]
+		).map((line) => fitWidth(`${lead}${theme.bold(line)}`));
+		const subtitleRows = safeBudget >= 14 ? [fitWidth(`${lead}${theme.fg("muted", "shell")}`)] : [];
+
+		if (this.helpOpen) {
+			const overlayWidth = framed ? boxWidth : safeWidth;
+			const overlayRows = renderNavKeyOverlay(
+				"keys · shell",
+				SHELL_VIEWER_OVERLAY_KEYS.flatMap((entry) => {
+					if (entry.action === "app.list.stop" && !isActive) return [];
+					if (entry.action === "app.nav.back") return [{ keys: backKeys, label: entry.label }];
+					return [entry];
+				}),
+				overlayWidth,
+				style,
+				chatKeybindings,
+			).map((line) => fitWidth(`${lead}${line}`));
+			const helpHeader = [...topRule, ...titleRows, ...subtitleRows, ...(fullLayout ? [""] : [])];
+			return [...helpHeader, ...overlayRows].slice(0, safeBudget);
+		}
+
+		const metaRows: string[] = [];
+		if (liveTask) {
+			const appearance = taskStatusAppearance(liveTask);
+			const exitCode =
+				liveTask.execution.kind === "settled" && liveTask.execution.result.kind !== "cancelled"
+					? liveTask.execution.result.exitCode
+					: undefined;
+			const statusValue =
+				theme.fg(appearance.color, `${appearance.icon} ${appearance.label}`) +
+				(exitCode === undefined ? "" : theme.fg("dim", ` · exit ${exitCode}`));
+			const elapsedMs = liveTask.metrics?.elapsedMs;
+			const runtimeText = elapsedMs === undefined ? undefined : formatPanelElapsed(elapsedMs);
+			if (fullLayout) {
+				metaRows.push("");
+				metaRows.push(fitWidth(`${lead}${theme.bold("Status:".padEnd(SHELL_META_LABEL_WIDTH))}${statusValue}`));
+				if (runtimeText !== undefined) {
+					metaRows.push(fitWidth(`${lead}${theme.bold("Runtime:".padEnd(SHELL_META_LABEL_WIDTH))}${runtimeText}`));
+				}
+				if (liveTask.title) {
+					metaRows.push(...formatShellMetaRows("Command", commandText, 3, contentWidth, lead).map(fitWidth));
+				}
+				if (liveTask.execution.kind === "settled" && liveTask.execution.result.kind === "failed") {
+					const errorText = taskDisplayText(liveTask.execution.result.message);
+					if (errorText) {
+						metaRows.push(
+							...formatShellMetaRows("Error", errorText, 2, contentWidth, lead, (text) =>
+								theme.fg("error", text),
+							).map(fitWidth),
+						);
+					}
+				}
+			} else {
+				const compactMeta = statusValue + (runtimeText === undefined ? "" : theme.fg("dim", ` · ${runtimeText}`));
+				metaRows.push(fitWidth(`${lead}${compactMeta}`));
+			}
+		}
+
+		const outputLabelRows =
+			safeBudget >= 14
+				? [...(fullLayout ? [""] : []), fitWidth(`${lead}${theme.fg("muted", theme.bold("Output"))}`)]
+				: [];
+		const header = [...topRule, ...titleRows, ...subtitleRows, ...metaRows, ...outputLabelRows];
+
+		const shellKeys: NavKey[] = [
+			{ action: "app.nav.back", label: back },
+			{ keys: "pgup/pgdn", label: "scroll" },
+			...(isActive ? [{ action: "app.list.stop", label: "stop" }] : []),
+			{ action: "app.keys.help", label: "keys" },
+		];
+		const hint = renderNavHintLine(shellKeys, safeWidth, style, chatKeybindings, gutter);
+		const stopNotice = this.failureNotice ? "" : this.stopNotice();
+		const warningText = this.failureNotice || stopNotice;
+		const warningRows = warningText
+			? [fitWidth(`${lead}${theme.fg("warning", truncateToWidth(warningText, contentWidth))}`)]
+			: [];
+		const baseNotes = [
+			transcript.outputState === "loading" && transcript.status === "Loading output…" ? "" : transcript.status,
+			this.status,
+		]
+			.filter(Boolean)
+			.join(" · ");
+		const baseNoteRows = baseNotes ? wrapNotes(baseNotes, contentWidth).length : 0;
+		const sepReserve = fullLayout && warningRows.length === 0 ? 1 : 0;
+		const maxOutputRoom = Math.max(
+			1,
+			safeBudget - header.length - baseNoteRows - sepReserve - warningRows.length - 1,
+		);
+
+		const border = (text: string) => theme.fg("borderMuted", text);
+		const buildOutputBlock = (availableRoom: number): string[] => {
+			const state = transcript.outputState;
+			if (state === "loading") {
+				return [fitWidth(`${lead}${theme.fg("dim", "Loading output…")}`)];
+			}
+			if (state === "empty") {
+				const emptyLabel =
+					liveTask !== undefined && liveTask.execution.kind !== "settled"
+						? "No output yet"
+						: "No output available";
+				return [fitWidth(`${lead}${theme.fg("dim", emptyLabel)}`)];
+			}
+			if (framed && availableRoom >= 3) {
+				const contentRows = transcript.measureRows(innerWidth);
+				const innerRows = Math.max(1, Math.min(contentRows, availableRoom - 2));
+				const bodyLines = transcript.render(innerWidth, innerRows);
+				const top = `${lead}${border(`╭${"─".repeat(Math.max(0, boxWidth - 2))}╮`)}`;
+				const bottom = `${lead}${border(`╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`)}`;
+				const framedRows = bodyLines.map((line) => {
+					const clipped = truncateToWidth(line, innerWidth, "");
+					const padRight = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
+					return fitWidth(`${lead}${border("│ ")}${clipped}${padRight}${border(" │")}`);
+				});
+				return [fitWidth(top), ...framedRows, fitWidth(bottom)];
+			}
+			return transcript.render(contentWidth, Math.max(1, availableRoom)).map((line) => fitWidth(`${lead}${line}`));
+		};
+
+		let outputBlock = buildOutputBlock(maxOutputRoom);
+		const scrollRange =
+			transcript.outputState === "output" || transcript.outputState === "error"
+				? shellScrollRange(transcript.paintedWindow())
+				: undefined;
+		let noteText = formatShellViewerNote(baseNotes, scrollRange);
+		let noteRows = wrapNotes(noteText, contentWidth).map((line) => fitWidth(`${lead}${theme.fg("dim", line)}`));
+
+		// If the wrapped range note expanded beyond the initial estimate, shrink the box once so the bottom hint never clips.
+		const overflow = header.length + outputBlock.length + noteRows.length + warningRows.length + 1 - safeBudget;
+		if (overflow > 0 && maxOutputRoom - overflow >= 1) {
+			outputBlock = buildOutputBlock(maxOutputRoom - overflow);
+			const nextRange =
+				transcript.outputState === "output" || transcript.outputState === "error"
+					? shellScrollRange(transcript.paintedWindow())
+					: undefined;
+			noteText = formatShellViewerNote(baseNotes, nextRange);
+			noteRows = wrapNotes(noteText, contentWidth).map((line) => fitWidth(`${lead}${theme.fg("dim", line)}`));
+		}
+
+		const spacerCount = Math.max(
+			0,
+			safeBudget - header.length - outputBlock.length - noteRows.length - warningRows.length - 1,
+		);
+		this.transcriptTop = header.length + (framed && outputBlock.length >= 3 ? 1 : 0);
+		return [
+			...header,
+			...outputBlock,
+			...noteRows,
+			...Array.from({ length: spacerCount }, () => ""),
+			...warningRows,
+			hint,
+		].slice(0, safeBudget);
+	}
+
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
 		this.transcriptTop = undefined;
 		if (transcript.handlesBack()) {
@@ -1615,18 +1901,7 @@ export class TaskInspector implements Component {
 			selected?.kind === "agent"
 				? (latestSubagentAttempt(this.store.tasks, selected.ref.taskId) ?? selected)
 				: selected;
-		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
-		const header = [
-			theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
-			task ? taskDetailSummary(task) : "",
-			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
-		].map(fitWidth);
-		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
-		const questionActive = transcript.takesEscape?.() === true;
-		const interruptible = !questionActive && transcript.interruptible();
-		const hasTasks = !questionActive && transcript.hasTasks?.() === true;
-		const expandable = transcript.expandable?.() === true;
 		const baseKeys = getKeybindings();
 		const backKeys = baseKeys
 			.getKeys("app.nav.back")
@@ -1643,26 +1918,6 @@ export class TaskInspector implements Component {
 					: resolved.filter((key) => key !== "esc" && key !== "escape" && !matchesKey("\x1b", key));
 			},
 		};
-		if (this.helpOpen)
-			return [
-				...header,
-				...renderNavKeyOverlay(
-					"keys · task chat",
-					TASK_CHAT_OVERLAY_KEYS.flatMap((entry) => {
-						if (entry.keys === "enter" && transcript.canSend?.() !== true) return [];
-						if (entry.action === "app.thinking.toggle" && task?.kind !== "agent") return [];
-						if (entry.keys === "esc" && !interruptible) return [];
-						if (entry.action === "app.tools.expand" && !expandable) return [];
-						const mapped = entry.action === "app.nav.back" ? { keys: backKeys, label: entry.label } : entry;
-						if (entry.action === "app.nav.back" && hasTasks)
-							return [mapped, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
-						return [mapped];
-					}),
-					width,
-					style,
-					chatKeybindings,
-				),
-			].slice(0, Math.max(1, budget));
 		const waitingAgent = waitedShell === undefined ? undefined : this.selected();
 		const back =
 			waitedShell?.returnTo === "chat"
@@ -1676,6 +1931,41 @@ export class TaskInspector implements Component {
 							: this.chatFrom === "list"
 								? "tasks"
 								: "task";
+		if (transcript instanceof TaskCommandOutputPage) {
+			return this.renderShellPage(width, budget, transcript, task, back, style, chatKeybindings, backKeys);
+		}
+		const liveTask = task ? this.withLiveElapsed(task) : undefined;
+		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
+		const header = [
+			theme.bold(`Transcript · ${liveTask ? taskDisplayText(taskLabel(liveTask)) : "Task"}`),
+			liveTask ? taskDetailSummary(liveTask) : "",
+			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
+		].map(fitWidth);
+		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
+		const questionActive = transcript.takesEscape?.() === true;
+		const interruptible = !questionActive && transcript.interruptible();
+		const hasTasks = !questionActive && transcript.hasTasks?.() === true;
+		const expandable = transcript.expandable?.() === true;
+		if (this.helpOpen)
+			return [
+				...header,
+				...renderNavKeyOverlay(
+					"keys · task chat",
+					TASK_CHAT_OVERLAY_KEYS.flatMap((entry) => {
+						if (entry.keys === "enter" && transcript.canSend?.() !== true) return [];
+						if (entry.action === "app.thinking.toggle" && liveTask?.kind !== "agent") return [];
+						if (entry.keys === "esc" && !interruptible) return [];
+						if (entry.action === "app.tools.expand" && !expandable) return [];
+						const mapped = entry.action === "app.nav.back" ? { keys: backKeys, label: entry.label } : entry;
+						if (entry.action === "app.nav.back" && hasTasks)
+							return [mapped, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
+						return [mapped];
+					}),
+					width,
+					style,
+					chatKeybindings,
+				),
+			].slice(0, Math.max(1, budget));
 		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable).flatMap((entry) => {
 			if (entry.action === "app.nav.back") {
 				return !questionActive || transcript.cursorAtStart()
@@ -1688,12 +1978,22 @@ export class TaskInspector implements Component {
 			if (questionActive && entry.action === "app.keys.help") return [];
 			return [entry];
 		});
-		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
+		const noteIndent = width >= 24 ? 2 : 0;
+		const noteLead = " ".repeat(noteIndent);
+		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings, noteIndent);
 		const footer = [
-			...wrapNotes(notes, width).map((line) => fitWidth(theme.fg("dim", line))),
+			...wrapNotes(notes, Math.max(1, width - noteIndent)).map((line) =>
+				fitWidth(`${noteLead}${theme.fg("dim", line)}`),
+			),
 			...(transcript.handlesBack() ? [] : [hint]),
 		];
-		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
+		const failure = this.failureNotice
+			? [
+					fitWidth(
+						`${noteLead}${theme.fg("warning", truncateToWidth(this.failureNotice, Math.max(1, width - noteIndent)))}`,
+					),
+				]
+			: [];
 		const statusRows = this.taskStatusRows(width);
 		const room = Math.max(1, budget - header.length - footer.length - failure.length - statusRows.length);
 		const body = transcript.render(width, room);
@@ -1753,7 +2053,12 @@ export class TaskInspector implements Component {
 			.map((key) => (key.action === "app.list.stop" ? { ...key, label: stopLabel } : key));
 		const footer = renderNavHintLine(keys, width, style, getKeybindings());
 		const notice = this.failureNotice || this.stopNotice();
-		const failure = notice ? [theme.fg("warning", truncateToWidth(notice, width))] : [];
+		const detailNoticeLead = framed ? "  " : "";
+		const failure = notice
+			? [
+					`${detailNoticeLead}${theme.fg("warning", truncateToWidth(notice, Math.max(1, width - detailNoticeLead.length)))}`,
+				]
+			: [];
 		if (!framed)
 			return [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows]
 				.map((line) => truncateToWidth(line, width))
@@ -1787,9 +2092,10 @@ export class TaskInspector implements Component {
 				: "";
 		const summary = task ? `  ${taskDetailSummary(task)}` : "";
 		const entry = (this.input.render(Math.max(1, width - 4))[0] ?? "").replace(/^> /, "");
+		const sheetNoteLead = width >= 20 ? "  " : "";
 		const notes = [
-			...(this.status ? [theme.fg("muted", taskDisplayText(this.status))] : []),
-			...(this.failureNotice ? [theme.fg("warning", taskDisplayText(this.failureNotice))] : []),
+			...(this.status ? [`${sheetNoteLead}${theme.fg("muted", taskDisplayText(this.status))}`] : []),
+			...(this.failureNotice ? [`${sheetNoteLead}${theme.fg("warning", taskDisplayText(this.failureNotice))}`] : []),
 		];
 		const hint = renderNavHintLine(
 			[
@@ -1979,7 +2285,15 @@ export class TaskInspector implements Component {
 		const hint = renderNavHintLine(keys, width, style, getKeybindings(), 2, { compact: true });
 		// A stop notice names its tasks sanitized already, and marks the key a click presses, which sanitizing drops.
 		const noticeText = stopNotice ? stopNotice : taskDisplayText(notice);
-		const footer = [...(notice ? [theme.fg("warning", clip(noticeText))] : []), hint];
+		const boardNoticeLead = width >= 20 ? "  " : "";
+		const footer = [
+			...(notice
+				? [
+						`${boardNoticeLead}${theme.fg("warning", truncateToWidth(noticeText, Math.max(1, width - boardNoticeLead.length)))}`,
+					]
+				: []),
+			hint,
+		];
 		const recordPaintedRow = (row: TaskBoardRow, drawnTasks: TaskRecord[]) => {
 			if (row.kind === "item") {
 				this.paintedItemFinished.set(row.id, rowFinished(row));

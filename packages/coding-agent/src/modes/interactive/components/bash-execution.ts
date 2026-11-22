@@ -1,8 +1,17 @@
 /**
- * Component for displaying bash command execution with streaming output.
+ * Component for displaying inline `!` / `!!` bash-mode command execution in Atomic's shell block family.
  */
 
-import { Container, Loader, Spacer, Text, type TUI } from "@bastani/atomic-tui";
+import {
+	type Component,
+	Container,
+	Spacer,
+	stripTerminalSequences,
+	type TUI,
+	truncateToWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
+import { replaceTabs } from "../../../core/tools/render-utils.ts";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -11,13 +20,16 @@ import {
 } from "../../../core/tools/truncate.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyTextHint, parenthesizedKeyHint } from "./keybinding-hints.js";
+import { atomicWorkingGlyph, watchAtomicWorkingClock } from "./atomic-working-status.ts";
+import { keyHintIfBound } from "./keybinding-hints.js";
+import { DETAIL_FIRST_PREFIX, DETAIL_PREFIX } from "./notice-line.ts";
+import { collapseToolBlockLines, TOOL_BLOCK_LIMITS } from "./tool-block.ts";
 import { blockRows, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
-import { truncateToVisualLines } from "./visual-truncate.ts";
+import { formatWorkingElapsed } from "./working-run-meter.ts";
 
-// Preview line limit when not expanded (matches tool execution behavior)
-const PREVIEW_LINES = 20;
+function noColor(): boolean {
+	return process.env.NO_COLOR !== undefined;
+}
 
 export class BashExecutionComponent extends Container {
 	readonly expandsOnClick = true;
@@ -25,42 +37,42 @@ export class BashExecutionComponent extends Container {
 	private outputLines: string[] = [];
 	private status: "running" | "complete" | "cancelled" | "error" = "running";
 	private exitCode: number | undefined = undefined;
-	private loader: Loader;
 	private truncationResult?: TruncationResult;
 	private fullOutputPath?: string;
 	private expanded = false;
-	private contentContainer: Container;
 	/** `dim` marks `!!` commands, whose output is excluded from the model context. */
+	private readonly excludeFromContext: boolean;
 	private readonly colorKey: "dim" | "bashMode";
+	private readonly ui: TUI;
+	private readonly startedAt = Date.now();
 	private outputPad: number;
+	private stopWorkingClock: (() => void) | undefined;
+	private disposed = false;
+	private cachedWidth: number | undefined;
+	private cachedLines: string[] | undefined;
 
 	constructor(command: string, ui: TUI, excludeFromContext = false, outputPad = 1) {
 		super();
 		this.command = command;
+		this.ui = ui;
+		this.excludeFromContext = excludeFromContext;
 		this.colorKey = excludeFromContext ? "dim" : "bashMode";
 		this.outputPad = outputPad;
-		const borderColor = (str: string) => theme.fg(this.colorKey, str);
 
-		// Add spacer
 		this.addChild(new Spacer(1));
+		const body: Component = {
+			render: (width: number) => this.renderBlock(width),
+			invalidate: () => {
+				this.cachedWidth = undefined;
+				this.cachedLines = undefined;
+			},
+		};
+		this.addChild(body);
+		this.syncWorkingClock();
+	}
 
-		// Top border
-		this.addChild(new DynamicBorder(borderColor));
-
-		// Content container (holds dynamic content between borders)
-		this.contentContainer = new Container();
-		this.addChild(this.contentContainer);
-
-		this.loader = new Loader(
-			ui,
-			(spinner) => theme.fg(this.colorKey, spinner),
-			(text) => theme.fg("muted", text),
-			`Running... (${keyTextHint("tui.select.cancel", "Cancel")})`, // Styled by the loader
-		);
-
-		// Bottom border
-		this.addChild(new DynamicBorder(borderColor));
-		this.updateDisplay();
+	isWorking(): boolean {
+		return this.status === "running";
 	}
 
 	/**
@@ -68,7 +80,7 @@ export class BashExecutionComponent extends Container {
 	 */
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
-		this.updateDisplay();
+		this.invalidateCache();
 	}
 
 	isExpanded(): boolean {
@@ -80,7 +92,7 @@ export class BashExecutionComponent extends Container {
 		return blockRows(super.render(width));
 	}
 
-	/** Every row of the block, its borders included, below the spacer it starts with. */
+	/** Every row of the block below the spacer it starts with. */
 	clickArea(width: number): RowRange | undefined {
 		const [spacer] = this.children;
 		return rowsFrom(spacer?.render(width).length ?? 0, this.render(width).length);
@@ -88,12 +100,18 @@ export class BashExecutionComponent extends Container {
 
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;
-		this.updateDisplay();
+		this.invalidateCache();
 	}
 
 	override invalidate(): void {
+		this.invalidateCache();
 		super.invalidate();
-		this.updateDisplay();
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.stopWorkingClock?.();
+		this.stopWorkingClock = undefined;
 	}
 
 	appendOutput(chunk: string): void {
@@ -110,7 +128,7 @@ export class BashExecutionComponent extends Container {
 			this.outputLines.push(...newLines);
 		}
 
-		this.updateDisplay();
+		this.invalidateCache();
 	}
 
 	setComplete(
@@ -128,95 +146,126 @@ export class BashExecutionComponent extends Container {
 		this.truncationResult = truncationResult;
 		this.fullOutputPath = fullOutputPath;
 
-		// Stop loader
-		this.loader.stop();
-
-		this.updateDisplay();
+		this.syncWorkingClock();
+		this.invalidateCache();
 	}
 
-	private updateDisplay(): void {
-		// Apply truncation for LLM context limits (same limits as bash tool)
+	private invalidateCache(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	private syncWorkingClock(): void {
+		if (!this.disposed && this.status === "running") {
+			this.stopWorkingClock ??= watchAtomicWorkingClock(() => {
+				if (this.disposed || this.status !== "running") {
+					this.stopWorkingClock?.();
+					this.stopWorkingClock = undefined;
+					return;
+				}
+				this.invalidateCache();
+				this.ui.requestRender();
+			});
+		} else {
+			this.stopWorkingClock?.();
+			this.stopWorkingClock = undefined;
+		}
+	}
+
+	private renderBlock(width: number): string[] {
+		if (width < 1) return [];
+		if (this.status !== "running" && this.cachedLines !== undefined && this.cachedWidth === width) {
+			return this.cachedLines;
+		}
+		const safeWidth = Math.max(1, Math.floor(width));
+		const pad = Math.max(0, Math.min(Math.floor(this.outputPad), safeWidth - 1));
+		const lead = " ".repeat(pad);
+		const contentWidth = Math.max(1, safeWidth - pad);
+		const prefix = this.excludeFromContext ? "!! " : "! ";
+		const prefixWidth = prefix.length;
+
+		// Header: `! <command>` (or `!! <command>`), wrapped cleanly with continuation under command text.
+		const commandText = terminalDisplayText(this.command).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		const commandWidth = Math.max(1, contentWidth - prefixWidth);
+		const wrappedCommand = commandText.split("\n").flatMap((line) => {
+			const parts = wrapTextWithAnsi(line, commandWidth);
+			return parts.length > 0 ? parts : [""];
+		});
+		const styledPrefix = theme.fg(this.colorKey, theme.bold(prefix));
+		const continuation = " ".repeat(prefixWidth);
+		const commandFg = this.excludeFromContext ? "muted" : "userMessageText";
+		const headerRows = wrappedCommand.map((part, index) => {
+			const inner = `${index === 0 ? styledPrefix : continuation}${theme.fg(commandFg, part)}`;
+			const tinted = this.excludeFromContext ? inner : theme.bg("userMessageBg", inner);
+			return truncateToWidth(`${lead}${tinted}`, safeWidth, "…");
+		});
+
+		// Apply LLM context truncation limits (same limits as bash tool).
 		const fullOutput = this.outputLines.join("\n");
 		const contextTruncation = truncateTail(fullOutput, {
 			maxLines: DEFAULT_MAX_LINES,
 			maxBytes: DEFAULT_MAX_BYTES,
 		});
+		const trimmedContent = contextTruncation.content.replace(/\n+$/, "");
+		const availableLines = trimmedContent ? trimmedContent.split("\n") : [];
 
-		// Get the lines to potentially display (after context truncation)
-		const availableLines = contextTruncation.content ? contextTruncation.content.split("\n") : [];
-
-		// Apply preview truncation based on expanded state
-		const previewLogicalLines = availableLines.slice(-PREVIEW_LINES);
-		const hiddenLineCount = availableLines.length - previewLogicalLines.length;
-
-		// Rebuild content container
-		this.contentContainer.clear();
-
-		// Command header
-		const header = new Text(theme.fg(this.colorKey, theme.bold(`$ ${this.command}`)), this.outputPad, 0);
-		this.contentContainer.addChild(header);
-
-		// Output
+		// Build logical detail lines for the `  ⎿  ` / `     ` family.
+		const detailItems: string[] = [];
 		if (availableLines.length > 0) {
-			if (this.expanded) {
-				// Show all lines
-				const displayText = availableLines.map((line) => theme.fg("muted", line)).join("\n");
-				this.contentContainer.addChild(new Text(`\n${displayText}`, this.outputPad, 0));
-			} else {
-				// Use shared visual truncation utility with width-aware caching
-				const styledOutput = previewLogicalLines.map((line) => theme.fg("muted", line)).join("\n");
-				const styledInput = `\n${styledOutput}`;
-				let cachedWidth: number | undefined;
-				let cachedLines: string[] | undefined;
-				this.contentContainer.addChild({
-					render: (width: number) => {
-						if (cachedLines === undefined || cachedWidth !== width) {
-							const result = truncateToVisualLines(styledInput, PREVIEW_LINES, width, this.outputPad);
-							cachedLines = result.visualLines;
-							cachedWidth = width;
-						}
-						return cachedLines ?? [];
-					},
-					invalidate: () => {
-						cachedWidth = undefined;
-						cachedLines = undefined;
-					},
-				});
+			const styledLines = availableLines.map((line, index) => {
+				const isErrorLine =
+					this.status === "error" && (availableLines.length <= 3 || index === availableLines.length - 1);
+				return theme.fg(isErrorLine ? "error" : "toolOutput", replaceTabs(line));
+			});
+			detailItems.push(...collapseToolBlockLines(styledLines, TOOL_BLOCK_LIMITS.bash, this.expanded, true));
+			if (this.expanded && availableLines.length > TOOL_BLOCK_LIMITS.bash) {
+				const collapseHint = keyHintIfBound("app.tools.expand", "to collapse");
+				if (collapseHint) detailItems.push(theme.fg("dim", `(${collapseHint})`));
 			}
 		}
 
-		// Loader or status
 		if (this.status === "running") {
-			this.contentContainer.addChild(this.loader);
+			const elapsedMs = Date.now() - this.startedAt;
+			const elapsedText = elapsedMs >= 1000 ? formatWorkingElapsed(elapsedMs) : undefined;
+			const cancelHint = keyHintIfBound("tui.select.cancel", "to cancel");
+			const metaParts = [...(elapsedText ? [elapsedText] : []), ...(cancelHint ? [cancelHint] : [])];
+			const metaText = metaParts.length > 0 ? theme.fg("dim", ` (${metaParts.join(" · ")})`) : "";
+			detailItems.push(`${atomicWorkingGlyph()} ${theme.fg("muted", "Running…")}${metaText}`);
 		} else {
-			const statusParts: string[] = [];
-
-			// Show how many lines are hidden (collapsed preview)
-			if (hiddenLineCount > 0) {
-				const hint = parenthesizedKeyHint("app.tools.expand", this.expanded ? "Collapse" : "Expand");
-				if (this.expanded) {
-					if (hint) statusParts.push(hint);
-				} else {
-					statusParts.push(theme.fg("muted", `... ${hiddenLineCount} more lines`) + (hint ? ` ${hint}` : ""));
-				}
-			}
-
-			if (this.status === "cancelled") {
-				statusParts.push(theme.fg("warning", "(cancelled)"));
+			if (this.status === "complete" && availableLines.length === 0) {
+				detailItems.push(theme.fg("dim", "(no output)"));
+			} else if (this.status === "cancelled") {
+				detailItems.push(theme.fg("warning", "(cancelled)"));
 			} else if (this.status === "error") {
-				statusParts.push(theme.fg("error", `(exit ${this.exitCode})`));
+				detailItems.push(theme.fg("error", `exit ${this.exitCode}`));
 			}
-
-			// Add truncation warning (context truncation, not preview truncation)
 			const wasTruncated = this.truncationResult?.truncated || contextTruncation.truncated;
 			if (wasTruncated && this.fullOutputPath) {
-				statusParts.push(theme.fg("warning", `Output truncated. Full output: ${this.fullOutputPath}`));
-			}
-
-			if (statusParts.length > 0) {
-				this.contentContainer.addChild(new Text(`\n${statusParts.join("\n")}`, this.outputPad, 0));
+				detailItems.push(
+					theme.fg("warning", `Output truncated · full output: ${terminalDisplayText(this.fullOutputPath)}`),
+				);
 			}
 		}
+
+		const detailWidth = Math.max(1, contentWidth - DETAIL_PREFIX.length);
+		const wrappedDetails: string[] = [];
+		for (const item of detailItems) {
+			const parts = wrapTextWithAnsi(item, detailWidth);
+			for (const part of parts.length > 0 ? parts : [""]) {
+				wrappedDetails.push(part.trimEnd());
+			}
+		}
+		const detailRows = wrappedDetails.map((line, index) => {
+			const connector = index === 0 ? DETAIL_FIRST_PREFIX : DETAIL_PREFIX;
+			return truncateToWidth(`${lead}${theme.fg("dim", connector)}${line}`, safeWidth, "…");
+		});
+
+		const rows = [...headerRows, ...detailRows].map((line) => (noColor() ? stripTerminalSequences(line) : line));
+		if (this.status !== "running") {
+			this.cachedWidth = width;
+			this.cachedLines = rows;
+		}
+		return rows;
 	}
 
 	/**
