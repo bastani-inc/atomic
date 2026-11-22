@@ -128,4 +128,87 @@ describe("BashExecutionComponent shell block family", () => {
 			else process.env.NO_COLOR = prevNoColor;
 		}
 	});
+
+	test("caches header and output rows across running working-clock ticks on 100k lines", () => {
+		const bash = new BashExecutionComponent("seq 1 100000", createStubTui(120), false, 1);
+		try {
+			const chunk = Array.from({ length: 100_000 }, (_, i) => `line-${i + 1}`).join("\n");
+			bash.appendOutput(`${chunk}\n`);
+			const first = bash.render(120);
+			assert.ok(first.length <= 10, `collapsed running output stays bounded: ${first.length}`);
+			const ticks = 100;
+			const started = performance.now();
+			for (let i = 0; i < ticks; i++) {
+				const frame = bash.render(120);
+				assert.equal(frame.length, first.length);
+			}
+			const elapsedMs = performance.now() - started;
+			// 100 working-clock ticks without new output must stay O(1) per frame (re-rendering only the indicator line).
+			assert.ok(
+				elapsedMs < 150,
+				`100 running ticks on 100k lines took ${elapsedMs.toFixed(1)} ms (expected < 150 ms)`,
+			);
+		} finally {
+			bash.dispose();
+		}
+	});
+
+	test("collapses a single 40 KB line by visual rows and expands on toggle", () => {
+		const bash = new BashExecutionComponent("python3 -c 'print(\"L\"*40000)'", createStubTui(120), false, 1);
+		bash.appendOutput(`${"L".repeat(40_000)}\n`);
+		bash.setComplete(0, false);
+
+		const collapsed = plain(bash, 120);
+		assert.ok(collapsed.length <= 10, `collapsed 40 KB line must stay bounded, got ${collapsed.length} rows`);
+		assert.match(collapsed[2] ?? "", /^ {3}⎿ {2}… \+\d+ earlier lines \(.+ to expand\)$/);
+		for (const row of bash.render(120)) {
+			assert.ok(visibleWidth(row) <= 120);
+		}
+
+		bash.setExpanded(true);
+		const expanded = plain(bash, 120);
+		assert.ok(expanded.length > 300, `expanded 40 KB line must show all visual rows, got ${expanded.length}`);
+		assert.ok(expanded.length > collapsed.length);
+	});
+
+	test("preserves clickable APC key-hint markers while stripping SGR colors under NO_COLOR", () => {
+		const prevNoColor = process.env.NO_COLOR;
+		try {
+			process.env.NO_COLOR = "1";
+			initTheme("dark");
+
+			const running = new BashExecutionComponent("sleep 10", createStubTui(120), false, 1);
+			try {
+				const runningRaw = running.render(120).join("\n");
+				assert.doesNotMatch(runningRaw, /\x1b\[[0-9;:]*m/, "NO_COLOR must not emit SGR color sequences");
+				assert.match(
+					runningRaw,
+					/\x1b_pi:h:k:/,
+					"NO_COLOR must keep clickable APC key-hint markers on cancel hint",
+				);
+				assert.match(runningRaw, /\x1b_pi:\/h\x07/, "NO_COLOR must keep APC hint closing markers");
+			} finally {
+				running.dispose();
+			}
+
+			const long = new BashExecutionComponent("seq 1 25", createStubTui(120), false, 1);
+			long.appendOutput(`${Array.from({ length: 25 }, (_, i) => `row-${i + 1}`).join("\n")}\n`);
+			long.setComplete(0, false);
+			const collapsedRaw = long.render(120).join("\n");
+			assert.doesNotMatch(
+				collapsedRaw,
+				/\x1b\[[0-9;:]*m/,
+				"NO_COLOR must not emit SGR sequences on collapsed output",
+			);
+			assert.match(
+				collapsedRaw,
+				/\x1b_pi:\/h\x07ctrl\+o to expand\x1b_pi:\/h\x07/,
+				"NO_COLOR must keep APC hint markers on expand hint",
+			);
+		} finally {
+			if (prevNoColor === undefined) delete process.env.NO_COLOR;
+			else process.env.NO_COLOR = prevNoColor;
+			initTheme("dark");
+		}
+	});
 });

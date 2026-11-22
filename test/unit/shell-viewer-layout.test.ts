@@ -424,4 +424,126 @@ describe("shell viewer layout and alignment", () => {
 			await fixture.dispose();
 		}
 	});
+
+	test("clears finished-while-armed notice on x when a shell settles after the first stop press", async () => {
+		const cancelled: TaskId[] = [];
+		const shell = taskRecord("shell-settle-armed", "command");
+		shell.title = "sleep 5";
+		const h = await createShellHost(shell, {
+			output: "working...",
+			onCancel: (id) => cancelled.push(id),
+		});
+		try {
+			h.inspector.handleInput("x");
+			assert.match(h.plain(80, 24).join("\n"), /Press x again within 3s to stop sleep 5/);
+			assert.deepEqual(cancelled, []);
+
+			// Shell finishes on its own before the second x arrives.
+			const settled: TaskRecord = {
+				...shell,
+				execution: { kind: "settled", result: { kind: "completed", output: shell.output, exitCode: 0 } },
+			};
+			h.updateTasks([settled]);
+			await flush();
+			const afterSettle = h.plain(80, 24).join("\n");
+			assert.match(afterSettle, /sleep 5 finished · x to acknowledge/);
+			assert.doesNotMatch(afterSettle, /Press x again/);
+
+			// Pressing x acknowledges and clears the finished notice instead of leaving it stuck.
+			h.inspector.handleInput("x");
+			const afterAck = h.plain(80, 24).join("\n");
+			assert.doesNotMatch(afterAck, /finished · x to acknowledge/, `notice stayed stuck:\n${afterAck}`);
+			assert.deepEqual(cancelled, [], "settled shell must never be cancelled");
+		} finally {
+			await h.dispose();
+		}
+	});
+
+	test("waited-shell view keeps the parent subagent extension status row and direct shell releases old watches", async () => {
+		initTheme("dark");
+		const keys = new KeybindingsManager();
+		setKeybindings(keys);
+		const fixture = taskFixture();
+		const owner = ownerTaskViewSource(fixture.store);
+		const environment = taskTranscriptEnvironment({ keybindings: keys });
+		const agent: TaskRecord = {
+			...taskRecord("wait-agent", "agent"),
+			agentName: "builder",
+			title: "build workspace",
+			wasBackground: true,
+			observation: { kind: "none", reason: "task-settled" },
+			execution: {
+				kind: "settled",
+				result: {
+					kind: "cancelled",
+					cause: "pause",
+					released: { waitingOn: [{ toolCallId: "bash-1", toolName: "bash" }] },
+				},
+			},
+		};
+		const waitedShell: TaskRecord = {
+			...taskRecord("wait-shell", "command"),
+			title: "npm run build",
+			parentTaskId: agent.ref.taskId,
+		};
+		const directShell: TaskRecord = {
+			...taskRecord("direct-shell", "command"),
+			title: "echo standalone",
+		};
+		let watchReleases = 0;
+		const source: TaskViewSource = {
+			...owner,
+			get tasks() {
+				return [agent, directShell];
+			},
+			get backgroundTasks() {
+				return [agent, directShell];
+			},
+			get ownerTasks() {
+				return [agent, waitedShell, directShell];
+			},
+			get ownerBackgroundTasks() {
+				return [agent, waitedShell, directShell];
+			},
+			extensionStatuses: (id) => (id === agent.ref.taskId ? new Map([["meter", "42 tok/s"]]) : new Map()),
+			watchExtensionStatuses: () => () => {
+				watchReleases++;
+			},
+			readTaskOutput: async (id) => ({ ok: true as const, value: { text: `output of ${id}`, omitted: false } }),
+		};
+		const inspector = new TaskInspector(
+			source,
+			() => {},
+			() => {},
+			undefined,
+			() => environment,
+		);
+		try {
+			inspector.open(agent.ref.taskId);
+			inspector.renderViewport(100, 24);
+			// Alt+W opens the waited shell while keeping the subagent's extension status row.
+			inspector.handleInput("\x1bw");
+			await flush();
+			const waitedLines = plainLines(inspector.renderViewport(100, 24));
+			assert.match(waitedLines.join("\n"), /npm run build/);
+			assert.match(
+				waitedLines.at(-1) ?? "",
+				/42 tok\/s/,
+				`waited shell dropped extension status:\n${waitedLines.join("\n")}`,
+			);
+
+			// Back to list, then open the standalone direct shell: previous agent's status watch must be released.
+			inspector.handleInput(LEFT);
+			inspector.open(directShell.ref.taskId);
+			inspector.handleInput("\r");
+			await flush();
+			const directLines = plainLines(inspector.renderViewport(100, 24));
+			assert.match(directLines.join("\n"), /echo standalone/);
+			assert.doesNotMatch(directLines.join("\n"), /42 tok\/s/);
+			assert.ok(watchReleases >= 1, "opening a direct shell must release any previous agent status watch");
+		} finally {
+			inspector.dispose();
+			await fixture.dispose();
+		}
+	});
 });

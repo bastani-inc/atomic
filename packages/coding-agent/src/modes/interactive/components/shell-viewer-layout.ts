@@ -33,7 +33,7 @@ export interface ShellScrollRange {
 	readonly overflowing: boolean;
 }
 
-export type ShellStopConfirmStep = "ignore" | "arm" | "confirm";
+export type ShellStopConfirmStep = "ignore" | "arm" | "confirm" | "acknowledge";
 
 export function shellViewerGutter(width: number): number {
 	return width >= SHELL_VIEWER_MIN_FRAMED_WIDTH ? SHELL_VIEWER_GUTTER : 0;
@@ -78,7 +78,11 @@ export function formatShellViewerNote(baseNote: string, range: ShellScrollRange 
 	return parts.join(" · ");
 }
 
-export function stepShellStopConfirm(isRunning: boolean, wasArmed: boolean): ShellStopConfirmStep {
-	if (!isRunning) return "ignore";
+export function stepShellStopConfirm(
+	isRunning: boolean,
+	wasArmed: boolean,
+	hadFinishedNotice = false,
+): ShellStopConfirmStep {
+	if (!isRunning) return hadFinishedNotice ? "acknowledge" : "ignore";
 	return wasArmed ? "confirm" : "arm";
 }

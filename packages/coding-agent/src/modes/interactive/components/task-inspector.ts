@@ -471,12 +471,12 @@ export class TaskInspector implements Component {
 					const target =
 						this.store.tasks.find((candidate) => candidate.ref.taskId === pending) ??
 						this.waitedShellRecord(pending as TaskId);
-					if (
-						target === undefined ||
-						target.execution.kind === "settled" ||
-						target.execution.kind === "cancelling"
-					) {
+					if (target === undefined || target.execution.kind === "cancelling") {
 						this.navigation.stopConfirm.reset();
+					} else if (target.execution.kind === "settled") {
+						this.navigation.stopConfirm.reset();
+						this.navigation.finishedWhileArmed = target;
+						this.navigation.finishedAcknowledged = false;
 					}
 				}
 			}
@@ -1186,8 +1186,18 @@ export class TaskInspector implements Component {
 				const shell = waited === undefined ? this.selected() : this.waitedShellRecord(waited.taskId);
 				const isRunning =
 					shell !== undefined && shell.execution.kind !== "settled" && shell.execution.kind !== "cancelling";
-				const step = stepShellStopConfirm(isRunning, this.navigation.stopConfirm.pending() === shell?.ref.taskId);
+				const hadFinishedNotice =
+					this.navigation.finishedWhileArmed !== undefined || this.itemFinishedWhileArmed !== undefined;
+				const step = stepShellStopConfirm(
+					isRunning,
+					this.navigation.stopConfirm.pending() === shell?.ref.taskId,
+					hadFinishedNotice,
+				);
 				if (step === "arm" && shell !== undefined) {
+					this.navigation.finishedWhileArmed = undefined;
+					this.navigation.finishedAcknowledged = false;
+					this.itemFinishedWhileArmed = undefined;
+					this.itemFinishedAcknowledged = false;
 					this.navigation.stopConfirm.press(shell.ref.taskId);
 					this.requestRender();
 					const timer = setTimeout(() => this.requestRender(), NAV_CONFIRM_WINDOW_MS + 50);
@@ -1195,6 +1205,10 @@ export class TaskInspector implements Component {
 					return true;
 				}
 				if (step === "confirm" && shell !== undefined) {
+					this.navigation.finishedWhileArmed = undefined;
+					this.navigation.finishedAcknowledged = false;
+					this.itemFinishedWhileArmed = undefined;
+					this.itemFinishedAcknowledged = false;
 					this.navigation.stopConfirm.press(shell.ref.taskId);
 					const environment = this.transcriptEnvironment();
 					void this.store
@@ -1218,10 +1232,18 @@ export class TaskInspector implements Component {
 					return true;
 				}
 				this.navigation.stopConfirm.reset();
+				this.navigation.finishedWhileArmed = undefined;
+				this.navigation.finishedAcknowledged = false;
+				this.itemFinishedWhileArmed = undefined;
+				this.itemFinishedAcknowledged = false;
 				this.requestRender();
 				return true;
 			}
 			this.navigation.stopConfirm.reset();
+			this.navigation.finishedWhileArmed = undefined;
+			this.navigation.finishedAcknowledged = false;
+			this.itemFinishedWhileArmed = undefined;
+			this.itemFinishedAcknowledged = false;
 		}
 		if (matchesKey(data, "escape")) {
 			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
@@ -1811,6 +1833,7 @@ export class TaskInspector implements Component {
 		const warningRows = warningText
 			? [fitWidth(`${lead}${theme.fg("warning", truncateToWidth(warningText, contentWidth))}`)]
 			: [];
+		const statusRows = this.taskStatusRows(safeWidth);
 		const baseNotes = [
 			transcript.outputState === "loading" && transcript.status === "Loading output…" ? "" : transcript.status,
 			this.status,
@@ -1821,7 +1844,7 @@ export class TaskInspector implements Component {
 		const sepReserve = fullLayout && warningRows.length === 0 ? 1 : 0;
 		const maxOutputRoom = Math.max(
 			1,
-			safeBudget - header.length - baseNoteRows - sepReserve - warningRows.length - 1,
+			safeBudget - header.length - baseNoteRows - sepReserve - warningRows.length - statusRows.length - 1,
 		);
 
 		const border = (text: string) => theme.fg("borderMuted", text);
@@ -1862,7 +1885,8 @@ export class TaskInspector implements Component {
 		let noteRows = wrapNotes(noteText, contentWidth).map((line) => fitWidth(`${lead}${theme.fg("dim", line)}`));
 
 		// If the wrapped range note expanded beyond the initial estimate, shrink the box once so the bottom hint never clips.
-		const overflow = header.length + outputBlock.length + noteRows.length + warningRows.length + 1 - safeBudget;
+		const overflow =
+			header.length + outputBlock.length + noteRows.length + warningRows.length + statusRows.length + 1 - safeBudget;
 		if (overflow > 0 && maxOutputRoom - overflow >= 1) {
 			outputBlock = buildOutputBlock(maxOutputRoom - overflow);
 			const nextRange =
@@ -1875,7 +1899,7 @@ export class TaskInspector implements Component {
 
 		const spacerCount = Math.max(
 			0,
-			safeBudget - header.length - outputBlock.length - noteRows.length - warningRows.length - 1,
+			safeBudget - header.length - outputBlock.length - noteRows.length - warningRows.length - statusRows.length - 1,
 		);
 		this.transcriptTop = header.length + (framed && outputBlock.length >= 3 ? 1 : 0);
 		return [
@@ -1885,6 +1909,7 @@ export class TaskInspector implements Component {
 			...Array.from({ length: spacerCount }, () => ""),
 			...warningRows,
 			hint,
+			...statusRows,
 		].slice(0, safeBudget);
 	}
 
