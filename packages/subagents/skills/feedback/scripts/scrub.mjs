@@ -156,9 +156,30 @@ function consumedValueWrapper(prefix) {
 	if (!match || /[ \t]$/u.test(prefix)) return "";
 	return match[1] ?? "";
 }
+function stripTrailingWrapperPrefix(prefix) {
+	let end = prefix.length;
+	while (end > 0 && (prefix[end - 1] === " " || prefix[end - 1] === "\t")) end -= 1;
+	const markerEnd = end;
+	while (
+		end > 0 &&
+		(prefix[end - 1] === "*" || prefix[end - 1] === "_" || prefix[end - 1] === "~" || prefix[end - 1] === "`")
+	) {
+		end -= 1;
+	}
+	if (end === markerEnd) return prefix;
+	while (end > 0 && (prefix[end - 1] === " " || prefix[end - 1] === "\t")) end -= 1;
+	return prefix.slice(0, end);
+}
+
+function trailingMarkerRunLength(text) {
+	let end = text.length;
+	while (end > 0 && (text[end - 1] === "*" || text[end - 1] === "_" || text[end - 1] === "~")) end -= 1;
+	return text.length - end;
+}
+
 function shouldRedactUnquotedValue(name, prefix, value, input, assignmentStart) {
 	if (value === REDACTION_PLACEHOLDER || value.length === 0) return false;
-	const assignmentPrefix = prefix.replace(/[ \t]*[*_~`]+[ \t]*$/u, "");
+	const assignmentPrefix = stripTrailingWrapperPrefix(prefix);
 	const compactAssignment = !/[=:](?:[*_~`]+)?[ \t]/u.test(prefix) && assignmentPrefix.trim() === assignmentPrefix;
 	const normalized = name.toLowerCase().replaceAll(/[ -]/gu, "_");
 	const pathLikeName = normalized.includes("path");
@@ -331,7 +352,7 @@ function scrubCredentialAssignments(input) {
 			const wrapperLength = closesWrapper
 				? openingWrapper.length
 				: matchingTrailingWrapperLength(input, assignmentStart, valueStart, suffixEnd, keyName);
-			const trailingMarkerLength = input.slice(suffixStart, suffixEnd).match(/[*_~]+$/u)?.[0].length ?? 0;
+			const trailingMarkerLength = trailingMarkerRunLength(input.slice(suffixStart, suffixEnd));
 			const redactedEnd = suffixEnd - Math.max(wrapperLength, trailingMarkerLength);
 			if ((openingWrapper && redactedEnd === suffixStart) || redactedEnd <= suffixStart) continue;
 			matches.push({ start: valueStart, end: redactedEnd, replacement: REDACTION_PLACEHOLDER });
@@ -367,9 +388,7 @@ function scrubCredentialAssignments(input) {
 		}
 		const matchingWrapperLength = matchingTrailingWrapperLength(input, assignmentStart, valueStart, end, keyName);
 		const trailingMarkerLength =
-			hasMatchingWrapper || preserveOpeningWrapper
-				? 0
-				: (input.slice(valueStart, end).match(/[*_~]+$/u)?.[0].length ?? 0);
+			hasMatchingWrapper || preserveOpeningWrapper ? 0 : trailingMarkerRunLength(input.slice(valueStart, end));
 		const trailingWrapperLength = Math.max(matchingWrapperLength, trailingMarkerLength);
 		const redactedEnd = end - trailingWrapperLength;
 		const value = input.slice(valueStart, redactedEnd);

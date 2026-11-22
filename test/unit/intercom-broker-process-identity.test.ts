@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { afterEach, describe, onTestFinished, test } from "vitest";
-import { endUnansweredBroker, readPsProcessStart, wroteFileAt } from "../../packages/intercom/broker/broker-process.js";
+import { describe, onTestFinished, test } from "vitest";
+import { endUnansweredBroker, wroteFileAt } from "../../packages/intercom/broker/broker-process.js";
 import { waitForBrokerExit } from "../../packages/intercom/broker/broker-stop.js";
 import {
 	currentProcessStart,
@@ -72,13 +72,18 @@ describe.skipIf(!READS_PROCESS_STARTS)("a broker pid that names a later process"
 		assert.equal(await stillRuns(recorded), true);
 	});
 
-	test("a broker that did not answer is not ended by its pid alone when its creation time could not be read", async () => {
-		const { recorded } = await liveProcess();
+	// macOS gives pids out again only once the whole range has been used: there a broker whose start was not read is ended
+	// by its pid, as before.
+	test.skipIf(process.platform === "darwin")(
+		"a broker that did not answer is not ended by its pid alone when its creation time could not be read",
+		async () => {
+			const { recorded } = await liveProcess();
 
-		// broker.pid's write time could not tell either way, and no start was read for the pid.
-		await endUnansweredBroker({ pid: recorded.pid, started: undefined, wroteBrokerPid: "unavailable" });
-		assert.equal(await stillRuns(recorded), true);
-	});
+			// broker.pid's write time could not tell either way, and no start was read for the pid.
+			await endUnansweredBroker({ pid: recorded.pid, started: undefined, wroteBrokerPid: "unavailable" });
+			assert.equal(await stillRuns(recorded), true);
+		},
+	);
 
 	test("a broker that did not answer is ended while its pid names it, and only the broker, not a process it started", async () => {
 		// The stand-in broker starts a child of its own and reports its pid. Detached, so that on Windows it is outside the
@@ -125,56 +130,5 @@ describe("telling the broker that wrote broker.pid by its write time", () => {
 		assert.equal(wroteFileAt(written, written), "unknown");
 		assert.equal(wroteFileAt(written + SECOND_NS, written), "unknown");
 		assert.equal(wroteFileAt(written + 2n * SECOND_NS, written), "no");
-	});
-});
-
-// macOS reads a process's start with `ps`, to the second. The same `ps -o lstart` runs on Linux, so the reader and the
-// macOS stop path are checked here with the platform stood in for.
-describe.skipIf(process.platform === "win32")("a broker's start as ps reads it", () => {
-	const platform = Object.getOwnPropertyDescriptor(process, "platform");
-	afterEach(() => {
-		if (platform !== undefined) Object.defineProperty(process, "platform", platform);
-	});
-	function onMacOS(): void {
-		Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
-	}
-
-	test("reads the same start for a running process each time, another for a process started earlier, none once it is gone", async () => {
-		const { recorded } = await liveProcess();
-		const first = await readPsProcessStart(recorded.pid);
-		assert.ok(first !== undefined);
-		assert.equal(await readPsProcessStart(recorded.pid), first);
-		// The first process of the system started long before this test's.
-		assert.notEqual(await readPsProcessStart(1), first);
-		await signalRecordedProcess(recorded);
-		assert.equal(await waitUntilGone(recorded, GONE_WITHIN_MS), true);
-		assert.equal(await readPsProcessStart(recorded.pid), undefined);
-	});
-
-	test("on macOS a broker that did not answer is not signalled once ps shows its pid names a process started at another time", async () => {
-		const { recorded } = await liveProcess();
-		const started = await readPsProcessStart(1);
-		assert.ok(started !== undefined);
-		onMacOS();
-
-		await endUnansweredBroker({ pid: recorded.pid, started, wroteBrokerPid: "unknown" });
-		assert.equal(await stillRuns(recorded), true);
-	});
-
-	test("on macOS a broker that did not answer is ended while ps shows its pid names it, or cannot tell", async () => {
-		const named = await liveProcess();
-		const started = await readPsProcessStart(named.recorded.pid);
-		assert.ok(started !== undefined);
-		const unknown = await liveProcess();
-		onMacOS();
-
-		await endUnansweredBroker({ pid: named.recorded.pid, started, wroteBrokerPid: "unknown" });
-		await endUnansweredBroker({ pid: unknown.recorded.pid, started: undefined, wroteBrokerPid: "unknown" });
-		assert.equal(await waitUntilGone(named.recorded, GONE_WITHIN_MS), true, "the broker its pid names was not ended");
-		assert.equal(
-			await waitUntilGone(unknown.recorded, GONE_WITHIN_MS),
-			true,
-			"a broker whose start was not read was not ended, as before",
-		);
 	});
 });

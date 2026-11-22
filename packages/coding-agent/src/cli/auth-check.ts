@@ -2,6 +2,7 @@ import { type AuthResult, type CredentialStore, ModelsError } from "@bastani/ato
 import { findExactModelReferenceMatch, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.js";
 import { InMemoryCodingAgentModelsStore } from "../core/models-store.ts";
+import { extractBearerToken } from "../utils/linear-text.js";
 import type { Args } from "./args.ts";
 import { AuthCommandError, validateAuthCheckArgs } from "./auth-command.ts";
 import { DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS, Secret } from "./credential-print.ts";
@@ -85,7 +86,7 @@ function getAuthCredential(auth: AuthResult | undefined): string | undefined {
 	const authorization = Object.entries(auth?.auth.headers ?? {}).find(
 		([name]) => name.toLowerCase() === "authorization",
 	)?.[1];
-	return typeof authorization === "string" ? /^Bearer\s+(.+)$/iu.exec(authorization)?.[1] : undefined;
+	return typeof authorization === "string" ? extractBearerToken(authorization) : undefined;
 }
 
 /** Resolve the credential that the checked provider would use, without exposing it to callers. */

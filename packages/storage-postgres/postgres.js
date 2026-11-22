@@ -490,7 +490,7 @@ function isRoutineBody(before) {
 
 /** Whether `sql` is a single SQLite `PRAGMA` statement, which Postgres has no use for. */
 function isPragma(/** @type {string} */ sql) {
-	return /^\s*PRAGMA\b[^;]*;?\s*$/i.test(sql);
+	return /^PRAGMA\b[^;]*;?$/i.test(sql.trim());
 }
 
 const INT8 = 20;

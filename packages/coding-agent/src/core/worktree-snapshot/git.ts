@@ -210,12 +210,15 @@ function taskkillTree(pid: number, deadline: number): Promise<number[]> {
 	return new Promise((resolve) => {
 		let output = "";
 		let taskkill: ChildProcess;
+		const systemRoot = process.env.SystemRoot || "C:\\Windows";
 		try {
-			taskkill = spawn(
-				join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
-				["/F", "/T", "/PID", String(pid)],
-				{ stdio: ["ignore", "pipe", "ignore"], windowsHide: true, env: createChildProcessEnvironment() },
-			);
+			// In the system directory: a kill never keeps the folder Atomic runs in in use.
+			taskkill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], {
+				cwd: systemRoot,
+				stdio: ["ignore", "pipe", "ignore"],
+				windowsHide: true,
+				env: createChildProcessEnvironment(),
+			});
 		} catch {
 			resolve([]);
 			return;
