@@ -87,14 +87,16 @@ for (const backend of storageBackends) {
 			const [large] = transcript("x".repeat(2 * SESSION_ENTRY_CHUNK_BYTES));
 			await store.create(header, [
 				large!,
+				// A field only Atomic writes, whose JSON the projection reads as text: malformed, it cannot be read.
 				{
-					type: "custom",
-					customType: "extension",
+					type: "branch_summary",
 					id: "malformed",
 					parentId: "receipt",
 					timestamp,
-					data: { groups: "{not JSON" },
-				},
+					fromId: "receipt",
+					summary: "summary",
+					usage: "{not JSON",
+				} as unknown as SessionEntry,
 			]);
 			const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
 			await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
@@ -247,16 +249,22 @@ for (const backend of storageBackends) {
 			}
 		},
 	);
-	run(`a malformed field in a fitting chunked extension stays final on ${backend.name} (#5590)`, async () => {
+	run(`a malformed field in a fitting chunked entry stays final on ${backend.name} (#5590)`, async () => {
 		const scope = await backend.openScope();
 		try {
 			const db = await scope.connect();
 			const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
 			const entries = transcript("");
-			const receipt = entries[0]!;
-			assert.ok(receipt.type === "custom");
-			receipt.customType = "third-party";
-			receipt.data = { owner: "{bad", ignored: "x".repeat(SESSION_ENTRY_CHUNK_BYTES + 37) };
+			// A field only Atomic writes, whose JSON the projection reads as text: malformed, it cannot be read.
+			entries[0] = {
+				type: "branch_summary",
+				id: "receipt",
+				parentId: null,
+				timestamp,
+				fromId: "receipt",
+				summary: "x".repeat(SESSION_ENTRY_CHUNK_BYTES + 37),
+				usage: "{bad",
+			} as unknown as SessionEntry;
 			await store.create(header, entries);
 			const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
 			await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
@@ -772,6 +780,102 @@ for (const backend of storageBackends) {
 				});
 				assert.equal(await rebuild(), inline);
 				assert.equal(await rebuild(true), inline);
+			} finally {
+				await scope.close();
+			}
+		},
+	);
+	run(
+		`reads text under owner, tasks and groups as text when it rebuilds an index, as the session was written, on ${backend.name}`,
+		async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				// Text where Atomic writes a list or an owner object: JSON-looking text, well formed or not, an extension's
+				// own field under the same name. A store that keeps each entry whole, as a JSONL store does, reads it as text.
+				const protocols: [string, object][] = [
+					["intercom_session_memberships", { sessionId: "s", homeGroup: "home", groups: '["a"]' }],
+					["workflow-stage-parked-tasks", { tasks: '[{"ownerId":"s","taskId":"t"}]' }],
+					[
+						"subagent-child",
+						{ childId: "child", version: 1, index: 0, state: "running", runId: "r", owner: '{"sessionId":"s"}' },
+					],
+					["extension", { groups: "[draft", tasks: "[draft", owner: "{draft" }],
+					["intercom_session_memberships", { sessionId: "s", homeGroup: "home", groups: ["b"] }],
+					// Atomic's own JSON null under these names reads as null: the latest membership, with no groups, is valid.
+					["workflow-stage-parked-tasks", { tasks: null }],
+					[
+						"subagent-child",
+						{ childId: "child2", version: 1, index: 1, state: "running", runId: "r", owner: null },
+					],
+					["intercom_session_memberships", { sessionId: "s", homeGroup: "home2", groups: null }],
+				];
+				const entries: SessionEntry[] = protocols.map(([customType, data], i) => ({
+					type: "custom",
+					timestamp,
+					data,
+					customType,
+					id: `c${i}`,
+					parentId: i ? `c${i - 1}` : null,
+				}));
+				await store.create(header, entries);
+				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+				const state = async () =>
+					JSON.parse(
+						(await db.get<{ summary_state: string }>(
+							`SELECT summary_state FROM ${tables.sessions} WHERE id = ?`,
+							header.id,
+						))!.summary_state,
+					);
+				// The index the store folded from the whole entries as it wrote them.
+				const { resume: written, ...summary } = await state();
+				assert.equal(
+					written.latest["intercom_session_memberships:s"][0],
+					protocols.length,
+					"the latest membership, whose groups are null, is the valid one",
+				);
+				const rebuild = async (refused = false) => {
+					await db.run(
+						`UPDATE ${tables.sessions} SET summary_state = ? WHERE id = ?`,
+						JSON.stringify(summary),
+						header.id,
+					);
+					const connection = await scope.connect();
+					const reader = await SqlSessionStore.open(connection, { prefix: scope.prefix });
+					// Refused, the chunked entries are read by the bounded reader instead of the database's projection.
+					if (refused) refuseChunkProjection(connection, entries[0]!.id);
+					try {
+						await reader.readResume(header.id);
+						return (await state()).resume;
+					} finally {
+						await reader.close();
+					}
+				};
+				assert.deepEqual(await rebuild(), written, "rebuilt from entries stored whole");
+				const stored = entries.map((entry) => Buffer.from(JSON.stringify(entry)));
+				await db.transaction(async (tx) => {
+					for (const [i, entry] of entries.entries()) {
+						const part = 41;
+						await tx.run(
+							`UPDATE ${tables.entries} SET entry_json = ?, chunks = ? WHERE session_id = ? AND seq = ?`,
+							JSON.stringify({ type: entry.type, id: entry.id, parentId: entry.parentId }),
+							Math.ceil(stored[i]!.length / part),
+							header.id,
+							i + 1,
+						);
+						for (let offset = 0; offset < stored[i]!.length; offset += part)
+							await tx.run(
+								`INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
+								header.id,
+								i + 1,
+								offset / part,
+								stored[i]!.subarray(offset, offset + part),
+							);
+					}
+				});
+				assert.deepEqual(await rebuild(), written, "rebuilt from entries stored in chunks");
+				assert.deepEqual(await rebuild(true), written, "rebuilt from chunks by the bounded reader");
 			} finally {
 				await scope.close();
 			}
