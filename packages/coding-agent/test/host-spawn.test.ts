@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -273,22 +273,32 @@ describe("a host process started in a job of its own", () => {
 		for (const recorded of leftRunning.splice(0)) await signalRecordedProcess(recorded);
 	});
 
-	/** A process that starts a program which outlives it, by itself for {@link LEFT_RUNNING_MS}, and then exits. */
+	/**
+	 * A process that starts a program which outlives it, by itself for {@link LEFT_RUNNING_MS}, and then exits. Its
+	 * streams are ignored: a program inherits what its starter can pass on, a pipe to this process too.
+	 */
 	async function leavingAProgramRunning(): Promise<{ child: ContainedChildProcess; program: RecordedProcess }> {
-		const child = contained(
-			node,
-			[
-				"-e",
-				`const c=require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},${LEFT_RUNNING_MS})'],{stdio:'ignore',detached:true});process.stdout.write(String(c.pid))`,
-			],
-			{ stdio: ["ignore", "pipe", "ignore"] },
-		);
-		const { stdout, code } = await ended(child);
-		assert.equal(code, 0);
-		const program = await recordProcess(Number(stdout));
-		leftRunning.push(program);
-		assert.equal(await stillRuns(program), true, "the program the process started is running");
-		return { child, program };
+		const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-contained-")));
+		try {
+			const pidFile = join(directory, "program.pid");
+			const child = contained(
+				node,
+				[
+					"-e",
+					`const c=require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},${LEFT_RUNNING_MS})'],{stdio:'ignore',detached:true});require('node:fs').writeFileSync(process.argv[1],String(c.pid))`,
+					pidFile,
+				],
+				{ stdio: "ignore" },
+			);
+			const { code } = await ended(child);
+			assert.equal(code, 0);
+			const program = await recordProcess(Number(readFileSync(pidFile, "utf8")));
+			leftRunning.push(program);
+			assert.equal(await stillRuns(program), true, "the program the process started is running");
+			return { child, program };
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	}
 
 	test("is started only on Windows, for a full program path and text child_process accepts, unless child_process is asked for", () => {
