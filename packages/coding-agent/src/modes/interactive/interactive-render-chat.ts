@@ -91,6 +91,7 @@ import {
 	hasTrustRequiringProjectResourcesAsync,
 	Markdown,
 	type Message,
+	needsChangelogPreload,
 	type PersistedMessageMeta,
 	parseSkillBlock,
 	preloadChangelog,
@@ -104,6 +105,7 @@ import {
 	type TruncationResult,
 	theme,
 	UserMessageComponent,
+	VERSION,
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
 import {
@@ -1882,16 +1884,24 @@ InteractiveModeBase.prototype.getUserInput = async function (
 				markLifecycleTiming("interactive-input-handler-ready");
 				void (async () => {
 					await yieldToEventLoop();
+					const deferredStartup = this.deferredStartupPending ? this.ensureDeferredStartupComplete() : undefined;
+					deferredStartup?.catch(() => {});
 					this.footerDataProvider.startGitWatcher();
 					// pi parity: the changelog/first-run notices need nothing from
 					// extensions — render them right after the input handler is ready
 					// instead of gating them behind the deferred extension reload (or,
 					// when the user types immediately, behind the whole agent turn).
-					await preloadChangelog(getChangelogPath());
-					this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-					if (this.deferredStartupPending) {
-						await this.ensureDeferredStartupComplete();
+					if (
+						needsChangelogPreload(
+							(this.session?.state?.messages?.length ?? 0) > 0,
+							this.settingsManager?.getLastChangelogVersion?.(),
+							VERSION,
+						)
+					) {
+						await preloadChangelog(getChangelogPath());
 					}
+					this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
+					await deferredStartup;
 				})().catch((error) => {
 					const message = error instanceof Error ? error.message : String(error);
 					console.error(`Deferred input-readiness startup task failed: ${message}`);

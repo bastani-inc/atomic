@@ -57,6 +57,7 @@ export class InteractiveThemeController {
 	private autoSyncEnabled = false;
 	private terminalColorSchemeUnsubscribe: (() => void) | undefined;
 	private terminalColorQuery: Promise<void> = Promise.resolve();
+	private terminalColorsQueried = false;
 	constructor(
 		ui: TUI,
 		options: {
@@ -76,7 +77,7 @@ export class InteractiveThemeController {
 		initTheme(this.activeThemeName, true);
 		this.bindTerminalColorSchemeListener();
 	}
-	async applyFromSettings(options?: { keepPreview?: boolean }): Promise<void> {
+	async applyFromSettings(options?: { keepPreview?: boolean; reuseTerminalColors?: boolean }): Promise<void> {
 		if (options?.keepPreview && this.previewActive) {
 			this.settingsChangedDuringPreview = true;
 			return;
@@ -87,7 +88,9 @@ export class InteractiveThemeController {
 		const name = this.resolveThemeName();
 		this.setAutoSync(parseAutoThemeSetting(setting) !== undefined || name === SYSTEM_THEME_NAME);
 		this.applyThemeName(name, setting !== undefined);
-		this.queryTerminalColors();
+		if (!options?.reuseTerminalColors || !this.terminalColorsQueried) {
+			this.queryTerminalColors();
+		}
 		await this.waitForTerminalColors();
 	}
 	waitForTerminalColors(): Promise<void> {
@@ -133,6 +136,7 @@ export class InteractiveThemeController {
 	}
 	rebindTui(): void {
 		this.terminalColorSchemeUnsubscribe?.();
+		this.terminalColorsQueried = false;
 		this.bindTerminalColorSchemeListener();
 		this.ui.setTerminalColorSchemeNotifications(this.autoSyncEnabled);
 	}
@@ -160,6 +164,7 @@ export class InteractiveThemeController {
 		return result;
 	}
 	private queryTerminalColors(): void {
+		this.terminalColorsQueried = true;
 		this.terminalColorQuery = requestTerminalColors(this.ui, (colors) => this.applyTerminalColors(colors));
 	}
 	private applyTerminalColors(reported: TerminalColors): void {

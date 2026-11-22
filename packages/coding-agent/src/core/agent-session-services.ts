@@ -197,12 +197,14 @@ async function prepareOwnedAgentSessionServices(
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const modelRuntimeSpan = startTimingSpan("createAgentSessionServices.modelRuntime");
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
+	const ownsModelRuntime = options.modelRuntime === undefined;
 	const [modelRuntime, settingsManager] = await Promise.all([
 		options.modelRuntime !== undefined
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({
 					authPath: join(agentDir, "auth.json"),
 					modelsPath: join(agentDir, "models.json"),
+					refreshOnCreate: false,
 				}),
 		options.settingsManager !== undefined
 			? Promise.resolve(options.settingsManager)
@@ -250,6 +252,7 @@ async function prepareOwnedAgentSessionServices(
 		endTimingSpan(providerSpan);
 		const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
 		await modelRuntime.refresh({ allowNetwork: false });
+		if (ownsModelRuntime) ModelRuntime.markStartupCatalogRestored(modelRuntime);
 		endTimingSpan(catalogRestoreSpan);
 		diagnostics.push(
 			...applyExtensionFlagValues(
