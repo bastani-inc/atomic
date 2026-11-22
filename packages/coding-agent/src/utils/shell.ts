@@ -6,6 +6,7 @@ import { type ChildProcess, spawn } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { findHelperExecutable, findHelperExecutableAsync } from "./helper-command.ts";
+import { type HostChildProcess, spawnContainedProcess } from "./host-spawn.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "./worker-threads.js";
@@ -434,11 +435,77 @@ export function untrackDetachedChildPid(pid: number): void {
 	detachedChildGuardian?.postMessage({ action: "untrack", pid });
 }
 
+/** Ends the tree of a running shell that {@link spawnShellProcess} started in a job of its own. */
+const runningShellTrees = new Set<() => void>();
+
+/** A shell the bash or PowerShell tool runs without a task owner. */
+export interface ShellProcess {
+	readonly child: HostChildProcess;
+	/** Ends the shell and what it started that still runs (timeout, abort). */
+	stop(): void;
+	/** Once its command is done: what the command left running keeps running. */
+	finish(): void;
+}
+
+/**
+ * Starts `shell` with `args` for the bash or PowerShell tool run without a task owner, with output piped and input
+ * `stdin`. On Windows, with the native module and a full shell path, the shell starts suspended in a job of its own:
+ * {@link ShellProcess.stop} ends, while the shell runs, it and the processes below it, and then every process in the
+ * job, also those left running after the shell exited and those whose starter exited, never one by a process ID
+ * another process may have been given. A program that asks to leave the job (as Git Bash's do) leaves it, and a stop
+ * ends it only while it is below the running shell, as `taskkill /T` did. {@link ShellProcess.finish} lets go of the
+ * job, so what the command left running outlives Atomic. Otherwise it is `child_process.spawn` (detached on POSIX),
+ * stopped with {@link killProcessTree}.
+ */
+export async function spawnShellProcess(
+	shell: string,
+	args: readonly string[],
+	options: { cwd: string; env: NodeJS.ProcessEnv; stdin: "pipe" | "ignore" },
+): Promise<ShellProcess> {
+	const stdio = [options.stdin, "pipe", "pipe"] as const;
+	const contained = await spawnContainedProcess(shell, args, { cwd: options.cwd, env: options.env, stdio });
+	if (contained !== undefined) {
+		const endTree = () => {
+			contained.endTree();
+		};
+		runningShellTrees.add(endTree);
+		return {
+			child: contained,
+			stop: endTree,
+			finish: () => {
+				runningShellTrees.delete(endTree);
+				contained.releaseTree();
+			},
+		};
+	}
+	const child = spawn(shell, [...args], {
+		cwd: options.cwd,
+		detached: process.platform !== "win32",
+		env: options.env,
+		stdio: [...stdio],
+		windowsHide: true,
+	});
+	const pid = child.pid;
+	if (pid) trackDetachedChildPid(pid);
+	return {
+		child,
+		stop: () => {
+			if (pid) killProcessTree(pid);
+		},
+		finish: () => {
+			if (pid) untrackDetachedChildPid(pid);
+		},
+	};
+}
+
 /**
  * Kill every tracked detached child and its tree, except those in `spare`, which stay tracked: their owner stops them
- * itself, and a later call without `spare` still kills them.
+ * itself, and a later call without `spare` still kills them. Also ends the tree of every shell {@link spawnShellProcess}
+ * started in a job whose command is not done.
  */
 export function killTrackedDetachedChildren(spare?: ReadonlySet<number>): void {
+	for (const endTree of runningShellTrees) endTree();
+	runningShellTrees.clear();
 	for (const [pid, exited] of trackedDetachedChildPids) {
 		if (spare?.has(pid)) continue;
 		if (!exited) killProcessTree(pid);

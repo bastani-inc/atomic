@@ -16,6 +16,7 @@ import { removeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/
 import {
 	createScriptSandbox,
 	python,
+	pyyaml,
 	readUntil,
 	type ScriptSandbox,
 	skillCreatorDir,
@@ -35,8 +36,6 @@ const windows = process.platform === "win32";
 const LOCK_WAIT_MS = 10_000;
 // That wait, plus starting the viewer and the program holding the lock under load.
 const LOCK_TEST_MS = LOCK_WAIT_MS + 30_000;
-// package_skill reads SKILL.md's frontmatter with PyYAML.
-const pyyaml = python !== undefined && spawnSyncCollect([python, "-c", "import yaml"]).exitCode === 0;
 
 const sandboxes: ScriptSandbox[] = [];
 const viewers: ReturnType<typeof spawnProcess>[] = [];
