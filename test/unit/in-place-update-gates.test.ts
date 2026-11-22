@@ -1,8 +1,9 @@
 /**
  * The gates the build writes at the paths an earlier release imports on demand
  * (`packages/coding-agent/scripts/in-place-update-gate.mjs`): a process of an earlier release that imports one after an
- * in-place update is told to restart before any of this build's code loads, and a process of this build gets the
- * module's code. Each case runs in a process of its own, whose module loader holds what it loaded before.
+ * in-place update gets the module's code when it loads there, and is told to restart when it cannot; any other process
+ * gets the module's code or its own error. Each case runs in a process of its own, whose module loader holds what it
+ * loaded before.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -41,6 +42,7 @@ const BUILD_FILES = new Set(["index.js", "_shared/own.js"]);
 
 interface Outcome {
 	readonly message?: string;
+	readonly cause?: string;
 	readonly exported?: string;
 	readonly defaultExport?: number;
 	readonly implementationLoaded: boolean;
@@ -49,9 +51,10 @@ interface Outcome {
 
 /**
  * A process that first loads what a process of `held` loaded (`{ "_shared/old.js": "1.0.0" }`: that file, of that
- * version), then has its installation updated to this build, then imports the gated `/export` module.
+ * version), then has its installation updated to this build, then imports the gated `/export` module, whose code
+ * fails as it loads there when `fails`.
  */
-function importAfterUpdate(runtime: "node" | "bun", held: Record<string, string>): Outcome {
+function importAfterUpdate(runtime: "node" | "bun", held: Record<string, string>, fails: boolean): Outcome {
 	const dir = makeTempDirectory("atomic-in-place-gate-");
 	dirs.push(dir);
 	const dist = join(dir, "dist");
@@ -78,7 +81,9 @@ function importAfterUpdate(runtime: "node" | "bun", held: Record<string, string>
 		],
 		[
 			"core/export-html/index.impl.js",
-			'globalThis.implementationLoaded = true;\nexport const exportSessionToHtml = () => "html";\nexport default 42;\n',
+			fails
+				? 'globalThis.implementationLoaded = true;\nthrow new Error("the update\'s code failed");\n'
+				: 'globalThis.implementationLoaded = true;\nexport const exportSessionToHtml = () => "html";\nexport default 42;\n',
 		],
 	];
 	const script = join(dir, "process.mjs");
@@ -102,6 +107,7 @@ function importAfterUpdate(runtime: "node" | "bun", held: Record<string, string>
 			"\toutcome.defaultExport = module.default;",
 			"} catch (error) {",
 			"\toutcome.message = error.message;",
+			"\tif (error.cause) outcome.cause = error.cause.message;",
 			"}",
 			"outcome.implementationLoaded = globalThis.implementationLoaded === true;",
 			"outcome.ownLoaded = globalThis.ownLoaded === true;",
@@ -116,35 +122,64 @@ function importAfterUpdate(runtime: "node" | "bun", held: Record<string, string>
 
 const RESTART = "atomic was updated to 2.0.0 while this session was running; restart it to keep using session export.";
 
+const LOADED = { exported: "html", defaultExport: 42, implementationLoaded: true };
+
 describe.each(["node", "bun"] as const)("a gated module under %s", (runtime) => {
 	test(
-		"tells a process of an earlier release whose module the update removed to restart, loading none of the build's code",
+		"whose code fails in a process of an earlier release whose module the update removed says to restart, with the failure as its cause",
 		() => {
-			const outcome = importAfterUpdate(runtime, { "_shared/old.js": "1.0.0" });
-			assert.deepEqual(outcome, { message: RESTART, implementationLoaded: false, ownLoaded: false });
-		},
-		CHILD_TIMEOUT_MS,
-	);
-
-	test(
-		"tells a process of an earlier release that holds a module at a path of this build's to restart",
-		() => {
-			const outcome = importAfterUpdate(runtime, { "_shared/own.js": "1.5.0" });
-			assert.deepEqual(outcome, { message: RESTART, implementationLoaded: false, ownLoaded: false });
-		},
-		CHILD_TIMEOUT_MS,
-	);
-
-	test(
-		"gives a process of this build the module's exports",
-		() => {
-			const outcome = importAfterUpdate(runtime, { "_shared/own.js": "2.0.0" });
+			const outcome = importAfterUpdate(runtime, { "_shared/old.js": "1.0.0" }, true);
 			assert.deepEqual(outcome, {
-				exported: "html",
-				defaultExport: 42,
+				message: RESTART,
+				cause: "the update's code failed",
 				implementationLoaded: true,
 				ownLoaded: false,
 			});
+		},
+		CHILD_TIMEOUT_MS,
+	);
+
+	test(
+		"whose code fails in a process of an earlier release that holds a module at a path of this build's says to restart",
+		() => {
+			const outcome = importAfterUpdate(runtime, { "_shared/own.js": "1.5.0" }, true);
+			assert.deepEqual(outcome, {
+				message: RESTART,
+				cause: "the update's code failed",
+				implementationLoaded: true,
+				ownLoaded: false,
+			});
+		},
+		CHILD_TIMEOUT_MS,
+	);
+
+	test(
+		"whose code loads in a process of an earlier release gives its exports, as before the gates",
+		() => {
+			const outcome = importAfterUpdate(runtime, { "_shared/old.js": "1.0.0" }, false);
+			assert.deepEqual(outcome, { ...LOADED, ownLoaded: false });
+		},
+		CHILD_TIMEOUT_MS,
+	);
+
+	test(
+		"whose code fails in a process of this build fails with its own error",
+		() => {
+			const outcome = importAfterUpdate(runtime, { "_shared/own.js": "2.0.0" }, true);
+			assert.deepEqual(outcome, {
+				message: "the update's code failed",
+				implementationLoaded: true,
+				ownLoaded: false,
+			});
+		},
+		CHILD_TIMEOUT_MS,
+	);
+
+	test(
+		"whose code loads asks nothing of the process: no release's module is loaded",
+		() => {
+			const outcome = importAfterUpdate(runtime, {}, false);
+			assert.deepEqual(outcome, { ...LOADED, ownLoaded: false });
 		},
 		CHILD_TIMEOUT_MS,
 	);

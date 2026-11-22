@@ -3,14 +3,14 @@
  *
  * A process of an earlier release that keeps running from an install updated in place (`npm install -g`, `bun add -g`)
  * imports such a module by its path when it first needs it, and so gets this build's file. Importing a module resolves
- * and links its whole static graph before any of it runs, and this build's shared files then meet the copies of
- * Atomic's packages that process already holds: a name or package subpath they lack fails to link, and code written for
- * this build's copies can fail as it runs. Neither says what to do. So the file at such a path is a gate: it imports
- * nothing statically, finds out which release the process runs, and only then imports the module's code, which this
- * build writes beside it. In a process of an earlier release it fails, before any of this build's code is loaded, with
- * the message the application gives for code an update replaced (`src/utils/updated-install.ts`):
- * "<app> was updated to <version> while this session was running; restart it to keep using <feature>." A process of
- * an earlier release prints that message whatever it does with the error, as 0.10.3 prints it as it is.
+ * and links its whole static graph, and this build's shared files then meet the copies of Atomic's packages that process
+ * already holds: a name or package subpath they lack fails to link, and code written for this build's copies can fail
+ * as it runs. Where that happens the runtime's error says nothing of the update. So the file at such a path is a gate:
+ * it imports the module's code, which this build writes beside it, and gives its exports. When that import fails, it
+ * asks which release the process runs, and in a process of an earlier release fails with the message the application
+ * gives for code an update replaced (`src/utils/updated-install.ts`): "<app> was updated to <version> while this
+ * session was running; restart it to keep using <feature>.", the runtime's error as its cause. Any other failure is
+ * the runtime's own, and an import that succeeds is as it was: a feature the update's code can serve keeps working.
  *
  * The release a process runs is the `VERSION` of a module every process of that release loaded at its start, which the
  * process holds as it was: the module loader gives it again for its URL. Node resolves the URL to the file first, so a
@@ -88,7 +88,8 @@ const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 
 /**
  * The gate written at `path` (in `dist`) for the module whose code is at {@link gatedImplementation}`(path)`, with the
- * module's `exports`: it fails in a process whose release (asked of the files `probes`, in `dist`) is not `version`.
+ * module's `exports`: when that code cannot load in a process whose release (asked of the files `probes`, in `dist`)
+ * is not `version`, it says to restart.
  *
  * @param {{ path: string, exports: readonly string[], probes: readonly string[], version: string }} gate
  */
@@ -101,30 +102,36 @@ export function gateSource({ path, exports, probes, version }) {
 	if (unbindable.length > 0) throw new Error(`in-place update gates: ${path} exports names a gate cannot bind: ${unbindable.join(", ")}`);
 	const restart = ` was updated to ${version} while this session was running; restart it to keep using ${gatedFeature(path)}.`;
 	return [
-		`${GATE_FILE_MARK}: a process of an earlier release that imports this module after an`,
-		"// in-place update is told to restart before any of this release's code loads.",
-		`const root = new URL(${JSON.stringify(root)}, import.meta.url);`,
-		'const releases = (globalThis[Symbol.for("atomic.in-place-update-release.v1")] ??= new Map());',
-		`const key = \`\${root.href}#${version}\`;`,
-		"let release = releases.get(key);",
-		"if (release === undefined) {",
-		"\trelease = (async () => {",
-		`\t\tfor (const path of ${JSON.stringify(probes)}) {`,
-		"\t\t\ttry {",
-		"\t\t\t\tconst module = await import(new URL(path, root).href);",
-		'\t\t\t\tif (typeof module.VERSION === "string") return { version: module.VERSION, name: module.APP_NAME };',
-		"\t\t\t} catch {",
-		"\t\t\t\t// Not a file this process can load: the next.",
-		"\t\t\t}",
-		"\t\t}",
-		"\t\treturn undefined;",
-		"\t})();",
-		"\treleases.set(key, release);",
+		`${GATE_FILE_MARK}: when this module's code cannot load in a process of an earlier release`,
+		"// that an in-place update left running, the process is told to restart.",
+		"let module;",
+		"try {",
+		`	module = await import(${JSON.stringify(implementation)});`,
+		"} catch (error) {",
+		`	const root = new URL(${JSON.stringify(root)}, import.meta.url);`,
+		'	const releases = (globalThis[Symbol.for("atomic.in-place-update-release.v1")] ??= new Map());',
+		`	const key = \`\${root.href}#${version}\`;`,
+		"	let release = releases.get(key);",
+		"	if (release === undefined) {",
+		"		release = (async () => {",
+		`			for (const path of ${JSON.stringify(probes)}) {`,
+		"				try {",
+		"					const held = await import(new URL(path, root).href);",
+		'					if (typeof held.VERSION === "string") return { version: held.VERSION, name: held.APP_NAME };',
+		"				} catch {",
+		"					// Not a file this process can load: the next.",
+		"				}",
+		"			}",
+		"			return undefined;",
+		"		})();",
+		"		releases.set(key, release);",
+		"	}",
+		"	const running = await release;",
+		`	if (running === undefined || running.version === ${JSON.stringify(version)}) throw error;`,
+		`	throw new Error((typeof running.name === "string" ? running.name : "atomic") + ${JSON.stringify(restart)}, {`,
+		"		cause: error,",
+		"	});",
 		"}",
-		"const running = await release;",
-		`if (running !== undefined && running.version !== ${JSON.stringify(version)})`,
-		`\tthrow new Error((typeof running.name === "string" ? running.name : "atomic") + ${JSON.stringify(restart)});`,
-		`const module = await import(${JSON.stringify(implementation)});`,
 		...(named.length > 0 ? [`export const { ${named.join(", ")} } = module;`] : []),
 		...(exports.includes("default") ? ["export default module.default;"] : []),
 		"",

@@ -1,7 +1,7 @@
 /**
  * A running process of each recorded release, updated in place to this build (`scripts/in-place-update-e2e.mjs`):
- * every module it imports on demand by its path loads or says to restart, and `/export` says to restart. The releases
- * are installed from npm as published; this build is packed as the release workflow packs it.
+ * every module it imports on demand by its path loads or says to restart, and the modules a session loads for its own
+ * work load. The releases are installed from npm as published; this build is packed as the release workflow packs it.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -55,10 +55,14 @@ afterAll(() => {
 
 describe("a running process of a recorded release, updated in place to this build", () => {
 	test.each(records.map((record) => [record.version, record] as const))(
-		"from %s loads each module it imports on demand or says to restart, and /export says to restart",
+		"from %s loads each module it imports on demand or says to restart, and its core modules load",
 		async (_version, record) => {
 			const version = JSON.parse(readFileSync(join(ROOT, "packages/coding-agent/package.json"), "utf8")).version;
-			assert.deepEqual(await updateRunningRelease(record, tarballs, version, work), []);
+			const allowed = JSON.parse(readFileSync(join(RECORDS, "allowed.json"), "utf8")) as Record<
+				string,
+				Record<string, string>
+			>;
+			assert.deepEqual(await updateRunningRelease(record, tarballs, version, work, allowed[record.version]), []);
 		},
 		UPDATE_TIMEOUT_MS,
 	);

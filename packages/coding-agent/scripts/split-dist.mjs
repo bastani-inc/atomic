@@ -917,8 +917,8 @@ for (const { path, contents } of compatSharedFiles(releasedSharedTargets, shared
 
 // Each module a recorded release imports on demand by its path becomes a gate, with its code beside it, unless this
 // package imports it statically (a file importing it would wait on the gate) or loads it as it starts, as an earlier
-// release did too, before an update can land. The gates ask for the release a process runs through the modules of
-// `releaseVersionModules`, with stubs where this build writes none. See `in-place-update-gate.mjs`.
+// release did too, before an update can land. When a gate's module cannot load, it asks for the release a process runs
+// through the modules of `releaseVersionModules`, with stubs where this build writes none. See `in-place-update-gate.mjs`.
 // The files the package keeps: the compiled files of the modules the split bundled go below.
 const distFiles = readdirSync(dist, { recursive: true })
 	.map((file) => String(file).split(sep).join("/"))

@@ -7,9 +7,8 @@
 // then puts the packed build's packages in place of the release's own, as `npm install -g` does, and has the process
 // import every module the release imports on demand by its path. Each must either load or fail with the message the
 // application gives for code an update replaced ("<app> was updated to <version> while this session was running;
-// restart it to keep using <feature>."), and the modules `/export` loads must fail with it: those are the gated
-// modules (`packages/coding-agent/scripts/in-place-update-gate.mjs`), which a process of an earlier release reaches
-// only to be told to restart.
+// restart it to keep using <feature>."; see `packages/coding-agent/scripts/in-place-update-gate.mjs`), and the
+// modules a session loads for its own work (`CORE_MODULES`) must load.
 //
 // Usage:
 //   node scripts/in-place-update-e2e.mjs <records-dir> <tarball-dir> [<version>...]
@@ -43,8 +42,21 @@ export const UPDATED_PACKAGES = [
 	"@bastani/atomic-telemetry",
 ];
 
-/** The modules `/export` loads on demand. */
-export const EXPORT_MODULES = ["dist/core/export-html/index.js", "dist/core/export-html/tool-renderer.js"];
+/**
+ * Modules a running session loads on demand for its own work, which must load after an update as they did before:
+ * the worktree snapshot of a turn that writes files, `read` of a URL, a forked subagent, the private copy of an entry
+ * over 1 MiB, and a subagent's completion card and task view. Only a package subpath the release cannot resolve and
+ * `allowed.json` lists for it excuses one, which then says to restart.
+ */
+export const CORE_MODULES = [
+	"dist/utils/tools-manager.js",
+	"dist/core/tools/read-url.js",
+	"dist/core/storage/session/fork-window.js",
+	"dist/core/storage/session/jsonl-entry-projection.js",
+	"dist/core/storage/session/expanded-child-details.js",
+	"dist/core/tasks/task-view-source.js",
+	"dist/core/tasks/task-file-history.js",
+];
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -66,7 +78,12 @@ for await (const line of lines) {
 			await load(path);
 			outcomes[path] = { loaded: true };
 		} catch (error) {
-			outcomes[path] = { loaded: false, message: String(error?.message ?? error), code: error?.code };
+			outcomes[path] = {
+				loaded: false,
+				message: String(error?.message ?? error),
+				cause: error?.cause === undefined ? undefined : String(error.cause.message ?? error.cause),
+				causeCode: error?.cause?.code,
+			};
 		}
 	}
 	process.stdout.write(JSON.stringify(outcomes) + "\\n");
@@ -137,11 +154,12 @@ function run(command, args, cwd) {
 
 /**
  * Updates a running process of release `record` to the packages in `tarballs` (the build of `version`), in `work`.
- * Returns what went wrong; nothing when every module loaded or said to restart.
+ * `allowed` maps the package subpaths the release cannot resolve that the build may import to why (`allowed.json`).
+ * Returns what went wrong; nothing when every module loaded or said to restart, and every core module loaded.
  *
  * @returns {Promise<string[]>}
  */
-export async function updateRunningRelease(record, tarballs, version, work) {
+export async function updateRunningRelease(record, tarballs, version, work, allowed = {}) {
 	const prefix = mkdtempSync(join(work, `release-${record.version}-`));
 	writeFileSync(join(prefix, "package.json"), '{ "private": true }\n');
 	run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", `@bastani/atomic@${record.version}`], prefix);
@@ -203,17 +221,21 @@ export async function updateRunningRelease(record, tarballs, version, work) {
 		);
 		const problems = [];
 		for (const [path, outcome] of Object.entries(outcomes)) {
-			if (outcome.loaded) {
-				if (EXPORT_MODULES.includes(path))
-					problems.push(`${record.version}: ${path} loaded in a process of ${record.version} after the update`);
-				continue;
-			}
-			if (!restart.test(outcome.message))
+			const excused =
+				outcome.causeCode === "ERR_PACKAGE_PATH_NOT_EXPORTED" &&
+				Object.keys(allowed).some((specifier) =>
+					outcome.cause?.includes(`'./${specifier.split("/").slice(2).join("/")}'`),
+				);
+			if (CORE_MODULES.includes(path) && !outcome.loaded && !(excused && restart.test(outcome.message)))
+				problems.push(
+					`${record.version}: ${path}, which a session loads for its own work, did not load: ${outcome.message}`,
+				);
+			else if (!outcome.loaded && !restart.test(outcome.message))
 				problems.push(`${record.version}: ${path} failed without saying to restart: ${outcome.message}`);
 		}
-		for (const path of EXPORT_MODULES)
-			if (targets.includes(path) && !/ to keep using session export\.$/.test(outcomes[path]?.message ?? ""))
-				problems.push(`${record.version}: /export does not say to restart: ${outcomes[path]?.message}`);
+		if (process.env.ATOMIC_IN_PLACE_E2E_REPORT === "1")
+			for (const [path, outcome] of Object.entries(outcomes))
+				console.log(`${record.version} ${path}: ${outcome.loaded ? "loaded" : outcome.message.split("\n")[0]}`);
 		return problems;
 	} finally {
 		child.kill();
@@ -230,6 +252,8 @@ async function main(argv) {
 		.filter((file) => /^\d.*\.json$/.test(file))
 		.map((file) => JSON.parse(readFileSync(join(recordsDir, file), "utf8")))
 		.filter((record) => versions.length === 0 || versions.includes(record.version));
+	const allowedFile = join(recordsDir, "allowed.json");
+	const allowed = existsSync(allowedFile) ? JSON.parse(readFileSync(allowedFile, "utf8")) : {};
 	const work = mkdtempSync(join(tmpdir(), "atomic-in-place-update-e2e-"));
 	const unpacked = mkdtempSync(join(work, "build-"));
 	untar(tarballOf(tarballs, "@bastani/atomic"), unpacked);
@@ -238,7 +262,7 @@ async function main(argv) {
 	try {
 		for (const record of records) {
 			mkdirSync(work, { recursive: true });
-			const problems = await updateRunningRelease(record, tarballs, version, work);
+			const problems = await updateRunningRelease(record, tarballs, version, work, allowed[record.version]);
 			for (const problem of problems) console.error(problem);
 			if (problems.length > 0) ok = false;
 			else console.log(`A process of ${record.version} updated in place to ${version} loads or says to restart.`);
