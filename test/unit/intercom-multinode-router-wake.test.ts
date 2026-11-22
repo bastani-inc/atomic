@@ -2277,6 +2277,125 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		assert.equal(granted(await again), true, "nothing still owns it");
 	});
 
+	/**
+	 * A claim of `id` that gives up before the database has run its binding write: the write runs once `land` is called,
+	 * as a pooled database's connection runs a statement it got late. `landed` settles with its answer.
+	 */
+	async function claimLandingLate(node: Node, id: string, returnAddress: string) {
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		const landing = Promise.withResolvers<void>();
+		const written = Promise.withResolvers<void>();
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await landing.promise;
+			try {
+				return await bind(...args);
+			} finally {
+				written.resolve();
+			}
+		});
+		const pending = node.router.claimSessionId(id, returnAddress);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await pending;
+		assert.equal(claim.status, "unanswered");
+		vi.mocked(knownSessions.bind).mockRestore();
+		return {
+			claim: (claim as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered,
+			async land() {
+				landing.resolve();
+				await written.promise;
+				await vi.advanceTimersByTimeAsync(0);
+			},
+		};
+	}
+
+	test("an id an unanswered claim's binding write takes after its registration settled on a fresh id is given back (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const late = await claimLandingLate(node, id, "return-1");
+
+		// Its presence wait ended first: the session is answered under its fresh id, and the claimed id is given back.
+		const back = registerUnanswered(node, late.claim, "return-1", true);
+		await back.registered;
+		assert.equal(back.target.info.id, back.freshId);
+		await late.land();
+
+		const again = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await again), true, "nothing still owns it");
+	});
+
+	test("an id an unanswered claim's binding write takes after its registration's own write chose the fresh id is given back (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const late = await claimLandingLate(node, id, "return-1");
+
+		// The registration's write finds the id not bound by its claim yet, and binds the fresh id.
+		const back = registerUnanswered(node, late.claim, "return-1");
+		await back.registered;
+		assert.deepEqual(back.settles, [false]);
+		await late.land();
+
+		const again = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await again), true, "nothing still owns it");
+	});
+
+	test("an id an unanswered claim's binding write takes after its registration's own write failed is given back (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const late = await claimLandingLate(node, id, "return-1");
+		const knownSessions = node.state.knownSessions;
+		assert.ok(knownSessions.reclaim !== undefined);
+		vi.spyOn(knownSessions, "reclaim").mockRejectedValueOnce(new Error("the shared database is down"));
+
+		const back = registerUnanswered(node, late.claim, "return-1");
+		await back.registered;
+		assert.deepEqual(back.settles, [false]);
+		vi.mocked(knownSessions.reclaim).mockRestore();
+		await late.land();
+
+		const again = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await again), true, "nothing still owns it");
+	});
+
+	test("a returning session that kept the id its unanswered claim wrote still owns it once the claim's answer arrives (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		const answer = Promise.withResolvers<void>();
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			const binding = await bind(...args);
+			await answer.promise;
+			return binding;
+		});
+		const pending = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claim = await pending;
+		assert.equal(claim.status, "unanswered");
+		vi.mocked(knownSessions.bind).mockRestore();
+
+		const back = registerUnanswered(
+			node,
+			(claim as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered,
+			"return-1",
+		);
+		await back.registered;
+		assert.equal(back.target.info.id, id);
+		answer.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const other = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(granted(await other), false, "the returning session owns it");
+	});
+
 	test("a returning session whose claim went unanswered keeps the id when the binding is still the one its claim wrote (#5607)", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
 		const node = await startNode(await cluster());
