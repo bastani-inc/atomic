@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import type { DetachedToolResult, SessionEntry } from "@bastani/atomic";
 import { type Context, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { SESSION_HISTORY_PAGE_ENTRIES } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
@@ -359,6 +360,90 @@ for (const compacted of [false, true])
 		},
 		LIVE_CHILD_TIMEOUT_MS,
 	);
+
+test(
+	"a woken child whose restore found its late result's call reads none of its history back again to save the notice",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const writer = await SessionManager.create(store, env.root);
+		await writer.appendMessage({ role: "user", content: "watch CI", timestamp: 1 });
+		const callEntry = await writer.appendMessage(
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "7" }, { id: "ci-1" })], { stopReason: "toolUse" }),
+		);
+		await writer.appendMessage({
+			role: "toolResult",
+			toolCallId: "ci-1",
+			toolName: "wait_for_ci",
+			content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+			isError: false,
+			timestamp: 2,
+		});
+		// More turns since the call than a page of history holds, then a compaction: a reopened session holds only what
+		// follows it, so reading back to the call reads pages of the stored history.
+		for (let turn = 0; turn < SESSION_HISTORY_PAGE_ENTRIES * 2; turn++)
+			await writer.appendMessage({ role: "user", content: `turn ${turn}`, timestamp: 3 });
+		await writer.appendCompaction("summary", null, 100, {
+			strategy: "verbatim-lines",
+			promptVersion: 7,
+			parameters: { query: "" },
+			stats: {
+				linesBefore: 3,
+				linesDeleted: 3,
+				linesKept: 0,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 10,
+				percentReduction: 90,
+			},
+			form: "cleared",
+		});
+		await writer.appendMessage(fauxAssistantMessage("Waiting."));
+		const sessionId = writer.getSessionId();
+		const reopened = await SessionManager.open(store, sessionId, env.root, { history: "tail" });
+		assert.equal(reopened.hasFullHistory(), false, "the reopened session holds only its window");
+		// The run opens its own copy of the session: count the pages any copy reads.
+		let pages = 0;
+		const readHistory = SessionManager.prototype.readHistory;
+		const spy = vi.spyOn(SessionManager.prototype, "readHistory").mockImplementation(function (
+			this: SessionManager,
+			options,
+		) {
+			const read = readHistory.call(this, options);
+			return (async function* () {
+				for await (const page of read) {
+					pages++;
+					yield page;
+				}
+			})();
+		});
+		cleanups.push(() => spy.mockRestore());
+		env.faux.setResponses([fauxAssistantMessage("Run 7 done.")]);
+		const late = result("ci-1", "RUN-7-OUTPUT");
+		const calls = new Map([["ci-1", callEntry]]);
+
+		const woken = await runSingleInProcess(env.root, agent, "", {
+			...env.options("late-call-known", {
+				sessionManager: reopened,
+				resumeSession: true,
+				resumeLateToolResults: [late],
+				resumeLateToolResultCalls: calls,
+				skipTaskPrompt: true,
+			}),
+		});
+
+		assert.equal(woken.status, "ok");
+		assert.equal(pages, 0, "no page of its history was read back");
+		const notices = (await SessionManager.open(store, sessionId))
+			.getBranch()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === SUBAGENT_LATE_TOOL_RESULT_TYPE);
+		assert.equal(notices.length, 1);
+		const [notice] = notices;
+		assert.ok(notice?.type === "custom_message");
+		assert.equal(notice.stageAdmissionKey, lateToolResultNoticeKey([late], calls), "admitted as its call's notice");
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
 
 test(
 	"a child resumed with a message reads it and its resume note in one request, and no message from the user carries the note",

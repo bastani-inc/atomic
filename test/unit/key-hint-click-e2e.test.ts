@@ -27,6 +27,7 @@ import { AgentPanelSourceHub } from "../../packages/coding-agent/src/core/tasks/
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
 import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
+import { registerHintRoute } from "../../packages/coding-agent/src/modes/interactive/components/hint-routes.ts";
 import { mainComposerHints } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { slashCommandHint } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.ts";
 import { Selector } from "../../packages/coding-agent/src/modes/interactive/components/selector.ts";
@@ -398,6 +399,7 @@ async function mainChat(commandHost?: "in-process" | "isolated") {
 		subscribe: () => () => {},
 	});
 	const liveCommands = new Set(["llama"]);
+	const engineCommands: InteractiveEngineCommand[] = [];
 	const session = {
 		extensionRunner: {
 			getAgentPanelSourceHub: () => hub,
@@ -464,6 +466,9 @@ async function mainChat(commandHost?: "in-process" | "isolated") {
 								source: "extension",
 								sourceInfo: { configurationOrigin: "bundled" },
 							})),
+						sendEngineCommand: (command: InteractiveEngineCommand) => {
+							engineCommands.push(command);
+						},
 					})
 				: { session },
 		session,
@@ -491,7 +496,7 @@ async function mainChat(commandHost?: "in-process" | "isolated") {
 	}) as unknown as { setupKeyHandlers(): Promise<void> };
 	await host.setupKeyHandlers();
 	ui.tui.renderNow();
-	return { ui, editor, extensionDialogs, liveCommands };
+	return { ui, editor, extensionDialogs, liveCommands, engineCommands };
 }
 
 test.each(["in-process", "isolated"] as const)(
@@ -522,6 +527,54 @@ test.each(["in-process", "isolated"] as const)(
 			await ui.click(/llama now/, "now");
 			assert.deepEqual(submitted, ["/llama"], "a stale hint never falls through to a user prompt");
 		} finally {
+			ui.tui.stop();
+		}
+	},
+);
+
+test.each(["in-process", "isolated"] as const)(
+	"a command hint that names a route runs only where the route leads on the %s host, never in the main chat",
+	async (host) => {
+		const { ui, editor, engineCommands } = await mainChat(host);
+		const submitted: string[] = [];
+		editor.onSubmit = (text) => {
+			submitted.push(text);
+		};
+		const ran: string[] = [];
+		const local = registerHintRoute((command) => {
+			ran.push(command);
+			return true;
+		});
+		const gone = registerHintRoute(() => true);
+		gone.dispose();
+		const engineRoute = "e-route-of-an-engine-chat";
+		try {
+			ui.mount(
+				new Text(
+					[
+						slashCommandHint("/tasks here", local.route),
+						slashCommandHint("/tasks gone", gone.route),
+						slashCommandHint("/tasks engine", engineRoute),
+					].join("\n"),
+					0,
+					0,
+				),
+			);
+			await ui.click(/tasks here/, "here");
+			assert.deepEqual(ran, ["/tasks"]);
+			await pastDoubleClick();
+			await ui.click(/tasks gone/, "gone");
+			await pastDoubleClick();
+			await ui.click(/tasks engine/, "engine");
+			assert.deepEqual(ran, ["/tasks"]);
+			assert.deepEqual(submitted, [], "a routed hint never runs the main chat's command");
+			// A route the engine drew is handed back to it; there is no engine in process.
+			assert.deepEqual(
+				engineCommands,
+				host === "isolated" ? [{ type: "engine_hint_route", componentId: engineRoute, command: "/tasks" }] : [],
+			);
+		} finally {
+			local.dispose();
 			ui.tui.stop();
 		}
 	},

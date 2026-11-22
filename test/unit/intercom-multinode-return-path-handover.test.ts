@@ -200,3 +200,47 @@ test("an answer read on another node before a newer message's delivery completes
 		returnPathClosedReason("launcher"),
 	]);
 });
+
+test("an answer read before a newer message's failed settle counts toward that message once it is handed over again", async () => {
+	const [a, b] = await cluster();
+	const launcher = await a.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
+	const stage = await b.connect("stage", "stages", true);
+	const handedOver = (id: string) =>
+		framesOf(stage).filter((frame) => frame.type === "message" && frame.message.id === id).length;
+	const note = async (id: string): Promise<void> => {
+		a.send(launcher, "stage", id);
+		await waitFor(() => (handedOver(id) > 0 ? true : undefined));
+	};
+	const answer = async (id: string) => {
+		b.send(stage, "launcher", id);
+		return waitFor(() => outcomeOf(stage, id));
+	};
+
+	await note("first-note");
+	assert.equal(b.router.received(stage, "first-note"), true);
+	await waitFor(() => outcomeOf(launcher, "first-note"));
+	// The second note reaches the stage, which answers it at once.
+	await note("second-note");
+	assert.equal((await answer("answer-1")).type, "delivered");
+	// Its receipt reaches the stage's broker while the shared storage fails the settle once: the row is claimed and
+	// handed over again, later than the answer, and only that second hand-over's receipt settles it.
+	const outbox = b.opened.state.outbox;
+	const markDelivered = outbox.markDelivered.bind(outbox);
+	let failures = 1;
+	outbox.markDelivered = async (claim) => {
+		if (failures-- > 0) throw new Error("database is locked");
+		return markDelivered(claim);
+	};
+	assert.equal(b.router.received(stage, "second-note"), true);
+	await waitFor(() => (handedOver("second-note") === 2 ? true : undefined));
+	assert.equal(b.router.received(stage, "second-note"), true);
+	assert.equal((await waitFor(() => outcomeOf(launcher, "second-note"))).type, "delivered");
+
+	for (let index = 2; index <= RETURN_PATH_MESSAGE_LIMIT; index++)
+		assert.equal((await answer(`answer-${index}`)).type, "delivered");
+	const over = await answer("answer-over");
+	assert.deepEqual(over.type === "delivery_failed" ? [over.type, over.reason] : [over.type], [
+		"delivery_failed",
+		returnPathClosedReason("launcher"),
+	]);
+});
