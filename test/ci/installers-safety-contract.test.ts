@@ -377,6 +377,7 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 	assert.match(powershell.slice(transactionCatch, successOutput), /Invoke-AtomicTransactionRollback \$transaction/u);
 	const finallyBlock = powershell.slice(powershell.indexOf("finally {", successOutput));
 	assert.match(finallyBlock, /-not \$transactionCommitted[\s\S]+Invoke-AtomicTransactionRollback \$transaction/u);
+	assert.match(powershell, /RollbackRetryBudget = @\{ RemainingMilliseconds = 9500 \}/u);
 	assert.match(powershell, /\$rollbackRetryLimit\s*=\s*[2-9]/u);
 	assert.match(finallyBlock, /while \(\$rollbackAttempt -lt \$rollbackRetryLimit/u);
 	assert.match(finallyBlock, /Write-Warning.*rollback.*incomplete.*-WarningAction Continue/iu);

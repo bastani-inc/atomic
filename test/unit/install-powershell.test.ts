@@ -767,14 +767,36 @@ test("Windows installer performs every transaction, rollback, and recovery move 
 	assert.match(moveHelper, /\[Math\]::Min\(100 \* \$attempt, 1000\)/u);
 	assert.match(moveHelper, /Start-Sleep -Milliseconds \$delayMilliseconds/u);
 	assert.match(moveHelper, /Refusing non-local rename/u);
+	assert.match(moveHelper, /Source and destination path must be different/u);
+	assert.match(moveHelper, /Test-AtomicTransientFileSystemError \$_/u);
+	assert.match(moveHelper, /\[hashtable\]\$RetryBudget = \$null/u);
+
+	const transientHelperStart = source.indexOf("function Test-AtomicTransientFileSystemError");
+	assert.ok(transientHelperStart >= 0, "Test-AtomicTransientFileSystemError helper is missing");
+	const transientHelperEnd = source.indexOf("\nfunction ", transientHelperStart + 1);
+	const transientHelper = source.slice(transientHelperStart, transientHelperEnd);
+	for (const subclass of [
+		"FileNotFoundException",
+		"DirectoryNotFoundException",
+		"PathTooLongException",
+		"DriveNotFoundException",
+	]) {
+		assert.match(transientHelper, new RegExp(`\\[System\\.IO\\.${subclass}\\]`, "u"));
+	}
+	assert.match(transientHelper, /@\(39,\s*80,\s*112,\s*183\)/u);
 
 	const rollbackStart = source.indexOf("function Invoke-AtomicTransactionRollback");
 	const rollbackEnd = source.indexOf("function Remove-AtomicTransactionBackups", rollbackStart);
 	const rollback = source.slice(rollbackStart, rollbackEnd);
 	assert.equal(
-		(rollback.match(/\bMove-AtomicItem\b/gu) ?? []).length,
+		(rollback.match(/\bMove-AtomicItem\b[^\r\n]*-RetryBudget \$Transaction\.RollbackRetryBudget/gu) ?? []).length,
 		4,
-		"all four rollback backup restores must use Move-AtomicItem",
+		"all four rollback backup restores must pass the shared RollbackRetryBudget to Move-AtomicItem",
+	);
+	assert.match(
+		source,
+		/RollbackRetryBudget = @\{ RemainingMilliseconds = 9500 \}/u,
+		"transaction must initialize one shared rollback retry sleep budget",
 	);
 
 	const leftoversStart = source.indexOf("function Clear-AtomicInstallLeftovers");
@@ -791,8 +813,8 @@ test("Windows installer performs every transaction, rollback, and recovery move 
 	const linkRemoval = source.slice(linkRemovalStart, linkRemovalEnd);
 	assert.match(
 		linkRemoval,
-		/Remove-AtomicTreeWithRetry \$item\.FullName \$RetryLimit \$RetryDelayMilliseconds/u,
-		"Remove-AtomicDirectoryLinkOrTree must retry real directory tree removals with Remove-AtomicTreeWithRetry",
+		/Remove-AtomicTreeWithRetry \$item\.FullName \$RetryLimit \$RetryDelayMilliseconds \$RetryBudget/u,
+		"Remove-AtomicDirectoryLinkOrTree must retry real directory tree removals with Remove-AtomicTreeWithRetry and forward RetryBudget",
 	);
 	assert.doesNotMatch(
 		linkRemoval,
@@ -801,13 +823,13 @@ test("Windows installer performs every transaction, rollback, and recovery move 
 	);
 	assert.match(
 		rollback,
-		/Remove-AtomicDirectoryLinkOrTree \$versionItem\.FullName \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
-		"rollback version removal must pass the bounded retry budget",
+		/Remove-AtomicDirectoryLinkOrTree \$versionItem\.FullName \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds \$Transaction\.RollbackRetryBudget/u,
+		"rollback version removal must pass the shared RollbackRetryBudget",
 	);
 	assert.match(
 		rollback,
-		/Remove-AtomicTreeWithRetry \$shimItem\.FullName \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
-		"rollback shim removal must use bounded Remove-AtomicTreeWithRetry",
+		/Remove-AtomicTreeWithRetry \$shimItem\.FullName \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds \$Transaction\.RollbackRetryBudget/u,
+		"rollback shim removal must pass the shared RollbackRetryBudget",
 	);
 	assert.doesNotMatch(rollback, /Remove-Item -LiteralPath/u, "rollback must not use bare single-attempt Remove-Item");
 
@@ -2247,6 +2269,12 @@ $global:AtomicFixtureRemoveLockStream = $null
 $global:AtomicFixtureRemoveLockAttempts = 0
 $global:AtomicFixtureRollbackRemoveLockArmed = $false
 $global:AtomicFixtureStageCleanupLockedDir = $null
+$global:AtomicFixtureNonLockAttempts = 0
+$global:AtomicFixtureNonLockCollisionDir = $null
+$global:AtomicFixtureDualRollbackLockArmed = $false
+$global:AtomicFixtureDualRollbackLockStreams = New-Object System.Collections.ArrayList
+$global:AtomicFixtureDualRollbackRestoreAttempts = 0
+$global:AtomicFixtureDualRollbackBackupPaths = New-Object System.Collections.ArrayList
 $global:AtomicFixtureWarnings = New-Object System.Collections.ArrayList
 
 function global:Write-Warning {
@@ -2460,6 +2488,15 @@ function global:Rename-Item {
         }
         throw "Injected transaction failure: stage-cleanup-probe"
     }
+    if ($global:AtomicFixtureFailurePoint -eq "nonlock-exists-probe" -and
+        $leafName -eq "1.0.0" -and
+        $destinationLeaf -match '^\.backup-[0-9a-f]{32}$') {
+        $global:AtomicFixtureNonLockAttempts++
+        if (-not (Test-Path -LiteralPath $destination)) {
+            $global:AtomicFixtureNonLockCollisionDir = $destination
+            Microsoft.PowerShell.Management\New-Item -ItemType Directory -Path $destination | Out-Null
+        }
+    }
 
     $restoreName = $null
     if ($leafName -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") { $restoreName = "shim-restore" }
@@ -2486,6 +2523,11 @@ function global:Rename-Item {
         $leafName -match '^\.backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "1.0.0") {
         $matchesMoveLock = $true
     }
+    if ($global:AtomicFixtureMoveLockTarget -eq "dual-rollback-restore" -and
+        (($leafName -match '^\.backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "1.0.0") -or
+         ($leafName -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd"))) {
+        $global:AtomicFixtureDualRollbackRestoreAttempts++
+    }
     if ($matchesMoveLock) {
         $global:AtomicFixtureMoveLockAttempts++
         if ($global:AtomicFixtureMoveLockMode -eq "one-shot" -and
@@ -2506,6 +2548,25 @@ function global:Rename-Item {
         throw
     }
 
+    if ($global:AtomicFixtureDualRollbackLockArmed) {
+        if ($destinationLeaf -match '^\.backup-[0-9a-f]{32}$') {
+            $verBackupExe = Join-Path $destination "atomic.exe"
+            if ([IO.File]::Exists($verBackupExe)) {
+                [void]$global:AtomicFixtureDualRollbackBackupPaths.Add($destination)
+                [void]$global:AtomicFixtureDualRollbackLockStreams.Add(
+                    [IO.File]::Open($verBackupExe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+                )
+            }
+        }
+        elseif ($destinationLeaf -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$') {
+            if ([IO.File]::Exists($destination)) {
+                [void]$global:AtomicFixtureDualRollbackBackupPaths.Add($destination)
+                [void]$global:AtomicFixtureDualRollbackLockStreams.Add(
+                    [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                )
+            }
+        }
+    }
     if ($global:AtomicFixtureRollbackMoveLockArmed -and
         $destinationLeaf -match '^\.backup-[0-9a-f]{32}$' -and
         $null -eq $global:AtomicFixtureMoveLockStream) {
@@ -3144,6 +3205,70 @@ try {
             Remove-Item -LiteralPath $global:AtomicFixtureStageCleanupLockedDir -Recurse -Force
         }
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "an exhausted stage cleanup altered the existing version"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 7. Non-lock IOException (ERROR_ALREADY_EXISTS 0x800700B7) fails fast on attempt 1 with 0 retries.
+        $global:AtomicFixtureFailurePoint = "nonlock-exists-probe"
+        $global:AtomicFixtureNonLockAttempts = 0
+        $global:AtomicFixtureNonLockCollisionDir = $null
+        $nonLockFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $nonLockFailure = $_
+        }
+        finally {
+            $global:AtomicFixtureFailurePoint = $null
+        }
+        Assert-Fixture ($null -ne $nonLockFailure) "an existing backup destination unexpectedly succeeded"
+        Assert-Fixture ($global:AtomicFixtureNonLockAttempts -eq 1) "a non-lock ERROR_ALREADY_EXISTS IOException was retried ($($global:AtomicFixtureNonLockAttempts) attempts)"
+        if ($null -ne $global:AtomicFixtureNonLockCollisionDir -and (Test-Path -LiteralPath $global:AtomicFixtureNonLockCollisionDir)) {
+            Remove-Item -LiteralPath $global:AtomicFixtureNonLockCollisionDir -Recurse -Force
+        }
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Raw) -ceq "rollback-preserved") "a non-lock collision altered the existing version"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        # 8. Two permanently locked rollback restores share one bounded rollback retry sleep budget across
+        #    catch + all finally rollback passes (never compounding 4x per item).
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureMoveLockTarget = "dual-rollback-restore"
+        $global:AtomicFixtureDualRollbackLockArmed = $true
+        $global:AtomicFixtureDualRollbackLockStreams.Clear()
+        $global:AtomicFixtureDualRollbackBackupPaths.Clear()
+        $global:AtomicFixtureDualRollbackRestoreAttempts = 0
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $dualRollbackFailure = $null
+        try {
+            & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        }
+        catch {
+            $dualRollbackFailure = $_
+        }
+        finally {
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+            $global:AtomicFixtureMoveLockTarget = $null
+            $global:AtomicFixtureDualRollbackLockArmed = $false
+            foreach ($lockedStream in @($global:AtomicFixtureDualRollbackLockStreams)) {
+                if ($null -ne $lockedStream) { $lockedStream.Dispose() }
+            }
+            $global:AtomicFixtureDualRollbackLockStreams.Clear()
+        }
+        Assert-Fixture ($null -ne $dualRollbackFailure) "a failing final smoke with locked rollback backups reported success"
+        # With one shared 9.5 s budget across catch + 3 finally passes: first locked restore exhausts the budget (~15 attempts),
+        # and every remaining item/pass still makes 1 attempt without sleeping (~22 total vs ~130 without a shared budget).
+        Assert-Fixture ($global:AtomicFixtureDualRollbackRestoreAttempts -ge 15 -and $global:AtomicFixtureDualRollbackRestoreAttempts -le 25) "two permanently locked rollback restores did not share one bounded retry budget ($($global:AtomicFixtureDualRollbackRestoreAttempts) attempts)"
+        $dualIncompleteWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'rollback remains incomplete' })
+        Assert-Fixture ($dualIncompleteWarnings.Count -eq 1) "a permanently locked rollback did not report incomplete rollback once ($($dualIncompleteWarnings.Count))"
+        # Clean up retained backups from the deliberately incomplete rollback and restore a clean install.
+        foreach ($retainedBackup in @($global:AtomicFixtureDualRollbackBackupPaths)) {
+            if (-not [string]::IsNullOrWhiteSpace($retainedBackup) -and (Test-Path -LiteralPath $retainedBackup)) {
+                Remove-Item -LiteralPath $retainedBackup -Recurse -Force
+            }
+        }
+        $global:AtomicFixtureDualRollbackBackupPaths.Clear()
+        Reset-FixtureInstallState @($installRoot, $binDir)
+        & $InstallerPath -Ref "1.0.0" | Out-Null
         Assert-NoTransactionResidue $installRoot $binDir
     }
     elseif ($Scenario -eq "unicode") {
@@ -4029,6 +4154,10 @@ finally {
         $global:AtomicFixtureRemoveLockStream.Dispose()
         $global:AtomicFixtureRemoveLockStream = $null
     }
+    foreach ($lockedStream in @($global:AtomicFixtureDualRollbackLockStreams)) {
+        if ($null -ne $lockedStream) { $lockedStream.Dispose() }
+    }
+    $global:AtomicFixtureDualRollbackLockStreams.Clear()
     [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
     foreach ($name in $environmentNames) {
         [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")

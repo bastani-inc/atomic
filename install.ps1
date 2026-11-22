@@ -836,7 +836,8 @@ function Get-AtomicPhysicalPath {
 function Move-AtomicItem {
     param(
         [string]$LiteralPath,
-        [string]$Destination
+        [string]$Destination,
+        [hashtable]$RetryBudget = $null
     )
 
     $normalizedSource = [IO.Path]::GetFullPath($LiteralPath).TrimEnd([char[]]@('\', '/'))
@@ -850,6 +851,10 @@ function Move-AtomicItem {
         (-not $IsWindowsHost -and ($sourceParent -cne $destinationParent))) {
         throw "Refusing non-local rename from '$LiteralPath' to '$Destination'."
     }
+    if (($IsWindowsHost -and ($normalizedSource -ieq $normalizedDestination)) -or
+        (-not $IsWindowsHost -and ($normalizedSource -ceq $normalizedDestination))) {
+        throw "Source and destination path must be different: '$LiteralPath'."
+    }
 
     $attemptLimit = 15
     for ($attempt = 1; ; $attempt++) {
@@ -858,10 +863,17 @@ function Move-AtomicItem {
             return
         }
         catch [System.IO.IOException], [System.UnauthorizedAccessException] {
-            if ($attempt -ge $attemptLimit) {
+            if (-not (Test-AtomicTransientFileSystemError $_) -or $attempt -ge $attemptLimit) {
                 throw
             }
             $delayMilliseconds = [Math]::Min(100 * $attempt, 1000)
+            if ($null -ne $RetryBudget) {
+                if ($RetryBudget.RemainingMilliseconds -le 0) {
+                    throw
+                }
+                $delayMilliseconds = [Math]::Min($delayMilliseconds, [int]$RetryBudget.RemainingMilliseconds)
+                $RetryBudget.RemainingMilliseconds -= $delayMilliseconds
+            }
             Start-Sleep -Milliseconds $delayMilliseconds
         }
     }
@@ -928,7 +940,22 @@ function Test-AtomicTransientFileSystemError {
     }
     $exception = $ErrorRecord.Exception
     while ($null -ne $exception) {
-        if ($exception -is [System.IO.IOException] -or $exception -is [System.UnauthorizedAccessException]) {
+        if ($exception -is [System.UnauthorizedAccessException]) {
+            return $true
+        }
+        if ($exception -is [System.IO.IOException]) {
+            if ($exception -is [System.IO.FileNotFoundException] -or
+                $exception -is [System.IO.DirectoryNotFoundException] -or
+                $exception -is [System.IO.PathTooLongException] -or
+                $exception -is [System.IO.DriveNotFoundException]) {
+                return $false
+            }
+            # Permanent Win32 IO errors: 39 (HANDLE_DISK_FULL), 80 (FILE_EXISTS), 112 (DISK_FULL), 183 (ALREADY_EXISTS).
+            if ($exception.HResult -lt 0 -and
+                ($exception.HResult -band 0x7FFF0000) -eq 0x00070000 -and
+                ($exception.HResult -band 0xFFFF) -in @(39, 80, 112, 183)) {
+                return $false
+            }
             return $true
         }
         $exception = $exception.InnerException
@@ -940,7 +967,8 @@ function Remove-AtomicDirectoryLinkOrTree {
     param(
         [string]$Path,
         [int]$RetryLimit = 9,
-        [int]$RetryDelayMilliseconds = 250
+        [int]$RetryDelayMilliseconds = 250,
+        [hashtable]$RetryBudget = $null
     )
 
     $item = Get-AtomicDirectoryEntry $Path
@@ -953,7 +981,7 @@ function Remove-AtomicDirectoryLinkOrTree {
         return
     }
 
-    $removal = Remove-AtomicTreeWithRetry $item.FullName $RetryLimit $RetryDelayMilliseconds
+    $removal = Remove-AtomicTreeWithRetry $item.FullName $RetryLimit $RetryDelayMilliseconds $RetryBudget
     if (-not $removal.Removed) {
         if ($null -ne $removal.LastError) {
             throw $removal.LastError
@@ -972,7 +1000,8 @@ function Remove-AtomicTreeWithRetry {
     param(
         [string]$Path,
         [int]$RetryLimit,
-        [int]$RetryDelayMilliseconds
+        [int]$RetryDelayMilliseconds,
+        [hashtable]$RetryBudget = $null
     )
 
     $result = [pscustomobject]@{ Removed = $true; Attempts = 0; LastError = $null }
@@ -1035,7 +1064,17 @@ function Remove-AtomicTreeWithRetry {
         }
 
         if ($result.Attempts -lt $RetryLimit) {
-            Start-Sleep -Milliseconds ($RetryDelayMilliseconds * $result.Attempts)
+            if ($null -ne $RetryBudget) {
+                if ($RetryBudget.RemainingMilliseconds -le 0) {
+                    break
+                }
+                $sleepMilliseconds = [Math]::Min($RetryDelayMilliseconds * $result.Attempts, [int]$RetryBudget.RemainingMilliseconds)
+                $RetryBudget.RemainingMilliseconds -= $sleepMilliseconds
+                Start-Sleep -Milliseconds $sleepMilliseconds
+            }
+            else {
+                Start-Sleep -Milliseconds ($RetryDelayMilliseconds * $result.Attempts)
+            }
         }
     }
 
@@ -1153,7 +1192,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.ShimInstallIntended = $false
             }
             else {
-                $shimRemoval = Remove-AtomicTreeWithRetry $shimItem.FullName $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
+                $shimRemoval = Remove-AtomicTreeWithRetry $shimItem.FullName $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds $Transaction.RollbackRetryBudget
                 if (-not $shimRemoval.Removed) {
                     if ($null -ne $shimRemoval.LastError) {
                         throw $shimRemoval.LastError
@@ -1170,7 +1209,7 @@ function Invoke-AtomicTransactionRollback {
             $shimBackupItem = Get-AtomicDirectoryEntry $Transaction.ShimBackupPath
             $shimDestinationItem = Get-AtomicDirectoryEntry $Transaction.ShimPath
             if ($null -ne $shimBackupItem -and $null -eq $shimDestinationItem) {
-                Move-AtomicItem -LiteralPath $shimBackupItem.FullName -Destination $Transaction.ShimPath
+                Move-AtomicItem -LiteralPath $shimBackupItem.FullName -Destination $Transaction.ShimPath -RetryBudget $Transaction.RollbackRetryBudget
                 $Transaction.ShimBackupIntended = $false
             }
             elseif ($null -eq $shimBackupItem -and $null -ne $shimDestinationItem) {
@@ -1198,7 +1237,7 @@ function Invoke-AtomicTransactionRollback {
             $atomicCurrentBackupItem = Get-AtomicDirectoryEntry $Transaction.AtomicCurrentBackupPath
             $atomicCurrentDestinationItem = Get-AtomicDirectoryEntry $Transaction.AtomicCurrentPath
             if ($null -ne $atomicCurrentBackupItem -and $null -eq $atomicCurrentDestinationItem) {
-                Move-AtomicItem -LiteralPath $atomicCurrentBackupItem.FullName -Destination $Transaction.AtomicCurrentPath
+                Move-AtomicItem -LiteralPath $atomicCurrentBackupItem.FullName -Destination $Transaction.AtomicCurrentPath -RetryBudget $Transaction.RollbackRetryBudget
                 $Transaction.AtomicCurrentBackupIntended = $false
             }
             elseif ($null -eq $atomicCurrentBackupItem -and $null -ne $atomicCurrentDestinationItem) {
@@ -1226,7 +1265,7 @@ function Invoke-AtomicTransactionRollback {
             $currentBackupItem = Get-AtomicDirectoryEntry $Transaction.CurrentBackupPath
             $currentDestinationItem = Get-AtomicDirectoryEntry $Transaction.CurrentPath
             if ($null -ne $currentBackupItem -and $null -eq $currentDestinationItem) {
-                Move-AtomicItem -LiteralPath $currentBackupItem.FullName -Destination $Transaction.CurrentPath
+                Move-AtomicItem -LiteralPath $currentBackupItem.FullName -Destination $Transaction.CurrentPath -RetryBudget $Transaction.RollbackRetryBudget
                 $Transaction.CurrentBackupIntended = $false
             }
             elseif ($null -eq $currentBackupItem -and $null -ne $currentDestinationItem) {
@@ -1243,7 +1282,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.VersionInstallIntended = $false
             }
             else {
-                Remove-AtomicDirectoryLinkOrTree $versionItem.FullName $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
+                Remove-AtomicDirectoryLinkOrTree $versionItem.FullName $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds $Transaction.RollbackRetryBudget
                 $Transaction.VersionInstallIntended = $false
             }
         }
@@ -1254,7 +1293,7 @@ function Invoke-AtomicTransactionRollback {
             $versionBackupItem = Get-AtomicDirectoryEntry $Transaction.VersionBackupPath
             $versionDestinationItem = Get-AtomicDirectoryEntry $Transaction.VersionPath
             if ($null -ne $versionBackupItem -and $null -eq $versionDestinationItem) {
-                Move-AtomicItem -LiteralPath $versionBackupItem.FullName -Destination $Transaction.VersionPath
+                Move-AtomicItem -LiteralPath $versionBackupItem.FullName -Destination $Transaction.VersionPath -RetryBudget $Transaction.RollbackRetryBudget
                 $Transaction.VersionBackupIntended = $false
             }
             elseif ($null -eq $versionBackupItem -and $null -ne $versionDestinationItem) {
@@ -1882,6 +1921,7 @@ try {
         UserPathChangeIntended = $false
         CurrentPathChangeIntended = $false
         RollbackCompleted = $false
+        RollbackRetryBudget = @{ RemainingMilliseconds = 9500 }
     }
 
     Add-AtomicMissingDirectoryPaths $transactionMissingDirectories $versionsDir
