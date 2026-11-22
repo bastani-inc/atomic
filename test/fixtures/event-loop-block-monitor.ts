@@ -7,6 +7,8 @@ import {
 } from "../../packages/coding-agent/src/core/event-loop-monitor.js";
 
 const [longBlockMs = "0", shortBlockMs = "0", settleMs = "0", mode = "blocks"] = process.argv.slice(2).map(String);
+// Loaded: what follows is the fixture's own work, which its test bounds apart from the loading.
+console.log("event-loop-block-monitor fixture loaded");
 
 function holdTheEventLoopForLong(ms: number): number {
 	const until = performance.now() + ms;

@@ -7,13 +7,15 @@ import {
 	hotFrames,
 } from "../../packages/coding-agent/src/core/event-loop-monitor.js";
 import {
+	type ByteStream,
 	bunExecutable,
+	decodeStream,
 	fileExistsSync,
 	makeTempDirectory,
 	moduleDir,
 	readTextSync,
 	removeTempDirectory,
-	spawnSyncCollect,
+	spawnProcess,
 } from "../helpers/runtime.js";
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
@@ -30,10 +32,16 @@ const SHORT_BLOCK_MS = 20;
  */
 const SESSION_DELAY_SLACK_MS = 50;
 const SETTLE_MS = 500;
-/** Structural: each child compiles the monitor and the fixture, through jiti on Node; a loaded runner took over 20 s. */
-const CHILD_TIMEOUT_MS = 60_000;
+/** Structural: loading the monitor and the fixture, through jiti on Node, slows with the machine; a loaded runner took 55 s. */
+const CHILD_LOAD_TIMEOUT_MS = 180_000;
+/** The fixture's own work once loaded: at most two long blocks and seven settling waits. */
+const CHILD_WORK_MS = 2 * LONG_BLOCK_MS + 7 * SETTLE_MS;
+/** Once loaded, the child's work and its exit, three times over for a loaded runner: past it, the child is stuck. */
+const CHILD_RUN_TIMEOUT_MS = 3 * CHILD_WORK_MS;
 /** The budget of a test that starts one child. */
-const CHILD_TEST_TIMEOUT_MS = CHILD_TIMEOUT_MS + 10_000;
+const CHILD_TEST_TIMEOUT_MS = CHILD_LOAD_TIMEOUT_MS + CHILD_RUN_TIMEOUT_MS + 10_000;
+/** The line the fixture prints once it has loaded. */
+const LOADED = "event-loop-block-monitor fixture loaded";
 
 const RUNTIMES = [
 	{ name: "Node", command: () => [process.execPath, "--import", "jiti/register"] },
@@ -75,13 +83,17 @@ beforeEach(() => {
 });
 afterEach(() => removeTempDirectory(temp));
 
-function runChild(
+/**
+ * Runs the fixture in `runtime` and returns its report and what it wrote to stderr. Loading and running are bounded
+ * apart: loading slows with the machine, while a child that loaded and then does not finish its work in time is stuck.
+ */
+async function runChild(
 	runtime: (typeof RUNTIMES)[number],
 	env: Record<string, string | undefined>,
 	mode = "blocks",
-): { report: ChildReport | undefined; stderr: string } {
+): Promise<{ report: ChildReport | undefined; stderr: string }> {
 	const [executable, ...preload] = runtime.command();
-	const result = spawnSyncCollect(
+	const child = spawnProcess(
 		[executable, ...preload, FIXTURE, String(LONG_BLOCK_MS), String(SHORT_BLOCK_MS), String(SETTLE_MS), mode],
 		{
 			cwd: ROOT,
@@ -92,12 +104,54 @@ function runChild(
 				ATOMIC_EVENT_LOOP_BLOCK_LOG: undefined,
 				...env,
 			},
-			timeout: CHILD_TIMEOUT_MS,
+			stdout: "pipe",
+			stderr: "pipe",
 		},
 	);
-	const stderr = result.stderr.toString();
-	assert.equal(result.exitCode, 0, `the child failed:\n${stderr}`);
-	const line = result.stdout.toString().trim().split("\n").at(-1);
+	const startedAt = performance.now();
+	let loadedAt: number | undefined;
+	let stdout = "";
+	let stderr = "";
+	const read = async (stream: ByteStream | null, take: (text: string) => void) => {
+		if (stream) for await (const text of decodeStream(stream)) take(text);
+	};
+	const reading = Promise.all([
+		read(child.stdout, (text) => {
+			stdout += text;
+			if (loadedAt === undefined && stdout.includes(LOADED)) loadedAt = performance.now();
+		}),
+		read(child.stderr, (text) => {
+			stderr += text;
+		}),
+	]);
+	const stuck = await new Promise<"loading" | "running" | undefined>((resolve) => {
+		const watch = setInterval(() => {
+			const now = performance.now();
+			if (loadedAt === undefined && now - startedAt > CHILD_LOAD_TIMEOUT_MS) resolve("loading");
+			else if (loadedAt !== undefined && now - loadedAt > CHILD_RUN_TIMEOUT_MS) resolve("running");
+		}, 50);
+		void child.exited.then(
+			() => resolve(undefined),
+			() => resolve(undefined),
+		);
+		void reading.finally(() => clearInterval(watch));
+	});
+	if (stuck !== undefined) {
+		child.kill();
+		await child.exited.catch(() => {});
+		assert.fail(
+			stuck === "loading"
+				? `the child did not load within ${CHILD_LOAD_TIMEOUT_MS} ms:\n${stderr}`
+				: `the child loaded, then did not finish within ${CHILD_RUN_TIMEOUT_MS} ms:\n${stderr}`,
+		);
+	}
+	await reading;
+	assert.equal(await child.exited, 0, `the child failed:\n${stderr}`);
+	const line = stdout
+		.trim()
+		.split("\n")
+		.filter((output) => output !== LOADED)
+		.at(-1);
 	return { report: line ? (JSON.parse(line) as ChildReport) : undefined, stderr };
 }
 
@@ -121,9 +175,9 @@ for (const runtime of RUNTIMES) {
 	describe(`the event-loop block diagnostic on ${runtime.name}`, () => {
 		test(
 			"records a long block once, with a stack through the function that held the loop, and not a brief one",
-			() => {
+			async () => {
 				const log = join(temp, "blocks.jsonl");
-				const { report, stderr } = runChild(runtime, {
+				const { report, stderr } = await runChild(runtime, {
 					ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS),
 					ATOMIC_EVENT_LOOP_BLOCK_LOG: log,
 				});
@@ -168,9 +222,9 @@ for (const runtime of RUNTIMES) {
 
 		test(
 			"counts a block in the phase it ran in when the phase ends in the same task (#5520)",
-			() => {
+			async () => {
 				const log = join(temp, "blocks.jsonl");
-				const { report } = runChild(
+				const { report } = await runChild(
 					runtime,
 					{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
 					"phase-inside-block",
@@ -198,8 +252,8 @@ for (const runtime of RUNTIMES) {
 
 		test(
 			"writes to event-loop-blocks.jsonl in the agent directory when no log is named",
-			() => {
-				const { report } = runChild(runtime, { ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS) });
+			async () => {
+				const { report } = await runChild(runtime, { ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS) });
 				assert.equal(report?.started, true);
 				assert.equal(
 					blocksNaming(readLog(join(temp, "agent/event-loop-blocks.jsonl")), "holdTheEventLoopForLong").length,
@@ -211,9 +265,9 @@ for (const runtime of RUNTIMES) {
 
 		test(
 			"counts the current block at exit without printing to the terminal (#5377)",
-			() => {
+			async () => {
 				const log = join(temp, "blocks.jsonl");
-				const { stderr } = runChild(
+				const { stderr } = await runChild(
 					runtime,
 					{
 						ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS),
@@ -234,9 +288,9 @@ for (const runtime of RUNTIMES) {
 
 		test(
 			"starts nothing and writes nothing while the threshold is unset",
-			() => {
+			async () => {
 				const log = join(temp, "blocks.jsonl");
-				const { report } = runChild(runtime, { ATOMIC_EVENT_LOOP_BLOCK_LOG: log });
+				const { report } = await runChild(runtime, { ATOMIC_EVENT_LOOP_BLOCK_LOG: log });
 				assert.deepEqual({ started: report?.started, created: report?.created }, { started: false, created: [] });
 				assert.equal(fileExistsSync(log), false);
 				assert.equal(fileExistsSync(join(temp, "agent/event-loop-blocks.jsonl")), false);
@@ -248,9 +302,9 @@ for (const runtime of RUNTIMES) {
 
 test(
 	"on Node, an anonymous function's hot frame counts every sample, wherever in its body each landed (#5377)",
-	() => {
+	async () => {
 		const log = join(temp, "blocks.jsonl");
-		runChild(
+		await runChild(
 			RUNTIMES[0],
 			{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
 			"anonymous",
