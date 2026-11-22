@@ -2258,9 +2258,22 @@ export class SqlSessionStore implements SessionStore {
 					),
 				],
 				["op", op],
-				["owner", j("data", "owner")],
-				["tasks", j("data", "tasks")],
-				["groups", j("data", "groups")],
+				// Atomic's own owner object and lists, read only as the JSON types Atomic writes them in: any other value
+				// under these names, an extension's text that looks like JSON included, reads as an empty string and is
+				// never parsed, as a JSONL store keeps it, a value the fold takes for none of them.
+				...(
+					[
+						["owner", "object"],
+						["tasks", "array"],
+						["groups", "array"],
+					] as const
+				).map(
+					([key, type]) =>
+						[
+							key,
+							`CASE WHEN ${jsonType("data", key)} = '${type}' THEN ${j("data", key)} WHEN ${jsonType("data", key)} IS NULL OR ${jsonType("data", key)} = 'null' THEN NULL ELSE '' END`,
+						] as const,
+				),
 				// Intercom's records of several asks at once: closed asks, and answered asks. They are parsed back from
 				// JSON text, which an extension's own text under the same name can look like: read them only as lists.
 				...["messageIds", "askIds"].map(
