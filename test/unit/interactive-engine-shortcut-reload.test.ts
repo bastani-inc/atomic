@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	waitUntilGone,
+} from "../helpers/recorded-process.js";
+import {
 	bunExecutable,
 	decodeStream,
 	moduleDir,
@@ -24,6 +30,8 @@ const ENGINE_REPORT_TIMEOUT_MS = 30_000;
  * ENGINE_REPORT_TIMEOUT_MS, so a scenario needs room for several of them.
  */
 const ISOLATED_INTERACTIVE_MODE_SCENARIO_TIMEOUT_MS = 90_000;
+/** How long a killed engine may take to be gone before cleanup reports it. */
+const ENGINE_EXIT_TIMEOUT_MS = 5_000;
 
 interface HarnessReport {
 	type?: string;
@@ -46,6 +54,7 @@ class InteractiveModeDriver {
 	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
+	private readonly engines = new Map<number, Promise<RecordedProcess>>();
 	private stderr = "";
 
 	constructor(args: string[], env: Record<string, string>) {
@@ -152,6 +161,17 @@ class InteractiveModeDriver {
 	async stop(): Promise<void> {
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
 		await this.process.exited;
+		// The engine runs in its own process group, so it outlives the killed host for a moment. Until it notices, it
+		// can still write Bun's transpiler cache under the temporary HOME, as when it loads the model's API module
+		// once its resources are ready, and removing that directory then fails with ENOTEMPTY. End every engine the
+		// host reported, only while its pid still names it, and wait until each is gone.
+		for (const pending of this.engines.values()) {
+			const engine = await pending;
+			if (!(await signalRecordedProcess(engine, "SIGKILL", { group: true }))) await signalRecordedProcess(engine);
+			if (!(await waitUntilGone(engine, ENGINE_EXIT_TIMEOUT_MS))) {
+				throw new Error(`Engine ${engine.pid} still runs after the host exited`);
+			}
+		}
 	}
 
 	private async readReports(): Promise<void> {
@@ -170,7 +190,12 @@ class InteractiveModeDriver {
 				buffer = buffer.slice(newline + 1);
 				const marker = line.indexOf(PREFIX);
 				if (marker === -1) continue;
-				this.reports.push(JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport);
+				const report = JSON.parse(line.slice(marker + PREFIX.length)) as HarnessReport;
+				const enginePid = report.enginePid;
+				if (typeof enginePid === "number" && !this.engines.has(enginePid)) {
+					this.engines.set(enginePid, recordProcess(enginePid));
+				}
+				this.reports.push(report);
 				for (const waiter of this.waiters) waiter();
 			}
 		}
