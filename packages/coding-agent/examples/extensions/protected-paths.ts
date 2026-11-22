@@ -7,10 +7,10 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	const protectedPaths = [".env", ".git/", "node_modules/"];
 
-	pi.on("tool_call", async (event, ctx) => {
+	atomic.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") {
 			return undefined;
 		}

@@ -5,7 +5,7 @@ description: "Implement a provider API or OAuth flow Atomic does not ship."
 
 # Custom providers
 
-Extensions can register custom model providers with `pi.registerProvider()`:
+Extensions can register custom model providers with `atomic.registerProvider()`:
 
 - **Proxies:** Route requests through corporate proxies or API gateways.
 - **Custom endpoints:** Connect self-hosted or private model deployments.
@@ -50,14 +50,14 @@ See these complete provider examples:
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default async function (pi: ExtensionAPI) {
+export default async function (atomic: ExtensionAPI) {
   // Override baseUrl for an existing provider
-  await pi.registerProvider("anthropic", {
+  await atomic.registerProvider("anthropic", {
     baseUrl: "https://proxy.example.com"
   });
 
   // Register a new provider with models
-  await pi.registerProvider("my-provider", {
+  await atomic.registerProvider("my-provider", {
     name: "My Provider",
     baseUrl: "https://api.example.com",
     apiKey: "$MY_API_KEY",
@@ -82,7 +82,7 @@ Await provider registration and unregistration. For dynamic model discovery, fet
 Passing only `baseUrl` or `headers` for an existing provider keeps its built-in models. Supplying `models` replaces that provider's models across chat, image, and classifier operations. An omitted `type` defaults to `"chat"`; image and classifier entries require explicit `type` discriminants and matching handlers in `images` or `classifiers` keyed by each model's `api`:
 
 ```typescript
-await pi.registerProvider("media-tools", {
+await atomic.registerProvider("media-tools", {
   apiKey: "$MEDIA_TOOLS_API_KEY",
   models: [
     {

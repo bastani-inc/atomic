@@ -100,8 +100,8 @@ test.each(scenarios)("isolated model choices save only global preferences with $
 	};
 	const extensionFactories: ExtensionFactory[] = scenario.transientLevel
 		? [
-				(pi) => {
-					pi.on("model_select", () => pi.setThinkingLevel("low"));
+				(atomic) => {
+					atomic.on("model_select", () => atomic.setThinkingLevel("low"));
 				},
 			]
 		: [];

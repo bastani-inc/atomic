@@ -59,8 +59,8 @@ describe("after a prompt whose extension added a section to the prompt", () => {
 	let disposeSession: (() => Promise<void>) | undefined;
 
 	/** An extension that adds a section to every prompt when it starts, as the MCP integration does. */
-	const addsSection: ExtensionFactory = (pi) => {
-		pi.on("before_agent_start", (event) => {
+	const addsSection: ExtensionFactory = (atomic) => {
+		atomic.on("before_agent_start", (event) => {
 			event.systemPromptOptions.sections.added_servers = "Servers: one.";
 		});
 	};

@@ -117,7 +117,7 @@ function terminalOwnerId(owner: object | undefined): number {
 
 /** Claims accepted same-child messages before terminal delivery. */
 export function registerTerminalOrderingBarrier(
-  pi: Pick<ExtensionAPI, "events">,
+  atomic: Pick<ExtensionAPI, "events">,
   options: TerminalOrderingBarrierOptions,
 ): () => void {
   const drainedTargetsByTerminal = new Map<string, Set<string>>();
@@ -260,7 +260,7 @@ export function registerTerminalOrderingBarrier(
   const registration = { handle, isCurrent: () => options.isCurrent?.() !== false };
   let unsubscribe: () => void;
   try {
-    unsubscribe = pi.events.on(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, handle);
+    unsubscribe = atomic.events.on(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, handle);
   } catch (error) {
     if (!isStaleExtensionContextError(error)) throw error;
     return () => {};

@@ -11,8 +11,8 @@ test.each(["steer", "followUp"] as const)(
 		const interrupted = Promise.withResolvers<void>();
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("before_agent_start", async (event) => {
+				(atomic) => {
+					atomic.on("before_agent_start", async (event) => {
 						if (event.messageType === "custom" && event.message.customType === "original") {
 							entered.resolve();
 							await release.promise;

@@ -39,9 +39,9 @@ import { PassiveDemoController, ToggleDemoComponent } from "./overlay-qa-toggle-
 // Global handle for toggle demo (in real code, use a more elegant pattern)
 let globalToggleHandle: OverlayHandle | null = null;
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	// Animation demo - proves overlays can handle real-time updates (like Atomic doom would need)
-	pi.registerCommand("overlay-animation", {
+	atomic.registerCommand("overlay-animation", {
 		description: "Test real-time animation in overlay (~30 FPS)",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => new AnimationDemoComponent(tui, theme, done), {
@@ -52,7 +52,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test all 9 anchor positions
-	pi.registerCommand("overlay-anchors", {
+	atomic.registerCommand("overlay-anchors", {
 		description: "Cycle through all anchor positions",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const anchors: OverlayAnchor[] = [
@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test margins and offsets
-	pi.registerCommand("overlay-margins", {
+	atomic.registerCommand("overlay-margins", {
 		description: "Test margin and offset options",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const configs: { name: string; options: OverlayOptions }[] = [
@@ -124,7 +124,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test stacked overlays
-	pi.registerCommand("overlay-stack", {
+	atomic.registerCommand("overlay-stack", {
 		description: "Test stacked overlays",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			// Three large overlays that overlap in the center area
@@ -168,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test width overflow scenarios (original crash case) - streams real process output
-	pi.registerCommand("overlay-overflow", {
+	atomic.registerCommand("overlay-overflow", {
 		description: "Test width overflow with streaming process output",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => new StreamingOverflowComponent(tui, theme, done), {
@@ -179,7 +179,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test overlay at terminal edge
-	pi.registerCommand("overlay-edge", {
+	atomic.registerCommand("overlay-edge", {
 		description: "Test overlay positioned at terminal edge",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new EdgeTestComponent(theme, done), {
@@ -190,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test percentage-based positioning
-	pi.registerCommand("overlay-percent", {
+	atomic.registerCommand("overlay-percent", {
 		description: "Test percentage-based positioning",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const configs = [
@@ -226,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test maxHeight
-	pi.registerCommand("overlay-maxheight", {
+	atomic.registerCommand("overlay-maxheight", {
 		description: "Test maxHeight truncation",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new MaxHeightTestComponent(theme, done), {
@@ -237,7 +237,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test responsive sidepanel - only shows when terminal is wide enough
-	pi.registerCommand("overlay-sidepanel", {
+	atomic.registerCommand("overlay-sidepanel", {
 		description: "Test responsive sidepanel (hides when terminal < 100 cols)",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => new SidepanelComponent(tui, theme, done), {
@@ -255,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test toggle overlay - demonstrates OverlayHandle.setHidden() via onHandle callback
-	pi.registerCommand("overlay-toggle", {
+	atomic.registerCommand("overlay-toggle", {
 		description: "Test overlay toggle (press 't' to toggle visibility)",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await ctx.ui.custom<void>(
@@ -276,7 +276,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Non-capturing overlay demo - passive info panel that doesn't steal focus
-	pi.registerCommand("overlay-passive", {
+	atomic.registerCommand("overlay-passive", {
 		description: "Test non-capturing overlay (passive info panel alongside active overlay)",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			ctx.ui.setEditorText("");
@@ -288,7 +288,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Focus cycling demo - demonstrates focus(), input routing, per-panel dismissal, and rendering order
-	pi.registerCommand("overlay-focus", {
+	atomic.registerCommand("overlay-focus", {
 		description: "Test focus cycling, input routing, dismissal, and rendering order with overlays",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			ctx.ui.setEditorText("");
@@ -300,7 +300,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Test multiple input panels with simulated streaming
-	pi.registerCommand("overlay-streaming", {
+	atomic.registerCommand("overlay-streaming", {
 		description: "Multiple input panels with simulated streaming (Tab to cycle focus)",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			ctx.ui.setEditorText("");

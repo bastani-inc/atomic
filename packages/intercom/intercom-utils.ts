@@ -560,9 +560,9 @@ export function resolveIntercomPresenceName(sessionName: string | undefined, ses
   const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
   return `${DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX}-${normalizedSessionId}`;
 }
-export function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string): { name: string } {
+export function buildPresenceIdentity(atomic: ExtensionAPI, sessionId: string): { name: string } {
   return {
-    name: resolveIntercomPresenceName(pi.getSessionName(), sessionId),
+    name: resolveIntercomPresenceName(atomic.getSessionName(), sessionId),
   };
 }
 export function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): string {

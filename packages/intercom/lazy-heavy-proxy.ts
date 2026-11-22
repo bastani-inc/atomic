@@ -79,20 +79,20 @@ export async function dispatchEventHandlers(captured: CapturedHeavy, eventName: 
   for (const handler of captured.eventHandlers.get(eventName) ?? []) await handler(payload);
 }
 
-export function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionAPI {
-  return new Proxy(pi, {
+export function createHeavyProxy(atomic: ExtensionAPI, captured: CapturedHeavy): ExtensionAPI {
+  return new Proxy(atomic, {
     get(target, prop, receiver) {
       if (prop === "registerTool") return (tool: ToolDefinition) => captured.tools.set(tool.name, tool);
       if (prop === "registerCommand") return (name: string, options: CapturedCommand) => captured.commands.set(name, options);
       if (prop === "on") return (event: LazyLifecycleEvent, handler: AnyForwardedHandler) => captureForwardedHandler(captured, event, handler);
       if (prop === "registerShortcut") return (shortcut: string, options: CapturedShortcut) => captured.shortcuts.set(shortcut, options);
-      if (prop === "registerMessageRenderer") return (customType: string, renderer: MessageRenderer) => pi.registerMessageRenderer(customType, renderer);
+      if (prop === "registerMessageRenderer") return (customType: string, renderer: MessageRenderer) => atomic.registerMessageRenderer(customType, renderer);
       if (prop === "events") {
-        return new Proxy(pi.events, {
+        return new Proxy(atomic.events, {
           get(eventTarget, eventProp, eventReceiver) {
             if (eventProp === "on") {
               return (event: string, handler: EventHandler) => {
-                if (LIVE_EVENT_SUBSCRIPTIONS.has(event)) return pi.events.on(event, handler);
+                if (LIVE_EVENT_SUBSCRIPTIONS.has(event)) return atomic.events.on(event, handler);
                 addEventHandler(captured, event, handler);
                 return () => {
                   const handlers = captured.eventHandlers.get(event) ?? [];

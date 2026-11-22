@@ -21,7 +21,7 @@ function normalizeToolName(input: string): string | undefined {
 	return trimmed;
 }
 
-export default function dynamicToolsExtension(pi: ExtensionAPI) {
+export default function dynamicToolsExtension(atomic: ExtensionAPI) {
 	const registeredToolNames = new Set<string>();
 
 	const registerEchoTool = (name: string, label: string, prefix: string): boolean => {
@@ -30,7 +30,7 @@ export default function dynamicToolsExtension(pi: ExtensionAPI) {
 		}
 
 		registeredToolNames.add(name);
-		pi.registerTool({
+		atomic.registerTool({
 			name,
 			label,
 			description: `Echo a message with prefix: ${prefix}`,
@@ -48,12 +48,12 @@ export default function dynamicToolsExtension(pi: ExtensionAPI) {
 		return true;
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	atomic.on("session_start", (_event, ctx) => {
 		registerEchoTool("echo_session", "Echo Session", "[session] ");
 		ctx.ui.notify("Registered dynamic tool: echo_session", "info");
 	});
 
-	pi.registerCommand("add-echo-tool", {
+	atomic.registerCommand("add-echo-tool", {
 		description: "Register a new echo tool dynamically: /add-echo-tool <tool_name>",
 		handler: async (args, ctx) => {
 			const toolName = normalizeToolName(args);

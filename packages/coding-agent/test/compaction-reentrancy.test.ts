@@ -64,8 +64,8 @@ function createGate() {
 		release = resolve;
 	});
 	const calls: string[] = [];
-	const factory: ExtensionFactory = (pi) => {
-		pi.on("session_before_compact", async (event) => {
+	const factory: ExtensionFactory = (atomic) => {
+		atomic.on("session_before_compact", async (event) => {
 			calls.push(event.reason);
 			signalStarted();
 			await released;
@@ -86,8 +86,8 @@ function createCommittedAutomaticGate() {
 		release = resolve;
 	});
 	const calls: Array<{ reason: string; query: string }> = [];
-	const factory: ExtensionFactory = (pi) => {
-		pi.on("session_before_compact", (event) => {
+	const factory: ExtensionFactory = (atomic) => {
+		atomic.on("session_before_compact", (event) => {
 			calls.push({
 				reason: event.reason,
 				query: event.parameters.query,
@@ -99,7 +99,7 @@ function createCommittedAutomaticGate() {
 						: "manual summary",
 			};
 		});
-		pi.on("session_compact", async (event) => {
+		atomic.on("session_compact", async (event) => {
 			if (event.reason !== "threshold") return;
 			signalCommitted();
 			await released;
@@ -162,8 +162,8 @@ function createTreeGate() {
 	const released = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	const factory: ExtensionFactory = (pi) => {
-		pi.on("session_before_tree", async () => {
+	const factory: ExtensionFactory = (atomic) => {
+		atomic.on("session_before_tree", async () => {
 			signalStarted();
 			await released;
 		});
@@ -188,8 +188,8 @@ describe("manual compaction re-entrancy", () => {
 	// Upstream #9340/#9777: cancellation in compaction_start wins before hooks/auth.
 	it("stops an automatic compaction cancelled by its start listener", async () => {
 		let hookCalls = 0;
-		const harness = await createHarness((pi) => {
-			pi.on("session_before_compact", () => {
+		const harness = await createHarness((atomic) => {
+			atomic.on("session_before_compact", () => {
 				hookCalls++;
 				return { compactedText: "must not commit" };
 			});
@@ -228,8 +228,8 @@ describe("manual compaction re-entrancy", () => {
 		const started = new Promise<void>((resolve) => {
 			signalStarted = resolve;
 		});
-		const abortable: ExtensionFactory = (pi) => {
-			pi.on("session_before_compact", async (event) => {
+		const abortable: ExtensionFactory = (atomic) => {
+			atomic.on("session_before_compact", async (event) => {
 				signalStarted();
 				await new Promise<void>((resolve) =>
 					event.signal.addEventListener("abort", () => resolve(), { once: true }),
@@ -329,8 +329,8 @@ describe("manual compaction re-entrancy", () => {
 				},
 			],
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", (event) => ({ compactedText: `${event.reason} summary` }));
+				(atomic) => {
+					atomic.on("session_before_compact", (event) => ({ compactedText: `${event.reason} summary` }));
 				},
 			],
 		});
@@ -455,8 +455,8 @@ describe("manual compaction re-entrancy", () => {
 	});
 
 	it("does not resume an armed automatic retry after manual compaction completes", async () => {
-		const factory: ExtensionFactory = (pi) => {
-			pi.on("session_before_compact", (event) => ({
+		const factory: ExtensionFactory = (atomic) => {
+			atomic.on("session_before_compact", (event) => ({
 				compactedText:
 					event.reason === "threshold"
 						? Array.from({ length: 24 }, (_, index) => `[User]: automatic line ${index + 1}`).join("\n")
@@ -559,8 +559,8 @@ describe("manual compaction re-entrancy", () => {
 				{ text: "completed response", stopReason: "stop", usage: { input: 100, output: 50, totalTokens: 150 } },
 			],
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async () => ({
+				(atomic) => {
+					atomic.on("session_before_compact", async () => ({
 						compactedText: "[User]: retained exactly\n(filtered 3 lines)",
 					}));
 				},
@@ -599,8 +599,8 @@ describe("manual compaction re-entrancy", () => {
 				},
 			],
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async () => ({
+				(atomic) => {
+					atomic.on("session_before_compact", async () => ({
 						compactedText: "[User]: retained exactly\n(filtered 3 lines)",
 					}));
 				},
@@ -676,8 +676,8 @@ describe("manual compaction re-entrancy", () => {
 				{ text: "recovered response", stopReason: "stop", usage: { input: 100, output: 50, totalTokens: 150 } },
 			],
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", () => ({
+				(atomic) => {
+					atomic.on("session_before_compact", () => ({
 						compactedText: "[User]: retained exactly\n(filtered 3 lines)",
 					}));
 				},

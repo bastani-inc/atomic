@@ -25,7 +25,7 @@ function getSessionStateByScope(): SessionStateByScope {
  * Return the session-scoped state registered for `(scope, key)`, creating it
  * with `create` on first use.
  *
- * `scope` must be the extension's `pi.events` facade or the session EventBus
+ * `scope` must be the extension's `atomic.events` facade or the session EventBus
  * itself. It is resolved to its canonical EventBus first (see
  * {@link canonicalEventBusFor}), so every load generation of one session — each
  * holding a distinct `events` facade over the same bus — re-binds to the same

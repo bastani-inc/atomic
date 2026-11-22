@@ -145,11 +145,11 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(imports).not.toContain("./gemini-api.js");
 		expect(imports).not.toContain("./gemini-web.js");
 		expect(source).toContain('import("./index-heavy.js")');
-		expect(source).toContain('pi.on("session_start"');
-		expect(source).toContain('pi.on("session_tree"');
-		expect(source).toContain('pi.on("session_shutdown"');
+		expect(source).toContain('atomic.on("session_start"');
+		expect(source).toContain('atomic.on("session_tree"');
+		expect(source).toContain('atomic.on("session_shutdown"');
 		expect(source).toContain('prop === "registerShortcut"');
-		expect(source).toContain("pi.registerShortcut(shortcut");
+		expect(source).toContain("atomic.registerShortcut(shortcut");
 		expect(source).toContain(
 			'renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args)',
 		);
@@ -174,7 +174,7 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(source).toContain('"tool_execution_start"');
 		expect(source).toContain('"model_select"');
 		expect(proxySource).toContain('prop === "registerShortcut"');
-		expect(source).toContain('pi.registerShortcut("alt+m"');
+		expect(source).toContain('atomic.registerShortcut("alt+m"');
 		expect(source).toContain("SUBAGENT_CONTROL_INTERCOM_EVENT");
 		expect(source).toContain("dispatchEventHandlers(handle.heavy, eventName, payload)");
 		expect(source).toContain(

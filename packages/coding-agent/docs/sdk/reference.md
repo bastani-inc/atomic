@@ -442,7 +442,7 @@ const { session } = await createAgentSession({
 });
 ```
 
-Use `defineTool()` for standalone definitions and arrays like `customTools: [myTool]`. Inline `pi.registerTool({ ... })` infers parameter types automatically.
+Use `defineTool()` for standalone definitions and arrays like `customTools: [myTool]`. Inline `atomic.registerTool({ ... })` infers parameter types automatically.
 
 Custom tools passed via `customTools` combine with extension-registered tools. When you pass a plain-name `tools` allowlist, include each custom or extension tool you want active (for example `tools: ["read", "bash", "my_tool"]`). Modifier-only lists keep default activation and can enable inactive tools with `+name`. `excludedTools` removes any matching tool from the active set.
 
@@ -567,8 +567,8 @@ import { createAgentSession, DefaultResourceLoader } from "@bastani/atomic";
 const loader = new DefaultResourceLoader({
   additionalExtensionPaths: ["/path/to/my-extension.ts"],
   extensionFactories: [
-    (pi) => {
-      pi.on("agent_start", () => {
+    (atomic) => {
+      atomic.on("agent_start", () => {
         console.log("[Inline Extension] Agent starting");
       });
     },
@@ -614,7 +614,7 @@ For reload, replacement, and resource ownership patterns, see [Finishing admitte
 
 Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 
-**Event Bus:** Extensions can communicate via `pi.events`. Pass a shared `eventBus` to `DefaultResourceLoader` if you need to emit or listen from outside:
+**Event Bus:** Extensions can communicate via `atomic.events`. Pass a shared `eventBus` to `DefaultResourceLoader` if you need to emit or listen from outside:
 
 ```typescript
 import { createEventBus, DefaultResourceLoader } from "@bastani/atomic";

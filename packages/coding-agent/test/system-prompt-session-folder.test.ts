@@ -105,8 +105,8 @@ async function turn(sessionManager: SessionManager, text: string, addendum?: str
 	const { runtime, model } = await createRuntime(prompts);
 	const extensionsResult = addendum
 		? await createTestExtensionsResult([
-				(pi) => {
-					pi.on("before_agent_start", (event) => {
+				(atomic) => {
+					atomic.on("before_agent_start", (event) => {
 						event.systemPromptOptions.appendSystemPrompt = addendum;
 					});
 				},
@@ -267,8 +267,8 @@ describe("the session folder in the system prompt (#6121)", () => {
 		const sessionManager = SessionManager.inMemory(process.cwd());
 		const quoting = `Guide example: ${IN_SECTION}`;
 		const extensionsResult = await createTestExtensionsResult([
-			(pi) => {
-				pi.on("before_agent_start", (event) => {
+			(atomic) => {
+				atomic.on("before_agent_start", (event) => {
 					event.systemPromptOptions.sections.session_memory = quoting;
 				});
 			},

@@ -23,14 +23,14 @@ try {
 		// File and inline factories use the same public API behavior; the file factory
 		// receives this fixture state via a temporary module, not a production seam.
 		const state = { held, entered, live, log, primary, cleanup, mode };
-		const factory = async (pi, state) => {
-			pi.on("session_shutdown", () => { state.log.push("shutdown"); for (const timer of state.live) clearInterval(timer); state.live.clear(); if (state.mode.endsWith("error")) throw state.cleanup; });
-			pi.events.on("acquire", async () => {
+		const factory = async (atomic, state) => {
+			atomic.on("session_shutdown", () => { state.log.push("shutdown"); for (const timer of state.live) clearInterval(timer); state.live.clear(); if (state.mode.endsWith("error")) throw state.cleanup; });
+			atomic.events.on("acquire", async () => {
 				state.log.push("started"); state.entered.resolve(); await state.held.promise;
-				pi.events.on("late-subscription", () => {});
+				atomic.events.on("late-subscription", () => {});
 				state.live.add(setInterval(() => {}, 1000)); state.log.push("acquired");
 			});
-			pi.events.emit("acquire", {});
+			atomic.events.emit("acquire", {});
 			if (state.mode === "drain-control") { state.held.resolve(); await delay(10); }
 			throw state.primary;
 		};
@@ -39,7 +39,7 @@ try {
 		const file = join(cwd, "factory.mjs");
 		writeFileSync(file, `export default pi => (${factory.toString()})(pi, globalThis[${JSON.stringify(key)}]);`);
 		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true,
-			...(mode === "drain-path" ? { additionalExtensionPaths: [file] } : { extensionFactories: [(pi) => factory(pi, state)] }),
+			...(mode === "drain-path" ? { additionalExtensionPaths: [file] } : { extensionFactories: [(atomic) => factory(atomic, state)] }),
 		});
 		operation = createAgentSession({ ...options, resourceLoader }).then((result) => { session = result.session; }, (error) => error);
 		await entered.promise; await delay(25);
@@ -62,8 +62,8 @@ try {
 		}
 		const LoaderClass = reloading || mode === "peer-replay" ? Loader : DefaultResourceLoader;
 		const resourceLoader = new LoaderClass({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [
-			(pi) => { const id = ++generation; peer = pi; pi.events.on("peer", () => { deliveries++; }); pi.on("session_shutdown", () => { log.push(`peer${id}`); }); },
-			(pi) => { const id = generation; pi.on("session_shutdown", async () => { log.push(`held${id}`); if ((!reloading && mode !== "peer-replay") || id > 1) { entered.resolve(); await held.promise; } if (mode === "peer-error") throw cleanup; }); if (mode === "peer-replay" && id > 1) throw primary; },
+			(atomic) => { const id = ++generation; peer = atomic; atomic.events.on("peer", () => { deliveries++; }); atomic.on("session_shutdown", () => { log.push(`peer${id}`); }); },
+			(atomic) => { const id = generation; atomic.on("session_shutdown", async () => { log.push(`held${id}`); if ((!reloading && mode !== "peer-replay") || id > 1) { entered.resolve(); await held.promise; } if (mode === "peer-error") throw cleanup; }); if (mode === "peer-replay" && id > 1) throw primary; },
 		] });
 		if (reloading || mode === "peer-replay") await resourceLoader.reload();
 		if (reloading) { session = new AgentSession({ agent: new Agent({ streamFn: () => { throw new Error("Rollback fixture must not invoke a model"); } }), cwd, settingsManager, modelRuntime, resourceLoader, sessionManager: options.sessionManager }); await session.bindExtensions({}); }
@@ -85,9 +85,9 @@ try {
 	} else if (mode.startsWith("subset")) {
 		let selected, omitted, other, unrelatedError, completed = false;
 		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [
-			(pi) => { selected = pi; pi.events.on("selected", async () => { await selectedWork.promise; }); pi.events.emit("selected", {}); pi.on("session_start", () => { if (mode === "subset-startup") throw primary; }); },
-			(pi) => { omitted = pi; pi.on("session_shutdown", () => { log.push("peer-shutdown"); for (const timer of live) clearInterval(timer); live.clear(); }); pi.events.on("omitted", async () => { admitted.resolve(); await held.promise; pi.events.on("late", () => {}); try { other.events.on("unrelated", () => {}); } catch (error) { unrelatedError = error; } live.add(setInterval(() => {}, 1000)); log.push("acquired"); }); pi.events.emit("omitted", {}); },
-			(pi) => { other = pi; pi.on("session_shutdown", async () => { log.push("last-shutdown"); entered.resolve(); await cleanupWork.promise; }); },
+			(atomic) => { selected = atomic; atomic.events.on("selected", async () => { await selectedWork.promise; }); atomic.events.emit("selected", {}); atomic.on("session_start", () => { if (mode === "subset-startup") throw primary; }); },
+			(atomic) => { omitted = atomic; atomic.on("session_shutdown", () => { log.push("peer-shutdown"); for (const timer of live) clearInterval(timer); live.clear(); }); atomic.events.on("omitted", async () => { admitted.resolve(); await held.promise; atomic.events.on("late", () => {}); try { other.events.on("unrelated", () => {}); } catch (error) { unrelatedError = error; } live.add(setInterval(() => {}, 1000)); log.push("acquired"); }); atomic.events.emit("omitted", {}); },
+			(atomic) => { other = atomic; atomic.on("session_shutdown", async () => { log.push("last-shutdown"); entered.resolve(); await cleanupWork.promise; }); },
 		], extensionsOverride: (result) => ({ ...result, extensions: result.extensions.slice(0, 1) }) });
 		operation = createAgentSession({ ...options, resourceLoader }).then((result) => { session = result.session; completed = true; }, (error) => { completed = true; return error; });
 		await admitted.promise;

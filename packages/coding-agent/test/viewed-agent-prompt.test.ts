@@ -431,8 +431,8 @@ describe("the main prompt while a subagent is shown", () => {
 		async () => {
 			let setText: ((text: string) => void) | undefined;
 			screen = await mainScreen([
-				(pi) =>
-					pi.on("session_start", (_event, ctx) => {
+				(atomic) =>
+					atomic.on("session_start", (_event, ctx) => {
 						setText = (text) => ctx.ui.setEditorText(text);
 					}),
 			]);
@@ -754,8 +754,8 @@ describe("the main prompt while a subagent is shown", () => {
 		async () => {
 			let pressed = 0;
 			screen = await mainScreen([
-				(pi) =>
-					pi.registerShortcut("left", {
+				(atomic) =>
+					atomic.registerShortcut("left", {
 						description: "takes left",
 						handler: async () => {
 							pressed++;
@@ -777,8 +777,8 @@ describe("the main prompt while a subagent is shown", () => {
 		async () => {
 			let setEditor: ((factory: EditorFactory) => void) | undefined;
 			screen = await mainScreen([
-				(pi) =>
-					pi.on("session_start", (_event, ctx) => {
+				(atomic) =>
+					atomic.on("session_start", (_event, ctx) => {
 						setEditor = (factory) => ctx.ui.setEditorComponent(factory);
 					}),
 			]);
@@ -801,8 +801,8 @@ describe("the main prompt while a subagent is shown", () => {
 		async () => {
 			let setEditor: ((factory: EditorFactory) => void) | undefined;
 			screen = await mainScreen([
-				(pi) =>
-					pi.on("session_start", (_event, ctx) => {
+				(atomic) =>
+					atomic.on("session_start", (_event, ctx) => {
 						setEditor = (factory) => ctx.ui.setEditorComponent(factory);
 					}),
 			]);

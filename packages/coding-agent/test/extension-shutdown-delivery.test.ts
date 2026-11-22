@@ -12,13 +12,13 @@ test("shutdown delivers later handlers when the runner retires during an awaited
 	});
 	const calls: string[] = [];
 	const extension = await loadExtensionFromFactory(
-		(pi) => {
-			pi.on("session_shutdown", async () => {
+		(atomic) => {
+			atomic.on("session_shutdown", async () => {
 				calls.push("first started");
 				await pending;
 				calls.push("first finished");
 			});
-			pi.on("session_shutdown", () => {
+			atomic.on("session_shutdown", () => {
 				calls.push("later started");
 			});
 		},

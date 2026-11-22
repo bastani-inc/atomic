@@ -27,10 +27,12 @@ it("reports unhandled MCP servers once per name at startup, reload and later reg
 		extensionFactories: [
 			{
 				name: "registrar",
-				factory: (pi) => {
-					api = pi;
-					pi.registerMcpServer("initial", { url: "https://initial.test/mcp" });
-					pi.on("session_start", () => pi.registerMcpServer("startup", { url: "https://startup.test/mcp" }));
+				factory: (atomic) => {
+					api = atomic;
+					atomic.registerMcpServer("initial", { url: "https://initial.test/mcp" });
+					atomic.on("session_start", () =>
+						atomic.registerMcpServer("startup", { url: "https://startup.test/mcp" }),
+					);
 				},
 			},
 		],
@@ -101,18 +103,19 @@ it("suppresses MCP contribution warnings when an extension subscribes during sta
 		extensionFactories: [
 			{
 				name: "registrar",
-				factory: (pi) => {
-					api = pi;
-					pi.registerMcpServer("initial", { url: "https://initial.test/mcp" });
+				factory: (atomic) => {
+					api = atomic;
+					atomic.registerMcpServer("initial", { url: "https://initial.test/mcp" });
 				},
 			},
 			{
 				name: "consumer",
-				factory: (pi) => {
-					pi.on("session_start", () => {
-						const consume = () => snapshots.push(pi.getMcpServerContributions!().map((server) => server.name));
+				factory: (atomic) => {
+					atomic.on("session_start", () => {
+						const consume = () =>
+							snapshots.push(atomic.getMcpServerContributions!().map((server) => server.name));
 						consume();
-						pi.onMcpServerContributionsChanged!(consume);
+						atomic.onMcpServerContributionsChanged!(consume);
 					});
 				},
 			},

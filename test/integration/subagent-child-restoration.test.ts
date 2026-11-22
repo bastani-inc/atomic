@@ -121,7 +121,7 @@ function parentSession(cwd: string, sessionManager: SessionManager = SessionMana
 			}
 		},
 	};
-	const pi = {
+	const atomic = {
 		events,
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
 			await sessionManager.appendCustomEntry(customType, data);
@@ -137,7 +137,7 @@ function parentSession(cwd: string, sessionManager: SessionManager = SessionMana
 			model: undefined,
 			thinkingLevel: undefined,
 		}) as unknown as ExtensionContext;
-	return { sessionManager, ctx, pi, authorizations, awaitedPeers, holds };
+	return { sessionManager, ctx, pi: atomic, authorizations, awaitedPeers, holds };
 }
 
 function records(parent: Parent): SubagentChildRecord[] {

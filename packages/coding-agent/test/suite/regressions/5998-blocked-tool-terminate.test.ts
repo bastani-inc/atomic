@@ -24,8 +24,8 @@ describe("#5998 blocked tool termination", () => {
 		const harness = await createHarness({
 			tools: [echoTool],
 			extensionFactories: [
-				(pi) => {
-					pi.on("tool_call", async () => ({
+				(atomic) => {
+					atomic.on("tool_call", async () => ({
 						block: true,
 						reason: "Blocked by terminating policy",
 						terminate: true,

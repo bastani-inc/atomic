@@ -180,8 +180,8 @@ describe("test harness", () => {
 			extensionFactories: [
 				{
 					path: "<delta-probe>",
-					factory: (pi) =>
-						pi.on("message_update", async (event) => {
+					factory: (atomic) =>
+						atomic.on("message_update", async (event) => {
 							updates.push(event);
 						}),
 				},
@@ -284,8 +284,8 @@ describe("test harness", () => {
 			extensionFactories: [
 				{
 					path: "<alpha>",
-					factory: (pi) => {
-						pi.registerCommand("shared-cmd", {
+					factory: (atomic) => {
+						atomic.registerCommand("shared-cmd", {
 							description: "Alpha command",
 							handler: async (args) => {
 								calls.push(`alpha:${args}`);
@@ -295,8 +295,8 @@ describe("test harness", () => {
 				},
 				{
 					path: "<beta>",
-					factory: (pi) => {
-						pi.registerCommand("shared-cmd", {
+					factory: (atomic) => {
+						atomic.registerCommand("shared-cmd", {
 							description: "Beta command",
 							handler: async (args) => {
 								calls.push(`beta:${args}`);

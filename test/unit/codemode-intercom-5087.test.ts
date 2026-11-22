@@ -63,9 +63,9 @@ async function intercomHarness() {
 	const extensionsResult = await createTestExtensionsResult(
 		[
 			createCodemodeExtension(),
-			(pi: ExtensionAPI) =>
+			(atomic: ExtensionAPI) =>
 				registerIntercomTool(
-					pi as never,
+					atomic as never,
 					{
 						ensureConnected: async () => client,
 						syncPresenceIdentity() {},

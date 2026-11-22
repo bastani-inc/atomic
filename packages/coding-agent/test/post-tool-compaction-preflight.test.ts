@@ -26,8 +26,8 @@ const terminatingLargeResultTool: AgentTool = {
 	}),
 };
 
-const compactOffline: ExtensionFactory = (pi) => {
-	pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
+const compactOffline: ExtensionFactory = (atomic) => {
+	atomic.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
 };
 function createPostToolCompactionGate() {
 	let signalStarted!: () => void;
@@ -38,8 +38,8 @@ function createPostToolCompactionGate() {
 	const released = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	const factory: ExtensionFactory = (pi) => {
-		pi.on("session_before_compact", async (event) => {
+	const factory: ExtensionFactory = (atomic) => {
+		atomic.on("session_before_compact", async (event) => {
 			if (event.reason === "manual") return { compactedText: "[User]: retained" };
 			assert.equal(event.reason, "threshold");
 			signalStarted();
@@ -389,7 +389,8 @@ describe("post-tool compaction preflight", () => {
 	it.each([
 		{
 			name: "cancellation",
-			extension: ((pi) => pi.on("session_before_compact", () => ({ cancel: true }))) satisfies ExtensionFactory,
+			extension: ((atomic) =>
+				atomic.on("session_before_compact", () => ({ cancel: true }))) satisfies ExtensionFactory,
 			aborted: true,
 			error: "cancelled",
 			failBoundaryWrite: false,
@@ -612,8 +613,8 @@ describe("post-tool compaction preflight", () => {
 			],
 			baseToolsOverride: { large_result: largeResultTool },
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", () => {
+				(atomic) => {
+					atomic.on("session_before_compact", () => {
 						order.push("compaction");
 						return { compactedText: "[User]: retained" };
 					});
@@ -1175,8 +1176,8 @@ describe("post-tool compaction preflight", () => {
 	});
 
 	it("does not compact an all-blocked terminating batch", async () => {
-		const blockTerminatingTool: ExtensionFactory = (pi) => {
-			pi.on("tool_call", () => ({ block: true, reason: "blocked", terminate: true }));
+		const blockTerminatingTool: ExtensionFactory = (atomic) => {
+			atomic.on("tool_call", () => ({ block: true, reason: "blocked", terminate: true }));
 		};
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
@@ -1203,13 +1204,13 @@ describe("post-tool compaction preflight", () => {
 	});
 
 	it("applies the hard-limit gate after context extensions transform the compacted messages", async () => {
-		const expandingContext: ExtensionFactory = (pi) => {
+		const expandingContext: ExtensionFactory = (atomic) => {
 			let compacted = false;
-			pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
-			pi.on("session_compact", () => {
+			atomic.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
+			atomic.on("session_compact", () => {
 				compacted = true;
 			});
-			pi.on("context", (event) =>
+			atomic.on("context", (event) =>
 				compacted
 					? {
 							messages: [
@@ -1251,12 +1252,12 @@ describe("post-tool compaction preflight", () => {
 		]);
 	});
 	it("blocks a known hard-limit overflow when one compaction attempt is insufficient", async () => {
-		const expandingAfterCompaction: ExtensionFactory = (pi) => {
+		const expandingAfterCompaction: ExtensionFactory = (atomic) => {
 			let compacted = false;
-			pi.on("session_compact", () => {
+			atomic.on("session_compact", () => {
 				compacted = true;
 			});
-			pi.on("context", (event) =>
+			atomic.on("context", (event) =>
 				compacted
 					? {
 							messages: [
@@ -1320,8 +1321,8 @@ describe("post-tool compaction preflight", () => {
 		const hookStarted = new Promise<void>((resolve) => {
 			signalHookStarted = resolve;
 		});
-		const abortableCompaction: ExtensionFactory = (pi) => {
-			pi.on("session_before_compact", async (event) => {
+		const abortableCompaction: ExtensionFactory = (atomic) => {
+			atomic.on("session_before_compact", async (event) => {
 				signalHookStarted?.();
 				await new Promise<void>((resolve) =>
 					event.signal.addEventListener("abort", () => resolve(), { once: true }),

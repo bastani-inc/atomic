@@ -4,7 +4,7 @@ import type { SessionInfo } from "./types.js";
 
 /** Execution termination is not agent_end: interactive idle remains replyable. */
 export function registerSubagentReplyCapability(
-  pi: Pick<ExtensionAPI, "on">,
+  atomic: Pick<ExtensionAPI, "on">,
   client: () => Pick<IntercomClient, "updatePresence"> | null,
 ): () => SessionInfo["replyCapability"] {
   let signal: AbortSignal | undefined;
@@ -13,7 +13,7 @@ export function registerSubagentReplyCapability(
     if (!signal) return undefined;
     return signal.aborted ? "terminal" : "live";
   };
-  pi.on("session_start", (_event, ctx) => {
+  atomic.on("session_start", (_event, ctx) => {
     unbind?.();
     signal = ctx.subagentPolicy?.executionEnded;
     const current = signal;
@@ -25,7 +25,7 @@ export function registerSubagentReplyCapability(
     unbind = () => current?.removeEventListener("abort", terminal);
     if (current?.aborted) terminal();
   });
-  pi.on("session_shutdown", () => {
+  atomic.on("session_shutdown", () => {
     unbind?.();
     unbind = undefined;
     signal = undefined;

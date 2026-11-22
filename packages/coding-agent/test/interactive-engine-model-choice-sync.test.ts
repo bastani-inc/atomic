@@ -23,8 +23,8 @@ async function modelPair(changeLevelOnSelect = false) {
 		],
 		engineExtensions: changeLevelOnSelect
 			? [
-					(pi) => {
-						pi.on("model_select", () => pi.setThinkingLevel("low"));
+					(atomic) => {
+						atomic.on("model_select", () => atomic.setThinkingLevel("low"));
 					},
 				]
 			: [],
