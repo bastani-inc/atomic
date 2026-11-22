@@ -90,63 +90,44 @@ test("forked pi packages are versionless workspaces that Atomic depends on exact
 	assert.equal(existsSync(join(root, "packages/cursor")), false, "removed Cursor workspace must not be recreated");
 
 	const npmLock = await readJson<Lockfile>(join(root, "package-lock.json"));
-	const shrinkwrap = await readJson<Lockfile>(join(root, "packages/coding-agent/npm-shrinkwrap.json"));
 	for (const [name, workspace] of forkedPackages) {
 		assert.equal(npmLock.packages[`node_modules/${name}`]?.resolved, workspace, name);
-		const published = shrinkwrap.packages[`node_modules/${name}`];
-		assert.equal(published?.version, "0.0.0", name);
-		assert.equal(published?.resolved, `https://registry.npmjs.org/${name}/-/${name.split("/")[1]}-0.0.0.tgz`, name);
 	}
-	for (const [lockPath, lock] of [
-		["package-lock.json", npmLock],
-		["packages/coding-agent/npm-shrinkwrap.json", shrinkwrap],
-	] as const) {
-		for (const [packagePath, entry] of Object.entries(lock.packages)) {
-			assert.equal(packagePath.includes("@earendil-works/"), false, `${lockPath}: ${packagePath}`);
-			for (const name of Object.keys(entry.dependencies ?? {})) {
-				assert.equal(name.startsWith("@earendil-works/"), false, `${lockPath}: ${packagePath} -> ${name}`);
-			}
+	for (const [packagePath, entry] of Object.entries(npmLock.packages)) {
+		assert.equal(packagePath.includes("@earendil-works/"), false, `package-lock.json: ${packagePath}`);
+		for (const name of Object.keys(entry.dependencies ?? {})) {
+			assert.equal(name.startsWith("@earendil-works/"), false, `package-lock.json: ${packagePath} -> ${name}`);
 		}
 	}
 });
 
-test("protobufjs 7.6.6 is pinned in source and every packaged lock", async () => {
+test("protobufjs 7.6.6 is pinned in source and the lockfile", async () => {
 	const rootManifest = await readJson<Manifest>(join(root, "package.json"));
 	const codingAgentManifest = await readJson<Manifest>(join(root, "packages/coding-agent/package.json"));
 	assert.equal(rootManifest.overrides?.protobufjs, "7.6.6");
 	assert.equal(codingAgentManifest.overrides?.protobufjs, "7.6.6");
 
-	for (const path of ["package-lock.json", "packages/coding-agent/npm-shrinkwrap.json"]) {
-		const lock = await readJson<Lockfile>(join(root, path));
-		const entry = lock.packages["node_modules/protobufjs"];
-		assert.equal(entry.version, "7.6.6", path);
-		assert.equal(
-			entry.integrity,
-			"sha512-dYDWdjSl5RNb7SgPxGQcRU+GtvP7s2fpkrY0r432PcOIaZ0/rBcxEZnQN67iJhFuQiVw754JDoPruPCNdGsbjg==",
-		);
-	}
-	// The bun.lock half of this assertion went with the file; the two locks above
-	// already cover every published surface.
-	const generator = await readText(join(root, "scripts/generate-coding-agent-shrinkwrap.mjs"));
-	assert.ok(generator.includes('"protobufjs@7.6.6"'));
-	assert.equal(generator.includes("protobufjs@7.6.5"), false);
+	const lock = await readJson<Lockfile>(join(root, "package-lock.json"));
+	const entry = lock.packages["node_modules/protobufjs"];
+	assert.equal(entry.version, "7.6.6");
+	assert.equal(
+		entry.integrity,
+		"sha512-dYDWdjSl5RNb7SgPxGQcRU+GtvP7s2fpkrY0r432PcOIaZ0/rBcxEZnQN67iJhFuQiVw754JDoPruPCNdGsbjg==",
+	);
 });
 
 // pi-ai 0.84.2 replaced the Mistral SDK with a native HTTP transport (upstream
-// 9dd90a49). The dependency is gone from the tree; a stale entry in either lock
-// would still be installed for users, because npm-shrinkwrap.json ships inside
-// @bastani/atomic.
-test("the Mistral SDK is absent from every packaged lock", async () => {
-	for (const path of ["package-lock.json", "packages/coding-agent/npm-shrinkwrap.json"]) {
-		const lock = await readJson<Lockfile>(join(root, path));
-		for (const [lockPath, entry] of Object.entries(lock.packages)) {
-			assert.equal(lockPath.includes("@mistralai/mistralai"), false, `${path}: ${lockPath}`);
-			assert.equal(
-				Object.hasOwn(entry.dependencies ?? {}, "@mistralai/mistralai"),
-				false,
-				`${path}: ${lockPath} still depends on @mistralai/mistralai`,
-			);
-		}
+// 9dd90a49). The dependency is gone from the tree; a stale lock entry would
+// still be installed by `npm ci` and tested against.
+test("the Mistral SDK is absent from the lockfile", async () => {
+	const lock = await readJson<Lockfile>(join(root, "package-lock.json"));
+	for (const [lockPath, entry] of Object.entries(lock.packages)) {
+		assert.equal(lockPath.includes("@mistralai/mistralai"), false, lockPath);
+		assert.equal(
+			Object.hasOwn(entry.dependencies ?? {}, "@mistralai/mistralai"),
+			false,
+			`${lockPath} still depends on @mistralai/mistralai`,
+		);
 	}
 });
 

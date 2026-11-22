@@ -10,8 +10,8 @@ This repo is the private `atomic-monorepo` npm workspace. It currently houses:
 - `@bastani/web-access` in `packages/web-access` — builtin web search, URL fetching, GitHub repository, PDF, and video extraction tools.
 - `@bastani/intercom` in `packages/intercom` — builtin coordination channel for parent/child and cross-session agent communication.
 - `@bastani/atomic-ai`, `@bastani/atomic-tui`, `@bastani/atomic-agent-core`, `@bastani/atomic-codemode`, `@bastani/atomic-schema` and `@bastani/atomic-telemetry` in `packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`, `packages/schema` and `packages/telemetry` — Atomic's hard forks of pi's packages (forked at pi 1.5.2; Atomic does not sync upstream changes). Each compiles with `tsc` like upstream pi, is published separately by `publish.yml` in lockstep with `@bastani/atomic`, which depends on each at the exact release version. The extension loader also resolves their legacy `@earendil-works/pi-*`, `@mariozechner/pi-*` and `@bastani/pi-ai` names to them.
-- `@bastani/atomic-storage-libsql` in `packages/storage-libsql` — the libSQL / Turso storage adapter. It is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`; `publish.yml` publishes it with the other npm packages, and it is never a dependency of `@bastani/atomic`, in its shrinkwrap, or in `dist/builtin`.
-- `@bastani/atomic-storage-postgres` in `packages/storage-postgres` — the PostgreSQL storage adapter, packaged and published exactly like the libSQL adapter (`atomic install npm:@bastani/atomic-storage-postgres`); it is never a dependency of `@bastani/atomic`, in its shrinkwrap, or in `dist/builtin`.
+- `@bastani/atomic-storage-libsql` in `packages/storage-libsql` — the libSQL / Turso storage adapter. It is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`; `publish.yml` publishes it with the other npm packages, and it is never a dependency of `@bastani/atomic` or in `dist/builtin`.
+- `@bastani/atomic-storage-postgres` in `packages/storage-postgres` — the PostgreSQL storage adapter, packaged and published exactly like the libSQL adapter (`atomic install npm:@bastani/atomic-storage-postgres`); it is never a dependency of `@bastani/atomic` or in `dist/builtin`.
 
 Companion packages under `packages/*` ship as **raw TypeScript** (no compile step). They are bundled into `@bastani/atomic` at build time rather than published independently, except the forked pi packages above, which compile and publish like the coding-agent package, and the storage adapters (`@bastani/atomic-storage-libsql`, `@bastani/atomic-storage-postgres`), which are published on their own as JSDoc-checked plain ESM JavaScript with a declaration file so plain Node SDK imports work. They also have no compile step. The coding-agent package follows upstream pi's compiled-package layout.
 
@@ -27,7 +27,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Install policy | committed `.npmrc` | `save-exact=true` matches pi. **`min-release-age=0` deliberately diverges** from pi's 2: Atomic adopts pi releases the same day they publish, which a nonzero cooldown blocks by construction. `.github/dependabot.yml` carries the matching `cooldown: 0`; the two must move together |
 | Build | `npm run build` | TypeScript 7 `tsc`, not Bun; no behaviour change |
 | Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
-| Typecheck / check | `npm run check` (biome + `bun check` on the root tsconfig + the coding-agent package's `tsconfig.build.json` and type tests + shrinkwrap check) | **Deliberately diverges** from pi, which runs TypeScript 7 `tsc` here. `bun check` (Bun ≥ 1.4.5) is a port of typescript-go that matches TypeScript 7.0.2's errors and runs these passes about 2.5× faster. `tsc` stays for builds, because `bun check` emits nothing. The scripts call `node scripts/bun-typecheck.mjs`, not `bun check`: the root `check` script would otherwise shadow the type checker. The script predates the `--no-script` flag that Bun 1.4.4 added. The second pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
+| Typecheck / check | `npm run check` (biome + `bun check` on the root tsconfig + the coding-agent package's `tsconfig.build.json` and type tests + the interactive event-loop check) | **Deliberately diverges** from pi, which runs TypeScript 7 `tsc` here. `bun check` (Bun ≥ 1.4.5) is a port of typescript-go that matches TypeScript 7.0.2's errors and runs these passes about 2.5× faster. `tsc` stays for builds, because `bun check` emits nothing. The scripts call `node scripts/bun-typecheck.mjs`, not `bun check`: the root `check` script would otherwise shadow the type checker. The script predates the `--no-script` flag that Bun 1.4.4 added. The second pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
 | Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
 | `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
@@ -72,7 +72,7 @@ action pins, permissions, and required checks. Keep product and executable relea
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
 - `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`, `packages/schema`, `packages/telemetry`, `packages/coding-agent`, `crates/`, or `packages/natives/`): builds `@bastani/atomic-schema` and `@bastani/atomic-telemetry`, then `@bastani/atomic-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), then `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`, builds the native N-API module, and builds `@bastani/atomic` with its bundled package assets. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these. The build is incremental (`scripts/build.mjs`): each step is skipped while its inputs and outputs match its content-hash stamp in `node_modules/.cache/atomic-build`, so models.dev and the other provider catalogs are refetched only when `packages/ai` changes or the fetched snapshot is older than 24 hours (`MODEL_CATALOG_MAX_AGE_MS`; the build prints a line when it refreshes a stale snapshot). `npm run build -- --force` or `ATOMIC_BUILD_FORCE=1` rebuilds everything; CI (`CI` set) always does. Package-level `build` scripts stay full builds
 - `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
-- `npm run check` — `bun check` on the root tsconfig, then the coding-agent package typecheck (`tsconfig.build.json` plus type tests), plus the published-shrinkwrap check. `npm run typecheck` runs the typecheck passes alone. Both need Bun ≥ 1.4.5 on `PATH`
+- `npm run check` — `bun check` on the root tsconfig, then the coding-agent package typecheck (`tsconfig.build.json` plus type tests), plus the interactive event-loop check. `npm run typecheck` runs the typecheck passes alone. Both need Bun ≥ 1.4.5 on `PATH`
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
 - `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
 - `npm run test:scripts` — `node --test scripts/*.test.mjs`
@@ -190,7 +190,7 @@ per-test hooks. `before`/`after` are not exported.
 
 ### Code Quality
 
-- Frequently run `npm run check` (typecheck plus the shrinkwrap check). `npm run typecheck` is the typecheck alone.
+- Frequently run `npm run check` (Biome, the typecheck and the event-loop check). `npm run typecheck` is the typecheck alone.
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
 - In `packages/coding-agent`, resolve package assets through helpers in `src/config.ts`. Do not use `__dirname` directly; the helpers account for source checkouts, npm installations, and standalone binaries.
@@ -342,9 +342,11 @@ Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not
 Install with `npm ci --ignore-scripts`, and add dependencies with `npm install`. Never run
 `yarn install` or `pnpm install`, and do not bring back `bun install`: each writes a competing
 lockfile that `npm ci` neither reads nor verifies, and bypasses the `save-exact` pin in the
-committed `.npmrc`. `package-lock.json` is the only lockfile, and it is also the input to the
-shrinkwrap published inside `@bastani/atomic`. Note that `min-release-age=0`: nothing delays a
-freshly published version from entering that lockfile, and the shrinkwrap ships to users.
+committed `.npmrc`. `package-lock.json` is the only lockfile. `@bastani/atomic` publishes no
+shrinkwrap: a user's install resolves each published dependency range itself, so every
+dependency of a published package must be an exact version (`save-exact`), and a transitive
+dependency can reach users at a newer version than the lockfile has. Note that
+`min-release-age=0`: nothing delays a freshly published version from entering that lockfile.
 
 Bun is still required, and still correct, for three things: compiling release binaries with
 `bun build --compile`, running `scripts/*.ts`, and running the Bun-hosted test fixtures. See
