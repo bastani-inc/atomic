@@ -5,6 +5,7 @@
 ### Changed
 
 - `SessionResume` now carries optional per-axis `retainedSettings` provenance (`"held"`, `"none"`, or `"not-held"`) for the active branch's latest model and thinking-level changes, allowing partial-history sessions to distinguish confirmed absence from unretained pre-window settings without additional store reads (while keeping `SessionManager.getLatestBranchSettings` and custom stores omitting `retainedSettings` compatible with 0.10.4).
+- Interactive sessions reach the editor and first model request faster on warm starts: early theme and settings defaults no longer load TypeBox or `@bastani/atomic-ai` before the editor paints (falling back lazily to the full TypeBox validator for any invalid theme), prewarmed engines preload RPC mode and the native addon while waiting for adoption, and skill discovery avoids unnecessary ignore-file reads, batches shared parent-directory path resolution, and parses safe YAML frontmatter linearly.
 
 ### Fixed
 

@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Changed
+
+- Deferred `Intl.Segmenter` and internal Unicode regex initialization until first use, narrowed the Dingbats emoji pre-filter so non-emoji UI glyphs such as `❯` skip compiling the RGI emoji pattern, and bundled shared package chunks without `__esmMin` wrappers so Node's compile cache pre-compiles them.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added
