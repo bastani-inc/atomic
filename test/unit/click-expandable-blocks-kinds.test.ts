@@ -26,7 +26,9 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/interactive-task-projection.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "../../packages/intercom/ui/wake-notice.js";
 import { renderSubagentNotification } from "../../packages/subagents/src/extension/index.js";
+import { WEB_ACCESS_MESSAGE_RENDERERS } from "../../packages/web-access/ui/custom-messages.js";
 
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
@@ -41,7 +43,9 @@ beforeAll(() => initTheme("dark", false));
 function messageRenderers(): ReadonlyMap<string, MessageRenderer> {
 	const renderers = new Map<string, MessageRenderer>([
 		["intercom_message", renderIntercomCustomMessage],
+		[ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage],
 		["subagent-notify", renderSubagentNotification as unknown as MessageRenderer],
+		...Object.entries(WEB_ACCESS_MESSAGE_RENDERERS),
 	]);
 	return renderers;
 }
@@ -230,6 +234,50 @@ const FIXTURES: { readonly [K in ChatMessageEntry["kind"]]: readonly Fixture<K>[
 		{ name: "an Intercom message", entry: intercom(lines(12, "peer line")) },
 		{ name: "a short Intercom message", entry: intercom("all of it fits") },
 		{
+			name: "an Intercom subagent wake notice",
+			entry: custom(
+				ENDED_CHILD_WAKE_MESSAGE_TYPE,
+				"Resuming subagent `subagent-debugger-45255a2f-7` (45255a2f:6) for an Intercom message from subagent-worker-45255a2f-3. It stays this session's subagent: its result arrives here.",
+				{
+					childName: "subagent-debugger-45255a2f-7",
+					childId: "45255a2f:6",
+					from: { id: "133acdf4-dc40-4f80-865c-ba1931d0a8cc", name: "subagent-worker-45255a2f-3" },
+					depth: 1,
+				},
+			),
+		},
+		{
+			name: "a session recovery notice",
+			entry: custom("session-recovery-notice", "Session recovery after restart:\n- Restored 2 tasks", {
+				reason: "resume",
+				notices: ["Restored 2 tasks", "Reattached Intercom"],
+			}),
+		},
+		{
+			name: "an event report notice",
+			entry: custom(
+				"event_report",
+				`Report from event child "ci#1/build-7" (event build-7):\n\n${lines(8, "build output")}`,
+				{
+					subscriptionId: "sess/ci#1",
+					eventId: "build-7",
+					child: "ci#1/build-7",
+				},
+			),
+		},
+		{
+			name: "a web search results notice",
+			entry: custom("web-search-results", lines(8, "search result"), {
+				curated: true,
+				queryCount: 2,
+				totalResults: 8,
+			}),
+		},
+		{
+			name: "a curator config notice",
+			entry: custom("curator-config", "Curator disabled", { workflow: "none" }),
+		},
+		{
 			name: "a finished-task notice",
 			entry: custom(completion.customType, completion.content as string, completion.details),
 		},
@@ -264,6 +312,10 @@ const EXPANDING = new Set([
 	"a shell command you ran",
 	"a skill block with the message typed with it",
 	"an Intercom message",
+	"an Intercom subagent wake notice",
+	"a session recovery notice",
+	"an event report notice",
+	"a web search results notice",
 	"a finished-task notice",
 	"a task heartbeat",
 	"a subagent notice",

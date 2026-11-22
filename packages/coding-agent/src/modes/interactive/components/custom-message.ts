@@ -7,6 +7,7 @@ import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js"
 import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notice.js";
 import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { renderCoreCustomMessage } from "./core-custom-messages.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
 import { declaresHistoryReplayable, disposeRenderer } from "./renderer-disposal.js";
@@ -231,6 +232,26 @@ export class CustomMessageComponent extends Container {
 				this.addChild(this.customComponent);
 				return;
 			}
+		}
+
+		// Built-in core custom messages (session recovery, event reports, oversized history notes).
+		const coreComponent = renderCoreCustomMessage(
+			this.message,
+			{
+				expanded: this._expanded,
+				outputPad: this.outputPad,
+				cwd: this.completionOptions?.cwd,
+				keyText,
+				keyHint,
+			},
+			theme,
+		);
+		if (coreComponent) {
+			this.spacer = new Spacer(1);
+			this.addChild(this.spacer);
+			this.customComponent = coreComponent;
+			this.addChild(coreComponent);
+			return;
 		}
 
 		// Default rendering uses our box, preceded by the standard leading spacer.

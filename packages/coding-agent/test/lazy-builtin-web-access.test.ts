@@ -87,6 +87,7 @@ describe("lazy builtin web-access", () => {
 		for (const key of eagerExt.shortcuts.keys()) {
 			assert.equal(lazyExt.shortcuts.get(key)?.description, eagerExt.shortcuts.get(key)?.description);
 		}
+		assert.deepEqual([...lazyExt.messageRenderers.keys()], [...eagerExt.messageRenderers.keys()]);
 	});
 
 	test("honors custom shortcuts from ~/.atomic/web-search.json while dormant", async () => {

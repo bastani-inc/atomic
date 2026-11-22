@@ -108,6 +108,8 @@ describe("lazy builtin intercom", () => {
 		assert.deepEqual([...lazyExt.shortcuts.keys()], [...eagerExt.shortcuts.keys()]);
 		assert.equal(lazyExt.shortcuts.get("alt+m")?.description, eagerExt.shortcuts.get("alt+m")?.description);
 		assert.equal(lazyExt.messageRenderers.has("intercom_message"), true);
+		assert.equal(lazyExt.messageRenderers.has("intercom_subagent_wake"), true);
+		assert.deepEqual([...lazyExt.messageRenderers.keys()], [...eagerExt.messageRenderers.keys()]);
 	});
 
 	test("registers byte-identical contact_supervisor tool when subagent orchestrator env is present", async () => {

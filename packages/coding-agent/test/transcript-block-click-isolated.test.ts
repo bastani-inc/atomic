@@ -14,6 +14,7 @@ import {
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "../../intercom/ui/wake-notice.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
@@ -86,7 +87,9 @@ function isolatedEngine(renderers: Readonly<Record<string, MessageRenderer>> = {
 						})
 					: customType === "intercom_message"
 						? renderIntercomCustomMessage
-						: renderers[customType],
+						: customType === ENDED_CHILD_WAKE_MESSAGE_TYPE
+							? renderIntercomWakeMessage
+							: renderers[customType],
 		},
 		getToolDefinition: () => undefined,
 		sessionManager: { getCwd: () => "/workspace" },
@@ -503,4 +506,38 @@ test("a click on a block the isolated engine draws with nothing to expand change
 	}, ENGINE_FRAME_WAIT);
 	assert.deepEqual(chat.screen(), before);
 	assert.equal(chat.transcript.isFollowingEnd, true);
+});
+
+test("clicking an Intercom subagent wake notice in the isolated host expands full IDs and collapses back", async () => {
+	const chat = await mountIsolatedChat();
+	const wake: CustomMessage<unknown> = {
+		role: "custom",
+		customType: ENDED_CHILD_WAKE_MESSAGE_TYPE,
+		content:
+			"Resuming subagent `subagent-debugger-45255a2f-7` (45255a2f:6) for an Intercom message from subagent-worker-45255a2f-3. It stays this session's subagent: its result arrives here.",
+		display: true,
+		details: {
+			childName: "subagent-debugger-45255a2f-7",
+			childId: "45255a2f:6",
+			from: { id: "133acdf4-dc40-4f80-865c-ba1931d0a8cc", name: "subagent-worker-45255a2f-3" },
+			depth: 1,
+		},
+		timestamp: 1,
+	};
+	const card = chat.message(wake);
+	await chat.waitFor(/Woke subagent-debugger-…-7 for a message from subagent-worker-…-3/);
+	assert.equal(card.isExpanded(), false);
+	assert.equal(chat.shows(/\[intercom_subagent_wake\]/), false);
+
+	await chat.click(/Woke subagent-debugger-…-7/, "Woke");
+	await chat.waitFor(/subagent-debugger-45255a2f-7 · 45255a2f:6/);
+	assert.equal(card.isExpanded(), true);
+	assert.ok(chat.shows(/Result stays with this session and arrives here\./));
+
+	await chat.click(/Result stays with this session/, "Result");
+	await vi.waitFor(() => assert.equal(card.isExpanded(), false), ENGINE_FRAME_WAIT);
+	await vi.waitFor(
+		() => assert.equal(chat.shows(/subagent-debugger-45255a2f-7 · 45255a2f:6/), false),
+		ENGINE_FRAME_WAIT,
+	);
 });

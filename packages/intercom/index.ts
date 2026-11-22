@@ -5,6 +5,7 @@ import { Type } from "@bastani/atomic-ai";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderContactSupervisorCall, renderIntercomCall, renderIntercomToolResult } from "./result-renderers.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "./ui/wake-notice.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
@@ -1014,6 +1015,7 @@ ${ASK_USAGE}
 		renderCall: renderIntercomCall,
 	});
 	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
+	pi.registerMessageRenderer?.(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
 	pi.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
 		if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self") return registered;

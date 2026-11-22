@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@bastani/atomic-ai";
 import { type KeyId, Text } from "@bastani/atomic-tui";
+import { DORMANT_WEB_ACCESS_MESSAGE_RENDERERS } from "../../../modes/interactive/components/dormant-builtin-messages.js";
 import type { SessionEntry } from "../../session-manager.ts";
 import type { LazyBuiltinController, LazyBuiltinSpec } from "../lazy-builtin.js";
 import type { ToolDefinition } from "../types.ts";
@@ -10,6 +11,7 @@ import type { ToolDefinition } from "../types.ts";
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
 
 const WEB_ACCESS_TOOLS = new Set(["web_search", "code_search", "fetch_content", "get_search_content"]);
+const WEB_ACCESS_MESSAGE_TYPES = new Set(Object.keys(DORMANT_WEB_ACCESS_MESSAGE_RENDERERS));
 
 function isAllFailedWebResult(toolName: string, details: unknown): boolean {
 	if (toolName !== "web_search" && toolName !== "fetch_content") return false;
@@ -20,9 +22,10 @@ function isAllFailedWebResult(toolName: string, details: unknown): boolean {
 function hasWebAccessHistory(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
 		(entry) =>
-			entry.type === "message" &&
-			entry.message.role === "toolResult" &&
-			WEB_ACCESS_TOOLS.has(entry.message.toolName),
+			(entry.type === "message" &&
+				entry.message.role === "toolResult" &&
+				WEB_ACCESS_TOOLS.has(entry.message.toolName)) ||
+			(entry.type === "custom_message" && WEB_ACCESS_MESSAGE_TYPES.has(entry.customType)),
 	);
 }
 
@@ -262,6 +265,14 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			pi.registerCommand(name, {
 				description,
 				handler: (args, ctx) => controller.runCommand(name, args, ctx),
+			});
+		}
+
+		for (const [customType, dormantRenderer] of Object.entries(DORMANT_WEB_ACCESS_MESSAGE_RENDERERS)) {
+			pi.registerMessageRenderer(customType, (message, options, theme) => {
+				const loaded = controller.active?.captured.messageRenderers.get(customType);
+				if (loaded) return loaded(message, options, theme);
+				return dormantRenderer(message, options, theme);
 			});
 		}
 	},

@@ -44,8 +44,6 @@ import { isIntercomRecipientGoneError } from "./broker/recipient-gone-errors.js"
 
 /** #5999: how often a message kept for a paused subagent checks that the subagent's start went past its first turn. */
 const FIRST_TURN_POLL_MS = 50;
-/** #5999: the notice, in the session that launched a subagent, that it is resuming it for another session's message. */
-const ENDED_CHILD_WAKE_MESSAGE_TYPE = "intercom_subagent_wake";
 import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironmentAsync, type SessionEntry, sessionScopedExtensionState, type IntercomPolicyView } from "@bastani/atomic";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -73,6 +71,7 @@ import { localOnlyBrokerWarning, warnLocalOnlyBrokerWithoutUi } from "./local-on
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "./ui/wake-notice.js";
 import { defaultConfig, loadConfigAsync, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message } from "./types.js";
 import { ReplyTracker, restorePendingInboundAsks } from "./reply-tracker.js";
@@ -1819,6 +1818,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 
 
   pi.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
+  pi.registerMessageRenderer(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
 
   const replyWaits = replyWaitGates(() => client);
   /**
