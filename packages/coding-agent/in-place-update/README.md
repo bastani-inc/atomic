@@ -15,7 +15,9 @@ What reads them:
   (`scripts/in-place-update-gate.mjs`): it imports the module's code from the file beside it, and only when that fails
   asks which release the process runs, through a module every process of each recorded release loaded (`running`),
   and tells a process of an earlier release to restart. Where this build writes no file at such a module's path, it
-  writes an empty stub there, so that Node still resolves the path and gives that process the module it holds.
+  writes an empty stub there, so that Node still resolves the path and gives that process the module it holds. This
+  build's own files import the module's code directly, so only a process of an earlier release meets a gate, and a
+  bundle of the package (the standalone binary's, in CommonJS) never holds a gate's top-level `await`.
 - `test/unit/in-place-update-releases.test.ts` checks the built packages against every record, in both directions: a
   file such a process loads after the update names only exports of the earlier copies it may hold, through the exports
   maps it read, and what the earlier release loads on demand is still there with the exports it had.

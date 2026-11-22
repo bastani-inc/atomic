@@ -27,6 +27,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -238,7 +239,11 @@ export async function updateRunningRelease(record, tarballs, version, work, allo
 				console.log(`${record.version} ${path}: ${outcome.loaded ? "loaded" : outcome.message.split("\n")[0]}`);
 		return problems;
 	} finally {
+		// The process holds the release's native module open until it exits, and Windows refuses to remove a file held
+		// open: the release's install goes once it has.
 		child.kill();
+		if (!exited) await new Promise((resolve) => child.once("exit", resolve));
+		await rm(prefix, { recursive: true, force: true, maxRetries: 10 });
 	}
 }
 

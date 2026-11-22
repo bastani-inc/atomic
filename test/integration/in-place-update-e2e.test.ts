@@ -4,19 +4,21 @@
  * work load. The releases are installed from npm as published; this build is packed as the release workflow packs it.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { updateRunningRelease } from "../../scripts/in-place-update-e2e.mjs";
-import { moduleDir, npmSpawnPrefix, spawnSyncCollect } from "../helpers/runtime.js";
+import { moduleDir, npmSpawnPrefix, removePath, spawnSyncCollect } from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "..", "..");
 const RECORDS = join(ROOT, "packages/coding-agent/in-place-update");
 /** Packing the seven packages of the build: structural. */
 const PACK_TIMEOUT_MS = 300_000;
-/** Installing a published release from npm, starting a process of it and updating it: structural. */
+/** Installing a published release from npm, starting a process of it, updating it and removing it: structural. */
 const UPDATE_TIMEOUT_MS = 300_000;
+/** Removing the packed build and what an interrupted update left: a directory of thousands of files on Windows. */
+const CLEANUP_TIMEOUT_MS = 120_000;
 
 const records = readdirSync(RECORDS)
 	.filter((file) => /^\d.*\.json$/.test(file))
@@ -49,9 +51,9 @@ beforeAll(() => {
 	assert.equal(packed.exitCode, 0, packed.stderr.toString());
 }, PACK_TIMEOUT_MS);
 
-afterAll(() => {
-	if (work !== "") rmSync(work, { recursive: true, force: true });
-});
+afterAll(async () => {
+	if (work !== "") await removePath(work, { recursive: true, force: true, maxRetries: 10 });
+}, CLEANUP_TIMEOUT_MS);
 
 describe("a running process of a recorded release, updated in place to this build", () => {
 	test.each(records.map((record) => [record.version, record] as const))(
