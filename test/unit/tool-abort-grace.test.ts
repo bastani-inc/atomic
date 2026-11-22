@@ -209,6 +209,27 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 	}
 }
 
+/**
+ * For the tests whose first call must have detached before Esc: the agent's tool events and the test's own steps, in
+ * milliseconds from when the timeline started, reported with a failure so it shows how far the call had come.
+ */
+function detachTimeline(session: AgentSession): { note(step: string): void; report(): string } {
+	const origin = performance.now();
+	const steps: string[] = [];
+	const at = () => Math.round(performance.now() - origin);
+	const unsubscribe = session.agent.subscribe((event) => {
+		if (event.type === "tool_execution_start" || event.type === "tool_execution_end")
+			steps.push(`${at()} ms ${event.type} ${event.toolCallId}`);
+	});
+	return {
+		note: (step) => steps.push(`${at()} ms ${step}`),
+		report: () => {
+			unsubscribe();
+			return steps.join("; ");
+		},
+	};
+}
+
 function textOf(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
 	return typeof content === "string" ? content : content.map((part) => part.text ?? "").join("\n");
 }
@@ -525,18 +546,24 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 	test("Esc ends a turn whose later call waits for its place behind a call that already detached (#5486)", async () => {
 		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, go: ["stuck", "stuck"] });
 		session.setToolDetachment({ afterMs: 50 });
+		const timeline = detachTimeline(session);
 		const prompt = session.prompt("go");
 		await tool.started.promise;
+		timeline.note("the first call started");
 		// The first call's 50 ms deadline was set before it started, so it passes before this wait ends: the call detaches
 		// and keeps its exclusive place while it runs on, and the second call waits for that place.
 		await sleep(100);
+		timeline.note(`Esc, with the agent waiting for [${[...session.agent.state.pendingToolCalls].join(", ")}]`);
 
 		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
 		await prompt.catch(() => {});
-		const results = session.messages.filter((message) => message.role === "toolResult");
+		const results = session.messages
+			.filter((message) => message.role === "toolResult")
+			.map((result) => [result.toolCallId, textOf(result.content), result.isError]);
 		assert.deepEqual(
-			results.map((result) => [result.toolCallId, textOf(result.content), result.isError]),
+			results,
 			[["stuck-2", "Operation aborted", true]],
+			`${JSON.stringify(results)}: ${timeline.report()}`,
 		);
 		const detached = session.takeDetachedToolCalls();
 		assert.deepEqual(
@@ -558,17 +585,23 @@ describe("a tool call that ignores the interrupt (#5486)", () => {
 	test("Esc ends a turn whose later call of a tool that never detaches waits behind a call that already detached (#5486)", async () => {
 		const { session, tool } = await sessionWithStuckTool("main", { detachable: true, go: ["stuck", "quick"] });
 		session.setToolDetachment({ afterMs: 50 });
+		const timeline = detachTimeline(session);
 		const prompt = session.prompt("go");
 		await tool.started.promise;
+		timeline.note("the first call started");
 		// As above: the first call detaches before this wait ends, and the quick call waits for its exclusive place.
 		await sleep(100);
+		timeline.note(`Esc, with the agent waiting for [${[...session.agent.state.pendingToolCalls].join(", ")}]`);
 
 		assert.ok(await settlesWithin(session.abort(), TURN_END_BUDGET_MS), "the interrupted turn ends");
 		await prompt.catch(() => {});
-		const results = session.messages.filter((message) => message.role === "toolResult");
+		const results = session.messages
+			.filter((message) => message.role === "toolResult")
+			.map((result) => [result.toolCallId, textOf(result.content), result.isError]);
 		assert.deepEqual(
-			results.map((result) => [result.toolCallId, textOf(result.content), result.isError]),
+			results,
 			[["quick-2", "Operation aborted", true]],
+			`${JSON.stringify(results)}: ${timeline.report()}`,
 		);
 		const detached = session.takeDetachedToolCalls();
 		tool.release.resolve("CI is green");
