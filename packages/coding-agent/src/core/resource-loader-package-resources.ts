@@ -50,7 +50,7 @@ export async function resolvePackageResourcePaths(
 	const state = resourceInternals(loader);
 	if (!options?.useLoadedSettings) await state.settingsManager.reload();
 	const includeCliProjectLocalResources = options?.includeCliProjectLocalResources ?? true;
-	const [resolvedPaths, rawCliExtensionPaths, builtinPackagePaths] = await Promise.all([
+	const [resolvedResult, cliResult, builtinResult] = await Promise.allSettled([
 		options?.withoutConfigured ? Promise.resolve(emptyResolvedPaths()) : state.packageManager.resolve(),
 		state.additionalExtensionPaths.length > 0
 			? state.packageManager.resolveExtensionSources(state.additionalExtensionPaths, {
@@ -64,6 +64,13 @@ export async function resolvePackageResourcePaths(
 					.then(markBundledResources)
 			: Promise.resolve(emptyResolvedPaths()),
 	]);
+	// Report the first error in main's sequential order: configured resolve -> CLI sources -> builtin sources.
+	if (resolvedResult.status === "rejected") throw resolvedResult.reason;
+	if (cliResult.status === "rejected") throw cliResult.reason;
+	if (builtinResult.status === "rejected") throw builtinResult.reason;
+	const resolvedPaths = resolvedResult.value;
+	const rawCliExtensionPaths = cliResult.value;
+	const builtinPackagePaths = builtinResult.value;
 	const cliExtensionPaths =
 		includeCliProjectLocalResources && options?.trustedBorrowedProjectLocalSources
 			? filterBorrowedProjectLocalResources(rawCliExtensionPaths, options.trustedBorrowedProjectLocalSources)

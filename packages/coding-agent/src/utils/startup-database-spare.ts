@@ -1,126 +1,147 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { type Args, parseArgs } from "../cli/args.ts";
+import { CONFIG_DIR_NAME, ENV_AGENT_DIR, getEnvNames } from "../config.js";
+import { parseConfigCommand } from "../config-command-parser.ts";
+import { previewProcessStorageSelection, previewSessionSettingSelection } from "../core/storage/process-selection.js";
+import { parsePackageCommand } from "../package-manager-cli-parser.ts";
 import { INTERACTIVE_ENGINE_PREWARM_NO_DATABASE } from "./interactive-engine-bootstrap.ts";
 import { type InvocationTerminal, isPlainInteractiveSessionInvocation } from "./interactive-invocation.ts";
+import { normalizePath } from "./paths.ts";
+import { stripBom } from "./text.ts";
 
-const METADATA_OR_EXIT_FLAGS = new Set(["-h", "--help", "-v", "--version", "--list-models", "--export"]);
+const DIRECT_SUBCOMMANDS = new Set(["auth", "mcp", "storage", "blueprint", "team", "intercom"]);
 
-const SUBCOMMANDS = new Set([
-	"auth",
-	"blueprint",
-	"config",
-	"install",
-	"intercom",
-	"list",
-	"mcp",
-	"remove",
-	"storage",
-	"team",
-	"update",
-]);
+function nonEmptyEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+	const value = env[name];
+	return value === undefined || value.length === 0 ? undefined : value;
+}
 
-const VALUE_FLAGS = new Set([
-	"--mode",
-	"--provider",
-	"--model",
-	"--api-key",
-	"--system-prompt",
-	"--append-system-prompt",
-	"--name",
-	"-n",
-	"--session",
-	"--import",
-	"--session-id",
-	"--fork",
-	"--session-dir",
-	"--session-store",
-	"--session-prefix",
-	"--storage",
-	"--storage-file",
-	"--models",
-	"--fallback-models",
-	"--tools",
-	"-t",
-	"--exclude-tools",
-	"-xt",
-	"--thinking",
-	"--export",
-	"--extension",
-	"-e",
-	"--skill",
-	"--prompt-template",
-	"--theme",
-	"--use-theme",
-	"--internal-engine-bootstrap",
-	"--internal-engine-session-storage",
-]);
+function isTopLevelSubcommand(args: readonly string[]): boolean {
+	if (args.length === 0) return false;
+	if (parsePackageCommand([...args]) !== undefined) return true;
+	if (parseConfigCommand(args) !== undefined) return true;
+	return DIRECT_SUBCOMMANDS.has(args[0]!);
+}
 
-function isNonSqliteStorageValue(value: string | undefined): boolean {
-	if (!value) return false;
-	const trimmed = value.trim().toLowerCase();
-	if (!trimmed) return false;
-	return (
-		trimmed === "memory" ||
-		trimmed === "jsonl" ||
-		trimmed.startsWith("postgres") ||
-		trimmed.startsWith("libsql:") ||
-		trimmed.startsWith("http://") ||
-		trimmed.startsWith("https://")
-	);
+function hasSessionSelectorConflict(parsed: Args): boolean {
+	if (
+		parsed.import !== undefined &&
+		(parsed.session !== undefined ||
+			parsed.fork !== undefined ||
+			parsed.sessionId !== undefined ||
+			parsed.continue ||
+			parsed.resume)
+	) {
+		return true;
+	}
+	if (
+		parsed.fork !== undefined &&
+		(parsed.session !== undefined || parsed.continue || parsed.resume || parsed.noSession)
+	) {
+		return true;
+	}
+	if (parsed.sessionId !== undefined && (parsed.session !== undefined || parsed.continue || parsed.resume)) {
+		return true;
+	}
+	return false;
+}
+
+function resolveAgentDirFromEnv(env: NodeJS.ProcessEnv): string | undefined {
+	for (const name of getEnvNames(ENV_AGENT_DIR)) {
+		const value = nonEmptyEnv(env, name);
+		if (value !== undefined) return normalizePath(value);
+	}
+	const home = nonEmptyEnv(env, "HOME") ?? nonEmptyEnv(env, "USERPROFILE");
+	return home !== undefined ? join(home, CONFIG_DIR_NAME, "agent") : undefined;
+}
+
+function settingsSelectSqlite(agentDir: string): boolean {
+	let text: string;
+	try {
+		text = readFileSync(join(agentDir, "settings.json"), "utf8");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT";
+	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(stripBom(text));
+	} catch {
+		return true;
+	}
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return true;
+	const settings = raw as { readonly sessions?: unknown; readonly storage?: unknown };
+	if (
+		settings.sessions !== undefined &&
+		(settings.sessions === null || typeof settings.sessions !== "object" || Array.isArray(settings.sessions))
+	) {
+		return false;
+	}
+	const sessionsStorage = (settings.sessions as { readonly storage?: unknown } | undefined)?.storage;
+	const value = sessionsStorage !== undefined ? sessionsStorage : settings.storage;
+	if (value === undefined) return true;
+	const field = sessionsStorage !== undefined ? "sessions.storage" : "storage";
+	try {
+		return previewSessionSettingSelection(value, field, agentDir).kind === "sqlite";
+	} catch {
+		return false;
+	}
 }
 
 /**
  * Whether `cli.ts` should warm the spare SQLite worker thread while modules load.
- * Covers prewarmed engines (unless marked no-database), plain interactive sessions,
- * and `-p`/`--print`/`--mode rpc|json|text` runs that may open a SQLite session store.
+ * Uses the same subcommand, argument (`parseArgs`), and storage selection
+ * (`previewProcessStorageSelection` / `previewSessionSettingSelection`) resolvers
+ * as `main`, returning `true` only when the invocation will open a SQLite store.
  */
 export function shouldStartSpareDatabaseThread(
 	args: readonly string[],
 	prewarmedEngine: boolean,
 	terminal: InvocationTerminal,
 	env: NodeJS.ProcessEnv = process.env,
+	cwd: string = process.cwd(),
 ): boolean {
 	if (prewarmedEngine) {
 		return args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE;
 	}
-	if (args.length > 0 && SUBCOMMANDS.has(args[0]!)) return false;
+	if (isTopLevelSubcommand(args)) return false;
 
-	const envStorage = env.ATOMIC_SESSIONS_STORAGE || env.PI_SESSIONS_STORAGE || env.ATOMIC_STORAGE || env.PI_STORAGE;
-	if (isNonSqliteStorageValue(envStorage)) return false;
-
-	let hasPrintOrMode = false;
-	let storageArg: string | undefined;
-
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i]!;
-		if (arg === "--") break;
-		if (arg === "--no-session") return false;
-		if (METADATA_OR_EXIT_FLAGS.has(arg)) return false;
-		if (arg === "-p" || arg === "--print") {
-			hasPrintOrMode = true;
-			continue;
-		}
-		if (arg === "--mode") {
-			hasPrintOrMode = true;
-			if (i + 1 < args.length) i += 1;
-			continue;
-		}
-		if (arg.startsWith("--mode=")) {
-			hasPrintOrMode = true;
-			continue;
-		}
-		if (arg === "--storage" && i + 1 < args.length) {
-			storageArg = args[++i];
-			continue;
-		}
-		if (arg.startsWith("--storage=")) {
-			storageArg = arg.slice("--storage=".length);
-			continue;
-		}
-		if (VALUE_FLAGS.has(arg) && i + 1 < args.length) {
-			i += 1;
-		}
+	let parsed: Args;
+	try {
+		parsed = parseArgs([...args]);
+	} catch {
+		return false;
 	}
 
-	if (isNonSqliteStorageValue(storageArg)) return false;
-	if (hasPrintOrMode) return true;
-	return isPlainInteractiveSessionInvocation(args, terminal);
+	if (parsed.diagnostics.some((d) => d.type === "error")) return false;
+	if (parsed.version || parsed.help || parsed.export !== undefined || parsed.listModels !== undefined) return false;
+	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) return false;
+	if (hasSessionSelectorConflict(parsed)) return false;
+
+	const qualifies =
+		isPlainInteractiveSessionInvocation(args, terminal) || parsed.print === true || parsed.mode !== undefined;
+	if (!qualifies) return false;
+
+	// Mirrors selectSessionStorageBeforeSettingsSteps in core/session-storage.ts.
+	if (parsed.sessionStorePath !== undefined) return true;
+	if (parsed.noSession) return false;
+	if (parsed.sessionDir !== undefined) return false;
+	if (nonEmptyEnv(env, "ATOMIC_SESSION_DIR") !== undefined) return false;
+
+	const agentDir = resolveAgentDirFromEnv(env);
+	try {
+		const processSelection = previewProcessStorageSelection("sessions", {
+			cliStorage: parsed.storage,
+			env,
+			cwd,
+			agentDir: agentDir ?? cwd,
+		});
+		if (processSelection !== undefined) {
+			return processSelection.kind === "sqlite";
+		}
+	} catch {
+		return false;
+	}
+
+	return agentDir === undefined ? true : settingsSelectSqlite(agentDir);
 }

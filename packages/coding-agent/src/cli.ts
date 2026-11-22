@@ -26,9 +26,9 @@ import { noteInheritedHangup } from "./utils/inherited-hangup.js";
 import {
 	hasInteractiveEngineBootstrapArg,
 	INTERACTIVE_ENGINE_PREWARM_FLAG,
+	INTERACTIVE_ENGINE_PREWARM_NO_DATABASE,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocation.ts";
-import { shouldStartSpareDatabaseThread } from "./utils/startup-database-spare.ts";
 import { startStartupPrefetch } from "./utils/startup-prefetch.js";
 import { updatedInstallError } from "./utils/updated-install.ts";
 
@@ -82,13 +82,39 @@ if (heapArgs.length > 0) {
 	const prewarm =
 		prewarmedEngine || interactiveHost ? import("./modes/interactive-engine/engine-prewarm.ts") : undefined;
 	// A session's database opens on a thread of its own: start that thread now, while the modules load.
-	// `--no-session` keeps the session in memory and opens no database; a prewarmed engine learns it from its host.
-	const opensDatabase = shouldStartSpareDatabaseThread(args, prewarmedEngine, terminal);
-	if (opensDatabase)
+	// Plain interactive launches without CLI/env storage overrides stay on the zero-import fast path;
+	// headless/print/RPC runs and storage-overridden invocations resolve through the full CLI/storage parser.
+	let mainStarted = false;
+	const startSpareDatabase = () =>
 		void import("./core/storage/node-sqlite-thread.js").then(
-			({ ThreadConnection }) => ThreadConnection.startSpare(),
+			({ ThreadConnection }) => {
+				if (!mainStarted) ThreadConnection.startSpare();
+			},
 			() => {},
 		);
+	if (prewarmedEngine) {
+		if (args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE) startSpareDatabase();
+	} else if (
+		isPlainInteractiveSessionInvocation(args, terminal) &&
+		!args.some(
+			(arg) => arg === "--no-session" || arg === "--session-dir" || arg === "--storage" || arg === "--storage-file",
+		) &&
+		!process.env.ATOMIC_STORAGE &&
+		!process.env.ATOMIC_SESSIONS_STORAGE &&
+		!process.env.ATOMIC_CODING_AGENT_SESSION_DIR &&
+		!process.env.ATOMIC_SESSION_DIR &&
+		!process.env.ATOMIC_PROFILE &&
+		!process.env.ATOMIC_TEAM_URL
+	) {
+		startSpareDatabase();
+	} else {
+		void import("./utils/startup-database-spare.ts").then(
+			({ shouldStartSpareDatabaseThread }) => {
+				if (!mainStarted && shouldStartSpareDatabaseThread(args, false, terminal)) startSpareDatabase();
+			},
+			() => {},
+		);
+	}
 	const prewarmed = interactiveHost
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
@@ -142,6 +168,7 @@ if (heapArgs.length > 0) {
 			return Promise.all([loaded, mainArgs]);
 		})
 		.then(([[{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }], runArgs]) => {
+			mainStarted = true;
 			configureHttpDispatcher();
 			main(runArgs).catch(exitOnDecisionConfigError);
 		})
