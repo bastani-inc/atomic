@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -27,6 +27,13 @@ const FIXTURE_MS = 120_000;
 const TIMEOUT_SECONDS = 3;
 /** Starting Bun, loading the tool from source and running one PowerShell command, however loaded the machine. */
 const TOOL_PROCESS_MS = 60_000;
+/** Lines of about 100 bytes: 60 MB, many times what a pipe and the host's queue hold. */
+const LARGE_OUTPUT_LINES = 600_000;
+/** 4 MB, for a host that takes a millisecond over each piece of output it gets. */
+const SLOW_HOST_LINES = 40_000;
+const SLOW_HOST_MS_PER_CHUNK = 1;
+/** Writing the file, and PowerShell passing on what `cmd` writes, however loaded the machine. */
+const LARGE_OUTPUT_TEST_TIMEOUT_MS = 120_000;
 /** The test that runs the tool in a Bun process of its own: that process, then a check that the program still runs. */
 const TOOL_PROCESS_TEST_TIMEOUT_MS = TOOL_PROCESS_MS + GONE_MS * 4 + NOT_ENDED_MS;
 
@@ -85,6 +92,48 @@ function orphanThenWait(): { command: string; pidFile: string } {
 		command: `& ${powerShellWord(process.execPath)} -e "${starter}" ${powerShellWord(path)} ${powerShellWord(pidFile)}; Start-Sleep ${FIXTURE_MS / 1000}`,
 		pidFile,
 	};
+}
+
+/**
+ * A file `cmd /c type` writes line by line, far more than a pipe and the host's queue hold: each line carries its
+ * number, so the last line received says whether all of them arrived.
+ */
+function numberedLines(lines: number): { path: string; lastLine: string } {
+	const path = join(directory(), "lines.txt");
+	const line = (index: number) => `line ${String(index).padStart(9, "0")} ${"x".repeat(80)}`;
+	const chunk = 10_000;
+	writeFileSync(path, "");
+	for (let start = 0; start < lines; start += chunk) {
+		const end = Math.min(lines, start + chunk);
+		appendFileSync(path, Array.from({ length: end - start }, (_, offset) => `${line(start + offset)}\r\n`).join(""));
+	}
+	return { path, lastLine: line(lines - 1) };
+}
+
+/** The lines a command wrote, as they arrive: how many, and the last one. */
+class LineCounter {
+	count = 0;
+	last = "";
+	#tail = "";
+
+	readonly onData = (data: Buffer): void => {
+		const parts = (this.#tail + data.toString("latin1")).split("\n");
+		this.#tail = parts.pop() ?? "";
+		for (const part of parts) this.#line(part);
+	};
+
+	/** Counts what follows the last line break, once the command is done. */
+	finish(): void {
+		this.#line(this.#tail);
+		this.#tail = "";
+	}
+
+	#line(text: string): void {
+		const line = text.trim();
+		if (line === "") return;
+		this.count++;
+		this.last = line;
+	}
 }
 
 /** C# that starts a program asking to leave its job (`CREATE_BREAKAWAY_FROM_JOB`), as some installers and updaters do. */
@@ -224,6 +273,53 @@ describe.runIf(process.platform === "win32")("on Windows, the bash and PowerShel
 		assert.equal(result.exitCode, 0);
 		assert.equal(await stillRuns(program), true, "the program is not running");
 	});
+
+	test(
+		"a command's large output, written line by line, arrives whole and before its exit code",
+		async () => {
+			const { path, lastLine } = numberedLines(LARGE_OUTPUT_LINES);
+			const received = new LineCounter();
+
+			const result = await createLocalPowerShellOperations().exec(
+				`cmd /d /c type ${powerShellWord(path)}; exit 3`,
+				process.cwd(),
+				{ onData: received.onData },
+			);
+			received.finish();
+
+			assert.equal(result.exitCode, 3, "the command's exit code was lost");
+			assert.deepEqual(
+				{ lines: received.count, last: received.last },
+				{ lines: LARGE_OUTPUT_LINES, last: lastLine },
+			);
+		},
+		LARGE_OUTPUT_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a host slow to handle a command's output still gets all of it and its exit code",
+		async () => {
+			const { path, lastLine } = numberedLines(SLOW_HOST_LINES);
+			const received = new LineCounter();
+
+			const result = await createLocalPowerShellOperations().exec(
+				`cmd /d /c type ${powerShellWord(path)}; exit 3`,
+				process.cwd(),
+				{
+					onData: (data) => {
+						received.onData(data);
+						const until = performance.now() + SLOW_HOST_MS_PER_CHUNK;
+						while (performance.now() < until) {}
+					},
+				},
+			);
+			received.finish();
+
+			assert.equal(result.exitCode, 3, "the command's exit code was lost");
+			assert.deepEqual({ lines: received.count, last: received.last }, { lines: SLOW_HOST_LINES, last: lastLine });
+		},
+		LARGE_OUTPUT_TEST_TIMEOUT_MS,
+	);
 
 	test("quitting ends the programs of a command still running", async () => {
 		const { command, pidFile } = startProcessThen(`Start-Sleep ${FIXTURE_MS / 1000}`);
