@@ -96,7 +96,7 @@ import {
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
-import { type ReturnPathParty, returnPathClosedReason } from "./return-paths.js";
+import { RETURN_PATH_MAX_ENTRIES, type ReturnPathParty, returnPathClosedReason } from "./return-paths.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
 import { brokerHostIdentity, isProcessAlive, processStartedAt } from "./broker-instance.js";
 import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
@@ -909,6 +909,11 @@ export class MultiNodeRouter {
 	private readonly scanning = new Map<string, { rescan: boolean }>();
 	private readonly serials = new Map<string, Promise<void>>();
 	private readonly settling = new Set<Promise<void>>();
+	/**
+	 * When rows whose settle failed were first handed over, by message id: the recipient may have read such a row, and
+	 * answered, before it is handed over again, so the path it opens counts answers from its first hand-over on.
+	 */
+	private readonly firstHandedOverAt = new Map<string, number>();
 	/** #5607: sessions registered before routing turned on, until `sessionRegistered` takes them up. */
 	private readonly adopting = new WeakSet<BrokerConnectedSession>();
 	/** #5607: when the renewals of owned ids still in flight were sent. */
@@ -4323,7 +4328,7 @@ export class MultiNodeRouter {
 				if (failed.status === "failed") await this.wakeOrigin(row);
 				continue;
 			}
-			const handedOverAt = this.host.returnPaths?.handOverTime();
+			const handedOverAt = this.firstHandedOverAt.get(row.messageId) ?? this.host.returnPaths?.handOverTime();
 			const inflight: Inflight = {
 				claim,
 				row,
@@ -4396,7 +4401,9 @@ export class MultiNodeRouter {
 	}
 
 	private settleDelivered(inflight: Inflight, recipient: BrokerConnectedSession, frame: IntercomDeliveryFrame): void {
-		this.inflight.delete(inflight.row.messageId);
+		const { messageId } = inflight.row;
+		this.inflight.delete(messageId);
+		let marked = false;
 		const settling = (async () => {
 			// Route first (spec §5.4): a settled row is never claimed again, so a route written after `markDelivered`
 			// would be lost if this broker stopped between the writes. Redelivery repeats the route write safely.
@@ -4413,6 +4420,8 @@ export class MultiNodeRouter {
 				}
 			}
 			const delivered = await this.state.outbox.markDelivered(inflight.claim);
+			marked = true;
+			this.firstHandedOverAt.delete(messageId);
 			if (delivered.status !== "delivered") return;
 			if (frame.message.replyTo !== undefined) {
 				await this.state.pendingAsks.clearReply({
@@ -4436,7 +4445,9 @@ export class MultiNodeRouter {
 			await this.wakeOrigin(inflight.row);
 		})().catch((error: Error) => {
 			this.report(error);
-			// Not settled: hand the row back so it is delivered again (the recipient deduplicates) and settled then.
+			// Not settled: hand the row back so it is delivered again (the recipient deduplicates) and settled then, with
+			// the return path it opens counting from this hand-over, which the recipient confirmed.
+			if (!marked) this.keepFirstHandOver(messageId, inflight.handedOverAt);
 			void this.state.outbox
 				.releaseClaim(inflight.claim)
 				.then(() => this.scanIdentity(inflight.identity))
@@ -4444,6 +4455,16 @@ export class MultiNodeRouter {
 		});
 		this.settling.add(settling);
 		void settling.finally(() => this.settling.delete(settling));
+	}
+
+	private keepFirstHandOver(messageId: string, handedOverAt: number | undefined): void {
+		if (handedOverAt === undefined) return;
+		this.firstHandedOverAt.set(messageId, handedOverAt);
+		while (this.firstHandedOverAt.size > RETURN_PATH_MAX_ENTRIES) {
+			const oldest = this.firstHandedOverAt.keys().next().value as string | undefined;
+			if (oldest === undefined) break;
+			this.firstHandedOverAt.delete(oldest);
+		}
 	}
 
 	private async wakeOrigin(row: OutboxRow): Promise<void> {

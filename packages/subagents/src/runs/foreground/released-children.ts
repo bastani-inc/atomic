@@ -383,23 +383,47 @@ function savedMessageOf(entry: SessionEntry): SavedMessage | undefined {
 	return undefined;
 }
 
+/** What reading a child's branch back found of the results held for it. */
+export interface HeldToolResultsReadBack {
+	/** The ids of the results the child already read, as {@link savedToolResultIds} gives them. */
+	readonly saved: string[];
+	/**
+	 * By id, the entry that issued the newest call with that id, for each result the child has not read since that call:
+	 * the read-back stops there, so this is where a late result's call is (#3274).
+	 */
+	readonly issuingCalls: ReadonlyMap<string, string>;
+}
+
 /**
  * {@link savedToolResultIds}, read from the child's branch rather than its context, so also where a compaction took
- * them out of it. Each result is read back only as far as its call.
+ * them out of it, and the entries that issued the calls of the results not read. Each result is read back only as far
+ * as its call.
  */
+export async function readHeldToolResultsBack(
+	sessionManager: Pick<SessionManager, "getBranch" | "readHistory" | "getLeafId" | "getEntrySeq">,
+	results: readonly DetachedToolResult[],
+): Promise<HeldToolResultsReadBack> {
+	const saved = new Set<string>();
+	const issuingCalls = new Map<string, string>();
+	const open = new Set(results.map((result) => result.toolCallId));
+	if (open.size === 0) return { saved: [], issuingCalls };
+	await visitBranchBack(sessionManager, (entry) => {
+		const message = savedMessageOf(entry);
+		if (message !== undefined) {
+			for (const id of issuedCallIds(message)) if (open.has(id)) issuingCalls.set(id, entry.id);
+			readBack([message], results, open, saved);
+		}
+		return open.size === 0;
+	});
+	return { saved: savedOf(results, saved), issuingCalls };
+}
+
+/** The ids of {@link readHeldToolResultsBack}'s results the child already read. */
 export async function savedToolResultIdsInHistory(
 	sessionManager: Pick<SessionManager, "getBranch" | "readHistory" | "getLeafId" | "getEntrySeq">,
 	results: readonly DetachedToolResult[],
 ): Promise<string[]> {
-	const saved = new Set<string>();
-	const open = new Set(results.map((result) => result.toolCallId));
-	if (open.size === 0) return [];
-	await visitBranchBack(sessionManager, (entry) => {
-		const message = savedMessageOf(entry);
-		if (message !== undefined) readBack([message], results, open, saved);
-		return open.size === 0;
-	});
-	return savedOf(results, saved);
+	return (await readHeldToolResultsBack(sessionManager, results)).saved;
 }
 
 /** How a woken child continues: results recorded as its pending calls' results, then its late results and prompt. */

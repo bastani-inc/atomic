@@ -982,9 +982,10 @@ export type TaskResult =
  * Ends running process `pid` if it was created at `created`, as `processCreationTime` reads it, and with
  * `descendants` every process it started, directly or through others, that still runs. Each is ended through a handle
  * opened and checked before anything is ended, so a later process given one of their ids is never ended: the process
- * `pid` names must have been created at `created`, and a descendant after the process that started it and before the
- * processes were listed. Returns how many were ended, or `null` where `pid` does not name that process (it is gone, is
- * another process, or this process may not end it), and off Windows.
+ * `pid` names must have been created at `created`, and a descendant must still be the child of the process that
+ * started it, by its own parent id, and have started after it, by the kernel's order of process starts rather than by
+ * a clock. Returns how many were ended, or `null` where `pid` does not name that process (it is gone, is another
+ * process, or this process may not end it), and off Windows.
  */
 export declare function terminateProcessCreatedAt(pid: number, created: string, descendants: boolean): number | null
 

@@ -340,7 +340,10 @@ function sameDrawnAtPointer(a: PointerFrame | undefined, b: PointerFrame): boole
 		a !== undefined &&
 		(a.hint === b.hint ||
 			(a.hint?.kind === "key" && b.hint?.kind === "key" && a.hint.key === b.hint.key) ||
-			(a.hint?.kind === "command" && b.hint?.kind === "command" && a.hint.command === b.hint.command)) &&
+			(a.hint?.kind === "command" &&
+				b.hint?.kind === "command" &&
+				a.hint.command === b.hint.command &&
+				a.hint.route === b.hint.route)) &&
 		a.drawn.length === b.drawn.length &&
 		a.drawn.every((item, index) => item === b.drawn[index]) &&
 		samePointerGeometry(a, b)
