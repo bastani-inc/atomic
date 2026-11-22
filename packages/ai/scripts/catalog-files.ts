@@ -1,12 +1,12 @@
 import {
 	chmodSync,
-	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
-	statSync,
+	type Stats,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -20,13 +20,28 @@ const RENAME_TRIES = 50;
 const RENAME_RETRY_MS = 40;
 const RETRIED_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
+function lstatIfExists(path: string): Stats | undefined {
+	try {
+		return lstatSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/** Whether `path` exists as a regular file (not a directory or symlink). */
+export function isRegularFile(path: string): boolean {
+	return lstatIfExists(path)?.isFile() === true;
+}
+
 /**
  * Replaces `to` with `from` in one rename, keeping the permissions of the file it replaces, so a process reading `to`
  * meanwhile reads all of the old file or all of the new one. A file another program keeps open past the retries is
  * written in place instead, as the generator always did.
  */
 export function replaceFile(from: string, to: string): void {
-	if (existsSync(to)) chmodSync(from, statSync(to).mode);
+	const existing = lstatIfExists(to);
+	if (existing?.isFile()) chmodSync(from, existing.mode);
 	for (let attempt = 1; ; attempt++) {
 		try {
 			renameSync(from, to);
@@ -57,7 +72,12 @@ export function moveChangedFiles(staged: string, target: string): string[] {
 	for (const name of names) {
 		const from = join(staged, name);
 		const to = join(target, name);
-		if (existsSync(to) && readFileSync(from).equals(readFileSync(to))) continue;
+		const existing = lstatIfExists(to);
+		if (existing?.isFile()) {
+			if (readFileSync(from).equals(readFileSync(to))) continue;
+		} else if (existing !== undefined) {
+			removeCatalogFile(to);
+		}
 		replaceFile(from, to);
 	}
 	return names;

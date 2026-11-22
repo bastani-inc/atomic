@@ -20,10 +20,16 @@ export class ProgramStatusReporter {
 
 	private readonly getTerminal: () => Terminal;
 	private readonly getSessionName: () => string | undefined;
+	private readonly canReport: () => boolean;
 
-	constructor(getTerminal: () => Terminal, getSessionName: () => string | undefined) {
+	constructor(
+		getTerminal: () => Terminal,
+		getSessionName: () => string | undefined,
+		canReport: () => boolean = () => true,
+	) {
 		this.getTerminal = getTerminal;
 		this.getSessionName = getSessionName;
+		this.canReport = canReport;
 	}
 
 	handleEvent(event: AgentSessionEvent | JsonAgentSessionEvent): void {
@@ -98,6 +104,7 @@ export class ProgramStatusReporter {
 	}
 
 	report(): void {
+		if (!this.canReport()) return;
 		const status: ProgramStatus = { ...this.currentStatus(), app: APP_NAME };
 		const key = JSON.stringify(status);
 		if (key === this.lastReport) return;

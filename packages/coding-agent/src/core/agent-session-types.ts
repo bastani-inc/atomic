@@ -359,6 +359,11 @@ export interface PromptOptions {
 	 * message by it when the session reports taking it from the queue.
 	 */
 	queuedMessageId?: string;
+	/**
+	 * @internal Ephemeral send id linking a host prompt submission to its relayed user `message_start` so the host
+	 * consumes or replaces that exact submission's echo even when an input hook rewrites it to match another send.
+	 */
+	originSendId?: string;
 }
 
 export interface ModelMutationOptions {

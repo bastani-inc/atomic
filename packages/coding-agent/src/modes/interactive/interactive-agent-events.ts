@@ -320,7 +320,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			this.pendingTools.clear();
 			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
-			if (this.settingsManager.getShowTerminalProgress()) {
+			if (!this.isShuttingDown && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(true);
 			}
 			// Restore main escape handler if retry handler is still active
@@ -621,7 +621,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			this.workingRunMeter.stop();
 			this.workingMessage = undefined;
 			const compactionInProgress = this.compactionActive;
-			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
+			if (!this.isShuttingDown && !compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
 			if (this.loadingAnimation) this.stopWorkingLoader();
@@ -660,7 +660,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 		}
 
 		case "compaction_start": {
-			if (this.settingsManager.getShowTerminalProgress()) {
+			if (!this.isShuttingDown && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(true);
 			}
 			// Release any loader left behind by an earlier start before mounting a
@@ -710,7 +710,12 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				this.manualCompactionTakeoverPending = false;
 			}
 			const resumesActiveRun = event.midTurn && !event.aborted && !event.errorMessage && !manualTakeoverPending;
-			if (!manualTakeoverPending && !resumesActiveRun && this.settingsManager.getShowTerminalProgress()) {
+			if (
+				!this.isShuttingDown &&
+				!manualTakeoverPending &&
+				!resumesActiveRun &&
+				this.settingsManager.getShowTerminalProgress()
+			) {
 				this.ui.terminal.setProgress(false);
 			}
 			if (!manualTakeoverPending && this.autoCompactionEscapeHandlerSaved) {

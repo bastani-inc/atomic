@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
@@ -46,8 +47,15 @@ const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
 interface HostEnding {
 	/** SIGTERM signals received. Only a repeated one ends every child at once. */
 	sigterms: number;
-	/** Set once the terminal is gone: the shutdown restores nothing and Atomic exits with status 129. */
+	/**
+	 * Set once the terminal is gone: the shutdown restores nothing and, unless a deliberate quit has already finished
+	 * disposing the session, Atomic exits with status 129.
+	 */
 	terminalLost: boolean;
+	/** Set once standard output itself reported a dead-terminal error, so nothing more is written to it. */
+	stdoutLost: boolean;
+	/** Set once a deliberate quit finished disposing the session and only looks up and writes its resume hint. */
+	quitDisposed: boolean;
 	/** Set once the Windows console is closed: Atomic exits with {@link CONSOLE_CLOSED_EXIT_CODE} instead of 129. */
 	consoleClosed: boolean;
 	/**
@@ -75,6 +83,8 @@ function hostEnding(mode: InteractiveModeBase): HostEnding {
 		ending = {
 			sigterms: 0,
 			terminalLost: false,
+			stdoutLost: false,
+			quitDisposed: false,
 			consoleClosed: false,
 			lostExitDeciding: false,
 			terminalLoss: loss.promise,
@@ -120,6 +130,9 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
 	if (ending.terminalLost) return;
 	ending.terminalLost = true;
 	ending.settleTerminalLoss();
+	// Once a deliberate quit has finished disposing its session, a dead terminal no longer ends processes or arms the
+	// lost-terminal 129 cut; a Windows console close still arms its own bound above.
+	if (ending.quitDisposed) return;
 	spareEngineFromKill(mode);
 	killSupervisedProcessTrees();
 	setTimeout(() => lostTerminalBoundEnded(mode), TERMINAL_LOST_SHUTDOWN_MS);
@@ -325,11 +338,17 @@ InteractiveModeBase.prototype.shutdown = async function (
 	await Promise.race([this.exitOutputWritten, ending.terminalLoss]);
 	await disposeRuntime(this, false);
 	if (ending.terminalLost) return exitAsTerminalLost(ending);
+	ending.quitDisposed = true;
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
-	// The terminal can be lost while the hint is being looked up; then it is not written.
-	if (ending.terminalLost) return exitAsTerminalLost(ending);
-	if (resumeCommand) {
-		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
+	// On Windows, a console close or session end during the hint lookup still skips the write and keeps its status.
+	// Otherwise, once a deliberate quit has finished disposing its session, a dead terminal does not turn it into 129.
+	if (ending.consoleClosed) return exitAsTerminalLost(ending);
+	if (resumeCommand && !ending.stdoutLost) {
+		try {
+			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
+		} catch (error) {
+			if (!isDeadTerminalError(error)) throw error;
+		}
 	}
 	process.exit(0);
 };
@@ -460,15 +479,16 @@ function registerEndingHandlers(mode: InteractiveModeBase, cleanups: Array<() =>
 		cleanups.push(() => process.off(signal, handler));
 	}
 
-	const terminalErrorHandler = (error: Error) => {
-		if (!isDeadTerminalError(error)) {
-			// Atomic's exit is already decided at the lost terminal's bound, and comes within its turns.
-			if (hostEnding(mode).lostExitDeciding) return;
-			throw error;
-		}
-		mode.handleTerminalLost();
-	};
 	for (const stream of [process.stdin, process.stdout, process.stderr]) {
+		const terminalErrorHandler = (error: Error) => {
+			if (!isDeadTerminalError(error)) {
+				// Atomic's exit is already decided at the lost terminal's bound, and comes within its turns.
+				if (hostEnding(mode).lostExitDeciding) return;
+				throw error;
+			}
+			if (stream === process.stdout) hostEnding(mode).stdoutLost = true;
+			mode.handleTerminalLost();
+		};
 		stream.on("error", terminalErrorHandler);
 		cleanups.push(() => stream.off("error", terminalErrorHandler));
 	}
@@ -610,6 +630,7 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 			route: "queue",
 			// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
 			showAsQueued: !this.isExtensionCommand(text),
+			originSendId: randomUUID(),
 		});
 		if (submitted.kind === "failed") throw submitted.error;
 		if (submitted.kind === "lost") {
