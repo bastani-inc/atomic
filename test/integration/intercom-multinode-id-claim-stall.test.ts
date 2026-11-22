@@ -5,6 +5,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
+import {
+	PRESENCE_REGISTRATION_BOUND_MS,
+	SESSION_ID_CLAIM_BOUND_MS,
+} from "../../packages/intercom/broker/multinode-router.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
 	SHARED_LEASES_TABLE,
@@ -33,6 +37,19 @@ const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTI
  * wait.
  */
 const BROKER_STALL_MS = 8_200;
+/**
+ * A registration that waits out both its claim and its presence bound leaves its client this much of its wait for
+ * everything else: the broker's store I/O, message handling and IPC, which take far longer on a loaded runner.
+ */
+const REAL_WORK_HEADROOM_MS = 2_000;
+/** A claim stalled just past its own bound, so that it gives up on its deadline when the broker runs again. */
+const PAST_CLAIM_BOUND_STALL_MS = SESSION_ID_CLAIM_BOUND_MS + 100;
+/**
+ * How long the broker is busy before it accepts a registration that then stalls past its claim bound and waits its whole
+ * presence bound: what the client's wait leaves of those and of the real work's headroom.
+ */
+const BUSY_BEFORE_ACCEPT_MS =
+	BROKER_CONNECT_TIMEOUT_MS - PAST_CLAIM_BOUND_STALL_MS - PRESENCE_REGISTRATION_BOUND_MS - REAL_WORK_HEADROOM_MS;
 const TEST_TIMEOUT_MS = 60_000;
 
 let harness: TwoBrokerHarness;
@@ -312,11 +329,11 @@ test(
 
 		// The client starts its 10 s wait while the broker is busy with an unrelated registration.
 		const other = randomUUID();
-		harness.stallIdClaim(other, 1_450);
+		harness.stallIdClaim(other, BUSY_BEFORE_ACCEPT_MS);
 		const busy = harness.connect("a", unique("other"), { returnAddress: other, preferredSessionId: randomUUID() });
 		try {
 			await vi.waitFor(() => assert.ok(harness.idClaimStalled(other)), { timeout: 15_000, interval: 10 });
-			harness.stallIdClaim(original.returnAddress, 2_800);
+			harness.stallIdClaim(original.returnAddress, PAST_CLAIM_BOUND_STALL_MS);
 			harness.holdRegistration(original.name);
 			const back = await harness.connect("a", original.name, {
 				returnAddress: original.returnAddress,
