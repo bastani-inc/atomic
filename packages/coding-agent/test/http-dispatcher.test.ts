@@ -308,7 +308,7 @@ describe("http dispatcher", () => {
 		const misnamed = await proxyFor(issue("proxy.test"));
 		const request = async (proxyPort: number) => {
 			const dispatcher = new undici.EnvHttpProxyAgent({
-				...createHttpDispatcherOptions(60_000),
+				...(createHttpDispatcherOptions(60_000) as ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0]),
 				httpsProxy: `https://localhost:${proxyPort}`,
 				noProxy: "none.invalid",
 				proxyTls: { ca: ca.cert },
