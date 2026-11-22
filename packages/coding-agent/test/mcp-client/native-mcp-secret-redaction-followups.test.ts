@@ -1059,4 +1059,73 @@ describe("mcp secret redaction follow-up gaps", () => {
 		assert.equal(tokenErr.message.includes(shortTok), false, tokenErr.message);
 		assert.equal(tokenErr.message.includes(shortPgPass), false, tokenErr.message);
 	});
+
+	it("preserves MCP Basic superset, OSC/marker safety, and long-input password boundaries while reusing shared core helpers", () => {
+		const latin1Basic = Buffer.from("user:caf\xe9", "latin1").toString("base64");
+		const delBasic = Buffer.from("user:p\x7fass", "latin1").toString("base64");
+		const nonColonBasic = Buffer.from("opaque-token-without-colon").toString("base64");
+		const unpaddedUtf8 = Buffer.from("a:bc", "utf8").toString("base64").replace(/=+$/u, "");
+
+		for (const sample of [
+			`rejected Basic ${latin1Basic}`,
+			`rejected Basic ${delBasic}`,
+			`rejected Basic ${nonColonBasic}`,
+			`rejected Basic ${unpaddedUtf8}`,
+			"rejected Basic opaqueBasicToken9988",
+			"rejected Basic opaqueBasicToken9988!",
+			"rejected Basic token12345678",
+			"rejected Basic a_b-c1234@host",
+			"rejected Basic token123=abc",
+			"rejected Basic Y2xpZW50OnNlY3JldA==?foo",
+			"rejected Basic Y2xpZW50OnNlY3Jld",
+			"rejected Basic Y2xpZW50OnNlY3JldDE",
+			"rejected Basic Y2xpZW50OnNlY3JldDF",
+			"rejected Basic a+bc",
+			"rejected \x1b[31mBasic\x1b[0m opaqueBasicToken9988",
+		]) {
+			const out = redactOAuthErrorText(sample);
+			assert.equal(out.includes("[redacted]"), true, `${sample} => ${out}`);
+			assert.equal(out.includes("opaqueBasicToken9988"), false, `${sample} => ${out}`);
+			assert.equal(out.includes(latin1Basic), false, `${sample} => ${out}`);
+			assert.equal(out.includes(delBasic), false, `${sample} => ${out}`);
+			assert.equal(out.includes(nonColonBasic), false, `${sample} => ${out}`);
+			assert.equal(out.includes("token12345678"), false, `${sample} => ${out}`);
+			assert.equal(out.includes("a_b-c1234"), false, `${sample} => ${out}`);
+			assert.equal(out.includes("Y2xpZW50OnNlY3Jld"), false, `${sample} => ${out}`);
+			assert.equal(redactOAuthErrorText(out), out, `idempotence failed on ${sample}`);
+		}
+
+		// Assigned Basic values with short unpadded Base64 prefix redact the whole value without slicing at `@`/`!`.
+		assert.equal(
+			redactOAuthErrorText(`Authorization: Basic ${unpaddedUtf8}@secretTail`),
+			"Authorization: [redacted]",
+		);
+		assert.equal(redactOAuthErrorText(`auth=Basic ${unpaddedUtf8}!secretTail`).includes("secretTail"), false);
+
+		// Non-secret Basic prose and short non-UTF-8 words remain visible.
+		for (const kept of ["Basic auth failed", "Basic mode enabled", "Basic text", "Basic Oolong"]) {
+			assert.equal(redactOAuthErrorText(kept), kept, kept);
+		}
+
+		// Pre-masked secrets embedded inside Bearer or query values keep [redacted] markers uncorrupted.
+		const preMaskedBearer = redactOAuthErrorText("Bearer secret1secret2 tail", ["secret2"]);
+		assert.equal(preMaskedBearer, "[redacted][redacted] tail");
+		assert.equal(redactOAuthErrorText(preMaskedBearer, ["secret2"]), preMaskedBearer);
+		const preMaskedQuery = redactOAuthErrorText("https://api.example.com/cb?token=secret1secret2&ok=1", ["secret2"]);
+		assert.equal(preMaskedQuery, "https://api.example.com/cb?token=[redacted][redacted]&ok=1");
+		assert.equal(redactOAuthErrorText(preMaskedQuery, ["secret2"]), preMaskedQuery);
+
+		// OSC payload inside a redacted MCP span is never exposed.
+		const oscHidden = redactOAuthErrorText("Bearer foo\x1b]0;secretInOsc\x07bar");
+		assert.equal(oscHidden.includes("secretInOsc"), false, oscHidden);
+		assert.equal(oscHidden, "[redacted]");
+
+		// Long (>2 KiB) multi-line MCP error bodies preserve password= boundaries and keep following params visible.
+		const prefix = "a\n".repeat(1200);
+		const longNext = redactOAuthErrorText(`${prefix}foo password=secret99&other=visible`);
+		assert.equal(longNext.includes("secret99"), false);
+		assert.equal(longNext.endsWith("foo password=[redacted]&other=visible"), true, longNext.slice(-60));
+		const longEqEq = redactOAuthErrorText(`${prefix}password==secret99`);
+		assert.equal(longEqEq.includes("secret99"), false);
+	});
 });

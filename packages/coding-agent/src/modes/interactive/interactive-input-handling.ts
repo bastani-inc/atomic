@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { bindBundledHintCommands, isHintActivation, isKeyRelease, Text } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
@@ -48,7 +49,13 @@ import { cachedExactModelMatch } from "./interactive-model-routing.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, mainSteering } from "./interactive-queueing.ts";
-import { followStartedRunEcho } from "./interactive-render-chat.ts";
+import {
+	beginPendingOriginSend,
+	followStartedRunEcho,
+	noteDeferredEchoOrigin,
+	taggedUserMessagesShownCount,
+	untaggedUserMessagesShownSince,
+} from "./interactive-render-chat.ts";
 import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { screenHoldOf } from "./screen-hold.ts";
@@ -755,8 +762,11 @@ async function submitToMainChat(
 			// starts, before or after the run's first events. If the session already showed the message, echoing it again
 			// here would show it twice (#4272). It shows the message as sent, which an `input` hook may have rewritten
 			// (#4277), so any message it showed meanwhile counts.
+			const originSendId = randomUUID();
+			const trackOrigin = beginPendingOriginSend(this, originSendId);
 			const shownBefore = this.userMessagesShownBySession;
-			const startedEcho = followStartedRunEcho(this, text, { sendShowsWorkingRow: false });
+			const taggedBefore = taggedUserMessagesShownCount(this);
+			const startedEcho = followStartedRunEcho(this, text, { sendShowsWorkingRow: false, originSendId });
 			const held = extensionCommand ? holdForExtensionCommand(this) : undefined;
 			let submitted: SteeringSubmitResult;
 			try {
@@ -764,19 +774,20 @@ async function submitToMainChat(
 					route: "queue",
 					// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
 					showAsQueued: !extensionCommand,
+					originSendId,
 					onAnswered: (success, disposition) => {
-						const echoed =
-							success &&
-							disposition === "started" &&
-							!text.startsWith("/") &&
-							this.userMessagesShownBySession === shownBefore;
+						const alreadyShown =
+							trackOrigin.wasShown() || untaggedUserMessagesShownSince(this, shownBefore, taggedBefore) !== 0;
+						const echoed = success && disposition === "started" && !text.startsWith("/") && !alreadyShown;
 						const echo = echoed ? this.renderDeferredUserInput(text) : undefined;
+						if (echo !== undefined) noteDeferredEchoOrigin(this, text, echo, originSendId, taggedBefore);
 						if (echoed) this.expectStartedUserInput(text, shownBefore, echo);
 						// The run's own events decide this echo (#5135), however they and this answer are ordered.
 						startedEcho.answer(echoed, echo);
 					},
 				});
 			} finally {
+				trackOrigin.dispose();
 				startedEcho.close();
 				held?.settle();
 			}

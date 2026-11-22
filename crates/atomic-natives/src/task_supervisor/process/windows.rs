@@ -12,10 +12,10 @@ use windows_sys::Win32::{
 	System::{
 		JobObjects::{
 			AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
-			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-			JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
-			JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-			TerminateJobObject,
+			JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+			JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+			QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 		},
 		Pipes::{CreatePipe, PeekNamedPipe},
 		Threading::{
@@ -29,15 +29,29 @@ use windows_sys::Win32::{
 	},
 };
 
-pub(super) struct ContainmentJob(OwnedHandle);
+pub(super) struct ContainmentJob {
+	handle: OwnedHandle,
+	allow_breakaway: bool,
+}
 impl ContainmentJob {
 	pub(super) fn create() -> io::Result<Self> {
+		Self::create_with_breakaway(false)
+	}
+	pub(super) fn create_allowing_breakaway() -> io::Result<Self> {
+		Self::create_with_breakaway(true)
+	}
+	fn create_with_breakaway(allow_breakaway: bool) -> io::Result<Self> {
 		let job = unsafe { CreateJobObjectW(null(), null()) };
 		if job.is_null() {
 			return Err(io::Error::last_os_error());
 		}
-		let job = Self(unsafe { OwnedHandle::from_raw_handle(job) });
-		job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)?;
+		let job = Self { handle: unsafe { OwnedHandle::from_raw_handle(job) }, allow_breakaway };
+		let flags = if allow_breakaway {
+			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+		} else {
+			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+		};
+		job.limit(flags)?;
 		Ok(job)
 	}
 	fn limit(&self, flags: JOB_OBJECT_LIMIT) -> io::Result<()> {
@@ -45,7 +59,7 @@ impl ContainmentJob {
 		limits.BasicLimitInformation.LimitFlags = flags;
 		if unsafe {
 			SetInformationJobObject(
-				raw(&self.0),
+				raw(&self.handle),
 				JobObjectExtendedLimitInformation,
 				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
 				std::mem::size_of_val(&limits) as u32,
@@ -57,10 +71,10 @@ impl ContainmentJob {
 		Ok(())
 	}
 	pub(super) fn release(self) -> io::Result<()> {
-		self.limit(0)
+		self.limit(if self.allow_breakaway { JOB_OBJECT_LIMIT_BREAKAWAY_OK } else { 0 })
 	}
 	pub(super) fn assign(&self, process: HANDLE) -> io::Result<()> {
-		if unsafe { AssignProcessToJobObject(raw(&self.0), process) } == 0 {
+		if unsafe { AssignProcessToJobObject(raw(&self.handle), process) } == 0 {
 			Err(io::Error::last_os_error())
 		} else {
 			Ok(())
@@ -70,7 +84,7 @@ impl ContainmentJob {
 		let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
 		if unsafe {
 			QueryInformationJobObject(
-				raw(&self.0),
+				raw(&self.handle),
 				JobObjectBasicAccountingInformation,
 				(&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
 				std::mem::size_of_val(&info) as u32,
@@ -83,7 +97,7 @@ impl ContainmentJob {
 		Ok(info.ActiveProcesses)
 	}
 	pub(super) fn terminate(&self) -> io::Result<()> {
-		if unsafe { TerminateJobObject(raw(&self.0), 1) } == 0 {
+		if unsafe { TerminateJobObject(raw(&self.handle), 1) } == 0 {
 			Err(io::Error::last_os_error())
 		} else {
 			Ok(())

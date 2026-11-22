@@ -12,6 +12,12 @@ import {
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
+import {
+	COMMITTED_WIDGET_PREVIEW_GATE,
+	canPaintWidgetFrame,
+	classifyWidgetFrame,
+	type WidgetPreviewGate,
+} from "../interactive/agent-view/view-preview-protocol.js";
 import { awaitFirstContent, PROMPT_SLOT_HOLD_MS } from "../interactive/components/prompt-slot.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { AGENT_PANEL_WIDGET_KEY } from "../rpc/agent-panel-bridge.ts";
@@ -141,11 +147,68 @@ class RemoteComponent implements Component {
 	 */
 	private hiddenUpTo: number | undefined;
 	private hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Speculative preview gate for engine widgets (the agent panel during `panelOnView`). */
+	private previewGate: WidgetPreviewGate = COMMITTED_WIDGET_PREVIEW_GATE;
+	/** Preview sequence number that produced the currently buffered `lines`, when staged/unpromoted. */
+	private framePreviewSeq: number | undefined;
+
+	private clearBufferedFrame(): void {
+		this.lines = [];
+		this.frame = undefined;
+		this.rowKeys = undefined;
+		this.layout = undefined;
+		this.scrollRequest = undefined;
+		this.framePreviewSeq = undefined;
+	}
+
+	/** Stage a speculative preview so matching frames buffer for `watchWidgetFrames` without painting live until commit. */
+	stagePreview(previewSeq: number, tagged: boolean): void {
+		if (this.disposed) return;
+		this.showFramesAgain();
+		if (this.framePreviewSeq !== undefined && this.framePreviewSeq !== previewSeq) {
+			this.clearBufferedFrame();
+			this.dirty = true;
+		}
+		this.previewGate = { kind: "staged", previewSeq, tagged };
+	}
+
+	/** Promote a staged preview buffer to live visibility on commit (0-frame gap). */
+	commitPreview(previewSeq: number): void {
+		if (this.disposed) return;
+		this.showFramesAgain();
+		this.previewGate = { kind: "committed", promotedSeq: previewSeq };
+		if (this.framePreviewSeq === previewSeq) {
+			this.framePreviewSeq = undefined;
+		} else if (this.framePreviewSeq !== undefined) {
+			this.clearBufferedFrame();
+			this.dirty = true;
+		}
+	}
+
+	/** Cancel/revoke a staged speculative preview so its buffered and late frames can never paint. */
+	cancelPreview(legacyHideCapMs?: number): void {
+		if (this.disposed) return;
+		this.previewGate = COMMITTED_WIDGET_PREVIEW_GATE;
+		if (this.framePreviewSeq !== undefined || legacyHideCapMs !== undefined) {
+			this.clearBufferedFrame();
+			this.dirty = true;
+		}
+		if (legacyHideCapMs !== undefined) this.hideFramesUntilFresh(legacyHideCapMs);
+		else this.requestRender();
+	}
+
+	/** Stop accepting late preview frames after leaving the view that promoted a preview. */
+	clearPromotedPreview(): void {
+		if (this.previewGate.kind === "committed" && this.previewGate.promotedSeq !== undefined) {
+			this.previewGate = COMMITTED_WIDGET_PREVIEW_GATE;
+		}
+	}
 
 	/** Shows nothing until a frame asked for from now on comes, or `capMs` passes. */
 	hideFramesUntilFresh(capMs: number): void {
 		if (this.disposed) return;
 		this.hiddenUpTo = this.requestId;
+		this.clearBufferedFrame();
 		this.dirty = true;
 		clearTimeout(this.hiddenTimer);
 		this.hiddenTimer = setTimeout(() => {
@@ -186,7 +249,7 @@ class RemoteComponent implements Component {
 		// arrives, the previous frame may be wrapped for an older terminal
 		// width. Clamp so a resize never replays overflowing lines (pi-tui
 		// crashes on any rendered line wider than the terminal).
-		if (this.hiddenUpTo !== undefined) {
+		if (!canPaintWidgetFrame(this.previewGate, this.framePreviewSeq, this.hiddenUpTo !== undefined)) {
 			this.paintedFrame = undefined;
 			this.paintedRowKeys = undefined;
 			this.paintedFrameLayout = undefined;
@@ -389,15 +452,35 @@ class RemoteComponent implements Component {
 		frame?: number,
 		rowKeys?: readonly string[],
 		layout?: TranscriptFrameLayout,
+		previewSeq?: number,
 	): void {
 		if (this.disposed || requestId < this.appliedRequestId) return;
+		const decision = classifyWidgetFrame(this.previewGate, previewSeq);
+		if (decision === "drop") {
+			if (requestId === this.requestId) {
+				this.dirty = true;
+				this.requestRender();
+			}
+			return;
+		}
 		this.appliedRequestId = requestId;
+		if (decision === "accept-staged") {
+			this.lines = lines;
+			this.frame = frame;
+			this.rowKeys = rowKeys;
+			this.layout = layout;
+			this.scrollRequest = scrollRequest;
+			this.framePreviewSeq = this.previewGate.kind === "staged" ? this.previewGate.previewSeq : previewSeq;
+			this.onFrame?.();
+			return;
+		}
 		if (this.hiddenUpTo !== undefined && requestId > this.hiddenUpTo) this.showFramesAgain();
 		this.lines = lines;
 		this.frame = frame;
 		this.rowKeys = rowKeys;
 		this.layout = layout;
 		this.scrollRequest = scrollRequest;
+		this.framePreviewSeq = undefined;
 		this.onFrame?.();
 		let answeredKey = false;
 		for (const inputId of [...this.answeredInputs]) {
@@ -541,6 +624,31 @@ const controllers = new WeakMap<object, RemoteComponentController>();
 /** See RemoteComponentController.hideWidgetFramesUntilFresh. */
 export function hideWidgetFramesUntilFresh(runtime: object, widgetKey: string, capMs: number): void {
 	controllers.get(runtime)?.hideWidgetFramesUntilFresh(widgetKey, capMs);
+}
+
+/** Stage a speculative preview gate for `widgetKey` until commit or cancel. */
+export function stageWidgetPreview(runtime: object, widgetKey: string, previewSeq: number, tagged: boolean): void {
+	controllers.get(runtime)?.stageWidgetPreview(widgetKey, previewSeq, tagged);
+}
+
+/** Promote a staged preview buffer for `widgetKey` so it paints immediately on commit. */
+export function commitWidgetPreview(runtime: object, widgetKey: string, previewSeq: number): void {
+	controllers.get(runtime)?.commitWidgetPreview(widgetKey, previewSeq);
+}
+
+/** Revoke a staged speculative preview for `widgetKey` so its buffered and late frames never paint. */
+export function cancelWidgetPreview(runtime: object, widgetKey: string, legacyHideCapMs?: number): void {
+	controllers.get(runtime)?.cancelWidgetPreview(widgetKey, legacyHideCapMs);
+}
+
+/** Clear `promotedSeq` for `widgetKey` once the screen leaves the view that promoted a preview. */
+export function clearPromotedWidgetPreview(runtime: object, widgetKey: string): void {
+	controllers.get(runtime)?.clearPromotedWidgetPreview(widgetKey);
+}
+
+/** Reset preview gate and hide state for `widgetKey` across engine generation replacement. */
+export function resetWidgetPreview(runtime: object, widgetKey: string): void {
+	controllers.get(runtime)?.resetWidgetPreview(widgetKey);
 }
 
 export function watchWidgetFrames(runtime: object, widgetKey: string): { drawn(): Promise<void>; stop(): void } {
@@ -725,7 +833,42 @@ export class RemoteComponentController {
 			if (record.widgetKey === widgetKey) record.component.hideFramesUntilFresh(capMs);
 	}
 
+	stageWidgetPreview(widgetKey: string, previewSeq: number, tagged: boolean): void {
+		this.hideOpening.delete(widgetKey);
+		this.previewGates.set(widgetKey, { kind: "staged", previewSeq, tagged });
+		for (const record of this.mounted.values())
+			if (record.widgetKey === widgetKey) record.component.stagePreview(previewSeq, tagged);
+	}
+
+	commitWidgetPreview(widgetKey: string, previewSeq: number): void {
+		this.hideOpening.delete(widgetKey);
+		this.previewGates.set(widgetKey, { kind: "committed", promotedSeq: previewSeq });
+		for (const record of this.mounted.values())
+			if (record.widgetKey === widgetKey) record.component.commitPreview(previewSeq);
+	}
+
+	cancelWidgetPreview(widgetKey: string, legacyHideCapMs?: number): void {
+		this.previewGates.delete(widgetKey);
+		if (legacyHideCapMs !== undefined) this.hideOpening.set(widgetKey, performance.now() + legacyHideCapMs);
+		for (const record of this.mounted.values())
+			if (record.widgetKey === widgetKey) record.component.cancelPreview(legacyHideCapMs);
+	}
+
+	clearPromotedWidgetPreview(widgetKey: string): void {
+		const gate = this.previewGates.get(widgetKey);
+		if (gate?.kind === "committed" && gate.promotedSeq !== undefined) this.previewGates.delete(widgetKey);
+		for (const record of this.mounted.values())
+			if (record.widgetKey === widgetKey) record.component.clearPromotedPreview();
+	}
+
+	resetWidgetPreview(widgetKey: string): void {
+		this.previewGates.delete(widgetKey);
+		this.hideOpening.delete(widgetKey);
+		for (const record of this.mounted.values()) if (record.widgetKey === widgetKey) record.component.cancelPreview();
+	}
+
 	private readonly hideOpening = new Map<string, number>();
+	private readonly previewGates = new Map<string, WidgetPreviewGate>();
 
 	/** Whether a widget open under `widgetKey` has not drawn its first frame yet. */
 	widgetWithoutFrame(widgetKey: string): boolean {
@@ -762,6 +905,8 @@ export class RemoteComponentController {
 	 * host mounts alone: the TUI is already stopping and must not repaint.
 	 */
 	private disposeAll(reason: "generation-lost" | "host-shutdown"): void {
+		this.previewGates.clear();
+		this.hideOpening.clear();
 		for (const stop of [...this.panelReturns]) stop();
 		// Its engine closed it already, and a replacement engine reuses component ids: no message about it.
 		this.releaseRetiredPanel(undefined, false);
@@ -818,6 +963,7 @@ export class RemoteComponentController {
 					message.frame,
 					message.rowKeys,
 					message.layout,
+					message.previewSeq,
 				);
 				if (record?.widgetKey !== undefined) this.checkWidgetFrames();
 				// The view the retired panel gave way to draws now: the panel leaves with the same paint.
@@ -918,6 +1064,12 @@ export class RemoteComponentController {
 			});
 			for (const watch of widgetFrameWatches.get(this.runtime) ?? [])
 				if (watch.widgetKey === widgetKey) watch.opened = true;
+			const previewGate = this.previewGates.get(widgetKey);
+			if (previewGate?.kind === "staged") {
+				component.stagePreview(previewGate.previewSeq, previewGate.tagged);
+			} else if (previewGate?.kind === "committed" && previewGate.promotedSeq !== undefined) {
+				component.commitPreview(previewGate.promotedSeq);
+			}
 			const hideFor = (this.hideOpening.get(widgetKey) ?? 0) - performance.now();
 			if (hideFor > 0) component.hideFramesUntilFresh(hideFor);
 			// The panel opened again replaces the one still showing.

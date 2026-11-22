@@ -251,6 +251,7 @@ export class InteractiveModeBase {
 	readonly programStatus = new ProgramStatusReporter(
 		() => this.ui.terminal,
 		() => this.sessionManager.getSessionName(),
+		() => !this.isShuttingDown && !this.terminalStopped,
 	);
 
 	resetTranscriptSelection(): void {
@@ -366,6 +367,12 @@ export class InteractiveModeBase {
 	version: string;
 
 	isInitialized = false;
+	/** Set while the TUI has started drawing and has not yet been stopped. */
+	tuiStarted = false;
+	/** Set once {@link stopInteractiveTui} has stopped the terminal, until a later start re-opens it. */
+	terminalStopped = false;
+	/** Set when an extension replaced the terminal title via `ctx.ui.setTitle`, until the default title is restored. */
+	extensionTitleActive = false;
 
 	onInputCallback?: (submission: InteractiveSubmission) => void;
 
@@ -741,6 +748,8 @@ export class InteractiveModeBase {
 			preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint",
 			writeInSlices: this.writeExitOutputInSlices,
 		});
+		this.tuiStarted = false;
+		this.terminalStopped = true;
 		if (this.writeExitOutputInSlices) this.exitOutputWritten = this.ui.whenStopped();
 		this.disposeMarkitDiagnosticSink();
 		this.disposeDeprecationWarningSink();
