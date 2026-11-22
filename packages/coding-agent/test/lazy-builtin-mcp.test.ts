@@ -6,7 +6,8 @@ import { afterEach, describe, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.js";
-import { hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
+import { createLazyBuiltinFactory, hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
+import { mcpLazyBuiltinSpec } from "../src/core/extensions/lazy-builtins/mcp.js";
 import { loadExtensionFromFactory, loadExtensions } from "../src/core/extensions/loader.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
@@ -123,12 +124,13 @@ describe("lazy builtin mcp", () => {
 			},
 		);
 		await runner1.emit({ type: "session_start", reason: "startup" });
-		assert.equal(dormantLoaded.extensions[0]!.handlers.has("before_agent_start"), false);
+		// MCP stayed dormant (no tool_call handler attached; before_agent_start is the fast-path guard).
+		assert.equal(dormantLoaded.extensions[0]!.handlers.has("tool_call"), false);
 		// Dormant mcp__* toolRenderer fallback works even without loading MCP.
 		assert.ok(runner1.resolveToolRenderers("mcp__docs__search", () => undefined));
 		await runner1.emit({ type: "session_shutdown", reason: "quit" });
 
-		// 2. Project .atomic/mcp.json exists -> activates on session_start and attaches before_agent_start!
+		// 2. Project .atomic/mcp.json exists -> activates on session_start and attaches tool_call!
 		mkdirSync(join(dir, ".atomic"), { recursive: true });
 		writeFileSync(join(dir, ".atomic", "mcp.json"), JSON.stringify({ mcpServers: {} }));
 		const activeLoaded = await loadExtensions([entryPath], dir);
@@ -172,7 +174,86 @@ describe("lazy builtin mcp", () => {
 			},
 		);
 		await runner2.emit({ type: "session_start", reason: "startup" });
-		assert.equal(activeLoaded.extensions[0]!.handlers.has("before_agent_start"), true);
+		assert.equal(activeLoaded.extensions[0]!.handlers.has("tool_call"), true);
 		await runner2.emit({ type: "session_shutdown", reason: "quit" });
+	});
+
+	test("before_agent_start activates for deferred project trust and does not shadow active MCP toolRenderer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-mcp-trust-"));
+		tempDirs.push(dir);
+		const agentDir = join(dir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(dir, ".atomic"), { recursive: true });
+		writeFileSync(join(dir, ".atomic", "mcp.json"), JSON.stringify({ mcpServers: {} }));
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+
+		let trusted = false;
+		let beforeAgentStartRan = 0;
+		const richRenderer = { renderCall: () => ({ invalidate() {}, render: () => ["rich"] }) };
+		const factory = createLazyBuiltinFactory(mcpLazyBuiltinSpec, async () => (pi) => {
+			pi.on("before_agent_start", () => {
+				beforeAgentStartRan += 1;
+			});
+			pi.registerToolRenderer((toolName, next) => {
+				const registered = next();
+				if (registered) return registered;
+				return toolName.startsWith("mcp__") ? richRenderer : undefined;
+			});
+		});
+
+		const runtime = createExtensionRuntime();
+		const ext = await loadExtensionFromFactory(factory, dir, createEventBus(), runtime, "builtin:mcp");
+		const runner = new ExtensionRunner(
+			[ext],
+			runtime,
+			dir,
+			SessionManager.inMemory(dir),
+			new ModelRegistry(AuthStorage.inMemory()),
+		);
+		runner.bindCore(
+			{
+				sendMessage: () => {},
+				sendMessages: () => {},
+				sendUserMessage: () => {},
+				appendEntry: async () => {},
+				setSessionName: async () => {},
+				getSessionName: () => undefined,
+				setLabel: async () => {},
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				setActiveTools: () => {},
+				refreshTools: () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => "off",
+				setThinkingLevel: async () => {},
+			},
+			{
+				getModel: () => undefined,
+				getScopedModels: () => [],
+				isIdle: () => true,
+				isProjectTrusted: () => trusted,
+				getSignal: () => undefined,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: () => {},
+				getSystemPrompt: () => "",
+			},
+		);
+		// Untrusted at session_start -> project .atomic/mcp.json ignored, stays dormant.
+		await runner.emit({ type: "session_start", reason: "startup" });
+		assert.equal(beforeAgentStartRan, 0);
+
+		// Project trust resolves -> before_agent_start activates MCP and runs its handler!
+		trusted = true;
+		await runner.emitBeforeAgentStart("hi", undefined, { cwd: dir });
+		assert.equal(beforeAgentStartRan, 1);
+
+		// Once active, MCP's rich toolRenderer is returned without being shadowed by the dormant fallback!
+		const resolved = runner.resolveToolRenderers("mcp__docs__search", () => undefined);
+		assert.equal(resolved, richRenderer);
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
 	});
 });
