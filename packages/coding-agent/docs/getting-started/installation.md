@@ -109,7 +109,7 @@ Package-manager installs run on Node.js; standalone release archives run on Bun.
 
 ### Git
 
-Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if it reports 2.30.0+. Otherwise, Atomic downloads a verified portable Git ([desktop/dugite-native](https://github.com/desktop/dugite-native)) just like `fd` and `rg`:
+Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if it reports 2.30.0+. Otherwise, Atomic downloads a verified portable Git ([desktop/dugite-native](https://github.com/desktop/dugite-native)) just like `fd` and `rg`. A few things differ with an older Git: SDK workspace bindings need Git 2.33+; before Git 2.33, a named subagent worktree whose creation was cut off (for example by a killed Atomic) is reported as busy after a 30-second wait rather than at once; and before Git 2.36, a worktree snapshot restore stops with an error when a worktree of its store has a path with a line break.
 
 - **Location:** `~/.atomic/agent/bin/git/` (or under `ATOMIC_CODING_AGENT_DIR`).
 - **When:** Downloaded at interactive startup or on the first git package install/update. Run `/tools` to check which Git Atomic uses and why.
