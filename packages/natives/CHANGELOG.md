@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed `blockRangeAt` (`BlockRange`, `BlockRangeOptions`) and its bundled `tree-sitter` language grammars, which have had no caller since 0.9.72 replaced hashline editing with exact-text editing.
+
 ### Added
 
 - `nativeVersion()`: the Atomic release the native module was built for (`0.0.0` from a source checkout).
+
+### Changed
+
+- Removing the unused `tree-sitter` grammars, dropping the unused `tokio` `net` feature, and compiling release builds with `codegen-units = 1` cuts the native module by about 72–74% (on Linux x64 glibc/musl from 18.2–18.4 MiB to 4.7 MiB unpacked and 3.6 MiB to 2.0 MiB compressed; on Windows x64 from 18.3 MiB to 5.2 MiB unpacked and 3.6 MiB to 2.1 MiB compressed) with no regression in search, glob, lock, or process-tree performance.
 
 ### Fixed
 
