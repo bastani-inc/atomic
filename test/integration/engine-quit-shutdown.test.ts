@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "vitest";
@@ -18,7 +19,7 @@ import {
 	stillRuns,
 	waitUntilGone,
 } from "../helpers/recorded-process.js";
-import { fileExistsSync, makeTempDirectory, moduleDir, readTextSync, sleep } from "../helpers/runtime.js";
+import { fileExistsSync, makeTempDirectory, moduleDir, readTextSync, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const PACKAGE = join(moduleDir(import.meta.url), "../../packages/coding-agent");
 const CLI_TIMEOUT_MS = 90_000;
@@ -552,6 +553,264 @@ describe.skipIf(process.platform === "win32")("a SIGHUP after a quit stopped the
 			CLI_TIMEOUT_MS + 10_000,
 		);
 	}
+});
+
+const POSIX_PTY_PYTHON =
+	process.platform !== "win32" &&
+	spawnSync("python3", ["-c", "import fcntl, pty, termios"], { stdio: "ignore" }).status === 0;
+
+/**
+ * Runs a child on a real POSIX controlling PTY so the test can close the PTY master mid-quit (without killing the
+ * child) or capture what the child writes after its shutdown handler starts.
+ */
+const POSIX_PTY_HARNESS = `
+import fcntl, json, os, pty, select, subprocess, sys, termios, time
+
+cfg = json.loads(open(sys.argv[1], "r", encoding="utf-8").read())
+master, slave = pty.openpty()
+
+def preexec():
+	os.setsid()
+	fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+proc = subprocess.Popen(
+	cfg["args"],
+	stdin=slave,
+	stdout=slave,
+	stderr=slave,
+	cwd=cfg["cwd"],
+	env=cfg["env"],
+	close_fds=True,
+	preexec_fn=preexec,
+)
+os.close(slave)
+os.set_blocking(master, False)
+
+def drain(buf):
+	while True:
+		try:
+			chunk = os.read(master, 4096)
+		except (BlockingIOError, OSError):
+			break
+		if not chunk:
+			break
+		buf.extend(chunk)
+
+def wait_file(path, timeout_s):
+	deadline = time.monotonic() + timeout_s
+	while not os.path.exists(path):
+		if proc.poll() is not None:
+			raise RuntimeError(f"child exited early ({proc.returncode}) waiting for {path}")
+		if time.monotonic() >= deadline:
+			raise TimeoutError(f"timed out waiting for {path}")
+		drain(pre_output)
+		time.sleep(0.02)
+
+pre_output = bytearray()
+post_output = bytearray()
+master_open = True
+try:
+	wait_file(cfg["started"], cfg["timeoutSec"])
+	# Wait for the prompt to render so /quit reaches the active editor.
+	prompt_deadline = time.monotonic() + cfg["timeoutSec"]
+	while "❯".encode("utf-8") not in pre_output:
+		if proc.poll() is not None:
+			raise RuntimeError(f"child exited early ({proc.returncode}) before prompt")
+		if time.monotonic() >= prompt_deadline:
+			raise TimeoutError("timed out waiting for prompt")
+		drain(pre_output)
+		time.sleep(0.02)
+	drain(pre_output)
+
+	os.write(master, b"/quit\\r")
+	wait_file(cfg["shutdown"], cfg["timeoutSec"])
+	# Drain any exit output written before the shutdown handler is released.
+	time.sleep(0.1)
+	drain(pre_output)
+
+	if cfg["closeMaster"]:
+		os.close(master)
+		master_open = False
+		# Give SIGHUP time to arrive while the shutdown handler is still running.
+		time.sleep(0.2)
+		open(cfg["released"], "w", encoding="utf-8").close()
+		exit_code = proc.wait(timeout=cfg["timeoutSec"])
+	else:
+		open(cfg["released"], "w", encoding="utf-8").close()
+		deadline = time.monotonic() + cfg["timeoutSec"]
+		while proc.poll() is None:
+			if time.monotonic() >= deadline:
+				raise TimeoutError("timed out waiting for child exit")
+			r, _, _ = select.select([master], [], [], 0.05)
+			if r:
+				drain(post_output)
+		drain(post_output)
+		exit_code = proc.returncode
+finally:
+	if master_open:
+		try:
+			os.close(master)
+		except OSError:
+			pass
+	if proc.poll() is None:
+		proc.kill()
+		proc.wait(timeout=5)
+
+result = {
+	"exitCode": exit_code,
+	"postOutput": post_output.decode("utf-8", errors="replace"),
+}
+open(cfg["result"], "w", encoding="utf-8").write(json.dumps(result))
+`;
+
+async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly closeMaster: boolean }): Promise<{
+	readonly exitCode: number;
+	readonly postOutput: string;
+	readonly calls: readonly ShutdownRecord[];
+}> {
+	const root = makeTempDirectory("atomic-pty-quit-close-");
+	const agentDir = join(root, "agent");
+	const project = join(root, "project");
+	const installed = join(root, "installed");
+	const sessionDir = join(root, "sessions");
+	const extension = join(root, "shutdown.ts");
+	const started = join(root, "started");
+	const shutdown = join(root, "shutdown.jsonl");
+	const released = join(root, "released");
+	const configFile = join(root, "harness.json");
+	const resultFile = join(root, "result.json");
+	try {
+		prepareAgentDir(agentDir, "http://127.0.0.1:9");
+		prepareInstalledPackage(PACKAGE, installed);
+		mkdirSync(project, { recursive: true });
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(
+			join(root, "fixture.json"),
+			JSON.stringify({
+				groupChild: false,
+				execGrandchild: false,
+				execLeftover: false,
+				execLeftoverTree: false,
+				fixtureSeconds: WINDOWS_FIXTURE_SECONDS,
+				waitForRelease: true,
+				pollMs: RECORD_POLL_MS,
+				handlerWorkMs: HANDLER_WORK_MS,
+				files: {
+					started,
+					shutdown,
+					groupChild: join(root, "group-child"),
+					execChild: join(root, "exec-child"),
+					execGo: join(root, "exec-go"),
+					released,
+				},
+			}),
+		);
+		writeFileSync(extension, SHUTDOWN_EXTENSION);
+		writeFileSync(
+			configFile,
+			JSON.stringify({
+				args: [
+					process.execPath,
+					join(PACKAGE, "dist/cli.js"),
+					"--offline",
+					"--no-mcp",
+					"--session-dir",
+					sessionDir,
+					...(options.inProcess ? ["--no-approve"] : []),
+					"-e",
+					extension,
+				],
+				cwd: project,
+				env: {
+					...process.env,
+					HOME: root,
+					USERPROFILE: root,
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+					ATOMIC_PACKAGE_DIR: installed,
+					ATOMIC_SKIP_VERSION_CHECK: "1",
+					ATOMIC_TELEMETRY: "0",
+					TERM: "xterm-256color",
+				},
+				started,
+				shutdown,
+				released,
+				result: resultFile,
+				closeMaster: options.closeMaster,
+				timeoutSec: Math.floor(CLI_TIMEOUT_MS / 1000),
+			}),
+		);
+		const harness = spawnProcess(["python3", "-c", POSIX_PTY_HARNESS, configFile], {
+			cwd: project,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const stderrChunks: string[] = [];
+		const reader = harness.stderr?.getReader();
+		const stderrDone = (async () => {
+			if (!reader) return;
+			const decoder = new TextDecoder();
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				stderrChunks.push(decoder.decode(value, { stream: true }));
+			}
+		})();
+		const code = await harness.exited;
+		await stderrDone;
+		assert.equal(code, 0, `PTY harness failed (${code}): ${stderrChunks.join("")}`);
+		const parsed = JSON.parse(readTextSync(resultFile, "utf8")) as { exitCode: number; postOutput: string };
+		const calls = fileExistsSync(shutdown)
+			? readTextSync(shutdown, "utf8")
+					.split("\n")
+					.filter((line) => line.length > 0)
+					.map((line) => JSON.parse(line) as ShutdownRecord)
+			: [];
+		return { ...parsed, calls };
+	} finally {
+		await removeTempRootReleasingBroker(root, agentDir);
+	}
+}
+
+describe.skipIf(!POSIX_PTY_PYTHON)("a PTY closing mid-quit", () => {
+	for (const inProcess of [false, true]) {
+		test(
+			`exits 0 after the session finishes shutting down${inProcess ? " in the in-process host" : ""}`,
+			async () => {
+				const ended = await runPosixPtyQuit({ inProcess, closeMaster: true });
+
+				assert.equal(ended.calls.length, 2, "the quit's shutdown handler ran to its end");
+				assert.equal(ended.calls[0]?.finished, false);
+				assert.equal(ended.calls[1]?.finished, true);
+				assert.equal(ended.exitCode, 0, "a deliberate /quit must still exit 0 after the PTY closes mid-quit");
+			},
+			CLI_TIMEOUT_MS + 10_000,
+		);
+	}
+
+	test(
+		"does not write a terminal title escape sequence after stopping the screen on a live PTY",
+		async () => {
+			const ended = await runPosixPtyQuit({ inProcess: false, closeMaster: false });
+
+			assert.equal(ended.exitCode, 0);
+			assert.equal(ended.calls.length, 2);
+			assert.ok(
+				ended.postOutput.includes("To resume this session:"),
+				`expected resume hint on live stdout: ${JSON.stringify(ended.postOutput)}`,
+			);
+			assert.equal(
+				ended.postOutput.includes("\x1b]0;"),
+				false,
+				`unexpected OSC 0 title write after stop: ${JSON.stringify(ended.postOutput)}`,
+			);
+			assert.equal(
+				ended.postOutput.includes("\x1b[?1049l"),
+				false,
+				`unexpected late alt-screen exit after stop: ${JSON.stringify(ended.postOutput)}`,
+			);
+		},
+		CLI_TIMEOUT_MS + 10_000,
+	);
 });
 
 test(

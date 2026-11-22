@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Deliberate `/quit` no longer exits with status `129` when the terminal closes after the session finishes shutting down; it skips terminal writes once stopped, prints the resume hint when standard output is still usable, treats dead-output writes as no-ops, and exits `0`.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

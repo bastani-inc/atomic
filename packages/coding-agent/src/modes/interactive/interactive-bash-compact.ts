@@ -179,7 +179,7 @@ InteractiveModeBase.prototype.stop = function (
 	this.disposeAgentView?.();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
-	if (this.settingsManager.getShowTerminalProgress()) {
+	if ((this.isInitialized || this.tuiStarted) && this.settingsManager.getShowTerminalProgress()) {
 		this.ui.terminal.setProgress(false);
 	}
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
@@ -191,7 +191,7 @@ InteractiveModeBase.prototype.stop = function (
 	if (this.unsubscribe) {
 		this.unsubscribe();
 	}
-	if (this.isInitialized) {
+	if (this.isInitialized || this.tuiStarted) {
 		this.stopInteractiveTui(fullscreenExitOutput);
 		this.isInitialized = false;
 		// A mode started again checks fd, rg and git again: what it found may have changed while it was stopped.
