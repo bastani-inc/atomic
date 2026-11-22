@@ -103,12 +103,12 @@ describe("a pi.exec command ended by Atomic ends with the processes it started",
 	test("also when the output limit ends it", async () => {
 		const file = pidFile();
 		const [flag, root] = commandStartingAProcess(file);
-		const running = execCommand(
-			process.execPath,
-			[flag!, `${root} setTimeout(() => process.stdout.write("x".repeat(4096)), 300);`],
-			process.cwd(),
-			{ maxBuffer: 1024 },
-		);
+		// The command passes the output limit only once the process it started has recorded its pid, however long
+		// that process takes to start on a loaded machine: ended before then, it would leave no pid to check.
+		const overflowOnceStarted = `const overflow = setInterval(() => { let pid = ""; try { pid = require("node:fs").readFileSync(${JSON.stringify(file)}, "utf8"); } catch {} if (pid === "") return; clearInterval(overflow); process.stdout.write("x".repeat(4096)); }, ${POLL_MS});`;
+		const running = execCommand(process.execPath, [flag!, `${root} ${overflowOnceStarted}`], process.cwd(), {
+			maxBuffer: 1024,
+		});
 		const started = await recordedFrom(file);
 
 		const result = await running;

@@ -29,7 +29,7 @@ import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, transform } from "esbuild";
-import { sharedFileName } from "./split-dist-names.mjs";
+import { compatSharedFiles, sharedFileName } from "./split-dist-names.mjs";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
@@ -361,12 +361,19 @@ if (!existsSync(RELEASE_RECORDS))
 		`split-dist: ${RELEASE_RECORDS} is missing; the split keeps the modules the releases recorded there import on demand`,
 	);
 const releasedLazyTargets = new Set();
+/** The shared files a recorded release imports on demand, with the names it exported: see `compatSharedFiles`. */
+const releasedSharedTargets = [];
 for (const file of readdirSync(RELEASE_RECORDS).filter((name) => /^\d.*\.json$/.test(name))) {
 	const record = JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8"));
-	for (const key of Object.keys(record.packages["@bastani/atomic"]?.lazy ?? {})) {
+	const atomic = record.packages["@bastani/atomic"];
+	for (const key of Object.keys(atomic?.lazy ?? {})) {
 		const prefix = "@bastani/atomic:dist/";
-		if (!key.startsWith(prefix) || key.startsWith(`${prefix}${SHARED_DIRECTORY}/`)) continue;
+		if (!key.startsWith(prefix)) continue;
 		const path = key.slice(prefix.length);
+		if (path.startsWith(`${SHARED_DIRECTORY}/`)) {
+			releasedSharedTargets.push({ version: record.version, path, names: atomic.files?.[`dist/${path}`] ?? [] });
+			continue;
+		}
 		if (!existsSync(join(dist, path)) && !existsSync(join(COMPILED_ENTRIES, path)))
 			throw new Error(
 				`split-dist: ${record.version} imports dist/${path} on demand, and no module of this package compiles to it; keep a module at that path`,
@@ -637,6 +644,15 @@ for (const file of ordered) {
 	renameSync(`${file.path}.split`, file.path);
 }
 for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
+// A shared file a recorded release imports on demand that this split no longer writes, as when the module it holds
+// changed its exports: a process of that release still imports it by that name, so it stays, naming this build's
+// shared file of the same module.
+const sharedOutputs = Object.entries(result.metafile.outputs).flatMap(([output, meta]) => {
+	const match = new RegExp(`^dist/${SHARED_DIRECTORY}/([^/]+)-([A-Z2-7]{8})\\.js$`).exec(output);
+	return match === null ? [] : [{ file: renames.get(`${match[1]}-${match[2]}.js`) ?? `${match[1]}-${match[2]}.js`, stem: match[1], exports: meta.exports }];
+});
+for (const { path, contents } of compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY))
+	writeFileSync(join(dist, path), contents);
 writeFileSync(
 	join(dist, "THIRD_PARTY_NOTICES.md"),
 	`# Third-party notices\n\nThe shared files in \`dist/${SHARED_DIRECTORY}/\` include code from these packages.\n\n${notices.join("\n")}`,
