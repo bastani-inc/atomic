@@ -1,5 +1,4 @@
 pub mod advisory_lock;
-pub mod block;
 pub mod directory_security;
 pub mod fs_cache;
 pub mod glob;
