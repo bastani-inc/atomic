@@ -151,7 +151,7 @@ test("Windows bin paths under transaction-owned install paths fail before any re
 	}
 	assert.doesNotMatch(
 		powershell.slice(powershell.indexOf("$ownedInstallPaths = @("), powershell.indexOf("$apiHeaders = @{")),
-		/Move-Item|Remove-Item|New-Item/u,
+		/Move-Item|Rename-Item|Move-AtomicItem|Remove-Item|New-Item/u,
 		"the Windows transaction-owned preflight must not mutate caller paths",
 	);
 });
@@ -228,7 +228,7 @@ test("Windows safety and version checks all precede temp creation and archive do
 
 	assert.doesNotMatch(
 		powershell.slice(powershell.indexOf("$existingShimItem = Get-AtomicDirectoryEntry $shimPath"), apiHeaders),
-		/Move-Item|Remove-Item|New-Item/u,
+		/Move-Item|Rename-Item|Move-AtomicItem|Remove-Item|New-Item/u,
 		"the Windows pointer preflight must not move or delete caller entries",
 	);
 
@@ -360,10 +360,17 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 		"ShimBackup",
 		"ShimInstall",
 	]) {
-		const intent = powershell.indexOf(`$transaction.${name}Intended = $true`);
-		const move = powershell.indexOf("Move-Item", intent);
-		assert.ok(intent >= 0 && move > intent, `${name} intent must precede its move`);
+		assert.match(
+			powershell,
+			new RegExp(`\\$transaction\\.${name}Intended = \\$true\\r?\\n\\s+Move-AtomicItem\\b`, "u"),
+			`${name} intent must immediately precede its atomic rename`,
+		);
 	}
+	assert.doesNotMatch(
+		powershell,
+		/^(?!\s*#)[^\r\n]*\bMove-Item\b/mu,
+		"install.ps1 must use atomic Rename-Item via Move-AtomicItem",
+	);
 	const successOutput = powershell.indexOf("    Write-AtomicInstallSummary $transaction.UserPathChangeIntended");
 	const transactionCatch = powershell.lastIndexOf("    catch {", successOutput);
 	assert.ok(transactionCatch >= 0 && successOutput > transactionCatch);

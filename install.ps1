@@ -828,25 +828,41 @@ function Get-AtomicPhysicalPath {
     return [IO.Path]::GetFullPath($current)
 }
 
-# Windows can refuse for a moment to move a directory that was just written or just run from (an antivirus scan, the
-# search indexer, a handle still closing). Try the move again for about two seconds before failing the install.
-function Move-AtomicStagedItem {
+# Windows can refuse for a moment to rename a file or directory that was just written or run from (an antivirus scan,
+# the search indexer, or a handle still closing). All transaction, rollback, and recovery moves stay inside the same
+# parent directory, so Rename-Item keeps them atomic on both Windows PowerShell 5.1 and PowerShell 7 (where Move-Item
+# falls back to a partial copy-and-delete when a file inside a directory is locked). Retry up to ~9.5 seconds with a
+# capped linear backoff before failing.
+function Move-AtomicItem {
     param(
         [string]$LiteralPath,
         [string]$Destination
     )
 
-    $attemptLimit = 20
+    $normalizedSource = [IO.Path]::GetFullPath($LiteralPath).TrimEnd([char[]]@('\', '/'))
+    $normalizedDestination = [IO.Path]::GetFullPath($Destination).TrimEnd([char[]]@('\', '/'))
+    $sourceParent = [IO.Path]::GetDirectoryName($normalizedSource)
+    $destinationParent = [IO.Path]::GetDirectoryName($normalizedDestination)
+    $destinationLeaf = [IO.Path]::GetFileName($normalizedDestination)
+    if ([string]::IsNullOrWhiteSpace($destinationLeaf) -or
+        $destinationLeaf.IndexOfAny([char[]]@('\', '/')) -ge 0 -or
+        ($IsWindowsHost -and ($sourceParent -ine $destinationParent)) -or
+        (-not $IsWindowsHost -and ($sourceParent -cne $destinationParent))) {
+        throw "Refusing non-local rename from '$LiteralPath' to '$Destination'."
+    }
+
+    $attemptLimit = 15
     for ($attempt = 1; ; $attempt++) {
         try {
-            Move-Item -LiteralPath $LiteralPath -Destination $Destination
+            Rename-Item -LiteralPath $normalizedSource -NewName $destinationLeaf -ErrorAction Stop
             return
         }
         catch [System.IO.IOException], [System.UnauthorizedAccessException] {
             if ($attempt -ge $attemptLimit) {
                 throw
             }
-            Start-Sleep -Milliseconds 100
+            $delayMilliseconds = [Math]::Min(100 * $attempt, 1000)
+            Start-Sleep -Milliseconds $delayMilliseconds
         }
     }
 }
@@ -1118,7 +1134,7 @@ function Invoke-AtomicTransactionRollback {
             $shimBackupItem = Get-AtomicDirectoryEntry $Transaction.ShimBackupPath
             $shimDestinationItem = Get-AtomicDirectoryEntry $Transaction.ShimPath
             if ($null -ne $shimBackupItem -and $null -eq $shimDestinationItem) {
-                Move-Item -LiteralPath $shimBackupItem.FullName -Destination $Transaction.ShimPath
+                Move-AtomicItem -LiteralPath $shimBackupItem.FullName -Destination $Transaction.ShimPath
                 $Transaction.ShimBackupIntended = $false
             }
             elseif ($null -eq $shimBackupItem -and $null -ne $shimDestinationItem) {
@@ -1146,7 +1162,7 @@ function Invoke-AtomicTransactionRollback {
             $atomicCurrentBackupItem = Get-AtomicDirectoryEntry $Transaction.AtomicCurrentBackupPath
             $atomicCurrentDestinationItem = Get-AtomicDirectoryEntry $Transaction.AtomicCurrentPath
             if ($null -ne $atomicCurrentBackupItem -and $null -eq $atomicCurrentDestinationItem) {
-                Move-Item -LiteralPath $atomicCurrentBackupItem.FullName -Destination $Transaction.AtomicCurrentPath
+                Move-AtomicItem -LiteralPath $atomicCurrentBackupItem.FullName -Destination $Transaction.AtomicCurrentPath
                 $Transaction.AtomicCurrentBackupIntended = $false
             }
             elseif ($null -eq $atomicCurrentBackupItem -and $null -ne $atomicCurrentDestinationItem) {
@@ -1174,7 +1190,7 @@ function Invoke-AtomicTransactionRollback {
             $currentBackupItem = Get-AtomicDirectoryEntry $Transaction.CurrentBackupPath
             $currentDestinationItem = Get-AtomicDirectoryEntry $Transaction.CurrentPath
             if ($null -ne $currentBackupItem -and $null -eq $currentDestinationItem) {
-                Move-Item -LiteralPath $currentBackupItem.FullName -Destination $Transaction.CurrentPath
+                Move-AtomicItem -LiteralPath $currentBackupItem.FullName -Destination $Transaction.CurrentPath
                 $Transaction.CurrentBackupIntended = $false
             }
             elseif ($null -eq $currentBackupItem -and $null -ne $currentDestinationItem) {
@@ -1202,7 +1218,7 @@ function Invoke-AtomicTransactionRollback {
             $versionBackupItem = Get-AtomicDirectoryEntry $Transaction.VersionBackupPath
             $versionDestinationItem = Get-AtomicDirectoryEntry $Transaction.VersionPath
             if ($null -ne $versionBackupItem -and $null -eq $versionDestinationItem) {
-                Move-Item -LiteralPath $versionBackupItem.FullName -Destination $Transaction.VersionPath
+                Move-AtomicItem -LiteralPath $versionBackupItem.FullName -Destination $Transaction.VersionPath
                 $Transaction.VersionBackupIntended = $false
             }
             elseif ($null -eq $versionBackupItem -and $null -ne $versionDestinationItem) {
@@ -1385,7 +1401,7 @@ function Clear-AtomicInstallLeftovers {
         foreach ($backup in @(Get-ChildItem -LiteralPath $InstallRoot -Force -Filter ".current-backup-*" -ErrorAction SilentlyContinue)) {
             $backupTarget = Get-AtomicReparseTarget $backup
             if (-not [string]::IsNullOrWhiteSpace($backupTarget) -and (Test-AtomicInstalledPayloadComplete $backup.FullName)) {
-                Move-Item -LiteralPath $backup.FullName -Destination $currentPath
+                Move-AtomicItem -LiteralPath $backup.FullName -Destination $currentPath
                 break
             }
         }
@@ -1845,19 +1861,19 @@ try {
         $previousVersionItem = Get-AtomicDirectoryEntry $versionPath
         if ($null -ne $previousVersionItem) {
             $transaction.VersionBackupIntended = $true
-            Move-Item -LiteralPath $previousVersionItem.FullName -Destination $versionBackupPath
+            Move-AtomicItem -LiteralPath $previousVersionItem.FullName -Destination $versionBackupPath
         }
         $transaction.VersionInstallIntended = $true
-        Move-AtomicStagedItem -LiteralPath $versionStagePath -Destination $versionPath
+        Move-AtomicItem -LiteralPath $versionStagePath -Destination $versionPath
 
         New-Item -ItemType Junction -Path $currentNextPath -Target $versionPath | Out-Null
         $previousCurrentItem = Get-AtomicDirectoryEntry $currentPath
         if ($null -ne $previousCurrentItem) {
             $transaction.CurrentBackupIntended = $true
-            Move-Item -LiteralPath $previousCurrentItem.FullName -Destination $currentBackupPath
+            Move-AtomicItem -LiteralPath $previousCurrentItem.FullName -Destination $currentBackupPath
         }
         $transaction.CurrentInstallIntended = $true
-        Move-AtomicStagedItem -LiteralPath $currentNextPath -Destination $currentPath
+        Move-AtomicItem -LiteralPath $currentNextPath -Destination $currentPath
 
         New-Item -ItemType Directory -Path $binDir -Force | Out-Null
         New-Item -ItemType Junction -Path $atomicCurrentNextPath -Target $versionPath | Out-Null
@@ -1866,17 +1882,17 @@ try {
         $previousAtomicCurrentItem = Get-AtomicDirectoryEntry $atomicCurrentPath
         if ($null -ne $previousAtomicCurrentItem) {
             $transaction.AtomicCurrentBackupIntended = $true
-            Move-Item -LiteralPath $previousAtomicCurrentItem.FullName -Destination $atomicCurrentBackupPath
+            Move-AtomicItem -LiteralPath $previousAtomicCurrentItem.FullName -Destination $atomicCurrentBackupPath
         }
         $previousShimItem = Get-AtomicDirectoryEntry $shimPath
         if ($null -ne $previousShimItem) {
             $transaction.ShimBackupIntended = $true
-            Move-Item -LiteralPath $previousShimItem.FullName -Destination $shimBackupPath
+            Move-AtomicItem -LiteralPath $previousShimItem.FullName -Destination $shimBackupPath
         }
         $transaction.AtomicCurrentInstallIntended = $true
-        Move-Item -LiteralPath $atomicCurrentNextPath -Destination $atomicCurrentPath
+        Move-AtomicItem -LiteralPath $atomicCurrentNextPath -Destination $atomicCurrentPath
         $transaction.ShimInstallIntended = $true
-        Move-Item -LiteralPath $shimNextPath -Destination $shimPath
+        Move-AtomicItem -LiteralPath $shimNextPath -Destination $shimPath
 
         $expandedOldUserPath = if ($null -eq $oldUserPath) { $null } else { [Environment]::ExpandEnvironmentVariables($oldUserPath) }
         if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $expandedOldUserPath $binDir)) {
