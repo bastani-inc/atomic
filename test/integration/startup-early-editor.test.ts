@@ -354,8 +354,10 @@ test(
 	REAL_CLI_TEST_TIMEOUT_MS,
 );
 
+// While the session's screen is up, Windows' pseudo console redraws it in its own output instead of passing the
+// switch to it through, so the screen under it cannot be read there; the line is read there once Atomic exits.
 for (const after of ["Atomic exits", "the session starts"] as const)
-	test(
+	test.skipIf(process.platform === "win32" && after === "the session starts")(
 		`a line written to standard output while the prompt shows is printed where the user sees it, once, when ${after}`,
 		async () => {
 			const dir = makeTempDirectory("atomic-early-editor-stdout-");
