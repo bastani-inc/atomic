@@ -444,12 +444,14 @@ const bundleWarnings = [];
 const nodeModulesExternalImports = new Map();
 /** @type {Set<string>} */
 const allBundledIds = new Set();
+/** @type {Set<string>} */
+const emittedDynamicNodeModules = new Set();
 
 const bundle = await rolldown({
 	cwd: packageDir,
 	input: entryFilesByName,
 	platform: "node",
-	treeshake: false,
+	treeshake: { moduleSideEffects: true },
 	preserveEntrySignatures: "allow-extension",
 	onLog(level, log) {
 		if (log.code === "CIRCULAR_DEPENDENCY" || log.code === "INEFFECTIVE_DYNAMIC_IMPORT") return;
@@ -463,7 +465,7 @@ const bundle = await rolldown({
 	plugins: [
 		{
 			name: "dist-module-url",
-			resolveId(source, importer) {
+			async resolveId(source, importer, extra) {
 				if (!importer) return null;
 				const cleanImporter = normalizeId(importer);
 				const recordNodeModuleExternal = (specifier) => {
@@ -477,7 +479,17 @@ const bundle = await rolldown({
 					}
 				};
 				if (/^\.{1,2}\//.test(source)) {
-					if (!isInDist(cleanImporter)) return null;
+					if (!isInDist(cleanImporter)) {
+						if (extra.kind === "dynamic-import") {
+							const resolved = await this.resolve(source, importer, { ...extra, skipSelf: true });
+							if (resolved && !resolved.external && !emittedDynamicNodeModules.has(resolved.id)) {
+								emittedDynamicNodeModules.add(resolved.id);
+								this.emitFile({ type: "chunk", id: resolved.id, preserveSignature: "allow-extension" });
+							}
+							return resolved;
+						}
+						return null;
+					}
 					const target = toPosix(relative(dist, join(dirname(cleanImporter), source)));
 					if (compiledModules.has(target) || owners.has(target)) {
 						return { id: `${DIST_PATH_MARK}${target}`, external: true };
@@ -488,7 +500,17 @@ const bundle = await rolldown({
 				}
 				if (isAbsolute(source)) return null;
 				if (isBuiltin(source)) return { id: source, external: true };
-				if (INLINED_PACKAGES.includes(packageOf(source))) return null;
+				if (INLINED_PACKAGES.includes(packageOf(source))) {
+					if (extra.kind === "dynamic-import") {
+						const resolved = await this.resolve(source, importer, { ...extra, skipSelf: true });
+						if (resolved && !resolved.external && !emittedDynamicNodeModules.has(resolved.id)) {
+							emittedDynamicNodeModules.add(resolved.id);
+							this.emitFile({ type: "chunk", id: resolved.id, preserveSignature: "allow-extension" });
+						}
+						return resolved;
+					}
+					return null;
+				}
 				recordNodeModuleExternal(source);
 				return { id: source, external: true };
 			},
