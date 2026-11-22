@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- In a subagent's chat on its page in a task list, a click on `/tasks to manage` under a command the subagent started opens the subagent's own task list, as typing `/tasks` there does. It works only while the chat takes what you type. Without colour the hint is text, as the main chat's hints are.
+
 ### Fixed
 
 - On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
+
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

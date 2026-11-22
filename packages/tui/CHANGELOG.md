@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `slashCommandHint(text, route)` and `commandHintAction(command, route)` take an optional route: a click on the hint hands the command to the `setHintCommandHandler` handler with that route as its second argument, so the handler can run it where the hint was drawn. A renderer from an earlier version draws a routed hint as text.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added
