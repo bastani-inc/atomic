@@ -735,6 +735,15 @@ export class ModelRuntime implements Models {
 	streamsThroughExtension(model: Pick<Model<Api>, "provider" | "api">): boolean {
 		const requested = normalizeProviderId(model.provider);
 		const providerId = this.extensionProviders.get(requested)?.aliasOf ?? requested;
+		// A native provider with its own stream functions and nothing over it is published as it is (composeProvider):
+		// every request of its models reaches its stream, including models it lists only later.
+		const native = this.nativeExtensionProviders.get(providerId);
+		if (
+			(native?.stream !== undefined || native?.streamSimple !== undefined) &&
+			!this.config.getProvider(providerId) &&
+			!this.extensionProviders.has(providerId)
+		)
+			return true;
 		return this.extensionOwnedApis(providerId)?.has(model.api) ?? false;
 	}
 

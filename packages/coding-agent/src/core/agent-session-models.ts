@@ -237,6 +237,7 @@ export async function _cycleScopedModel(
 	await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = nextModel;
+	void prewarmModelApi(nextModel, this._modelRuntime);
 	if (options.persist) {
 		settingsWriteOwner.run(this, () =>
 			this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id),
@@ -274,6 +275,7 @@ export async function _cycleAvailableModel(
 	await this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = selectedModel;
+	void prewarmModelApi(selectedModel, this._modelRuntime);
 	if (options.persist) {
 		settingsWriteOwner.run(this, () =>
 			this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id),

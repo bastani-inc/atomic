@@ -151,16 +151,17 @@ if (heapArgs.length > 0) {
 				void Promise.all([loaded, prewarm!]).then(([[, mainModule], module]) => {
 					const flags = module as {
 						INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG?: string;
-						INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG?: string;
+						prewarmHostArguments?: (argv: readonly string[]) => string[] | undefined;
 					};
 					const flag = flags.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
 					if (!adopted && flag !== undefined && args.includes(flag)) flushPersistentCompileCache();
-					// Only for a session whose model the settings' default decides: the host's arguments name no other.
-					const apiFlag = flags.INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG;
-					if (!adopted && apiFlag !== undefined && args.includes(apiFlag)) {
-						const prewarmApi = (mainModule as { prewarmDefaultModelApi?: () => Promise<void> })
-							.prewarmDefaultModelApi;
-						if (typeof prewarmApi === "function") void prewarmApi().catch(() => {});
+					// The api of the model the settings select, read with the arguments its host was started with.
+					const hostArgs = flags.prewarmHostArguments?.(args);
+					if (!adopted && hostArgs !== undefined) {
+						const prewarmApi = (
+							mainModule as { prewarmHostDefaultModelApi?: (hostArgs: readonly string[]) => Promise<void> }
+						).prewarmHostDefaultModelApi;
+						if (typeof prewarmApi === "function") void prewarmApi(hostArgs).catch(() => {});
 					}
 				});
 			return Promise.all([loaded, mainArgs]);

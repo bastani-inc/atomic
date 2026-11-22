@@ -127,69 +127,37 @@ export function interactiveEngineClientOptions(cwd: string): {
 export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-write-cache`;
 
 /**
- * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG} for a prewarmed child whose host's arguments leave the session's
- * model to the settings' default: the child may load the API implementation of that model while it waits. Read by
- * `cli.ts` from this module's namespace, as {@link INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG} is; an earlier version
- * ignores it.
+ * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG}, after `=`, with the host's arguments (JSON, base64url): while it
+ * waits, the child reads them as the command line does and loads the API implementation of the model the settings
+ * select, when the arguments leave the model to the settings. Read by `cli.ts` through {@link prewarmHostArguments} from
+ * this module's namespace, as {@link INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG} is; an earlier version ignores it.
  */
 export const INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-default-model-api`;
 
-/** Arguments that change neither the session's model nor the session it opens. */
-const ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
-	"--offline",
-	"--no-mcp",
-	"--verbose",
-	"--debug",
-	"--no-session",
-	"--approve",
-	"-a",
-	"--no-approve",
-	"-na",
-	"--no-skills",
-	"-ns",
-	"--no-prompt-templates",
-	"-np",
-	"--no-themes",
-	"--use-theme",
-	"--no-context-files",
-	"-nc",
-	"--no-tools",
-	"-nt",
-	"--no-builtin-tools",
-	"-nbt",
-	"--no-extensions",
-	"-ne",
-	"--no-fallback",
-]);
-/** Such arguments that take a value: the value follows them. */
-const VALUE_ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
-	"--thinking",
-	"--tools",
-	"-t",
-	"--exclude-tools",
-	"-xt",
-	"--skill",
-	"--prompt-template",
-	"--theme",
-	"--system-prompt",
-	"--append-system-prompt",
-	"--name",
-	"-n",
-]);
+/**
+ * The longest encoding of a host's arguments a prewarmed child is given, well within every platform's command line.
+ * A host with longer arguments, such as a long first message, gives none: its child loads nothing before it is adopted.
+ */
+export const PREWARM_HOST_ARGUMENTS_MAX_LENGTH = 8192;
 
-/** Whether a host started with `args` leaves the session's model to the settings' default, in a new session. */
-function argumentsKeepDefaultModel(args: readonly string[]): boolean {
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index]!;
-		// A first message or a file to attach: never the value of an option, as any other option stops the scan.
-		if (!arg.startsWith("-") || ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg)) continue;
-		if (VALUE_ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg) && index + 1 < args.length) {
-			index++;
-			continue;
-		}
-		return false;
+function hostArgumentsFlag(args: readonly string[]): string | undefined {
+	const encoded = Buffer.from(JSON.stringify(args), "utf8").toString("base64url");
+	return encoded.length > PREWARM_HOST_ARGUMENTS_MAX_LENGTH
+		? undefined
+		: `${INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG}=${encoded}`;
+}
+
+/** The host's arguments a prewarmed child was started with, if its host gave it them. */
+export function prewarmHostArguments(argv: readonly string[]): string[] | undefined {
+	const prefix = `${INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG}=`;
+	const flag = argv.find((arg) => arg.startsWith(prefix));
+	if (flag === undefined) return undefined;
+	try {
+		const args: unknown = JSON.parse(Buffer.from(flag.slice(prefix.length), "base64url").toString("utf8"));
+		return Array.isArray(args) && args.every((arg) => typeof arg === "string") ? args : undefined;
+	} catch {
+		return undefined;
 	}
-	return true;
 }
 
 /**
@@ -276,11 +244,12 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 		// for its engine's exit work).
 		// The write-cache flag follows the no-database marker, which the engine reads as its second argument.
 		const writeCache = options.basis === "derived" && process.platform !== "win32";
+		const hostArguments = hostArgumentsFlag(args);
 		const prewarmArgs = [
 			INTERACTIVE_ENGINE_PREWARM_FLAG,
 			...(args.includes("--no-session") ? [PREWARM_NO_DATABASE] : []),
 			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
-			...(argumentsKeepDefaultModel(args) ? [INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG] : []),
+			...(hostArguments ? [hostArguments] : []),
 		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,
