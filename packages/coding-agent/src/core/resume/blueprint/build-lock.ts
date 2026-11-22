@@ -12,7 +12,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -96,39 +96,121 @@ async function removeLock(file: string): Promise<void> {
 	} catch {}
 }
 
+const STEP_START_MAX_ATTEMPTS = 4;
+const STEP_START_RETRY_MS = 500;
+const LOCK_WRITE_MAX_ATTEMPTS = 25;
+const LOCK_WRITE_RETRY_MS = 20;
+const TRANSIENT_RENAME_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
+const HOLDER_RETRY_KEY = -1;
+const WRITE_RETRY_KEY = -2;
+
 interface BuildLockWriter {
 	readonly files: ReadonlyMap<string, string>;
-	readonly holder: LockedProcess;
+	holder: LockedProcess;
 	readonly steps: Map<number, LockedProcess>;
+	readonly retryTimers: Map<number, ReturnType<typeof setTimeout>>;
 	readonly onUnwritable?: (message: string) => void;
+	started: boolean;
 	settled: boolean;
 	told: boolean;
 }
 
+function processAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function clearRetryTimer(writer: BuildLockWriter, key: number): void {
+	const timer = writer.retryTimers.get(key);
+	if (timer !== undefined) {
+		clearTimeout(timer);
+		writer.retryTimers.delete(key);
+	}
+}
+
+function clearAllRetryTimers(writer: BuildLockWriter): void {
+	for (const timer of writer.retryTimers.values()) clearTimeout(timer);
+	writer.retryTimers.clear();
+}
+
+function readStepStartDurably(writer: BuildLockWriter, pid: number, step: LockedProcess, attempt: number): void {
+	void processStartTokenAsync(pid, { fresh: true }).then((start) => {
+		if (writer.settled || writer.steps.get(pid) !== step) return;
+		if (start !== undefined) {
+			writer.steps.set(pid, { ...step, start });
+			writeBuildLocksDurably(writer);
+			return;
+		}
+		if (process.platform !== "win32" || attempt >= STEP_START_MAX_ATTEMPTS || !processAlive(pid)) return;
+		clearRetryTimer(writer, pid);
+		const timer = setTimeout(() => {
+			writer.retryTimers.delete(pid);
+			if (writer.settled || writer.steps.get(pid) !== step || !processAlive(pid)) return;
+			readStepStartDurably(writer, pid, step, attempt + 1);
+		}, STEP_START_RETRY_MS);
+		timer.unref?.();
+		writer.retryTimers.set(pid, timer);
+	});
+}
+
+function backfillHolderStart(writer: BuildLockWriter, attempt: number): void {
+	if (writer.settled || writer.holder.start !== undefined) return;
+	if (process.platform !== "win32" || attempt >= STEP_START_MAX_ATTEMPTS) return;
+	clearRetryTimer(writer, HOLDER_RETRY_KEY);
+	const timer = setTimeout(() => {
+		writer.retryTimers.delete(HOLDER_RETRY_KEY);
+		if (writer.settled || writer.holder.start !== undefined) return;
+		void processStartTokenAsync(process.pid, { fresh: true }).then((start) => {
+			if (writer.settled || writer.holder.start !== undefined) return;
+			if (start !== undefined) {
+				writer.holder = { pid: process.pid, start };
+				if (writer.started) writeBuildLocksDurably(writer);
+				return;
+			}
+			backfillHolderStart(writer, attempt + 1);
+		});
+	}, STEP_START_RETRY_MS);
+	timer.unref?.();
+	writer.retryTimers.set(HOLDER_RETRY_KEY, timer);
+}
+
 function recordStepProcessDurably(writer: BuildLockWriter, pid: number, running: boolean): void {
 	const { steps } = writer;
+	clearRetryTimer(writer, pid);
 	if (running) {
+		writer.started = true;
 		const step: LockedProcess = { pid, at: Date.now() };
 		steps.set(pid, step);
-		void processStartTokenAsync(pid).then((start) => {
-			if (start === undefined || steps.get(pid) !== step) return;
-			steps.set(pid, { ...step, start });
-			writeBuildLocksDurably(writer);
-		});
+		readStepStartDurably(writer, pid, step, 1);
 	} else steps.delete(pid);
 	writeBuildLocksDurably(writer);
 }
 
-function writeBuildLocksDurably(writer: BuildLockWriter): void {
+function writeBuildLocksDurably(writer: BuildLockWriter, attempt = 1): void {
 	if (writer.settled) return;
+	clearRetryTimer(writer, WRITE_RETRY_KEY);
 	const lock: BuildLock = { host: HOST, ...writer.holder, steps: [...writer.steps.values()] };
+	let retryTransient = false;
 	for (const [file, root] of writer.files) {
+		const temporary = `${file}.${process.pid}.tmp`;
 		try {
 			mkdirSync(dirname(file), { recursive: true });
-			const temporary = `${file}.${process.pid}.tmp`;
 			writeFileSync(temporary, JSON.stringify(lock), { mode: 0o600 });
 			renameSync(temporary, file);
 		} catch (error) {
+			try {
+				rmSync(temporary, { force: true });
+			} catch {}
+			const code = (error as NodeJS.ErrnoException).code ?? "";
+			if (process.platform === "win32" && attempt < LOCK_WRITE_MAX_ATTEMPTS && TRANSIENT_RENAME_CODES.has(code)) {
+				retryTransient = true;
+				continue;
+			}
 			if (writer.told) continue;
 			writer.told = true;
 			const reason = error instanceof Error ? error.message : String(error);
@@ -136,6 +218,14 @@ function writeBuildLocksDurably(writer: BuildLockWriter): void {
 				`The blueprint build lock of ${root} could not be written (${reason.slice(0, 200)}); if Atomic is killed during this build, the next resume cannot tell, and may build the worktree again while a step of this build still runs there.`,
 			);
 		}
+	}
+	if (retryTransient && !writer.settled) {
+		const timer = setTimeout(() => {
+			writer.retryTimers.delete(WRITE_RETRY_KEY);
+			writeBuildLocksDurably(writer, attempt + 1);
+		}, LOCK_WRITE_RETRY_MS);
+		timer.unref?.();
+		writer.retryTimers.set(WRITE_RETRY_KEY, timer);
 	}
 }
 
@@ -146,15 +236,15 @@ type Identity = "same" | "gone" | "unknown";
  * running process's. `"unknown"` when either start cannot be read: a process of that id runs, but it may be a later
  * one given the same id.
  */
-async function identity(recorded: LockedProcess): Promise<Identity> {
-	const start = await processStartTokenAsync(recorded.pid);
-	if (recorded.start !== undefined && start !== undefined) return start === recorded.start ? "same" : "gone";
-	try {
-		process.kill(recorded.pid, 0);
-		return "unknown";
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM" ? "unknown" : "gone";
-	}
+async function identity(recorded: LockedProcess, options?: { readonly fresh?: boolean }): Promise<Identity> {
+	if (!processAlive(recorded.pid)) return "gone";
+	if (recorded.start === undefined) return "unknown";
+	const start =
+		options === undefined
+			? await processStartTokenAsync(recorded.pid)
+			: await processStartTokenAsync(recorded.pid, options);
+	if (start !== undefined) return start === recorded.start ? "same" : "gone";
+	return processAlive(recorded.pid) ? "unknown" : "gone";
 }
 
 /**
@@ -222,8 +312,12 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
-async function stepsWhose(steps: readonly LockedProcess[], wanted: Identity): Promise<LockedProcess[]> {
-	const identities = await Promise.all(steps.map((step) => identity(step)));
+async function stepsWhose(
+	steps: readonly LockedProcess[],
+	wanted: Identity,
+	options?: { readonly fresh?: boolean },
+): Promise<LockedProcess[]> {
+	const identities = await Promise.all(steps.map((step) => identity(step, options)));
 	return steps.filter((_, index) => identities[index] === wanted);
 }
 
@@ -233,7 +327,7 @@ async function stopProven(
 	signal: AbortSignal | undefined,
 	extra: readonly LockedProcess[] = [],
 ): Promise<void> {
-	const proven = [...(await stepsWhose(steps, "same")), ...extra];
+	const proven = [...(await stepsWhose(steps, "same", { fresh: true })), ...extra];
 	for (const step of proven) killProcessTree(step.pid);
 	// Stopping is asynchronous on Windows: the next build starts only once they have ended, or after a bounded wait.
 	for (let waited = 0; waited < 50 && (await stepsWhose(proven, "same")).length > 0; waited++) {
@@ -480,19 +574,22 @@ export async function withBuildLocks<T>(
 ): Promise<T> {
 	const files = new Map(roots.map((root) => [buildLockPath(storeDir, root), root]));
 	const steps = new Map<number, LockedProcess>();
+	const ownStart = await processStartTokenAsync(process.pid, { fresh: true });
 	const writer: BuildLockWriter = {
 		files,
-		holder: await locked(process.pid),
+		holder: ownStart === undefined ? { pid: process.pid } : { pid: process.pid, start: ownStart },
 		steps,
+		retryTimers: new Map(),
 		...(onUnwritable === undefined ? {} : { onUnwritable }),
+		started: false,
 		settled: false,
 		told: false,
 	};
+	if (writer.holder.start === undefined) backfillHolderStart(writer, 1);
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
-	let started = false;
 	const starting = () => {
-		if (started) return;
-		started = true;
+		if (writer.started) return;
+		writer.started = true;
 		writeBuildLocksDurably(writer);
 	};
 	const watch = (pid: number, running: boolean) => recordStepProcessDurably(writer, pid, running);
@@ -500,6 +597,7 @@ export async function withBuildLocks<T>(
 		return await stepStartingWatcher.run(starting, () => stepProcessWatcher.run(watch, build));
 	} finally {
 		writer.settled = true;
+		clearAllRetryTimers(writer);
 		steps.clear();
 		for (const file of files.keys()) if ((await readLock(file))?.pid === process.pid) await removeLock(file);
 	}

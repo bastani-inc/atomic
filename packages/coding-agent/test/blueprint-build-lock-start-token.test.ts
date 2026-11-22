@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import * as startTokens from "../src/core/process-start-token.ts";
-import { buildLockPath, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
+import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { stepProcessWatcher } from "../src/core/resume/blueprint/process.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		renameSync: vi.fn(actual.renameSync),
+	};
+});
 
 vi.mock("../src/core/process-start-token.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/core/process-start-token.ts")>();
@@ -23,6 +32,30 @@ interface RecordedStep {
 	readonly at?: number;
 }
 
+const PLATFORM = Object.getOwnPropertyDescriptor(process, "platform")!;
+const THIS_HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+const windowsToken = (created: string) => createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
+
+function sleeper(): ChildProcess {
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+		detached: process.platform !== "win32",
+		stdio: "ignore",
+	});
+	children.push(child);
+	return child;
+}
+
+async function deadPid(): Promise<number> {
+	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+	return child.pid!;
+}
+
+function writeLock(lock: object): void {
+	mkdirSync(join(dir, "blueprint-builds", "locks"), { recursive: true });
+	writeFileSync(buildLockPath(dir, root()), JSON.stringify({ host: THIS_HOST, ...lock }));
+}
+
 let dir: string;
 const children: ChildProcess[] = [];
 beforeEach(() => {
@@ -31,6 +64,10 @@ beforeEach(() => {
 	vi.mocked(startTokens.processStartTokenAsync).mockClear();
 });
 afterEach(() => {
+	startTokens.setProcessCreationTimeQueryForTesting(undefined);
+	startTokens.setNativeProcessCreationTimeForTesting(undefined);
+	Object.defineProperty(process, "platform", PLATFORM);
+	vi.unstubAllEnvs();
 	for (const child of children.splice(0)) if (child.exitCode === null) child.kill("SIGKILL");
 	rmSync(dir, { recursive: true, force: true });
 });
@@ -38,12 +75,6 @@ afterEach(() => {
 const root = () => join(dir, "worktrees", "repo-0");
 const stepsOf = (): RecordedStep[] =>
 	(JSON.parse(readFileSync(buildLockPath(dir, root()), "utf8")) as { steps: RecordedStep[] }).steps;
-
-function sleeper(): ChildProcess {
-	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-	children.push(child);
-	return child;
-}
 
 async function until(condition: () => boolean): Promise<void> {
 	for (let attempt = 0; attempt < 500 && !condition(); attempt++)
@@ -123,5 +154,217 @@ describe("blueprint build lock step starts (#4748)", () => {
 			);
 			watcher()(step.pid!, false);
 		});
+	});
+
+	test("without the native module, a new step reusing a cached pid reads a fresh start instead of stale negative or positive cache (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const step = sleeper();
+		let stepCreated: string | undefined;
+		startTokens.setNativeProcessCreationTimeForTesting(null);
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: (pid) => {
+				if (pid === process.pid) return ["-e", 'console.log("132000000000000001")'];
+				return stepCreated === undefined ? ["-e", ""] : ["-e", `console.log("${stepCreated}")`];
+			},
+		});
+		// Prime a stale negative cache entry for step.pid (as settling a dead pid does).
+		assert.equal(await startTokens.processStartTokenAsync(step.pid!), undefined);
+
+		stepCreated = "132000000000000010";
+		await withBuildLocks(dir, [root()], async () => {
+			watcher()(step.pid!, true);
+			await until(() => stepsOf()[0]?.start !== undefined);
+			assert.equal(
+				stepsOf()[0]?.start,
+				windowsToken("132000000000000010"),
+				"bypasses stale negative cache for the newly started step",
+			);
+			watcher()(step.pid!, false);
+
+			// Now fallbackReads holds a positive entry for step.pid from the ended step: a new step reusing that pid
+			// must record its own fresh start rather than the ended step's cached start.
+			stepCreated = "132000000000000020";
+			watcher()(step.pid!, true);
+			await until(() => stepsOf()[0]?.start !== undefined);
+			assert.equal(
+				stepsOf()[0]?.start,
+				windowsToken("132000000000000020"),
+				"bypasses stale positive cache for a later step reusing the same pid",
+			);
+			watcher()(step.pid!, false);
+		});
+	});
+
+	test("on Windows, a transient start-read failure for a running step or build holder is retried, and cancelled when the build settles (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const step = sleeper();
+		let ownCalls = 0;
+		let stepCalls = 0;
+		startTokens.setNativeProcessCreationTimeForTesting(null);
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: (pid) => {
+				if (pid === process.pid) {
+					ownCalls++;
+					return ownCalls === 1 ? ["-e", "process.exitCode = 1"] : ["-e", 'console.log("132000000000000031")'];
+				}
+				stepCalls++;
+				return stepCalls === 1 ? ["-e", "process.exitCode = 1"] : ["-e", 'console.log("132000000000000032")'];
+			},
+		});
+		const lockFile = buildLockPath(dir, root());
+		await withBuildLocks(dir, [root()], async () => {
+			watcher()(step.pid!, true);
+			await until(() => {
+				const lock = JSON.parse(readFileSync(lockFile, "utf8")) as { start?: string; steps: RecordedStep[] };
+				return lock.start !== undefined && lock.steps[0]?.start !== undefined;
+			});
+			const lock = JSON.parse(readFileSync(lockFile, "utf8")) as { start?: string; steps: RecordedStep[] };
+			assert.equal(
+				lock.start,
+				windowsToken("132000000000000031"),
+				"holder start backfilled after transient failure",
+			);
+			assert.equal(
+				lock.steps[0]?.start,
+				windowsToken("132000000000000032"),
+				"step start recorded after transient failure",
+			);
+			watcher()(step.pid!, false);
+		});
+		assert.equal(existsSync(lockFile), false, "lock removed once settled");
+
+		// A build that runs nothing never writes a lock even when holder retry completes; and a settled build cancels pending retries.
+		let settledRetryCalls = 0;
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: () => {
+				settledRetryCalls++;
+				return settledRetryCalls === 1
+					? ["-e", "process.exitCode = 1"]
+					: ["-e", 'console.log("132000000000000033")'];
+			},
+		});
+		await withBuildLocks(dir, [root()], async () => {
+			watcher()(step.pid!, true);
+			// Wait for the first failing attempt so a retry timer is armed, then settle immediately.
+			await until(() => settledRetryCalls >= 2);
+		});
+		assert.equal(existsSync(lockFile), false);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		assert.equal(existsSync(lockFile), false, "cancelled retry never writes lock after build settled");
+	});
+
+	test("settling a dead build skips start queries for dead or startless pids and ends the stop wait as soon as the step exits (#5315)", async () => {
+		const goneHolder = await deadPid();
+		const goneStep = await deadPid();
+		vi.mocked(startTokens.processStartTokenAsync).mockClear();
+		writeLock({ pid: goneHolder, start: "aaaaaaaaaaaa", steps: [{ pid: goneStep, start: "bbbbbbbbbbbb" }] });
+		const settledGone = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+		await settledGone.release();
+		assert.deepEqual(settledGone.warnings, []);
+		assert.deepEqual(
+			vi
+				.mocked(startTokens.processStartTokenAsync)
+				.mock.calls.filter(([pid]) => pid === goneHolder || pid === goneStep),
+			[],
+			"dead pids are ruled gone by liveness without querying start tokens",
+		);
+
+		// A live step that exited right after killProcessTree must not spin for 50 polls even when a stale cached start
+		// token would still return its old start.
+		const orphan = sleeper();
+		const orphanExited = new Promise<void>((resolve) => orphan.once("exit", () => resolve()));
+		let pollsAfterExit = 0;
+		let exited = false;
+		void orphanExited.then(() => {
+			exited = true;
+		});
+		const actual = vi.mocked(startTokens.processStartTokenAsync).getMockImplementation()!;
+		vi.mocked(startTokens.processStartTokenAsync).mockImplementation(async (pid, options) => {
+			if (pid === orphan.pid) {
+				if (exited) pollsAfterExit++;
+				return "cccccccccccc";
+			}
+			return actual(pid, options);
+		});
+		try {
+			writeLock({ pid: goneHolder, start: "aaaaaaaaaaaa", steps: [{ pid: orphan.pid, start: "cccccccccccc" }] });
+			const started = performance.now();
+			const settled = await settleOtherBuilds(dir, [root()], { waitMs: 600 });
+			await settled.release();
+			await orphanExited;
+			assert.deepEqual(settled.warnings, []);
+			assert.equal(pollsAfterExit, 0, "no start-token query runs for a step that already exited");
+			assert.ok(performance.now() - started < 3_000, "stopProven does not spin for the full 5 s cache TTL");
+		} finally {
+			vi.mocked(startTokens.processStartTokenAsync).mockImplementation(actual);
+		}
+	});
+
+	test("without the native module, settling a dead build verifies fresh before stopping so a cached pid reused by an unrelated process is never stopped (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const goneHolder = await deadPid();
+		const unrelated = sleeper();
+		let currentCreated = "132000000000000050";
+		startTokens.setNativeProcessCreationTimeForTesting(null);
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: () => ["-e", `console.log("${currentCreated}")`],
+		});
+		// Prime the fallback cache with the dead step's creation time.
+		const oldStart = await startTokens.processStartTokenAsync(unrelated.pid!);
+		assert.equal(oldStart, windowsToken("132000000000000050"));
+		// Now the PID belongs to a newer unrelated process while the 5 s cache entry is still warm.
+		currentCreated = "132000000000000060";
+		writeLock({ pid: goneHolder, start: "aaaaaaaaaaaa", steps: [{ pid: unrelated.pid, start: oldStart }] });
+		const started = performance.now();
+		const settled = await settleOtherBuilds(dir, [root()], { waitMs: 600 });
+		await settled.release();
+		assert.deepEqual(settled.warnings, []);
+		assert.equal(unrelated.exitCode, null, "unrelated process reusing cached pid is never stopped");
+		assert.equal(unrelated.signalCode, null);
+		assert.ok(performance.now() - started < 3_000, "does not enter stopProven wait for a reused pid");
+	});
+
+	test("on Windows, a transient EPERM while renaming the build lock retries and still persists the step start (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const step = sleeper();
+		startTokens.setNativeProcessCreationTimeForTesting(null);
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: (pid) => ["-e", `console.log("${pid === process.pid ? "132000000000000081" : "132000000000000082"}")`],
+		});
+		const actualRename = vi.mocked(renameSync).getMockImplementation()!;
+		let lockRenames = 0;
+		const lockFile = buildLockPath(dir, root());
+		vi.mocked(renameSync).mockImplementation((from, to) => {
+			if (String(to) === lockFile && ++lockRenames === 2) {
+				throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+			}
+			return actualRename(from, to);
+		});
+		const told: string[] = [];
+		try {
+			await withBuildLocks(
+				dir,
+				[root()],
+				async () => {
+					watcher()(step.pid!, true);
+					await until(() => stepsOf()[0]?.start !== undefined);
+					assert.equal(stepsOf()[0]?.start, windowsToken("132000000000000082"));
+					watcher()(step.pid!, false);
+				},
+				(message) => told.push(message),
+			);
+			assert.deepEqual(told, [], "transient Windows rename refusal did not drop the lock update or warn");
+		} finally {
+			vi.mocked(renameSync).mockImplementation(actualRename);
+		}
 	});
 });

@@ -24,15 +24,26 @@ export function processStartToken(pid: number): string | undefined {
 	return windowsStartToken(known?.created);
 }
 
-export async function readProcessStartToken(pid: number): Promise<string | undefined> {
+export interface ReadProcessStartTokenOptions {
+	/** When true, bypasses any cached or earlier in-flight Windows fallback answer for `pid`. */
+	readonly fresh?: boolean;
+}
+
+export async function readProcessStartToken(
+	pid: number,
+	options?: ReadProcessStartTokenOptions,
+): Promise<string | undefined> {
 	if (process.platform !== "win32") return procStartTokenAsync(pid);
 	const native = nativeCreationTime();
 	if (native !== null) return windowsStartToken(nativeCreation(native, pid));
-	return windowsStartToken(await readFallbackCreation(pid));
+	return windowsStartToken(await readFallbackCreation(pid, options?.fresh === true));
 }
 
-export async function processStartTokenAsync(pid: number): Promise<string | undefined> {
-	return readProcessStartToken(pid);
+export async function processStartTokenAsync(
+	pid: number,
+	options?: ReadProcessStartTokenOptions,
+): Promise<string | undefined> {
+	return readProcessStartToken(pid, options);
 }
 
 /**
@@ -240,17 +251,25 @@ function knownFallbackCreation(pid: number): { readonly created: string | undefi
 	return cached !== undefined && Date.now() - cached.at < FALLBACK_CACHE_MS ? cached : undefined;
 }
 
-function readFallbackCreation(pid: number): Promise<string | undefined> {
-	const known = knownFallbackCreation(pid);
-	if (known !== undefined) return Promise.resolve(known.created);
-	const pending = pendingReads.get(pid);
-	if (pending !== undefined) return pending.reading;
+function readFallbackCreation(pid: number, fresh = false): Promise<string | undefined> {
+	if (pid === process.pid && ownCreation !== undefined) return Promise.resolve(ownCreation);
+	if (fallbackBroken) return Promise.resolve(undefined);
+	if (!fresh) {
+		const known = knownFallbackCreation(pid);
+		if (known !== undefined) return Promise.resolve(known.created);
+		const pending = pendingReads.get(pid);
+		if (pending !== undefined) return pending.reading;
+	} else {
+		fallbackReads.delete(pid);
+		const pending = pendingReads.get(pid);
+		if (pending !== undefined) pending.superseded = true;
+	}
 	const generation = fallbackGeneration;
 	const current = {
 		superseded: false,
 		reading: queryCreationTime(pid).then((answer) => {
 			if (generation !== fallbackGeneration) return undefined;
-			pendingReads.delete(pid);
+			if (pendingReads.get(pid) === current) pendingReads.delete(pid);
 			if (current.superseded) return knownFallbackCreation(pid)?.created;
 			rememberFallbackCreation(pid, answer);
 			return answer.created;

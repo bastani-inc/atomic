@@ -193,6 +193,48 @@ test("a timed-out start read is remembered before another query is allowed (#531
 	assert.equal(queries, 2);
 });
 
+test("a fresh start read bypasses stale negative and positive cache and supersedes an older in-flight query (#5315)", async () => {
+	const pid = 2 ** 22 + 8;
+	const releaseOld = join(directory, "release-old-query");
+	let call = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: () => {
+			call++;
+			if (call === 1) return ["-e", "process.exitCode = 1"];
+			if (call === 2) return ["-e", 'console.log("132000000000000001")'];
+			if (call === 3) return ["-e", 'console.log("132000000000000002")'];
+			if (call === 4)
+				return [
+					"-e",
+					'const fs = require("node:fs"); const t = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(t); console.log("132000000000000003"); } }, 10);',
+					releaseOld,
+				];
+			return ["-e", 'console.log("132000000000000004")'];
+		},
+	});
+	// 1) Stale negative cache (failed/dead query) is bypassed by a fresh read.
+	assert.equal(await readProcessStartToken(pid), undefined);
+	const first = await readProcessStartToken(pid, { fresh: true });
+	assert.match(first ?? "", /^[0-9a-f]{12}$/);
+	// 2) Stale positive cache (previous process with same PID) is bypassed by a fresh read.
+	const second = await readProcessStartToken(pid, { fresh: true });
+	assert.match(second ?? "", /^[0-9a-f]{12}$/);
+	assert.notEqual(second, first);
+	// 3) An older in-flight query is superseded by a fresh read and cannot overwrite the cache.
+	const now = Date.now();
+	vi.spyOn(Date, "now").mockReturnValue(now + CACHE_EXPIRY_MS);
+	const older = readProcessStartToken(pid);
+	const newer = await readProcessStartToken(pid, { fresh: true });
+	assert.match(newer ?? "", /^[0-9a-f]{12}$/);
+	assert.notEqual(newer, second);
+	writeFileSync(releaseOld, "");
+	assert.equal(await older, newer);
+	assert.equal(processStartToken(pid), newer);
+	assert.equal(await readProcessStartToken(pid), newer);
+	assert.equal(call, 5);
+});
+
 test("uncontended auth saves and provider refreshes never wait for a fallback start read (#5315)", async () => {
 	let queries = 0;
 	setProcessCreationTimeQueryForTesting({
