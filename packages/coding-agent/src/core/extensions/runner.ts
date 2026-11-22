@@ -972,17 +972,29 @@ export class ExtensionRunner {
 		};
 	}
 
+	/** @internal Whether the runner holds exactly `extensions` in order. */
+	hasExactExtensions(extensions: readonly Extension[]): boolean {
+		return (
+			this.extensions.length === extensions.length &&
+			this.extensions.every((extension, index) => extension === extensions[index])
+		);
+	}
+
 	/** Keep startup reporters bound while adding the now-authorized extension set. */
-	attachStartupExtensions(extensions: Extension[]): () => Promise<void> {
+	attachStartupExtensions(
+		extensions: Extension[],
+		onError: (error: ExtensionError) => void = (error) => this.emitError(error),
+	): () => Promise<void> {
 		const newcomers = extensions.filter((extension) => !this.extensions.includes(extension));
-		this.extensions = [...this.extensions, ...newcomers];
+		const retained = this.extensions.filter((extension) => !extensions.includes(extension));
+		this.extensions = [...extensions, ...retained];
 		return async () => {
 			await runResourceRegistrationBatch(this.runtime, () =>
 				runGenericHandlers(
 					this.extensions.filter((extension) => newcomers.includes(extension)),
 					this.createContext(),
 					{ type: "session_start", reason: "startup" },
-					(error) => this.emitError(error),
+					onError,
 				),
 			);
 		};

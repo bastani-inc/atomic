@@ -8,6 +8,7 @@ export {
 	loadExtensionFromFactory,
 	loadExtensions,
 	loadExtensionsCached,
+	setExtensionRuntimeEventBus,
 } from "./loader-core.js";
 export { discoverAndLoadExtensions } from "./loader-discovery.ts";
 export type {

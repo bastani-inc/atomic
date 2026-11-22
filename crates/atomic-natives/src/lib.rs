@@ -6,6 +6,7 @@ pub mod glob;
 mod glob_util;
 pub mod grep;
 pub mod host_process;
+pub mod native_version;
 pub mod process_start;
 pub mod process_tree;
 pub mod pty;
