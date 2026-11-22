@@ -350,17 +350,20 @@ async function checkoutBranch(
 	path: string,
 	branch: string,
 	missingBranchStart: () => Promise<string>,
+	beforeAdd: () => Promise<void>,
 	onSpawn: (pid: number) => Promise<void>,
 ): Promise<void> {
 	const local = await commitOf(repository, `refs/heads/${branch}`);
 	const remote = await commitOf(repository, `refs/remotes/origin/${branch}`);
-	const add = (args: readonly string[]) =>
-		runWorkspaceGit({
+	const add = async (args: readonly string[]) => {
+		await beforeAdd();
+		return runWorkspaceGit({
 			cwd: repository.root,
 			args: ["worktree", "add", "--lock", "--reason", WORKTREE_ADDING_REASON, ...args],
 			phase: "worktree-add",
 			onSpawn,
 		});
+	};
 	if (local === undefined) {
 		await add(["-b", branch, path, remote ?? (await missingBranchStart())]);
 		return;
@@ -693,9 +696,14 @@ async function addWorktree(
 			await git(repository.root, ["worktree", "prune"], "worktree-add");
 			// A failed addition keeps its record: its git has exited, so a later bind sees the adder gone and repairs it.
 			const record = worktreeAdderRecord(repository.commonDir, path);
-			await prepareAdderRecord(record);
-			await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, (pid) =>
-				recordAdder(record, pid),
+			await checkoutBranch(
+				repository,
+				repo,
+				path,
+				branch,
+				steps.missingBranchStart,
+				() => prepareAdderRecord(record),
+				(pid) => recordAdder(record, pid),
 			);
 			await git(repository.root, ["worktree", "unlock", path], "worktree-add");
 			await filesystem("remove the record of the git adding", record, () => rm(record, { force: true }));
