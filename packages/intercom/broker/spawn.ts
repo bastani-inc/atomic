@@ -115,6 +115,8 @@ export const BROKER_SPAWN_LOCK_MAX_AGE_MS = 60_000;
 type BrokerRuntime = "node" | "bun-source" | "bun-binary";
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
+const INTERNAL_INTERCOM_BROKER_RELAY_ARG = "--atomic-internal-intercom-broker-relay";
+const INTERNAL_INTERCOM_BROKER_RELAY_CAPABILITY = Symbol.for("@bastani/atomic/intercom-broker-relay@1");
 
 export interface BrokerLaunchSpec {
   readonly kind: "direct";
@@ -563,6 +565,8 @@ interface NativeDetachedStartOptions {
   readonly detached: true;
   readonly stderrLogPath?: string;
   readonly verbatimArguments?: boolean;
+  readonly watchPid?: number;
+  readonly watchCreationTime?: string;
 }
 
 type NativeStartHostProcess = (
@@ -570,21 +574,37 @@ type NativeStartHostProcess = (
   onEvent: (event: NativeHostProcessEvent) => void,
 ) => NativeDetachedProcess;
 
-let nativeStartDetached: NativeStartHostProcess | null | undefined;
+interface NativeBrokerSpawnBindings {
+  readonly startHostProcess: NativeStartHostProcess | null;
+  readonly modulePath: string | undefined;
+}
 
-function loadNativeStartDetached(): NativeStartHostProcess | null {
-  if (process.platform !== "win32") return null;
-  if (nativeStartDetached === undefined) {
+let nativeBrokerSpawnBindings: NativeBrokerSpawnBindings | undefined;
+
+function loadNativeBrokerSpawnBindings(): NativeBrokerSpawnBindings {
+  if (process.platform !== "win32") {
+    return { startHostProcess: null, modulePath: undefined };
+  }
+  if (nativeBrokerSpawnBindings === undefined) {
+    let startHostProcess: NativeStartHostProcess | null = null;
+    let modulePath: string | undefined;
     try {
-      const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+      const req = createRequire(import.meta.url);
+      try {
+        modulePath = req.resolve("@bastani/atomic-natives");
+      } catch {
+        modulePath = undefined;
+      }
+      const binding = req(modulePath ?? "@bastani/atomic-natives") as {
         readonly startHostProcess?: NativeStartHostProcess;
       };
-      nativeStartDetached = typeof binding.startHostProcess === "function" ? binding.startHostProcess : null;
+      startHostProcess = typeof binding.startHostProcess === "function" ? binding.startHostProcess : null;
     } catch {
-      nativeStartDetached = null;
+      startHostProcess = null;
     }
+    nativeBrokerSpawnBindings = { startHostProcess, modulePath };
   }
-  return nativeStartDetached;
+  return nativeBrokerSpawnBindings;
 }
 
 function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -595,18 +615,153 @@ function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return result;
 }
 
+/**
+ * Minimal relay script run in a short-lived detached child on Windows so the Intercom broker is orphaned outside the
+ * launching engine's process tree (its `InheritedFromUniqueProcessId` is the exited relay). Without this, escalating a
+ * hung engine via `holdProcessDescendants` or `taskkill /T` would terminate the shared Intercom broker serving other
+ * sessions. The relay reads one JSON request on stdin, starts the broker (breaking away from the parent job when
+ * allowed), writes `{ ok, pid, creationTime }` on stdout while holding the broker's handle so the parent can attach a
+ * verified watch handle without PID-reuse races, and exits immediately once stdin closes.
+ */
+const WINDOWS_BROKER_RELAY_SCRIPT = [
+  'const fs = require("node:fs");',
+  'const cp = require("node:child_process");',
+  'let buf = "", launched = false, held = null;',
+  'function done() { try { held?.release?.(); } catch {} process.exit(0); }',
+  'function reply(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }',
+  'process.stdin.setEncoding("utf8");',
+  'process.stdin.on("data", (chunk) => {',
+  '  if (launched) return;',
+  '  buf += chunk;',
+  '  const nl = buf.indexOf("\\n");',
+  '  if (nl === -1) return;',
+  '  launched = true;',
+  '  try {',
+  '    const req = JSON.parse(buf.slice(0, nl));',
+  '    let native = null;',
+  '    if (req.nativePath) { try { native = require(req.nativePath); } catch {} }',
+  '    if (typeof native?.startHostProcess === "function") {',
+  '      try {',
+  '        const p = native.startHostProcess({ file: req.file, args: req.args, cwd: req.cwd, env: req.env, pipeStdin: false, pipeStdout: false, pipeStderr: false, detached: true, stderrLogPath: req.stderrLogPath, ...(req.verbatimArguments ? { verbatimArguments: true } : {}) }, () => {});',
+  '        p.unref();',
+  '        held = p;',
+  '        reply({ ok: true, pid: p.pid, creationTime: p.creationTime ?? null });',
+  '        return;',
+  '      } catch (e) {',
+  '        if (e?.code !== "ENOSYS" && e?.code !== "ENOTSUP") throw e;',
+  '      }',
+  '    }',
+  '    const fd = fs.openSync(req.stderrLogPath, "a");',
+  '    try {',
+  '      const c = cp.spawn(req.file, req.args, { detached: true, windowsHide: true, cwd: req.cwd, env: req.env, stdio: ["ignore", "ignore", fd], ...(req.verbatimArguments ? { windowsVerbatimArguments: true } : {}) });',
+  '      c.once("spawn", () => {',
+  '        c.unref();',
+  '        let started = null;',
+  '        if (c.pid && typeof native?.processCreationTime === "function") { try { started = native.processCreationTime(c.pid) ?? null; } catch {} }',
+  '        reply({ ok: true, pid: c.pid ?? null, creationTime: started });',
+  '      });',
+  '      c.once("error", (e) => reply({ ok: false, code: e?.code ?? "UNKNOWN", message: e?.message ?? String(e) }));',
+  '    } finally { fs.closeSync(fd); }',
+  '  } catch (e) {',
+  '    reply({ ok: false, code: e?.code ?? "UNKNOWN", message: e?.message ?? String(e) });',
+  '  }',
+  '});',
+  'process.stdin.on("end", done);',
+  'setTimeout(done, 5000).unref();',
+].join("\n");
+
+const WINDOWS_RELAY_HANDSHAKE_TIMEOUT_MS = 10_000;
+const WINDOWS_RELAY_EXIT_TIMEOUT_MS = 2_000;
+
+interface WindowsRelaySpec {
+  readonly command: string;
+  readonly args: string[];
+}
+
+function getWindowsRelaySpec(
+  runtime: BrokerRuntime = getCurrentBrokerRuntime(),
+  runtimePath: string = process.execPath,
+): WindowsRelaySpec | undefined {
+  if (runtime === "bun-binary") {
+    const supported = (globalThis as Record<symbol, unknown>)[INTERNAL_INTERCOM_BROKER_RELAY_CAPABILITY] === true;
+    return supported ? { command: runtimePath, args: [INTERNAL_INTERCOM_BROKER_RELAY_ARG] } : undefined;
+  }
+  if (runtime === "bun-source") {
+    return { command: runtimePath, args: ["-e", WINDOWS_BROKER_RELAY_SCRIPT] };
+  }
+  return { command: runtimePath, args: ["--no-warnings", "-e", WINDOWS_BROKER_RELAY_SCRIPT] };
+}
+
+function cleanRelayEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    // Do not run user/test preloads or debuggers inside the short-lived relay; the broker itself receives the full env.
+    if (key.toUpperCase() === "NODE_OPTIONS") continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 interface SpawnedBrokerChild {
   readonly pid: number | undefined;
   /** Kernel creation time read while the process handle was held at start (Windows), when available. */
   readonly started: string | undefined;
   readonly exitCode: number | null;
   readonly signalCode: NodeJS.Signals | null;
+  /** Non-native Windows fallback only: poll liveness of the orphaned broker via waitForBroker. */
+  readonly polledIdentity?: () => AnnouncedBroker | undefined;
   onceError(listener: (error: Error) => void): void;
   offError(listener: (error: Error) => void): void;
   onceExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   offExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   killHandle(): void;
   release(): void;
+}
+
+function wrapNativeProcessHandle(
+  proc: NativeDetachedProcess,
+  started: string | undefined,
+  readExitCode: () => number | null,
+  setExitListener: (listener: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined) => void,
+  clearExitListener: (listener: (code: number | null, signal: NodeJS.Signals | null) => void) => void,
+): SpawnedBrokerChild {
+  return {
+    pid: proc.pid,
+    started,
+    get exitCode() {
+      return readExitCode();
+    },
+    get signalCode() {
+      return null;
+    },
+    onceError() {
+      // Native start/watch reports launch errors synchronously via throw.
+    },
+    offError() {},
+    onceExit(listener) {
+      const code = readExitCode();
+      if (code !== null) {
+        queueMicrotask(() => listener(code, null));
+        return;
+      }
+      setExitListener(listener);
+    },
+    offExit(listener) {
+      clearExitListener(listener);
+    },
+    killHandle() {
+      try {
+        proc.kill(9, false);
+      } catch {}
+    },
+    release() {
+      setExitListener(undefined);
+      try {
+        proc.release();
+      } catch {}
+    },
+  };
 }
 
 function wrapNativeDetachedProcess(
@@ -648,40 +803,228 @@ function wrapNativeDetachedProcess(
   }
   proc.unref();
   const started = proc.creationTime ?? nativeProcessCreationTime(proc.pid);
+  return wrapNativeProcessHandle(
+    proc,
+    started,
+    () => exitCode,
+    (listener) => {
+      exitListener = listener;
+    },
+    (listener) => {
+      if (exitListener === listener) exitListener = undefined;
+    },
+  );
+}
+
+function watchOrphanedWindowsProcess(
+  startNative: NativeStartHostProcess,
+  pid: number,
+  creationTime: string,
+): SpawnedBrokerChild | undefined {
+  let exitCode: number | null = null;
+  let exitListener: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  let proc: NativeDetachedProcess;
+  try {
+    proc = startNative(
+      {
+        file: "",
+        args: [],
+        env: {},
+        pipeStdin: false,
+        pipeStdout: false,
+        pipeStderr: false,
+        detached: true,
+        watchPid: pid,
+        watchCreationTime: creationTime,
+      },
+      (event) => {
+        if (event.kind !== "exit") return;
+        exitCode = event.code ?? -1;
+        const listener = exitListener;
+        exitListener = undefined;
+        listener?.(exitCode, null);
+      },
+    );
+  } catch {
+    return undefined;
+  }
+  proc.unref();
+  return wrapNativeProcessHandle(
+    proc,
+    creationTime,
+    () => exitCode,
+    (listener) => {
+      exitListener = listener;
+    },
+    (listener) => {
+      if (exitListener === listener) exitListener = undefined;
+    },
+  );
+}
+
+interface RelayResponse {
+  readonly ok: boolean;
+  readonly pid?: number | null;
+  readonly creationTime?: string | null;
+  readonly code?: string;
+  readonly message?: string;
+}
+
+/**
+ * Start the Windows broker through a short-lived detached relay that exits immediately after handing the broker's
+ * `(pid, creationTime)` back while holding its handle. Once the relay exits, the broker's `InheritedFromUniqueProcessId`
+ * names the dead relay, so a hung-engine tree kill (`holdProcessDescendants` or `taskkill /T`) never ends the shared
+ * broker while still ending every other descendant of the engine.
+ */
+async function spawnOrphanedWindowsBrokerAsync(
+  launch: BrokerLaunchSpec,
+  spawnOptions: ReturnType<typeof buildBrokerSpawnOptions>,
+  logPath: string,
+  bindings: NativeBrokerSpawnBindings,
+): Promise<SpawnedBrokerChild | undefined> {
+  const relaySpec = getWindowsRelaySpec();
+  if (relaySpec === undefined) return undefined;
+
+  let relay: ReturnType<typeof spawn>;
+  try {
+    relay = spawn(relaySpec.command, relaySpec.args, {
+      detached: true,
+      windowsHide: true,
+      cwd: spawnOptions.cwd,
+      env: cleanRelayEnvironment(),
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+  } catch {
+    return undefined;
+  }
+  relay.stdin?.on("error", () => {});
+  relay.stdout?.on("error", () => {});
+
+  const relayExited = new Promise<void>((resolve) => {
+    if (relay.exitCode !== null || relay.signalCode !== null) {
+      resolve();
+      return;
+    }
+    relay.once("exit", () => resolve());
+    relay.once("error", () => resolve());
+  });
+
+  const endRelayAndWait = async (): Promise<void> => {
+    try {
+      relay.stdin?.end();
+    } catch {}
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const exitedInTime = await Promise.race([
+      relayExited.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), WINDOWS_RELAY_EXIT_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (!exitedInTime) {
+      try {
+        relay.kill("SIGKILL");
+      } catch {}
+      await Promise.race([relayExited, sleep(500)]);
+    }
+  };
+
+  const response = await new Promise<RelayResponse | undefined>((resolve) => {
+    let stdout = "";
+    let settled = false;
+    const finish = (value: RelayResponse | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      relay.stdout?.off("data", onData);
+      relay.off("error", onError);
+      relay.off("exit", onExit);
+      resolve(value);
+    };
+    const onData = (chunk: Buffer | string) => {
+      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const nl = stdout.indexOf("\n");
+      if (nl === -1) return;
+      try {
+        finish(JSON.parse(stdout.slice(0, nl)) as RelayResponse);
+      } catch {
+        finish(undefined);
+      }
+    };
+    const onError = () => finish(undefined);
+    const onExit = () => finish(undefined);
+    const timer = setTimeout(() => finish(undefined), WINDOWS_RELAY_HANDSHAKE_TIMEOUT_MS);
+    timer.unref();
+
+    relay.stdout?.on("data", onData);
+    relay.once("error", onError);
+    relay.once("exit", onExit);
+
+    try {
+      const payload = JSON.stringify({
+        file: launch.command,
+        args: launch.args,
+        cwd: spawnOptions.cwd,
+        env: stringOnlyEnv(spawnOptions.env),
+        stderrLogPath: logPath,
+        ...(launch.verbatimArguments ? { verbatimArguments: true } : {}),
+        ...(bindings.modulePath ? { nativePath: bindings.modulePath } : {}),
+      });
+      relay.stdin?.write(`${payload}\n`);
+    } catch {
+      finish(undefined);
+    }
+  });
+
+  if (response === undefined) {
+    await endRelayAndWait();
+    return undefined;
+  }
+
+  if (!response.ok) {
+    await endRelayAndWait();
+    const error = new Error(response.message ?? "Failed to spawn intercom broker") as NodeJS.ErrnoException;
+    if (response.code) error.code = response.code;
+    throw error;
+  }
+
+  const pid = typeof response.pid === "number" && Number.isInteger(response.pid) && response.pid > 0 ? response.pid : undefined;
+  const creationTime = typeof response.creationTime === "string" && response.creationTime.length > 0 ? response.creationTime : undefined;
+
+  // Open a verified watch handle while the relay still holds the broker's handle, so PID reuse is impossible and even
+  // an instant startup crash delivers its exact exit code.
+  let watched: SpawnedBrokerChild | undefined;
+  if (pid !== undefined && creationTime !== undefined && bindings.startHostProcess !== null) {
+    watched = watchOrphanedWindowsProcess(bindings.startHostProcess, pid, creationTime);
+  }
+
+  // Signal the relay to drop its handle and wait until it has exited, guaranteeing the broker is orphaned from this
+  // process's descendant tree before spawn returns.
+  await endRelayAndWait();
+
+  if (watched !== undefined) return watched;
+
+  // Fallback when watchHostProcess is unavailable (older native addon or no addon): poll liveness by (pid, creationTime).
+  const started = creationTime ?? (pid === undefined ? undefined : nativeProcessCreationTime(pid));
+  const polledIdentity: (() => AnnouncedBroker | undefined) | undefined =
+    pid === undefined ? undefined : () => (started === undefined ? { pid } : { pid, started });
   return {
-    pid: proc.pid,
+    pid,
     started,
     get exitCode() {
-      return exitCode;
+      return pid !== undefined && !isProcessAlive(pid) ? -1 : null;
     },
     get signalCode() {
       return null;
     },
-    onceError() {
-      // Native start reports spawn errors synchronously via throw above.
-    },
+    polledIdentity,
+    onceError() {},
     offError() {},
-    onceExit(listener) {
-      if (exitCode !== null) {
-        queueMicrotask(() => listener(exitCode, null));
-        return;
-      }
-      exitListener = listener;
-    },
-    offExit(listener) {
-      if (exitListener === listener) exitListener = undefined;
-    },
-    killHandle() {
-      try {
-        proc.kill(9, false);
-      } catch {}
-    },
-    release() {
-      exitListener = undefined;
-      try {
-        proc.release();
-      } catch {}
-    },
+    onceExit() {},
+    offExit() {},
+    killHandle() {},
+    release() {},
   };
 }
 
@@ -804,10 +1147,13 @@ async function spawnBrokerHoldingLock(
     const logPath = getBrokerLogPath();
     let logHandle: FileHandle | undefined;
     let child: SpawnedBrokerChild | undefined;
-    const startNative = loadNativeStartDetached();
-    if (startNative !== null) {
+    if (process.platform === "win32") {
+      const bindings = loadNativeBrokerSpawnBindings();
       try {
-        child = wrapNativeDetachedProcess(startNative, launch, baseSpawnOptions, logPath);
+        child = await spawnOrphanedWindowsBrokerAsync(launch, baseSpawnOptions, logPath, bindings);
+        if (child === undefined && bindings.startHostProcess !== null) {
+          child = wrapNativeDetachedProcess(bindings.startHostProcess, launch, baseSpawnOptions, logPath);
+        }
       } catch (error) {
         const cause = toError(error);
         const log = await describeBrokerLogAsync();
@@ -815,7 +1161,7 @@ async function spawnBrokerHoldingLock(
       }
     }
     if (child === undefined) {
-      // Direct child_process.spawn path (all POSIX platforms, and Windows fallback when native detached spawn is absent).
+      // Direct child_process.spawn path (all POSIX platforms, and Windows fallback if both relay and native spawn are unavailable).
       // Node duplicates the append descriptor during spawn, so the parent copy is closed immediately afterwards rather
       // than being held open for the broker's lifetime.
       logHandle = await open(logPath, "a");
@@ -878,7 +1224,7 @@ async function spawnBrokerHoldingLock(
       spawned.onceExit(onExit);
       // A disposed session stops waiting at once; the broker it launched is then stopped below, so the call still never
       // returns while that broker is writing its start-up files.
-      waitForBroker(readyTimeoutMs, undefined, cancelSignal).then(() => {
+      waitForBroker(readyTimeoutMs, spawned.polledIdentity, cancelSignal).then(() => {
         cleanup();
         resolve();
       }, async (error) => {

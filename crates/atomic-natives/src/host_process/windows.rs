@@ -49,10 +49,11 @@ use windows_sys::Win32::System::Threading::{
 	CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
 	CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW, DETACHED_PROCESS,
 	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-	GetProcessTimes, INFINITE, InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-	PROCESS_INFORMATION, ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-	SetEvent, TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects,
-	WaitForSingleObject,
+	GetProcessTimes, INFINITE, InitializeProcThreadAttributeList, OpenProcess,
+	PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+	PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, ResumeThread, STARTF_USESHOWWINDOW,
+	STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent, TerminateProcess, UpdateProcThreadAttribute,
+	WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -636,6 +637,12 @@ pub(super) fn start(
 	on_event: EventCallback,
 ) -> napi::Result<HostProcess, String> {
 	if options.detached {
+		if let Some(pid) = options.watch_pid {
+			let Some(creation_time) = options.watch_creation_time else {
+				return Err(code_error("EINVAL", "watchPid requires watchCreationTime"));
+			};
+			return watch(pid, creation_time, on_event);
+		}
 		return start_detached(options, on_event);
 	}
 	let file = wide(&options.file)?;
@@ -935,6 +942,57 @@ fn start_detached(
 		return Err(os_error(error));
 	}
 	Ok(HostProcess { pid: info.dwProcessId, creation_time, shared })
+}
+
+/// Opens existing process `pid`, verifies its creation time matches `expected_creation_time`, and supervises its exit
+/// until the host calls `release()`. Even an already-exited process whose handle is still held by a relay opens cleanly
+/// and reports its exact exit code immediately.
+pub(super) fn watch(
+	pid: u32,
+	expected_creation_time: String,
+	on_event: EventCallback,
+) -> napi::Result<HostProcess, String> {
+	if pid == 0 {
+		return Err(code_error("ENOENT", "process 0 cannot be watched"));
+	}
+	let raw_process = unsafe {
+		OpenProcess(
+			PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+			0,
+			pid,
+		)
+	};
+	if raw_process.is_null() {
+		return Err(os_error(io::Error::last_os_error()));
+	}
+	let process = unsafe { OwnedHandle::from_raw_handle(raw_process) };
+	let actual = handle_creation_time(raw(&process));
+	if actual.as_deref() != Some(expected_creation_time.as_str()) {
+		return Err(code_error("ENOENT", format!("process {pid} creation time does not match")));
+	}
+	let stop = unsafe { CreateEventW(null(), 1, 0, null()) };
+	if stop.is_null() {
+		return Err(os_error(io::Error::last_os_error()));
+	}
+	let shared = Arc::new(Shared {
+		pid,
+		handles: Mutex::new(Some(Handles {
+			process,
+			stop: unsafe { OwnedHandle::from_raw_handle(stop) },
+		})),
+		job: Mutex::new(None),
+		callback: Mutex::new(Some(on_event)),
+		stopping: AtomicBool::new(false),
+		killed_with: AtomicI32::new(0),
+	});
+	let worker = shared.clone();
+	if let Err(error) =
+		std::thread::Builder::new().name("host-process".into()).spawn(move || supervise(&worker))
+	{
+		shared.release_by_host();
+		return Err(os_error(error));
+	}
+	Ok(HostProcess { pid, creation_time: Some(expected_creation_time), shared })
 }
 
 #[cfg(test)]

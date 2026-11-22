@@ -620,6 +620,13 @@ export interface HostProcessOptions {
   stderrLogPath?: string
   /** On Windows, join `args` verbatim without re-quoting, matching Node's `windowsVerbatimArguments`. */
   verbatimArguments?: boolean
+  /**
+   * On Windows with `detached`, attach to an existing process ID instead of spawning a new process (requires
+   * `watch_creation_time` matching its kernel creation time).
+   */
+  watchPid?: number
+  /** Expected Windows kernel creation time (decimal 100-ns ticks since 1601-01-01 UTC) for `watch_pid`. */
+  watchCreationTime?: string
 }
 
 export type InputData =
@@ -932,7 +939,9 @@ export declare function signalIgnored(signal: number): boolean | null
  * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. On Windows the
  * process starts suspended in a job of its own, its piped streams are connections to the host's pipe server
  * `options.pipe`, and `on_event` gets only its exit; a start that cannot put it in the job or connect its streams
- * throws `ENOTSUP` before the program ran. Off Linux and Windows it always refuses with `ENOSYS`.
+ * throws `ENOTSUP` before the program ran. With `detached: true` on Windows, starts a hidden detached process with
+ * optional `stderr_log_path` and `CREATE_BREAKAWAY_FROM_JOB`, or (with `watch_pid` and `watch_creation_time`) attaches
+ * a verified exit watcher to an existing process. Off Linux and Windows it always refuses with `ENOSYS`.
  */
 export declare function startHostProcess(options: HostProcessOptions, onEvent: (event: HostProcessEvent) => void): HostProcess
 

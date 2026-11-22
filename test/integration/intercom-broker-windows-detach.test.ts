@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import { terminateRpcClientProcess } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "../../packages/intercom/broker/control-request.js";
 import { getBrokerLogPath, getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
-import { bunExecutable, makeTempDirectory, moduleDir } from "../helpers/runtime.js";
+import { bunExecutable, makeTempDirectory, moduleDir, sleep } from "../helpers/runtime.js";
 
 const REPO = join(moduleDir(import.meta.url), "../..");
 const INTERCOM_DIR = join(REPO, "packages/intercom");
@@ -394,4 +396,148 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 		},
 		WINDOWS_DETACH_TEST_TIMEOUT_MS,
 	);
+
+	interface HungEngineFixture {
+		readonly root: string;
+		readonly agentDir: string;
+		readonly engine: ReturnType<typeof spawn>;
+		readonly enginePid: number;
+		readonly brokerPid: number;
+		readonly otherPid: number;
+		readonly brokerCreated: string;
+		readonly otherCreated: string;
+		readonly natives: {
+			holdProcessDescendants(pid: number): { readonly count: number; endAll(): boolean; release(): void } | null;
+			processCreationTime(pid: number): string | null;
+			terminateProcessCreatedAt(pid: number, created: string, descendants: boolean): number | null;
+		};
+	}
+
+	/**
+	 * Starts a child that mimics an isolated engine: it starts the shared Intercom broker via `spawnBrokerIfNeeded`
+	 * plus one ordinary child process, records both PIDs, and then hangs (ignoring stdin EOF).
+	 */
+	async function startHungEngineWithBroker(prefix: string): Promise<HungEngineFixture> {
+		const root = makeTempDirectory(prefix);
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const readyFile = join(root, "ready.json");
+		const engineScript = join(root, "hung-engine.ts");
+		writeFileSync(
+			engineScript,
+			[
+				`process.env.ATOMIC_CODING_AGENT_DIR = ${JSON.stringify(agentDir)};`,
+				"delete process.env.PI_CODING_AGENT_DIR;",
+				'import { spawn } from "node:child_process";',
+				'import { readFileSync, writeFileSync } from "node:fs";',
+				`import { spawnBrokerIfNeeded } from ${JSON.stringify(SPAWN_ENTRY)};`,
+				`import { getBrokerPidPath } from ${JSON.stringify(join(INTERCOM_DIR, "broker/paths.ts"))};`,
+				`await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 30_000, ${JSON.stringify(INTERCOM_DIR)});`,
+				'const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });',
+				`const brokerPid = Number(readFileSync(getBrokerPidPath(${JSON.stringify(agentDir)}), "utf8").trim());`,
+				`writeFileSync(${JSON.stringify(readyFile)}, JSON.stringify({ enginePid: process.pid, brokerPid, otherPid: other.pid }));`,
+				// Hang deliberately: ignore stdin end so graceful shutdown hits the grace escalation path.
+				"process.stdin.resume();",
+				"setInterval(() => {}, 1000);",
+			].join("\n"),
+			"utf8",
+		);
+		const natives = createRequire(import.meta.url)("@bastani/atomic-natives") as HungEngineFixture["natives"];
+		const engine = spawn(process.execPath, [JITI_CLI, engineScript], {
+			cwd: root,
+			stdio: ["pipe", "ignore", "ignore"],
+			windowsHide: true,
+		});
+		const deadline = Date.now() + 30_000;
+		while (!existsSync(readyFile) && Date.now() < deadline) {
+			if (engine.exitCode !== null) throw new Error(`hung-engine fixture exited early with ${engine.exitCode}`);
+			await sleep(50);
+		}
+		assert.equal(existsSync(readyFile), true, "hung-engine fixture never became ready");
+		const info = JSON.parse(readFileSync(readyFile, "utf8")) as {
+			enginePid: number;
+			brokerPid: number;
+			otherPid: number;
+		};
+		const brokerCreated = natives.processCreationTime(info.brokerPid);
+		const otherCreated = natives.processCreationTime(info.otherPid);
+		assert.ok(brokerCreated !== null, "broker was not running before hung-engine escalation");
+		assert.ok(otherCreated !== null, "ordinary engine child was not running before hung-engine escalation");
+		return {
+			root,
+			agentDir,
+			engine,
+			enginePid: info.enginePid,
+			brokerPid: info.brokerPid,
+			otherPid: info.otherPid,
+			brokerCreated,
+			otherCreated,
+			natives,
+		};
+	}
+
+	for (const escalation of ["holdProcessDescendants", "taskkill", "terminateRpcClientProcess"] as const) {
+		test(
+			`hung-engine ${escalation} escalation ends the engine and its ordinary child while sparing the shared broker`,
+			async () => {
+				const fixture = await startHungEngineWithBroker(`ic-hung-${escalation}-`);
+				try {
+					if (escalation === "holdProcessDescendants") {
+						const held = fixture.natives.holdProcessDescendants(fixture.enginePid);
+						assert.ok(held !== null, "holdProcessDescendants returned null for running engine");
+						assert.equal(held.endAll(), true, "holdProcessDescendants.endAll did not end the engine");
+					} else if (escalation === "taskkill") {
+						const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+						spawnSync(
+							join(systemRoot, "System32", "taskkill.exe"),
+							["/F", "/T", "/PID", String(fixture.enginePid)],
+							{
+								stdio: "ignore",
+								windowsHide: true,
+							},
+						);
+					} else {
+						// Real RPC host escalation: closes stdin, waits out ENGINE_SHUTDOWN_GRACE_MS (5 s), then tree-kills.
+						await terminateRpcClientProcess(fixture.engine, true, true);
+					}
+
+					const goneBy = Date.now() + 5_000;
+					while (
+						Date.now() < goneBy &&
+						(fixture.natives.processCreationTime(fixture.enginePid) !== null ||
+							fixture.natives.processCreationTime(fixture.otherPid) === fixture.otherCreated)
+					) {
+						await sleep(50);
+					}
+					assert.equal(
+						fixture.natives.processCreationTime(fixture.enginePid),
+						null,
+						"hung engine still ran after tree kill",
+					);
+					assert.notEqual(
+						fixture.natives.processCreationTime(fixture.otherPid),
+						fixture.otherCreated,
+						"ordinary engine descendant survived tree kill",
+					);
+					assert.equal(
+						fixture.natives.processCreationTime(fixture.brokerPid),
+						fixture.brokerCreated,
+						`shared Intercom broker was killed by hung-engine ${escalation} escalation`,
+					);
+					assert.equal(
+						await queryBrokerPid(fixture.agentDir),
+						fixture.brokerPid,
+						`shared Intercom broker stopped answering after hung-engine ${escalation} escalation`,
+					);
+				} finally {
+					try {
+						fixture.engine.kill("SIGKILL");
+					} catch {}
+					fixture.natives.terminateProcessCreatedAt(fixture.otherPid, fixture.otherCreated, true);
+					await removeTempRootReleasingBroker(fixture.root, fixture.agentDir);
+				}
+			},
+			WINDOWS_DETACH_TEST_TIMEOUT_MS,
+		);
+	}
 });

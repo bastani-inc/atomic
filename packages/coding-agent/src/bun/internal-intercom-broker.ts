@@ -1,10 +1,14 @@
-import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, existsSync, openSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { INTERCOM_BROKER_BUNDLE_ENTRY } from "../core/builtin-install-layout.ts";
 import { type AppHostModuleSpecifier, type AppHostModules, requestAppHostModulesOnly } from "./app-host-modules.js";
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
+export const INTERNAL_INTERCOM_BROKER_RELAY_ARG = "--atomic-internal-intercom-broker-relay";
+export const INTERNAL_INTERCOM_BROKER_RELAY_CAPABILITY = Symbol.for("@bastani/atomic/intercom-broker-relay@1");
 
 const BROKER_HOST_MODULE_SPECIFIERS: readonly AppHostModuleSpecifier[] = ["@bastani/atomic", "@bastani/atomic/storage"];
 
@@ -99,4 +103,137 @@ export async function importInternalIntercomBroker(
 		throw new Error(`Atomic internal intercom broker module not found at ${brokerPath}`);
 	}
 	await import(pathToFileURL(brokerPath).href);
+}
+
+interface BrokerRelayRequest {
+	readonly file: string;
+	readonly args: string[];
+	readonly cwd?: string;
+	readonly env: Record<string, string>;
+	readonly stderrLogPath: string;
+	readonly verbatimArguments?: boolean;
+	readonly nativePath?: string;
+}
+
+interface RelayNativeBinding {
+	readonly startHostProcess?: (
+		options: {
+			readonly file: string;
+			readonly args: string[];
+			readonly cwd?: string;
+			readonly env: Record<string, string>;
+			readonly pipeStdin: false;
+			readonly pipeStdout: false;
+			readonly pipeStderr: false;
+			readonly detached: true;
+			readonly stderrLogPath: string;
+			readonly verbatimArguments?: boolean;
+		},
+		onEvent: () => void,
+	) => { readonly pid: number; readonly creationTime?: string | null; unref(): void; release(): void };
+	readonly processCreationTime?: (pid: number) => string | null;
+}
+
+/**
+ * Short-lived Windows broker relay for standalone compiled binaries: reads one newline-delimited JSON launch request
+ * from stdin, starts the detached broker directly (breaking away from the parent job object when allowed), reports its
+ * PID and creation time on stdout, holds the broker handle until stdin closes (so the parent can open a verified watch
+ * handle without PID-reuse race), and exits immediately so the broker is orphaned outside the parent's process tree.
+ */
+export function runInternalIntercomBrokerRelay(): void {
+	let buf = "";
+	let launched = false;
+	let held: { release(): void } | undefined;
+	const finish = (code = 0) => {
+		try {
+			held?.release();
+		} catch {}
+		process.exit(code);
+	};
+	const reply = (payload: Record<string, unknown>) => {
+		process.stdout.write(`${JSON.stringify(payload)}\n`);
+	};
+	const loadNative = (nativePath: string | undefined): RelayNativeBinding | null => {
+		const req = createRequire(import.meta.url);
+		for (const candidate of [
+			nativePath,
+			join(dirname(process.execPath), "node_modules", "@bastani", "atomic-natives"),
+			"@bastani/atomic-natives",
+		]) {
+			if (!candidate) continue;
+			try {
+				return req(candidate) as RelayNativeBinding;
+			} catch {}
+		}
+		return null;
+	};
+	process.stdin.setEncoding("utf8");
+	process.stdin.on("data", (chunk: string) => {
+		if (launched) return;
+		buf += chunk;
+		const nl = buf.indexOf("\n");
+		if (nl === -1) return;
+		launched = true;
+		try {
+			const req = JSON.parse(buf.slice(0, nl)) as BrokerRelayRequest;
+			const native = loadNative(req.nativePath);
+			if (typeof native?.startHostProcess === "function") {
+				try {
+					const proc = native.startHostProcess(
+						{
+							file: req.file,
+							args: req.args,
+							cwd: req.cwd,
+							env: req.env,
+							pipeStdin: false,
+							pipeStdout: false,
+							pipeStderr: false,
+							detached: true,
+							stderrLogPath: req.stderrLogPath,
+							...(req.verbatimArguments ? { verbatimArguments: true } : {}),
+						},
+						() => {},
+					);
+					proc.unref();
+					held = proc;
+					reply({ ok: true, pid: proc.pid, creationTime: proc.creationTime ?? null });
+					return;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code !== "ENOSYS" && code !== "ENOTSUP") throw error;
+				}
+			}
+			const fd = openSync(req.stderrLogPath, "a");
+			try {
+				const child = spawn(req.file, req.args, {
+					detached: true,
+					windowsHide: true,
+					cwd: req.cwd,
+					env: req.env,
+					stdio: ["ignore", "ignore", fd],
+					...(req.verbatimArguments ? { windowsVerbatimArguments: true } : {}),
+				});
+				child.once("spawn", () => {
+					child.unref();
+					let creationTime: string | null = null;
+					if (child.pid !== undefined) {
+						try {
+							creationTime = native?.processCreationTime?.(child.pid) ?? null;
+						} catch {}
+					}
+					reply({ ok: true, pid: child.pid ?? null, creationTime });
+				});
+				child.once("error", (error: NodeJS.ErrnoException) => {
+					reply({ ok: false, code: error.code ?? "UNKNOWN", message: error.message });
+				});
+			} finally {
+				closeSync(fd);
+			}
+		} catch (error) {
+			const err = error as NodeJS.ErrnoException;
+			reply({ ok: false, code: err.code ?? "UNKNOWN", message: err.message ?? String(error) });
+		}
+	});
+	process.stdin.on("end", () => finish(0));
+	setTimeout(() => finish(0), 5_000).unref();
 }
