@@ -27,9 +27,6 @@ import {
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
 import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
 
-const graphemeSegmenter = getGraphemeSegmenter();
-const wordSegmenter = getWordSegmenter();
-
 /** Regex matching paste markers like `[paste #1 +123 lines]` or `[paste #2 1234 chars]`. */
 const PASTE_MARKER_REGEX = /\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/g;
 
@@ -143,7 +140,7 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 	}
 
 	const chunks: TextChunk[] = [];
-	const segments = preSegmented ?? [...graphemeSegmenter.segment(line)];
+	const segments = preSegmented ?? [...getGraphemeSegmenter().segment(line)];
 
 	let currentWidth = 0;
 	let chunkStart = 0;
@@ -665,7 +662,11 @@ export class Editor implements Component, Focusable {
 
 	/** Segment text with paste-marker awareness, only merging markers with valid IDs. */
 	private segment(text: string, mode: "word" | "grapheme"): Iterable<Intl.SegmentData> {
-		return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.validPasteIds());
+		return segmentWithMarkers(
+			text,
+			mode === "word" ? getWordSegmenter() : getGraphemeSegmenter(),
+			this.validPasteIds(),
+		);
 	}
 
 	getPaddingX(): number {

@@ -613,13 +613,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			const streamingEpoch = this.streamingEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
-			const state = await this.getEngineState();
-			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
-			const catalog = await this.client.requestInternal<RpcModelCatalog>({
-				type: "get_available_models",
-				allowPartialResources: true,
-			});
-			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
+			const [state, catalog] = await Promise.all([
+				this.getEngineState(),
+				this.client.requestInternal<RpcModelCatalog>({
+					type: "get_available_models",
+					allowPartialResources: true,
+				}),
+			]);
+			if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 			if (
 				(super.session.sessionManager.isPersisted() && state.sessionId !== super.session.sessionId) ||
 				(state.sessionLocation &&

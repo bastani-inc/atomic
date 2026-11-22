@@ -442,3 +442,58 @@ test("single-entry inlined packages coalesce their static modules into one chunk
 	const thingCode = readFileSync(join(pkg, "dist/deep/thing.js"), "utf8");
 	assert.equal(thingCode.includes(sdkChunks[0]), false, "unrelated entry must not import fake-sdk chunk");
 });
+
+test("strictExecutionOrder: false omits __esmMin wrappers while preserving singletons, standalone imports, and compatNoopExports", async () => {
+	const { pkg } = fixture();
+	await bundlePackageDist(pkg, {
+		standalone: ["standalone.js"],
+		strictExecutionOrder: false,
+		log: () => {},
+	});
+	const shared = sharedFiles(pkg);
+	assert.ok(shared.length > 0);
+	for (const name of shared) {
+		const code = readFileSync(join(pkg, "dist", name), "utf8");
+		assert.equal(code.includes("__esmMin"), false, `${name} should not contain __esmMin wrappers`);
+	}
+	const result = inChild(
+		join(pkg, "dist/index.js"),
+		`const base = ${JSON.stringify(pathToFileURL(join(pkg, "dist/")).href)};
+		const other = await import(base + "extra.js");
+		const heavy = await m.loadHeavy();
+		process.stdout.write(JSON.stringify({
+			sameObject: other.shared === m.shared,
+			sameClass: other.Shared === m.Shared,
+			fromLazy: heavy.sharedFromHeavy === m.shared,
+			standaloneOk: typeof m.standaloneUrl === "string" && m.standaloneUrl.endsWith("/dist/standalone.js"),
+			assetOk: m.assetUrl.endsWith("/dist/asset.txt"),
+			nestedAssetOk: m.nestedAssetUrl.endsWith("/dist/nested/data.txt"),
+		}));`,
+	);
+	assert.deepEqual(result, {
+		sameObject: true,
+		sameClass: true,
+		fromLazy: true,
+		standaloneOk: true,
+		assetOk: true,
+		nestedAssetOk: true,
+	});
+
+	// Re-bundle with compatNoopExports targeting one of the shared chunks and verify the no-op export is callable
+	const targetChunk = shared.find((name) => name.startsWith("_lazy-"));
+	assert.ok(targetChunk, `expected a _lazy-* chunk in ${shared.join(", ")}`);
+	await bundlePackageDist(pkg, {
+		standalone: ["standalone.js"],
+		strictExecutionOrder: false,
+		compatNoopExports: { [targetChunk]: ["init_legacy_compat"] },
+		log: () => {},
+	});
+	const compatCode = readFileSync(join(pkg, "dist", targetChunk), "utf8");
+	assert.match(compatCode, /export function init_legacy_compat\(\)/);
+	assert.match(compatCode, /\/\/# sourceMappingURL=[^\n]+\n?$/);
+	const compatCall = inChild(
+		join(pkg, "dist", targetChunk),
+		`process.stdout.write(JSON.stringify({ type: typeof m.init_legacy_compat, ret: m.init_legacy_compat() === undefined }));`,
+	);
+	assert.deepEqual(compatCall, { type: "function", ret: true });
+});

@@ -241,16 +241,20 @@ async function analyzeModules(esbuild, packageDir, dist, sources, isExternal) {
 /**
  * Bundles `packageDir`'s compiled `dist` in place.
  * @param {string} packageDir
- * @param {{ standalone?: readonly string[], inline?: readonly string[], dist?: string, cacheDir?: string, log?: (message: string) => void }} [options]
+ * @param {{ standalone?: readonly string[], inline?: readonly string[], dist?: string, cacheDir?: string, strictExecutionOrder?: boolean, compatNoopExports?: Readonly<Record<string, readonly string[]>>, log?: (message: string) => void }} [options]
  *   `standalone`: modules, by path below `dist`, that keep their compiled files. `inline`: packages bundled in. `dist`: a
  *   directory named `dist` elsewhere that holds the compiled package instead, such as one staged for the package; the
- *   bundle is the same.
+ *   bundle is the same. `strictExecutionOrder`: when false, omits `__esmMin` wrappers via virtual entry facades so V8
+ *   compile cache pre-compiles top-level ESM bytecode. `compatNoopExports`: per-chunk no-op export stubs preserved for
+ *   in-place updates from releases that invoked `__esmMin` initializers.
  */
 export async function bundlePackageDist(packageDir, options = {}) {
 	const { rolldown } = await import("rolldown");
 	const esbuild = await import("esbuild");
 	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
 	const cacheDir = options.cacheDir ?? join(packageDir, "node_modules", ".cache", "atomic-bundle-dist");
+	const strictExecutionOrder = options.strictExecutionOrder ?? true;
+	const compatNoopExports = options.compatNoopExports ?? {};
 	if (options.dist !== undefined) {
 		// The bundle names modules by their paths from the directory holding `dist`, so it is the same wherever that is.
 		const staged = resolve(packageDir, options.dist);
@@ -371,12 +375,25 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	const entries = namedEntries(packageDir, manifest);
 	/** @type {Map<string, string>} */
 	let groups = new Map();
+	/** Virtual entry facades used when `strictExecutionOrder` is false so shared code never merges into entry files. */
+	/** @type {Map<string, string>} */
+	const virtualToFile = new Map();
+	/** @type {Record<string, string>} */
+	const inputEntries = {};
+	for (const file of sources.keys()) {
+		const rel = toPosix(relative(dist, file)).replace(/\.js$/, "");
+		if (strictExecutionOrder) {
+			inputEntries[rel] = file;
+		} else {
+			const vid = `\0bundle-entry:${rel}`;
+			virtualToFile.set(vid, file);
+			inputEntries[rel] = vid;
+		}
+	}
 
 	const bundle = await rolldown({
 		cwd: packageDir,
-		input: Object.fromEntries(
-			[...sources.keys()].map((file) => [toPosix(relative(dist, file)).replace(/\.js$/, ""), file]),
-		),
+		input: inputEntries,
 		// Not "node": the shared helpers would import `node:module` for a `require` no module makes.
 		// Configure mainFields explicitly so CJS inlined packages without an `exports` map still resolve.
 		platform: "neutral",
@@ -396,9 +413,12 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			{
 				name: "compiled-modules",
 				async resolveId(source, importer, extra) {
+					if (virtualToFile.has(source)) return source;
+					if (importer && virtualToFile.has(importer) && sources.has(normalizeId(source))) return source;
 					if (!importer || !source.startsWith(".")) return null;
 					const resolved = await this.resolve(source, importer, { ...extra, skipSelf: true });
-					return resolved && standalone.has(resolved.id) ? { id: resolved.id, external: true } : resolved;
+					if (!resolved || !standalone.has(resolved.id)) return resolved;
+					return { id: strictExecutionOrder ? resolved.id : asImported(resolved.id), external: true };
 				},
 				transform(code, id) {
 					// An inlined package's module keeps its code, so it cannot need its own URL once in a shared file.
@@ -411,6 +431,17 @@ export async function bundlePackageDist(packageDir, options = {}) {
 					return null;
 				},
 				async load(id) {
+					const virtualTarget = virtualToFile.get(id);
+					if (virtualTarget !== undefined) {
+						const exps = expectedExports.get(normalizeId(virtualTarget)) ?? [];
+						const named = exps.filter((name) => name !== "default");
+						const lines = [];
+						if (named.length > 0)
+							lines.push(`export { ${named.join(", ")} } from ${JSON.stringify(virtualTarget)};`);
+						if (exps.includes("default")) lines.push(`export { default } from ${JSON.stringify(virtualTarget)};`);
+						if (lines.length === 0) lines.push(`import ${JSON.stringify(virtualTarget)}; export {};`);
+						return { code: `${lines.join("\n")}\n`, map: null };
+					}
 					const code = sources.get(normalizeId(id));
 					if (code === undefined) return null;
 					const map = maps.get(normalizeId(id));
@@ -559,7 +590,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			const key = own.length === 0 ? `runtime:${first}\0${[...chunk.exports].sort().join(",")}` : `module:${first}`;
 			return `_${label}-${stableName(key)}.js`;
 		},
-		strictExecutionOrder: true,
+		strictExecutionOrder,
 		minifyInternalExports: false,
 		keepNames: true,
 		sourcemap: true,
@@ -582,7 +613,8 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		const entryImport = chunk.imports.find((name) => entryFiles.has(name));
 		if (entryImport) throw new Error(`bundle-package-dist: ${chunk.fileName} imports the entry ${entryImport}`);
 		if (!chunk.isEntry || !chunk.facadeModuleId) continue;
-		const expected = expectedExports.get(normalizeId(chunk.facadeModuleId)) ?? [];
+		const facadeTarget = virtualToFile.get(chunk.facadeModuleId) ?? chunk.facadeModuleId;
+		const expected = expectedExports.get(normalizeId(facadeTarget)) ?? [];
 		const actual = [...chunk.exports].sort();
 		if (expected.join(",") !== actual.join(",")) {
 			throw new Error(
@@ -614,14 +646,15 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			for (const imported of dynamic ? [...chunk.imports, ...chunk.dynamicImports] : chunk.imports) {
 				if (byName.has(imported)) stack.push(imported);
 				// A standalone module is named by its path below dist.
-				else externals.add(standalone.has(join(dist, imported)) ? `./${imported}` : imported);
+				else externals.add(standalone.has(join(dist, imported)) ? asImported(join(dist, imported)) : imported);
 			}
 		}
 		return [...externals].sort();
 	};
 	for (const chunk of chunks) {
 		if (!chunk.isEntry || !chunk.facadeModuleId) continue;
-		const expected = footprintOf(normalizeId(chunk.facadeModuleId));
+		const facadeTarget = virtualToFile.get(chunk.facadeModuleId) ?? chunk.facadeModuleId;
+		const expected = footprintOf(normalizeId(facadeTarget));
 		for (const [kind, actual, wanted] of /** @type {const} */ ([
 			["loads", fileReach(chunk.fileName, false), expected.loaded],
 			["reaches", fileReach(chunk.fileName, true), expected.reachable],
@@ -654,6 +687,16 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			});
 			if (contents.includes(MODULE_URL_MARKER)) {
 				throw new Error(`bundle-package-dist: ${item.fileName} names a module URL the build could not replace`);
+			}
+		}
+		if (item.type === "chunk" && !item.isEntry) {
+			const compatNames = (compatNoopExports[item.fileName] ?? []).filter((name) => !item.exports.includes(name));
+			if (compatNames.length > 0) {
+				const stubs = `${compatNames.map((name) => `export function ${name}() {}`).join("\n")}\n`;
+				const mapComment = /\n\/\/# sourceMappingURL=[^\r\n]*\s*$/;
+				contents = mapComment.test(contents)
+					? contents.replace(mapComment, (match) => `\n${stubs}${match.trimStart()}`)
+					: `${contents}\n${stubs}`;
 			}
 		}
 		mkdirSync(dirname(path), { recursive: true });
@@ -784,5 +827,27 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 		.slice(2)
 		.find((arg) => arg.startsWith("--dist="))
 		?.slice("--dist=".length);
-	await bundlePackageDist(process.cwd(), { standalone: list("standalone"), inline: list("inline"), dist });
+	const strictExecutionOrder = !process.argv.slice(2).includes("--no-strict-execution-order");
+	/** @type {Record<string, string[]>} */
+	const compatNoopExports = {};
+	for (const arg of process.argv.slice(2)) {
+		if (!arg.startsWith("--compat-noop-exports=")) continue;
+		for (const entry of arg.slice("--compat-noop-exports=".length).split(";").filter(Boolean)) {
+			const sepIndex = entry.indexOf(":");
+			if (sepIndex <= 0) continue;
+			const file = entry.slice(0, sepIndex);
+			const names = entry
+				.slice(sepIndex + 1)
+				.split(",")
+				.filter(Boolean);
+			if (names.length > 0) compatNoopExports[file] = [...(compatNoopExports[file] ?? []), ...names];
+		}
+	}
+	await bundlePackageDist(process.cwd(), {
+		standalone: list("standalone"),
+		inline: list("inline"),
+		dist,
+		strictExecutionOrder,
+		compatNoopExports,
+	});
 }

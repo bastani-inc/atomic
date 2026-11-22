@@ -207,6 +207,98 @@ describe("theme schema", () => {
 			assert.throws(() => parseThemeJson("invalid", invalid), /additional properties/i);
 		}
 	});
+
+	it("matches validateThemeJson across valid and invalid inputs without loading TypeBox", async () => {
+		const { validateThemeJson } = await import("../src/modes/interactive/theme/theme-schema.js");
+		const builtIn = JSON.parse(readPackageFile("src/modes/interactive/theme/dark.json")) as Record<string, unknown>;
+		const builtInColors = builtIn.colors as Record<string, unknown>;
+		const cases: unknown[] = [
+			builtIn,
+			{ ...builtIn, $schema: "https://example.com/schema.json" },
+			{ ...builtIn, $schema: 123 },
+			{ ...builtIn, name: "" },
+			{ ...builtIn, name: "a/b" },
+			{ ...builtIn, name: 42 },
+			{ ...builtIn, vars: { primary: "#ffffff", idx: 0, max: 255 } },
+			{ ...builtIn, vars: { badNeg: -1 } },
+			{ ...builtIn, vars: { badHigh: 256 } },
+			{ ...builtIn, vars: { badFloat: 1.5 } },
+			{ ...builtIn, vars: { badBool: true } },
+			{ ...builtIn, vars: [] },
+			{ ...builtIn, vars: null },
+			{ ...builtIn, colors: { ...builtInColors, accent: 0, border: 255 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: -1 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: 256 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: 12.3 } },
+			{ ...builtIn, colors: { ...builtInColors, accent: null } },
+			{ ...builtIn, colors: [] },
+			{ ...builtIn, colors: {} },
+			{ ...builtIn, workingIndicator: { dark: "#111111", peak: 255 } },
+			{ ...builtIn, workingIndicator: { dark: 256 } },
+			{ ...builtIn, workingIndicator: { extra: "#111111" } },
+			{ ...builtIn, workingIndicator: [] },
+			{ ...builtIn, export: { pageBg: "#000000", cardBg: 16, infoBg: "" } },
+			{ ...builtIn, export: { pageBg: -1 } },
+			{ ...builtIn, export: { extra: "" } },
+			{ ...builtIn, export: null },
+			{ ...builtIn, unknownTop: 1 },
+			null,
+			[],
+			"string",
+			42,
+			{},
+		];
+		for (const candidate of cases) {
+			const expectedValid = validateThemeJson.Check(candidate);
+			let actualValid = true;
+			try {
+				parseThemeJson("diff", candidate);
+			} catch {
+				actualValid = false;
+			}
+			assert.equal(actualValid, expectedValid, `mismatch for ${JSON.stringify(candidate)}`);
+		}
+
+		// Verify theme-parse does not import TypeBox at runtime
+		const { spawnSync } = await import("node:child_process");
+		const parseUrl = new URL("../src/modes/interactive/theme/theme-parse.ts", import.meta.url).href;
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const loaded = [];
+				registerHooks({ load(url, ctx, next) { loaded.push(url); return next(url, ctx); } });
+				await import(${JSON.stringify(parseUrl)});
+				process.stdout.write(JSON.stringify(loaded.filter((u) => u.includes("typebox") || u.includes("theme-schema"))));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		assert.deepEqual(JSON.parse(probe.stdout), []);
+
+		// Verify settings-defaults stays aligned with atomic-ai's retry default without importing atomic-ai
+		const { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } = await import("@bastani/atomic-ai/utils/retry");
+		const { SETTINGS_DEFAULTS } = await import("../src/core/settings-defaults.js");
+		assert.equal(SETTINGS_DEFAULTS.retry.maxAgentDelayMs, DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
+		const defaultsUrl = new URL("../src/core/settings-defaults.ts", import.meta.url).href;
+		const defaultsProbe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const loaded = [];
+				registerHooks({ load(url, ctx, next) { loaded.push(url); return next(url, ctx); } });
+				await import(${JSON.stringify(defaultsUrl)});
+				process.stdout.write(JSON.stringify(loaded.filter((u) => u.includes("atomic-ai") || u.includes("/packages/ai/"))));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(defaultsProbe.status, 0, defaultsProbe.stderr);
+		assert.deepEqual(JSON.parse(defaultsProbe.stdout), []);
+	});
 });
 
 describe("models.json schema", () => {

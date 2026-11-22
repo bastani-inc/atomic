@@ -6,7 +6,8 @@ import { fuzzyFilter } from "./fuzzy.ts";
 import { autocompleteBoundaryRegex, autocompleteSeparatorRegex } from "./utils.ts";
 
 const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
-const tokenStartRegex = new RegExp(`${autocompleteBoundaryRegex.source}$`, "u");
+let tokenStartRegex: RegExp | undefined;
+const getTokenStartRegex = (): RegExp => (tokenStartRegex ??= new RegExp(`${autocompleteBoundaryRegex.source}$`, "u"));
 // Opening wrappers that may precede a path in prose, mapped to their closing counterpart.
 const PATH_WRAPPERS: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">", "`": "`" };
 
@@ -90,7 +91,7 @@ function isTokenStart(text: string, index: number): boolean {
 	while (start > 0 && PATH_WRAPPERS[text[start - 1]!]) {
 		start -= 1;
 	}
-	return PATH_DELIMITERS.has(text[start - 1] ?? "") || tokenStartRegex.test(text.slice(0, start));
+	return PATH_DELIMITERS.has(text[start - 1] ?? "") || getTokenStartRegex().test(text.slice(0, start));
 }
 
 function extractQuotedPrefix(text: string): string | null {
@@ -537,7 +538,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 		// Return an empty prefix after whitespace or CJK punctuation, but not for empty text.
 		// Empty text should not trigger file suggestions - that's for forced Tab completion
-		if (pathPrefix === "" && text !== "" && tokenStartRegex.test(text)) {
+		if (pathPrefix === "" && text !== "" && getTokenStartRegex().test(text)) {
 			return pathPrefix;
 		}
 

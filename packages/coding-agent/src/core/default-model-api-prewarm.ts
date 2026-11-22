@@ -11,6 +11,7 @@ import { isModelType } from "@bastani/atomic-ai";
 import { getAllBuiltinModels } from "@bastani/atomic-ai/providers/all";
 import { type Args, parseArgs } from "../cli/args.ts";
 import { getAgentDir } from "../config.js";
+import { nativeModuleProblem } from "../utils/native-module.ts";
 import { prewarmModelApi } from "./model-api-prewarm.ts";
 import { ModelConfig } from "./model-config.ts";
 import { extensionsCanDecideProjectTrust } from "./project-trust-electorate.js";
@@ -103,5 +104,18 @@ export async function prewarmHostDefaultModelApi(
 		if (model && isModelType(model, "chat")) await prewarmModelApi({ provider, api: model.api });
 	} catch {
 		// Best-effort prewarm; never fail startup or leak rejections.
+	}
+}
+
+/**
+ * Load the RPC mode module and native addon while a prewarmed engine waits for host adoption so they are already
+ * linked when `main()` runs. Best-effort; never rejects.
+ */
+export async function prewarmInteractiveEngineRpcMode(): Promise<void> {
+	try {
+		nativeModuleProblem();
+		await import("../modes/rpc/rpc-mode.ts");
+	} catch {
+		// Best-effort prewarm; main() surfaces any real load failure on adoption.
 	}
 }
