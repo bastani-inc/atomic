@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
-import { afterAll, onTestFinished, test, vi } from "vitest";
+import { afterAll, describe, onTestFinished, test, vi } from "vitest";
 import { recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
@@ -46,28 +46,28 @@ async function liveProcess(): Promise<number> {
 	return child.pid;
 }
 
-test("with a host older than Intercom, a session takes the spawn lock, which names its pid alone", async () => {
-	const path = join(tempDir, "broker.spawn.lock-own");
-	const owner = await acquireSpawnLockAsync(path);
-	assert.ok(owner !== undefined);
-	onTestFinished(() => releaseSpawnLockAsync(owner, path));
-	assert.equal(owner.split("\n")[0], String(process.pid));
-});
+// On macOS a process's start is read by the native module that ships beside the broker, not by the host, so an older
+// host takes no reader away there.
+describe.skipIf(process.platform === "darwin")("where the host reads process starts (Linux, Windows)", () => {
+	test("with a host older than Intercom, a session takes the spawn lock, which names its pid alone", async () => {
+		const path = join(tempDir, "broker.spawn.lock-own");
+		const owner = await acquireSpawnLockAsync(path);
+		assert.ok(owner !== undefined);
+		onTestFinished(() => releaseSpawnLockAsync(owner, path));
+		assert.equal(owner.split("\n")[0], String(process.pid));
+	});
 
-// On macOS the start is read by the native module that ships beside the broker, not by the host.
-test.skipIf(process.platform === "darwin")(
-	"with a host older than Intercom, a lock naming a live process stays held whatever start it records",
-	async () => {
+	test("with a host older than Intercom, a lock naming a live process stays held whatever start it records", async () => {
 		const pid = await liveProcess();
 		const path = join(tempDir, "broker.spawn.lock-live");
 		// A start in the form a reader records, of a process other than this one: only a reader could tell them apart.
 		writeTextSync(path, `${pid} 1\n${Date.now()}\n`);
 		assert.equal(isSpawnLockStale(path), false);
-	},
-);
+	});
 
-test("with a host older than Intercom, a broker is found by its pid alone", async () => {
-	const pid = await liveProcess();
-	const found = await identifyBrokerProcessAsync(pid, join(tempDir, "broker.pid"));
-	assert.deepEqual(found, { pid, started: undefined, wroteBrokerPid: "unknown" });
+	test("with a host older than Intercom, a broker is found by its pid alone", async () => {
+		const pid = await liveProcess();
+		const found = await identifyBrokerProcessAsync(pid, join(tempDir, "broker.pid"));
+		assert.deepEqual(found, { pid, started: undefined, wroteBrokerPid: "unknown" });
+	});
 });
