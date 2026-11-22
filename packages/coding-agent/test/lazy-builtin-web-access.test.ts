@@ -120,6 +120,7 @@ describe("lazy builtin web-access", () => {
 				`light vs heavy shortcut description mismatch for ${key}`,
 			);
 		}
+		assert.deepEqual([...lazyExt.messageRenderers.keys()], [...eagerExt.messageRenderers.keys()]);
 	});
 
 	test("honors custom shortcuts from ~/.atomic/web-search.json while dormant", async () => {

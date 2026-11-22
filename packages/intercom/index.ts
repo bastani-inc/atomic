@@ -4,6 +4,7 @@ import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type S
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderContactSupervisorCall, renderIntercomCall, renderIntercomToolResult } from "./result-renderers.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "./ui/wake-notice.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
@@ -982,6 +983,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 		renderCall: renderIntercomCall,
 	});
+	pi.registerMessageRenderer?.(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
 	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
 	pi.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
