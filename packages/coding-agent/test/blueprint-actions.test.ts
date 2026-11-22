@@ -21,6 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
+import { nativeProcessCreationTime, processStartToken } from "../src/core/process-start-token.js";
 import {
 	closedObject,
 	type ExpressionContext,
@@ -57,20 +58,17 @@ import {
 	stepProcessWatcher,
 	stepStartingWatcher,
 } from "../src/core/resume/blueprint/process.ts";
+import { BLUEPRINT_STEP_TIMEOUT_MS } from "../src/core/resume/blueprint/steps.ts";
 import { isWorkspaceGitError } from "../src/core/workspace/errors.ts";
 import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { createGitEnvironment } from "../src/utils/git-env.ts";
 import * as shell from "../src/utils/shell.ts";
 import { getShellConfig, type ShellConfig } from "../src/utils/shell.ts";
 import { bunExecutable } from "./cli-test-helpers.ts";
+import { expireStepBudgetOnceStarted } from "./helpers/blueprint-fixtures.ts";
 
 /** Room for a node or bash process to start and finish on a loaded machine. */
 const ACTION_TIMEOUT_MS = 60_000;
-/**
- * The budget of an action that never finishes. The clock never ends it: {@link expireBudgetOnceStarted} makes it run
- * out once the action has started, however long a loaded machine takes to fetch and start it.
- */
-const HANG_TIMEOUT_MS = 60 * 60 * 1_000;
 /** A Bun child loads this module graph and runs two actions: a real child process, not a slow test. */
 const BUN_PROBE_TIMEOUT_MS = 120_000;
 /** The budget of a step that only has to expire: long enough for bash to have started, short enough not to wait. */
@@ -246,55 +244,6 @@ function startRun(uses: string, options: RunOptions = {}): StartedRun {
 	return { logPath, result };
 }
 
-/**
- * Makes the budget of the run about to start run out once `started` exists, which the action writes as it starts,
- * rather than once {@link HANG_TIMEOUT_MS} has passed. The timer a run arms for what is left of that budget is the only
- * one longer than half of it; every other timer is armed as asked. Returns a restore for the timer functions.
- *
- * A test that uses it no longer sees how long the timer is armed for: "does not forgive a step that ran out of time"
- * still runs a step against a real budget, which node actions and composite steps share through the same process
- * runner.
- */
-function expireBudgetOnceStarted(started: string): () => void {
-	const realSetTimeout = globalThis.setTimeout;
-	const realClearTimeout = globalThis.clearTimeout;
-	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
-	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
-		if (typeof timeout !== "number" || timeout <= HANG_TIMEOUT_MS / 2)
-			return realSetTimeout(handler, timeout, ...args);
-		const budget: (typeof budgets)[number] = {
-			standIn: realSetTimeout(() => undefined, 2 ** 31 - 1),
-			cleared: false,
-		};
-		budget.standIn.unref();
-		budgets.push(budget);
-		const look = () => {
-			if (budget.cleared) return;
-			if (existsSync(started)) handler(...args);
-			else budget.watch = realSetTimeout(look, 20);
-		};
-		look();
-		return budget.standIn;
-	}) as typeof setTimeout;
-	globalThis.clearTimeout = ((timer?: NodeJS.Timeout | string | number) => {
-		const budget = budgets.find((entry) => entry.standIn === timer);
-		if (budget !== undefined) {
-			budget.cleared = true;
-			realClearTimeout(budget.watch);
-		}
-		realClearTimeout(timer);
-	}) as typeof clearTimeout;
-	return () => {
-		globalThis.setTimeout = realSetTimeout;
-		globalThis.clearTimeout = realClearTimeout;
-		for (const budget of budgets) {
-			budget.cleared = true;
-			realClearTimeout(budget.watch);
-			realClearTimeout(budget.standIn);
-		}
-	};
-}
-
 function readText(path: string): string {
 	return readFileSync(path, "utf8");
 }
@@ -383,6 +332,26 @@ function isAlive(pid: number): boolean {
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
+}
+
+function readRecordedPid(path: string): number {
+	const text = readText(path).trim();
+	assert.match(text, /^\d+$/, `expected numeric PID in ${path}, got ${JSON.stringify(text)}`);
+	const pid = Number(text);
+	assert.ok(Number.isSafeInteger(pid) && pid > 0, `expected positive PID in ${path}, got ${pid}`);
+	return pid;
+}
+
+/** Synchronous per-process identity when available (Windows native creation time or Linux `/proc` start token). */
+function liveProcessIdentity(pid: number): string | undefined {
+	if (process.platform === "win32") return nativeProcessCreationTime(pid) ?? undefined;
+	return processStartToken(pid);
+}
+
+function isSameProcessAlive(pid: number, identity: string | undefined): boolean {
+	if (!isAlive(pid)) return false;
+	if (identity === undefined) return true;
+	return liveProcessIdentity(pid) === identity;
 }
 
 async function waitForFile(path: string): Promise<void> {
@@ -1263,8 +1232,12 @@ describe("the action cache", () => {
 });
 
 describe("how an action ends", () => {
+	// Publish the PID file via rename so the test never observes a newly created empty file before its bytes are written.
 	const hang = script(
-		'require("node:fs").writeFileSync(process.env.PID_FILE, String(process.pid));',
+		'const fs = require("node:fs");',
+		'const tmp = process.env.PID_FILE + ".tmp";',
+		"fs.writeFileSync(tmp, String(process.pid));",
+		"fs.renameSync(tmp, process.env.PID_FILE);",
 		"setInterval(() => {}, 1000);",
 	);
 
@@ -1272,19 +1245,31 @@ describe("how an action ends", () => {
 		commitNodeAction("acme/hang", hang);
 		const pidFile = join(fixture.root, "hang.pid");
 
-		const restore = expireBudgetOnceStarted(pidFile);
+		let identity: string | undefined;
+		const budget = expireStepBudgetOnceStarted(() => {
+			if (!existsSync(pidFile)) return false;
+			try {
+				identity = liveProcessIdentity(readRecordedPid(pidFile));
+				return true;
+			} catch {
+				return false;
+			}
+		});
 		let exit: ProcessExit;
 		try {
-			exit = await startRun("github.com/acme/hang@v1", { env: { PID_FILE: pidFile }, timeoutMs: HANG_TIMEOUT_MS })
-				.result;
+			exit = await startRun("github.com/acme/hang@v1", {
+				env: { PID_FILE: pidFile },
+				timeoutMs: BLUEPRINT_STEP_TIMEOUT_MS,
+			}).result;
 		} finally {
-			restore();
+			budget.restore();
 		}
 
 		assert.equal(exit.timedOut, true);
 		assert.notEqual(exit.exitStatus, 0);
+		assert.equal(budget.armedDelays.length, 1);
 		assert.ok(existsSync(pidFile), "the action started before its budget ran out");
-		assert.equal(isAlive(Number(readText(pidFile))), false);
+		assert.equal(isSameProcessAlive(readRecordedPid(pidFile), identity), false);
 	});
 
 	test("aborting rejects with the signal's reason and stops the process (#4588)", async () => {
@@ -1298,10 +1283,12 @@ describe("how an action ends", () => {
 			signal: controller.signal,
 		});
 		await waitForFile(pidFile);
+		const pid = readRecordedPid(pidFile);
+		const identity = liveProcessIdentity(pid);
 		controller.abort(reason);
 
 		assert.equal(await rejectionOf(started.result), reason);
-		assert.equal(isAlive(Number(readText(pidFile))), false);
+		assert.equal(isSameProcessAlive(pid, identity), false);
 	});
 
 	test("an already aborted signal rejects before anything is fetched (#4588)", async () => {
