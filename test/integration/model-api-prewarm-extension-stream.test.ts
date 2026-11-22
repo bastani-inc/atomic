@@ -33,13 +33,18 @@ export async function load(url, context, nextLoad) {
 	return { preload, log };
 }
 
-/** When the engine first loaded Atomic's own Anthropic Messages implementation, if it has. */
-function anthropicImplementationLoadedAt(log: string): number | undefined {
-	if (!existsSync(log)) return undefined;
-	const line = readFileSync(log, "utf8")
-		.split("\n")
-		.find((entry) => /[\\/]api[\\/]anthropic-messages\.js$/.test(entry));
-	return line === undefined ? undefined : Number(line.split(" ")[0]);
+/** The engine's module log so far: every load it began, in the order it began them. */
+function readModuleLog(log: string): string {
+	return existsSync(log) ? readFileSync(log, "utf8") : "";
+}
+
+/**
+ * Where in the engine's module log its first load of Atomic's own Anthropic Messages implementation is recorded, if it
+ * has loaded it: a position in the engine's own order of loads, which no clock of another process needs to agree with.
+ */
+function anthropicImplementationLoadOffset(content: string): number | undefined {
+	const match = /^\d+ \S*[\\/]api[\\/]anthropic-messages\.js$/m.exec(content);
+	return match === null ? undefined : match.index;
 }
 
 test(
@@ -97,17 +102,23 @@ test(
 			assert.equal(state.model?.provider, "proxy");
 			// Long enough for a prewarm the engine starts once its resources are ready to reach the module.
 			await sleep(2_000);
-			const switchedAt = Date.now();
+			// Everything the engine began to load before it was asked to switch is in the log by now.
+			const beforeSwitch = readModuleLog(log);
+			assert.equal(
+				anthropicImplementationLoadOffset(beforeSwitch),
+				undefined,
+				"nothing loaded the implementation before the switch",
+			);
 			await client.setModel("anthropic", "claude-sonnet-4-5");
 			const deadline = Date.now() + MODULE_LOAD_WAIT_MS;
-			let loadedAt = anthropicImplementationLoadedAt(log);
+			let loadedAt = anthropicImplementationLoadOffset(readModuleLog(log));
 			while (loadedAt === undefined && Date.now() < deadline) {
 				await sleep(50);
-				loadedAt = anthropicImplementationLoadedAt(log);
+				loadedAt = anthropicImplementationLoadOffset(readModuleLog(log));
 			}
-			// The switch to a model of Atomic's own Anthropic provider loads it, and nothing loaded it before.
+			// The switch to a model of Atomic's own Anthropic provider loads it, after every load that came before it.
 			assert.ok(loadedAt !== undefined, "the switch loads the implementation its model uses");
-			assert.ok(loadedAt >= switchedAt, `loaded ${switchedAt - loadedAt} ms before the switch`);
+			assert.ok(loadedAt >= beforeSwitch.length, "loaded after the switch was asked for");
 		} finally {
 			await client.stop();
 			rmSync(root, { recursive: true, force: true });
