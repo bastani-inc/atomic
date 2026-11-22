@@ -425,9 +425,21 @@ test("router close releases pending openings before awaiting serial reply lanes 
 	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "close-open"));
 
 	// Send both a reply-lane candidate (serialized on `reply:<id>`) and a plain send waiting on the pending opening.
+	const realWhenForTarget = b.returnPaths.whenOpeningForTarget;
+	let waitedCount = 0;
+	const bothWaiting = Promise.withResolvers<void>();
+	b.returnPaths.whenOpeningForTarget = (...args) => {
+		const waited = realWhenForTarget(...args);
+		if (waited) {
+			waitedCount += 1;
+			if (waitedCount >= 2) bothWaiting.resolve();
+		}
+		return waited;
+	};
 	b.send(stage, "launcher", "close-reply", { replyTo: "some-ask" });
 	b.send(stage, "launcher", "close-plain");
-	await new Promise((done) => setTimeout(done, 60));
+	await bothWaiting.promise;
+	b.returnPaths.whenOpeningForTarget = realWhenForTarget;
 
 	let listLiveAfterClose = 0;
 	const origListLive = b.opened.state.leases.listLive.bind(b.opened.state.leases);
@@ -544,14 +556,20 @@ test("multi-node local sends preserve per-(sender, target) FIFO order across ID 
 
 	b.send(launcher, "stage", "fifo-a-open");
 	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "fifo-a-open"));
+	const msg1Parked = Promise.withResolvers<void>();
+	const realWhenOpening = b.returnPaths.whenOpening;
+	b.returnPaths.whenOpening = (...args) => {
+		const waited = realWhenOpening(...args);
+		if (waited) msg1Parked.resolve();
+		return waited;
+	};
 	b.send(stage, launcher.info.id, "fifo-a-1");
 	await msg1ReadDone.promise;
-	// Let fifo-a-1 reach commitLocalNotFound and park before fifo-a-2 arrives.
-	await new Promise((done) => setTimeout(done, 30));
+	await msg1Parked.promise;
+	b.returnPaths.whenOpening = realWhenOpening;
 	b.send(stage, launcher.info.id, "fifo-a-2");
 	await msg2ReadEntered.promise;
 	for (const settle of heldLocal.splice(0)) settle(true);
-	await new Promise((done) => setTimeout(done, 30));
 	msg2ReadGate.resolve();
 
 	assert.equal((await waitFor(() => outcomeOf(stage, "fifo-a-1"))).type, "delivered");
@@ -591,12 +609,19 @@ test("multi-node local sends preserve per-(sender, target) FIFO order across ID 
 	await waitFor(() =>
 		framesOf(stage2).find((frame) => frame.type === "message" && frame.message.id === "fifo-b-open"),
 	);
+	const msg1bParked = Promise.withResolvers<void>();
+	const realWhenForTargetB = b.returnPaths.whenOpeningForTarget;
+	b.returnPaths.whenOpeningForTarget = (...args) => {
+		const waited = realWhenForTargetB(...args);
+		if (waited) msg1bParked.resolve();
+		return waited;
+	};
 	b.send(stage2, "launcher2", "fifo-b-1");
 	b.send(stage2, launcher2.info.id, "fifo-b-2");
-	await msg2bEntered.promise;
+	await Promise.all([msg1bParked.promise, msg2bEntered.promise]);
+	b.returnPaths.whenOpeningForTarget = realWhenForTargetB;
 	// Settle fifo-b-open while fifo-b-2 is in outbox.read, then release fifo-b-2.
 	for (const settle of heldLocal2.splice(0)) settle(true);
-	await new Promise((done) => setTimeout(done, 30));
 	msg2bGate.resolve();
 
 	assert.equal((await waitFor(() => outcomeOf(stage2, "fifo-b-1"))).type, "delivered");
@@ -609,7 +634,7 @@ test("multi-node local sends preserve per-(sender, target) FIFO order across ID 
 	assert.deepEqual(orderB, ["fifo-b-1", "fifo-b-2"]);
 });
 
-test("hung markDelivered respects bounded wait, releases on sessionLeft and close, and recomputes same-group join mid-wait", async () => {
+test("hung markDelivered expires within the return-path opening wait bound and releases on sessionLeft", async () => {
 	// Part 1: bounded wait expires cleanly when markDelivered hangs
 	const [a, b] = await cluster(80);
 	const launcher = await a.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
@@ -629,17 +654,20 @@ test("hung markDelivered respects bounded wait, releases on sessionLeft and clos
 	assert.equal(b.router.received(stage, "hung-m1"), true);
 	await entered.promise;
 
-	b.send(stage, "launcher", "hung-ans");
-	const expiredOutcome = await waitFor(() => outcomeOf(stage, "hung-ans"));
-	assert.equal(expiredOutcome.type, "delivery_failed");
+	try {
+		b.send(stage, "launcher", "hung-ans");
+		const expiredOutcome = await waitFor(() => outcomeOf(stage, "hung-ans"));
+		assert.equal(expiredOutcome.type, "delivery_failed");
 
-	// Part 2: sessionLeft releases settling opening and ends responder cleanly (no zombie path on late settle)
-	b.sessions.delete(stage.info.id);
-	b.rawReturnPaths.revoke(`["return","${stage.registrationReturnAddress}","stages"]`);
-	b.router.sessionLeft(stage, undefined, true);
-	outbox.markDelivered = realMark;
-	gate.resolve();
-	await new Promise((done) => setTimeout(done, 100));
+		// Part 2: sessionLeft releases settling opening and ends responder cleanly (no zombie path on late settle)
+		b.sessions.delete(stage.info.id);
+		b.rawReturnPaths.revoke(`["return","${stage.registrationReturnAddress}","stages"]`);
+		b.router.sessionLeft(stage, undefined, true);
+	} finally {
+		outbox.markDelivered = realMark;
+		gate.resolve();
+	}
+	await waitFor(() => outcomeOf(launcher, "hung-m1"));
 	assert.equal(
 		b.returnPaths.holds(stage, {
 			sessionId: launcher.info.id,
@@ -647,8 +675,10 @@ test("hung markDelivered respects bounded wait, releases on sessionLeft and clos
 		}),
 		false,
 	);
+});
 
-	// Part 3: joining the sender's group mid-wait in enqueueThroughOutbox delivers as same-group on wake
+test("joining the sender's group while waiting in enqueueThroughOutbox delivers as same-group once the opening settles", async () => {
+	const [a, b] = await cluster();
 	const launcherAddr = randomUUID();
 	const launcherOld = await a.connect(
 		"l-old",
@@ -670,6 +700,8 @@ test("hung markDelivered respects bounded wait, releases on sessionLeft and clos
 		launcherAddr,
 	);
 
+	const outbox = b.opened.state.outbox;
+	const realMark = outbox.markDelivered.bind(outbox);
 	const gate3 = Promise.withResolvers<void>();
 	const entered3 = Promise.withResolvers<void>();
 	outbox.markDelivered = async (claim) => {
@@ -680,11 +712,23 @@ test("hung markDelivered respects bounded wait, releases on sessionLeft and clos
 	assert.equal(b.router.received(stage3, "join-m1"), true);
 	await entered3.promise;
 
-	// Address launcherNew by its new ID (reaches enqueueThroughOutbox wait); then join launch3 before settle completes.
-	b.send(stage3, launcherNew.info.id, "join-ans");
-	await new Promise((done) => setTimeout(done, 30));
-	stage3.info.groups = [...(stage3.info.groups ?? []), "launch3"];
-	outbox.markDelivered = realMark;
-	gate3.resolve();
+	// Address launcherNew by its new ID (reaches enqueueThroughOutbox wait); wait deterministically until parked.
+	const parkedInEnqueue = Promise.withResolvers<void>();
+	const realWhenOpening = b.returnPaths.whenOpening;
+	b.returnPaths.whenOpening = (...args) => {
+		const waited = realWhenOpening(...args);
+		if (waited) parkedInEnqueue.resolve();
+		return waited;
+	};
+	try {
+		b.send(stage3, launcherNew.info.id, "join-ans");
+		await parkedInEnqueue.promise;
+		b.returnPaths.whenOpening = realWhenOpening;
+		stage3.info.groups = [...(stage3.info.groups ?? []), "launch3"];
+	} finally {
+		b.returnPaths.whenOpening = realWhenOpening;
+		outbox.markDelivered = realMark;
+		gate3.resolve();
+	}
 	assert.equal((await waitFor(() => outcomeOf(stage3, "join-ans"))).type, "delivered");
 });
