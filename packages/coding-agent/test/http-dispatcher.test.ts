@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import tls from "node:tls";
 import { stream as streamOpenAICodexResponses } from "@bastani/atomic-ai/api/openai-codex-responses";
+import { findTlsCertificateRefusal, transportFailure } from "@bastani/atomic-ai/utils/tls-certificate";
 import { normalizeContext } from "@bastani/atomic-ai/utils/transcript";
 import * as undici from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +29,35 @@ describe("createHttpDispatcherOptions", () => {
 		// client errors do not crash the process.
 		expect(typeof options.clientFactory).toBe("function");
 		expect(typeof options.factory).toBe("function");
+	});
+
+	it("strips only IP-literal servername values on https:// proxy connections in clientFactory", async () => {
+		const options = createHttpDispatcherOptions(10_000);
+		const clientFactory = options.clientFactory;
+		expect(typeof clientFactory).toBe("function");
+		if (typeof clientFactory !== "function") throw new Error("Expected clientFactory");
+		const seen: Array<{ protocol: string; servername: string | undefined }> = [];
+		const connect: undici.buildConnector.connector = (connectOptions, callback) => {
+			seen.push({ protocol: connectOptions.protocol, servername: connectOptions.servername });
+			callback(new Error("stop"), null);
+		};
+		const httpsClient = clientFactory(new URL("https://127.0.0.1:8443"), { connect }) as unknown as undici.Client;
+		const httpClient = clientFactory(new URL("http://127.0.0.1:8080"), { connect }) as unknown as undici.Client;
+		try {
+			for (const servername of ["proxy.corp.example", "127.0.0.1", "::1", "[::1]"]) {
+				await httpsClient.connect({ path: "example.com:443", servername }).catch(() => {});
+			}
+			await httpClient.connect({ path: "example.com:443", servername: "127.0.0.1" }).catch(() => {});
+		} finally {
+			await Promise.all([httpsClient.close(), httpClient.close()]);
+		}
+		expect(seen).toEqual([
+			{ protocol: "https:", servername: "proxy.corp.example" },
+			{ protocol: "https:", servername: undefined },
+			{ protocol: "https:", servername: undefined },
+			{ protocol: "https:", servername: undefined },
+			{ protocol: "http:", servername: "127.0.0.1" },
+		]);
 	});
 });
 
@@ -351,6 +382,164 @@ describe("http dispatcher", () => {
 					(server) => new Promise<void>((resolve) => server.close(() => resolve())),
 				),
 			);
+		}
+	});
+
+	it("sends SNI for hostname https:// proxies, omits IP SNI for IPv4/IPv6 https:// proxies, and preserves explicit servername", async () => {
+		const ca = createTestCertificate({ subject: "Dispatcher SNI Test CA", ca: true, keyUsage: ["keyCertSign"] });
+		const issue = (name: string) =>
+			createTestCertificate({
+				subject: name,
+				issuer: ca,
+				keyUsage: ["digitalSignature"],
+				extendedKeyUsage: ["serverAuth"],
+				altNames: [name],
+			});
+		const certLocalhost = issue("localhost");
+		const certCustom = issue("proxy.corp.example");
+		const certOther = issue("other.example");
+		const certIpv4 = issue("127.0.0.1");
+		const certIpv4Wrong = issue("127.0.0.2");
+		const certIpv6 = issue("::1");
+		const certIpv6Wrong = issue("::2");
+		const ctxLocalhost = tls.createSecureContext({ cert: certLocalhost.cert, key: certLocalhost.key });
+		const ctxCustom = tls.createSecureContext({ cert: certCustom.cert, key: certCustom.key });
+
+		const endpoint = http.createServer((request, response) => {
+			request.resume();
+			response.writeHead(200, { "content-type": "text/plain", connection: "close" }).end("ok");
+		});
+		await new Promise<void>((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+		const endpointPort = (endpoint.address() as net.AddressInfo).port;
+
+		const openSockets = new Set<net.Socket>();
+		const servers: (http.Server | https.Server | tls.Server)[] = [endpoint];
+		const startProxy = async (
+			tlsOptions: tls.TlsOptions,
+			bindHost: string,
+			onSni?: (servername: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => void,
+		) => {
+			const seenSnis: string[] = [];
+			const proxy = tls.createServer(
+				{
+					...tlsOptions,
+					SNICallback(servername, cb) {
+						seenSnis.push(servername);
+						if (onSni) onSni(servername, cb);
+						else cb(null);
+					},
+				},
+				(client) => {
+					openSockets.add(client);
+					client.once("close", () => openSockets.delete(client));
+					client.on("error", () => {});
+					let buf = Buffer.alloc(0);
+					const onData = (chunk: Buffer) => {
+						buf = Buffer.concat([buf, chunk]);
+						const end = buf.indexOf("\r\n\r\n");
+						if (end === -1) return;
+						client.removeListener("data", onData);
+						const rest = buf.subarray(end + 4);
+						const upstream = net.connect(endpointPort, "127.0.0.1", () => {
+							openSockets.add(upstream);
+							upstream.once("close", () => openSockets.delete(upstream));
+							client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+							if (rest.length > 0) upstream.write(rest);
+							upstream.pipe(client).pipe(upstream);
+						});
+						upstream.on("error", () => client.destroy());
+					};
+					client.on("data", onData);
+				},
+			);
+			proxy.on("tlsClientError", () => {});
+			servers.push(proxy);
+			await new Promise<void>((resolve) => proxy.listen(0, bindHost, resolve));
+			return { port: (proxy.address() as net.AddressInfo).port, seenSnis };
+		};
+
+		const sniSwitch = await startProxy({ cert: certOther.cert, key: certOther.key }, "127.0.0.1", (servername, cb) =>
+			cb(null, servername === "localhost" ? ctxLocalhost : undefined),
+		);
+		const customSni = await startProxy({ cert: certOther.cert, key: certOther.key }, "127.0.0.1", (servername, cb) =>
+			cb(null, servername === "proxy.corp.example" ? ctxCustom : undefined),
+		);
+		const ipv4Ok = await startProxy({ cert: certIpv4.cert, key: certIpv4.key }, "127.0.0.1");
+		const ipv4Wrong = await startProxy({ cert: certIpv4Wrong.cert, key: certIpv4Wrong.key }, "127.0.0.1");
+		const ipv6Ok = await startProxy({ cert: certIpv6.cert, key: certIpv6.key }, "::1");
+		const ipv6Wrong = await startProxy({ cert: certIpv6Wrong.cert, key: certIpv6Wrong.key }, "::1");
+
+		const warnings: string[] = [];
+		const onWarning = (warning: Error) => warnings.push(`${warning.name}: ${warning.message}`);
+		process.on("warning", onWarning);
+
+		const sendThrough = async (proxyUrl: string, servername?: string) => {
+			const dispatcher = new undici.EnvHttpProxyAgent({
+				...(createHttpDispatcherOptions(10_000) as ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0]),
+				httpProxy: proxyUrl,
+				httpsProxy: proxyUrl,
+				noProxy: "none.invalid",
+				proxyTls: { ca: ca.cert, ...(servername ? { servername } : {}) },
+			});
+			try {
+				const response = await undici.fetch(`http://127.0.0.1:${endpointPort}`, { dispatcher });
+				return { ok: true as const, status: response.status, body: await response.text() };
+			} catch (error) {
+				const failure = transportFailure(error, `http://127.0.0.1:${endpointPort}`);
+				return { ok: false as const, refusal: findTlsCertificateRefusal(failure), error };
+			} finally {
+				await dispatcher.close();
+			}
+		};
+
+		try {
+			// 1. Hostname proxy sends SNI "localhost" and selects the matching certificate.
+			const switched = await sendThrough(`https://localhost:${sniSwitch.port}`);
+			expect(switched).toEqual({ ok: true, status: 200, body: "ok" });
+			expect(sniSwitch.seenSnis).toEqual(["localhost"]);
+
+			// 2. Explicit non-IP proxyTls.servername is preserved even when dialing an IP proxy.
+			const custom = await sendThrough(`https://127.0.0.1:${customSni.port}`, "proxy.corp.example");
+			expect(custom).toEqual({ ok: true, status: 200, body: "ok" });
+			expect(customSni.seenSnis).toEqual(["proxy.corp.example"]);
+
+			// 3. IPv4 https:// proxy omits IP SNI (no RFC 6066 warning) and enforces IPv4 SAN.
+			const v4Good = await sendThrough(`https://127.0.0.1:${ipv4Ok.port}`);
+			expect(v4Good).toEqual({ ok: true, status: 200, body: "ok" });
+			expect(ipv4Ok.seenSnis).toEqual([]);
+
+			const v4Bad = await sendThrough(`https://127.0.0.1:${ipv4Wrong.port}`);
+			expect(v4Bad.ok).toBe(false);
+			if (!v4Bad.ok) {
+				expect(v4Bad.refusal).toMatchObject({
+					code: "ERR_TLS_CERT_ALTNAME_INVALID",
+					host: `127.0.0.1:${ipv4Wrong.port}`,
+					proxy: true,
+				});
+			}
+			expect(ipv4Wrong.seenSnis).toEqual([]);
+
+			// 4. IPv6 https://[::1] proxy omits bracketed IP SNI, succeeds with IP:::1 SAN, and rejects IP:::2 SAN.
+			const v6Good = await sendThrough(`https://[::1]:${ipv6Ok.port}`);
+			expect(v6Good).toEqual({ ok: true, status: 200, body: "ok" });
+			expect(ipv6Ok.seenSnis).toEqual([]);
+
+			const v6Bad = await sendThrough(`https://[::1]:${ipv6Wrong.port}`);
+			expect(v6Bad.ok).toBe(false);
+			if (!v6Bad.ok) {
+				expect(v6Bad.refusal).toMatchObject({
+					code: "ERR_TLS_CERT_ALTNAME_INVALID",
+					host: `[::1]:${ipv6Wrong.port}`,
+					proxy: true,
+				});
+			}
+			expect(ipv6Wrong.seenSnis).toEqual([]);
+
+			expect(warnings.filter((w) => w.includes("RFC 6066"))).toEqual([]);
+		} finally {
+			process.removeListener("warning", onWarning);
+			for (const socket of openSockets) socket.destroy();
+			await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 		}
 	});
 
