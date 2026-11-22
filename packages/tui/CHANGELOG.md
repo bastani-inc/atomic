@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Added
 
 - `TuiAltScreen.onViewportChange(listener)` calls the listener after each input, late single click and painted frame, so a caller can wait for `isPointerIdle()` without polling ([#6183](https://github.com/bastani-inc/atomic/pull/6183))

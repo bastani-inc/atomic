@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Added
 
 - `resolveHttpsFallbackProxyUrl()` returns the http proxy an `https://` request takes when no https proxy is set, as Atomic's HTTP dispatcher on Node.js takes it (`http_proxy`, else `HTTP_PROXY`), for runtimes whose own HTTP client sends such a request direct, such as Bun. It is undefined when `NO_PROXY` exempts the host or an https proxy or an `http://`/`https://` `ALL_PROXY` is set ([#6233](https://github.com/bastani-inc/atomic/pull/6233))
