@@ -539,14 +539,20 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	updateProviderCountFromSnapshot(this);
 };
 
-InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveModeBase): void {
-	if (this.isShuttingDown || this.isInitialized === false) return;
-	const cwdBasename = path.basename(this.sessionManager.getCwd());
-	const sessionName = this.sessionManager.getSessionName();
+/** Writes Atomic's default terminal window title and clears {@link InteractiveModeBase.extensionTitleActive}. */
+export function writeDefaultTerminalTitle(mode: InteractiveModeBase): void {
+	const cwdBasename = path.basename(mode.sessionManager.getCwd());
+	const sessionName = mode.sessionManager.getSessionName();
 	// Session names come from session files: a BEL or ESC in the title would end the OSC title sequence early and send
 	// the rest to the terminal as escape sequences.
 	const title = sessionName ? `${APP_TITLE} - ${sessionName} - ${cwdBasename}` : `${APP_TITLE} - ${cwdBasename}`;
-	this.ui.terminal.setTitle(replaceControlCharacters(title));
+	mode.ui.terminal.setTitle(replaceControlCharacters(title));
+	mode.extensionTitleActive = false;
+}
+
+InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveModeBase): void {
+	if (this.isShuttingDown || this.terminalStopped || (this.isInitialized === false && !this.tuiStarted)) return;
+	writeDefaultTerminalTitle(this);
 };
 
 /**

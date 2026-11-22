@@ -63,7 +63,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const fixture = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixture.json"), "utf8"));
 export default (pi) => {
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		if (fixture.groupChild) {
 			// A process the extension starts in the engine's process group, neither detached nor stopped at shutdown.
 			const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -92,6 +92,12 @@ export default (pi) => {
 		if (fixture.execLeftover) {
 			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], String(child.pid));';
 			void pi.exec(process.execPath, ["-e", command, fixture.files.execChild]);
+		}
+		if (fixture.customTitle) {
+			// Wait until startup finishes its own title update, then set a custom extension title as titlebar-spinner does.
+			setTimeout(() => {
+				if (ctx.hasUI) ctx.ui.setTitle(fixture.customTitle);
+			}, 150);
 		}
 		writeFileSync(fixture.files.started, String(process.pid));
 	});
@@ -564,7 +570,7 @@ const POSIX_PTY_PYTHON =
  * child) or capture what the child writes after its shutdown handler starts.
  */
 const POSIX_PTY_HARNESS = `
-import fcntl, json, os, pty, select, subprocess, sys, termios, time
+import fcntl, json, os, pty, select, signal, subprocess, sys, termios, time
 
 cfg = json.loads(open(sys.argv[1], "r", encoding="utf-8").read())
 master, slave = pty.openpty()
@@ -606,23 +612,30 @@ def wait_file(path, timeout_s):
 		drain(pre_output)
 		time.sleep(0.02)
 
+def wait_bytes(needle, timeout_s, what):
+	deadline = time.monotonic() + timeout_s
+	while needle not in pre_output:
+		if proc.poll() is not None:
+			raise RuntimeError(f"child exited early ({proc.returncode}) waiting for {what}")
+		if time.monotonic() >= deadline:
+			raise TimeoutError(f"timed out waiting for {what}")
+		drain(pre_output)
+		time.sleep(0.02)
+
 pre_output = bytearray()
 post_output = bytearray()
 master_open = True
 try:
 	wait_file(cfg["started"], cfg["timeoutSec"])
-	# Wait for the prompt to render so /quit reaches the active editor.
-	prompt_deadline = time.monotonic() + cfg["timeoutSec"]
-	while "❯".encode("utf-8") not in pre_output:
-		if proc.poll() is not None:
-			raise RuntimeError(f"child exited early ({proc.returncode}) before prompt")
-		if time.monotonic() >= prompt_deadline:
-			raise TimeoutError("timed out waiting for prompt")
-		drain(pre_output)
-		time.sleep(0.02)
+	wait_bytes("❯".encode("utf-8"), cfg["timeoutSec"], "prompt")
+	if cfg.get("waitTitle"):
+		wait_bytes(f"\\x1b]0;{cfg['waitTitle']}\\x07".encode("utf-8"), cfg["timeoutSec"], "custom title")
 	drain(pre_output)
 
-	os.write(master, b"/quit\\r")
+	if cfg.get("endWith") == "SIGTERM":
+		os.kill(proc.pid, signal.SIGTERM)
+	else:
+		os.write(master, b"/quit\\r")
 	wait_file(cfg["shutdown"], cfg["timeoutSec"])
 	# Drain any exit output written before the shutdown handler is released.
 	time.sleep(0.1)
@@ -658,13 +671,33 @@ finally:
 
 result = {
 	"exitCode": exit_code,
+	"preOutput": pre_output.decode("utf-8", errors="replace"),
 	"postOutput": post_output.decode("utf-8", errors="replace"),
 }
 open(cfg["result"], "w", encoding="utf-8").write(json.dumps(result))
 `;
 
-async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly closeMaster: boolean }): Promise<{
+function oscTitles(output: string): string[] {
+	const titles: string[] = [];
+	const oscPrefix = "\x1b]0;";
+	let index = output.indexOf(oscPrefix);
+	while (index !== -1) {
+		const end = output.indexOf("\x07", index + oscPrefix.length);
+		if (end === -1) break;
+		titles.push(output.slice(index + oscPrefix.length, end));
+		index = output.indexOf(oscPrefix, end + 1);
+	}
+	return titles;
+}
+
+async function runPosixPtyQuit(options: {
+	readonly inProcess: boolean;
+	readonly closeMaster: boolean;
+	readonly customTitle?: string;
+	readonly endWith?: "quit" | "SIGTERM";
+}): Promise<{
 	readonly exitCode: number;
+	readonly preOutput: string;
 	readonly postOutput: string;
 	readonly calls: readonly ShutdownRecord[];
 }> {
@@ -677,6 +710,7 @@ async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly 
 	const started = join(root, "started");
 	const shutdown = join(root, "shutdown.jsonl");
 	const released = join(root, "released");
+	const eventLoopLog = join(root, "event-loop.jsonl");
 	const configFile = join(root, "harness.json");
 	const resultFile = join(root, "result.json");
 	try {
@@ -695,6 +729,7 @@ async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly 
 				waitForRelease: true,
 				pollMs: RECORD_POLL_MS,
 				handlerWorkMs: HANDLER_WORK_MS,
+				customTitle: options.customTitle,
 				files: {
 					started,
 					shutdown,
@@ -714,9 +749,9 @@ async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly 
 					join(PACKAGE, "dist/cli.js"),
 					"--offline",
 					"--no-mcp",
-					"--session-dir",
-					sessionDir,
-					...(options.inProcess ? ["--no-approve"] : []),
+					// `--no-approve` without pinning `--session-dir` runs in the host process while still persisting
+					// the session to the default store in `agentDir`.
+					...(options.inProcess ? ["--no-approve"] : ["--session-dir", sessionDir]),
 					"-e",
 					extension,
 				],
@@ -729,6 +764,9 @@ async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly 
 					ATOMIC_PACKAGE_DIR: installed,
 					ATOMIC_SKIP_VERSION_CHECK: "1",
 					ATOMIC_TELEMETRY: "0",
+					ATOMIC_EVENT_LOOP_BLOCK_MS: "1000",
+					ATOMIC_EVENT_LOOP_BLOCK_STACKS: "0",
+					ATOMIC_EVENT_LOOP_BLOCK_LOG: eventLoopLog,
 					TERM: "xterm-256color",
 				},
 				started,
@@ -736,6 +774,8 @@ async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly 
 				released,
 				result: resultFile,
 				closeMaster: options.closeMaster,
+				waitTitle: options.customTitle,
+				endWith: options.endWith ?? "quit",
 				timeoutSec: Math.floor(CLI_TIMEOUT_MS / 1000),
 			}),
 		);
@@ -758,7 +798,17 @@ async function runPosixPtyQuit(options: { readonly inProcess: boolean; readonly 
 		const code = await harness.exited;
 		await stderrDone;
 		assert.equal(code, 0, `PTY harness failed (${code}): ${stderrChunks.join("")}`);
-		const parsed = JSON.parse(readTextSync(resultFile, "utf8")) as { exitCode: number; postOutput: string };
+		const records = readRecords(eventLoopLog);
+		const host = records.find((record) => record.type === "start" && record.role === "host");
+		const engine = records.find((record) => record.type === "start" && record.role === "engine");
+		assert.ok(host?.type === "start", "the host started");
+		if (options.inProcess) assert.equal(engine, undefined, "the session ran in the host process");
+		else assert.ok(engine?.type === "start", "the session ran in an engine process");
+		const parsed = JSON.parse(readTextSync(resultFile, "utf8")) as {
+			exitCode: number;
+			preOutput: string;
+			postOutput: string;
+		};
 		const calls = fileExistsSync(shutdown)
 			? readTextSync(shutdown, "utf8")
 					.split("\n")
@@ -811,6 +861,41 @@ describe.skipIf(!POSIX_PTY_PYTHON)("a PTY closing mid-quit", () => {
 		},
 		CLI_TIMEOUT_MS + 10_000,
 	);
+
+	for (const inProcess of [false, true]) {
+		for (const endWith of ["quit", "SIGTERM"] as const) {
+			test(
+				`resets an extension-modified terminal title before exit on ${endWith}${inProcess ? " in the in-process host" : ""}`,
+				async () => {
+					const busyTitle = "⠋ π - project";
+					const ended = await runPosixPtyQuit({
+						inProcess,
+						closeMaster: false,
+						customTitle: busyTitle,
+						endWith,
+					});
+
+					assert.equal(ended.exitCode, 0);
+					assert.equal(ended.calls.length, 2);
+					const allTitles = oscTitles(`${ended.preOutput}${ended.postOutput}`);
+					assert.ok(allTitles.includes(busyTitle), `extension title never painted: ${JSON.stringify(allTitles)}`);
+					assert.equal(
+						allTitles.at(-1),
+						"atomic - project",
+						`expected default title restored before exit, got sequence: ${JSON.stringify(allTitles)}`,
+					);
+					if (endWith === "quit") {
+						assert.equal(
+							ended.postOutput.includes("\x1b]0;"),
+							false,
+							`title reset must run before stop, not after: ${JSON.stringify(ended.postOutput)}`,
+						);
+					}
+				},
+				CLI_TIMEOUT_MS + 10_000,
+			);
+		}
+	}
 });
 
 test(

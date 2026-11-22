@@ -91,10 +91,12 @@ describe("terminal title (pi 89c921d8)", () => {
 	it("stops an already-started TUI even if stop() runs before initialization completes", () => {
 		const stopInteractiveTui = vi.fn();
 		const setProgress = vi.fn();
+		const setTitle = vi.fn();
 		const stop = Reflect.get(InteractiveModeBase.prototype, "stop") as (this: Record<string, unknown>) => void;
 		const mode = {
 			isInitialized: false,
 			tuiStarted: true,
+			extensionTitleActive: false,
 			managedToolReadiness: "started",
 			postStartupTimer: undefined,
 			chatContainer: undefined,
@@ -102,7 +104,11 @@ describe("terminal title (pi 89c921d8)", () => {
 				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => true,
 			},
-			ui: { terminal: { setProgress }, requestRender: vi.fn() },
+			sessionManager: {
+				getCwd: () => "/work/repo",
+				getSessionName: () => undefined,
+			},
+			ui: { terminal: { setProgress, setTitle }, requestRender: vi.fn() },
 			statusContainer: { clear: vi.fn() },
 			disposeActiveSelector: vi.fn(),
 			disposeInteractiveEngineHost: vi.fn(),
@@ -118,6 +124,86 @@ describe("terminal title (pi 89c921d8)", () => {
 
 		assert.equal(stopInteractiveTui.mock.calls.length, 1);
 		assert.equal(setProgress.mock.calls.length, 1);
+		assert.equal(setTitle.mock.calls.length, 0, "stop() does not write an extra title when no extension changed it");
 		assert.equal(mode.managedToolReadiness, "on-init");
+	});
+
+	it("restores an extension-modified title in stop() before stopping the TUI, including after a suppressed shutdown update", () => {
+		const events: string[] = [];
+		const updateTerminalTitle = Reflect.get(InteractiveModeBase.prototype, "updateTerminalTitle") as (
+			this: Record<string, unknown>,
+		) => void;
+		const createExtensionUIContext = Reflect.get(InteractiveModeBase.prototype, "createExtensionUIContext") as (
+			this: Record<string, unknown>,
+		) => { setTitle: (title: string) => void };
+		const stop = Reflect.get(InteractiveModeBase.prototype, "stop") as (this: Record<string, unknown>) => void;
+
+		const makeMode = () => {
+			const mode: Record<string, unknown> = {
+				isInitialized: true,
+				tuiStarted: true,
+				terminalStopped: false,
+				isShuttingDown: false,
+				extensionTitleActive: false,
+				managedToolReadiness: "started",
+				postStartupTimer: undefined,
+				chatContainer: undefined,
+				settingsManager: {
+					getFullscreenExitOutput: () => "transcript",
+					getShowTerminalProgress: () => false,
+				},
+				sessionManager: {
+					getCwd: () => "/work/repo",
+					getSessionName: () => undefined,
+				},
+				ui: {
+					terminal: {
+						setTitle: (title: string) => events.push(`title:${title}`),
+						setProgress: () => {},
+					},
+					requestRender: vi.fn(),
+				},
+				statusContainer: { clear: vi.fn() },
+				disposeActiveSelector: vi.fn(),
+				disposeInteractiveEngineHost: vi.fn(),
+				themeController: { disableAutoSync: vi.fn() },
+				clearExtensionTerminalInputListeners: vi.fn(),
+				footer: { dispose: vi.fn() },
+				footerDataProvider: { dispose: vi.fn() },
+				stopInteractiveTui: () => {
+					events.push("stopInteractiveTui");
+					mode.tuiStarted = false;
+					mode.terminalStopped = true;
+				},
+				unregisterSignalHandlers: vi.fn(),
+			};
+			return mode;
+		};
+
+		// Case 1: Extension sets busy title, then /quit or SIGTERM runs (on SIGTERM, dispose runs resetExtensionUI ->
+		// updateTerminalTitle() while isShuttingDown is true BEFORE stop() runs).
+		const mode = makeMode();
+		const ui = createExtensionUIContext.call(mode);
+		ui.setTitle("⠋ π - repo");
+		mode.isShuttingDown = true;
+		updateTerminalTitle.call(mode); // Suppressed during shutdown; must NOT clear extensionTitleActive.
+		stop.call(mode);
+		assert.deepEqual(events, [`title:⠋ π - repo`, `title:${APP_TITLE} - repo`, "stopInteractiveTui"]);
+		assert.equal(mode.extensionTitleActive, false);
+
+		// Calling stop() again after teardown does not write another title.
+		events.length = 0;
+		stop.call(mode);
+		assert.deepEqual(events, []);
+
+		// Case 2: Live updateTerminalTitle() clears extensionTitleActive so a later stop() writes no extra title.
+		const mode2 = makeMode();
+		const ui2 = createExtensionUIContext.call(mode2);
+		ui2.setTitle("⠋ π - repo");
+		updateTerminalTitle.call(mode2);
+		events.length = 0;
+		mode2.isShuttingDown = true;
+		stop.call(mode2);
+		assert.deepEqual(events, ["stopInteractiveTui"]);
 	});
 });

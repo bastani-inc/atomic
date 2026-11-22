@@ -224,7 +224,8 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		onWidgetRelease: (key, listener) => this.onExtensionWidgetRelease(key, listener),
 		setHeader: (factory) => shown(this.setExtensionHeader(factory)),
 		setTitle: (title) => {
-			if (this.isShuttingDown || this.isInitialized === false) return;
+			if (this.isShuttingDown || this.terminalStopped || (this.isInitialized === false && !this.tuiStarted)) return;
+			this.extensionTitleActive = true;
 			this.ui.terminal.setTitle(replaceControlCharacters(title));
 		},
 		custom: (factory, options) => this.showExtensionCustom(factory, options),

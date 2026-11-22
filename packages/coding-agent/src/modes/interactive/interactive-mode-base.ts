@@ -371,6 +371,8 @@ export class InteractiveModeBase {
 	tuiStarted = false;
 	/** Set once {@link stopInteractiveTui} has stopped the terminal, until a later start re-opens it. */
 	terminalStopped = false;
+	/** Set when an extension replaced the terminal title via `ctx.ui.setTitle`, until the default title is restored. */
+	extensionTitleActive = false;
 
 	onInputCallback?: (submission: InteractiveSubmission) => void;
 

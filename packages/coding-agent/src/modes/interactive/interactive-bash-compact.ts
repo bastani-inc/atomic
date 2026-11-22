@@ -6,7 +6,7 @@ import { BashExecutionComponent, type TruncationResult } from "./interactive-mod
 import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
 import { releaseSavedChatHistory } from "./interactive-saved-chat-history.js";
 import { stopRendererWatch } from "./interactive-session-runtime.ts";
-import { cancelApprovedResourceListing } from "./interactive-startup.ts";
+import { cancelApprovedResourceListing, writeDefaultTerminalTitle } from "./interactive-startup.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
@@ -179,8 +179,13 @@ InteractiveModeBase.prototype.stop = function (
 	this.disposeAgentView?.();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
-	if ((this.isInitialized || this.tuiStarted) && this.settingsManager.getShowTerminalProgress()) {
-		this.ui.terminal.setProgress(false);
+	if (this.isInitialized || this.tuiStarted) {
+		if (this.extensionTitleActive) {
+			writeDefaultTerminalTitle(this);
+		}
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(false);
+		}
 	}
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	this.themeController.disableAutoSync();
