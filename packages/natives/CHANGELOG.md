@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [0.10.5-alpha.1] - 2026-11-22
+
 ### Added
 
-- `containProcessTreeAllowingBreakaway(pid)`: on Windows, puts process `pid` into a kill-on-close Job object with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so descendants that explicitly ask to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) can start and outlive it while non-breakaway descendants remain contained and end on `terminate()`. `release()` clears kill-on-close while keeping `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. Returns `null` off Windows.
+- `containProcessTreeAllowingBreakaway(pid)`: on Windows, puts process `pid` into a kill-on-close Job object with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so descendants that explicitly ask to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) can start and outlive it while non-breakaway descendants remain contained and end on `terminate()`. `release()` clears kill-on-close while keeping `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. Returns `null` off Windows ([#6445](https://github.com/bastani-inc/atomic/pull/6445)).
 
 ## [0.10.4] - 2026-11-22
 
