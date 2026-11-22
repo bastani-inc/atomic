@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { type BigIntStats, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import {
 	HOLDER_TEMP_STALE_MS,
-	lockHolderAsync,
 	lockHolderPath,
 	prepareTakeoverMutex,
 	processMayRun,
@@ -21,9 +20,42 @@ import {
 
 export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
-import { lockHolder } from "./lock-wait.ts";
 import { processStartToken, processStartTokenAsync } from "./process-start-token.js";
 import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
+
+const MAX_SAFE_INO = BigInt(Number.MAX_SAFE_INTEGER);
+
+interface LockDirectoryIdentity {
+	readonly exact: string;
+	readonly legacy: string;
+	readonly legacyInoSafe: boolean;
+}
+
+function lockDirectoryIdentityFromStats(stats: BigIntStats): LockDirectoryIdentity {
+	const birthtimeMs =
+		Number(stats.birthtimeNs / 1_000_000_000n) * 1000 + Number(stats.birthtimeNs % 1_000_000_000n) / 1_000_000;
+	return {
+		exact: `${stats.dev}:${stats.ino}:${stats.birthtimeNs}`,
+		legacy: `${Number(stats.ino)}:${birthtimeMs}`,
+		legacyInoSafe: stats.ino <= MAX_SAFE_INO,
+	};
+}
+
+function readLockIdentity(lockPath: string): LockDirectoryIdentity | undefined {
+	try {
+		return lockDirectoryIdentityFromStats(statSync(lockPath, { bigint: true }));
+	} catch {
+		return undefined;
+	}
+}
+
+async function readLockIdentityAsync(lockPath: string): Promise<LockDirectoryIdentity | undefined> {
+	try {
+		return lockDirectoryIdentityFromStats(await stat(lockPath, { bigint: true }));
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Who holds a proper-lockfile lock, kept beside its lock directory (#5161): the host, the pid and when that process
@@ -34,8 +66,19 @@ interface LockHolderRecord {
 	readonly host: string;
 	readonly pid: number;
 	readonly started?: string;
-	/** The lock directory this holder created, as {@link lockHolder} names it. */
+	/** Legacy `${ino}:${birthtimeMs}` projection when `ino <= Number.MAX_SAFE_INTEGER` (for older readers), else exact `lockId`. */
 	readonly lock: string;
+	/** Exact 64-bit `${dev}:${ino}:${birthtimeNs}` identity of the lock directory. */
+	readonly lockId?: string;
+}
+
+function matchesHolderRecord(identity: LockDirectoryIdentity | undefined, record: LockHolderRecord): boolean {
+	if (identity === undefined) return false;
+	if (record.lockId !== undefined) {
+		return identity.exact === record.lockId && (record.lock === identity.legacy || record.lock === identity.exact);
+	}
+	if (record.lock === identity.exact) return true;
+	return identity.legacyInoSafe && record.lock === identity.legacy;
 }
 
 /**
@@ -43,13 +86,14 @@ interface LockHolderRecord {
  * whose holder is not named is only taken over once it is stale.
  */
 export function recordLockHolder(lockPath: string): void {
-	const lock = lockHolder(lockPath);
-	if (lock === undefined) return;
+	const identity = readLockIdentity(lockPath);
+	if (identity === undefined) return;
 	const record: LockHolderRecord = {
 		host: hostname(),
 		pid: process.pid,
 		started: processStartToken(process.pid),
-		lock,
+		lock: identity.legacyInoSafe ? identity.legacy : identity.exact,
+		lockId: identity.exact,
 	};
 	const path = lockHolderPath(lockPath);
 	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -64,10 +108,16 @@ export function recordLockHolder(lockPath: string): void {
 let ownStart: Promise<string | undefined> | undefined;
 
 export async function recordLockHolderAsync(lockPath: string): Promise<void> {
-	const lock = await lockHolderAsync(lockPath);
-	if (lock === undefined) return;
+	const identity = await readLockIdentityAsync(lockPath);
+	if (identity === undefined) return;
 	ownStart ??= processStartTokenAsync(process.pid);
-	const record: LockHolderRecord = { host: hostname(), pid: process.pid, started: await ownStart, lock };
+	const record: LockHolderRecord = {
+		host: hostname(),
+		pid: process.pid,
+		started: await ownStart,
+		lock: identity.legacyInoSafe ? identity.legacy : identity.exact,
+		lockId: identity.exact,
+	};
 	const path = lockHolderPath(lockPath);
 	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	try {
@@ -111,9 +161,10 @@ async function readHolderRecordAsync(lockPath: string): Promise<LockHolderRecord
 
 function parseHolderRecord(content: string): LockHolderRecord | undefined {
 	const record = JSON.parse(content) as Partial<LockHolderRecord>;
-	// A host or lock that is not a string never matches this host or a lock directory, so only these are checked.
-	if (!Number.isSafeInteger(record.pid)) return undefined;
+	if (typeof record.host !== "string" || !Number.isSafeInteger(record.pid) || typeof record.lock !== "string")
+		return undefined;
 	if (record.started !== undefined && typeof record.started !== "string") return undefined;
+	if (record.lockId !== undefined && typeof record.lockId !== "string") return undefined;
 	return record as LockHolderRecord;
 }
 
@@ -131,14 +182,20 @@ export async function prepareLockTakeover(lockPath: string): Promise<void> {
  */
 export function takeOverDeadHolder(lockPath: string): boolean {
 	const record = readHolderRecord(lockPath);
-	if (record === undefined || lockHolder(lockPath) !== record.lock || processMayRun(record)) return false;
+	if (record === undefined || !matchesHolderRecord(readLockIdentity(lockPath), record) || processMayRun(record))
+		return false;
 	const mutex = takeTakeoverMutex(lockPath);
 	if (mutex === undefined) return false;
 	try {
 		// Within the mutex, only this process moves the lock: if the dead holder's record and lock are still in place,
 		// no other process took the lock since they were judged.
 		const current = readHolderRecord(lockPath);
-		if (current === undefined || !sameRecord(current, record) || lockHolder(lockPath) !== record.lock) return false;
+		if (
+			current === undefined ||
+			!sameRecord(current, record) ||
+			!matchesHolderRecord(readLockIdentity(lockPath), record)
+		)
+			return false;
 		const aside = `${lockPath}.${randomUUID()}.dead`;
 		// A process paused here for long keeps its mutex while it runs; one that lost it moves nothing.
 		if (!mutex.owned()) return false;
@@ -147,7 +204,7 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 		} catch {
 			return false;
 		}
-		if (lockHolder(aside) !== record.lock) {
+		if (!matchesHolderRecord(readLockIdentity(aside), record)) {
 			putBack(aside, lockPath);
 			return false;
 		}
@@ -161,13 +218,21 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 
 export async function takeOverDeadHolderAsync(lockPath: string): Promise<boolean> {
 	const record = await readHolderRecordAsync(lockPath);
-	if (record === undefined || (await lockHolderAsync(lockPath)) !== record.lock || (await processMayRunAsync(record)))
+	if (
+		record === undefined ||
+		!matchesHolderRecord(await readLockIdentityAsync(lockPath), record) ||
+		(await processMayRunAsync(record))
+	)
 		return false;
 	const mutex = await takeTakeoverMutexAsync(lockPath);
 	if (mutex === undefined) return false;
 	try {
 		const current = await readHolderRecordAsync(lockPath);
-		if (current === undefined || !sameRecord(current, record) || (await lockHolderAsync(lockPath)) !== record.lock)
+		if (
+			current === undefined ||
+			!sameRecord(current, record) ||
+			!matchesHolderRecord(await readLockIdentityAsync(lockPath), record)
+		)
 			return false;
 		const aside = `${lockPath}.${randomUUID()}.dead`;
 		if (!(await mutex.owned())) return false;
@@ -176,7 +241,7 @@ export async function takeOverDeadHolderAsync(lockPath: string): Promise<boolean
 		} catch {
 			return false;
 		}
-		if ((await lockHolderAsync(aside)) !== record.lock) {
+		if (!matchesHolderRecord(await readLockIdentityAsync(aside), record)) {
 			await putBackAsync(aside, lockPath);
 			return false;
 		}
@@ -189,5 +254,5 @@ export async function takeOverDeadHolderAsync(lockPath: string): Promise<boolean
 }
 
 function sameRecord(a: LockHolderRecord, b: LockHolderRecord): boolean {
-	return a.host === b.host && a.pid === b.pid && a.started === b.started && a.lock === b.lock;
+	return a.host === b.host && a.pid === b.pid && a.started === b.started && a.lock === b.lock && a.lockId === b.lockId;
 }

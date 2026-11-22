@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash, randomUUID } from "crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { type BigIntStats, existsSync, readdirSync, readFileSync, statSync } from "fs";
 import {
 	chmod,
 	lstat,
@@ -883,21 +883,25 @@ interface SystemGitCandidate {
 	readonly signature: string;
 }
 
+function systemGitSignature(candidate: string, stats: BigIntStats): string {
+	return JSON.stringify([
+		candidate,
+		String(stats.dev),
+		String(stats.ino),
+		String(stats.size),
+		String(stats.mtimeNs),
+		String(stats.ctimeNs),
+		String(stats.mode),
+	]);
+}
+
 function inspectSystemGitCandidate(candidate: string, plat: string): SystemGitCandidate | undefined {
 	try {
-		const stats = statSync(candidate, { throwIfNoEntry: false });
-		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111) === 0)) return undefined;
+		const stats = statSync(candidate, { bigint: true, throwIfNoEntry: false });
+		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111n) === 0n)) return undefined;
 		return {
 			path: candidate,
-			signature: JSON.stringify([
-				candidate,
-				stats.dev,
-				stats.ino,
-				stats.size,
-				stats.mtimeMs,
-				stats.ctimeMs,
-				stats.mode,
-			]),
+			signature: systemGitSignature(candidate, stats),
 		};
 	} catch (error) {
 		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return undefined;
@@ -910,22 +914,14 @@ async function inspectSystemGitCandidateAsync(
 	plat: string,
 ): Promise<SystemGitCandidate | undefined> {
 	try {
-		const stats = await stat(candidate).catch((error: unknown) => {
+		const stats = await stat(candidate, { bigint: true }).catch((error: unknown) => {
 			if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
 			throw error;
 		});
-		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111) === 0)) return undefined;
+		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111n) === 0n)) return undefined;
 		return {
 			path: candidate,
-			signature: JSON.stringify([
-				candidate,
-				stats.dev,
-				stats.ino,
-				stats.size,
-				stats.mtimeMs,
-				stats.ctimeMs,
-				stats.mode,
-			]),
+			signature: systemGitSignature(candidate, stats),
 		};
 	} catch (error) {
 		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return undefined;

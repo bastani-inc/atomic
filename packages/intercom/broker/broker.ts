@@ -4,7 +4,7 @@ import "./bounded-stderr-install.js";
 // MUST stay second: it announces the broker's pid before the rest of the module graph loads (see start-announcement.ts).
 import "./announce-on-import.js";
 import net from "net";
-import { chmodSync, existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
+import { chmodSync, existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { access } from "fs/promises";
 import { hostname } from "os";
 import { dirname } from "path";
@@ -32,7 +32,7 @@ import {
 } from "./socket-replacement-lock.js";
 import { type BrokerWatchdog, startBrokerWatchdog } from "./watchdog.js";
 import { retractBrokerStartAnnouncement } from "./start-announcement.js";
-import { type HeldDirectory, holdDirectory } from "./directory-hold.js";
+import { type HeldDirectory, holdDirectory, socketPathIdentity } from "./directory-hold.js";
 import { createBrokerHostIdentityReader, systemSources } from "./broker-instance.js";
 import {
 	getBrokerAwayAsksPath,
@@ -225,14 +225,6 @@ const MULTI_NODE_OFF_REASONS: Readonly<Record<string, string>> = {
   "domain-only-adapter": "the storage adapter has no openDatabase hook",
 };
 
-function socketPathInode(): number | undefined {
-  try {
-    return statSync(SOCKET_PATH).ino;
-  } catch {
-    return undefined;
-  }
-}
-
 /** The socket lock, or undefined when a starting broker still holds it after `budgetMs`. */
 async function acquireSocketLockWithin(budgetMs: number): Promise<SocketReplacementLock | undefined> {
   // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
@@ -383,7 +375,7 @@ class IntercomBroker {
   private releaseOrder = 0;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private watchdog: BrokerWatchdog | undefined;
-  private boundSocketInode: number | undefined;
+  private boundSocketIdentity: string | undefined;
   private lastConnectionAt = performance.now();
   private deliveredMessageCache: DeliveredMessageCache | undefined;
   /** The Intercom directory this broker created as it started, held for as long as it runs: its state goes there only. */
@@ -606,12 +598,12 @@ class IntercomBroker {
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
       if (process.platform !== "win32") {
-        const inode = socketPathInode();
-        if (inode === undefined) {
+        const identity = socketPathIdentity(SOCKET_PATH);
+        if (identity === undefined) {
           this.rebindVanishedSocket(attempt);
           return;
         }
-        this.boundSocketInode = inode;
+        this.boundSocketIdentity = identity;
       }
       this.releaseStartupLock();
       // The pid file takes over from the start-up announcement the moment the broker answers.
@@ -620,7 +612,7 @@ class IntercomBroker {
       this.watchdog = startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
-      if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
+      if (this.boundSocketIdentity !== undefined) this.watchSocketOwnership();
       this.warmEndedQueueStore();
     });
   }
@@ -659,8 +651,8 @@ class IntercomBroker {
   }
 
   private ownsSocketPath(): boolean {
-    if (this.boundSocketInode === undefined) return process.platform === "win32";
-    return socketPathInode() === this.boundSocketInode;
+    if (this.boundSocketIdentity === undefined) return process.platform === "win32";
+    return socketPathIdentity(SOCKET_PATH) === this.boundSocketIdentity;
   }
 
   /**
