@@ -85,32 +85,25 @@ if (heapArgs.length > 0) {
 	// Plain interactive launches without CLI/env storage overrides stay on the zero-import fast path;
 	// headless/print/RPC runs and storage-overridden invocations resolve through the full CLI/storage parser.
 	let mainStarted = false;
-	const startSpareDatabase = () =>
+	const fastSpareDatabase = prewarmedEngine
+		? args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE
+		: isPlainInteractiveSessionInvocation(args, terminal) &&
+			!args.some(
+				(arg) =>
+					arg === "--no-session" || arg === "--session-dir" || arg === "--storage" || arg === "--storage-file",
+			) &&
+			!process.env.ATOMIC_STORAGE &&
+			!process.env.ATOMIC_SESSIONS_STORAGE &&
+			!process.env.ATOMIC_CODING_AGENT_SESSION_DIR &&
+			!process.env.ATOMIC_SESSION_DIR &&
+			!process.env.ATOMIC_PROFILE &&
+			!process.env.ATOMIC_TEAM_URL;
+	if (fastSpareDatabase || !prewarmedEngine) {
 		void import("./core/storage/node-sqlite-thread.js").then(
 			({ ThreadConnection }) => {
-				if (!mainStarted) ThreadConnection.startSpare();
-			},
-			() => {},
-		);
-	if (prewarmedEngine) {
-		if (args[1] !== INTERACTIVE_ENGINE_PREWARM_NO_DATABASE) startSpareDatabase();
-	} else if (
-		isPlainInteractiveSessionInvocation(args, terminal) &&
-		!args.some(
-			(arg) => arg === "--no-session" || arg === "--session-dir" || arg === "--storage" || arg === "--storage-file",
-		) &&
-		!process.env.ATOMIC_STORAGE &&
-		!process.env.ATOMIC_SESSIONS_STORAGE &&
-		!process.env.ATOMIC_CODING_AGENT_SESSION_DIR &&
-		!process.env.ATOMIC_SESSION_DIR &&
-		!process.env.ATOMIC_PROFILE &&
-		!process.env.ATOMIC_TEAM_URL
-	) {
-		startSpareDatabase();
-	} else {
-		void import("./utils/startup-database-spare.ts").then(
-			({ shouldStartSpareDatabaseThread }) => {
-				if (!mainStarted && shouldStartSpareDatabaseThread(args, false, terminal)) startSpareDatabase();
+				if (mainStarted) return;
+				if (fastSpareDatabase) ThreadConnection.startSpare();
+				else return ThreadConnection.startSpareIfSqlNeeded(args, terminal, () => !mainStarted);
 			},
 			() => {},
 		);
