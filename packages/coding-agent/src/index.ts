@@ -1392,11 +1392,7 @@ export {
 } from "./utils/git-errors.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
-export {
-	INTERACTIVE_ENGINE_ENV_VARS,
-	isInteractiveEngineRestarted,
-	scrubInteractiveEngineEnv,
-} from "./utils/interactive-engine-env.ts";
+export { INTERACTIVE_ENGINE_ENV_VARS, scrubInteractiveEngineEnv } from "./utils/interactive-engine-env.ts";
 export {
 	isManagedToolDownloadError,
 	isManagedToolError,

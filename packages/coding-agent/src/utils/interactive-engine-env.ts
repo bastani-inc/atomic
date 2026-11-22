@@ -98,8 +98,3 @@ export function interactiveEngineStartupEnv(): InteractiveEngineStartupEnv {
 export function isInteractiveEngineChild(): boolean {
 	return interactiveEngineStartupEnv().child === "1";
 }
-
-/** True when this engine child replaced a previous interactive engine generation after a crash or restart. */
-export function isInteractiveEngineRestarted(): boolean {
-	return interactiveEngineStartupEnv().restarted === true;
-}

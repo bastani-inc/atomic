@@ -9,6 +9,7 @@
 import { join } from "node:path";
 import type { Agent, AgentMessage, AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
+import { interactiveEngineStartupEnv } from "../utils/interactive-engine-env.ts";
 import { isPowerShellAvailable } from "../utils/shell.ts";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
@@ -408,7 +409,11 @@ class AgentSessionBase {
 		this._childSessionOptions = config.childSessionOptions;
 		this._storageAgentDir = config.storageAgentDir;
 		this._baseToolsOverride = config.baseToolsOverride;
-		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._sessionStartEvent = config.sessionStartEvent ?? {
+			type: "session_start",
+			reason: "startup",
+			...(interactiveEngineStartupEnv().restarted ? { engineRestart: true as const } : {}),
+		};
 		this._workspace = config.workspace;
 		this._subagentPolicy = config.subagentPolicy;
 		this._intercomPolicy = config.intercomPolicy;

@@ -269,7 +269,8 @@ describe("post-crash subagent recovery in a real PTY", () => {
 				// Open /tasks in the real PTY and verify worker is listed without any user resume prompt or recovery error.
 				program.write("/tasks\r");
 				await program.waitForScreen(
-					(screen) => screen.includes("worker") && /Tasks|HOLD_WORKER_TASK|running/i.test(screen),
+					(screen) =>
+						screen.includes("enter/→ open") && screen.includes("worker") && screen.includes("HOLD_WORKER_TASK"),
 					STEP_TIMEOUT_MS,
 					"restored worker listed in /tasks",
 				);
@@ -281,7 +282,7 @@ describe("post-crash subagent recovery in a real PTY", () => {
 				// Close /tasks, let restored worker finish, and quit cleanly.
 				releaseChildGen2.resolve();
 				program.write("\x1b");
-				await sleep(200);
+				await program.waitForScreen((screen) => !screen.includes("enter/→ open"), STEP_TIMEOUT_MS, "/tasks closed");
 				program.write("/quit\r");
 				const exit = await program.exited;
 				assert.equal(exit.timedOut, false);
@@ -289,7 +290,8 @@ describe("post-crash subagent recovery in a real PTY", () => {
 				releaseChildGen2.resolve();
 				for (const res of [...openResponses]) res.destroy();
 				program?.kill();
-				await server.close();
+				server.closeAllConnections?.();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
 				await removeTempRootReleasingBroker(root, agentDir);
 			}
 		},
@@ -498,7 +500,8 @@ describe("post-crash subagent recovery in a real PTY", () => {
 
 				program.write("/tasks\r");
 				await program.waitForScreen(
-					(screen) => screen.includes("worker") && /Tasks|HOLD_WORKER_TASK|running/i.test(screen),
+					(screen) =>
+						screen.includes("enter/→ open") && screen.includes("worker") && screen.includes("HOLD_WORKER_TASK"),
 					STEP_TIMEOUT_MS,
 					"restored worker listed in /tasks after second crash",
 				);
@@ -506,7 +509,7 @@ describe("post-crash subagent recovery in a real PTY", () => {
 
 				releaseChildGen3.resolve();
 				program.write("\x1b");
-				await sleep(200);
+				await program.waitForScreen((screen) => !screen.includes("enter/→ open"), STEP_TIMEOUT_MS, "/tasks closed");
 				program.write("/quit\r");
 				const exit = await program.exited;
 				assert.equal(exit.timedOut, false);
@@ -514,7 +517,8 @@ describe("post-crash subagent recovery in a real PTY", () => {
 				releaseChildGen3.resolve();
 				for (const res of [...openResponses]) res.destroy();
 				program?.kill();
-				await server.close();
+				server.closeAllConnections?.();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
 				await removeTempRootReleasingBroker(root, agentDir);
 			}
 		},
