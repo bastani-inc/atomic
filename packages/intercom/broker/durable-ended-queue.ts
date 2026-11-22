@@ -1,6 +1,9 @@
 import type net from "node:net";
 import { Socket } from "node:net";
-import type { SessionInfo } from "../types.js";
+import { intercomMessageBytes } from "../message-size.js";
+import { isAgentRecipient } from "../recipient-purpose.js";
+import { resolveSessionTarget, resolveSessionTargetByHostSessionId } from "../session-target.js";
+import type { Message, SessionInfo } from "../types.js";
 import {
 	type DepartedChildrenJournal,
 	departureKey,
@@ -9,11 +12,11 @@ import {
 	type WakeSender,
 } from "./departed-children.js";
 import { type EndedChildMessages, type EndedChildWakeBudget, markMaybeDelivered } from "./ended-child-wakes.js";
+import { reachesSession } from "./group-membership.js";
+import { PRESENCE_REGISTRATION_BOUND_MS } from "./multinode-router.js";
+import type { SubagentEndedOutcome } from "./recipient-gone-errors.js";
 import type { HeldSend } from "./restoring-recipients.js";
 import { type BrokerConnectedSession, detachSend, type SendClientMessage, senderAtReceipt } from "./send-handler.js";
-import { intercomMessageBytes } from "../message-size.js";
-import type { Message } from "../types.js";
-import type { SubagentEndedOutcome } from "./recipient-gone-errors.js";
 import type {
 	EndedChildQueueStore,
 	EndedQueueCounted,
@@ -21,7 +24,6 @@ import type {
 	EndedQueueRow,
 	EndedWakeBudgetEvent,
 } from "./sql-ended-child-queue-store.js";
-import { PRESENCE_REGISTRATION_BOUND_MS } from "./multinode-router.js";
 
 /**
  * #5999 durable wake queue: how long a session's registration waits, at most, for the broker to know whether its queue
@@ -164,16 +166,113 @@ export function isRestoredSend(held: HeldSend): boolean {
  * - The rows a broker finds are taken up again in the order they were queued: as its departures, see
  *   `DepartedChildren.restore`.
  */
+/**
+ * Restoration phase of the broker's durable ended-subagent queue:
+ * - `idle`: `decide()` has not run yet.
+ * - `deciding`: waiting for the store to open (bounded).
+ * - `identifying_targets`: the store is open and registrations proceed while `store.targets()` determines which
+ *   subagents have kept messages. Sends that may reach a subagent wait here, and are re-evaluated as soon as
+ *   `store.targets()` resolves, before `store.load()` reads message bodies.
+ * - `loading`: `pending` holds every normalized subagent key/alias with kept messages (plus any target whose wake
+ *   send is waiting for the load to finish). Only sends targeting those subagents wait here; unrelated sends proceed.
+ * - `ready`: restoration finished (or memory-only / failed). Nothing waits.
+ */
+export type EndedQueueRestorePhase = "idle" | "deciding" | "identifying_targets" | "loading" | "ready";
+
+type RestoreState =
+	| { readonly phase: "idle" }
+	| { readonly phase: "deciding"; readonly deferred: Array<() => void> }
+	| { readonly phase: "identifying_targets"; readonly deferred: Array<() => void> }
+	| { readonly phase: "loading"; readonly pending: Set<string>; readonly deferred: Array<() => void> }
+	| { readonly phase: "ready" };
+
+const UUID_PREFIX_PATTERN = /^[0-9a-f]{8}$/i;
+
+function targetMatchesSession(
+	trimmed: string,
+	lower: string,
+	session: BrokerConnectedSession,
+	localAliasTarget?: (target: string) => BrokerConnectedSession | undefined,
+): boolean {
+	if (session.info.id === trimmed) return true;
+	if (session.info.name?.trim().toLowerCase() === lower) return true;
+	if (session.registrationName?.trim().toLowerCase() === lower) return true;
+	if (UUID_PREFIX_PATTERN.test(trimmed) && session.info.id.toLowerCase().startsWith(lower)) return true;
+	if (session.registrationReturnAddress === trimmed) return true;
+	if (localAliasTarget?.(trimmed) === session) return true;
+	return false;
+}
+
+/**
+ * Whether a send to `target` from `sender` must wait for the durable ended-subagent queue's restoration barrier:
+ * - `idle` / `ready`: never waits.
+ * - `deciding` / `identifying_targets`: kept targets are not known yet; live sends that unambiguously resolve to a
+ *   non-subagent session (`supervisorId === undefined`) proceed immediately, while sends to live subagents or
+ *   unresolved targets wait and are re-evaluated once `store.targets()` resolves.
+ * - `loading`: waits if `target` is pending directly or could match a live subagent whose `registrationName` is
+ *   pending (including by new session ID, 8-hex UUID prefix, mutable name, host session ID, or alias).
+ */
+export function shouldHoldSendForEndedQueueRestore(
+	queue: Pick<DurableEndedQueue, "restorePhase" | "holds" | "hasPendingTargets">,
+	target: string,
+	sender: BrokerConnectedSession | undefined,
+	sessions: ReadonlyMap<string, BrokerConnectedSession>,
+	localAliasTarget?: (target: string) => BrokerConnectedSession | undefined,
+): boolean {
+	const phase = queue.restorePhase;
+	if (phase === "idle" || phase === "ready") return false;
+	const trimmed = target.trim();
+	if (trimmed.length === 0) return false;
+	const lower = trimmed.toLowerCase();
+	if (phase === "deciding" || phase === "identifying_targets") {
+		const exact = sessions.get(trimmed);
+		if (exact !== undefined) return exact.supervisorId !== undefined;
+		for (const session of sessions.values()) {
+			if (session.supervisorId !== undefined && targetMatchesSession(trimmed, lower, session, localAliasTarget)) {
+				return true;
+			}
+		}
+		if (sender !== undefined) {
+			const visible = Array.from(sessions.values(), (session) => session.info).filter(
+				(info) => isAgentRecipient(info) && reachesSession(sender, info),
+			);
+			const byNameOrPrefix = resolveSessionTarget(visible, trimmed);
+			const resolved =
+				byNameOrPrefix.kind === "not_found"
+					? resolveSessionTargetByHostSessionId(
+							visible,
+							trimmed,
+							(info) => sessions.get(info.id)?.registrationReturnAddress,
+						)
+					: byNameOrPrefix;
+			if (resolved.kind === "resolved") {
+				const live = sessions.get(resolved.session.id);
+				if (live !== undefined && live.supervisorId === undefined) return false;
+			}
+		}
+		return true;
+	}
+	if (!queue.hasPendingTargets) return false;
+	if (queue.holds(trimmed)) return true;
+	for (const session of sessions.values()) {
+		if (
+			session.supervisorId !== undefined &&
+			session.registrationName !== undefined &&
+			queue.holds(session.registrationName) &&
+			targetMatchesSession(trimmed, lower, session, localAliasTarget)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 export class DurableEndedQueue {
 	private store: EndedChildQueueStore | undefined;
 	private deciding: Promise<void> | undefined;
-	private decidedNow = false;
 	private loading: Promise<void> | undefined;
-	private loadedNow = false;
+	private restoreState: RestoreState = { phase: "idle" };
 	private readonly early = new Map<string, EarlyOutcome | undefined>();
-	/** While an earlier broker's messages are read: the subagents (names and ids) they are for. */
-	private pending: Set<string> | undefined;
-	private readonly deferred: Array<() => void> = [];
 	/** Failures kept for senders that were not connected, by the sender's return address (or session id). */
 	private readonly kept = new Map<string, Map<string, KeptFailure>>();
 
@@ -188,12 +287,20 @@ export class DurableEndedQueue {
 		return this.store !== undefined;
 	}
 
+	get restorePhase(): EndedQueueRestorePhase {
+		return this.restoreState.phase;
+	}
+
+	get hasPendingTargets(): boolean {
+		return this.restoreState.phase === "loading" && this.restoreState.pending.size > 0;
+	}
+
 	get decided(): boolean {
-		return this.decidedNow;
+		return this.restoreState.phase !== "idle" && this.restoreState.phase !== "deciding";
 	}
 
 	get loaded(): boolean {
-		return this.loadedNow;
+		return this.restoreState.phase === "ready";
 	}
 
 	/**
@@ -201,34 +308,48 @@ export class DurableEndedQueue {
 	 * the store needs before it can open (routing's start with a shared `storage`, the store's code with the local one),
 	 * and within {@link ENDED_QUEUE_TOTAL_WAIT_MS} in all. `restore`
 	 * receives what an earlier broker kept, once the store is open: read a page at a time, the event loop running between
-	 * pages. Until then, sends to the subagents it kept messages for wait ({@link holds}), so none overtakes them.
+	 * pages. Until `store.targets()` resolves, sends that may target a subagent wait and are re-evaluated before pages
+	 * are read; while pages are read, sends to pending subagents wait ({@link holds}), so none overtakes them.
 	 */
 	decide(restore: (restored: RestoredEndedQueues) => void): Promise<void> {
 		if (this.deciding !== undefined) return this.deciding;
-		let settle: () => void = () => {};
+		this.restoreState = { phase: "deciding", deferred: [] };
+		let resolveDecided: () => void = () => {};
 		const decided = new Promise<void>((resolve) => {
-			settle = () => {
-				this.decidedNow = true;
-				resolve();
-			};
+			resolveDecided = resolve;
 		});
+		let finishLoad: () => void = () => {};
+		this.loading = new Promise<void>((resolve) => {
+			finishLoad = resolve;
+		});
+		const transitionToReady = (runRestore?: () => void): void => {
+			const state = this.restoreState;
+			const waiting = state.phase === "idle" || state.phase === "ready" ? [] : state.deferred;
+			this.restoreState = { phase: "ready" };
+			try {
+				runRestore?.();
+			} finally {
+				finishLoad();
+				for (const deferred of waiting) deferred();
+			}
+		};
 		const timers: ReturnType<typeof setTimeout>[] = [];
 		const wait = (ms: number) => {
 			const timer = setTimeout(() => {
-				if (this.decidedNow) return;
+				if (this.restoreState.phase !== "deciding") return;
 				this.host.log(
 					`Intercom broker keeps messages for subagents that ended in memory only: their store did not open within ${ms} ms`,
 				);
 				this.host.retireStore();
-				this.loadedNow = true;
-				settle();
+				transitionToReady();
+				resolveDecided();
 			}, ms);
 			timer.unref();
 			timers.push(timer);
 		};
 		const openWaitMs = endedQueueOpenWaitMs();
 		const waitToOpen = () => {
-			if (!this.decidedNow) wait(openWaitMs);
+			if (this.restoreState.phase === "deciding") wait(openWaitMs);
 		};
 		const before = this.host.routingStarted() ?? this.host.storeCodeLoaded?.();
 		if (before === undefined) wait(openWaitMs);
@@ -236,13 +357,6 @@ export class DurableEndedQueue {
 			wait(Math.max(ENDED_QUEUE_TOTAL_WAIT_MS, openWaitMs));
 			void before.then(waitToOpen, waitToOpen);
 		}
-		let finishLoad: () => void = () => {};
-		this.loading = new Promise<void>((resolve) => {
-			finishLoad = () => {
-				this.loadedNow = true;
-				resolve();
-			};
-		});
 		void (async () => {
 			let store: EndedChildQueueStore | undefined;
 			try {
@@ -252,34 +366,40 @@ export class DurableEndedQueue {
 					`Intercom broker keeps messages for subagents that ended in memory only: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
-			if (this.decidedNow) {
+			if (this.restoreState.phase !== "deciding") {
 				// Too late: this broker already told its sessions their messages are kept in memory.
 				await store?.close().catch(() => {});
-				finishLoad();
 				return;
 			}
 			for (const timer of timers) clearTimeout(timer);
 			this.store = store;
-			if (store !== undefined) this.journalBudget(store);
-			else this.host.retireStore();
-			settle();
 			if (store === undefined) {
-				finishLoad();
+				this.host.retireStore();
+				transitionToReady();
+				resolveDecided();
 				return;
 			}
+			this.journalBudget(store);
+			this.restoreState = { phase: "identifying_targets", deferred: this.restoreState.deferred };
+			resolveDecided();
+			let snapshot: RestoredEndedQueues | undefined;
 			try {
-				this.pending = new Set(await store.targets());
+				const targets = await store.targets();
+				const identifyingDeferred =
+					this.restoreState.phase === "identifying_targets" ? this.restoreState.deferred : [];
+				this.restoreState = { phase: "loading", pending: new Set(targets), deferred: [] };
+				// Re-evaluate sends deferred while targets were unknown: unrelated sends proceed before `store.load()`
+				// reads bodies, while sends to pending subagents re-enter the `loading` queue in FIFO order.
+				for (const deferred of identifyingDeferred) deferred();
 				const restored = this.restoration();
 				const { budget } = await store.load((rows) => restored.add(rows));
-				restore({ ...restored.result(), budget });
+				snapshot = { ...restored.result(), budget };
 			} catch (error) {
 				this.host.log(
 					`Intercom broker could not read the messages kept for subagents that ended: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
-			this.pending = undefined;
-			finishLoad();
-			for (const deferred of this.deferred.splice(0)) deferred();
+			transitionToReady(snapshot === undefined ? undefined : () => restore(snapshot));
 		})();
 		this.deciding = decided;
 		return decided;
@@ -287,21 +407,44 @@ export class DurableEndedQueue {
 
 	/**
 	 * Whether a send to `target` waits for what an earlier broker kept for it to be taken up again: one of its senders'
-	 * later messages must not reach it first. Sends to any other session never wait.
+	 * later messages must not reach it first. True while targets are not yet identified (`deciding` /
+	 * `identifying_targets`), true for pending targets during `loading`, and false once restored (`ready`).
 	 */
 	holds(target: string): boolean {
-		return this.pending !== undefined && this.pending.has(target.trim().toLowerCase());
+		const state = this.restoreState;
+		if (state.phase === "idle" || state.phase === "ready") return false;
+		if (state.phase === "deciding" || state.phase === "identifying_targets") return true;
+		return state.pending.has(target.trim().toLowerCase());
 	}
 
-	/** Runs `send` once what an earlier broker kept is taken up again, after it, in the order asked. */
+	/**
+	 * Runs `send` once the current restoration barrier passes, in FIFO order:
+	 * - in `deciding` / `identifying_targets`, re-runs once `store.targets()` resolves (or restoration finishes);
+	 * - in `loading`, runs once `store.load()` and `restore()` finish;
+	 * - in `idle` / `ready`, runs immediately.
+	 */
 	whenRestored(send: () => void): void {
-		if (this.pending === undefined) send();
-		else this.deferred.push(send);
+		const state = this.restoreState;
+		if (state.phase === "idle" || state.phase === "ready") send();
+		else state.deferred.push(send);
+	}
+
+	/**
+	 * Defers `send` in the unified FIFO restoration queue until restoration finishes, marking `target` pending while
+	 * `store.load()` runs so a subsequent send to `target` (after it registers) cannot overtake this one. Returns
+	 * `false` when restoration is already complete (`idle` / `ready`), without calling `send`.
+	 */
+	deferForTarget(target: string, send: () => void): boolean {
+		const state = this.restoreState;
+		if (state.phase === "idle" || state.phase === "ready") return false;
+		if (state.phase === "loading") state.pending.add(target.trim().toLowerCase());
+		state.deferred.push(send);
+		return true;
 	}
 
 	/** Resolves once what an earlier broker kept is taken up again (or it is known there is none), within a bound. */
 	untilLoaded(): Promise<void> {
-		if (this.loadedNow || this.loading === undefined) return Promise.resolve();
+		if (this.restoreState.phase === "ready" || this.loading === undefined) return Promise.resolve();
 		return Promise.race([
 			this.loading,
 			new Promise<void>((resolve) => setTimeout(resolve, ENDED_QUEUE_LOAD_WAIT_MS).unref()),
