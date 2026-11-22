@@ -349,12 +349,17 @@ async function indexSeedOf(userIndexPath: string): Promise<IndexSeed | null> {
  * What is recorded next to a private index: the seed it was built from and the hash of its bytes. The record is written
  * after the index, by whichever capture renamed it, so it vouches only for the exact index it names: a crash between
  * the two writes, or captures in two processes renaming over each other, leave a record whose hash the index file no
- * longer has, and the next capture reseeds.
+ * longer has, and the next capture reseeds. Releases before `pristine` kept the files a capture added in the index, and
+ * read HEAD's tree into it again in every capture; they ignore the two fields, and their records have neither.
  */
 interface IndexRecord {
 	readonly version: number;
 	readonly seed: IndexSeed | null;
 	readonly index: string;
+	/** The commit whose tree the index holds, with no file a capture added: a capture of that HEAD reads it as is. */
+	readonly pristine?: string;
+	/** The tree `write-tree` gives for that index, once a capture learned it. */
+	readonly tree?: string;
 }
 
 /** The record next to `index`, when it is of this version; anything else reads as none. */
@@ -415,11 +420,12 @@ async function captureIndexOf(checkout: Checkout, storeDir: string, signal?: Abo
 }
 
 /**
- * {@link writeWorkingTree} for a capture, through the private index `capture.index` kept between captures. Its entries
- * keep the file times of the last capture's refresh, so unchanged files are not read again; it is reseeded from the
- * user's index whenever that changed. Any failure with it, such as a corrupt or truncated file, removes it and
- * captures as {@link writeWorkingTree} does: the tree is always computed from the working files. Runs in the index's
- * turn ({@link inTurn}).
+ * {@link writeWorkingTree} for a capture, through the private index `capture.index` kept between captures as the tree
+ * of HEAD alone ({@link writeScannedTree}). Its entries keep the file times of the last capture's refresh, so unchanged
+ * files are not read again; it is reseeded from the user's index whenever that changed, and reads HEAD's tree again
+ * when HEAD moved. Any failure with it, such as a corrupt or truncated file, removes it and captures as
+ * {@link writeWorkingTree} does: the tree is always computed from the working files. Runs in the index's turn
+ * ({@link inTurn}).
  */
 async function writeCapturedTree(
 	checkout: Checkout,
@@ -435,6 +441,8 @@ async function writeCapturedTree(
 	if (!(await usableOutside(root, index))) return writeWorkingTree(checkout, settings, policy, scratch, options);
 	const working = `${index}.${process.pid}.tmp`;
 	try {
+		// A lock a killed Git left on the working copy fails Git's writes to it: capture without it, which removes it.
+		if (await pathExists(`${working}.lock`)) throw new Error(`${working} is locked`);
 		const seed = await indexSeedOf(userIndexPath);
 		await mkdir(dirname(index), { recursive: true });
 		const record = await recordOf(index);
@@ -444,14 +452,24 @@ async function writeCapturedTree(
 			await rm(working, { force: true });
 			await seedFromUserIndex(userIndexPath, working);
 		}
-		const state = await writeTreeThrough(working, checkout, settings, policy, options, {
-			refresh: true,
-			forceAdded: () => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
-		});
+		// The copy has the recorded bytes: it is HEAD's tree alone when the record says so for this HEAD.
+		const pristine = !reseed && record?.pristine === checkout.head;
+		const { state, headTree } = await writeScannedTree(
+			working,
+			checkout,
+			settings,
+			policy,
+			scratch,
+			{ pristine, tree: pristine ? record?.tree : undefined },
+			() => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
+			signal,
+		);
 		const written: IndexRecord = {
 			version: CAPTURE_INDEX_VERSION,
 			seed,
 			index: sha256Hex(await readFile(working)),
+			pristine: checkout.head,
+			...(headTree === undefined ? {} : { tree: headTree }),
 		};
 		await renameWithRetry(working, index, { signal });
 		await writeAtomically(`${index}.json`, JSON.stringify(written));
@@ -717,7 +735,35 @@ async function writeTreeThrough(
 		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout),
 		...forceAdded,
 	];
-	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
+	const { admitted, omitted } = await admittedFiles(root, changed, untracked, settings, policy);
+	if (options.seedTree !== undefined && omitted.length > 0) {
+		await runGit(["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", checkout.head], {
+			...git,
+			env: { ...git.env, GIT_LITERAL_PATHSPECS: "1" },
+			input: `${omitted.map((omission) => omission.path).join("\0")}\0`,
+		});
+	}
+	if (admitted.length > 0) {
+		await runGit([...config, "update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
+			...git,
+			input: `${admitted.join("\0")}\0`,
+		});
+	}
+	return { tree: await gitText(["write-tree"], git), omitted };
+}
+
+/**
+ * Which of the files that differ from HEAD (`changed`) and the untracked ones (`untracked`) a snapshot records
+ * (`admitted`), in path order, and which it leaves out and why: the policy, the settings, then the size caps.
+ */
+async function admittedFiles(
+	root: string,
+	changed: readonly string[],
+	untracked: readonly string[],
+	settings: WorktreeSnapshotSettings,
+	policy: SnapshotPathPolicy,
+): Promise<{ readonly admitted: string[]; readonly omitted: PathOmission[] }> {
+	const omitted: PathOmission[] = [];
 	const admitted: string[] = [];
 	let total = 0;
 	const candidates = [
@@ -750,20 +796,115 @@ async function writeTreeThrough(
 		total += bytes;
 		admitted.push(path);
 	}
-	if (options.seedTree !== undefined && omitted.length > 0) {
-		await runGit(["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", checkout.head], {
-			...git,
-			env: { ...git.env, GIT_LITERAL_PATHSPECS: "1" },
-			input: `${omitted.map((omission) => omission.path).join("\0")}\0`,
-		});
+	return { admitted, omitted };
+}
+
+/**
+ * The settings and arguments of the `status` that lists, through a private index holding HEAD's tree, the files that
+ * differ from it and the untracked ones, as `update-index --refresh`, `diff-files` and `ls-files --others
+ * --exclude-standard` list them: the untracked cache, which `ls-files` does not read, is not used, and
+ * `diff.ignoreSubmodules`, which `diff-files` does not read, is set to its default, so both follow each submodule's
+ * own `ignore` setting alike. A submodule whose only change is untracked files is the exception: `status` lists it,
+ * and `diff-files` lists it or not depending on the Git version.
+ */
+const SCAN_COMMAND = [
+	"-c",
+	"core.untrackedCache=false",
+	"-c",
+	"diff.ignoreSubmodules=none",
+	"status",
+	"--porcelain=v2",
+	"-z",
+	"--untracked-files=all",
+	"--no-renames",
+];
+
+/**
+ * The files that differ from the private index `git` names, which holds HEAD's tree, and the untracked ones, from one
+ * `status` that also refreshes the index's file times. `askDiffFiles`: it listed a submodule whose only change is
+ * untracked files, or an entry other than a changed or an untracked one, so `diff-files` lists the changed files.
+ */
+async function scanWorkingFiles(
+	git: GitRunOptions,
+): Promise<{ readonly changed: string[]; readonly untracked: string[]; readonly askDiffFiles: boolean }> {
+	// The refreshed times are written back, as `update-index --refresh` writes them, even where optional locks are off.
+	const { stdout } = await runGit(SCAN_COMMAND, { ...git, env: { ...git.env, GIT_OPTIONAL_LOCKS: "1" } });
+	const fields = nulFields(stdout);
+	const changed: string[] = [];
+	const untracked: string[] = [];
+	let askDiffFiles = false;
+	for (let index = 0; index < fields.length; index++) {
+		const field = fields[index]!;
+		if (field.startsWith("? ")) {
+			untracked.push(field.slice(2));
+		} else if (field.startsWith("1 ")) {
+			// `1 XY sub mH mI mW hH hI path`: Y is the file against the index; `sub` is `S..U` for a submodule with only
+			// untracked files in it.
+			const [, states = "", sub = ""] = field.split(" ", 3);
+			if (states[1] === ".") continue;
+			if (sub === "S..U") askDiffFiles = true;
+			changed.push(field.split(" ").slice(8).join(" "));
+		} else {
+			// A rename (with its original path next), an unmerged path or anything else: not one of HEAD's files alone.
+			askDiffFiles = true;
+			if (field.startsWith("2 ")) index++;
+		}
 	}
-	if (admitted.length > 0) {
-		await runGit([...config, "update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
-			...git,
-			input: `${admitted.join("\0")}\0`,
-		});
+	return { changed, untracked, askDiffFiles };
+}
+
+/**
+ * The tree of a capture's working files through the private index `index`, kept between captures as HEAD's tree alone,
+ * refreshed: `pristine` says it already is HEAD's tree, so it is not read again, and `tree` is the tree it gives when
+ * known. One `status` lists the files that differ from it and the untracked ones ({@link scanWorkingFiles}); the files
+ * the snapshot records go into a copy, in `scratch`, so `index` stays HEAD's tree. Records exactly the tree and
+ * omissions {@link writeTreeThrough} records with a refresh and the files staged despite an ignore rule. Resolves
+ * the tree `index` gives too, when this capture learned it.
+ */
+async function writeScannedTree(
+	index: string,
+	checkout: Checkout,
+	settings: WorktreeSnapshotSettings,
+	policy: SnapshotPathPolicy,
+	scratch: string,
+	known: { readonly pristine: boolean; readonly tree: string | undefined },
+	forceAdded: () => Promise<string[]>,
+	signal?: AbortSignal,
+): Promise<{ readonly state: WorkingTreeState; readonly headTree: string | undefined }> {
+	const { root } = checkout;
+	const git: GitRunOptions = { cwd: root, env: { GIT_INDEX_FILE: index }, signal };
+	if (!known.pristine) await runGit(["read-tree", "--reset", checkout.head], git);
+	const scan = await scanWorkingFiles(git);
+	let { changed } = scan;
+	if (scan.askDiffFiles) {
+		await runGit(["update-index", "-q", "--refresh"], { ...git, allowExitCodes: [1] });
+		changed = nulFields((await runGit(["diff-files", "-z", "--name-only", "--no-renames"], git)).stdout);
 	}
-	return { tree: await gitText(["write-tree"], git), omitted };
+	const untracked = [...scan.untracked, ...(await forceAdded())];
+	const { admitted, omitted } = await admittedFiles(root, changed, untracked, settings, policy);
+	const headTree = known.pristine ? known.tree : undefined;
+	if (admitted.length === 0) {
+		const tree = headTree ?? (await gitText(["write-tree"], git));
+		return { state: { tree, omitted }, headTree: tree };
+	}
+	const recorded = join(scratch, "capture-index");
+	await copyWithTimes(index, recorded);
+	const files: GitRunOptions = { ...git, env: { GIT_INDEX_FILE: recorded } };
+	await runGit(["update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
+		...files,
+		input: `${admitted.join("\0")}\0`,
+	});
+	return { state: { tree: await gitText(["write-tree"], files), omitted }, headTree };
+}
+
+/**
+ * Copies `from` to `to` with `from`'s times: Git trusts an index entry's file times only when they are older than the
+ * index file's, so a copy must not look newer than the index it copies.
+ */
+async function copyWithTimes(from: string, to: string): Promise<void> {
+	await copyFile(from, to);
+	const { atime, mtimeMs } = await stat(from);
+	await utimes(to, atime, new Date(mtimeMs));
 }
 
 /**

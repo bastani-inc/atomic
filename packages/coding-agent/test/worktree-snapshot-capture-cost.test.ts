@@ -24,15 +24,18 @@ useTemporaryAgentDir();
 
 /**
  * Git processes one turn may start to learn that its checkout did not change: one `rev-parse` locates the checkout,
- * its Git directory, its index and HEAD; the tree is then computed through the private index with `read-tree`,
- * `update-index --refresh`, `diff-files`, `ls-files --others`, `update-index --stdin` (the files that differ from
- * HEAD), the `config` lookup of the modes Git trusts, and `write-tree`. The files staged in the user's index despite an
- * ignore rule (`diff-index`) were listed by the turn before, from the same index and HEAD. The session ref already names
- * the snapshot's commit, so it is not written again. Every turn that calls a file-writing tool pays this, in every
- * session of a host: before this budget an unchanged turn started 14, and a host with many agents about 5 Git
- * processes a second.
+ * its Git directory, its index and HEAD; one `status` lists the files that differ from HEAD and the untracked ones
+ * through the private index, which still holds HEAD's tree, so it is not read again; `update-index --stdin` adds the
+ * files that differ from HEAD to a copy of it, and `write-tree` writes the tree. The files staged in the user's index
+ * despite an ignore rule (`diff-index`) were listed by the turn before, from the same index and HEAD. The session ref
+ * already names the snapshot's commit, so it is not written again. Every turn that calls a file-writing tool pays
+ * this, in every session of a host: before this budget an unchanged turn started 14, then 8, and a host with many
+ * agents about 5 Git processes a second. On Windows each process takes 25 to 45 ms to start.
  */
-const UNCHANGED_TURN_GIT_PROCESSES = 8;
+const UNCHANGED_TURN_GIT_PROCESSES = 4;
+
+/** Of those, the ones an unchanged turn starts when no file differs from HEAD: the lookup and the `status`. */
+const CLEAN_TURN_GIT_PROCESSES = 2;
 
 /**
  * The `diff-index` that gives changed files the executable or link mode their recorded tree holds, which a capture
@@ -127,6 +130,26 @@ describe("the Git processes a turn's snapshot starts", () => {
 			`an unchanged turn started ${processes.count()} Git processes, over ${budget}`,
 		);
 	});
+
+	test("a turn whose checkout still matches HEAD starts only the lookup and one status", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "src/a.txt": "a\n" });
+		const manager = await SessionManager.create(await sqlStore(), clone);
+		await manager.appendMessage({ role: "user", content: "work", timestamp: Date.now() });
+		const recorder = recorderFor(manager, clone);
+		await recorder.recordTurn(bashTurn());
+		const trace = sandbox.traceGitProcesses();
+		await recorder.recordTurn(bashTurn());
+		const entries = manager.getEntries().filter((entry) => entry.type === "worktree_snapshot");
+		assert.equal(entries.length, 2, "the unchanged turn records a reference to the same snapshot");
+		const commands = startedGitProcesses(trace).map(({ argv = [] }) =>
+			argv.filter((arg) => !arg.includes("=")).at(-1),
+		);
+		assert.equal(
+			startedGitProcesses(trace).length,
+			CLEAN_TURN_GIT_PROCESSES,
+			`an unchanged turn of a clean checkout started ${JSON.stringify(commands)}`,
+		);
+	});
 });
 
 function captured(
@@ -170,6 +193,8 @@ describe("captures of one checkout requested together", () => {
 
 	test("a capture requested while the checkout's tree is being computed records the files as they are after its request", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		// A file that differs from HEAD, so each capture writes its tree after listing the files.
+		sandbox.write(join(clone, "README.md"), "edited\n");
 		const blobs = new MemorySnapshotBlobStore();
 		const recorded = captured(await captureWorktreeSnapshot(clone, { settings, blobs }));
 		const checkout = await locateCheckout(clone);
@@ -182,10 +207,10 @@ describe("captures of one checkout requested together", () => {
 		const resumed = new Promise<void>((resolve) => {
 			resume = resolve;
 		});
-		// The first capture's fifth Git process, `write-tree`, runs after its tree computation listed the changed and
-		// untracked files (the files staged despite an ignore rule were listed by the capture before, from the same index).
+		// The first capture's second Git process, `update-index`, runs after its `status` listed the changed and untracked
+		// files (the files staged despite an ignore rule were listed by the capture before, from the same index).
 		countGitProcesses(async (started) => {
-			if (started !== 5) return;
+			if (started !== 2) return;
 			reading();
 			await resumed;
 		});
@@ -291,9 +316,9 @@ describe("captures of one checkout requested together", () => {
 		let started = 0;
 		const previous = setWorktreeSnapshotGit(async () => {
 			started++;
-			// The first capture's sixth Git process, `write-tree`, runs once its scan listed the changed files (the files
+			// The first capture's third Git process, `write-tree`, runs once its scan listed the changed files (the files
 			// staged despite an ignore rule were listed by the capture of `plain`, from the same index and HEAD).
-			if (started === 6) {
+			if (started === 3) {
 				scanning.resolve();
 				await resume.promise;
 			}
@@ -311,7 +336,7 @@ describe("captures of one checkout requested together", () => {
 		const [, executable, regular] = (await Promise.all([first, restoredModes, ownModes])).map(
 			(capture) => captured(capture).snapshot,
 		);
-		const scans = startedGitProcesses(trace).filter((event) => event.argv?.includes("--others")).length;
+		const scans = startedGitProcesses(trace).filter((event) => event.argv?.includes("status")).length;
 		assert.equal(scans, 2, "the two later captures share one scan");
 		const modeOf = async (tree: string) => (await sandbox.git(clone, "ls-tree", tree, "tool.sh")).split(" ")[0];
 		assert.equal(await modeOf(executable!.tree), "100755");
@@ -321,7 +346,7 @@ describe("captures of one checkout requested together", () => {
 	/**
 	 * Captures `earlier[0]`'s session's checkout and, once that capture's scan of the working files started, requests a
 	 * capture from `earlier[1]` whose writes ended at the tick `wroteBy` gives, before or after that start. Every Git
-	 * process the snapshot runner starts is traced; the first capture's sixth one, its scan's `write-tree`, runs once
+	 * process the snapshot runner starts is traced; the first capture's third one, its scan's `write-tree`, runs once
 	 * the scan listed the changed files, and waits until the second capture was requested. The files staged despite an
 	 * ignore rule were listed by the earlier captures, from the same index and HEAD.
 	 */
@@ -336,7 +361,7 @@ describe("captures of one checkout requested together", () => {
 		let started = 0;
 		const previous = setWorktreeSnapshotGit(async () => {
 			started++;
-			if (started === 6) {
+			if (started === 3) {
 				scanning.resolve();
 				await resume.promise;
 			}
