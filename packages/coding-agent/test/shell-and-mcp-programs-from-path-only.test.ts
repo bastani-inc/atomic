@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import {
 	chmodSync,
 	copyFileSync,
@@ -12,8 +13,14 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import {
+	type RecordedProcess,
+	recordProcess,
+	signalRecordedProcess,
+	waitUntilGone,
+} from "../../../test/helpers/recorded-process.js";
 
 const windows = process.platform === "win32";
 
@@ -21,6 +28,19 @@ const windows = process.platform === "win32";
 const hiddenPaths = vi.hoisted(() => new Set<string>());
 /** Folders whose real path is read without an answer, as on a network share that stopped responding. */
 const heldRealpaths = vi.hoisted(() => new Set<string>());
+/** Every process started through `node:child_process` while a test ran, and the folder it started in. */
+const startedProcesses = vi.hoisted(() => [] as { child: ChildProcess; cwd: string }[]);
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const spawn = ((command: string, argsOrOptions?: readonly string[] | SpawnOptions, options?: SpawnOptions) => {
+		const args = Array.isArray(argsOrOptions) ? argsOrOptions : [];
+		const spawnOptions = (Array.isArray(argsOrOptions) ? options : argsOrOptions) ?? {};
+		const child = actual.spawn(command, args, spawnOptions);
+		startedProcesses.push({ child, cwd: resolve(String(spawnOptions.cwd ?? process.cwd())) });
+		return child;
+	}) as typeof actual.spawn;
+	return { ...actual, spawn, default: { ...actual, spawn } };
+});
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
 	const accessSync: typeof actual.accessSync = (path, mode) => {
@@ -64,6 +84,31 @@ function plantProgram(directory: string, name: string): string {
 
 /** How long a started server may take to record its run on a loaded machine. */
 const SERVER_START_BUDGET_MS = 20_000;
+/** Longer than an ended process, or a command that ends one, takes to exit on a loaded machine. */
+const PROCESS_EXIT_BUDGET_MS = 10_000;
+/** The cleanup's waits for the processes a test left, at their deadlines. */
+const CLEANUP_TIMEOUT_MS = 3 * PROCESS_EXIT_BUDGET_MS;
+
+/** The servers a test started, ended and waited for before its folders are removed. */
+const servers: RecordedProcess[] = [];
+
+/** Whether `child` has exited, or never started, within `timeoutMs`. */
+function exitedWithin(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+	if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+	return new Promise((done) => {
+		const timer = setTimeout(() => done(false), timeoutMs);
+		child.once("exit", () => {
+			clearTimeout(timer);
+			done(true);
+		});
+	});
+}
+
+/** Whether `path` is `folder` or inside it; Windows compares paths in any letter case. */
+function isInside(folder: string, path: string): boolean {
+	const fromFolder = relative(windows ? folder.toLowerCase() : folder, windows ? path.toLowerCase() : path);
+	return !fromFolder.startsWith("..") && !isAbsolute(fromFolder);
+}
 
 let root: string;
 let project: string;
@@ -89,13 +134,22 @@ beforeEach(() => {
 	vi.resetModules();
 });
 
-afterEach(() => {
+afterEach(async () => {
 	process.chdir(previousCwd);
 	hiddenPaths.clear();
 	heldRealpaths.clear();
 	vi.unstubAllEnvs();
+	// A process still running in a folder keeps Windows from removing it: every server is ended and gone, and every
+	// process started meanwhile has exited, before the folders go.
+	for (const server of servers.splice(0)) {
+		await signalRecordedProcess(server);
+		assert.equal(await waitUntilGone(server, PROCESS_EXIT_BUDGET_MS), true, `server ${server.pid} outlived its test`);
+	}
+	for (const { child } of startedProcesses.splice(0)) {
+		assert.equal(await exitedWithin(child, PROCESS_EXIT_BUDGET_MS), true, `${child.spawnfile} outlived its test`);
+	}
 	rmSync(root, { recursive: true, force: true });
-});
+}, CLEANUP_TIMEOUT_MS);
 
 describe("shells and MCP servers Atomic starts by name come only from PATH, never from the project folder", () => {
 	test.skipIf(windows)("without bash in /bin the bash tool's shell is never a sh in the project folder", async () => {
@@ -153,6 +207,7 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 
 		await transport.start();
 		assert.ok(transport.pid !== undefined);
+		servers.push(await recordProcess(transport.pid));
 		await transport.close();
 	});
 
@@ -180,6 +235,7 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 			});
 
 			await transport.start();
+			servers.push(await recordProcess(transport.pid!));
 			await vi.waitFor(() => assert.equal(runs().length, 2), { timeout: SERVER_START_BUDGET_MS });
 			await transport.close();
 			assert.deepEqual(runs(), [expected, configured]);
@@ -272,6 +328,7 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 				});
 
 				await transport.start();
+				servers.push(await recordProcess(transport.pid!));
 				await vi.waitFor(() => assert.deepEqual(runs(), ["script"]), { timeout: SERVER_START_BUDGET_MS });
 				await transport.close();
 				assert.deepEqual(runs(), ["script"]);
@@ -295,6 +352,7 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 			const transport = new StdioTransport({ command: script, cwd: tools, projectCwd: project });
 
 			await transport.start();
+			servers.push(await recordProcess(transport.pid!));
 			await vi.waitFor(() => assert.deepEqual(runs(), ["script"]), { timeout: SERVER_START_BUDGET_MS });
 			await transport.close();
 		},
@@ -313,5 +371,57 @@ describe("shells and MCP servers Atomic starts by name come only from PATH, neve
 		await assert.rejects(started);
 		assert.equal(transport.pid, undefined);
 		assert.deepEqual(runs(), []);
+	});
+});
+
+// Windows keeps a folder in use while a process runs in it: a command started in the folder Atomic runs in, the
+// project's, keeps it from being removed or renamed until that command exits.
+describe.skipIf(!windows)("commands Atomic starts to end a process never run in the project folder", () => {
+	test("closing an MCP server returns once the command that ended it has exited, and that command ran elsewhere", async () => {
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		plantProgram(bin, "atomic-test-mcp-server");
+		vi.stubEnv("PATH", bin);
+		const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+		// A server that does not exit when its input closes: the close ends it. The close waits for the command that ends
+		// it as long as the server is given to exit, set here past how long that command takes on a loaded machine.
+		const transport = new StdioTransport({
+			command: "atomic-test-mcp-server",
+			args: ["-e", "setTimeout(() => {}, 5000)"],
+			cwd: project,
+			projectCwd: project,
+			closeTimeoutMs: PROCESS_EXIT_BUDGET_MS,
+		});
+		await transport.start();
+		servers.push(await recordProcess(transport.pid!));
+		const before = startedProcesses.length;
+
+		await transport.close();
+
+		const commands = startedProcesses.slice(before);
+		assert.ok(commands.length > 0, "the close started a command to end the server");
+		for (const { child, cwd } of commands) {
+			assert.ok(
+				child.exitCode !== null || child.signalCode !== null,
+				`${child.spawnfile} still runs after the close`,
+			);
+			assert.ok(!isInside(project, cwd), `${child.spawnfile} ran in the project folder`);
+		}
+	});
+
+	test("ending a process tree runs its kill command outside the project folder", async () => {
+		const { spawn } = await import("node:child_process");
+		const { killProcessTree } = await import("../src/utils/shell.ts");
+		const target = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
+		assert.ok(target.pid !== undefined);
+		servers.push(await recordProcess(target.pid));
+		const before = startedProcesses.length;
+
+		killProcessTree(target.pid);
+
+		const commands = startedProcesses.slice(before);
+		assert.equal(commands.length, 1, "one command ends the tree");
+		assert.ok(!isInside(project, commands[0]!.cwd), `${commands[0]!.child.spawnfile} ran in the project folder`);
+		assert.equal(await exitedWithin(target, PROCESS_EXIT_BUDGET_MS), true, "the tree was ended");
 	});
 });
