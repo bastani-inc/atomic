@@ -44,6 +44,15 @@ function historyWork(trace: string): number {
 	return work;
 }
 
+/** The `git config` processes started since `trace` was last emptied; it is left as it is. */
+function configReads(trace: string): number {
+	if (!existsSync(trace)) return 0;
+	return startedGitProcesses(trace).filter(({ argv = [] }) => {
+		const command = argv.slice(1).filter((arg, index, all) => arg !== "-c" && all[index - 1] !== "-c");
+		return command[0] === "config";
+	}).length;
+}
+
 /**
  * `captureWorktreeSnapshot` of the modules loaded again, as a process that resumes a session loads them, with nothing
  * remembered, its Git traced to `trace`.
@@ -229,5 +238,44 @@ describe("unpushed history over the cap, packed under other settings", () => {
 		const second = captured(await captureWorktreeSnapshot(clone, { settings, previous: first.snapshot }));
 		assert.deepEqual(historyOmissions(second.snapshot.omitted), []);
 		assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+	});
+
+	test("other settings, such as a remote added, keep the commits left out without bundling them again", async () => {
+		const { clone } = await cloneWithUnpushedData();
+		const trace = sandbox.traceGitProcesses();
+		const settings = { maxSnapshotBytes: SMALL_CAP };
+		const first = captured(await captureWorktreeSnapshot(clone, { settings }));
+		assert.equal(historyOmissions(first.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+		historyWork(trace);
+
+		await sandbox.git(clone, "remote", "add", "mirror", "https://example.com/mirror.git");
+		await sandbox.git(clone, "config", "user.name", "Someone Else");
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const second = captured(await captureWorktreeSnapshot(clone, { settings }));
+		assert.equal(historyOmissions(second.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+		assert.equal(historyWork(trace), 0);
+	});
+
+	test("a capture whose unpushed commits are bundled and fit reads the repository's config once", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "small.txt"), "small\n");
+		await sandbox.commitAll(clone, "small");
+		const trace = sandbox.traceGitProcesses();
+		const fits = captured(await captureWorktreeSnapshot(clone));
+		assert.equal(fits.snapshot.bundle?.commits.length, 1, "the unpushed commit is bundled");
+		assert.equal(configReads(trace), 1);
+	});
+
+	test("a capture that keeps commits over the cap left out reads the repository's config once", async () => {
+		const { clone } = await cloneWithUnpushedData();
+		const trace = sandbox.traceGitProcesses();
+		const settings = { maxSnapshotBytes: SMALL_CAP };
+		captured(await captureWorktreeSnapshot(clone, { settings }));
+		historyWork(trace);
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const reused = captured(await captureWorktreeSnapshot(clone, { settings }));
+		assert.equal(historyOmissions(reused.snapshot.omitted)[0]?.reason, "bundle-over-cap");
+		assert.equal(configReads(trace), 1);
+		assert.equal(historyWork(trace), 0, "the omission is reused");
 	});
 });

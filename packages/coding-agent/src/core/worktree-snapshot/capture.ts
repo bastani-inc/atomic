@@ -1105,25 +1105,36 @@ interface RepositoryConfig {
 	readonly remotes: string[];
 	readonly autocrlf: string | null;
 	readonly eol: string | null;
+	/**
+	 * The settings Git packs a bundle with, `pack.*` and `core.*` (such as `pack.compression`, `pack.window` or
+	 * `core.bigFileThreshold`), as a hash: they change a bundle's size without changing the packs.
+	 */
+	readonly packing: string;
 }
 
 export async function readRepositoryConfig(root: string, signal?: AbortSignal): Promise<RepositoryConfig> {
-	const { stdout } = await runGit(
-		["config", "-z", "--get-regexp", "^(remote\\..+\\.url|core\\.autocrlf|core\\.eol)$"],
-		{ cwd: root, signal, allowExitCodes: [1] },
-	);
+	const { stdout } = await runGit(["config", "-z", "--get-regexp", "^(remote\\..+\\.url|(core|pack)\\..+)$"], {
+		cwd: root,
+		signal,
+		allowExitCodes: [1],
+	});
 	const remotes: string[] = [];
+	const packing: string[] = [];
 	let autocrlf: string | null = null;
 	let eol: string | null = null;
 	for (const field of nulFields(stdout)) {
 		const newline = field.indexOf("\n");
 		const key = newline < 0 ? field : field.slice(0, newline);
 		const value = newline < 0 ? "" : field.slice(newline + 1);
+		if (key.startsWith("remote.")) {
+			remotes.push(redactUrlCredentials(value));
+			continue;
+		}
+		packing.push(field);
 		if (key === "core.autocrlf") autocrlf = value;
 		else if (key === "core.eol") eol = value;
-		else remotes.push(redactUrlCredentials(value));
 	}
-	return { remotes, autocrlf, eol };
+	return { remotes, autocrlf, eol, packing: sha256Hex(packing.join("\0")) };
 }
 
 const FILTER_ATTRIBUTE = /^(?!\s*#).*?(?:^|\s)filter=(\S+)/gm;
@@ -1167,7 +1178,7 @@ type HistoryOmission = Extract<
 /**
  * The unpushed commits a capture of each checkout in this process last left out, by checkout root: the hash of their
  * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs and
- * packing settings when the commits were bundled ({@link packingOf}). Which of those commits add or modify a
+ * packing settings the commits were bundled with ({@link packingOf}). Which of those commits add or modify a
  * deny-listed path follows from the list alone, and the size of their bundle from the list, the packs and the settings,
  * so a later capture of the same list records the same omission without checking and bundling the commits again, which
  * takes seconds for a long history no remote has.
@@ -1234,30 +1245,29 @@ async function packsOf(gitDir: string): Promise<string | undefined> {
 }
 
 /**
- * The repository's packs ({@link packsOf}) and the settings Git packs a bundle with, `pack.*` and `core.*` (such as
- * `pack.compression`, `pack.window` or `core.bigFileThreshold`), which change a bundle's size without changing the
- * packs, as a hash; undefined when either cannot be read.
+ * The repository's packs ({@link packsOf}) and its packing settings `packing` ({@link RepositoryConfig.packing}) as
+ * one hash; undefined when the packs cannot be read.
  */
-async function packingOf(root: string, gitDir: string, signal?: AbortSignal): Promise<string | undefined> {
+async function packingOf(gitDir: string, packing: string): Promise<string | undefined> {
 	const packs = await packsOf(gitDir);
-	if (packs === undefined) return undefined;
-	let packing: Buffer;
+	return packs === undefined ? undefined : sha256Hex(`${packs}\n${packing}`);
+}
+
+/** The repository's packing settings as they are now ({@link RepositoryConfig.packing}); undefined when unreadable. */
+async function packingSettingsNow(root: string, signal?: AbortSignal): Promise<string | undefined> {
 	try {
-		packing = (
-			await runGit(["config", "-z", "--get-regexp", "^(pack|core)\\."], { cwd: root, signal, allowExitCodes: [1] })
-		).stdout;
+		return (await readRepositoryConfig(root, signal)).packing;
 	} catch (error) {
 		signal?.throwIfAborted();
 		if (isWorkspaceSnapshotError(error) || isGitUnavailableError(error)) throw error;
 		return undefined;
 	}
-	return sha256Hex(`${packs}\n${sha256Hex(packing)}`);
 }
 
 /**
  * Whether `omission`, recorded for the same unpushed commits, still leaves them out under `settings`: a denied commit
  * always does; a bundle over the cap does while the repository's packs and packing settings are those it was bundled
- * with (`packs`, as {@link packingOf} gives them now: `current`) and its size exceeds the cap by more than
+ * with (`packs`, as {@link packingOf} gives them for this capture: `current`) and its size exceeds the cap by more than
  * {@link OVER_CAP_REUSE_MARGIN}.
  */
 async function stillLeftOut(
@@ -1406,10 +1416,15 @@ function isHistoryOmission(omission: WorktreeSnapshotOmission): omission is Hist
 	return omission.reason === "unpushed-history-denied" || omission.reason === "bundle-over-cap";
 }
 
+/**
+ * The unpushed history of `checkout` for a capture whose repository config, read at its start, has the packing
+ * settings `packing` ({@link RepositoryConfig.packing}).
+ */
 async function captureHistory(
 	checkout: Checkout,
 	gitDir: string,
 	settings: WorktreeSnapshotSettings,
+	packing: string,
 	previous: WorktreeSnapshot | undefined,
 	scratch: string,
 	signal?: AbortSignal,
@@ -1425,7 +1440,7 @@ async function captureHistory(
 	const remembered = leftOutHistory.get(root);
 	if (
 		remembered?.fingerprint === fingerprint &&
-		(await stillLeftOut(remembered.omission, remembered.packs, () => packingOf(root, gitDir, signal), settings))
+		(await stillLeftOut(remembered.omission, remembered.packs, () => packingOf(gitDir, packing), settings))
 	) {
 		return { bundle: null, omitted: [remembered.omission] };
 	}
@@ -1435,15 +1450,16 @@ async function captureHistory(
 	};
 	const denied = await deniedHistory(root, unpushed, signal);
 	if (denied.commits.length > 0) return leaveOut({ reason: "unpushed-history-denied", ...denied });
-	const packs = await packingOf(root, gitDir, signal);
+	const packs = await packingOf(gitDir, packing);
 	const file = join(scratch, "history.bundle");
 	await bundlePinned(root, head, boundary, file, signal);
 	const data = await verifiedBundle(root, head, unpushed, file, signal);
 	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
-		// The size is kept for the packs and settings only when they were the same before and after bundling.
-		const bundledFrom = packs === (await packingOf(root, gitDir, signal)) ? packs : undefined;
+		// The size is kept for the packs and settings only when they are the same after bundling as before it.
+		const now = await packingSettingsNow(root, signal);
+		const bundledFrom = now !== undefined && packs === (await packingOf(gitDir, now)) ? packs : undefined;
 		return leaveOut({ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }, bundledFrom);
 	}
 	const blob = snapshotBlob(data);
@@ -1647,7 +1663,16 @@ async function captureCheckout(
 			bytes: patch?.data.byteLength ?? 0,
 		};
 		const chain = incremental ? [...previous.chain, link] : [link];
-		const history = await captureHistory(checkout, capture.gitDir, settings, previous, scratch, signal, listed);
+		const history = await captureHistory(
+			checkout,
+			capture.gitDir,
+			settings,
+			config.packing,
+			previous,
+			scratch,
+			signal,
+			listed,
+		);
 		if (history.blob) blobs.push(history.blob);
 		const fields = {
 			root,
