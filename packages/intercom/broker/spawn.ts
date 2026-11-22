@@ -1,8 +1,7 @@
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { appendFile, chmod, type FileHandle, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "path";
+import { access, appendFile, chmod, type FileHandle, lstat, mkdir, open, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, win32 } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
@@ -31,7 +30,6 @@ import {
   recognisedProcessStart,
   type AnnouncedBroker,
   type BrokerStartAnnouncement,
-  readBrokerStartAnnouncementAsync,
 } from "./start-announcement.js";
 import {
   createChildProcessEnvironment,
@@ -49,6 +47,7 @@ import {
   laterProcessProbe,
   nativeProcessCreationTime,
   processStartToken,
+  readProcessCreationTime,
   readProcessStartToken,
   readProcessStartWithoutProcess,
   stopWindowsProcess,
@@ -60,7 +59,6 @@ import { BROKER_PROTOCOL, type BrokerProtocolRange, decideBrokerProtocol, protoc
 import { readSharedStorageSettingAsync, sharedStorageDigest } from "./shared-storage-setting.js";
 import {
   BROKER_STORAGE_ENV,
-  getBrokerStartAnnouncementPath,
   getBrokerLogPath,
   getBrokerPidPath,
   getBrokerSocketPathAsync,
@@ -118,19 +116,13 @@ type BrokerRuntime = "node" | "bun-source" | "bun-binary";
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
 
-type BrokerLaunchSpec =
-  | {
-    kind: "direct";
-    command: string;
-    args: string[];
-  }
-  | {
-    kind: "windows-launcher";
-    command: string;
-    args: string[];
-    launcherPath: string;
-    launcherCommandLine: string;
-  };
+export interface BrokerLaunchSpec {
+  readonly kind: "direct";
+  readonly command: string;
+  readonly args: string[];
+  /** Windows: pass `args` verbatim without re-quoting (used only when a custom `brokerCommand` is a `.cmd`/`.bat` script). */
+  readonly verbatimArguments?: true;
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -190,14 +182,6 @@ function getDefaultBrokerCommandParts(
   return { command: runtimePath, args: [getDefaultBrokerRunnerPath(extensionDir), brokerPath] };
 }
 
-function quoteWindowsArg(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-export function getWindowsHiddenLauncherPath(intercomDir: string = getIntercomDirPath()): string {
-  return join(intercomDir, "broker-launch.vbs");
-}
-
 function usesDefaultBrokerCommand(brokerCommand: string, brokerArgs: string[]): boolean {
   return brokerCommand === "npx"
     && brokerArgs.length === 2
@@ -205,63 +189,70 @@ function usesDefaultBrokerCommand(brokerCommand: string, brokerArgs: string[]): 
     && brokerArgs[1] === "tsx";
 }
 
-export function getWindowsBrokerCommandLine(
-  brokerPath: string,
-  extensionDir: string = EXTENSION_DIR,
-  nodePath: string = process.execPath,
-  brokerCommand = "npx",
-  brokerArgs: string[] = ["--no-install", "tsx"],
-  runtime: BrokerRuntime = getCurrentBrokerRuntime(),
-): string {
-  if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
-    const launch = getDefaultBrokerCommandParts(brokerPath, extensionDir, nodePath, runtime);
-    return [quoteWindowsArg(launch.command), ...launch.args.map(quoteWindowsArg)].join(" ");
-  }
+function isWindowsBatchCommand(command: string): boolean {
+  return /\.(?:cmd|bat)$/iu.test(command);
+}
 
-  return [quoteWindowsArg(brokerCommand), ...brokerArgs.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
+function windowsCmdPath(): string {
+  return win32.join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "cmd.exe");
+}
+
+function quoteWindowsCmdToken(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function formatWindowsCmdCommandLine(command: string, args: readonly string[]): string {
+  // `/s` strips the single outer quote pair and passes the interior verbatim to cmd.exe.
+  return `"${[quoteWindowsCmdToken(command), ...args.map(quoteWindowsCmdToken)].join(" ")}"`;
+}
+
+function envValueCaseInsensitive(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const key = Object.keys(env)
+    .filter((candidate) => candidate.toUpperCase() === name)
+    .sort()[0];
+  return key === undefined ? undefined : env[key];
 }
 
 /**
- * `WshShell.Run` does not hand the launched process the parent's standard handles, so a file
- * descriptor passed to `wscript.exe` would only ever capture the launcher. Run the broker under
- * `cmd.exe /s /c` instead and append its stderr to the same log the direct path writes.
- * `/s` makes cmd strip exactly the outer quote pair and use the remainder verbatim.
- *
- * Returns the command line unchanged when it contains a `%`. cmd expands `%NAME%` at parse time
- * and there is no reliable way to escape a literal percent on a `cmd /c` command line — `^` does
- * not cover it, and `%%` is a batch-file escape rather than a command-line one. Wrapping such a
- * command would hand the broker different arguments than the user configured, so the redirect is
- * dropped instead: launching correctly without a captured log beats launching wrongly with one.
- * A `%` reaches here only from a custom `brokerCommand`/`brokerArgs` or an install path that
- * contains one, and the direct (non-launcher) Windows path still captures stderr normally.
- *
- * Nothing may follow the broker in this chain: after the broker's process ends, the resident `cmd.exe` must do no
- * file I/O, because tests, `atomic intercom restart` and users remove the intercom directory the moment the broker
- * is gone, and a file the chain creates there then fails that removal (the marker an earlier version appended made
- * every Windows test that kills a broker and removes its directory fail with ENOTEMPTY). The broker's own start-up
- * announcement (`start-announcement.ts`) is how the parent learns that a broker it cannot watch has exited.
+ * On Windows, resolve a bare custom `brokerCommand` name on `PATH` so `.cmd`/`.bat` shims are recognised and wrapped
+ * cleanly with `cmd.exe /d /s /c`, while `.exe`/`.com` commands run directly without a shell. Never searches the
+ * working directory unless an explicit absolute `PATH` entry names it.
  */
-export function getWindowsStderrRedirectCommandLine(commandLine: string, logPath: string): string {
-  if (commandLine.includes("%")) return commandLine;
-  return `cmd.exe /s /c "${commandLine} 2>>${quoteWindowsArg(logPath)}"`;
-}
+async function resolveWindowsCustomCommandAsync(command: string, env: NodeJS.ProcessEnv): Promise<string> {
+  if (command === "" || /[\\/:]/u.test(command) || isWindowsBatchCommand(command)) {
+    return command;
+  }
+  const rawPath = envValueCaseInsensitive(env, "PATH") ?? envValueCaseInsensitive(process.env, "PATH") ?? "";
+  const rawPathext = envValueCaseInsensitive(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD";
+  const named = rawPathext
+    .split(";")
+    .map((ext) => ext.trim().toLowerCase())
+    .filter((ext) => ext.startsWith("."));
+  const extensions = [...named, ...[".com", ".exe"].filter((ext) => !named.includes(ext))];
+  const hasExt = win32.extname(command) !== "";
+  const names = [...(hasExt ? [command] : []), ...extensions.map((ext) => `${command}${ext}`)];
 
-export function getWindowsHiddenLauncherScript(commandLine: string): string {
-  return [
-    'Set WshShell = CreateObject("WScript.Shell")',
-    `WshShell.Run "${commandLine.replace(/"/g, '""')}", 0, False`,
-    'Set WshShell = Nothing',
-    '',
-  ].join("\r\n");
-}
-
-async function writeWindowsHiddenLauncherAsync(
-  commandLine: string,
-  launcherPath: string = getWindowsHiddenLauncherPath(),
-): Promise<string> {
-  await ensurePrivateDirectoryAsync(dirname(launcherPath));
-  await writeFile(launcherPath, getWindowsHiddenLauncherScript(commandLine), "utf-8");
-  return launcherPath;
+  for (const rawEntry of rawPath.split(";")) {
+    const entry = rawEntry.trim().replace(/^"(.*)"$/u, "$1");
+    if (entry === "" || !win32.isAbsolute(entry)) continue;
+    for (const name of names) {
+      const candidate = win32.join(entry, name);
+      try {
+        await access(candidate);
+        try {
+          const entryStat = await lstat(candidate);
+          const isDir = entryStat.isDirectory() || (entryStat.isSymbolicLink() && (await stat(candidate)).isDirectory());
+          if (isDir) continue;
+        } catch {
+          // App execution aliases can be visible to access() while lstat/stat fails; treat as startable.
+        }
+        return candidate;
+      } catch {
+        // Not present in this directory.
+      }
+    }
+  }
+  return command;
 }
 
 export function getBrokerLaunchSpec(
@@ -270,31 +261,26 @@ export function getBrokerLaunchSpec(
   brokerArgs: string[],
   extensionDir: string = EXTENSION_DIR,
   platform: NodeJS.Platform = process.platform,
-  intercomDir: string = getIntercomDirPath(),
+  _intercomDir: string = getIntercomDirPath(),
   nodePath: string = process.execPath,
   runtime: BrokerRuntime = getCurrentBrokerRuntime(),
-  logPath: string = getBrokerLogPath(),
+  _logPath: string = getBrokerLogPath(),
 ): BrokerLaunchSpec {
-  if (platform === "win32") {
-    const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
-    return {
-      kind: "windows-launcher",
-      command: join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "wscript.exe"),
-      args: [launcherPath],
-      launcherPath,
-      launcherCommandLine: getWindowsStderrRedirectCommandLine(
-        getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs, runtime),
-        logPath,
-      ),
-    };
-  }
-
   if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
     const launch = getDefaultBrokerCommandParts(brokerPath, extensionDir, nodePath, runtime);
     return {
       kind: "direct",
       command: launch.command,
       args: launch.args,
+    };
+  }
+
+  if (platform === "win32" && isWindowsBatchCommand(brokerCommand)) {
+    return {
+      kind: "direct",
+      command: windowsCmdPath(),
+      args: ["/d", "/s", "/c", formatWindowsCmdCommandLine(brokerCommand, [...brokerArgs, brokerPath])],
+      verbatimArguments: true,
     };
   }
 
@@ -553,6 +539,229 @@ async function waitForBrokerOrTakeOver(
   throw await brokerStartTimeoutError(readyTimeoutMs);
 }
 
+interface NativeDetachedProcess {
+  readonly pid: number;
+  readonly creationTime?: string | null;
+  kill(signal: number, group: boolean): boolean;
+  unref(): void;
+  release(): void;
+}
+
+interface NativeHostProcessEvent {
+  readonly kind: string;
+  readonly code?: number;
+}
+
+interface NativeDetachedStartOptions {
+  readonly file: string;
+  readonly args: string[];
+  readonly cwd?: string;
+  readonly env: Record<string, string>;
+  readonly pipeStdin: false;
+  readonly pipeStdout: false;
+  readonly pipeStderr: false;
+  readonly detached: true;
+  readonly stderrLogPath?: string;
+  readonly verbatimArguments?: boolean;
+}
+
+type NativeStartHostProcess = (
+  options: NativeDetachedStartOptions,
+  onEvent: (event: NativeHostProcessEvent) => void,
+) => NativeDetachedProcess;
+
+let nativeStartDetached: NativeStartHostProcess | null | undefined;
+
+function loadNativeStartDetached(): NativeStartHostProcess | null {
+  if (process.platform !== "win32") return null;
+  if (nativeStartDetached === undefined) {
+    try {
+      const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+        readonly startHostProcess?: NativeStartHostProcess;
+      };
+      nativeStartDetached = typeof binding.startHostProcess === "function" ? binding.startHostProcess : null;
+    } catch {
+      nativeStartDetached = null;
+    }
+  }
+  return nativeStartDetached;
+}
+
+function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+interface SpawnedBrokerChild {
+  readonly pid: number | undefined;
+  /** Kernel creation time read while the process handle was held at start (Windows), when available. */
+  readonly started: string | undefined;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  onceError(listener: (error: Error) => void): void;
+  offError(listener: (error: Error) => void): void;
+  onceExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+  offExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+  killHandle(): void;
+  release(): void;
+}
+
+function wrapNativeDetachedProcess(
+  startNative: NativeStartHostProcess,
+  launch: BrokerLaunchSpec,
+  spawnOptions: ReturnType<typeof buildBrokerSpawnOptions>,
+  logPath: string,
+): SpawnedBrokerChild | undefined {
+  let exitCode: number | null = null;
+  let exitListener: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+  let proc: NativeDetachedProcess;
+  try {
+    proc = startNative(
+      {
+        file: launch.command,
+        args: launch.args,
+        cwd: spawnOptions.cwd,
+        env: stringOnlyEnv(spawnOptions.env),
+        pipeStdin: false,
+        pipeStdout: false,
+        pipeStderr: false,
+        detached: true,
+        stderrLogPath: logPath,
+        ...(launch.verbatimArguments ? { verbatimArguments: true } : {}),
+      },
+      (event) => {
+        if (event.kind !== "exit") return;
+        exitCode = event.code ?? -1;
+        const listener = exitListener;
+        exitListener = undefined;
+        listener?.(exitCode, null);
+      },
+    );
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // Older native addon before Windows detached support: fall back to direct child_process.spawn.
+    if (code === "ENOSYS" || code === "ENOTSUP") return undefined;
+    throw error;
+  }
+  proc.unref();
+  const started = proc.creationTime ?? nativeProcessCreationTime(proc.pid);
+  return {
+    pid: proc.pid,
+    started,
+    get exitCode() {
+      return exitCode;
+    },
+    get signalCode() {
+      return null;
+    },
+    onceError() {
+      // Native start reports spawn errors synchronously via throw above.
+    },
+    offError() {},
+    onceExit(listener) {
+      if (exitCode !== null) {
+        queueMicrotask(() => listener(exitCode, null));
+        return;
+      }
+      exitListener = listener;
+    },
+    offExit(listener) {
+      if (exitListener === listener) exitListener = undefined;
+    },
+    killHandle() {
+      try {
+        proc.kill(9, false);
+      } catch {}
+    },
+    release() {
+      exitListener = undefined;
+      try {
+        proc.release();
+      } catch {}
+    },
+  };
+}
+
+function wrapNodeChildProcess(
+  child: ReturnType<typeof spawn>,
+  started: string | undefined,
+): SpawnedBrokerChild {
+  let bufferedError: Error | undefined;
+  let bufferedExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  let errorListener: ((error: Error) => void) | undefined;
+  let exitListener: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
+
+  const onError = (error: Error) => {
+    if (errorListener !== undefined) {
+      const listener = errorListener;
+      errorListener = undefined;
+      listener(error);
+    } else {
+      bufferedError = error;
+    }
+  };
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (exitListener !== undefined) {
+      const listener = exitListener;
+      exitListener = undefined;
+      listener(code, signal);
+    } else {
+      bufferedExit = { code, signal };
+    }
+  };
+  child.once("error", onError);
+  child.once("exit", onExit);
+
+  return {
+    pid: child.pid,
+    started,
+    get exitCode() {
+      return child.exitCode ?? bufferedExit?.code ?? null;
+    },
+    get signalCode() {
+      return child.signalCode ?? bufferedExit?.signal ?? null;
+    },
+    onceError(listener) {
+      if (bufferedError !== undefined) {
+        const error = bufferedError;
+        bufferedError = undefined;
+        queueMicrotask(() => listener(error));
+        return;
+      }
+      errorListener = listener;
+    },
+    offError(listener) {
+      if (errorListener === listener) errorListener = undefined;
+    },
+    onceExit(listener) {
+      if (bufferedExit !== undefined) {
+        const exit = bufferedExit;
+        bufferedExit = undefined;
+        queueMicrotask(() => listener(exit.code, exit.signal));
+        return;
+      }
+      exitListener = listener;
+    },
+    offExit(listener) {
+      if (exitListener === listener) exitListener = undefined;
+    },
+    killHandle() {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    },
+    release() {
+      errorListener = undefined;
+      exitListener = undefined;
+      child.off("error", onError);
+      child.off("exit", onExit);
+    },
+  };
+}
+
 /**
  * Start a broker while holding the spawn lock `lockOwner` wrote, and release it, unless a broker still starting takes
  * it over. `recheck` returns at once when a broker answers by now. An aborted `signal` cancels the start before the
@@ -577,50 +786,64 @@ async function spawnBrokerHoldingLock(
     cancelSignal?.throwIfAborted();
 
     const brokerPath = await resolveBrokerEntrypointAsync(extensionDir);
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
-    // The Windows launcher hides the broker's pid and exit, so there the broker announces its pid, which this watches.
-    // Elsewhere the child is the broker and its exit event says how it ended.
-    const announcement: BrokerStartAnnouncement | undefined =
-      launch.kind === "windows-launcher" ? { path: getBrokerStartAnnouncementPath(), token: randomUUID() } : undefined;
-    if (announcement !== undefined) {
-      try {
-        await unlink(announcement.path);
-      } catch {
-        // None left by an earlier broker, or not removable: its token is not this spawn's, so it is ignored.
-      }
-    }
-    if (launch.kind === "windows-launcher") {
-      await writeWindowsHiddenLauncherAsync(launch.launcherCommandLine, launch.launcherPath);
-    }
-    // Reset before spawning either way: the Windows launcher appends to this same path.
+    const baseSpawnOptions = await getBrokerSpawnOptionsAsync(extensionDir, "ignore");
+    const effectiveCommand =
+      process.platform === "win32" && !usesDefaultBrokerCommand(brokerCommand, brokerArgs)
+        ? await resolveWindowsCustomCommandAsync(brokerCommand, baseSpawnOptions.env)
+        : brokerCommand;
+    const launch = getBrokerLaunchSpec(brokerPath, effectiveCommand, brokerArgs, extensionDir);
+    // Reset before spawning: on Windows an older broker launcher's `cmd.exe` redirect may still hold broker.log
+    // briefly after exiting, so wait up to BROKER_LOG_RELEASE_WAIT_MS before concluding a broker is still starting.
     if (!(await resetBrokerLogOnceReleased())) {
       await waitForBroker(readyTimeoutMs, undefined, cancelSignal);
       return;
     }
     // The last point before the broker exists; from here it is waited for, never abandoned while it starts.
     cancelSignal?.throwIfAborted();
-    // The Windows launcher redirects the broker's own stderr, so only the direct spawn
-    // needs the descriptor. Node duplicates it during spawn, so the parent copy is closed
-    // immediately afterwards rather than being held open for the broker's lifetime.
-    const logHandle = launch.kind === "direct" ? await open(getBrokerLogPath(), "a") : undefined;
-    let child: ReturnType<typeof spawn>;
-    try {
-      const spawnOptions = await getBrokerSpawnOptionsAsync(extensionDir, logHandle?.fd ?? "ignore", announcement);
-      child = spawn(
-        launch.command,
-        launch.args,
-        spawnOptions,
-      );
-    } catch (error) {
-      await logHandle?.close();
-      throw error;
-    }
-    child.unref();
 
+    const logPath = getBrokerLogPath();
+    let logHandle: FileHandle | undefined;
+    let child: SpawnedBrokerChild | undefined;
+    const startNative = loadNativeStartDetached();
+    if (startNative !== null) {
+      try {
+        child = wrapNativeDetachedProcess(startNative, launch, baseSpawnOptions, logPath);
+      } catch (error) {
+        const cause = toError(error);
+        const log = await describeBrokerLogAsync();
+        throw new Error(`Failed to spawn intercom broker: ${cause.message}\n${log}`, { cause });
+      }
+    }
+    if (child === undefined) {
+      // Direct child_process.spawn path (all POSIX platforms, and Windows fallback when native detached spawn is absent).
+      // Node duplicates the append descriptor during spawn, so the parent copy is closed immediately afterwards rather
+      // than being held open for the broker's lifetime.
+      logHandle = await open(logPath, "a");
+      try {
+        const spawnOptions = {
+          ...baseSpawnOptions,
+          stdio: ["ignore", "ignore", logHandle.fd] as ["ignore", "ignore", number],
+          ...(launch.verbatimArguments ? { windowsVerbatimArguments: true } : {}),
+        };
+        const rawChild = spawn(launch.command, launch.args, spawnOptions);
+        rawChild.unref();
+        const childStarted =
+          process.platform === "win32" && rawChild.pid !== undefined
+            ? nativeProcessCreationTime(rawChild.pid)
+            : undefined;
+        child = wrapNodeChildProcess(rawChild, childStarted);
+      } catch (error) {
+        await logHandle.close();
+        throw error;
+      }
+    }
+
+    const spawned = child;
     const started = new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        child.off("error", onError);
-        child.off("exit", onExit);
+      const cleanup = (releaseHandle = true) => {
+        spawned.offError(onError);
+        spawned.offExit(onExit);
+        if (releaseHandle) spawned.release();
       };
 
       const onError = (error: Error) => {
@@ -631,9 +854,6 @@ async function spawnBrokerHoldingLock(
       };
 
       const onExit = (code: number | null, exitSignal: NodeJS.Signals | null) => {
-        if (launch.kind === "windows-launcher" && code === 0 && exitSignal === null) {
-          return;
-        }
         cleanup();
         if (exitSignal) {
           void describeBrokerLogAsync().then((log) =>
@@ -654,54 +874,50 @@ async function spawnBrokerHoldingLock(
         rejectExitedBeforeStartup();
       };
 
-      child.once("error", onError);
-      child.once("exit", onExit);
+      spawned.onceError(onError);
+      spawned.onceExit(onExit);
       // A disposed session stops waiting at once; the broker it launched is then stopped below, so the call still never
       // returns while that broker is writing its start-up files.
-      waitForBroker(
-        readyTimeoutMs,
-        announcement === undefined ? undefined : () => readBrokerStartAnnouncementAsync(announcement),
-        cancelSignal,
-      ).then(() => {
+      waitForBroker(readyTimeoutMs, undefined, cancelSignal).then(() => {
         cleanup();
         resolve();
       }, async (error) => {
-        cleanup();
-        const starting = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
-        // #4727: the session that launched this broker is gone and the broker did not start in time; it is stopped
-        // before this call returns, so it never writes into an agent directory its host may already be removing. Behind
-        // the Windows launcher the broker is found by the pid it announced; one that never announced cannot be found,
-        // and one that did not announce when it was created cannot be told apart from a later process given its pid
-        // (#6133), so neither is stopped.
-        let abandoned: StartingBroker | undefined;
-        if (signal?.aborted) {
-          if (launch.kind === "direct") {
-            if (starting && child.pid !== undefined) abandoned = { kind: "group", pid: child.pid };
-          } else if (announcement !== undefined) {
-            const announced = await readBrokerStartAnnouncementAsync(announcement);
-            if (announced?.started !== undefined) {
-              abandoned = { kind: "announced", pid: announced.pid, started: announced.started };
+        // Keep the OS process handle open while stopping or handing off the spawn lock so its PID cannot be recycled.
+        cleanup(false);
+        try {
+          const starting = spawned.exitCode === null && spawned.signalCode === null;
+          // #4727 / #6133: the session that launched this broker is gone and the broker did not start in time; stop it
+          // (and every descendant it started) before this call returns, never by an unverified bare PID on Windows.
+          if (signal?.aborted && starting && spawned.pid !== undefined) {
+            let abandoned: StartingBroker;
+            if (process.platform === "win32") {
+              const childStart = spawned.started ?? (await readProcessCreationTime(spawned.pid));
+              abandoned =
+                childStart !== undefined
+                  ? { kind: "announced", pid: spawned.pid, started: childStart }
+                  : { kind: "handle", kill: () => spawned.killHandle() };
+            } else {
+              abandoned = { kind: "group", pid: spawned.pid };
             }
+            await stopStartingBroker(abandoned);
+            reject(toError(error));
+            return;
           }
+          // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
+          // Only now does the lock name the broker: until this hand-off it follows this live spawner, so no other
+          // spawner can judge it stale and replace it while this one may still release it.
+          // The child handle is still open, so its pid still names it: record its start now.
+          keepLock =
+            starting &&
+            (await handSpawnLockToBrokerAsync(
+              spawned.pid,
+              lockOwner,
+              spawned.started ?? (spawned.pid === undefined ? undefined : await lockProcessStartAsync(spawned.pid)),
+            ));
+          reject(toError(error));
+        } finally {
+          spawned.release();
         }
-        if (abandoned !== undefined) {
-          void stopStartingBroker(abandoned).finally(() => reject(toError(error)));
-          return;
-        }
-        // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
-        // Only now does the lock name the broker: until this hand-off it follows this live spawner, so no other
-        // spawner can judge it stale and replace it while this one may still release it.
-        // The Windows launcher hides the broker's pid, so its lock could only follow this live spawner and would
-        // block every later spawn; there the broker's own live-socket check is what prevents a takeover.
-        // The child has not been reaped, so its pid still names it: its start is read now.
-        keepLock =
-          starting &&
-          (await handSpawnLockToBrokerAsync(
-            child.pid,
-            lockOwner,
-            child.pid === undefined ? undefined : await lockProcessStartAsync(child.pid),
-          ));
-        reject(toError(error));
       });
     });
     try {
@@ -722,25 +938,28 @@ const STARTING_BROKER_KILL_POLL_MS = 10;
 /** A broker that has not started listening, as the spawner that launched it finds it. */
 type StartingBroker =
   /**
-   * Spawned directly and detached, so it leads a process group of its own. A custom broker command can run the broker
-   * as its own child rather than replacing itself with it; the group holds both. Its pid is read while the spawner's
-   * child has not been reaped, so it still names that child.
+   * Spawned directly and detached on POSIX, so it leads a process group of its own. A custom broker command can run the
+   * broker as its own child rather than replacing itself with it; the group holds both.
    */
   | { readonly kind: "group"; readonly pid: number }
-  /** Behind the Windows launcher: the pid the broker announced, and when that process was created. */
-  | { readonly kind: "announced"; readonly pid: number; readonly started: string };
+  /** Windows: verified by the process's pid and kernel creation time, so descendants are ended without PID-reuse risk. */
+  | { readonly kind: "announced"; readonly pid: number; readonly started: string }
+  /** Windows last-resort fallback when neither native nor PowerShell could read creation time: kill through the live child handle. */
+  | { readonly kind: "handle"; readonly kill: () => void };
 
 /**
  * Kill a broker that has not started listening, with every process it started, and wait until they are gone.
  *
- * #6133: on Windows the broker is found by the pid it announced, which Windows gives to another process within seconds
- * once the broker has exited. It is stopped only through a handle to the process whose creation time is the one it
- * announced ({@link stopWindowsProcess}), never by its pid alone; a pid that names another process, or a process this
- * one may not open, counts as a broker that has already exited.
+ * #6133: on Windows the broker is ended only through a handle verified against its creation time
+ * ({@link stopWindowsProcess}) or directly through the live child handle, never by its pid alone.
  */
 async function stopStartingBroker(broker: StartingBroker): Promise<void> {
   if (broker.kind === "announced") {
     return stopWindowsProcess(broker.pid, broker.started, { waitMs: STARTING_BROKER_KILL_WAIT_MS, descendants: true });
+  }
+  if (broker.kind === "handle") {
+    broker.kill();
+    return;
   }
   const deadline = Date.now() + STARTING_BROKER_KILL_WAIT_MS;
   try {

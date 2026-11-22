@@ -34,7 +34,9 @@ pub struct HostProcessOptions {
 	pub pipe_stdin: bool,
 	pub pipe_stdout: bool,
 	pub pipe_stderr: bool,
-	/// Starts the process in a session of its own, as Node's `detached` does. Refused on Windows.
+	/// Starts the process detached from its parent. On Linux, starts a new session as Node's `detached` does. On Windows,
+	/// starts hidden with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (and `CREATE_BREAKAWAY_FROM_JOB` when the parent
+	/// job allows it), with no pipes and an optional append-only `stderr_log_path`.
 	pub detached: bool,
 	/// Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
 	/// detached process.
@@ -45,6 +47,11 @@ pub struct HostProcessOptions {
 	/// Written first into each connection to `pipe`, followed by one byte, the stream's number (0 standard
 	/// input, 1 output, 2 error), so the host knows its connections and which stream each is.
 	pub pipe_prefix: Option<Buffer>,
+	/// On Windows with `detached`, a log file opened append-only (`FILE_APPEND_DATA`) and inherited as standard error.
+	/// Ignored elsewhere.
+	pub stderr_log_path: Option<String>,
+	/// On Windows, join `args` verbatim without re-quoting, matching Node's `windowsVerbatimArguments`.
+	pub verbatim_arguments: Option<bool>,
 }
 
 #[napi(string_enum = "kebab-case")]
@@ -81,6 +88,8 @@ impl HostProcessEvent {
 #[napi]
 pub struct HostProcess {
 	pid: u32,
+	#[cfg(windows)]
+	creation_time: Option<String>,
 	#[cfg(any(target_os = "linux", windows))]
 	shared: std::sync::Arc<platform::Shared>,
 }
@@ -90,6 +99,16 @@ impl HostProcess {
 	#[napi(getter)]
 	pub fn pid(&self) -> u32 {
 		self.pid
+	}
+
+	/// When this process was created on Windows (decimal 100-ns ticks since 1601-01-01 UTC), read from its process
+	/// handle at start; `null` elsewhere or where unreadable.
+	#[napi(getter, js_name = "creationTime")]
+	pub fn creation_time(&self) -> Option<String> {
+		#[cfg(windows)]
+		return self.creation_time.clone();
+		#[cfg(not(windows))]
+		None
 	}
 
 	/// Queues `chunk` for the process's standard input. False once input can no longer be written: it was ended, or

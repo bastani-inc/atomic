@@ -27,14 +27,16 @@ use windows_sys::Win32::Foundation::{
 	ERROR_ACCESS_DENIED, ERROR_BAD_EXE_FORMAT, ERROR_DIRECTORY, ERROR_ELEVATION_REQUIRED,
 	ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_DRIVE, ERROR_INVALID_NAME,
 	ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY, ERROR_PATH_NOT_FOUND,
-	ERROR_TOO_MANY_OPEN_FILES, GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT,
+	ERROR_TOO_MANY_OPEN_FILES, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT,
 	INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Globalization::{CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-	CreateFileW, FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, GetShortPathNameW,
-	INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+	CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+	FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+	FILE_WRITE_ATTRIBUTES, GetFileAttributesW, GetShortPathNameW, INVALID_FILE_ATTRIBUTES,
+	OPEN_ALWAYS, OPEN_EXISTING, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
 use windows_sys::Win32::System::JobObjects::{
@@ -44,11 +46,13 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
-	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
-	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
-	InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-	ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent,
-	TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects, WaitForSingleObject,
+	CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+	CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW, DETACHED_PROCESS,
+	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+	GetProcessTimes, INFINITE, InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+	PROCESS_INFORMATION, ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+	SetEvent, TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects,
+	WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -386,6 +390,115 @@ pub(super) fn command_line(arguments: &[Vec<u16>]) -> Vec<u16> {
 	line
 }
 
+/// Joins `program` (quoted if needed) and `args` verbatim with spaces, matching Node's `windowsVerbatimArguments`.
+pub(super) fn verbatim_command_line(program: &[u16], args: &[Vec<u16>]) -> Vec<u16> {
+	let mut line = Vec::new();
+	quote_argument(program, &mut line);
+	for argument in args {
+		line.push(b' ' as u16);
+		line.extend_from_slice(argument);
+	}
+	line.push(0);
+	line
+}
+
+/// Looks up `file`: directly via `program_path` when it contains a separator or drive prefix, else by searching the
+/// `PATH` entries of `env` (or this process's `PATH` when `env` sets none), trying exact name when it has an extension
+/// and then `.com` and `.exe`.
+fn resolve_program_path(
+	file: &[u16],
+	env: &HashMap<String, String>,
+) -> napi::Result<Option<Vec<u16>>, String> {
+	if file.iter().any(|&unit| unit == b'\\' as u16 || unit == b'/' as u16 || unit == b':' as u16) {
+		return Ok(program_path(file));
+	}
+	let mut path_keys: Vec<&String> =
+		env.keys().filter(|key| key.eq_ignore_ascii_case("PATH")).collect();
+	path_keys.sort();
+	let path_value: Option<Vec<u16>> = match path_keys.first() {
+		Some(key) => Some(wide(&env[*key])?),
+		None => current_variable("PATH"),
+	};
+	let Some(path_value) = path_value else {
+		return Ok(None);
+	};
+	for raw_segment in path_value.split(|&unit| unit == b';' as u16) {
+		let trimmed = trim_path_segment(raw_segment);
+		if trimmed.is_empty() {
+			continue;
+		}
+		let mut candidate = Vec::with_capacity(trimmed.len() + 1 + file.len());
+		candidate.extend_from_slice(trimmed);
+		if !matches!(candidate.last(), Some(&u) if u == b'\\' as u16 || u == b'/' as u16) {
+			candidate.push(b'\\' as u16);
+		}
+		candidate.extend_from_slice(file);
+		if let Some(found) = program_path(&candidate) {
+			return Ok(Some(found));
+		}
+	}
+	Ok(None)
+}
+
+fn trim_path_segment(mut segment: &[u16]) -> &[u16] {
+	while let Some(&first) = segment.first() {
+		if first == b' ' as u16 || first == b'\t' as u16 {
+			segment = &segment[1..];
+		} else {
+			break;
+		}
+	}
+	while let Some(&last) = segment.last() {
+		if last == b' ' as u16 || last == b'\t' as u16 {
+			segment = &segment[..segment.len() - 1];
+		} else {
+			break;
+		}
+	}
+	if segment.len() >= 2
+		&& segment.first() == Some(&(b'"' as u16))
+		&& segment.last() == Some(&(b'"' as u16))
+	{
+		segment = &segment[1..segment.len() - 1];
+	}
+	segment
+}
+
+fn handle_creation_time(process: HANDLE) -> Option<String> {
+	let empty = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+	let (mut created, mut exited, mut kernel, mut user) = (empty(), empty(), empty(), empty());
+	if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+		return None;
+	}
+	let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+	(ticks != 0).then(|| ticks.to_string())
+}
+
+/// Opens `path` append-only (`FILE_APPEND_DATA`, no truncate right) with full sharing so other processes can read
+/// tails or reset on the next start.
+fn open_stderr_append(path: &[u16]) -> io::Result<File> {
+	let attributes = SECURITY_ATTRIBUTES {
+		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+		lpSecurityDescriptor: null_mut(),
+		bInheritHandle: 0,
+	};
+	let opened = unsafe {
+		CreateFileW(
+			path.as_ptr(),
+			FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			&attributes,
+			OPEN_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL,
+			null_mut(),
+		)
+	};
+	if opened == INVALID_HANDLE_VALUE {
+		return Err(io::Error::last_os_error());
+	}
+	Ok(unsafe { File::from_raw_handle(opened) })
+}
+
 /// The variables libuv adds from this process's environment when the child's has none of that name.
 const REQUIRED_VARIABLES: [&str; 11] = [
 	"HOMEDRIVE",
@@ -523,7 +636,7 @@ pub(super) fn start(
 	on_event: EventCallback,
 ) -> napi::Result<HostProcess, String> {
 	if options.detached {
-		return Err(code_error("ENOSYS", "a detached process starts through child_process here"));
+		return start_detached(options, on_event);
 	}
 	let file = wide(&options.file)?;
 	let mut arguments = vec![file.clone()];
@@ -617,6 +730,7 @@ pub(super) fn start(
 	}
 	let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
 	let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
+	let creation_time = handle_creation_time(raw(&process));
 	// Nothing of the program has run yet: the job holds it before its first instruction, or it never runs.
 	if let Err(error) = job.assign(raw(&process)) {
 		unsafe {
@@ -657,7 +771,170 @@ pub(super) fn start(
 		shared.release_by_host();
 		return Err(os_error(error));
 	}
-	Ok(HostProcess { pid: info.dwProcessId, shared })
+	Ok(HostProcess { pid: info.dwProcessId, creation_time, shared })
+}
+
+/// Starts a detached, hidden Windows process that survives parent exit, parent console close, and breakaway-allowing
+/// parent job objects, inheriting only NUL stdin/stdout and an optional append-only stderr log handle.
+fn start_detached(
+	options: HostProcessOptions,
+	on_event: EventCallback,
+) -> napi::Result<HostProcess, String> {
+	if options.pipe_stdin || options.pipe_stdout || options.pipe_stderr {
+		return Err(code_error("EINVAL", "a detached Windows process cannot use piped streams"));
+	}
+	let file = wide(&options.file)?;
+	let mut raw_args = Vec::with_capacity(options.args.len());
+	for argument in &options.args {
+		raw_args.push(wide(argument)?);
+	}
+	let line = if options.verbatim_arguments.unwrap_or(false) {
+		verbatim_command_line(&file, &raw_args)
+	} else {
+		let mut arguments = Vec::with_capacity(1 + raw_args.len());
+		arguments.push(file.clone());
+		arguments.extend(raw_args);
+		command_line(&arguments)
+	};
+	let mut entries = Vec::with_capacity(options.env.len());
+	for (key, value) in &options.env {
+		let mut entry = wide(key)?;
+		entry.push(b'=' as u16);
+		entry.extend(wide(value)?);
+		entries.push(entry);
+	}
+	let environment = environment_block(entries, ordinal_ignoring_case, current_variable);
+	let cwd = options.cwd.as_deref().map(working_directory).transpose()?;
+	let Some(application) = resolve_program_path(&file, &options.env)? else {
+		return Err(code_error("ENOENT", format!("spawn {} ENOENT", options.file)));
+	};
+	let stdin_child = null_device(false).map_err(os_error)?;
+	let stdout_child = null_device(true).map_err(os_error)?;
+	let stderr_child = match options.stderr_log_path.as_deref() {
+		Some(path) => open_stderr_append(&terminated(wide(path)?)).map_err(os_error)?,
+		None => null_device(true).map_err(os_error)?,
+	};
+	let inherited = [raw(&stdin_child), raw(&stdout_child), raw(&stderr_child)];
+	for handle in inherited {
+		if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+			return Err(os_error(io::Error::last_os_error()));
+		}
+	}
+	let mut attribute_size = 0;
+	unsafe {
+		InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size);
+	}
+	let mut attributes = vec![0usize; attribute_size.div_ceil(std::mem::size_of::<usize>())];
+	let attribute_list = attributes.as_mut_ptr().cast();
+	if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_size) } == 0 {
+		return Err(os_error(io::Error::last_os_error()));
+	}
+	let listed = unsafe {
+		UpdateProcThreadAttribute(
+			attribute_list,
+			0,
+			PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+			inherited.as_ptr().cast(),
+			std::mem::size_of_val(&inherited),
+			null_mut(),
+			null(),
+		)
+	};
+	if listed == 0 {
+		let error = io::Error::last_os_error();
+		unsafe {
+			DeleteProcThreadAttributeList(attribute_list);
+		}
+		return Err(os_error(error));
+	}
+	let mut startup = STARTUPINFOEXW::default();
+	startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+	startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+	startup.StartupInfo.wShowWindow = SW_HIDE as u16;
+	startup.StartupInfo.hStdInput = inherited[0];
+	startup.StartupInfo.hStdOutput = inherited[1];
+	startup.StartupInfo.hStdError = inherited[2];
+	startup.lpAttributeList = attribute_list;
+
+	let base_flags = DETACHED_PROCESS
+		| CREATE_NEW_PROCESS_GROUP
+		| CREATE_UNICODE_ENVIRONMENT
+		| EXTENDED_STARTUPINFO_PRESENT;
+	let mut info = PROCESS_INFORMATION::default();
+	let mut line_first = line.clone();
+	let mut created = unsafe {
+		CreateProcessW(
+			application.as_ptr(),
+			line_first.as_mut_ptr(),
+			null(),
+			null(),
+			1,
+			base_flags | CREATE_BREAKAWAY_FROM_JOB,
+			environment.as_ptr().cast(),
+			cwd.as_ref().map_or(null(), |cwd| cwd.as_ptr()),
+			&startup.StartupInfo,
+			&mut info,
+		)
+	};
+	let mut create_error = io::Error::last_os_error();
+	if created == 0 && create_error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+		// A parent job object may forbid breakaway; retry without CREATE_BREAKAWAY_FROM_JOB using a fresh command buffer.
+		let mut line_retry = line;
+		created = unsafe {
+			CreateProcessW(
+				application.as_ptr(),
+				line_retry.as_mut_ptr(),
+				null(),
+				null(),
+				1,
+				base_flags,
+				environment.as_ptr().cast(),
+				cwd.as_ref().map_or(null(), |cwd| cwd.as_ptr()),
+				&startup.StartupInfo,
+				&mut info,
+			)
+		};
+		create_error = io::Error::last_os_error();
+	}
+	unsafe {
+		DeleteProcThreadAttributeList(attribute_list);
+	}
+	drop((stdin_child, stdout_child, stderr_child));
+	if created == 0 {
+		return Err(os_error(create_error));
+	}
+	let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
+	let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
+	drop(thread);
+	let creation_time = handle_creation_time(raw(&process));
+	let stop = unsafe { CreateEventW(null(), 1, 0, null()) };
+	if stop.is_null() {
+		let error = io::Error::last_os_error();
+		unsafe {
+			TerminateProcess(raw(&process), 1);
+		}
+		return Err(os_error(error));
+	}
+	let shared = Arc::new(Shared {
+		pid: info.dwProcessId,
+		handles: Mutex::new(Some(Handles {
+			process,
+			stop: unsafe { OwnedHandle::from_raw_handle(stop) },
+		})),
+		job: Mutex::new(None),
+		callback: Mutex::new(Some(on_event)),
+		stopping: AtomicBool::new(false),
+		killed_with: AtomicI32::new(0),
+	});
+	let worker = shared.clone();
+	if let Err(error) =
+		std::thread::Builder::new().name("host-process".into()).spawn(move || supervise(&worker))
+	{
+		shared.kill(9, false);
+		shared.release_by_host();
+		return Err(os_error(error));
+	}
+	Ok(HostProcess { pid: info.dwProcessId, creation_time, shared })
 }
 
 #[cfg(test)]
@@ -742,6 +1019,36 @@ mod tests {
 		);
 		assert_eq!(found("folder.exe"), None, "a directory is not a program");
 		assert_eq!(found("missing.exe"), None);
+		std::fs::remove_dir_all(&directory).unwrap();
+	}
+
+	#[test]
+	fn builds_a_verbatim_command_line_without_requoting_arguments() {
+		let line = verbatim_command_line(
+			&units(r"C:\Windows\System32\cmd.exe"),
+			&[units("/d"), units("/s"), units("/c"), units(r#""C:\my tools\broker.cmd" "arg 1""#)],
+		);
+		assert_eq!(
+			String::from_utf16(&line[..line.len() - 1]).unwrap(),
+			r#"C:\Windows\System32\cmd.exe /d /s /c "C:\my tools\broker.cmd" "arg 1""#
+		);
+		assert_eq!(line.last(), Some(&0));
+	}
+
+	#[test]
+	fn resolves_a_bare_program_name_from_path_entries() {
+		let directory = std::env::temp_dir().join(format!("atomic-bare-path-{}", std::process::id()));
+		std::fs::create_dir_all(&directory).unwrap();
+		std::fs::write(directory.join("custom-broker.exe"), b"").unwrap();
+		let mut env = HashMap::new();
+		env.insert("PATH".to_string(), format!("\"{}\";C:\\nonexistent", directory.display()));
+		let found = resolve_program_path(&units("custom-broker"), &env)
+			.unwrap()
+			.map(|path| String::from_utf16(&path).unwrap());
+		assert_eq!(
+			found,
+			Some(format!("{}\0", directory.join("custom-broker.exe").to_string_lossy()))
+		);
 		std::fs::remove_dir_all(&directory).unwrap();
 	}
 }

@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- On Windows, the Intercom broker now starts directly as a hidden detached process instead of through `wscript.exe` and `cmd.exe`, removing the `broker-launch.vbs` helper script and two extra process starts on every cold broker start. Broker startup now works when Windows Script Host is disabled, preserves startup error logs and exit codes when paths or arguments contain `%`, and breaks away from breakaway-allowing parent job objects while keeping `broker.log` appending and capped at 8 KiB.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added

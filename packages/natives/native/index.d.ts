@@ -38,6 +38,11 @@ export declare class HeldProcessDescendants {
 export declare class HostProcess {
   get pid(): number
   /**
+   * When this process was created on Windows (decimal 100-ns ticks since 1601-01-01 UTC), read from its process
+   * handle at start; `null` elsewhere or where unreadable.
+   */
+  get creationTime(): string | null
+  /**
    * Queues `chunk` for the process's standard input. False once input can no longer be written: it was ended, or
    * the process's output thread finished. On Windows always false: standard input is the host's connection.
    */
@@ -587,7 +592,11 @@ export interface HostProcessOptions {
   pipeStdin: boolean
   pipeStdout: boolean
   pipeStderr: boolean
-  /** Starts the process in a session of its own, as Node's `detached` does. Refused on Windows. */
+  /**
+   * Starts the process detached from its parent. On Linux, starts a new session as Node's `detached` does. On Windows,
+   * starts hidden with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (and `CREATE_BREAKAWAY_FROM_JOB` when the parent
+   * job allows it), with no pipes and an optional append-only `stderr_log_path`.
+   */
   detached: boolean
   /**
    * Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
@@ -604,6 +613,13 @@ export interface HostProcessOptions {
    * input, 1 output, 2 error), so the host knows its connections and which stream each is.
    */
   pipePrefix?: Buffer
+  /**
+   * On Windows with `detached`, a log file opened append-only (`FILE_APPEND_DATA`) and inherited as standard error.
+   * Ignored elsewhere.
+   */
+  stderrLogPath?: string
+  /** On Windows, join `args` verbatim without re-quoting, matching Node's `windowsVerbatimArguments`. */
+  verbatimArguments?: boolean
 }
 
 export type InputData =
