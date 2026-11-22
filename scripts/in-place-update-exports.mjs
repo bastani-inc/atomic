@@ -34,7 +34,7 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "acorn";
-import { simple } from "acorn-walk";
+import { ancestor } from "acorn-walk";
 import semver from "semver";
 
 /** A file's export names when one of its `export *` comes from a module outside Atomic's packages: any name. */
@@ -137,14 +137,16 @@ export function moduleSyntax(source) {
 			syntax.imports.push({ specifier: String(node.source.value), names: [] });
 		}
 	}
-	simple(program, {
+	ancestor(program, {
 		ImportExpression(node) {
 			if (node.source.type === "Literal" && typeof node.source.value === "string")
 				syntax.lazy.push(node.source.value);
 		},
-		NewExpression(node) {
+		NewExpression(node, _state, ancestors) {
 			// `new URL("./worker.js", import.meta.url)`: a module that runs by its path, in a thread or process of its own.
+			// Its `.href` alone is a bundled module's own URL, which the bundle keeps for it and which loads nothing.
 			const [target, base] = node.arguments;
+			const parent = ancestors.at(-2);
 			if (
 				node.callee.type === "Identifier" &&
 				node.callee.name === "URL" &&
@@ -153,7 +155,8 @@ export function moduleSyntax(source) {
 				JAVASCRIPT.test(target.value) &&
 				base?.type === "MemberExpression" &&
 				base.object.type === "MetaProperty" &&
-				moduleName(base.property) === "url"
+				moduleName(base.property) === "url" &&
+				!(parent?.type === "MemberExpression" && parent.object === node && moduleName(parent.property) === "href")
 			)
 				syntax.workers.push(target.value);
 		},
@@ -387,7 +390,9 @@ export function recordRelease(dirs) {
 			])
 				for (const specifier of list) {
 					const target = resolveImport(specifier, path, name, resolvable);
-					if (!target?.path) continue;
+					// Only a file the release ships: the split names each bundled module's removed compiled file in a
+					// `new URL()` that only stands for the module's own URL, and loads nothing.
+					if (!target?.path || resolvable.get(target.name)?.files[target.path] === undefined) continue;
 					const key = `${target.name}:${target.path}`;
 					kind[key] = [...(kind[key] ?? []), path];
 				}
@@ -548,7 +553,8 @@ export function checkRelease(earlier, dirs, allowed = {}) {
 			for (const [key, importers] of Object.entries(references)) {
 				const target = splitKey(key);
 				const now = current.get(target.name)?.files[target.path];
-				if (!current.has(target.name)) continue;
+				// What the earlier release did not ship, its process cannot have loaded from it either.
+				if (!current.has(target.name) || earlierFile(key) === undefined) continue;
 				if (now === undefined) {
 					problems.add(
 						`${at}'s ${name}/${importers[0]} ${verb} ${target.name}/${target.path}: this build lacks it`,

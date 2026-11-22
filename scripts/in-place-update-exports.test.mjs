@@ -163,3 +163,23 @@ test("a record lists each file's export names through `export *`, and what the C
 		"@bastani/atomic:dist/tool.js": ["dist/main.js"],
 	});
 });
+
+test("a bundled module's own URL is not a file the release starts, and a worker it starts must stay", (t) => {
+	const earlier = application(t, {
+		// As a bundle keeps each module's own URL, naming its compiled file, which the package may not ship.
+		"dist/shared.js":
+			'var moduleUrl = new URL("./bundled-away.js", import.meta.url).href;\nvar keptUrl = new URL("./config.js", import.meta.url).href;\nexport function load() { return [moduleUrl, keptUrl]; }\n',
+		"dist/tool.js":
+			'import { load } from "./shared.js";\nexport const tool = () => new Worker(new URL("./worker.js", import.meta.url));\nexport { load };\n',
+		"dist/worker.js": "export {};\n",
+	});
+	const record = recordRelease([earlier, dependency(t)]);
+	assert.deepEqual(record.packages["@bastani/atomic"].workers, { "@bastani/atomic:dist/worker.js": ["dist/tool.js"] });
+	assert.deepEqual(checkRelease(record, [earlier, dependency(t)]), []);
+	const withoutWorker = application(t, {
+		"dist/tool.js": 'import { load } from "./shared.js";\nexport const tool = load;\nexport { load };\n',
+	});
+	assert.deepEqual(checkRelease(record, [withoutWorker, dependency(t)]), [
+		"1.0.0's @bastani/atomic/dist/tool.js starts @bastani/atomic/dist/worker.js: this build lacks it",
+	]);
+});

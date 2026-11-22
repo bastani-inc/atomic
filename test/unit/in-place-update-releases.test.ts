@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { checkRelease, type ReleaseRecord } from "../../scripts/in-place-update-exports.mjs";
+import { checkRelease, type ReleaseRecord, recordRelease } from "../../scripts/in-place-update-exports.mjs";
 import { moduleDir } from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "../..");
@@ -57,6 +57,15 @@ for (const record of records) {
 		CHECK_TIMEOUT_MS,
 	);
 }
+
+builtTest(
+	"this build, once released and recorded, can be updated in place to itself",
+	() => {
+		// What a later release checks this one against: a record of this build, which names only what it ships.
+		assert.deepEqual(checkRelease(recordRelease(PACKAGES), PACKAGES), []);
+	},
+	CHECK_TIMEOUT_MS,
+);
 
 test("the 0.10.3 record names each file's exports as a 0.10.3 process's module namespaces had them", () => {
 	const record = records.find((entry) => entry.version === "0.10.3");

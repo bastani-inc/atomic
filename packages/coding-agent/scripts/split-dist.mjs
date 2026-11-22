@@ -350,6 +350,10 @@ for (const entry of [...BUNDLED_ENTRIES, ...OWNER_ENTRIES, ...lateImports]) visi
  * exports, and the release check reports one this build no longer writes.
  */
 const RELEASE_RECORDS = join(packageDir, "in-place-update");
+if (!existsSync(RELEASE_RECORDS))
+	throw new Error(
+		`split-dist: ${RELEASE_RECORDS} is missing; the split keeps the modules the releases recorded there import on demand`,
+	);
 const releasedLazyTargets = new Set();
 for (const file of readdirSync(RELEASE_RECORDS).filter((name) => /^\d.*\.json$/.test(name))) {
 	const record = JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8"));
