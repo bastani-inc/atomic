@@ -277,7 +277,11 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		await modelRuntime.whenRegistrationRefreshesSettled();
 		return settledHandles();
 	};
-	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions };
+	/** Catalog refreshes still running in the background: while one runs, it can hold the session it came from. */
+	const pendingRefreshes = () =>
+		(modelRuntime as unknown as { readonly registrationRefreshes: ReadonlySet<Promise<unknown>> })
+			.registrationRefreshes.size;
+	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions, pendingRefreshes };
 }
 
 /**
@@ -307,14 +311,26 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 			handles: await settledHandles(),
 			listeners: h.subscriptions(),
 			stores: asyncContextStores(),
+			pendingRefreshes: h.pendingRefreshes(),
 		};
+		// Only for the failure message: the stores once those refreshes have settled.
+		await h.settled();
+		const firstStoresSettled = asyncContextStores();
 		await wave(AGENTS_PER_WAVE);
 		await wave(AGENTS_PER_WAVE * 2);
 
 		assert.equal(released.length, AGENTS_PER_WAVE * 3);
 		assert.deepEqual(await settledHandles(), afterFirst.handles);
 		assert.equal(h.subscriptions(), afterFirst.listeners);
-		assert.equal(asyncContextStores(), afterFirst.stores);
+		const stores = asyncContextStores();
+		const pendingRefreshes = h.pendingRefreshes();
+		if (stores !== afterFirst.stores) await h.settled();
+		const storesSettled = stores === afterFirst.stores ? stores : asyncContextStores();
+		assert.equal(
+			stores,
+			afterFirst.stores,
+			`async context stores: ${stores} now, ${afterFirst.stores} after the first wave; catalog refreshes pending: ${pendingRefreshes} now, ${afterFirst.pendingRefreshes} after the first wave; once they settled: ${storesSettled} now, ${firstStoresSettled} after the first wave`,
+		);
 		assert.equal(h.runtime.rehydratedSessionCount, 0);
 		assert.equal(armedIdleSessionCount(), 0);
 		assert.deepEqual(dispatcher.stats(), {
