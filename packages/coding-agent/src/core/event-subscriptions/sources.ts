@@ -3,6 +3,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import type { BigIntStats } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -143,16 +144,52 @@ interface TailChunk {
 	readonly more: boolean;
 }
 
-async function readRange(path: string, start: number, length: number): Promise<Buffer> {
+interface OpenedRead {
+	readonly identity: string;
+	readonly size: number;
+	readonly reset: boolean;
+	readonly readFrom: number;
+	readonly chunk: Buffer;
+}
+
+/**
+ * Identifies a file from exact 64-bit `BigInt` stat fields so files whose NTFS file reference numbers or 64-bit inodes
+ * exceed `Number.MAX_SAFE_INTEGER` do not collide. Includes `birthtimeNs` on Windows (where creation time is stable
+ * across appends), and omits it elsewhere (where systems without `statx` report `ctimeNs` as `birthtimeNs`).
+ */
+function fileIdentityOf(stats: BigIntStats): string {
+	return process.platform === "win32" ? `${stats.dev}:${stats.ino}:${stats.birthtimeNs}` : `${stats.dev}:${stats.ino}`;
+}
+
+async function readOpenedRange(
+	path: string,
+	fileIdentity: string | undefined,
+	cursor: number,
+	statReset: boolean,
+): Promise<OpenedRead> {
 	const handle = await open(path, "r");
-	const data = Buffer.alloc(length);
-	let filled = 0;
+	let identity = "";
+	let size = 0;
+	let reset = statReset;
+	let readFrom = 0;
+	let chunk: Buffer = Buffer.alloc(0);
 	let failure: { readonly error: unknown } | undefined;
 	try {
-		while (filled < length) {
-			const { bytesRead } = await handle.read(data, filled, length - filled, start + filled);
-			if (bytesRead === 0) break;
-			filled += bytesRead;
+		const opened = await handle.stat({ bigint: true });
+		identity = fileIdentityOf(opened);
+		size = Number(opened.size);
+		reset = statReset || (fileIdentity !== undefined && identity !== fileIdentity) || size < cursor;
+		readFrom = reset ? 0 : cursor;
+		const length = Math.min(Math.max(0, size - readFrom), MAX_LOG_READ_BYTES);
+		if (length > 0) {
+			const data = Buffer.alloc(length);
+			let filled = 0;
+			while (filled < length) {
+				const { bytesRead } = await handle.read(data, filled, length - filled, readFrom + filled);
+				if (bytesRead === 0) break;
+				filled += bytesRead;
+			}
+			chunk = data.subarray(0, filled);
 		}
 	} catch (error) {
 		failure = { error };
@@ -163,7 +200,7 @@ async function readRange(path: string, start: number, length: number): Promise<B
 		failure ??= { error: closeError };
 	}
 	if (failure !== undefined) throw failure.error;
-	return data.subarray(0, filled);
+	return { identity, size, reset, readFrom, chunk };
 }
 
 /**
@@ -186,25 +223,35 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 			let generation = 0;
 			let consumed = 0;
 			let pending: Buffer = Buffer.alloc(0);
-			/** The followed file's device and inode, so a file renamed over it is not read from the old offset. */
+			/** The followed file's exact identity, so a file renamed over it is not read from the old offset. */
 			let fileIdentity: string | undefined;
 
 			async function pollOnce(): Promise<TailChunk> {
 				try {
-					const { size, dev, ino } = await stat(absolutePath);
-					const identity = `${dev}:${ino}`;
-					const replaced = fileIdentity !== undefined && identity !== fileIdentity;
-					fileIdentity = identity;
-					if (replaced || size < consumed + pending.length) {
+					const stats = await stat(absolutePath, { bigint: true });
+					const identity = fileIdentityOf(stats);
+					const size = Number(stats.size);
+					const cursor = consumed + pending.length;
+					const statReset = (fileIdentity !== undefined && identity !== fileIdentity) || size < cursor;
+					const plannedReadFrom = statReset ? 0 : cursor;
+					if (size === plannedReadFrom) {
+						if (statReset) {
+							generation += 1;
+							consumed = 0;
+							pending = Buffer.alloc(0);
+						}
+						fileIdentity = identity;
+						return { lines: [], more: false };
+					}
+					const opened = await readOpenedRange(absolutePath, fileIdentity, cursor, statReset);
+					if (opened.reset) {
 						generation += 1;
 						consumed = 0;
 						pending = Buffer.alloc(0);
 					}
-					const readFrom = consumed + pending.length;
-					if (size === readFrom) return { lines: [], more: false };
-					const chunk = await readRange(absolutePath, readFrom, Math.min(size - readFrom, MAX_LOG_READ_BYTES));
-					if (chunk.length === 0) return { lines: [], more: false };
-					const buffer = Buffer.concat([pending, chunk]);
+					fileIdentity = opened.identity;
+					if (opened.chunk.length === 0) return { lines: [], more: false };
+					const buffer = Buffer.concat([pending, opened.chunk]);
 					const lines: TailLine[] = [];
 					let lineStart = 0;
 					for (let newline = buffer.indexOf(0x0a); newline !== -1; newline = buffer.indexOf(0x0a, lineStart)) {
@@ -215,7 +262,7 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 					}
 					consumed += lineStart;
 					pending = Buffer.from(buffer.subarray(lineStart));
-					return { lines, more: readFrom + chunk.length < size };
+					return { lines, more: opened.readFrom + opened.chunk.length < opened.size };
 				} catch (error) {
 					if (errnoCode(error) !== "ENOENT") throw error;
 					if (consumed + pending.length > 0) generation += 1;
@@ -227,9 +274,9 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 			}
 
 			try {
-				const { size, dev, ino } = await stat(absolutePath);
-				consumed = size;
-				fileIdentity = `${dev}:${ino}`;
+				const stats = await stat(absolutePath, { bigint: true });
+				consumed = Number(stats.size);
+				fileIdentity = fileIdentityOf(stats);
 			} catch (error) {
 				if (signal.aborted) return;
 				if (errnoCode(error) !== "ENOENT") {

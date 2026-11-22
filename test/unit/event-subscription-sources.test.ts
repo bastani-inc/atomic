@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { mkdirSync, readFileSync } from "node:fs";
+import { type BigIntStats, mkdirSync, readFileSync, type Stats } from "node:fs";
 import { appendFile, rename, truncate, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo, connect } from "node:net";
@@ -53,6 +53,10 @@ import {
 const fsProbe = vi.hoisted(() => ({
 	statCalls: 0,
 	statFaults: [] as (() => Promise<never>)[],
+	statTransform: undefined as
+		| ((stats: Stats | BigIntStats, bigint: boolean, exact: BigIntStats) => Stats | BigIntStats)
+		| undefined,
+	beforeOpen: undefined as (() => Promise<void> | void) | undefined,
 	opens: 0,
 	closes: 0,
 	readLengths: [] as number[],
@@ -71,14 +75,29 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	return {
 		...actual,
-		stat: (...args: Parameters<typeof actual.stat>) => {
+		stat: async (...args: Parameters<typeof actual.stat>) => {
 			fsProbe.statCalls++;
 			const fault = fsProbe.statFaults.shift();
-			return fault === undefined ? actual.stat(...args) : fault();
+			if (fault !== undefined) return fault();
+			const stats = await actual.stat(...args);
+			if (fsProbe.statTransform === undefined) return stats;
+			const bigint = Boolean((args[1] as { bigint?: boolean } | undefined)?.bigint);
+			const exact = bigint ? (stats as BigIntStats) : await actual.stat(args[0], { bigint: true });
+			return fsProbe.statTransform(stats, bigint, exact);
 		},
 		open: async (...args: Parameters<typeof actual.open>) => {
+			const beforeOpen = fsProbe.beforeOpen;
+			fsProbe.beforeOpen = undefined;
+			if (beforeOpen !== undefined) await beforeOpen();
 			fsProbe.opens++;
 			const handle = await actual.open(...args);
+			const handleStat = async (...statArgs: Parameters<typeof handle.stat>) => {
+				const stats = await handle.stat(...statArgs);
+				if (fsProbe.statTransform === undefined) return stats;
+				const bigint = Boolean((statArgs[0] as { bigint?: boolean } | undefined)?.bigint);
+				const exact = bigint ? (stats as BigIntStats) : await handle.stat({ bigint: true });
+				return fsProbe.statTransform(stats, bigint, exact);
+			};
 			// The real read still fills the whole range; reporting fewer bytes makes the caller read the rest itself.
 			const read = async (buffer: Buffer, offset: number, length: number, position: number) => {
 				fsProbe.readLengths.push(length);
@@ -98,6 +117,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 				get: (target, property) => {
 					if (property === "read") return read;
 					if (property === "close") return close;
+					if (property === "stat") return handleStat;
 					return Reflect.get(target, property, target);
 				},
 			});
@@ -312,6 +332,8 @@ beforeEach(() => {
 	httpProbe.servers.length = 0;
 	fsProbe.statCalls = 0;
 	fsProbe.statFaults.length = 0;
+	fsProbe.statTransform = undefined;
+	fsProbe.beforeOpen = undefined;
 	fsProbe.opens = 0;
 	fsProbe.closes = 0;
 	fsProbe.readLengths.length = 0;
@@ -2581,6 +2603,157 @@ test("logTail starts over when the file is replaced between polls by one at leas
 		["0", "0", "old one"],
 		["1", "0", "new first line"],
 		["1", "15", "new second line"],
+	]);
+	await handle.stop();
+});
+
+test("logTail detects replacement when 64-bit file ids collide as IEEE-754 numbers, for both larger and equal-sized replacements", async () => {
+	// Adjacent 64-bit NTFS file reference numbers with sequence >= 32 round to the exact same binary64 Number.
+	const syntheticInos = [0xf9000000039deen, 0xf9000000039defn, 0xf9000000039df1n] as const;
+	assert.equal(Number(syntheticInos[0]), Number(syntheticInos[1]));
+	assert.equal(Number(syntheticInos[0]), Number(syntheticInos[2]));
+	const fixedBirthtimeNs = 1_795_343_551_522_500_700n;
+	const mappedInos = new Map<string, bigint>();
+	fsProbe.statTransform = (stats, bigint, exact) => {
+		const key = `${exact.dev}:${exact.ino}`;
+		let mapped = mappedInos.get(key);
+		if (mapped === undefined) {
+			mapped = syntheticInos[mappedInos.size] ?? syntheticInos[syntheticInos.length - 1];
+			mappedInos.set(key, mapped);
+		}
+		const overrides = bigint
+			? { ino: mapped, birthtimeNs: fixedBirthtimeNs }
+			: { ino: Number(mapped), birthtimeMs: Number(fixedBirthtimeNs / 1_000_000n) };
+		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, overrides);
+	};
+
+	const directory = tempDir();
+	const file = join(directory, "rotated-64bit.log");
+	await writeFile(file, "");
+	const clock = manualDispatcher();
+	const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
+	await clock.step(POLL_MS);
+	await appendFile(file, "old one\nold partial");
+	await clock.step(POLL_MS);
+
+	// Replacement 1: larger than old file (31 bytes vs 19 bytes), identical rounded Number(ino) and birthtime.
+	const larger = join(directory, "replacement-larger.log");
+	await writeFile(larger, "new first line\nnew second line\n");
+	await rename(larger, file);
+	await clock.step(POLL_MS);
+
+	// Replacement 2: exact same byte size as replacement 1 (31 bytes), identical rounded Number(ino) and birthtime.
+	const sameSize = join(directory, "replacement-same-size.log");
+	await writeFile(sameSize, "third file one\nthird file two!\n");
+	await rename(sameSize, file);
+	await clock.step(POLL_MS);
+
+	const seen = handle.events.map((event) => {
+		const [, generation, offset] = event.id.slice(`${file}:`.length).split(":");
+		return [generation, offset, (event.payload as { line: string }).line];
+	});
+	assert.deepEqual(seen, [
+		["0", "0", "old one"],
+		["1", "0", "new first line"],
+		["1", "15", "new second line"],
+		["2", "0", "third file one"],
+		["2", "15", "third file two!"],
+	]);
+	await handle.stop();
+});
+
+test("logTail starts over cleanly when the file is replaced between stat and open", async () => {
+	const directory = tempDir();
+	const file = join(directory, "toctou-replace.log");
+	await writeFile(file, "");
+	const clock = manualDispatcher();
+	const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
+	await clock.step(POLL_MS);
+	await appendFile(file, "old one\nold partial");
+	await clock.step(POLL_MS);
+
+	// Append enough bytes to make stat plan a read past the replacement's second newline, then replace before open runs.
+	await appendFile(file, " trailing line\n");
+	const replacement = join(directory, "replacement-race.log");
+	await writeFile(replacement, "new first line\nnew second line\n");
+	fsProbe.beforeOpen = async () => {
+		await rename(replacement, file);
+	};
+	await clock.step(POLL_MS);
+
+	const seen = handle.events.map((event) => {
+		const [, generation, offset] = event.id.slice(`${file}:`.length).split(":");
+		return [generation, offset, (event.payload as { line: string }).line];
+	});
+	assert.deepEqual(seen, [
+		["0", "0", "old one"],
+		["1", "0", "new first line"],
+		["1", "15", "new second line"],
+	]);
+	assert.equal(fsProbe.closes, fsProbe.opens);
+	await handle.stop();
+});
+
+test("logTail keeps a truncation observed by stat even if the file grows past the old offset before open", async () => {
+	const directory = tempDir();
+	const file = join(directory, "toctou-truncate.log");
+	await writeFile(file, "");
+	const clock = manualDispatcher();
+	const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
+	await clock.step(POLL_MS);
+	await appendFile(file, "old one\nold partial");
+	await clock.step(POLL_MS);
+
+	// Truncate below the 19-byte cursor so stat sees size 3, then grow to 24 bytes before open runs.
+	await truncate(file, 3);
+	fsProbe.beforeOpen = async () => {
+		await appendFile(file, " restarted\nstill new\n");
+	};
+	await clock.step(POLL_MS);
+
+	const seen = handle.events.map((event) => {
+		const [, generation, offset] = event.id.slice(`${file}:`.length).split(":");
+		return [generation, offset, (event.payload as { line: string }).line];
+	});
+	assert.deepEqual(seen, [
+		["0", "0", "old one"],
+		["1", "0", "old restarted"],
+		["1", "14", "still new"],
+	]);
+	assert.equal(fsProbe.closes, fsProbe.opens);
+	await handle.stop();
+});
+
+test("logTail does not reset on append when non-Windows stat reports moving change time as birth time", async () => {
+	let syntheticCtimeNs = 1_700_000_000_000_000_000n;
+	if (process.platform !== "win32") {
+		fsProbe.statTransform = (stats, bigint) => {
+			syntheticCtimeNs += 1_000_000n;
+			const overrides = bigint
+				? { birthtimeNs: syntheticCtimeNs, ctimeNs: syntheticCtimeNs }
+				: { birthtimeMs: Number(syntheticCtimeNs / 1_000_000n), ctimeMs: Number(syntheticCtimeNs / 1_000_000n) };
+			return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, overrides);
+		};
+	}
+
+	const directory = tempDir();
+	const file = join(directory, "moving-btime.log");
+	await writeFile(file, "");
+	const clock = manualDispatcher();
+	const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
+	await clock.step(POLL_MS);
+	await appendFile(file, "first\n");
+	await clock.step(POLL_MS);
+	await appendFile(file, "second\n");
+	await clock.step(POLL_MS);
+
+	const seen = handle.events.map((event) => {
+		const [, generation, offset] = event.id.slice(`${file}:`.length).split(":");
+		return [generation, offset, (event.payload as { line: string }).line];
+	});
+	assert.deepEqual(seen, [
+		["0", "0", "first"],
+		["0", "6", "second"],
 	]);
 	await handle.stop();
 });
