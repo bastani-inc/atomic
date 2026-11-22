@@ -15,29 +15,41 @@ Use `--` to end option parsing when positional prompt text begins with `-`, `--`
 atomic --print -- "- leading-dash prompt"
 ```
 
-## Package Commands
+## Package commands
 
 ```bash
-atomic install <source> [-l]       # Install package, -l for project-local
-atomic remove <source> [-l]        # Remove package
-atomic uninstall <source> [-l]     # Alias for remove
-atomic update [source|self|atomic] # Update Atomic only, or one package source
-atomic update --all                # Update Atomic and packages; reconcile pinned git refs
-atomic update --extensions         # Update packages only; reconcile pinned git refs
-atomic update --models             # Force-refresh authenticated provider model catalogs
-atomic update --self               # Update Atomic only
-atomic update --extension <src>    # Update one package
-atomic list                        # List installed packages
-atomic config                      # Enable/disable package resources
+atomic install <source> [-l]         # Install package, -l for project-local
+atomic remove <source> [-l]          # Remove package
+atomic uninstall <source> [-l]       # Alias for remove
+atomic update [source|self|atomic]   # Update Atomic only, or one package source
+atomic update --all                  # Update Atomic and packages; reconcile pinned git refs
+atomic update --extensions           # Update packages only; reconcile pinned git refs
+atomic update --models               # Force-refresh authenticated provider model catalogs
+atomic update --self                 # Update Atomic only
+atomic update --force                # Reinstall Atomic even if the current version is latest
+atomic update --extension <src>      # Update one package
+atomic list                          # List installed packages
+atomic config [-l]                   # Open resource TUI (-l starts in project settings)
 ```
 
-These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust. After it updates the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands) when the `atomic` on PATH reports the version just installed and lists the command; otherwise it prints a note and leaves the broker alone. A failure of the upgrade prints a warning and does not change the exit code.
+These commands manage Atomic packages, and `atomic update` updates the Atomic CLI installation. To uninstall Atomic itself, see [Installation](/getting-started/installation#uninstall).
 
-A session that runs while an update replaces Atomic keeps the code it has loaded and loads the rest from the update when it needs it. A feature whose updated code cannot load beside the session's reports `atomic was updated to <version> while this session was running; restart it to keep using <feature>.`, followed by the original error; restart the session (for example with `atomic --resume`) to use it again. Errors of your own extensions, such as a missing package, are reported as they are. A session started on Atomic 0.10.2 or earlier has no such message: restart it after every in-place update.
+`atomic config` and project package commands accept `--approve` or `--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust.
 
-`atomic update --models` refreshes configured providers without updating packages. Built-in catalogs refreshed from models.dev do not refresh your provider login. Account-specific catalogs still need valid credentials; if an OAuth refresh fails, the command warns with `atomic auth login <provider>` and continues refreshing other catalogs. Other failures, such as a catalog network error, still make the command exit nonzero.
+After updating the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands) when `atomic` on `PATH` reports the installed version and lists that command. Otherwise it prints a note and leaves the broker alone. A failed broker upgrade prints a warning and keeps exit code `0`.
 
-See [Atomic Packages](/packages) for package sources and security notes.
+A session that runs while an update replaces Atomic keeps the code it already loaded and reads remaining modules from disk on demand. If an updated module cannot load beside the running session, Atomic reports `atomic was updated to <version> while this session was running; restart it to keep using <feature>.`, followed by the original error. Restart the session (for example with `atomic --resume`) to use that feature again.
+
+Two additional rules apply after an in-place update:
+
+- On `/reload`, updated built-in extension bundles load on Windows and under Bun (other platforms keep the bundles loaded at startup). If the running host lacks an export a reloaded built-in extension needs, Atomic fails the load cleanly with `atomic was updated to <version> while this session was running; restart it to keep using the <name> extension.`.
+- Document conversion (`markit-ai`) is bundled into Atomic's own files. A session started before an in-place update from an earlier release fails its first PDF, Office, or EPUB read until restarted.
+
+Errors in your own extensions, such as a missing dependency, are reported as they are. Sessions started on Atomic 0.10.2 or earlier lack these restart notices, so restart them after any in-place update.
+
+`atomic update --models` refreshes configured providers without updating packages. Built-in catalogs from models.dev do not refresh your provider login. Account-specific catalogs still need valid credentials; if an OAuth refresh fails, the command warns with `atomic auth login <provider>` and continues refreshing other catalogs. Other failures, such as a network error, exit nonzero.
+
+See [Atomic packages](/packages) for package sources and security notes.
 
 ### Custom update command
 
@@ -47,11 +59,13 @@ If a wrapper or another package manager provides Atomic, set `ATOMIC_SELF_UPDATE
 export ATOMIC_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
 ```
 
-`atomic update` runs it only when a newer release exists, replacing `{packageName}`, `{version}`, and `{installSpec}` (`{packageName}@{version}`) with that release. It replaces install-method detection, so it also works for installs Atomic cannot update itself. The value is split on spaces; `PI_SELF_UPDATE_COMMAND` is accepted as an alias. For arguments with spaces, use the `selfUpdateCommand` setting in `~/.atomic/agent/settings.json` instead, an argv array such as `["nix", "profile", "upgrade", "atomic"]`. Project settings are ignored for it.
+`atomic update` runs this command only when a newer release exists, replacing `{packageName}`, `{version}`, and `{installSpec}` (`{packageName}@{version}`) with that release. It bypasses install-method detection, so it works for installs Atomic cannot update itself.
 
-Afterwards Atomic reports the version it finds installed: the one on disk, or what `atomic --version` prints on `PATH`. A wrapper that installs each version into a new directory therefore still reports success, and a command that exits `0` without installing the new version prints a warning instead.
+The environment value is split on spaces; `PI_SELF_UPDATE_COMMAND` works as a legacy alias. For arguments that contain spaces, set the global `selfUpdateCommand` argv array in `~/.atomic/agent/settings.json` instead (for example `["nix", "profile", "upgrade", "atomic"]`). Project settings are ignored for this key.
 
-## Credential Commands
+After the command finishes, Atomic checks the version on disk or from `atomic --version` on `PATH`. A wrapper that installs each version into a new directory still reports success. A command that exits `0` without installing the new version prints a warning instead.
+
+## Credential commands
 
 ```bash
 atomic auth login <provider> [--api-key] [--no-browser]
@@ -61,28 +75,32 @@ atomic auth print-api-key --model <model> [--provider <p>]
 atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
 ```
 
-`atomic auth login <provider>` signs in to a provider in the terminal and exits, without starting a session. It signs in with an account and opens the browser, like `/login <provider>`; when the provider offers another sign-in method, it prints how to use it instead. Providers without account sign-in ask for an API key. `<provider>` is a provider ID or display name, such as `openai` or `OpenAI`. A name that matches more than one provider, such as a `models.json` provider named like a built-in one, is rejected with the matching provider IDs; the exact provider ID always selects that provider. After signing in, it refreshes that provider's model catalog; if the refresh fails, times out after 15 seconds, or you press Ctrl+C, the login is kept and the catalog refreshes on the next start. It requires an interactive terminal.
+`atomic auth login <provider>` signs in to a provider in an interactive terminal and exits without starting a session. It opens the browser for account sign-in like `/login <provider>`, or prints instructions for another sign-in method when available. Providers without account sign-in prompt for an API key.
+
+`<provider>` accepts a provider ID or display name such as `openai` or `OpenAI`. An ambiguous name (such as a `models.json` provider sharing a built-in display name) is rejected with the matching IDs; an exact provider ID always matches that provider. After sign-in, Atomic refreshes that provider's model catalog. If the refresh fails, times out after 15 seconds, or is interrupted with Ctrl+C, the login stays saved and refreshes on the next start.
 
 | Option | Description |
 |---|---|
-| `--api-key` | Save an API key instead of signing in with an account; the key is read without echoing it |
-| `--no-browser` | Do not open a browser; use the provider's other sign-in method, such as a device code, for example over SSH. Asks when there are several. Not allowed with `--api-key` |
+| `--api-key` | Save an API key instead of signing in with an account; input is not echoed |
+| `--no-browser` | Skip opening a browser and use another sign-in method such as a device code, for example over SSH. Prompts if several methods exist. Cannot be combined with `--api-key` |
 
-`atomic auth logout <provider>` removes the credentials that `atomic auth login` or `/login` stored, like `/logout`, and takes `<provider>` the same way. Environment variables and `models.json` config are unchanged. For a built-in or `models.json` provider it exits with status `0` when nothing is stored, so it is safe to repeat. Extensions are not loaded, so an extension provider's credentials are removed by its provider ID; once none are stored, that ID is reported as an unknown provider with exit status `1`, like a mistyped name.
+`atomic auth logout <provider>` removes credentials saved by `atomic auth login` or `/login` while leaving environment variables and `models.json` unchanged. For built-in or `models.json` providers, it exits `0` even when nothing is stored. Extensions are not loaded; remove an extension provider's credentials by its provider ID (once none remain stored, that ID exits `1` as an unknown provider).
 
-`atomic auth check` verifies the effective credential a provider or model would use before a session starts. It requires at least one of `--provider` or `--model`, prints `ready`, `not_ready`, or `invalid` to stdout, and exits `0`, `1`, or `2` for those states. `--json` adds the resolved provider when one is found, credential kind, and any reason. By default, a check never emits credential material.
+`atomic auth check` verifies the effective credential for a provider or model before starting a session. Pass at least one of `--provider` or `--model`. It prints `ready`, `not_ready`, or `invalid` to stdout and exits `0`, `1`, or `2`. `--json` adds the resolved provider, credential kind, and any failure reason. By default, checks never print credential material.
 
-`--credentials` is an explicit export opt-in. It requires `--provider` or an exact `--model` target; a fuzzy model match on an otherwise-ready provider is refused as `invalid` (exit `2`) rather than exporting a credential for a provider you did not name. If that provider is not ready, the check remains `not_ready` (exit `1`). On a ready check, plain stdout becomes the resolved credential alone and JSON adds it only in the `credentials` field. A non-ready raw export leaves stdout empty and reports its status on stderr; a JSON export returns the status object without a credential. Credential writes can also exit `8` (nothing written) or `9` (only a fragment written). Treat the stream like `print-api-key` or `print-bearer-token` output.
+`--credentials` opts in to credential export from `atomic auth check`. It requires `--provider` or an exact `--model` target. A fuzzy model match on a ready provider returns `invalid` (exit `2`) instead of exporting a credential you did not name; on a non-ready provider it stays `not_ready` (exit `1`).
 
-Checks refresh expired OAuth credentials by default, using Atomic's normal locked `auth.json` update path. Pass `--no-refresh` to read credentials without creating, locking, or mutating `auth.json`; this is useful when a probe must not change stored auth state. It still reads Atomic's primary and legacy credential paths and resolves configured API-key values, including `!command`, through the normal provider configuration. In this read-only mode, malformed `auth.json` is `invalid` (exit `2`) rather than an unavailable credential. An OAuth credential export requires at least 30 minutes of life: the normal path can refresh it, while `--no-refresh` refuses a shorter-lived token.
+On a ready check with `--credentials`, plain stdout contains only the resolved credential, and `--json` adds it only in the `credentials` field. On a non-ready check, plain stdout stays empty while stderr reports the status, and `--json` omits `credentials`. Write failures exit `8` (nothing written) or `9` (partial fragment written).
 
-The credential print commands print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+Checks refresh expired OAuth credentials by default through Atomic's locked `auth.json` update path. Pass `--no-refresh` for a read-only check that never creates, locks, or modifies `auth.json`. Read-only mode still reads primary and legacy credential paths and resolves configured API-key values including `!command`, but treats malformed `auth.json` as `invalid` (exit `2`). OAuth credential exports require at least 30 minutes of remaining lifetime; normal mode can refresh, while `--no-refresh` refuses shorter-lived tokens.
 
-`--model` is required for the two `print-*` exports. An exporting auth check needs `--provider` or an exact `--model` target. When several configured providers offer a model, pass `--provider` to choose one. The two `print-*` subcommands accept only `--provider` and `--model`: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+The credential print commands emit one configured credential for an external client such as a proxy or script. The credential goes to **stdout and nothing else**. Warnings, provider selection, refresh notices, and help go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` never captures diagnostics.
 
-`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. `atomic auth check --help` (or `-h`) does the same until a `--` terminator; after it, the flag is not help. Any other subcommand exits `1` and names all five valid commands. Help never uses stdout, so raw credential export stdout is a credential or empty; a JSON export writes an object that carries a credential only in its `credentials` field.
+`--model` is required for both `print-*` commands. Pass `--provider` when several configured providers offer the same model. The two `print-*` subcommands accept only `--provider` and `--model` (plus `--min-expiry` for `print-bearer-token`). Any other flag, including `--export`, `--session-dir`, and `--print`, is a usage error rather than an ignored flag.
 
-`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — even after a `--` terminator — because an API key has no expiry. A failed refresh leaves your stored credential untouched.
+Passing `--help` or `-h` to `atomic auth` or to any `auth` subcommand (`login`, `logout`, `print-api-key`, `print-bearer-token`, or `check`), before a `--` terminator and not as the value of a value-taking flag, prints auth help to stderr and exits `0`. Bare `atomic auth` and `atomic auth help` do the same. Any unknown subcommand exits `1` and lists all five valid commands. Help never writes to stdout, so raw credential export stdout is always a credential or empty.
+
+`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; requesting the wrong kind fails instead of falling back. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` work. Passing `--min-expiry` to `print-api-key` is a usage error, even after `--`. A failed refresh leaves your stored credential untouched.
 
 Credential-export exits (`print-api-key`, `print-bearer-token`, and the `--credentials` write itself):
 
@@ -90,12 +108,12 @@ Credential-export exits (`print-api-key`, `print-bearer-token`, and the `--crede
 |------|---------|
 | `0` | Credential written to stdout, one trailing newline |
 | `1` | Usage error |
-| `2` | No credential configured for that model/provider |
-| `3` | Several configured providers match — pass `--provider` |
+| `2` | No credential configured for that model or provider |
+| `3` | Several configured providers match; pass `--provider` |
 | `4` | That credential kind is unsupported for the provider |
 | `5` | OAuth refresh failed; the stored credential is unchanged |
 | `6` | The provider cannot mint a token that lives as long as `--min-expiry` |
-| `7` | The provider's OAuth credential could not be used — no claim is made about the stored credential |
+| `7` | The provider's OAuth credential could not be used; no guarantee is made about stored state |
 | `8` | The credential could not be written; nothing was emitted |
 | `9` | Only part of the credential was written; discard the output |
 
@@ -105,63 +123,118 @@ Auth-check exits:
 |------|---------------------|
 | `0` | `ready` |
 | `1` | `not_ready`, including a fuzzy `--model` with `--credentials` when its resolved provider is not ready |
-| `2` | `invalid`, including check usage errors (unknown option, neither `--provider` nor `--model`, and a fuzzy `--model` with `--credentials` when its resolved provider is otherwise ready) |
+| `2` | `invalid`, including check usage errors (unknown option, neither `--provider` nor `--model`, or a fuzzy `--model` with `--credentials` when its resolved provider is otherwise ready) |
 | `8` | With `--credentials`, the credential could not be written; nothing was emitted |
 | `9` | With `--credentials`, only part of the credential was written; discard the output |
 
-Exit `5` is reported only for a refresh that itself failed, which happens before anything is persisted; that is the only exit that promises your stored credential is untouched. Any other OAuth failure exits `7` and makes no such promise.
+Exit `5` happens only when the refresh itself fails before persistence, so it is the only OAuth exit that guarantees your stored credential was not changed. Any other OAuth failure exits `7`.
 
-Raw credential exports leave stdout empty on non-zero exits, except exit `9`. That exit means the stream failed after writing part of the credential. Discard the fragment; those bytes cannot be recalled.
+Raw credential exports leave stdout empty on nonzero exits except exit `9`. Exit `9` means the stream failed partway through writing the credential; discard those bytes. Once the full credential reaches stdout, exit code stays `0` even if draining fails later (for example because a reader closed the pipe), with a diagnostic on stderr.
 
-Once the complete credential reaches stdout, the command has succeeded. If the stream then fails to drain, for example because a reader closed the pipe, Atomic reports it on stderr and keeps exit code `0`.
+`auth check --credentials --json` may write a credential-free JSON status object on a nonzero check result. See [Security](/security#credential-export) before wiring credential export into a script.
 
-`auth check --credentials --json` may instead write a credential-free JSON status object on a non-zero check result. See [Security](/security#credential-export) before wiring this into a script.
-
-## Storage and Intercom Commands
+## MCP commands
 
 ```bash
-atomic storage status [--json]                                       # Selection, source, adapter and connection per domain
-atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL / Turso database
+atomic mcp add <server> [options] -- <command> [args...]
+atomic mcp add <server> [options] --url <url>
+atomic mcp remove <server> [-l]
+atomic mcp list [--json]
+atomic mcp login <server> [-l] [--timeout <seconds>]
+atomic mcp logout <server> [-l]
+```
+
+Configure and check MCP servers and sign in to OAuth servers without starting a session. These commands read `~/.atomic/agent/mcp.json` and, in trusted projects, `.atomic/mcp.json`, without loading extensions.
+
+| Command | Description |
+|---|---|
+| `add <server>` | Add or replace a server entry in `mcp.json` |
+| `remove <server>` | Remove a server entry from `mcp.json` |
+| `list` | Connect to enabled servers and print state, tools, and errors (exits `1` on config or connection failure) |
+| `login <server>` | Sign in to an OAuth HTTP server through the browser |
+| `logout <server>` | Delete stored OAuth credentials for the server |
+
+| Option | Commands | Description |
+|---|---|---|
+| `-l`, `--local` | `add`, `remove`, `login`, `logout` | Target `.atomic/mcp.json` in the current project instead of `~/.atomic/agent/mcp.json` |
+| `--url <url>` | `add` | Streamable HTTP server URL (instead of a stdio command) |
+| `--env <KEY=VALUE>` | `add` | Environment variable for a stdio server; repeatable |
+| `--cwd <dir>` | `add` | Working directory for a stdio server |
+| `--header <KEY=VALUE>` | `add` | HTTP request header; repeatable |
+| `--bearer-token-env-var <NAME>` | `add` | Send `Authorization: Bearer ${NAME}` |
+| `--oauth-client-id <id>` | `add` | Pre-registered OAuth client ID |
+| `--oauth-client-secret <secret>` | `add` | OAuth client secret (accepts `${NAME}` or `!command`) |
+| `--oauth-callback-port <port>` | `add` | Fixed local OAuth callback port |
+| `--oauth-client-name <name>` | `add` | Client name sent during dynamic OAuth registration |
+| `--exposure <mode>` | `add` | Tool exposure: `codemode` (default), `deferred`, `direct`, or `hidden` |
+| `--description <text>` | `add` | Short server description shown in the system prompt |
+| `--json` | `list` | Print the server report as JSON |
+| `--timeout <seconds>` | `login` | Total sign-in timeout in seconds (default `300`) |
+
+Passing `--help` or `-h` after `--` (for example `atomic mcp add srv -- cmd --help`) or as the value of a value-taking flag passes through to the command or option instead of printing MCP help. See [MCP shell commands](/mcp-servers#shell-commands).
+
+## Storage and Intercom commands
+
+```bash
+atomic storage status [--json]                                       # Selection, source, adapter, and connection per domain
+atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL or Turso database
 atomic storage join <postgres-url> --password-file <path>|--token-file <path>|--auth azure|aws|gcp [--prefix <prefix>]  # Use a shared PostgreSQL database
+atomic storage migrate [--db <url> [--password-file <path> | --token-file <path> | --auth azure|aws|gcp]] [--prefix <prefix>]
+atomic storage move-snapshot-chunks <sqlite-file> [--prefix <prefix>]
+atomic storage search-session <sqlite-file> <session-id> <pattern> [cursor]
+atomic storage export <dir> [--sessions] [--limit <n>] [--since <time>] [--storage <json> | --storage-file <path>]
+atomic storage import <dir> [--sessions] [--storage <json> | --storage-file <path>]
 atomic team join <url> [--token-file <path>] [--prefix <prefix>]     # Share Intercom; sessions stay local
 atomic team status [--json]                                          # Profile in effect plus the storage report
 atomic team leave                                                    # Remove what team join wrote
-atomic storage migrate [--db <url> [--password-file <path> | --token-file <path> | --auth azure|aws|gcp]] [--prefix <prefix>]
-atomic storage export <dir> [--sessions] [--limit <n>] [--since <time>] [--storage <json> | --storage-file <path>]
-atomic storage import <dir> [--sessions] [--storage <json> | --storage-file <path>]
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
 atomic intercom upgrade                                              # Replace a broker an older Atomic started, when safe
 ```
 
-`atomic storage status` reports, for sessions and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, or a database does not answer.
+`atomic storage status` reports the selected storage for sessions and Intercom, where each selection came from (environment variable, project settings, global settings, or default), any outranked selections, whether each adapter loads, and whether each database answers `SELECT 1`. It also shows the running Intercom broker, its multi-node routing state, and peer brokers live in the shared database. It modifies nothing and exits `1` if a selection is invalid, an adapter fails to load, or a database does not answer.
 
-`atomic storage join` checks the token and the connection with `@bastani/atomic-storage-libsql`, stores the trimmed token in a new `storage-token.<id>` file in the agent directory with mode 600, writes only the global `storage` setting, and lists the environment variables and settings that override it. Previous token files are never overwritten; a settings-write failure removes only the new token. It creates no tables. `--token-file` is required except for absolute `file:` URLs; relative file URLs and URLs that contain the token itself (a user name, a password, or an `authToken` parameter) are refused. When the package is not installed, it prints the install command. A `postgres://` or `postgresql://` URL selects `@bastani/atomic-storage-postgres` and takes exactly one of `--password-file` (copied to a `storage-token.<id>` file, mode 600), `--token-file` (referenced where it is and read again for every new connection) or `--auth azure|aws|gcp`; a password in the URL is refused, and settings hold only a file reference. See [Storage](/storage#joining-a-machine-to-a-shared-database).
+`atomic storage join` verifies the credential and connection with `@bastani/atomic-storage-libsql` (for libSQL or Turso) or `@bastani/atomic-storage-postgres` (for `postgres://` or `postgresql://`), writes only the global `storage` setting, and reports any environment variables or settings that override it. It creates no tables and prints the install command if the adapter package is missing.
 
-`atomic team join` runs the same checks and token handling as `atomic storage join`, then writes the global `storage` setting (the team database) and `sessions.storage` (the local default store) in one update, restarts the Intercom broker, and prints the profile and the `atomic storage status` report. Nothing is written when a check fails. `atomic team status` adds the profile in effect (`individual`, `team`, `ci`, or `custom`) and the current project's Intercom group to that report. `atomic team leave` removes only the values `team join` wrote, deletes their token file unless another setting references it, and restarts the broker. See [Team and CI setup](/guides/team-setup).
+- For libSQL, `--token-file` is required except for absolute `file:` URLs. Atomic copies the trimmed token into a new `storage-token.<id>` file (mode `600`) in the agent directory without overwriting earlier token files. Relative `file:` URLs and URLs carrying embedded credentials or `authToken` parameters are rejected.
+- For PostgreSQL, pass exactly one of `--password-file` (copied to a mode `600` `storage-token.<id>` file), `--token-file` (referenced in place and re-read on every new connection), or `--auth azure|aws|gcp`. Passwords in the URL are rejected, and settings store only file references.
 
-`atomic storage migrate` creates or upgrades the session and Intercom tables in the selected shared database. Use `--db` to name another database. Run this as the database owner after joining or upgrading Atomic, so users with runtime-only privileges do not need to create tables.
+`atomic team join` runs the same validation and token handling as `atomic storage join`, writes global `storage` (the team database) and `sessions.storage` (local default store) together, restarts the Intercom broker, and prints the profile and storage status. Nothing is written if validation fails.
 
-`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (format 4, also read by `atomic --import`). Each file is replaced whole; identical files are not rewritten and no files are deleted. `--limit <n>` keeps at most the `n` most recently modified sessions. `--since <time>` selects sessions modified at or after a date or date and time.
+`atomic team status` adds the active profile (`individual`, `team`, `ci`, or `custom`) and project Intercom group. `atomic team leave` reverts only what `team join` wrote, deletes its token file unless another setting references it, and restarts the broker. See [Team and CI setup](/guides/team-setup).
 
-`atomic storage import` checks every file in `<dir>/sessions` before writing. It adds new sessions and any newer entries in sessions this machine already has. Other directories are ignored. If importing fails partway through, the command lists what was and was not imported; repeat the import to finish. Both commands accept `--sessions`. To export or import a shared database, name it explicitly with `--storage <json>` or `--storage-file <path>` using the JSON form of the `storage` setting.
+`atomic storage migrate` creates or upgrades session and Intercom tables in the selected shared database (or `--db`). Run it as the database owner after joining or upgrading Atomic so runtime-only roles do not need DDL privileges.
 
-`atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
+`atomic storage move-snapshot-chunks <sqlite-file> [--prefix <prefix>]` migrates the snapshot chunk table in a closed local SQLite file using exclusive access, checkpointing after each batch so the write-ahead log does not need space for the entire copy.
 
-`atomic intercom upgrade` replaces a broker that an older Atomic started, when that is safe. With no session connected it stops the broker, and the next session starts this version's. With sessions connected it leaves the broker running, and the next session of this version hands it over without disconnecting them for longer than a reconnect. It does nothing when no broker runs or the broker is already this version's, leaves a broker too old to report its sessions running, and exits `1` only when stopping the broker fails. The installers and `atomic update` run it after a successful install when the installed version has the command, without passing it any input. See [Upgrading Atomic with sessions running](/intercom/operations#upgrading-atomic-with-sessions-running).
+`atomic storage search-session <sqlite-file> <session-id> <pattern> [cursor]` searches entries of a stored session in a local SQLite database by regex pattern, optionally resuming pagination from `cursor`. See [Recalling earlier work](/sessions#recalling-earlier-work).
+
+`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (format 4, read by `atomic --import`). Each file is replaced whole; identical files are skipped and no files are deleted. `--limit <n>` exports at most `n` most recently modified sessions, and `--since <time>` filters by modification date or timestamp.
+
+`atomic storage import` validates every file in `<dir>/sessions` before writing, then adds new sessions and newer entries for existing sessions while ignoring other directories. Partial failures list what was and was not written so you can rerun safely. Both `export` and `import` accept `--sessions`, plus `--storage <json>` or `--storage-file <path>` to target a specific store (required when exporting or importing a shared database).
+
+`atomic intercom restart` stops the running broker, waits for it to exit, and waits for a reconnecting session to start a new broker (printing its status). Without connected sessions, the next session that uses Intercom starts one.
+
+`atomic intercom upgrade` replaces an older Atomic version's broker when safe. With no connected sessions, it stops the broker so the next session starts the new version. With connected sessions, it leaves the broker running so the next session of this version hands it over smoothly. It exits `1` only if stopping the broker fails. Installers and `atomic update` run it automatically. See [Upgrading Atomic with sessions running](/intercom/operations#upgrading-atomic-with-sessions-running).
 
 See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) and [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
-## Blueprint Commands
+## Blueprint commands
 
 ```bash
 atomic blueprint cache-key [dir] [--format text|json|github-output]  # Cache keys and paths for a runner's cache action
 atomic blueprint prebuild [dir] [--park] [--approve]                 # Build the repository ahead of time
 ```
 
-`atomic blueprint cache-key` prints the cache entries of the repository at `dir` (default: the current directory): `stores` for the package stores detected from its lockfiles (npm, pnpm, Yarn, Bun, Cargo, uv, pip, Poetry, Go, Gradle, Maven) plus the store paths of the [`resume.cache`](/settings#resume) setting, `build` for the setting's `"build"` paths and the seed manifest, `git` for Atomic's Git object store of the repository, and `atomic` for the extension transpile cache. Each has a key, a restore prefix and its paths. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines for `$GITHUB_OUTPUT`. Paths that could hold credentials are left out with a warning on stderr. See [Caches for runners](/guides/resume-on-any-machine#caches-for-runners).
+Top-level `atomic --help` lists both `atomic blueprint cache-key` and `atomic blueprint prebuild`.
 
-`atomic blueprint prebuild` restores the committed `HEAD` of the checkout at `dir` into a new restored worktree, builds it with the blueprints (`initialize` and `maintenance`), and leaves it idle for the next resume of the repository to claim. `--park` moves the `"build"` paths of `resume.cache` into the seed directory that the `build` cache entry saves, for a resume on another machine to adopt. It runs project code, so the project must be trusted, or `--approve` given. It prints the restore and blueprint step durations on stderr and exits `1` when the project is untrusted, the checkout has no remote or uncommitted changes to tracked files, or a blueprint step fails; a failed build keeps earlier worktrees and seeds. See [Caches for runners](/guides/resume-on-any-machine#caches-for-runners) and [Prebuilt worktrees](/guides/resume-on-any-machine#prebuilt-worktrees).
+`atomic blueprint cache-key` prints cache entries for the repository at `dir` (default: current directory). It reports `stores` (lockfile-detected package stores for npm, pnpm, Yarn, Bun, Cargo, uv, pip, Poetry, Go, Gradle, and Maven, plus [`resume.cache`](/settings#resume) store paths), `build` (`resume.cache` build paths and seed manifest), `git` (Atomic's Git object store), and `atomic` (extension transpile cache).
+
+Each entry includes a key, restore prefix, and paths. `--format github-output` outputs `<name>-key`, `<name>-restore-prefix`, and `<name>-paths` lines for `$GITHUB_OUTPUT`. Paths that might hold credentials are omitted with a stderr warning. See [Caches for runners](/guides/resume-on-any-machine#caches-for-runners).
+
+`atomic blueprint prebuild` restores the committed `HEAD` of `dir` into a new restored worktree, runs its `initialize` and `maintenance` blueprints, and leaves the worktree idle for the next resume to claim. `--park` moves `"build"` paths from `resume.cache` into the seed directory saved by the `build` cache entry.
+
+Because `prebuild` executes project code, the project must be trusted or `--approve` must be passed. It prints restore and step timings on stderr and exits `1` if the project is untrusted, the checkout has no remote or has uncommitted changes to tracked files, or a step fails (keeping earlier worktrees and seeds). See [Caches for runners](/guides/resume-on-any-machine#caches-for-runners) and [Prebuilt worktrees](/guides/resume-on-any-machine#prebuilt-worktrees).
 
 ## Modes
 
@@ -173,92 +246,98 @@ atomic blueprint prebuild [dir] [--park] [--approve]                 # Build the
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
-Interactive sessions use fullscreen, with a scrolling transcript above the docked editor and status area. Scrolling, scrollbar dragging, and selection remain available outside overlays.
+Interactive sessions run fullscreen with a scrolling transcript above the docked editor and status area. Scrolling, scrollbar dragging, and text selection remain available outside overlays.
 
-Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail views and `/tasks` transcripts.
+Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This applies to the main transcript, fullscreen tool views, and `/tasks` transcripts.
 
-Selection copies automatically unless `fullscreenCopyOnSelect` is false. Ctrl+X does not copy: followed by Ctrl+K it stops all background work (see [Keybindings](/keybindings#navigation)), and the scoped-model selector uses it to clear its selection. `/copy` copies the last assistant message.
+Text selection copies automatically unless `fullscreenCopyOnSelect` is `false`. Ctrl+X does not copy: followed by Ctrl+K it stops all background work (see [Keybindings](/keybindings#navigation)), and the scoped-model selector uses it to clear selections. `/copy` copies the last assistant message.
 
 On exit, `fullscreenExitOutput: "transcript"` prints the final transcript and resume hint. `"resume-hint"` restores the previous screen and prints only the hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
 
-In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
+In print mode, Atomic reads piped stdin and merges it into the initial prompt:
 
 ```bash
 cat README.md | atomic -p "Summarize this text"
 ```
 
-Atomic waits for piped input to end, however slowly it arrives once it has started. A pipe that sends nothing at all, not even its end, is a different case: a script, an agent's shell tool, or another program often starts Atomic with stdin open and never writes to it. If nothing arrives on such a pipe within 2 seconds, a run with a prompt argument (or `@file`) starts without stdin. If input arrives after that, Atomic warns that it was ignored. A run with no prompt argument keeps waiting for stdin, and says so on stderr. Set `ATOMIC_STDIN_TIMEOUT_MS` to change the wait, or to `0` to always wait for the end of piped input.
+Once piped input starts arriving, Atomic waits until EOF. If a pipe sends nothing at all within 2 seconds, a run with a prompt argument or `@file` starts without stdin and warns if bytes arrive later. A run with no prompt argument keeps waiting and notes that on stderr. Set `ATOMIC_STDIN_TIMEOUT_MS` to adjust the wait, or `0` to always wait for piped EOF.
 
-When a print-mode turn correctly finishes by calling an opt-in terminating structured-output tool created with `createStructuredOutputTool` (for example from an extension or SDK caller), Atomic ends after that tool result without an extra follow-up assistant turn. Print-mode stdout contains the terminating structured JSON payload, so `atomic -p` remains script-friendly while the same value is also available through the SDK `capture` sink, tool `details`, or a configured file sink. This also works for custom factory names such as `final_decision`. Non-terminating or unrelated tool results are not printed as the final response.
+When a print-mode turn finishes by calling an opt-in terminating structured-output tool created with `createStructuredOutputTool` (such as `final_decision`), Atomic exits after that tool result without an extra assistant turn. Print-mode stdout holds the terminating JSON payload, while SDK callers also receive it through their capture sink, tool `details`, or configured file sink. Non-terminating tool results are not printed as the final response.
 
-## Model Options
+## Model options
 
 | Option | Description |
 |--------|-------------|
 | `--provider <name>` | Provider to search for `--model`, such as `anthropic`, `openai`, or `google`; requires `--model` |
 | `--model <pattern>` | Model pattern or ID; supports `provider/id` and optional `:<thinking>`. If several providers match, Atomic prefers the one with credentials; otherwise it asks for `--provider` |
-| `--api-key <key>` | API key, overriding environment variables. It does not choose between providers that offer the same model |
+| `--api-key <key>` | API key, overriding environment variables. Does not disambiguate providers that share a model |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; model capability mapping still governs availability |
-| `--models <patterns>` | Comma-separated patterns for CTRL+P cycling. A model offered by several providers is added for each, with a warning |
-| `--fallback-models <models>` | Comma-separated `provider/model[:thinking]` IDs this run may fall back to, in order, after a failure the [`fallbackModels`](/settings#fallbackmodels) setting would fall back on. Replaces that setting for this run |
+| `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling. A model offered by several providers is added for each, with a warning |
+| `--fallback-models <models>` | Comma-separated `provider/model[:thinking]` IDs this run may fall back to in order after a failure that [`fallbackModels`](/settings#fallbackmodels) handles. Replaces that setting for this run |
 | `--no-fallback` | Never fall back to another model in this run. Cannot be combined with `--fallback-models` |
 | `--list-models [search]` | List available models |
 
-A model named with `--model` runs as named. It falls back only to the models `--fallback-models` names, never to the `fallbackModels` setting, user or project. In an interactive session this holds for the whole process: after you switch models with `/model` or Ctrl+P, and in sessions you start with `/new` or `/resume`, the session still uses only `--fallback-models`. Start Atomic without `--model` to use the setting. Child sessions that run on the main session's model, such as a subagent that names no model, inherit the same chain. In print mode, a fallback prints `Model fallback: <model> failed, continuing on <fallback>: <reason>` to stderr. If the run's answer came from the fallback, it ends with `Model: ran on <fallback>, not the requested <model>.` A run that fails prints `Model <model> failed: <reason>`.
+A model selected with `--model` runs strictly as named and falls back only to `--fallback-models`, ignoring global and project `fallbackModels` settings. In interactive mode this holds for the whole process, even after `/model`, Ctrl+P, `/new`, or `/resume`. Start Atomic without `--model` to use settings fallbacks.
 
-## Session Options
+Child sessions running on the main session's model inherit the same fallback chain. In print mode, fallbacks print `Model fallback: <model> failed, continuing on <fallback>: <reason>` to stderr, and answers from a fallback end with `Model: ran on <fallback>, not the requested <model>.`. Failed runs print `Model <model> failed: <reason>`.
+
+## Session options
 
 | Option | Description |
 |--------|-------------|
 | `-c`, `--continue` | Continue the most recent session for the current directory |
 | `-r`, `--resume` | Browse and select a session |
-| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix, and run it in its working directory. If it only matches a session from another directory, Atomic offers to fork it into the current directory. A session another live process has open is not resumed: Atomic exits with code `75` ([When the session is already open](/guides/resume-on-any-machine#when-the-session-is-already-open)) |
+| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix in its working directory. If it matches only another directory, Atomic offers to fork it here. Exits `75` if another live process holds the session open ([When the session is already open](/guides/resume-on-any-machine#when-the-session-is-already-open)) |
 | `--import <file>` | Import a format-4 JSONL export into session storage |
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
 | `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix into a new session in the current directory |
-| `--session-dir <dir>` | Custom session storage directory |
+| `--session-dir <dir>` | Select JSONL session storage and lookup directory |
 | `--session-store <path>` | Select a SQLite session database; relative paths resolve from the working directory |
 | `--session-prefix <prefix>` | Use a non-default table prefix with `--session-store` |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | No resumable session; [released history may use disk](/sessions) |
-| `--storage <json>` | Select shared storage for this process, in the same JSON form as the shared `storage` setting; never saved. See [Selecting storage per process](/storage#selecting-storage-per-process) |
+| `--storage <json>` | Select shared storage for this process in the JSON form of the `storage` setting; never saved. See [Selecting storage per process](/storage#selecting-storage-per-process) |
 | `--storage-file <path>` | Read the `--storage` selection from a JSON file; cannot be combined with `--storage` |
 
 See [Choosing a store](/sessions#choosing-a-store) for precedence, prefix rules, and conflicts.
 
-## Tool Options
+## Tool options
 
 | Option | Description |
 |--------|-------------|
 | `--tools <list>`, `-t <list>` | Allowlist tool names or `*` patterns, or modify defaults with only `+name`/`-name` entries; an allowlist keeps MCP tools unless an entry starts with `mcp__` |
 | `--exclude-tools <list>`, `-xt <list>` | Exclude tool names or `*` patterns, including MCP tools and Intercom |
-| `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
+| `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension and custom tools enabled |
 | `--no-tools`, `-nt` | Disable every tool, including Intercom, even with `--tools` |
 
-Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `codemode`, plus `powershell` on native Windows when a PowerShell executable is available. `ls` remains available but is not a default. `defaultTools` selects initial coding tools without narrowing extension/custom tools. `--tools` selects an explicit allowlist; `--exclude-tools` subtracts from it. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. The bundled Intercom extension remains loaded with `--no-extensions`, but its tool follows the allowlist, exclusions, and `--no-tools` like other extension tools.
+Default built-in tools: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `codemode`, plus `powershell` on native Windows when a PowerShell executable is available. `atomic --help` lists `kill` and `codemode` alongside the other built-in tools. `ls` remains available but is off by default.
 
-To remove [codemode](/tools#codemode) or add [tool search](/tools#tool_search) alongside defaults, use `atomic --tools -codemode,+tool_search` for one invocation, or `"defaultTools": ["-codemode", "+tool_search"]` in settings. `atomic --tools +codemode,-write` keeps the other defaults and disables `write`. Modifier entries take exact names, not `*` patterns, and cannot be mixed with plain allowlist entries. Use `--exclude-tools` for pattern exclusions. On `/reload`, modifiers apply to the reloaded `defaultTools` setting too, so tools removed with `-name` stay removed. Modifiers do not narrow extension/custom tools or filter MCP exposure; `--no-tools` still disables every tool.
+`defaultTools` selects initial coding tools without narrowing extension or custom tools. `--tools` sets an explicit allowlist, and `--exclude-tools` subtracts from it. `--no-builtin-tools` suppresses coding defaults when no allowlist is given. Bundled Intercom stays loaded with `--no-extensions`, but its tool follows allowlists, exclusions, and `--no-tools` like other extension tools.
+
+To remove [codemode](/tools#codemode) or add [tool search](/tools#tool_search) alongside defaults, pass `atomic --tools -codemode,+tool_search` for one run or set `"defaultTools": ["-codemode", "+tool_search"]`. `atomic --tools +codemode,-write` keeps the other defaults and disables `write`.
+
+Modifier entries take exact names (not `*` patterns) and cannot be mixed with plain allowlist entries; use `--exclude-tools` for pattern exclusions. On `/reload`, CLI modifiers still apply to the reloaded `defaultTools` setting. Modifiers do not narrow extension tools or filter MCP exposure, and `--no-tools` disables every tool.
 
 ### MCP tools
 
-`--tools read,codemode` keeps non-hidden MCP tools with codemode or deferred exposure callable from codemode scripts. MCP tools unmatched by the allowlist are not declared directly, regardless of exposure. Unmatched direct-exposure tools remain registered but inactive. Only an enabled `tool_search` can load unmatched tools with non-direct exposure.
+`--tools read,codemode` keeps non-hidden MCP tools with `codemode` or `deferred` exposure callable from codemode scripts. MCP tools unmatched by the allowlist are not declared directly, regardless of exposure. Unmatched direct-exposure tools stay registered but inactive. Only an enabled `tool_search` can load unmatched non-direct tools.
 
-An entry starting with `mcp__` filters MCP tools too. For example, `atomic --tools read,codemode,'mcp__docs__*'` keeps only tools from the `docs` server. MCP resource tools also count as MCP tools. Exclusions apply to both server and resource tools. Use `--no-mcp` to disable built-in MCP connections and resources entirely.
+An entry starting with `mcp__` filters MCP tools too. For example, `atomic --tools read,codemode,'mcp__docs__*'` keeps only tools from the `docs` server. MCP resource tools count as MCP tools, and exclusions apply to both server and resource tools. Use `--no-mcp` to disable built-in MCP connections and resources.
 
-## Project Trust Options
-
-| Option | Description |
-|--------|-------------|
-| `--approve`, `-a` | Trust project-local files/resources for this run |
-| `--no-approve`, `-na` | Ignore project-local files/resources for this run |
-
-Project trust gates `.atomic`/legacy `.pi` project resources, project package settings, project-local context files, and `.agents/skills` discovered from the project tree. Saved trust decisions can be managed with `/trust`; see [Security](/security).
-
-## Resource Options
+## Project trust options
 
 | Option | Description |
 |--------|-------------|
-| `-e`, `--extension <source>` | Load an extension from path, npm, or git; repeatable |
+| `--approve`, `-a` | Trust project-local files and resources for this run |
+| `--no-approve`, `-na` | Ignore project-local files and resources for this run |
+
+Project trust gates `.atomic` and legacy `.pi` project resources, project package settings, project-local context files, and `.agents` resources discovered from the project tree. Manage saved trust decisions with `/trust`; see [Security](/security).
+
+## Resource options
+
+| Option | Description |
+|--------|-------------|
+| `-e`, `--extension <source>` | Load an extension from a path, npm, or git; repeatable |
 | `--no-extensions`, `-ne` | Disable optional extension discovery; mandatory bundled Intercom remains loaded |
 | `--no-mcp` | Disable built-in MCP support for this run, even when explicitly enabled; replacement extensions are unaffected |
 | `--skill <path>` | Load a skill; repeatable |
@@ -269,18 +348,18 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | `--no-themes` | Disable theme discovery |
 | `--no-context-files`, `-nc` | Disable context-file discovery and loading |
 
-Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings. Example:
+Combine `--no-*` with explicit flags to load only what you specify, ignoring settings:
 
 ```bash
 atomic --no-extensions -e ./my-extension.ts
 ```
 
-## Other Options
+## Other options
 
 | Option | Description |
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
-| `--append-system-prompt <text>` | Append to system prompt |
+| `--append-system-prompt <text>` | Append text or file contents to the system prompt; repeatable |
 | `--use-theme <name[/name]>` | Set the interactive theme for this run without saving it; see [Themes](/themes#initial-theme) |
 | `--offline` | Disable automatic network activity, including update checks, package updates, telemetry, and model catalog refreshes |
 | `--debug` | Turn on [debug mode](/development#debugging) for this run, the same as `ATOMIC_DEBUG=1` |
@@ -288,7 +367,7 @@ atomic --no-extensions -e ./my-extension.ts
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
-## File Arguments
+## File arguments
 
 Prefix files with `@` to include them in the message:
 
@@ -326,32 +405,33 @@ atomic --models "claude-*,gpt-4o"
 atomic --tools read,search,find,ls -p "Review the code"
 ```
 
-## Environment Variables
+## Environment variables
+
+See [Environment variables](/environment-variables) for the complete registry of Atomic variables, legacy `PI_*` aliases, provider keys, and diagnostic variables. The table below lists the main CLI and runtime variables:
 
 | Variable | Description |
 |----------|-------------|
-| `AI_AGENT` | Set to `atomic` by the CLI, RPC, and compiled binary entry points and in every Atomic-owned child-process environment so generic tooling can identify Atomic processes; child environments override caller-supplied values without mutating the caller's environment object |
-| `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
-| `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
-| `ATOMIC_STORAGE` | Shared storage selection JSON for sessions and Intercom; `--storage` takes precedence, and sessions may select their own store |
+| `AI_AGENT` | Set to `atomic` by the CLI, RPC, and compiled binary entry points and in every Atomic-owned child process so tools can identify Atomic processes |
+| `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled Intercom files live under its `intercom/` subdirectory |
+| `ATOMIC_CODING_AGENT_SESSION_DIR` | Select JSONL session directory; overridden by `--session-dir` |
+| `ATOMIC_STORAGE` | Shared storage selection JSON for sessions and Intercom; `--storage` takes precedence |
 | `ATOMIC_SESSIONS_STORAGE` | Session-only storage selection JSON; cannot be combined with `ATOMIC_CODING_AGENT_SESSION_DIR` |
-| `ATOMIC_PROFILE` | `ci`: sessions and Intercom use the team database from the variables below, without settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
-| `ATOMIC_TEAM_URL` | Team database URL for `ATOMIC_PROFILE=ci` |
-| `ATOMIC_TEAM_TOKEN` | Team database token for `ATOMIC_PROFILE=ci`; cannot be combined with `ATOMIC_TEAM_TOKEN_FILE` |
-| `ATOMIC_TEAM_TOKEN_FILE` | File holding the team database token for `ATOMIC_PROFILE=ci` |
-| `ATOMIC_TEAM_PREFIX` | Team table prefix for `ATOMIC_PROFILE=ci` |
-| `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
-| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and keep the working `∀` static. Elapsed working and compaction time still updates once per second |
-| `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |
-| `ATOMIC_DEBUG` | Set to `1` to turn on [debug mode](/development#debugging), the same as `--debug` (`PI_DEBUG` is a legacy alias) |
-| `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
-| `ATOMIC_STDIN_TIMEOUT_MS` | How long a print-mode run waits, in milliseconds, for anything on a piped stdin before a run with a prompt argument starts without it; default `2000`, at most `2147483647`, `0` waits for the end of piped input (`PI_STDIN_TIMEOUT_MS` is a legacy alias) |
-| `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks (`PI_TELEMETRY` is a legacy alias) |
-| `NODE_COMPILE_CACHE` | Override the directory for Node's persistent compile cache, which Atomic enables automatically on Node >= 22.8 to speed up startup (most noticeable on Windows). On Windows, when the cache in the default directory is empty or out of date (the first run after an install or upgrade), an interactive session runs without it and a background `node` process writes it during the session; with `NODE_COMPILE_CACHE` set, Node writes the cache when Atomic exits instead. Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
-| `ATOMIC_CACHE_RETENTION` | Prompt-cache retention: `long` (default), `short`, or `none`, subject to provider/model support (`PI_CACHE_RETENTION` is a legacy alias) |
-| `ATOMIC_OAUTH_CALLBACK_HOST` | Host the local OAuth callback server listens on during `/login`; default `127.0.0.1` (`PI_OAUTH_CALLBACK_HOST` is a legacy alias) |
-| `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |
-| `VISUAL`, `EDITOR` | External editor for CTRL+G |
+| `ATOMIC_PROFILE` | `ci`: use the team database from `ATOMIC_TEAM_*` for sessions and Intercom without settings ([Team and CI setup](/guides/team-setup#ci-and-swarms)) |
+| `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN`, `ATOMIC_TEAM_TOKEN_FILE`, `ATOMIC_TEAM_PREFIX` | Team database connection settings for `ATOMIC_PROFILE=ci` (`ATOMIC_TEAM_TOKEN` and `ATOMIC_TEAM_TOKEN_FILE` cannot be combined) |
+| `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix or Guix store paths |
+| `ATOMIC_SELF_UPDATE_COMMAND` | Command `atomic update` runs to update Atomic itself (`{packageName}`, `{version}`, `{installSpec}`). See [Custom update command](#custom-update-command) |
+| `ATOMIC_SHARE_VIEWER_URL` | Base URL for `/share` links; default `https://bastani.ai/session/` |
+| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup animation and keep the working `∀` static while elapsed time still updates |
+| `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package updates, telemetry, and model catalog refreshes |
+| `ATOMIC_DEBUG` | Set to `1` to turn on [debug mode](/development#debugging), the same as `--debug` |
+| `ATOMIC_SKIP_VERSION_CHECK` | Skip the startup version update check |
+| `ATOMIC_STDIN_TIMEOUT_MS` | Milliseconds a print-mode run waits for piped stdin before starting with a prompt argument; default `2000`, max `2147483647`, `0` waits until EOF |
+| `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no` (does not disable update checks) |
+| `NODE_COMPILE_CACHE` | Override Node's persistent compile cache directory (enabled automatically on Node 22.8+; set `NODE_DISABLE_COMPILE_CACHE=1` to opt out). On Windows, a cold default cache warms in a background `node` helper during interactive runs |
+| `ATOMIC_CACHE_RETENTION` | Prompt-cache retention: `long` (default), `short`, or `none`, subject to provider and model support. See [Prompt-cache retention](/environment-variables#prompt-cache-retention) |
+| `ATOMIC_OAUTH_CALLBACK_HOST` | Bind host for the local OAuth callback server during `/login`; default `127.0.0.1` |
+| `ATOMIC_NO_PTY` | Set to `1` to disable PTY allocation for `bash` and `powershell` tools |
+| `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 
 Every bash execution receives one execution-time snapshot of the active session. Foreground/background observation controls how long the caller waits, not the command's execution timeout. Omitted `wait` uses the owner's policy, normally yielding after 10 seconds; explicit background observation requires a supported task owner. Without one, foreground execution waits until completion. See [Background tasks](/background-tasks#choose-how-long-to-wait).
 
@@ -362,6 +442,8 @@ Every bash execution receives one execution-time snapshot of the active session.
 | `ATOMIC_MODEL` | `PI_MODEL` | Active model ID; omitted when no model is selected |
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |
 
-The snapshot is taken when the command executes, not when the tool is created, so resumed sessions, isolated sessions, model changes, and concurrent sessions cannot reuse stale metadata. Atomic preserves all unrelated inherited and caller-supplied environment variables; only the ten names above are cleared and overlaid. Factory-created bash tools expose the same metadata by default and can set `exposeSessionEnvironment: false` to omit it.
+The snapshot is taken when the command executes, not when the tool is created, so resumed sessions, isolated sessions, model changes, and concurrent sessions never reuse stale metadata. Atomic preserves all unrelated inherited and caller-supplied environment variables.
 
-`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. For example, [Intercom](/intercom) honors `PI_CODING_AGENT_DIR` when `ATOMIC_CODING_AGENT_DIR` is unset and still reads legacy `~/.pi/agent/intercom/config.json` when the Atomic config is absent. Long prompt-cache retention is the default for main chat and subagents where supported; use `ATOMIC_CACHE_RETENTION=short atomic` to opt back into shorter caching. See [Prompt-cache retention](/environment-variables#prompt-cache-retention) for overrides and pricing tradeoffs. Intercom's default broker starter works across Node-based installs, Bun source checkouts, and standalone Atomic binaries without requiring `npx`, `tsx`, or `bun` to be present on `PATH`; custom broker commands remain explicit opt-in overrides.
+Before overlaying the eight current snapshot values above, Atomic clears those eight names plus the two retired session-file variables (ten reserved names in total; see [Bash and PowerShell session environment](/environment-variables#bash-and-powershell-session-environment) for the retired names). Factory-created bash tools expose the same metadata by default and accept `exposeSessionEnvironment: false` to omit it.
+
+App-specific `ATOMIC_*` variables also accept legacy `PI_*` aliases (except storage and team variables). Intercom's default broker starter works across Node installs, Bun checkouts, and standalone binaries without needing `npx`, `tsx`, or `bun` on `PATH`.

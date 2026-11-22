@@ -11,247 +11,199 @@ This page collects day-to-day usage details that do not fit on the quickstart pa
 
 This page covers interactive use: the interactive loop, slash commands, the message queue, sessions, context files, and the design principles behind them. Every command, flag, argument, and environment variable now lives in the [CLI reference](/reference/cli).
 
-## Interactive Mode
+## Interactive mode
 
 <p align="center"><img src="images/interactive-mode.png" alt="Interactive Mode" width="600" /></p>
 
 The interface has four main areas:
 
-- **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
-- **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
-- **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or the bound interrupt key while it works (`esc to interrupt` on `main`, `esc to pause` while viewing a subagent). When background subagents are active, the [agent panel](/background-tasks#the-agent-panel) appears below the footer; selecting a subagent swaps the transcript and points the same prompt at it. Press `?` on an empty prompt for the key overview
+- **Startup header.** Shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions. Press the expand-tools shortcut (`Ctrl+O` by default) to switch those lists to source paths.
+- **Messages.** User messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI.
+- **Editor.** The prompt box where you type. Its border color shows the current thinking level.
+- **Footer.** Token usage, cache usage, cost, and context usage sit above the editor. Below it, Atomic shows the current model, reasoning level, working directory, Git branch, and session name while idle, or the bound interrupt key while working (`esc to interrupt` on `main`, `esc to pause` while viewing a subagent). When background subagents run, the [agent panel](/background-tasks#the-agent-panel) appears below the footer; selecting a subagent swaps the transcript and points the prompt at it. Press `?` on an empty prompt for the key overview.
 
-The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
+Built-in views such as `/settings` or custom extension UI can temporarily replace the editor.
 
-### Startup and Working Identity
+### Startup and working identity
 
-The startup animation shows Atomic's identity. Press any key, including Ctrl+C, to finish it immediately and continue normal input. Setting `quietStartup` to `true` suppresses it, while `"header"` keeps it; non-TTY sessions and `ATOMIC_REDUCED_MOTION=1` show the settled identity without animation. `NO_COLOR` removes foreground colors while retaining weight emphasis.
+The startup animation shows Atomic's identity. Press any key, including Ctrl+C, to finish it immediately and continue normal input. Setting `quietStartup` to `true` hides it, while `"header"` keeps it. Non-TTY sessions and `ATOMIC_REDUCED_MOTION=1` show the settled identity without animation. Setting `NO_COLOR` turns off foreground and background colors and text styles (bold, italic, dim, underline, inverse, and strikethrough).
 
-Startup lists loaded context files, skills, prompts, and extensions by name. Custom themes are not listed; choose them in `/settings`. Duplicate local extension names include path information. Expand the startup disclosure to see source paths.
+Startup lists loaded context files, skills, prompts, and extensions by name. Custom themes are not listed; choose them in `/settings`. Duplicate local extension names include path details. Expand the startup block to inspect source paths.
 
-While the agent works, `∀` pulses beside a working message, followed by the current run's elapsed time and output tokens. A new run starts a fresh meter; steering keeps the current run's meter. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Elapsed time still updates once per second with reduced motion. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
+While the agent works, `∀` pulses beside a status message with the current run's elapsed time and output tokens. A new run starts a fresh meter; steering keeps the current meter. Retry, fallback, compaction, cancellation, and error notices take precedence, and approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static mark (elapsed time still updates once per second) or `NO_COLOR` for plain unstyled output. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
 
-Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, one line marks the boundary: `⚛ Context cleared · 182.0k tokens`, or `⚛ Context compacted · morph/morph-compactor · 182.0k → 21.4k tokens` when a compactor model ran. Use the expand key, normally Ctrl+O, to read the whole boundary message: where the earlier conversation is in session history, what the agent recovers first, and any compacted text.
+Compaction shows a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction displays how long compaction has been running. Afterwards, one line marks the boundary: `⚛ Context cleared · 182.0k tokens`, or `⚛ Context compacted · morph/morph-compactor · 182.0k → 21.4k tokens` when a compactor model ran. Press `Ctrl+O` to inspect where the earlier conversation lives in session history, what the agent recovers first, and any compacted text.
 
-### Editor Features
+### Editor features
 
 | Feature | How |
 |---------|-----|
 | File reference | Type `@` to fuzzy-search project files |
 | Path completion | Press Tab to complete paths |
-| Prompt history | ↑ and ↓ walk through past prompts; Ctrl+R searches them and puts the chosen one in the editor without sending it |
-| Multi-line input | SHIFT+Enter, or CTRL+Enter on Windows Terminal |
-| Images | Paste with CTRL+V, ALT+V on Windows, or drag into the terminal |
-| Shell command | `!command` runs and sends output to the model |
-| Hidden shell command | `!!command` runs without sending output to the model |
-| External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
+| Prompt history | `↑` and `↓` walk past prompts; `Ctrl+R` searches them and places the chosen prompt in the editor without sending |
+| Multi-line input | `Shift+Enter` or `Ctrl+J` |
+| Images | Paste with `Ctrl+V` (`Alt+V` or `Ctrl+V` on Windows and WSL), or drag into the terminal |
+| Shell command | `!command` runs a command and includes output in model context |
+| Hidden shell command | `!!command` runs a command without sending output to model context |
+| External editor | `Ctrl+G` opens `externalEditor`, `$VISUAL`, or `$EDITOR` |
 
-The `@` and `/` menus end with one hint line naming the keys that work there. Tab completes without sending. Enter inserts an `@` path; for a `/`-prefixed completion, including an absolute path, Enter submits the completed prompt. Remapped menu keys appear only when an app shortcut or earlier menu action does not take them first.
+The `@` and `/` menus end with a hint line naming active keys. `Tab` completes without sending. `Enter` inserts an `@` path; for a `/`-prefixed completion (including an absolute path), `Enter` submits the completed prompt. Remapped menu keys appear only when an app shortcut or earlier menu action does not claim them first.
 
-Ctrl+R searches the viewed agent's recorded prompts, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ walk the same agent's history — on `main`, the main chat's history; while viewing a subagent, that subagent's own delivered prompts followed by what you send while viewing it (queued messages come back with Alt+Up rather than ↑). Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys.
+`Ctrl+R` searches the viewed agent's recorded prompts, newest first, including prompts sent through templates or skills and prompts rewritten by an `input` hook. Editor `↑` and `↓` walk what you typed during the current run (on `main`, the main chat's prompts; while viewing a subagent, that subagent's prompts; queued messages come back with `Alt+Up` or `Alt+Q` rather than `↑`). `Esc` clears search text and then closes the search without touching your draft or interrupting the agent.
 
-Prompt history keeps what you typed, including input rewritten by an extension before it reaches the model. An `input` hook does not erase the original from saved session history. Avoid typing secrets directly into prompts.
+When an `input` hook transforms a prompt, Atomic saves the transformed text to session history and searches that transformed text in `Ctrl+R`. Only editor `↑` and `↓` walk the raw text you typed during the current run. Avoid typing secrets directly into prompts.
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
-On native Windows, `!` and `!!` execute PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows) for the locations checked). Linux, macOS, and WSL use Bash. Extension-provided execution operations still take precedence. `shellCommandPrefix` is still prepended, so use syntax matching the selected shell; `shellPath` configures Bash, not Windows interactive PowerShell. Escape or Ctrl+C cancels a running command. `!!` output remains excluded from model context. While viewing a subagent, `!` and `!!` commands are refused with a notice; switch to `main` to run them.
+On native Windows, `!` and `!!` run PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows)). Linux, macOS, and WSL use Bash. Extension-provided execution hooks take precedence. `shellCommandPrefix` is prepended to each command, so match the active shell's syntax (`shellPath` configures Bash, not Windows interactive PowerShell). `Esc` or `Ctrl+C` cancels a running command. While viewing a subagent, `!` and `!!` commands are refused; switch to `main` to run them.
 
-On Windows, ALT+Z lends the terminal to an interactive PowerShell subshell. Type `exit` to return to the same Atomic session; owned background tasks keep running. CTRL+Z remains editor undo. On POSIX systems, CTRL+Z suspends Atomic and `fg` resumes it.
+On native Windows, `Alt+Z` opens an interactive PowerShell subshell; type `exit` to return to the same Atomic session while background tasks keep running, and `Ctrl+Z` stays editor undo. On POSIX systems and WSL, `Ctrl+Z` suspends Atomic and `fg` resumes it.
 
 ## Startup typing
 
-In an interactive terminal, you can type while Atomic starts, before the prompt box is ready.
+On eligible interactive starts, Atomic opens the prompt editor immediately so you can start typing right away, and your text is kept while the session finishes loading. This applies in a fullscreen terminal when no startup dialog (such as first-run setup or a project trust prompt), non-default editor display setting (other than a built-in global theme), or CLI flag outside `--offline`, `--no-mcp`, `--verbose`, `--approve`/`-a`, and `--no-approve`/`-na` is active.
 
-When no startup screen needs an answer:
-- Enter-submitted ordinary prompts wait until the session is ready.
-- Command-like submissions such as `/settings` or `!pwd` run as separate editor submissions through normal command routing.
-- Later submissions wait behind an earlier command and run in input order. Ordinary prompts cannot overtake commands, and commands are not merged with following prompts.
-- Text you have not submitted waits in the prompt. When it ends in a `/` command or an `@` file and no command was submitted before it, its completion menu opens once completions are ready, as if you had typed it there.
+While the session is still loading:
 
-When a startup screen appears, including project trust, first-time setup, the resume picker or a cross-project fork question, your earlier text waits in the prompt as a draft. Text typed into a screen that does not use text joins that draft, with line breaks between typed lines. Text left in a startup input that you cancel, or that times out, also joins the draft. Nothing is sent until you review the draft and press Enter after startup.
+- Typing and prompt-editing keys (cursor and word movement, deletions, kill ring, undo, and newlines) act immediately and echo live.
+- `Ctrl+C` clears prompt text, or exits on a second press within 0.8 seconds on an empty prompt. `Ctrl+D` exits on an empty prompt.
+- Non-editing keys (`Enter`, command shortcuts, `Esc`, view-switching keys, and mouse events) wait in order until the session takes over on the same screen.
+- Any direct stdout or stderr output written during startup stays visible instead of being overwritten by the prompt.
+- Clicking in the prompt before completions finish loading cancels any pending `/` or `@` completion lookup.
 
-Enter or a custom prompt-submit key ending an unfinished prompt does not answer the screen. Use ↑ or ↓ to choose in a selector; the resume picker and text input also accept Enter after you start typing into them. Answer a fork question with `y` or `n` explicitly if you were typing a prompt or an earlier line was kept as a draft.
+When a startup dialog, an ineligible flag (such as `--resume`, `--continue`, or `--name`), or a custom editor display setting applies, Atomic falls back to buffered startup typing before the UI paints:
 
-Startup typing does not apply to non-TTY input, print or RPC mode, or metadata commands such as `--help` and `--list-models`.
+- `Enter`-submitted ordinary prompts wait until the session is ready.
+- Command submissions such as `/settings` or `!pwd` run as separate submissions through normal command routing in input order.
+- Unsubmitted text waits in the editor. If it ends with a `/` command or `@` file and no earlier command ran, its completion menu opens once completions are ready unless you click elsewhere first.
 
-## Slash Commands
+When a startup screen appears (project trust, first-run setup, resume picker, or cross-project fork prompt), earlier typed text waits in the prompt as a draft. Text typed into a screen that ignores text, or left in a cancelled or timed-out startup input, joins that draft with line breaks. Nothing sends until you review the draft and press `Enter` after startup.
 
-Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`. While viewing a subagent, built-in commands run on `main` (asking to confirm for commands that replace or rewrite the main conversation, refusing `/model` and `/thinking`, and using `/copy` for the viewed subagent's last message), while skills, prompt templates, and user or project extension commands go to the viewed subagent; see [Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent).
+`Enter` (or a custom submit key) ending an unfinished prompt never answers a startup screen automatically. Use `↑` or `↓` in selectors (the resume picker and text prompts accept `Enter` after you type into them), and answer a fork prompt explicitly with `y` or `n`. Startup typing does not apply to non-TTY input, print or RPC mode, or metadata commands such as `--help` and `--list-models`.
 
-`/settings` lists each setting with its value, shortening long labels first on narrow terminals. Type to search; Enter or Space changes the selected setting, stepping a value in place or opening its picker (a value followed by `›`). Right does not change or save a setting, including inside a value picker. The selected setting's description shows under the list, and Esc clears a search before it closes.
+## Slash commands
+
+Type `/` in the editor to open command completion. Extensions can register custom commands, skills run as `/skill:name`, and prompt templates expand via `/templatename`. While viewing a subagent, built-in commands target `main` (confirming commands that replace or rewrite the main chat, refusing `/model` and `/thinking`, and using `/copy` for the viewed subagent's last message), while skills, prompt templates, and user or project extension commands target the viewed subagent; see [Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent).
+
+`/settings` lists each setting and value, shortening long labels on narrow terminals. Type to search; press `Enter` or `Space` to step a value or open its picker (`›`). `Right` never changes or saves a setting. The selected setting's description appears below the list, and `Esc` clears search before closing.
 
 | Command | Description |
 |---------|-------------|
 | `/login`, `/logout` | Manage OAuth or API-key credentials |
-| `/model` | Switch models and automatically save the startup default |
-| `/thinking` | Switch thinking level and automatically save the startup default |
-| `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/settings` | Theme, message delivery, transport, and other preferences |
-| `/resume` | Pick from previous sessions |
+| `/model` | Switch models and save the startup default |
+| `/thinking` | Switch thinking level and save the startup default |
+| `/scoped-models` | Enable, disable, and reorder models for `Ctrl+P` cycling |
+| `/settings` | Change theme, message delivery, transport, and other preferences |
+| `/resume` | Browse and resume previous sessions |
 | `/new` | Start a new session |
-| `/name <name>` | Set session display name |
-| `/session` | Show session file, ID, messages, tokens, and cost |
-| `/tools` | Show active tools, why other tools are off, and selected tool names that nothing registered |
-| `/tree` | Jump to any point in the session and continue from there |
-| `/fork` | Create a new session from a previous user message |
+| `/name <name>` | Set the session display name |
+| `/session [snapshot]` | Show session location, ID, messages, tokens, and cost; `snapshot` shows worktree snapshots and diffs |
+| `/tools` | Show active tools, why other tools are off, and unregistered names in `defaultTools` |
+| `/tasks` | Inspect agents and background shells, view output, and manage running tasks |
+| `/tree` | Jump to any point in the session tree and continue from there |
+| `/fork` | Create a new session from an earlier user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact [instructions]` | Clear the context window; the agent recovers what it needs from session history |
-| `/copy` | Copy last assistant message to clipboard |
-| `/export [file]` | Export session to HTML |
-| `/share` | Upload as private GitHub gist with shareable HTML link |
-| `/reload` | Reload keybindings, extensions, skills, prompts and context files |
+| `/compact [instructions]` | Clear or compact the context window; the agent recovers needed details from session history |
+| `/copy` | Copy the last assistant message to the clipboard |
+| `/export [file]` | Export the session to HTML (default) or format-4 `.jsonl` when `file` ends in `.jsonl` |
+| `/import <file>` | Import a format-4 `.jsonl` session export and replace the current session |
+| `/share` | Upload as a private GitHub gist with a shareable HTML link |
+| `/trust` | Save a project trust decision for future sessions |
+| `/llama` | Manage local `llama.cpp` router models (load, unload, or download from Hugging Face) |
+| `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display the full version history |
-| `/exit` | Exit Atomic |
-| `/quit` | Quit Atomic |
+| `/exit`, `/quit` | Exit Atomic |
 
-## Message Queue
+Bundled integrations also register `/agents` (subagents), `/mcp` (MCP servers), `/intercom` (Intercom overlay), and `/curator`, `/websearch`, `/search`, `/google-account` ([Web access](/web-access)).
 
-You can submit messages while the agent is still working (the same queue and interrupt keys apply whether you are viewing `main` or a subagent, with `Esc` pausing a viewed subagent instead of interrupting `main`):
+## Message queue
 
-- **Enter** queues a steering message, delivered after the current assistant turn finishes executing its tool calls.
-- **ALT+Enter** queues a follow-up message, delivered after the agent finishes all work.
-- **Escape** aborts active/queued work and restores queued steering/follow-up messages to the editor. The session remains paused until you submit the next ordinary chat message; that submission releases any held queue before starting the new turn. A later Escape while the queue is paused restores any newly queued steering/follow-up text without releasing the pause.
-- **Ctrl+C** clears the editor first when it has text. With an empty editor, it aborts active/queued work and pauses queued messages in place. They remain queued, in their original per-queue order, until you submit the next ordinary chat message; that submission resumes the chat and makes each queued item eligible once. After the abort settles, Ctrl+C on an empty editor shows "Press Ctrl+C again to exit" without releasing the hold, and a second press within 0.8 s exits.
-- **ALT+Up** explicitly retrieves queued messages back to the editor without aborting active work or resuming a paused session. Even when retrieval empties the queue, the pause remains active until the next ordinary submission. It restores exactly what the session still held when it handled the key press: a message queued an instant earlier comes back, and one the agent has already taken into its turn does not come back a second time. If the engine process cannot be reached, nothing is removed and Atomic shows an error.
+You can submit messages while the agent works. The same queue and interrupt keys apply on `main` and while viewing a subagent, except `Esc` pauses a viewed subagent instead of interrupting `main`:
 
-Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working. Prompt templates and skills wait the same way. Slash commands that do not send a prompt, such as `/settings`, `/tasks` and `/model`, run immediately during compaction. A message that such a command sends, for example through `pi.sendUserMessage()`, also waits until compaction ends. It is shown as queued, goes out once, and keeps its place after the messages typed before the command. **ALT+Up** and Ctrl+C return it to the editor like the rest of the queue.
+- **Enter** queues a steering message, delivered after the current assistant turn finishes its tool calls.
+- **Alt+Enter** (**Ctrl+Q** on Windows and WSL) queues a follow-up message, delivered after the agent finishes all work.
+- **Escape** aborts active or queued work and restores still-queued steering and follow-up messages to the editor. The session stays paused until you submit the next ordinary chat message, which releases any held queue before starting the turn. Another `Escape` while paused restores newly queued text without releasing the pause.
+- **Ctrl+C** clears editor text first. On an empty editor, it aborts active or queued work and pauses queued messages in place in their original order until your next ordinary submission. After the abort settles, `Ctrl+C` on an empty editor displays `Press Ctrl+C again to exit` without releasing the hold, and a second press within 0.8 seconds exits.
+- **Alt+Up** (**Alt+Q** on Windows and WSL) retrieves queued messages back to the editor without aborting active work or resuming a paused session. It restores only messages the agent has not already taken into its turn, and reports an error without dropping messages if the engine is unreachable.
 
-Messages you submit while Atomic is still preparing a prompt, while it waits to retry a failed request, or while extensions finish handling the end of a run are queued the same way. They show as queued at once and join the run at its next turn boundary, in the order you submitted them. If the agent refuses one, Atomic returns the text to the editor, or keeps it queued, and shows the error.
+Each queue keeps submission order, and steering messages run ahead of follow-ups. Messages submitted during compaction, prompt templates, skills, and messages sent from slash commands via `pi.sendUserMessage()` wait in queue order until compaction ends or is cancelled. Non-prompt slash commands such as `/settings`, `/tasks`, and `/model` run immediately during compaction.
 
-If the first message sent after compaction fails, it stays queued with the messages after it, in the order you typed them, and Atomic shows the error. Anything you submit next is queued behind them, and your next submission sends them again in order. **ALT+Up** retrieves them to the editor in that same order.
+Messages submitted while Atomic prepares a prompt, waits to retry a failed request, or finishes end-of-run extension hooks queue the same way and join the next turn boundary in order. If the first message sent after compaction fails, it stays queued ahead of later messages so your next submission retries them in order, and `Alt+Up` (or `Alt+Q`) returns them together.
 
-Both interrupts hold a queued message only while it is still waiting in the queue. A message the agent has already picked up is written into the transcript, and an interrupt that cancels its reply before any output appears no longer strands it: Atomic answers it instead of returning it to the editor. A reply that had already started printing is left as-is and is not restarted. Sending a message while that recovered reply is still streaming is safe — it is delivered as soon as the reply finishes.
+Interrupts hold only messages still waiting in the queue. A message the agent already picked up stays in the transcript; if an interrupt cancels its reply before any output prints, Atomic answers it rather than stranding it. A reply that already began printing stays as printed, and sending a message while a recovered reply streams queues cleanly until it finishes.
 
-Both abort routes ask the agent to stop cooperatively, and neither route terminates the engine during normal cancellation. The turn ends once each of its tool calls has stopped. A tool call still waiting for an earlier call to finish ends at once with `Operation aborted` and does not run. A tool call that has not stopped 10 seconds after the interrupt (set `ATOMIC_TOOL_ABORT_GRACE_MS` to change this; see [Environment variables](/environment-variables)) gets the result `Operation aborted: <tool> did not stop within 10 seconds after the turn was interrupted`, and the turn ends anyway. Such a call may keep running in the background, but later tool calls no longer wait for it. Anything it returns or throws after the grace period is discarded; it does not enter the chat or a later model request.
+Both abort paths request cooperative cancellation and leave the engine running during normal interrupts. Pending tool calls abort immediately with `Operation aborted`. Any active tool call still running 10 seconds after the interrupt (configurable via `ATOMIC_TOOL_ABORT_GRACE_MS`; see [Environment variables](/environment-variables)) receives `Operation aborted: <tool> did not stop within 10 seconds after the turn was interrupted`, letting the turn finish while discarding any later output from that call.
 
-Ctrl+C also provides a recovery path. It reaches Atomic even when an extension's custom UI owns the screen, closing that UI if it does not handle the key. If the engine stops answering, a queue clear or cancellation remains unanswered for over one second, or either operation fails, Ctrl+C replaces the engine. This includes cancelling chat, shell commands, compaction, and retries, even while engine heartbeats continue. It also covers a replacement that hangs during startup or fails to start. Recovery is explicit: a stalled control does not restart the engine on its own. Replacing the engine interrupts running tools. Check `/tasks` and the session transcript before repeating an action.
+`Ctrl+C` also provides explicit recovery. It closes an extension's custom UI if that UI does not handle `Ctrl+C`. If the engine stops answering, or a cancel or queue-clear request fails or stalls for over one second (even while heartbeats continue), `Ctrl+C` terminates and replaces the engine. Recovery never triggers automatically. Replacing the engine interrupts running tools; check `/tasks` and the transcript before repeating actions.
 
-If a message could not be sent, Atomic restores it to the editor exactly as typed, including pasted content. It appears above anything typed while the send was pending, separated by a blank line, together with later queued messages in their original order. Atomic does not also show a red error. See [Keybindings](/keybindings#application).
+If sending fails, Atomic restores your unsent text (including pasted content) to the editor above any text typed while the send was pending, along with later queued messages in order, without adding a redundant red error. See [Keybindings](/keybindings#application).
 
-On Windows Terminal, ALT+Enter is fullscreen by default. Remap it as described in [Terminal setup](/terminal-setup) if you want Atomic to receive the shortcut.
+On Windows and WSL, follow-up queueing defaults to `Ctrl+Q` and dequeue defaults to `Alt+Q`, avoiding Windows Terminal's `Alt+Enter` fullscreen binding. Only remap `Alt+Enter` in [Terminal setup](/terminal-setup) if you explicitly rebind an action to `alt+enter`.
 
-Configure delivery in [Settings](/settings) with `steeringMode` and `followUpMode`.
+Configure delivery behavior with `steeringMode` and `followUpMode` in [Settings](/settings#message-delivery).
 
 ## Sessions
 
-Sessions are saved automatically to `~/.atomic/agent/sessions/`, organized by working directory.
+Sessions auto-save to the local SQLite database `~/.atomic/workflows/journal.sqlite` by default. JSONL session directories such as `~/.atomic/agent/sessions/` are opt-in via `--session-dir`, `ATOMIC_CODING_AGENT_SESSION_DIR`, or `sessions.storage`.
 
-```bash
-atomic -c                  # Continue most recent session
-atomic -r                  # Browse and select a session
-atomic --no-session        # No resumable session (released history may use disk; see Sessions)
-atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
-atomic --import <file>       # Import a format-4 JSONL export into session storage
-atomic --session-id <id>   # Use/create an exact project-local session ID
-atomic --name "Refactor"   # Set the session display name
-atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
-```
+Common session flags include `atomic -c` (continue latest in this directory), `atomic -r` (browse sessions), `atomic --session <id|prefix>`, `atomic --fork <id|prefix>`, `atomic --name "Refactor"`, `atomic --import <file>`, and `atomic --no-session`. See [CLI session options](/reference/cli#session-options) for the full list.
 
-When `--session-id` does not match an exact session in the current project, Atomic warns that no session was found and then creates the requested new session. Reusing an existing exact ID opens it without that warning.
+Useful interactive session commands:
 
-`--session` and `--fork` resolve exact custom IDs first within each search scope. UUID-backed sessions also support a unique, exactly 8-character hexadecimal prefix; ambiguous prefixes list their matching full UUIDs, while other UUID truncations are rejected after checking for exact custom IDs, including global IDs such as `cafe`. Current-project matches retain priority over the global session store. Repeated catalog entries for the same UUID count as one match.
-
-Useful session commands:
-
-- `/session` shows the current session file and ID.
-- `/tree` navigates the in-file session tree and can summarize abandoned branches.
+- `/session` shows the current session location, ID, and usage stats (`/session snapshot` shows worktree snapshots).
+- `/tree` navigates the session tree and can summarize abandoned branches.
 - `/fork` creates a new session from an earlier user message.
-- `/clone` duplicates the current active branch into a new session file.
-- `/compact [instructions]` clears the context window. The model then sees the system prompt and one message that says where the earlier conversation is in session history and what to recover first, followed by your instructions. With a compactor model configured, the compactor's output replaces the context instead.
+- `/clone` duplicates the current active branch into a new session.
+- `/compact [instructions]` clears the context window so the agent recovers needed context from session history (or compacts through a configured `compactionModel`).
 
-See [Sessions](/sessions) and [Compaction](/compaction) for details.
+See [Sessions](/sessions) and [Compaction](/compaction) for storage selection, ID matching, branching, and compaction details.
 
-## Context Files
+## Context files
 
-Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` at startup from:
+Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` from `~/.atomic/agent/`, ancestor directories, and the current directory. See [Project instructions](/getting-started/project-instructions) for discovery order and override rules. Disable context files for one run with `--no-context-files` or `-nc`.
 
-- `~/.atomic/agent/` for global instructions (legacy `~/.pi/agent/` also works)
-- parent directories, walking up from the current working directory
-- the current directory
+### System prompt files
 
-If a directory contains `AGENTS.override.md`, Atomic uses it instead of that directory's `AGENTS.md` or `CLAUDE.md`. Context files from other directories still layer normally.
+Replace the default system prompt with `.atomic/SYSTEM.md` (project) or `~/.atomic/agent/SYSTEM.md` (global). Append to the default prompt with `APPEND_SYSTEM.md` in either location.
 
-Use context files for project conventions, commands, safety rules, and preferences. Disable loading with `--no-context-files` or `-nc`.
+The default prompt instructs the agent to write self-describing code without unnecessary comments unless requested. Ask for comments directly in your prompt or add a standing rule in a context file or `APPEND_SYSTEM.md`.
 
-### System Prompt Files
+The agent recalls earlier sessions in this project through `history://` when you reference past work, tackle a similar task, or plan verification. Subagents can recall session history too, and with a shell tool the agent also searches commits, issues, and pull requests. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
-Replace the default system prompt with:
+## Exporting and sharing sessions
 
-- `.atomic/SYSTEM.md` for a project
-- `~/.atomic/agent/SYSTEM.md` globally
+Use `/export [file]` to write a session to HTML (default) or to format-4 `.jsonl` when the filename ends in `.jsonl`. In exported HTML, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages hidden in the terminal.
 
-Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
+`atomic --export <session.jsonl> [file]` renders an `Agent(...)` card for a single subagent launch on the selected branch, showing the prompt, tool calls, and answer saved in the receipt without opening the child's session. Background handoffs are labeled as handoffs rather than running children, and **Recorded arguments and result** shows the original record. Parallel launches and other extension tools keep their normal export format.
 
-The default prompt asks the agent to write self-describing code and not add code comments unless you ask for them or the task calls for them. To get comments, request them in your prompt (for example "add JSDoc to the exported functions"), or make it a standing rule in a context file or `APPEND_SYSTEM.md` (for example "Document every exported function with a JSDoc block"). The default guideline explicitly defers to those instructions, so no other configuration is needed.
+Use `/share` to upload a private GitHub gist with a shareable link that opens in `https://bastani.ai/session/` (override with `ATOMIC_SHARE_VIEWER_URL`).
 
-The agent remembers earlier work through `history://`: it recalls this project's past sessions and the preferences you stated in them when you refer to earlier work, when a task resembles one done before, or when planning verification and estimating effort. Subagents can recall session history too. With a shell tool, the agent also searches commits, issues, PRs and their comments for relevant prior work. See [Recalling earlier work](/sessions#recalling-earlier-work).
+Treat exported and shared sessions as sensitive. Transcripts can contain source code, file paths, and credentials; review a session before sharing it with anyone who has the link.
 
-## Exporting and Sharing Sessions
+## Design principles
 
-Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them.
+Atomic keeps the core CLI small and bundles first-party integrations for subagents, MCP, web access, and [Intercom](/intercom). For reusable multi-step procedures, write a [skill](/skills#skills-as-workflows).
 
-`atomic --export <session.jsonl> [file]` can show an `Agent(...)` card for a single subagent launch on the selected branch. Expand it to read the prompt, tool calls and answer saved in the receipt. A recorded background handoff is labeled as a handoff, not as a currently running child. Open **Recorded arguments and result** for the original record. The export never opens the child's session. Parallel launches, incomplete or ambiguous receipts, and other extension tools keep their usual export format.
+## Moved sections
 
-Use `/share` to upload a private GitHub gist with a shareable link. The link opens the session in Atomic's viewer at `https://bastani.ai/session/`; set `ATOMIC_SHARE_VIEWER_URL` to use your own viewer instead.
+CLI flags, commands, and environment variables moved to the [CLI reference](/reference/cli):
 
-Treat exported and shared sessions as sensitive: transcripts can contain source code, file paths, credentials, and other private data from your session. Review a session before sharing it, and only upload transcripts you are comfortable making accessible to anyone with the link.
+<a id="cli-reference" />
+<a id="package-commands" />
+<a id="credential-commands" />
+<a id="modes" />
+<a id="model-options" />
+<a id="session-options" />
+<a id="tool-options" />
+<a id="project-trust-options" />
+<a id="resource-options" />
+<a id="other-options" />
+<a id="file-arguments" />
+<a id="examples" />
+<a id="environment-variables" />
 
-## CLI Reference
-
-Moved to [CLI reference](/reference/cli#cli-reference).
-
-### Package Commands
-
-Moved to [CLI reference](/reference/cli#package-commands).
-
-### Credential Commands
-
-Moved to [CLI reference](/reference/cli#credential-commands).
-
-### Modes
-
-Moved to [CLI reference](/reference/cli#modes).
-
-### Model Options
-
-Moved to [CLI reference](/reference/cli#model-options).
-
-### Session Options
-
-Moved to [CLI reference](/reference/cli#session-options).
-
-### Tool Options
-
-Moved to [CLI reference](/reference/cli#tool-options).
-
-### Project Trust Options
-
-Moved to [CLI reference](/reference/cli#project-trust-options).
-
-### Resource Options
-
-Moved to [CLI reference](/reference/cli#resource-options).
-
-### Other Options
-
-Moved to [CLI reference](/reference/cli#other-options).
-
-### File Arguments
-
-Moved to [CLI reference](/reference/cli#file-arguments).
-
-### Examples
-
-Moved to [CLI reference](/reference/cli#examples).
-
-### Environment Variables
-
-Moved to [CLI reference](/reference/cli#environment-variables).
-
-## Design Principles
-
-Atomic keeps the core CLI small, while this distribution bundles first-party integrations for subagents, MCP, web access, and [Intercom](/intercom). For reusable procedures, write a [skill](/skills#skills-as-workflows).
-
-For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).
+- [CLI reference](/reference/cli#cli-reference), [Package commands](/reference/cli#package-commands), and [Credential commands](/reference/cli#credential-commands)
+- [Modes](/reference/cli#modes), [Model options](/reference/cli#model-options), and [Session options](/reference/cli#session-options)
+- [Tool options](/reference/cli#tool-options), [Project trust options](/reference/cli#project-trust-options), [Resource options](/reference/cli#resource-options), and [Other options](/reference/cli#other-options)
+- [File arguments](/reference/cli#file-arguments), [Examples](/reference/cli#examples), and [Environment variables](/reference/cli#environment-variables)

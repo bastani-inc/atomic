@@ -1,113 +1,85 @@
-> Atomic can create extensions. Ask it to build one for your use case.
+---
+title: Extensions
+description: Extend Atomic with TypeScript modules that register tools, commands, event handlers, and custom UI.
+---
 
 # Extensions
 
-Extensions are TypeScript modules that extend Atomic's behavior. They can subscribe to lifecycle events, register custom tools callable by the LLM, add commands, and more.
+Extensions are TypeScript modules that extend Atomic's behavior. They can subscribe to lifecycle events, register custom tools callable by the LLM, add commands, and render custom UI.
 
-> **Placement for /reload:** Put extensions in `~/.atomic/agent/extensions/` (global) or `.atomic/extensions/` (project-local) for auto-discovery; legacy `.pi` paths remain supported. Use `atomic -e ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`. `/reload` runs the current contents of each extension file and the local modules and JSON files it imports. That includes plain JavaScript (`.mjs`, `.cjs`, and `.js` that is ESM in a `"type": "module"` package or CommonJS): Atomic evaluates it through its own transform, as it does TypeScript, instead of leaving it to Node or Bun, which would keep the first version until the process exits. ESM keeps `import.meta.url`, strict mode, top-level await and imports of Node builtins and packages; CommonJS keeps `require`, `module.exports`, `__filename`, `__dirname` and sloppy mode. A package the extension imports by name resolves from the importing file as Node or Bun would, and only falls back to Atomic's own copy of a host package when none is installed. Packages imported by name, JavaScript and JSON under `node_modules` outside the extension's own package, and modules loaded through a `createRequire()` require still load once per process, so restart Atomic after editing those.
+## Reloading and startup behavior
 
-If `/reload` reports `Reload retiring cleanup failed`, its error includes the extension cleanup cause. The replacement extensions and updated settings remain active, and joined Intercom groups stay available. Fix the reported extension cleanup error before reloading again.
+Put extensions in `~/.atomic/agent/extensions/` (global) or `.atomic/extensions/` (project-local) for auto-discovery; legacy `.pi` paths remain supported. Use `atomic -e ./path.ts` for quick tests.
 
-If an optional extension fails to import or initialize during interactive startup or `/reload`, Atomic skips it and shows its path and the reason under `[Extension issues]` while keeping the session available. Fix the extension or its dependencies, then use `/reload` again. Print mode (`-p`) and standalone RPC mode (`--mode rpc`) instead report the named failure and exit with status 1, so scripts do not silently run without a requested extension. Required built-in failures and failed cleanup still stop startup.
+Auto-discovered extensions hot-reload with `/reload`. Atomic evaluates each extension file and the local modules and JSON files it imports through its own transform, including plain JavaScript (`.mjs`, `.cjs`, and `.js`). ESM keeps `import.meta.url`, strict mode, top-level await, and package or Node built-in imports. CommonJS keeps `require`, `module.exports`, `__filename`, `__dirname`, and sloppy mode.
 
-Legacy extensions can import the running host API from either `@mariozechner/pi-coding-agent` or `@earendil-works/pi-coding-agent`, including in release-archive installs; a separate pi installation is not required.
+Under Bun, extensions also load through Atomic's extension loader on the first load (not only on `/reload`). That keeps `typebox` and Atomic package imports pointing to Atomic's own copies right away and matches native `import.meta` values (including Windows backslashes). Because the loader reads runtime globals through `globalThis`, modules that declare a top-level `globalThis` binding cannot be loaded this way under Node or Bun.
 
-**Key capabilities:**
-- **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
-- **Event interception** - Block or modify tool calls, inject context, observe, cancel or replace compaction, and customize branch summaries
-- **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
-- **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
-- **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
-- **Session persistence** - Store state that survives restarts via `pi.appendEntry()`
-- **Reload-surviving state** - Keep in-memory objects alive across `/reload` via `sessionScopedExtensionState()`
-- **Custom rendering** - Control how tool calls/results and messages appear in TUI
+Packages imported by name resolve from the importing file as Node or Bun would, falling back to Atomic's copy of a host package only when none is installed. Named packages, files under `node_modules` outside the extension's own package, and modules loaded through `createRequire()` load once per process, so restart Atomic after editing them.
 
-**Example use cases:**
-- Permission gates (confirm before `rm -rf`, `sudo`, etc.)
-- Git checkpointing (stash at each turn, restore on branch)
-- Path protection (block writes to `.env`, `node_modules/`)
-- Compaction policies (cancel compaction or supply your own replacement text)
-- Conversation summaries (see `summarize.ts` example)
-- Interactive tools (questions, wizards, custom dialogs)
-- Stateful tools (todo lists, connection pools)
-- External integrations (file watchers, webhooks, CI triggers)
-- Games while you wait (see `snake.ts` example)
+If `/reload` reports `Reload retiring cleanup failed`, the error includes the extension cleanup cause. The replacement extensions, updated settings, and joined Intercom groups stay active. Fix the cleanup error before reloading again.
 
-See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions) for working implementations.
+If an optional extension fails to import or initialize during interactive startup or `/reload`, Atomic skips it and shows its path and reason under `[Extension issues]` while keeping the session usable. Fix the extension or its dependencies and run `/reload`. Print mode (`-p`) and standalone RPC mode (`--mode rpc`) report the named failure and exit with status 1 instead so scripts do not silently run without a requested extension. Required built-in failures and failed cleanup stop startup in every mode.
 
-Atomic also ships an environment-gated [Herdr reporter](/herdr). It reports the parent session’s activity, running tasks, and approval requests in its pane. It defers to loaded community or legacy reporters and can be disabled with `herdr.enabled` in settings. See [Herdr setup](/herdr#setup) for the supported version and [status indicators](/herdr#status-indicators) for reported activity.
+Legacy extensions can import the running host API from `@mariozechner/pi-coding-agent` or `@earendil-works/pi-coding-agent`, including in release-archive installs, without a separate installation.
+
+Key capabilities:
+
+- **Custom tools.** Register tools the LLM can call via `pi.registerTool()`.
+- **Event interception.** Block or modify tool calls, inject context, observe or replace compaction, and customize branch summaries.
+- **User interaction.** Prompt users via `ctx.ui` (`select`, `confirm`, `input`, `editor`, `notify`).
+- **Custom UI components.** Render interactive TUI components with keyboard input via `ctx.ui.custom()`.
+- **Custom commands.** Register slash commands such as `/mycommand` via `pi.registerCommand()`.
+- **Session persistence.** Store durable state that survives restarts via `pi.appendEntry()`.
+- **Reload-surviving state.** Keep in-memory objects alive across `/reload` via `sessionScopedExtensionState()`.
+- **Custom rendering.** Control how tool calls, tool results, and custom messages appear in the TUI.
+
+Common use cases include permission gates, git checkpointing, path protection, compaction policies, conversation summaries (`summarize.ts`), interactive wizards, stateful tools, webhooks or file watchers, and waiting-time games (`snake.ts`). See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions) for working implementations.
+
+Atomic also ships an environment-gated [Herdr reporter](/herdr) that reports the parent session's activity, running tasks, and approval requests in its pane. It defers to loaded community or legacy reporters and can be disabled with `herdr.enabled` in settings. See [Herdr setup](/herdr#setup) and [status indicators](/herdr#status-indicators).
 
 ## Where to go next
 
-Extensions are TypeScript modules that add tools, commands, event handlers, and custom UI. Read this page for startup behavior, locations, imports, and a first extension, then continue:
+Read this page for startup behavior, locations, imports, and a first extension, then continue:
 
-- [Writing extensions](/extensions/authoring) — build one, manage its state, and register custom tools.
-- [Extension events](/extensions/events) — every event, its payload, and its return contract.
-- [Extension UI](/extensions/ui) — render custom UI from an extension.
-- [Extension API reference](/extensions/api-reference) — `ExtensionContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and error handling.
-- [Extension examples](/extensions/examples) — runnable examples shipped with Atomic.
-- [Security](/security) — the project-trust boundary that decides whether a project's extensions load, and what an extension can reach once it does. Read this before installing an extension you did not write.
+- [Writing extensions](/extensions/authoring). Build an extension, manage its state, and register custom tools.
+- [Extension events](/extensions/events). Look up every event, its payload, and its return contract.
+- [Extension UI](/extensions/ui). Render dialogs, widgets, and custom UI components.
+- [Extension API reference](/extensions/api-reference). Reference `ExtensionContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and error handling.
+- [Extension examples](/extensions/examples). Browse runnable examples shipped with Atomic.
+- [Security](/security). Review the project-trust boundary that controls whether a project's extensions load.
 
-If an extension is heavier than you need, compare the lighter mechanisms on [Build with Atomic](/build).
-
-## Table of Contents
-
-- [Startup and lazy discovery](/extensions#startup-and-lazy-discovery)
-- [Interactive callback isolation](/extensions#interactive-callback-isolation)
-- [Quick Start](/extensions#quick-start)
-- [Extension Locations](/extensions#extension-locations)
-- [Available Imports](/extensions#available-imports)
-- [Writing an Extension](/extensions/authoring#writing-an-extension)
-  - [Extension Styles](/extensions/authoring#extension-styles)
-- [Events](/extensions/events#events)
-  - [Lifecycle Overview](/extensions/events#lifecycle-overview)
-  - [Resource Events](/extensions/events#resource-events)
-  - [Session Events](/extensions/events#session-events)
-  - [Agent Events](/extensions/events#agent-events)
-  - [Model Events](/extensions/events#model-events)
-  - [Tool Events](/extensions/events#tool-events)
-- [ExtensionContext](/extensions/api-reference#extensioncontext)
-- [ExtensionCommandContext](/extensions/api-reference#extensioncommandcontext)
-- [ExtensionAPI Methods](/extensions/api-reference#extensionapi-methods)
-- [State Management](/extensions/authoring#state-management)
-  - [Session-scoped in-memory state](/extensions/authoring#session-scoped-in-memory-state)
-- [Custom Tools](/extensions/authoring#custom-tools)
-- [Custom UI](/extensions/ui#custom-ui)
-- [Error Handling](/extensions/api-reference#error-handling)
-- [Mode Behavior](/extensions#mode-behavior)
-- [Examples Reference](/extensions/examples#examples-reference)
+If an extension is heavier than you need, compare lighter options on [Build with Atomic](/build).
 
 ## Startup and lazy discovery
 
 Built-in MCP, subagent, web-access, and Intercom commands are available at startup. Their first use may wait for discovery or connection.
 
-Commands still wait for the resources they need before returning results. These include MCP tool calls and explicit reloads.
-
-Discovery scope depends on the operation:
+Commands wait for the resources they need before returning results, including MCP tool calls and explicit reloads. Discovery scope depends on the operation:
 
 - Enabled MCP servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with direct tools.
 - Codemode waits for the MCP namespaces a script names; `searchTools()` and `ALL_TOOLS` require all enabled servers. Tool search and resource tools also wait for discovery.
 - `/mcp` provides server management; `/mcp login`, `/mcp logout`, and `/mcp reconnect` accept an optional server name. Completion lists actions and eligible servers.
-- Autocomplete falls back to current/admin completions when lazy discovery fails.
+- Autocomplete falls back to current and administrative completions when lazy discovery fails.
 
-Failed connections can be retried with `/mcp reconnect`; dropped MCP connections reconnect on the next call. Web-access batches with no successful items report a tool error; partial successes retain their completed items.
+Failed connections can be retried with `/mcp reconnect`, and dropped MCP connections reconnect on the next call. Web-access batches with no successful items report a tool error; partial successes keep their completed items.
 
-MCP `timeout` is an inactivity limit in seconds, not a total deadline: progress resets it. The default is 60 seconds. See [MCP servers](/mcp-servers) for native configuration, exposure, resources, OAuth, and shell commands.
+MCP `timeout` is an inactivity limit in seconds (default 60 seconds), reset by progress rather than a fixed total deadline. See [MCP servers](/mcp-servers) for configuration, exposure, resources, OAuth, and shell commands.
 
 ## Interactive callback isolation
 
-Interactive sessions isolate extension callbacks from terminal input handling, so a busy callback does not stop keyboard handling or spinners.
+Interactive sessions isolate extension callbacks from terminal input handling so a busy callback does not block keyboard input or spinners.
 
-Escape requests the engine's own cooperative cancellation and waits for it, for as long as the engine takes. There is no deadline on that wait, and Escape never terminates or replaces the engine, so an interrupt cannot discard in-flight tool state.
+Escape requests cooperative cancellation from the engine and waits as long as the engine takes. There is no deadline on that wait, and Escape never terminates or replaces the engine, so an interrupt cannot discard in-flight tool state.
 
-Ctrl+C is the host's escape hatch, and it applies in two distinct situations.
+Ctrl+C is the host's escape hatch in two situations.
 
-The first is a remote custom UI. While an engine-owned `ctx.ui.custom()` component or overlay holds input, every key is forwarded to the engine child, so a component that never resolves would trap Ctrl+C too. Ownership of the key is declared per mount:
+First, while an engine-owned `ctx.ui.custom()` component or overlay holds input, every key goes to the engine child. Ownership of Ctrl+C is declared per mount:
 
-- A component mounted with `handlesCtrlC: true` receives the press and keeps its own Skip, Close, or cancel binding. If that same component is still holding input on the next press, that press closes it, so a declared component cannot trap the keyboard either.
-- A component that did not declare it is closed by the first press, through the ordinary close path: its `ctx.ui.custom()` promise resolves with `undefined`, the child is told the component closed, the editor comes back, and the engine keeps running — including any other component that generation has mounted below or above this one.
+- A component mounted with `handlesCtrlC: true` receives the first Ctrl+C press and keeps its own skip, close, or cancel binding. If that same component still holds input on the next Ctrl+C press, the host closes it so no component can trap the keyboard.
+- A component without `handlesCtrlC: true` is closed on the first Ctrl+C press through the ordinary close path: its `ctx.ui.custom()` promise resolves with `undefined`, the editor returns, and the engine keeps running (along with any other mounted component).
 
-Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
+Declare `handlesCtrlC: true` whenever your component's hint row offers `ctrl+c`. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays keep Ctrl+C as their own cancel.
 
 ```typescript
 await ctx.ui.custom<string | undefined>(
@@ -116,25 +88,25 @@ await ctx.ui.custom<string | undefined>(
 );
 ```
 
-Both safety keys are matched by physical identity rather than by the configured `app.clear` action, so rebinding `app.clear` — even to Escape — can neither route Escape into a stop/restart branch nor take the host route away from Ctrl+C. A configured `app.clear` on any other key keeps its ordinary editor-clear behavior, and key-release events never act.
+Both safety keys match by physical key identity rather than the configured `app.clear` action, so rebinding `app.clear` (even to Escape) cannot route Escape into engine replacement or disable Ctrl+C recovery. Rebinding `app.clear` to another key keeps normal editor clearing, and key-release events never act.
 
-If the engine is unresponsive, an abort or replacement has waited over one second, or replacement failed, Ctrl+C terminates and replaces it. This takes precedence over custom UI bindings. A failed replacement remains recoverable with another Ctrl+C; Atomic does not keep retrying automatically.
+Second, if the engine is unresponsive, an abort or replacement has waited over one second, or replacement failed, Ctrl+C terminates and replaces the engine. This takes precedence over custom UI bindings. A failed replacement remains recoverable with another Ctrl+C; Atomic does not keep retrying automatically.
 
-After an unexpected engine stop, Atomic closes its custom UI and makes one automatic restart attempt. A restart that succeeds shows no message, unless messages were still queued: the main chat's queued messages come back into the prompt, steering first, with the warning `Engine restarted; 2 queued messages weren't sent and are back in the editor`, and a warning lists each subagent's queued messages that weren't sent (`Engine restarted; 2 queued messages to <agent> weren't sent:`). None of them is sent twice. With debug logging on, the restart's cause is written to the debug log. A failed restart leaves the editor usable and reports `Interactive engine restart failed: …`. A submission that never started returns as an exact draft, including pasted content and queued submissions in order. Accepted work is not offered for automatic retry.
+After an unexpected engine stop, Atomic closes custom UI and attempts one automatic restart. A clean restart prints nothing unless messages were still queued.
 
-If a saved tool call has no recorded result, reopening the session shows that its result is unavailable. **Inspect files or external systems before retrying: the tool may already have had side effects.**
+If messages were queued, main-chat messages return to the editor (steering first) with the warning `Engine restarted; 2 queued messages weren't sent and are back in the editor`, and subagent messages print `Engine restarted; 2 queued messages to <agent> weren't sent:`. None are sent twice, and unstarted submissions return as exact drafts while accepted work is not retried automatically. With debug logging enabled, the restart cause goes to the debug log. A failed restart leaves the editor usable and reports `Interactive engine restart failed: ...`.
 
-When spawning processes from an extension, pass an explicit `env` derived from `process.env`. Engine-only bootstrap values are not exposed in that environment.
+If a saved tool call has no recorded result, reopening the session marks its result unavailable. **Inspect files or external systems before retrying because the tool may already have had side effects.**
 
-Dialogs and `ctx.ui.custom()` components are proxied to the host as rendered lines with asynchronous input forwarding. Custom UI results must be JSON-safe. APIs that require a synchronous callback in the terminal process—raw `onTerminalInput` transforms, synchronous `getEditorText`, custom editor factories, autocomplete wrappers, component-factory widgets, and custom header/footer factories—are unavailable in isolated interactive mode and produce a warning rather than executing extension code in the host. Print and public RPC modes retain their existing execution model.
+When spawning processes from an extension, pass an explicit `env` derived from `process.env`. Engine-only bootstrap values are not exposed there.
 
-Use `ctx.ui.hostSessionPicker(request)` for a session-style picker with responsive local navigation and search. Supply JSON-safe `HostSessionPickerRow` values: `SessionInfo` with `createdAt` and `modifiedAt` in epoch milliseconds.
+Dialogs, `ctx.ui.custom()` components, and component-factory widgets run in the isolated engine child and proxy rendered lines to the host with asynchronous input forwarding. Custom UI results must be JSON-safe. APIs that require a synchronous callback in the terminal host (raw `onTerminalInput` transforms, synchronous `getEditorText`, custom editor factories, autocomplete wrappers, and custom header or footer factories) are unavailable in isolated interactive mode and produce a warning instead of running extension code in the host. Print and public RPC modes keep their own execution models.
 
-The returned handle provides `result`, `update(rows)`, `error(message)`, and `close()`. `result` resolves to the selected `path`, or `undefined` on cancel. Your `onDelete(path)` callback owns deletion; the row remains until you call `update` or `error`. The API works in both interactive modes and is absent in print and headless RPC. See [Host-native session picker](/tui/reference#host-native-session-picker).
+Use `ctx.ui.hostSessionPicker(request)` for a session-style picker with local navigation and search. Pass JSON-safe `HostSessionPickerRow` values (`SessionInfo` with `createdAt` and `modifiedAt` in epoch milliseconds). The returned handle provides `result`, `update(rows)`, `error(message)`, and `close()`. `result` resolves to the selected `path` or `undefined` on cancel, and your `onDelete(path)` callback owns deletion. This API works in both interactive modes and is absent in print and headless RPC. See [Host-native session picker](/tui/reference#host-native-session-picker).
 
-For structured forms, use `ctx.ui.hostInputForm(request)`. Supply JSON-safe descriptors of type `string`, `text`, `number`, `integer`, `boolean`, or `select`, each with a raw `initialValue`. The call resolves to a raw string record or `undefined` on cancellation. It rejects if the host cannot read the form, with "The host could not read this input form." Catch this error as shown in the linked reference example. Editing, navigation, validation, and configured keybindings work locally in both interactive modes. Print and headless RPC omit this optional API. See [Host-native input form](/tui/reference#host-native-input-form).
+For structured forms, use `ctx.ui.hostInputForm(request)` with JSON-safe descriptors (`string`, `text`, `number`, `integer`, `boolean`, or `select`) and raw `initialValue` fields. It resolves to a raw string record or `undefined` on cancel, and rejects with `"The host could not read this input form."` if the host cannot read the form. Editing, navigation, validation, and configured keybindings run locally in both interactive modes. Print and headless RPC omit this API. See [Host-native input form](/tui/reference#host-native-input-form).
 
-## Quick Start
+## Quick start
 
 Create `~/.atomic/agent/extensions/my-extension.ts`:
 
@@ -181,15 +153,15 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Test with `--extension` (or `-e`) flag:
+Test with `--extension` (or `-e`):
 
 ```bash
 atomic -e ./my-extension.ts
 ```
 
-## Extension Locations
+## Extension locations
 
-> **Security:** Extensions run with your full system permissions and can execute arbitrary code. Only install from sources you trust.
+> **Security:** Extensions run with your full system permissions and can execute arbitrary code. Install only from sources you trust.
 
 Extensions are auto-discovered from:
 
@@ -197,14 +169,14 @@ Extensions are auto-discovered from:
 |----------|-------|
 | `~/.atomic/agent/extensions/*.ts` | Global (all projects) |
 | `~/.atomic/agent/extensions/*/index.ts` | Global (subdirectory) |
-| `.atomic/extensions/*.ts` | Project-local |
-| `.atomic/extensions/*/index.ts` | Project-local (subdirectory) |
+| `.atomic/extensions/*.ts` | Project-local (trusted projects only) |
+| `.atomic/extensions/*/index.ts` | Project-local subdirectory (trusted projects only) |
 
-Atomic also discovers extensions and package resources inherited from legacy `~/.pi/agent` and `.pi` configuration. When an inherited Pi extension uses the exact same tool, command, prompt, flag, or shortcut name as an extension bundled with Atomic, Atomic keeps the bundled registration and ignores only that conflicting inherited registration. Other resources from the inherited extension remain available. Interactive startup reports all such overlaps in one yellow summary; print and RPC modes apply the same winners without changing the Pi settings or package files.
+Atomic also discovers extensions and package resources inherited from legacy `~/.pi/agent` and `.pi` configuration. When an inherited extension uses the exact same tool, command, prompt, flag, or shortcut name as a bundled Atomic extension, Atomic keeps the bundled registration and ignores only the conflicting inherited registration while keeping its other resources. Interactive startup reports those overlaps in one yellow summary; print and RPC modes apply the same winners without editing legacy settings or package files.
 
-This compatibility rule applies only to inherited Pi resources. Extensions configured through `.atomic` or passed explicitly with `--extension` retain the normal intentional override and load-order behavior described below.
+This compatibility rule applies only to inherited legacy resources. Extensions configured through `.atomic` or passed with `--extension` keep the normal override and load-order rules.
 
-Additional paths via `settings.json`:
+Configure additional paths in `settings.json`:
 
 ```json
 {
@@ -221,553 +193,197 @@ Additional paths via `settings.json`:
 
 ### Built-in extension resources
 
-Atomic exposes `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search` as extension resources, not filesystem paths. Disable one in the `extensions` setting, for example:
+Atomic exposes `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search` as extension resources rather than filesystem paths. Disable one in `settings.json`:
 
 ```json
 { "extensions": ["-builtin:codemode"] }
 ```
 
-A trusted project `"+builtin:codemode"` entry can override a global exclusion. Explicit loading also works with `--no-extensions`: `atomic --no-extensions -e builtin:codemode --tools read,codemode`. Loading the resource registers the tool. Codemode is in the default selection; a replacement tool list must name it. Tool search is opt-in.
+A trusted project `"+builtin:codemode"` entry can override a global exclusion. Explicit loading also works with `--no-extensions`: `atomic --no-extensions -e builtin:codemode --tools read,codemode`. Loading the resource registers the tool. Codemode is in the default selection, so a replacement tool list must name it; tool search is opt-in.
 
-Codemode and tool search are replaceable: an extension that registers the same tool, command, or flag can take over. Atomic reports the replacement and names its owner. Disable that extension through `atomic config` when you want the built-in implementation instead.
+Codemode and tool search are replaceable: an extension that registers the same tool, command, or flag can take over, and Atomic reports the replacement and its owner. Disable that extension through `atomic config` when you want the built-in implementation instead.
 
-These symbolic names do not replace Atomic's bundled MCP, subagent, web-access, or Intercom resources. There are no corresponding `builtin:mcp` or `builtin:subagents` aliases. Keep using the existing package controls and MCP configuration.
+These symbolic names do not replace Atomic's bundled MCP, subagent, web-access, or Intercom packages. There are no `builtin:mcp` or `builtin:subagents` aliases; keep using package settings and MCP configuration.
 
 To share extensions via npm or git as Atomic packages, see [Atomic packages](/packages).
 
-## Available Imports
+## Available imports
 
 | Package | Purpose |
 |---------|---------|
-| `@bastani/atomic` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
-| `typebox` | Schema definitions for tool parameters. Every `typebox` import, subpaths such as `typebox/format` included, gets Atomic's own copy, so formats registered with `Format.Set()` apply to tool validation |
-| [`@bastani/atomic-ai`](/libraries/ai) | AI utilities (`StringEnum` for Google-compatible enums) |
+| `@bastani/atomic` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) and helpers such as `StringEnum` |
+| `typebox` | Schema definitions for tool parameters. Direct `typebox` imports (including subpaths such as `typebox/format`) resolve to Atomic's copy so formats registered with `Format.Set()` apply to tool validation |
+| [`@bastani/atomic-ai`](/libraries/ai) | AI utilities (also exports `StringEnum`), provider APIs, and image generation helpers |
 | [`@bastani/atomic-tui`](/libraries/tui) | TUI components for custom rendering |
 | [`@bastani/atomic-agent-core`](/libraries/agent-core) | Agent loop types and helpers |
 | [`@bastani/atomic-codemode`](/libraries/codemode) | Codemode sandbox and declaration helpers |
 | [`@bastani/atomic-schema`](/libraries/schema) | JSON Schema builders and validation |
 | [`@bastani/atomic-telemetry`](/libraries/telemetry) | Telemetry contracts |
 
-Atomic maintains these packages as its own forks of pi's packages; [Libraries](/libraries) documents each one. Extensions written for pi keep working: the old names `@earendil-works/pi-ai`, `pi-tui`, `pi-agent-core`, `pi-codemode`, `pi-schema` and `pi-telemetry`, their `@mariozechner/pi-*` equivalents, and `@bastani/pi-ai` resolve to the same modules, including their subpaths. New extensions should import the `@bastani/atomic-*` names.
+Atomic maintains these packages directly; [Libraries](/libraries) documents each one. Legacy extension names (`@earendil-works/pi-*`, `@mariozechner/pi-*`, and `@bastani/pi-ai`) resolve to the same modules, including their subpaths. New extensions should import the `@bastani/atomic-*` names.
 
-Registry dependencies work too. Add a `package.json` next to your extension (or in a parent directory), then install dependencies with Bun:
+**Sharing TypeBox from dependencies and SDK apps.** Direct `typebox` imports inside an extension file are mapped to Atomic's copy automatically. If a separate package your extension depends on (or an SDK application) registers custom TypeBox formats, settings, or locales that must reach Atomic's tool validation, import from `@bastani/atomic/typebox` and its subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) rather than from a separate `typebox` dependency.
+
+Registry dependencies work too. Add a `package.json` next to your extension (or in a parent directory) and install dependencies with npm (or pnpm or Bun):
 
 ```bash
-bun install
+npm install
 ```
 
-Imports from `node_modules/` are resolved automatically.
+Imports from `node_modules/` resolve automatically.
 
-For distributed Atomic packages installed with `atomic install` (npm or git), runtime deps must be in `dependencies`. Package installation uses production dependency installs by default, so `devDependencies` are not available at runtime; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers.
+For distributed Atomic packages installed with `atomic install` (npm or git), declare runtime dependencies in `dependencies`. Package installation installs production dependencies by default, so `devDependencies` are not available at runtime. When `npmCommand` is configured, git packages run a plain `install` for wrapper compatibility.
 
 ### Tool parameter schemas
 
-A tool's `parameters` can be a TypeBox schema or any plain JSON Schema object. Atomic validates the model's arguments against it, after coercing loosely typed values (for example a numeric string to a number, `"true"` to `true`, `null` in an optional property dropped):
+A tool's `parameters` can be a TypeBox schema or any plain JSON Schema object. Atomic validates the model's arguments against it after coercing loosely typed values (such as a numeric string to a number, `"true"` to `true`, or dropping `null` in an optional property):
 
-- **TypeBox schemas** are converted and checked by TypeBox, so TypeBox features outside JSON Schema, such as `Type.Refine()` and formats registered with `Format.Set()`, apply. Validation errors use TypeBox's messages.
-- **Plain JSON Schema** (for example an MCP server's tool schema, or a schema from `@bastani/atomic-schema`'s builders) is coerced and checked by `@bastani/atomic-schema`. A single value is also wrapped into a one-item array, the `url` and `json-pointer-uri-fragment` formats are checked, and a `$ref` that names nothing rejects only the argument at its place instead of every call. Validation errors use `@bastani/atomic-schema`'s messages, such as `- path: missing` or `- limit: expected number, got string`.
+- **TypeBox schemas** are converted and checked by TypeBox, so TypeBox features outside JSON Schema (such as `Type.Refine()` and formats registered with `Format.Set()`) apply and validation errors use TypeBox's messages.
+- **Plain JSON Schema** (such as an MCP server's tool schema or a schema built with `@bastani/atomic-schema`) is coerced and checked by `@bastani/atomic-schema`. A single value is wrapped into a one-item array when an array is expected, the `url` and `json-pointer-uri-fragment` formats are checked, and an unresolved `$ref` rejects only the argument at that field instead of every call. Validation errors use `@bastani/atomic-schema`'s messages, such as `- path: missing` or `- limit: expected number, got string`.
 
-Node.js built-ins (`node:fs`, `node:path`, etc.) are also available.
+Node.js built-ins (`node:fs`, `node:path`, and the rest of `node:*`) are also available.
 
-## Writing an Extension
+## Mode behavior
 
-Moved to [Writing extensions](/extensions/authoring#writing-an-extension).
-
-### Async factory functions
-
-Moved to [Writing extensions](/extensions/authoring#async-factory-functions).
-
-### Long-lived resources and shutdown
-
-Moved to [Writing extensions](/extensions/authoring#long-lived-resources-and-shutdown).
-
-### Extension Styles
-
-Moved to [Writing extensions](/extensions/authoring#extension-styles).
-
-## Events
-
-Moved to [Extension events](/extensions/events#events).
-
-### Lifecycle Overview
-
-Moved to [Extension events](/extensions/events#lifecycle-overview).
-
-### Startup Events
-
-Moved to [Extension events](/extensions/events#startup-events).
-
-#### project_trust
-
-Moved to [Extension events](/extensions/events#project_trust).
-
-### Resource Events
-
-Moved to [Extension events](/extensions/events#resource-events).
-
-#### resources_discover
-
-Moved to [Extension events](/extensions/events#resources_discover).
-
-### Session Events
-
-Moved to [Extension events](/extensions/events#session-events).
-
-#### session_start
-
-Moved to [Extension events](/extensions/events#session_start).
-
-#### session_info_changed
-
-Moved to [Extension events](/extensions/events#session_info_changed).
-
-#### session_before_switch
-
-Moved to [Extension events](/extensions/events#session_before_switch).
-
-#### session_before_fork
-
-Moved to [Extension events](/extensions/events#session_before_fork).
-
-#### session_before_compact / session_compact / session_compact_failed
-
-Moved to [Extension events](/extensions/events#session_before_compact-/-session_compact-/-session_compact_failed).
-
-#### session_before_tree / session_tree
-
-Moved to [Extension events](/extensions/events#session_before_tree-/-session_tree).
-
-#### session_shutdown
-
-Moved to [Extension events](/extensions/events#session_shutdown).
-
-### Agent Events
-
-Moved to [Extension events](/extensions/events#agent-events).
-
-#### before_agent_start
-
-Moved to [Extension events](/extensions/events#before_agent_start).
-
-#### agent_start / agent_end / agent_before_settle / agent_settled
-
-Moved to [Extension events](/extensions/events#agent_start-/-agent_end-/-agent_before_settle-/-agent_settled).
-
-#### ui_prompt_start / ui_prompt_end
-
-Moved to [Extension events](/extensions/events#ui_prompt_start-/-ui_prompt_end).
-
-#### turn_start / turn_end
-
-Moved to [Extension events](/extensions/events#turn_start-/-turn_end).
-
-#### message_start / message_update / message_end
-
-Moved to [Extension events](/extensions/events#message_start-/-message_update-/-message_end).
-
-#### tool_execution_start / tool_execution_update / tool_execution_end
-
-Moved to [Extension events](/extensions/events#tool_execution_start-/-tool_execution_update-/-tool_execution_end).
-
-#### context
-
-Moved to [Extension events](/extensions/events#context).
-
-#### context_with_system
-
-Moved to [Extension events](/extensions/events#context_with_system).
-
-#### before_provider_headers
-
-Moved to [Extension events](/extensions/events#before_provider_headers).
-
-#### before_provider_request
-
-Moved to [Extension events](/extensions/events#before_provider_request).
-
-#### after_provider_response
-
-Moved to [Extension events](/extensions/events#after_provider_response).
-
-### Model Events
-
-Moved to [Extension events](/extensions/events#model-events).
-
-#### model_select
-
-Moved to [Extension events](/extensions/events#model_select).
-
-#### thinking_level_select
-
-Moved to [Extension events](/extensions/events#thinking_level_select).
-
-### Tool Events
-
-Moved to [Extension events](/extensions/events#tool-events).
-
-#### tool_call
-
-Moved to [Extension events](/extensions/events#tool_call).
-
-#### Typing custom tool input
-
-Moved to [Extension events](/extensions/events#typing-custom-tool-input).
-
-#### tool_result
-
-Moved to [Extension events](/extensions/events#tool_result).
-
-### User Bash Events
-
-Moved to [Extension events](/extensions/events#user-bash-events).
-
-#### user_bash
-
-Moved to [Extension events](/extensions/events#user_bash).
-
-### Input Events
-
-Moved to [Extension events](/extensions/events#input-events).
-
-#### input
-
-Moved to [Extension events](/extensions/events#input).
-
-## ExtensionContext
-
-Moved to [Extension API reference](/extensions/api-reference#extensioncontext).
-
-### ctx.ui
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-ui).
-
-### ctx.hasUI
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-hasui).
-
-### ctx.cwd
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-cwd).
-
-### ctx.isProjectTrusted()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-isprojecttrusted).
-
-### ctx.sessionManager
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-sessionmanager).
-
-### ctx.modelRegistry / ctx.model / ctx.scopedModels
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels).
-
-### ctx.signal
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-signal).
-
-### ctx.isIdle() / ctx.abort() / ctx.hasPendingMessages()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-isidle-/-ctx-abort-/-ctx-haspendingmessages).
-
-### ctx.isProjectTrusted()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-isprojecttrusted-2).
-
-### ctx.shutdown()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-shutdown).
-
-### ctx.getContextUsage()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-getcontextusage).
-
-### ctx.compact()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-compact).
-
-### ctx.getSystemPrompt()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-getsystemprompt).
-
-### ctx.getSkillCatalog()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-getskillcatalog).
-
-## ExtensionCommandContext
-
-Moved to [Extension API reference](/extensions/api-reference#extensioncommandcontext).
-
-### ctx.waitForIdle()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-waitforidle).
-
-### ctx.newSession(options?)
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-newsession-options).
-
-### ctx.fork(entryId, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-fork-entryid-options).
-
-### ctx.navigateTree(targetId, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-navigatetree-targetid-options).
-
-### ctx.switchSession(sessionId, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-switchsession-sessionid-options).
-
-### Session replacement lifecycle and footguns
-
-Moved to [Extension API reference](/extensions/api-reference#session-replacement-lifecycle-and-footguns).
-
-### ctx.reload()
-
-Moved to [Extension API reference](/extensions/api-reference#ctx-reload).
-
-## ExtensionAPI Methods
-
-Moved to [Extension API reference](/extensions/api-reference#extensionapi-methods).
-
-### pi.on(event, handler)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-on-event-handler).
-
-### pi.registerTool(definition)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registertool-definition).
-
-A tool that orchestrates other tools can adjust what the model sees with `prepareLoadout(loadout)`. The hook receives declared, callable, and registered tools, with `getExposure()`, `getNamespace()`, and `getPromptGuidelines()`. Return replacement `descriptions` or `hiddenDeclarations` to hide active tools' declarations while keeping them callable. The default system prompt omits hidden tools from its tool list and rules, and names no tool in the skills hint when the file reader is hidden. The orchestrating tool should present those guidelines itself, as `codemode` does.
-
-#### Built-in tool prompt contributions
-
-Moved to [Extension API reference](/extensions/api-reference#built-in-tool-prompt-contributions).
-
-### pi.sendMessage(message, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-sendmessage-message-options).
-
-### pi.sendMessages(messages, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-sendmessages-messages-options).
-
-### pi.sendUserMessage(content, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-sendusermessage-content-options).
-
-### pi.appendEntry(customType, data?)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-appendentry-customtype-data).
-
-### pi.registerEntryRenderer(customType, renderer)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registerentryrenderer-customtype-renderer).
-
-### pi.setSessionName(name)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-setsessionname-name).
-
-### pi.getSessionName()
-
-Moved to [Extension API reference](/extensions/api-reference#pi-getsessionname).
-
-### pi.setLabel(entryId, label)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-setlabel-entryid-label).
-
-### pi.registerCommand(name, options)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registercommand-name-options).
-
-### pi.getCommands()
-
-Moved to [Extension API reference](/extensions/api-reference#pi-getcommands).
-
-### pi.registerMessageRenderer(customType, renderer)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registermessagerenderer-customtype-renderer).
-
-### pi.registerMarkdownTransformer(transformer)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registermarkdowntransformer-transformer).
-
-### pi.registerShortcut(shortcut, options)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registershortcut-shortcut-options).
-
-### pi.registerFlag(name, options)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registerflag-name-options).
-
-### pi.registerAgentPanelSource(source)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registeragentpanelsource-source).
-
-### pi.exec(command, args, options?)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-exec-command-args-options).
-
-### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-getactivetools-/-pi-getalltools-/-pi-setactivetools-names).
-
-### pi.setModel(model)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-setmodel-model).
-
-### pi.getThinkingLevel() / pi.setThinkingLevel(level)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-getthinkinglevel-/-pi-setthinkinglevel-level).
-
-### pi.events
-
-Moved to [Extension API reference](/extensions/api-reference#pi-events).
-
-### Native providers
-
-Moved to [Extension API reference](/extensions/api-reference#native-providers).
-
-### pi.registerProvider(name, config)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-registerprovider-name-config).
-
-### pi.unregisterProvider(name)
-
-Moved to [Extension API reference](/extensions/api-reference#pi-unregisterprovider-name).
-
-### pi.registerMcpServer(name, config)
-
-Contribute an MCP server computed at runtime from the factory or `session_start`, using the native `mcpServers` entry shape. Registered servers connect like file-configured servers and appear in `/mcp` with the extension as their source. File-configured servers take precedence; enabled-state and exposure changes to registered servers apply only to the session. Shell `atomic mcp` commands do not load extensions. Provider-token authentication is allowed for extension registrations and global configuration, but not project configuration or package manifests. See [MCP servers](/mcp-servers) and [Extension API reference](/extensions/api-reference#pi-registermcpserver-name-config).
-
-## State Management
-
-Moved to [Writing extensions](/extensions/authoring#state-management).
-
-### Session-scoped in-memory state
-
-Moved to [Writing extensions](/extensions/authoring#session-scoped-in-memory-state).
-
-## Custom Tools
-
-Moved to [Writing extensions](/extensions/authoring#custom-tools).
-
-### Tool Definition
-
-Moved to [Writing extensions](/extensions/authoring#tool-definition).
-
-#### Constrained sampling
-
-Moved to [Writing extensions](/extensions/authoring#constrained-sampling).
-
-### Fireworks deferred tool loading
-
-Moved to [Writing extensions](/extensions/authoring#fireworks-deferred-tool-loading).
-
-### Overriding Built-in Tools
-
-Moved to [Writing extensions](/extensions/authoring#overriding-built-in-tools).
-
-### Remote Execution
-
-Moved to [Writing extensions](/extensions/authoring#remote-execution).
-
-### Output Truncation
-
-Moved to [Writing extensions](/extensions/authoring#output-truncation).
-
-### Multiple Tools
-
-Moved to [Writing extensions](/extensions/authoring#multiple-tools).
-
-### Custom Rendering
-
-Moved to [Writing extensions](/extensions/authoring#custom-rendering).
-
-#### Tool rendering
-
-A tool's `renderCall` and `renderResult` draw its calls in the interactive transcript and HTML exports. Use `pi.registerToolRenderer((toolName, next) => renderers)` to choose renderers for any tool, including MCP tools in resumed sessions before their server connects. Resolvers run in extension load order. `next()` returns the remaining resolvers' choice, then the registered tool's renderers, so `next() ?? mine` only fills in when none exist.
-
-Extension `Image` components render JPEG, GIF, and WebP images on Kitty-protocol terminals automatically, just like tool result images.
-
-#### renderCall
-
-Moved to [Writing extensions](/extensions/authoring#rendercall).
-
-#### renderResult
-
-Moved to [Writing extensions](/extensions/authoring#renderresult).
-
-#### Keybinding Hints
-
-Moved to [Writing extensions](/extensions/authoring#keybinding-hints).
-
-#### Best Practices
-
-Moved to [Writing extensions](/extensions/authoring#best-practices).
-
-#### Fallback
-
-Moved to [Writing extensions](/extensions/authoring#fallback).
-
-## Custom UI
-
-Moved to [Extension UI](/extensions/ui#custom-ui).
-
-### Dialogs
-
-Moved to [Extension UI](/extensions/ui#dialogs).
-
-#### Timed Dialogs with Countdown
-
-Moved to [Extension UI](/extensions/ui#timed-dialogs-with-countdown).
-
-#### Manual Dismissal with AbortSignal
-
-Moved to [Extension UI](/extensions/ui#manual-dismissal-with-abortsignal).
-
-### Widgets, Status, and Footer
-
-Moved to [Extension UI](/extensions/ui#widgets-status-and-footer).
-
-### Autocomplete Providers
-
-Moved to [Extension UI](/extensions/ui#autocomplete-providers).
-
-### Custom Components
-
-Moved to [Extension UI](/extensions/ui#custom-components).
-
-#### Overlay Mode (Experimental)
-
-Moved to [Extension UI](/extensions/ui#overlay-mode-experimental).
-
-### Custom Editor
-
-Moved to [Extension UI](/extensions/ui#custom-editor).
-
-### Message Rendering
-
-Moved to [Extension UI](/extensions/ui#message-rendering).
-
-### Theme Colors
-
-Moved to [Extension UI](/extensions/ui#theme-colors).
-
-## Error Handling
-
-Moved to [Extension API reference](/extensions/api-reference#error-handling).
-
-## Mode Behavior
-
-| Mode | UI Methods | Notes |
+| Mode | UI methods | Notes |
 |------|-----------|-------|
 | Interactive | Full TUI | Normal operation |
-| RPC (`--mode rpc`) | JSON protocol | Host handles UI, see [RPC mode](/rpc) |
-| JSON (`--mode json`) | No-op | Event stream to stdout, see [JSON mode](/json) |
-| Print (`-p`) | No-op | Extensions run but can't prompt |
+| RPC (`--mode rpc`) | JSON protocol | Host handles UI; see [RPC mode](/rpc) |
+| JSON (`--mode json`) | No-op | Event stream to stdout; see [JSON mode](/json) |
+| Print (`-p`) | No-op | Extensions run without interactive prompts |
 
 In non-interactive modes, check `ctx.hasUI` before using UI methods.
 
-## Examples Reference
+## Moved sections
 
-Moved to [Extension examples](/extensions/examples#examples-reference).
+<a id="writing-an-extension" />
+<a id="async-factory-functions" />
+<a id="long-lived-resources-and-shutdown" />
+<a id="extension-styles" />
+<a id="state-management" />
+<a id="session-scoped-in-memory-state" />
+<a id="custom-tools" />
+<a id="tool-definition" />
+<a id="constrained-sampling" />
+<a id="fireworks-deferred-tool-loading" />
+<a id="overriding-built-in-tools" />
+<a id="remote-execution" />
+<a id="output-truncation" />
+<a id="multiple-tools" />
+<a id="custom-rendering" />
+<a id="tool-rendering" />
+<a id="rendercall" />
+<a id="renderresult" />
+<a id="keybinding-hints" />
+<a id="best-practices" />
+<a id="fallback" />
+- Extension structure, state management, custom tools, overrides, remote execution, truncation, and custom rendering moved to [Writing extensions](/extensions/authoring).
+
+<a id="events" />
+<a id="lifecycle-overview" />
+<a id="startup-events" />
+<a id="project_trust" />
+<a id="resource-events" />
+<a id="resources_discover" />
+<a id="session-events" />
+<a id="session_start" />
+<a id="session_info_changed" />
+<a id="session_before_switch" />
+<a id="session_before_fork" />
+<a id="session_before_compact-/-session_compact-/-session_compact_failed" />
+<a id="session_before_tree-/-session_tree" />
+<a id="session_shutdown" />
+<a id="agent-events" />
+<a id="before_agent_start" />
+<a id="agent_start-/-agent_end-/-agent_before_settle-/-agent_settled" />
+<a id="ui_prompt_start-/-ui_prompt_end" />
+<a id="turn_start-/-turn_end" />
+<a id="message_start-/-message_update-/-message_end" />
+<a id="tool_execution_start-/-tool_execution_update-/-tool_execution_end" />
+<a id="context" />
+<a id="context_with_system" />
+<a id="before_provider_headers" />
+<a id="before_provider_request" />
+<a id="after_provider_response" />
+<a id="model-events" />
+<a id="model_select" />
+<a id="thinking_level_select" />
+<a id="tool-events" />
+<a id="tool_call" />
+<a id="typing-custom-tool-input" />
+<a id="tool_result" />
+<a id="user-bash-events" />
+<a id="user_bash" />
+<a id="input-events" />
+<a id="input" />
+- Lifecycle diagrams, event payloads, and return contracts moved to [Extension events](/extensions/events).
+
+<a id="custom-ui" />
+<a id="dialogs" />
+<a id="timed-dialogs-with-countdown" />
+<a id="manual-dismissal-with-abortsignal" />
+<a id="widgets-status-and-footer" />
+<a id="autocomplete-providers" />
+<a id="custom-components" />
+<a id="overlay-mode-experimental" />
+<a id="custom-editor" />
+<a id="message-rendering" />
+<a id="theme-colors" />
+- Dialogs, widgets, autocomplete providers, custom components, overlays, custom editors, and theme helpers moved to [Extension UI](/extensions/ui).
+
+<a id="extensioncontext" />
+<a id="ctx-ui" />
+<a id="ctx-hasui" />
+<a id="ctx-cwd" />
+<a id="ctx-isprojecttrusted" />
+<a id="ctx-sessionmanager" />
+<a id="ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels" />
+<a id="ctx-signal" />
+<a id="ctx-isidle-/-ctx-abort-/-ctx-haspendingmessages" />
+<a id="ctx-isprojecttrusted-2" />
+<a id="ctx-shutdown" />
+<a id="ctx-getcontextusage" />
+<a id="ctx-compact" />
+<a id="ctx-getsystemprompt" />
+<a id="ctx-getskillcatalog" />
+<a id="extensioncommandcontext" />
+<a id="ctx-waitforidle" />
+<a id="ctx-newsession-options" />
+<a id="ctx-fork-entryid-options" />
+<a id="ctx-navigatetree-targetid-options" />
+<a id="ctx-switchsession-sessionid-options" />
+<a id="session-replacement-lifecycle-and-footguns" />
+<a id="ctx-reload" />
+<a id="extensionapi-methods" />
+<a id="pi-on-event-handler" />
+<a id="pi-registertool-definition" />
+<a id="built-in-tool-prompt-contributions" />
+<a id="pi-sendmessage-message-options" />
+<a id="pi-sendmessages-messages-options" />
+<a id="pi-sendusermessage-content-options" />
+<a id="pi-appendentry-customtype-data" />
+<a id="pi-registerentryrenderer-customtype-renderer" />
+<a id="pi-setsessionname-name" />
+<a id="pi-getsessionname" />
+<a id="pi-setlabel-entryid-label" />
+<a id="pi-registercommand-name-options" />
+<a id="pi-getcommands" />
+<a id="pi-registermessagerenderer-customtype-renderer" />
+<a id="pi-registermarkdowntransformer-transformer" />
+<a id="pi-registershortcut-shortcut-options" />
+<a id="pi-registerflag-name-options" />
+<a id="pi-registeragentpanelsource-source" />
+<a id="pi-exec-command-args-options" />
+<a id="pi-getactivetools-/-pi-getalltools-/-pi-setactivetools-names" />
+<a id="pi-setmodel-model" />
+<a id="pi-getthinkinglevel-/-pi-setthinkinglevel-level" />
+<a id="pi-events" />
+<a id="native-providers" />
+<a id="pi-registerprovider-name-config" />
+<a id="pi-unregisterprovider-name" />
+<a id="pi-registermcpserver-name-config" />
+<a id="error-handling" />
+- `ExtensionContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and error handling moved to [Extension API reference](/extensions/api-reference).
+
+<a id="examples-reference" />
+- Runnable extension examples moved to [Extension examples](/extensions/examples).
