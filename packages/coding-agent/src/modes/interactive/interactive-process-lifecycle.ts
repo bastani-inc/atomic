@@ -183,7 +183,7 @@ function listenForConsoleClose(mode: InteractiveModeBase, cleanups: Array<() => 
 		void mode;
 		return;
 	}
-	if (process.platform !== "win32") return;
+	if ((process.platform as string) !== "win32") return;
 	const handler = () => consoleClosed(mode);
 	process.prependListener("SIGHUP", handler);
 	cleanups.push(() => process.off("SIGHUP", handler));
