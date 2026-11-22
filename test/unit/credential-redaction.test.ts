@@ -5,7 +5,14 @@ import { generatePKCE } from "../../packages/ai/src/auth/oauth/pkce.ts";
 import { redactUrlCredentials } from "../../packages/coding-agent/src/core/error-contract.ts";
 import { configuredSecretRedactor } from "../../packages/coding-agent/src/core/storage/sqlite-facade.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
-import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
+import {
+	applyRedactionRanges,
+	isBasicAuthPayload,
+	REDACTED_PLACEHOLDER,
+	redactCredentialShapes,
+	scanBasicAuthEndAt,
+	stripAnsiWithOrigin,
+} from "../../packages/coding-agent/src/utils/credential-redaction.ts";
 import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
@@ -1330,6 +1337,78 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 
 /** Budget for spawning a Bun child process to verify JSC Yarr parity on MB-scale inputs. */
 const BUN_SUBPROCESS_TIMEOUT_MS = 60_000;
+/** Scale factor k between baseline and scaled inputs for load-independent linearity checks (O(n) ~ k, O(n^2) ~ k^2). */
+const LINEARITY_SCALE_FACTOR = 5;
+/** Interleaved paired samples per input family; median filters isolated GC or JIT tier-up spikes. */
+const LINEARITY_SAMPLES = 5;
+/** Minimum CPU time per baseline batch (5 ms) so measurement stays well above timer resolution without any floor. */
+const LINEARITY_MIN_BATCH_CPU_US = 5_000;
+/** Minimum acceptable median baseline CPU time (half target, also rejects 0 us coarse-tick medians and forces a retry). */
+const LINEARITY_MIN_MEDIAN_CPU_US = LINEARITY_MIN_BATCH_CPU_US / 2;
+/** Upper cap on adaptive batch doubling so a degenerate no-op cannot loop unboundedly. */
+const MAX_LINEARITY_BATCH_REPS = 1_024;
+/** Ratio ceiling between linear k (5x) and quadratic k^2 (25x): 3x headroom above linear, well below quadratic. */
+const LINEARITY_RATIO_HEADROOM = 3;
+const MAX_LINEAR_SCALING_RATIO = LINEARITY_SCALE_FACTOR * LINEARITY_RATIO_HEADROOM;
+
+function medianNumber(samples: readonly number[]): number {
+	const sorted = [...samples].sort((a, b) => a - b);
+	return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+function measureBatchCpuUs(input: string, reps: number, run: (input: string) => void): number {
+	const started = process.cpuUsage();
+	for (let i = 0; i < reps; i++) run(input);
+	const delta = process.cpuUsage(started);
+	return delta.user + delta.system;
+}
+
+/**
+ * Load-independent O(n) scaling check using process CPU time (`process.cpuUsage()`): adaptively doubles batch
+ * repetitions on `build(baseSize)` until a batch consumes >= 5 ms of CPU time, then runs interleaved paired
+ * batches of `small` and `build(baseSize * k)` at the same repetition count and bounds `median(k*N) / median(N)`
+ * with no artificial denominator floor.
+ */
+function assertLinearScaling(
+	label: string,
+	baseSize: number,
+	build: (size: number) => string,
+	run: (input: string) => void,
+): void {
+	const small = build(baseSize);
+	const large = build(baseSize * LINEARITY_SCALE_FACTOR);
+	run(small);
+	let reps = 1;
+	while (reps < MAX_LINEARITY_BATCH_REPS && measureBatchCpuUs(small, reps, run) < LINEARITY_MIN_BATCH_CPU_US) {
+		reps *= 2;
+	}
+	for (;;) {
+		const smallTimes: number[] = [];
+		const largeTimes: number[] = [];
+		for (let sample = 0; sample < LINEARITY_SAMPLES; sample++) {
+			if (sample % 2 === 0) {
+				smallTimes.push(measureBatchCpuUs(small, reps, run));
+				largeTimes.push(measureBatchCpuUs(large, reps, run));
+			} else {
+				largeTimes.push(measureBatchCpuUs(large, reps, run));
+				smallTimes.push(measureBatchCpuUs(small, reps, run));
+			}
+		}
+		const smallMedianUs = medianNumber(smallTimes);
+		if (smallMedianUs < LINEARITY_MIN_MEDIAN_CPU_US && reps < MAX_LINEARITY_BATCH_REPS) {
+			reps = Math.min(reps * 2, MAX_LINEARITY_BATCH_REPS);
+			continue;
+		}
+		assert.ok(smallMedianUs > 0, `${label} baseline CPU time was 0 us after ${reps} reps`);
+		const largeMedianUs = medianNumber(largeTimes);
+		const ratio = largeMedianUs / smallMedianUs;
+		assert.ok(
+			ratio <= MAX_LINEAR_SCALING_RATIO,
+			`${label} scaled super-linearly (reps=${reps}): median(${baseSize * LINEARITY_SCALE_FACTOR})=${(largeMedianUs / 1000).toFixed(2)}ms / median(${baseSize})=${(smallMedianUs / 1000).toFixed(2)}ms CPU (${ratio.toFixed(2)}x > ${MAX_LINEAR_SCALING_RATIO}x)`,
+		);
+		return;
+	}
+}
 
 describe("OAuth credential shapes and linear-time scanning across Node and Bun", () => {
 	test("redacts auth=Bearer, Authorization=Basic, and other assigned auth schemes without dropping the token", () => {
@@ -1346,6 +1425,7 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 			["auth=Bearer opaqueTok99 PORT=8080", "auth= [redacted] [redacted] PORT=8080"],
 			["auth=Bearer\nnext", "auth= [redacted]\nnext"],
 			["Bearer tok%2Ftail%3D", "[redacted][redacted]"],
+			["Bearer tok%2ftail%3d", "[redacted][redacted]"],
 			["Bearer tok:secretTail", "[redacted][redacted]"],
 			["Expected Bearer https://example.com/auth", "Expected [redacted]://example.com/auth"],
 			["Cookie: a=}}", "Cookie: a=[redacted]}"],
@@ -1509,17 +1589,27 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 			["netrc_1mb", `machine h ${"login a ".repeat(150_000)}password myNetrcSec99`, "myNetrcSec99"],
 		];
 		for (const [label, input, needle] of cases) {
-			const started = performance.now();
 			const out = redactCredentialShapes(input);
-			const elapsed = performance.now() - started;
 			assert.equal(out.includes(needle), false, `${label} leaked ${needle}`);
-			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `${label} took ${Math.round(elapsed)} ms`);
 		}
 		for (const ansi of ["\x1b]".repeat(100_000), "\x1b[0".repeat(100_000)]) {
-			const started = performance.now();
 			assert.equal(redactCredentialShapes(ansi), ansi);
-			const elapsed = performance.now() - started;
-			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `unterminated ANSI took ${Math.round(elapsed)} ms`);
+		}
+		const scalingFamilies: readonly (readonly [string, number, (size: number) => string])[] = [
+			["pwd_env", 20_000, (n) => `password=myEnvSecret9988 ${"z ".repeat(n)}`],
+			["pwd_semi", 10_000, (n) => `password=mySemiSecret9988${";x".repeat(n)}`],
+			["pwd_bare", 20_000, (n) => `password: myBareSecret9988 ${"z ".repeat(n)}`],
+			["quoted_esc", 20_000, (n) => `"password":"${"\\a".repeat(n)}myQuotedSec99"`],
+			["esc_json", 20_000, (n) => `\\"password\\":\\"${"\\\\a".repeat(n)}myEscSec99\\"`],
+			["provider_key", 20_000, (n) => `openaiKey="${"\\a".repeat(n)}myProvSec99"`],
+			["cookie_bs", 20_000, (n) => `Cookie: sid=${"\\x".repeat(n)}myCookSec99`],
+			["cookie_brace", 20_000, (n) => `Cookie: sid=${"}x".repeat(n)}myCookSec99`],
+			["netrc_match", 20_000, (n) => `machine h ${"login a ".repeat(n)}password myNetrcSec99`],
+			["unterm_osc", 20_000, (n) => "\x1b]".repeat(n)],
+			["unterm_csi", 20_000, (n) => "\x1b[0".repeat(n)],
+		];
+		for (const [label, baseSize, build] of scalingFamilies) {
+			assertLinearScaling(label, baseSize, build, redactCredentialShapes);
 		}
 	});
 
@@ -1528,8 +1618,62 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 		() => {
 			const script = `
 import assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
 import { redactCredentialShapes } from "./packages/coding-agent/src/utils/credential-redaction.ts";
+
+const SCALE = ${LINEARITY_SCALE_FACTOR};
+const SAMPLES = ${LINEARITY_SAMPLES};
+const MIN_BATCH_CPU_US = ${LINEARITY_MIN_BATCH_CPU_US};
+const MIN_MEDIAN_CPU_US = ${LINEARITY_MIN_MEDIAN_CPU_US};
+const MAX_BATCH_REPS = ${MAX_LINEARITY_BATCH_REPS};
+const MAX_RATIO = ${MAX_LINEAR_SCALING_RATIO};
+
+function median(values) {
+	const sorted = [...values].sort((a, b) => a - b);
+	return sorted[Math.floor(sorted.length / 2)];
+}
+
+function measureBatchCpuUs(input, reps) {
+	const started = process.cpuUsage();
+	for (let i = 0; i < reps; i++) redactCredentialShapes(input);
+	const delta = process.cpuUsage(started);
+	return delta.user + delta.system;
+}
+
+function assertLinearOnBun(label, baseSize, build) {
+	const small = build(baseSize);
+	const large = build(baseSize * SCALE);
+	redactCredentialShapes(small);
+	let reps = 1;
+	while (reps < MAX_BATCH_REPS && measureBatchCpuUs(small, reps) < MIN_BATCH_CPU_US) {
+		reps *= 2;
+	}
+	for (;;) {
+		const smallTimes = [];
+		const largeTimes = [];
+		for (let sample = 0; sample < SAMPLES; sample++) {
+			if (sample % 2 === 0) {
+				smallTimes.push(measureBatchCpuUs(small, reps));
+				largeTimes.push(measureBatchCpuUs(large, reps));
+			} else {
+				largeTimes.push(measureBatchCpuUs(large, reps));
+				smallTimes.push(measureBatchCpuUs(small, reps));
+			}
+		}
+		const smallMedianUs = median(smallTimes);
+		if (smallMedianUs < MIN_MEDIAN_CPU_US && reps < MAX_BATCH_REPS) {
+			reps = Math.min(reps * 2, MAX_BATCH_REPS);
+			continue;
+		}
+		assert.ok(smallMedianUs > 0, label + " baseline CPU time was 0 us on Bun after " + reps + " reps");
+		const largeMedianUs = median(largeTimes);
+		const ratio = largeMedianUs / smallMedianUs;
+		assert.ok(
+			ratio <= MAX_RATIO,
+			label + " scaled super-linearly on Bun (reps=" + reps + "): median(" + (baseSize * SCALE) + ")=" + (largeMedianUs / 1000).toFixed(2) + "ms / median(" + baseSize + ")=" + (smallMedianUs / 1000).toFixed(2) + "ms CPU (" + ratio.toFixed(2) + "x > " + MAX_RATIO + "x)",
+		);
+		return;
+	}
+}
 
 const cases = [
 	["auth_eq_bearer", "auth=Bearer opaqueAuthEqTok9988", "opaqueAuthEqTok9988"],
@@ -1558,18 +1702,24 @@ const cases = [
 	["cred_opt_4mb_prefix", "--" + "a-".repeat(1_000_000) + "password myCredOpt4m99", "myCredOpt4m99"],
 ];
 for (const [label, input, needle] of cases) {
-	const started = performance.now();
 	const out = redactCredentialShapes(input);
-	const elapsed = performance.now() - started;
 	assert.equal(out.includes(needle), false, label + " leaked on Bun");
-	assert.ok(elapsed < 2000, label + " took " + Math.round(elapsed) + " ms on Bun");
 }
 const huge = "x\\nPASSWORD=" + "a ".repeat(4 * 1024 * 1024) + "\\ny";
 assert.equal(redactCredentialShapes(huge), "x\\nPASSWORD= [redacted]\\ny");
 for (const ansi of ["\\x1b]".repeat(100_000), "\\x1b[0".repeat(100_000)]) {
-	const started = performance.now();
 	assert.equal(redactCredentialShapes(ansi), ansi);
-	assert.ok(performance.now() - started < 2000);
+}
+const scalingFamilies = [
+	["pwd_env", 4_000, (n) => "password=myEnvSecret9988 " + "z ".repeat(n)],
+	["pwd_semi", 4_000, (n) => "password=mySemiSecret9988" + ";x".repeat(n)],
+	["quoted_esc", 4_000, (n) => '"password":"' + "\\\\a".repeat(n) + 'myQuotedSec99"'],
+	["esc_json", 4_000, (n) => '\\\\"password\\\\":\\\\"' + "\\\\\\\\a".repeat(n) + 'myEscSec99\\\\"'],
+	["unterm_osc", 15_000, (n) => "\\x1b]".repeat(n)],
+	["unterm_csi", 15_000, (n) => "\\x1b[0".repeat(n)],
+];
+for (const [label, baseSize, build] of scalingFamilies) {
+	assertLinearOnBun(label, baseSize, build);
 }
 for (const kept of [
 	"connect ECONNREFUSED (code=ECONNREFUSED)",
@@ -1591,4 +1741,78 @@ console.log("BUN_REDACTION_OK");
 		},
 		BUN_SUBPROCESS_TIMEOUT_MS,
 	);
+
+	test("shared ANSI, Basic auth, and range-application helpers preserve core strictness and MCP superset semantics", () => {
+		assert.equal(REDACTED_PLACEHOLDER, "[redacted]");
+
+		// stripAnsiWithOrigin handles CSI SGR, OSC 8 BEL/ST, nested ESC inside OSC, and unterminated sequences
+		const styled = "a\x1b[31;1mb\x1b[0m\x1b]8;;https://example.com\x07c\x1b]8;;\x1b\\d";
+		const stripped = stripAnsiWithOrigin(styled);
+		assert.equal(stripped.plain, "abcd");
+		assert.ok(stripped.origin !== undefined);
+		for (let k = 0; k < stripped.plain.length; k++) {
+			assert.equal(styled[stripped.origin[k]!], stripped.plain[k]);
+		}
+		assert.equal(stripped.origin[stripped.plain.length], styled.length);
+		assert.equal(stripAnsiWithOrigin("x\x1b]unterm\x1b[31my\x1b[0mz").plain, "x\x1b]untermyz");
+
+		// Unified isBasicAuthPayload: strict mode (core) vs includeOpaqueTokens (MCP)
+		const latin1Basic = Buffer.from("user:caf\xe9", "latin1").toString("base64");
+		const delBasic = Buffer.from("user:p\x7fass", "latin1").toString("base64");
+		const unpaddedUtf8 = Buffer.from("a:bc", "utf8").toString("base64").replace(/=+$/u, "");
+		assert.equal(isBasicAuthPayload(unpaddedUtf8), true);
+		// Short unpadded Basic stays deferred to core strict boundaries so Authorization: Basic YTpiYw@host is redacted whole
+		assert.equal(isBasicAuthPayload(unpaddedUtf8, { includeOpaqueTokens: true }), false);
+		assert.equal(isBasicAuthPayload(latin1Basic), false);
+		assert.equal(isBasicAuthPayload(latin1Basic, { includeOpaqueTokens: true }), true);
+		assert.equal(isBasicAuthPayload(delBasic), false);
+		assert.equal(isBasicAuthPayload(delBasic, { includeOpaqueTokens: true }), true);
+		for (const opaque of [
+			"opaqueBasicToken9988",
+			"token12345678",
+			"a_b-c1234",
+			Buffer.from("opaque-token-without-colon").toString("base64"),
+			"Y2xpZW50OnNlY3Jld",
+			"Y2xpZW50OnNlY3JldDF",
+			"a+bc",
+		]) {
+			assert.equal(isBasicAuthPayload(opaque), false, `core must reject ${opaque}`);
+			assert.equal(isBasicAuthPayload(opaque, { includeOpaqueTokens: true }), true, `MCP must accept ${opaque}`);
+		}
+		assert.equal(isBasicAuthPayload("Y2xpZW50OnNlY3JldDE"), true);
+		assert.equal(isBasicAuthPayload("Y2xpZW50OnNlY3JldDE", { includeOpaqueTokens: true }), true);
+		for (const prose of ["auth", "mode", "text", "Oolong"]) {
+			assert.equal(isBasicAuthPayload(prose), false, `core must keep ${prose}`);
+			assert.equal(isBasicAuthPayload(prose, { includeOpaqueTokens: true }), false, `MCP must keep ${prose}`);
+		}
+		assert.equal(isBasicAuthPayload("Settings"), false);
+		assert.equal(isBasicAuthPayload("Overview"), false);
+
+		// Shared scanBasicAuthEndAt honors strict core boundaries vs MCP opaque boundaries
+		assert.equal(scanBasicAuthEndAt("Basic opaqueBasicToken9988!", 0), -1);
+		assert.equal(scanBasicAuthEndAt("Basic opaqueBasicToken9988!", 0, { includeOpaqueTokens: true }), 26);
+		assert.equal(scanBasicAuthEndAt("Basic Y2xpZW50OnNlY3JldA==?foo", 0), -1);
+		assert.equal(scanBasicAuthEndAt("Basic Y2xpZW50OnNlY3JldA==?foo", 0, { includeOpaqueTokens: true }), 26);
+		assert.equal(scanBasicAuthEndAt('Basic realm="example"', 0), -1);
+		assert.equal(scanBasicAuthEndAt('Basic realm="example"', 0, { includeOpaqueTokens: true }), 12);
+
+		// Shared applyRedactionRanges protects markers in both modes and ANSI only when preserveAnsi is true
+		assert.equal(applyRedactionRanges("abc[redacted]def", [{ start: 0, end: 16 }]), "[redacted][redacted][redacted]");
+		assert.equal(
+			applyRedactionRanges("Bearer foo\x1b]0;oscSecret\x07bar", [{ start: 0, end: 27 }], { preserveAnsi: true }),
+			"[redacted]\x1b]0;oscSecret\x07[redacted]",
+		);
+		assert.equal(
+			applyRedactionRanges("Bearer foo\x1b]0;oscSecret\x07bar", [{ start: 0, end: 27 }], { preserveAnsi: false }),
+			"[redacted]",
+		);
+		assert.equal(
+			applyRedactionRanges("Bearer foo[redacted]bar", [{ start: 0, end: 19 }], { preserveAnsi: false }),
+			"[redacted][redacted]bar",
+		);
+		assert.equal(
+			applyRedactionRanges('v="[redacted]   [redacted]"', [{ start: 2, end: 27 }], { preserveAnsi: false }),
+			"v=[redacted][redacted][redacted][redacted][redacted]",
+		);
+	});
 });
