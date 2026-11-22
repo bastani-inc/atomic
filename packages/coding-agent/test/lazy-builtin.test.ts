@@ -119,8 +119,8 @@ describe("lazy builtin extension mechanism", () => {
 	test("registers static surface immediately and defers heavy load until first tool, command, or shortcut use", async () => {
 		let loadCount = 0;
 		const calls: string[] = [];
-		const heavyFactory: ExtensionFactory = (pi) => {
-			pi.registerTool({
+		const heavyFactory: ExtensionFactory = (atomic) => {
+			atomic.registerTool({
 				name: "demo_tool",
 				label: "Demo",
 				description: "Demo tool",
@@ -130,13 +130,13 @@ describe("lazy builtin extension mechanism", () => {
 					return { content: [{ type: "text", text: `ok:${(params as { value: string }).value}` }], details: {} };
 				},
 			});
-			pi.registerCommand("demo", {
+			atomic.registerCommand("demo", {
 				description: "Demo command",
 				handler: async (args) => {
 					calls.push(`cmd:${args}`);
 				},
 			});
-			pi.registerShortcut("alt+d", {
+			atomic.registerShortcut("alt+d", {
 				description: "Demo shortcut",
 				handler: async () => {
 					calls.push("shortcut:alt+d");
@@ -145,19 +145,19 @@ describe("lazy builtin extension mechanism", () => {
 		};
 		const spec: LazyBuiltinSpec = {
 			label: "demo",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "demo_tool",
 					label: "Demo",
 					description: "Demo tool",
 					parameters: Type.Object({ value: Type.String() }),
 					execute: (...args) => controller.executeTool("demo_tool", args),
 				});
-				pi.registerCommand("demo", {
+				atomic.registerCommand("demo", {
 					description: "Demo command",
 					handler: (args, ctx) => controller.runCommand("demo", args, ctx),
 				});
-				pi.registerShortcut("alt+d", {
+				atomic.registerShortcut("alt+d", {
 					description: "Demo shortcut",
 					handler: (ctx) => controller.runShortcut("alt+d", ctx),
 				});
@@ -190,18 +190,18 @@ describe("lazy builtin extension mechanism", () => {
 	});
 
 	test("activation preserves host edits to static registrations (limitMandatoryIntercomToTool) while forwarding dynamic tools", async () => {
-		const heavyFactory: ExtensionFactory = (pi) => {
-			pi.registerTool({
+		const heavyFactory: ExtensionFactory = (atomic) => {
+			atomic.registerTool({
 				name: "static_tool",
 				label: "Static",
 				description: "Static",
 				parameters: Type.Object({}),
 				execute: async () => ({ content: [{ type: "text", text: "static-ok" }], details: {} }),
 			});
-			pi.registerCommand("static_cmd", { description: "Static cmd", handler: async () => {} });
-			pi.registerShortcut("alt+m", { description: "Static shortcut", handler: async () => {} });
+			atomic.registerCommand("static_cmd", { description: "Static cmd", handler: async () => {} });
+			atomic.registerShortcut("alt+m", { description: "Static shortcut", handler: async () => {} });
 			// Dynamic tool registered only when active (like mcp__* or contact_supervisor)
-			pi.registerTool({
+			atomic.registerTool({
 				name: "dynamic_tool",
 				label: "Dynamic",
 				description: "Dynamic",
@@ -211,19 +211,19 @@ describe("lazy builtin extension mechanism", () => {
 		};
 		const spec: LazyBuiltinSpec = {
 			label: "surface-check",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "static_tool",
 					label: "Static",
 					description: "Static",
 					parameters: Type.Object({}),
 					execute: (...args) => controller.executeTool("static_tool", args),
 				});
-				pi.registerCommand("static_cmd", {
+				atomic.registerCommand("static_cmd", {
 					description: "Static cmd",
 					handler: (args, ctx) => controller.runCommand("static_cmd", args, ctx),
 				});
-				pi.registerShortcut("alt+m", {
+				atomic.registerShortcut("alt+m", {
 					description: "Static shortcut",
 					handler: (ctx) => controller.runShortcut("alt+m", ctx),
 				});
@@ -250,22 +250,22 @@ describe("lazy builtin extension mechanism", () => {
 	test("serializes lifecycle replay so live events arriving mid-replay never overtake or duplicate", async () => {
 		const observed: string[] = [];
 		const gate = deferred<void>();
-		const heavyFactory: ExtensionFactory = (pi) => {
-			pi.on("session_start", async () => {
+		const heavyFactory: ExtensionFactory = (atomic) => {
+			atomic.on("session_start", async () => {
 				observed.push("session_start:enter");
 				await gate.promise;
 				observed.push("session_start:exit");
 			});
-			pi.on("turn_start", async () => {
+			atomic.on("turn_start", async () => {
 				observed.push("turn_start");
 			});
-			pi.on("agent_start", async () => {
+			atomic.on("agent_start", async () => {
 				observed.push("agent_start");
 			});
-			pi.on("tool_execution_start", async (ev) => {
+			atomic.on("tool_execution_start", async (ev) => {
 				observed.push(`tool_execution_start:${(ev as { toolCallId: string }).toolCallId}`);
 			});
-			pi.registerTool({
+			atomic.registerTool({
 				name: "ordered",
 				label: "Ordered",
 				description: "Ordered",
@@ -278,8 +278,8 @@ describe("lazy builtin extension mechanism", () => {
 		};
 		const spec: LazyBuiltinSpec = {
 			label: "ordered",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "ordered",
 					label: "Ordered",
 					description: "Ordered",
@@ -328,8 +328,8 @@ describe("lazy builtin extension mechanism", () => {
 		let loadCalls = 0;
 		const spec: LazyBuiltinSpec = {
 			label: "coalesce",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "work",
 					label: "Work",
 					description: "Work",
@@ -357,8 +357,8 @@ describe("lazy builtin extension mechanism", () => {
 		abortA.abort(abortReason);
 		await assert.rejects(callA, (err) => err === abortReason);
 
-		loadGate.resolve((pi) => {
-			pi.registerTool({
+		loadGate.resolve((atomic) => {
+			atomic.registerTool({
 				name: "work",
 				label: "Work",
 				description: "Work",
@@ -380,8 +380,8 @@ describe("lazy builtin extension mechanism", () => {
 		let shutdownCalls = 0;
 		const spec: LazyBuiltinSpec = {
 			label: "retryable",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "ping",
 					label: "Ping",
 					description: "Ping",
@@ -394,19 +394,19 @@ describe("lazy builtin extension mechanism", () => {
 			createLazyBuiltinFactory(spec, async () => {
 				attempt += 1;
 				const currentAttempt = attempt;
-				return (pi) => {
-					pi.events.on("custom:ping", () => {
+				return (atomic) => {
+					atomic.events.on("custom:ping", () => {
 						busListenerCalls += 1;
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						shutdownCalls += 1;
 					});
 					if (currentAttempt === 1) {
-						pi.on("session_start", async () => {
+						atomic.on("session_start", async () => {
 							throw new Error("transient-init-boom");
 						});
 					}
-					pi.registerTool({
+					atomic.registerTool({
 						name: "ping",
 						label: "Ping",
 						description: "Ping",
@@ -443,9 +443,9 @@ describe("lazy builtin extension mechanism", () => {
 		let orphanedShutdowns = 0;
 		const spec: LazyBuiltinSpec = {
 			label: "bg-orphan",
-			register(pi, controller) {
+			register(atomic, controller) {
 				controllerRef = controller;
-				pi.registerTool({
+				atomic.registerTool({
 					name: "bg_tool",
 					label: "BG",
 					description: "BG",
@@ -458,8 +458,8 @@ describe("lazy builtin extension mechanism", () => {
 			createLazyBuiltinFactory(spec, () => {
 				loadCount += 1;
 				if (loadCount === 1) return bgLoad.promise;
-				return Promise.resolve((pi: ExtensionAPI) => {
-					pi.registerTool({
+				return Promise.resolve((atomic: ExtensionAPI) => {
+					atomic.registerTool({
 						name: "bg_tool",
 						label: "BG",
 						description: "BG",
@@ -484,11 +484,11 @@ describe("lazy builtin extension mechanism", () => {
 		assert.equal(controllerRef!.active, null);
 
 		// Now lease 1's orphaned background load resolves -> must fail lease fence and clean up (kills noLeaseFence).
-		bgLoad.resolve((pi) => {
-			pi.events.on("orphan:check", () => {
+		bgLoad.resolve((atomic) => {
+			atomic.events.on("orphan:check", () => {
 				orphanedBusHits += 1;
 			});
-			pi.on("session_shutdown", () => {
+			atomic.on("session_shutdown", () => {
 				orphanedShutdowns += 1;
 			});
 		});
@@ -510,8 +510,8 @@ describe("lazy builtin extension mechanism", () => {
 		let cleanedUp = false;
 		const spec: LazyBuiltinSpec = {
 			label: "fg-shutdown",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "slow",
 					label: "Slow",
 					description: "Slow",
@@ -535,8 +535,8 @@ describe("lazy builtin extension mechanism", () => {
 		await new Promise((r) => setImmediate(r));
 		assert.equal(shutdownResolved, false);
 
-		loadGate.resolve((pi) => {
-			pi.on("session_shutdown", () => {
+		loadGate.resolve((atomic) => {
+			atomic.on("session_shutdown", () => {
 				cleanedUp = true;
 			});
 		});
@@ -581,8 +581,8 @@ describe("lazy builtin extension mechanism", () => {
 		let loadCount = 0;
 		const spec: LazyBuiltinSpec = {
 			label: "per-session",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "iso",
 					label: "Iso",
 					description: "Iso",
@@ -594,8 +594,8 @@ describe("lazy builtin extension mechanism", () => {
 		const lazyFactory = createLazyBuiltinFactory(spec, async () => {
 			loadCount += 1;
 			const id = loadCount;
-			return (pi) => {
-				pi.registerTool({
+			return (atomic) => {
+				atomic.registerTool({
 					name: "iso",
 					label: "Iso",
 					description: "Iso",
@@ -640,8 +640,8 @@ describe("lazy builtin extension mechanism", () => {
 		savedSpecs.push({ label: "web-access", previous: getLazyBuiltinSpec("web-access") });
 		registerLazyBuiltin("web-access", {
 			label: "web-access",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "lazy_probe_tool",
 					label: "Probe",
 					description: "Probe",
@@ -680,11 +680,11 @@ describe("lazy builtin extension mechanism", () => {
 		let shutdownCount = 0;
 		const spec: LazyBuiltinSpec = {
 			label: "shutdown-once",
-			register(pi, controller) {
+			register(atomic, controller) {
 				controller.onActivated(async () => {
 					await hookGate.promise;
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "act",
 					label: "Act",
 					description: "Act",
@@ -694,11 +694,11 @@ describe("lazy builtin extension mechanism", () => {
 			},
 		};
 		const { extension, runner } = await mountExtension(
-			createLazyBuiltinFactory(spec, async () => (pi) => {
-				pi.on("session_shutdown", () => {
+			createLazyBuiltinFactory(spec, async () => (atomic) => {
+				atomic.on("session_shutdown", () => {
 					shutdownCount += 1;
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "act",
 					label: "Act",
 					description: "Act",
@@ -734,10 +734,10 @@ describe("lazy builtin extension mechanism", () => {
 			createLazyBuiltinFactory(spec, async () => {
 				loadIndex += 1;
 				if (loadIndex === 1) {
-					return async (pi) => {
+					return async (atomic) => {
 						await factoryGate.promise;
 						// Attempt to register a dynamic tool on the retired proxy after successor lease started!
-						pi.registerTool({
+						atomic.registerTool({
 							name: "stale_bg_tool",
 							label: "Stale",
 							description: "Stale",
@@ -769,8 +769,8 @@ describe("lazy builtin extension mechanism", () => {
 		const resolverCalls: number[] = [];
 		const spec: LazyBuiltinSpec = {
 			label: "tool-renderer-retry",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "render_me",
 					label: "RenderMe",
 					description: "RenderMe",
@@ -783,13 +783,13 @@ describe("lazy builtin extension mechanism", () => {
 			createLazyBuiltinFactory(spec, async () => {
 				attempt += 1;
 				const currentAttempt = attempt;
-				return (pi) => {
-					pi.registerToolRenderer((toolName, next) => {
+				return (atomic) => {
+					atomic.registerToolRenderer((toolName, next) => {
 						resolverCalls.push(currentAttempt);
 						return toolName === "render_me" ? {} : next();
 					});
 					if (currentAttempt === 1) throw new Error("fail-attempt-1");
-					pi.registerTool({
+					atomic.registerTool({
 						name: "render_me",
 						label: "RenderMe",
 						description: "RenderMe",
@@ -818,8 +818,8 @@ describe("lazy builtin extension mechanism", () => {
 		const observed: string[] = [];
 		const spec: LazyBuiltinSpec = {
 			label: "message-start-buffer",
-			register(pi, controller) {
-				pi.registerTool({
+			register(atomic, controller) {
+				atomic.registerTool({
 					name: "msg_tool",
 					label: "MsgTool",
 					description: "MsgTool",
@@ -844,19 +844,19 @@ describe("lazy builtin extension mechanism", () => {
 			message: { role: "custom", customType: "intercom_message", content: "hi", display: true, timestamp: 2 },
 		});
 
-		loadGate.resolve((pi) => {
-			pi.on("session_start", () => {
+		loadGate.resolve((atomic) => {
+			atomic.on("session_start", () => {
 				observed.push("session_start");
 			});
-			pi.on("turn_start", () => {
+			atomic.on("turn_start", () => {
 				observed.push("turn_start");
 			});
-			pi.on("message_start", (event) => {
+			atomic.on("message_start", (event) => {
 				observed.push(
 					`message_start:${(event.message as { customType?: string }).customType ?? event.message.role}`,
 				);
 			});
-			pi.registerTool({
+			atomic.registerTool({
 				name: "msg_tool",
 				label: "MsgTool",
 				description: "MsgTool",
@@ -880,9 +880,9 @@ describe("lazy builtin extension mechanism", () => {
 		let stateFromProxy: { count: number } | undefined;
 		const spec: LazyBuiltinSpec = {
 			label: "proxy-invariants",
-			register(pi, controller) {
-				assert.equal((pi as unknown as Record<symbol, unknown>)[sym], writerFn);
-				pi.registerTool({
+			register(atomic, controller) {
+				assert.equal((atomic as unknown as Record<symbol, unknown>)[sym], writerFn);
+				atomic.registerTool({
 					name: "inv_tool",
 					label: "InvTool",
 					description: "InvTool",
@@ -891,12 +891,12 @@ describe("lazy builtin extension mechanism", () => {
 				});
 			},
 		};
-		const baseFactory = createLazyBuiltinFactory(spec, async () => (pi) => {
-			observedValue = (pi as unknown as Record<symbol, unknown>)[sym];
-			capturedProxyEvents = pi.events;
-			stateFromProxy = sessionScopedExtensionState(pi.events, stateKey, () => ({ count: 0 }));
+		const baseFactory = createLazyBuiltinFactory(spec, async () => (atomic) => {
+			observedValue = (atomic as unknown as Record<symbol, unknown>)[sym];
+			capturedProxyEvents = atomic.events;
+			stateFromProxy = sessionScopedExtensionState(atomic.events, stateKey, () => ({ count: 0 }));
 			stateFromProxy.count += 1;
-			pi.registerTool({
+			atomic.registerTool({
 				name: "inv_tool",
 				label: "InvTool",
 				description: "InvTool",
@@ -907,9 +907,9 @@ describe("lazy builtin extension mechanism", () => {
 				}),
 			});
 		});
-		const wrappedFactory: ExtensionFactory = (pi) => {
-			Object.defineProperty(pi, sym, { value: writerFn });
-			return baseFactory(pi);
+		const wrappedFactory: ExtensionFactory = (atomic) => {
+			Object.defineProperty(atomic, sym, { value: writerFn });
+			return baseFactory(atomic);
 		};
 		const { extension, runner, eventBus } = await mountExtension(wrappedFactory);
 		const stateFromRoot = sessionScopedExtensionState(eventBus, stateKey, () => ({ count: 0 }));

@@ -84,7 +84,7 @@ async function registerWithQuitChild(options: { hasUI?: boolean } = {}): Promise
 	const sessionManager = SessionManager.inMemory(cwd);
 	const handlers = new Map<string, (event: { reason?: string }, ctx: ExtensionContext) => unknown>();
 	const listeners = new Map<string, Set<(payload: object) => void>>();
-	const pi = {
+	const atomic = {
 		events: {
 			on(channel: string, handler: (payload: object) => void) {
 				const set = listeners.get(channel) ?? new Set();
@@ -106,7 +106,7 @@ async function registerWithQuitChild(options: { hasUI?: boolean } = {}): Promise
 			handlers.set(event, handler);
 		},
 	} as unknown as ExtensionAPI;
-	registerSubagentExtension(pi);
+	registerSubagentExtension(atomic);
 	cleanups.push(() => {
 		const shutdown = handlers.get("session_shutdown");
 		shutdown?.({}, { sessionManager } as unknown as ExtensionContext);

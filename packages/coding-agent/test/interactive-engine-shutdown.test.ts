@@ -190,8 +190,8 @@ describe("isolated interactive startup shutdown", () => {
 		const events: SessionShutdownEvent[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_shutdown", (event) => {
+				(atomic) => {
+					atomic.on("session_shutdown", (event) => {
 						events.push(event);
 					});
 				},
@@ -227,8 +227,8 @@ describe("isolated interactive startup shutdown", () => {
 		const events: SessionShutdownEvent[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_shutdown", (event) => {
+				(atomic) => {
+					atomic.on("session_shutdown", (event) => {
 						events.push(event);
 					});
 				},

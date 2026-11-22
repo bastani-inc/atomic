@@ -122,8 +122,8 @@ async function typeClosed(chat: MainChatTerminal, command: string): Promise<RegE
 
 /** An extension command that runs until `release`, after `effect`. */
 function slowCommand(name: string, release: Promise<void>, effect?: (ui: { notify(message: string): void }) => void) {
-	return ((pi) =>
-		pi.registerCommand(name, {
+	return ((atomic) =>
+		atomic.registerCommand(name, {
 			handler: async (_args, ctx) => {
 				effect?.(ctx.ui);
 				await release;
@@ -304,7 +304,7 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 		"/agents, an extension command, goes from the typed command straight to its view (#6077)",
 		async () => {
 			const chat = await start(host, [
-				(pi) => registerSlashCommands(pi, { baseCwd: process.cwd() } as SubagentState),
+				(atomic) => registerSlashCommands(atomic, { baseCwd: process.cwd() } as SubagentState),
 			]);
 			await expectStraightToView(chat, "/agents", /Built-in agents/);
 		},
@@ -334,8 +334,8 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 		async () => {
 			let ran = false;
 			const chat = await start(host, [
-				(pi) =>
-					pi.registerCommand("quiet", {
+				(atomic) =>
+					atomic.registerCommand("quiet", {
 						handler: async () => {
 							ran = true;
 						},
@@ -372,8 +372,8 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 		"the working row leaves the screen when an extension command ends after its view closed, with no key pressed (#6134)",
 		async () => {
 			const chat = await start(host, [
-				(pi) =>
-					pi.registerCommand("panel", {
+				(atomic) =>
+					atomic.registerCommand("panel", {
 						handler: async (_args, ctx) => {
 							await ctx.ui.custom<void>((_tui, _theme, _keys, done) => ({
 								render: () => ["panel view"],
@@ -405,8 +405,8 @@ describe.each(["in-process", "isolated"] as const)("a slash command that opens a
 		"an extension command registered while startup is still finishing goes straight to its view (#6077)",
 		async () => {
 			const chat = await start(host, [
-				(pi) =>
-					pi.registerCommand("fx", {
+				(atomic) =>
+					atomic.registerCommand("fx", {
 						handler: async (_args, ctx) => {
 							await ctx.ui.custom<void>((_tui, _theme, _keys, done) => ({
 								render: () => ["fx view"],

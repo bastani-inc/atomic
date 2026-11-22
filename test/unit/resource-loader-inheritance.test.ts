@@ -53,8 +53,8 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
 			builtinPackagePaths: ["/repo/packages/subagents"],
 			appendSystemPrompt: ["Parent append prompt"],
 			extensionFactories: [
-				(pi) => {
-					observedSnapshots.push(pi.getResourceLoaderInheritanceSnapshot?.() ?? {});
+				(atomic) => {
+					observedSnapshots.push(atomic.getResourceLoaderInheritanceSnapshot?.() ?? {});
 				},
 			],
 		});

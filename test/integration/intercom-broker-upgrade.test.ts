@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import {
@@ -58,11 +58,22 @@ interface PreviousModules {
 	readonly spawnBrokerIfNeeded: (command: string, args: string[], readyTimeoutMs?: number) => Promise<void>;
 }
 
+/**
+ * Where each test's agent directory goes. The 0.9.71 broker binds its socket inside it, with the path as it is, and
+ * macOS takes no socket path longer than 103 bytes: there the directory is a short one under /tmp rather than under the
+ * run's temporary directory, which macOS keeps deep under /var/folders.
+ */
+const agentDirRoot = process.platform === "darwin" ? mkdtempSync("/tmp/iu-") : process.env.ATOMIC_TEST_RUN_DIR;
+afterAll(() => {
+	if (process.platform === "darwin" && agentDirRoot !== undefined)
+		rmSync(agentDirRoot, { recursive: true, force: true });
+});
+
 let agentDir: string;
 const cleanups: Array<() => Promise<void> | void> = [];
 
 beforeEach(() => {
-	agentDir = temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR);
+	agentDir = temporaryAgentDir(agentDirRoot);
 	mkdirSync(join(agentDir, "intercom"), { recursive: true });
 	writeFileSync(join(agentDir, "intercom", "config.json"), JSON.stringify({ brokerCommand: "bun", brokerArgs: [] }));
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);

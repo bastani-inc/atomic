@@ -425,8 +425,8 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 						clock: () => 100,
 						timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
 					}),
-					(pi) => {
-						pi.on("session_start", async (event, ctx) => {
+					(atomic) => {
+						atomic.on("session_start", async (event, ctx) => {
 							if (event.reason !== "reload") return;
 							candidateContext = ctx;
 							registerExtensionContextRetirementEffect(ctx, () => {
@@ -440,7 +440,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 								"commit",
 							);
 						});
-						pi.on("resources_discover", (event) =>
+						atomic.on("resources_discover", (event) =>
 							event.reason === "reload" && failure === "extendResources"
 								? { skillPaths: [join(fake.dir, "rejected-skill")] }
 								: {},

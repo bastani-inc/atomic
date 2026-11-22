@@ -55,8 +55,8 @@ async function createFileSession(
 		noPromptTemplates: true,
 		noContextFiles: true,
 		extensionFactories: [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "inactive_tool",
 					label: "Inactive",
 					description: "Fixture",
@@ -65,7 +65,7 @@ async function createFileSession(
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				});
 				if (deferExtensions) {
-					pi.registerTool({
+					atomic.registerTool({
 						name: "active_tool",
 						label: "Active",
 						description: "Fixture",
@@ -73,7 +73,8 @@ async function createFileSession(
 						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 					});
 				}
-				if (startupTool) pi.on("session_start", () => pi.setActiveTools([...pi.getActiveTools(), startupTool]));
+				if (startupTool)
+					atomic.on("session_start", () => atomic.setActiveTools([...atomic.getActiveTools(), startupTool]));
 			},
 		],
 	});
@@ -541,11 +542,11 @@ for (const activate of [false, true]) {
 					{ name: "optin_probe", defaultActive: false },
 				],
 				activate: activate ? ["optin_probe"] : [],
-				earlyExtension: (pi) => {
-					pi.on("session_start", () => {
-						if (safeChange === "activate") pi.setActiveTools([...pi.getActiveTools(), "find"]);
+				earlyExtension: (atomic) => {
+					atomic.on("session_start", () => {
+						if (safeChange === "activate") atomic.setActiveTools([...atomic.getActiveTools(), "find"]);
 						if (safeChange === "deactivate")
-							pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "read"));
+							atomic.setActiveTools(atomic.getActiveTools().filter((name) => name !== "read"));
 					});
 				},
 			});
@@ -626,8 +627,8 @@ test("startup completion keeps a deactivated tool inactive while activating newl
 		sessionManager: await recordedSession(["read", "ls"]),
 		tools: [{ name: "newcomer_probe" }],
 		// early_probe registers before startup completes, so the first restore already decided about it.
-		earlyExtension: (pi) => {
-			pi.registerTool({ ...activeTool, name: "early_probe" });
+		earlyExtension: (atomic) => {
+			atomic.registerTool({ ...activeTool, name: "early_probe" });
 		},
 	});
 	assert.ok(session.getActiveToolNames().includes("early_probe"));

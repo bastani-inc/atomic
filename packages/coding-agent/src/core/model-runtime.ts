@@ -378,16 +378,7 @@ export class ModelRuntime implements Models {
 		return withFastModelVariants(provider, {
 			getModelOverrides: () => this.config.getProvider(provider.id)?.modelOverrides,
 			getCustomModelIds: () => new Set(this.config.getProvider(provider.id)?.models?.map((model) => model.id)),
-			getExtensionOwnedApis: () => {
-				const ownedApis = new Set<Api>();
-				const extension = this.extensionProviders.get(provider.id);
-				if (extension?.streamSimple !== undefined && extension.api) ownedApis.add(extension.api);
-				const native = this.nativeExtensionProviders.get(provider.id);
-				if (native?.stream !== undefined || native?.streamSimple !== undefined) {
-					for (const model of native.getModels()) ownedApis.add(model.api);
-				}
-				return ownedApis.size > 0 ? ownedApis : undefined;
-			},
+			getExtensionOwnedApis: () => this.extensionOwnedApis(provider.id),
 			onDiagnostics: (id, diagnostics) => {
 				if (diagnostics.length === 0) this.fastModelVariantDiagnostics.delete(id);
 				else this.fastModelVariantDiagnostics.set(id, diagnostics);
@@ -722,6 +713,41 @@ export class ModelRuntime implements Models {
 	}
 
 	/**
+	 * The apis whose requests to this provider an extension streams itself: the api its `streamSimple` was registered
+	 * for, and every api of a native provider that brings its own stream functions. Undefined when there are none.
+	 */
+	private extensionOwnedApis(providerId: string): Set<Api> | undefined {
+		const ownedApis = new Set<Api>();
+		const extension = this.extensionProviders.get(providerId);
+		if (extension?.streamSimple !== undefined && extension.api) ownedApis.add(extension.api);
+		const native = this.nativeExtensionProviders.get(providerId);
+		if (native?.stream !== undefined || native?.streamSimple !== undefined) {
+			for (const model of native.getModels()) ownedApis.add(model.api);
+		}
+		return ownedApis.size > 0 ? ownedApis : undefined;
+	}
+
+	/**
+	 * Whether this model's requests reach an extension's own stream function instead of Atomic's built-in
+	 * implementation of its api: its provider, or the source provider an alias names, is one whose apis an extension
+	 * streams itself (see `extensionOwnedApis`).
+	 */
+	streamsThroughExtension(model: Pick<Model<Api>, "provider" | "api">): boolean {
+		const requested = normalizeProviderId(model.provider);
+		const providerId = this.extensionProviders.get(requested)?.aliasOf ?? requested;
+		// A native provider with its own stream functions and nothing over it is published as it is (composeProvider):
+		// every request of its models reaches its stream, including models it lists only later.
+		const native = this.nativeExtensionProviders.get(providerId);
+		if (
+			(native?.stream !== undefined || native?.streamSimple !== undefined) &&
+			!this.config.getProvider(providerId) &&
+			!this.extensionProviders.has(providerId)
+		)
+			return true;
+		return this.extensionOwnedApis(providerId)?.has(model.api) ?? false;
+	}
+
+	/**
 	 * Whether an extension supplies the stream function for this model's api. Such a transport owns its
 	 * own serialization, so Atomic must not attach first-party provider routing to it. This mirrors the
 	 * `usesExtensionStream` check the agent session makes before dispatching.
@@ -989,7 +1015,7 @@ export class ModelRuntime implements Models {
 	private readModelsFileTokenSync(): string {
 		if (!this.modelsPath) return "none";
 		try {
-			return createHash("sha1")
+			return createHash("sha256")
 				.update(readFileSync(normalizePath(this.modelsPath)))
 				.digest("hex");
 		} catch (error) {
@@ -1001,7 +1027,7 @@ export class ModelRuntime implements Models {
 	private async readModelsFileToken(): Promise<string> {
 		if (!this.modelsPath) return "none";
 		try {
-			return createHash("sha1")
+			return createHash("sha256")
 				.update(await readFile(normalizePath(this.modelsPath)))
 				.digest("hex");
 		} catch (error) {

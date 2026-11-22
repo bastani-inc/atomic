@@ -21,9 +21,9 @@ for (const via of ["selector", "shortcut"] as const) {
 		const restore = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
 		try {
 			const loaded = await createTestExtensionsResult([
-				(pi) =>
+				(atomic) =>
 					preset({
-						...pi,
+						...atomic,
 						getThinkingLevel: () => "off",
 						getActiveTools: () => [],
 						setActiveTools() {},

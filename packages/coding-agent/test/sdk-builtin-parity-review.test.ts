@@ -49,10 +49,10 @@ test.each(["spread", "public fields"])(
 		const f = await fixture(
 			["removed", "selected"].map((id) => ({
 				name: "filesystem",
-				factory: (pi: ExtensionAPI) => {
+				factory: (atomic: ExtensionAPI) => {
 					constructed.push(id);
 					let starts = 0;
-					pi.on("session_start", () => {
+					atomic.on("session_start", () => {
 						throw new Error(`${id}:${++starts}`);
 					});
 				},
@@ -105,8 +105,8 @@ for (const method of ["steer", "followUp", "sendUserMessage"] as const) {
 			const release = deferred();
 			let calls = 0;
 			const f = await fixture([
-				(pi) => {
-					pi.on("input", async () => {
+				(atomic) => {
+					atomic.on("input", async () => {
 						calls++;
 						entered.resolve();
 						await release.promise;
@@ -174,19 +174,19 @@ for (const failCleanup of [false, true]) {
 		const active = new Set<number>();
 		const released: number[] = [];
 		const f = await fixture([
-			(pi) => {
+			(atomic) => {
 				const id = ++attempts;
 				active.add(id);
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					released.push(id);
 					if (failCleanup && id > 2) throw new Error(`cleanup ${id}`);
 				});
 			},
-			(pi) => {
+			(atomic) => {
 				const id = ++attempts;
 				active.add(id);
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					released.push(id);
 					if (failCleanup && id > 2) throw new Error(`cleanup ${id}`);
@@ -239,20 +239,20 @@ test("review F transformed registrations bind the invoking sibling across awaits
 		eventBus,
 		noExtensions: true,
 		extensionFactories: [
-			(pi) => {
-				capturedAPI = pi;
+			(atomic) => {
+				capturedAPI = atomic;
 				const instance = ++factories;
 				let calls = 0;
-				pi.registerCommand("probe", {
+				atomic.registerCommand("probe", {
 					description: "original",
 					handler: async () => {
 						await gates[entered++]!.promise;
-						await pi.appendEntry("probe", { instance, calls: ++calls });
+						await atomic.appendEntry("probe", { instance, calls: ++calls });
 					},
 				});
-				pi.registerCommand("removed", {
+				atomic.registerCommand("removed", {
 					handler: async () => {
-						await pi.appendEntry("removed", {});
+						await atomic.appendEntry("removed", {});
 					},
 				});
 			},
@@ -385,8 +385,8 @@ test("review F custom send doors seal after disposal", async () => {
 for (const method of ["steer", "followUp"] as const) {
 	test(`review F ${method} preserves live behavior across reload`, async () => {
 		const f = await fixture([
-			(pi) => {
-				pi.on("input", (event) =>
+			(atomic) => {
+				atomic.on("input", (event) =>
 					event.text === "handled"
 						? { action: "handled" }
 						: event.text === "transform"
@@ -432,11 +432,11 @@ test("review F factory rollback attempts every subscription release", async () =
 			},
 		},
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const generation = ++generations;
-				pi.events.on(`${generation}:first`, () => {});
-				pi.events.on(`${generation}:second`, () => {});
-				pi.events.on(`${generation}:third`, () => {});
+				atomic.events.on(`${generation}:first`, () => {});
+				atomic.events.on(`${generation}:second`, () => {});
+				atomic.events.on(`${generation}:third`, () => {});
 				if (generation > 1) throw new Error("subscription factory failed");
 			},
 		],
@@ -456,8 +456,8 @@ for (const method of ["steer", "followUp"] as const) {
 		const entered = deferred();
 		const release = deferred();
 		const f = await fixture([
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text === "suspended") {
 						entered.resolve();
 						await release.promise;
@@ -539,10 +539,10 @@ for (const failCleanup of [false, true]) {
 		let acquired = 0;
 		const active = new Set<number>();
 		const f = await fixture([
-			(pi) => {
+			(atomic) => {
 				const id = ++acquired;
 				active.add(id);
-				pi.on("session_shutdown", () => {
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					if (failCleanup) throw new Error("owned cleanup failed");
 				});
@@ -610,10 +610,10 @@ test("review F resource setup failure rolls back owned factory and subscriptions
 	const active = new Set<number>();
 	const cause = new Error("resource policy failed");
 	const f = await fixture([
-		(pi) => {
+		(atomic) => {
 			const id = ++acquired;
 			active.add(id);
-			pi.on("session_shutdown", () => {
+			atomic.on("session_shutdown", () => {
 				active.delete(id);
 			});
 		},
@@ -673,12 +673,12 @@ test("review F constructor failure retains setup and every cleanup cause", async
 			},
 		},
 		extensionFactories: [
-			(pi) => {
+			(atomic) => {
 				const id = ++generations;
 				active.add(id);
-				pi.events.on(`${id}:first`, () => {});
-				pi.events.on(`${id}:second`, () => {});
-				pi.on("session_shutdown", () => {
+				atomic.events.on(`${id}:first`, () => {});
+				atomic.events.on(`${id}:second`, () => {});
+				atomic.on("session_shutdown", () => {
 					active.delete(id);
 					throw new Error(`shutdown ${id}`);
 				});

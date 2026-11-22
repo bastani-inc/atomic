@@ -67,8 +67,8 @@ test("resizes builtin and extension-injected tool images before history", async 
 	const harness = await createHarness({
 		tools: [screenshotTool],
 		extensionFactories: [
-			(pi) => {
-				pi.on("tool_result", (event) => ({
+			(atomic) => {
+				atomic.on("tool_result", (event) => ({
 					content: [
 						...event.content,
 						{ type: "image", data: oversizedImage, mimeType: "image/png" },
@@ -116,8 +116,8 @@ test("preserves builtin tool details while resizing its image", async () => {
 test("resizes images returned by extension tools before history", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "extension_screenshot",
 					label: "Extension screenshot",
 					description: "Return an oversized screenshot from an extension tool",

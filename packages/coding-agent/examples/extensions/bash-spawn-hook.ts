@@ -10,7 +10,7 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { createBashTool } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	const bashTool = createBashTool(cwd, {
@@ -21,7 +21,7 @@ export default function (pi: ExtensionAPI) {
 		}),
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		...bashTool,
 		execute: async (id, params, signal, onUpdate, _ctx) => {
 			return bashTool.execute(id, params, signal, onUpdate);

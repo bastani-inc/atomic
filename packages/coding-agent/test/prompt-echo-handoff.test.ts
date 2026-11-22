@@ -26,8 +26,8 @@ function holdRunStart(runIndex: number) {
 	const release = Promise.withResolvers<void>();
 	const held = Promise.withResolvers<void>();
 	let runs = 0;
-	const extension: ExtensionFactory = (pi) => {
-		pi.on("agent_start", async () => {
+	const extension: ExtensionFactory = (atomic) => {
+		atomic.on("agent_start", async () => {
 			if (runs++ !== runIndex) return;
 			held.resolve();
 			await release.promise;

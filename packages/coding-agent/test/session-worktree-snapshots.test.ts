@@ -109,8 +109,8 @@ describe("session worktree snapshots", () => {
 		const manager = await SessionManager.create(await sqlStore("sessions"), sandbox.root);
 		const tool =
 			(name: string, writesFiles: boolean): ExtensionFactory =>
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name,
 					label: name,
 					description: name,

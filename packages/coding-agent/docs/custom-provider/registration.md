@@ -7,14 +7,14 @@ description: Register provider aliases, add or remove custom providers, and choo
 
 ## Multiple accounts for one provider
 
-Use `pi.registerProviderAlias()` to reuse an existing provider's models, OAuth flows, and transport under separate logins. Register aliases inside the extension factory so they are available at startup:
+Use `atomic.registerProviderAlias()` to reuse an existing provider's models, OAuth flows, and transport under separate logins. Register aliases inside the extension factory so they are available at startup:
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default async function (pi: ExtensionAPI) {
+export default async function (atomic: ExtensionAPI) {
   for (let account = 1; account <= 7; account++) {
-    await pi.registerProviderAlias({
+    await atomic.registerProviderAlias({
       id: `openai-${account}`,
       name: `OpenAI account ${account}`,
       provider: "openai",
@@ -31,7 +31,7 @@ Aliases work with OAuth logins and non-empty stored API keys. For ambient-only a
 
 Aliases inherit the source's endpoint, shared headers, models, derived Fast variants, OAuth callbacks, and request handling. Do not hard-code account secrets in source headers; supply per-account credentials through `/login`. Saved messages and callbacks keep the alias ID. Source catalog updates are shared while availability filters run against each alias's credential; aliases do not run separate per-account catalog discovery.
 
-The source provider must already be registered and cannot be an alias itself. Alias IDs cannot replace an existing provider. Configure endpoints, headers, and `models.json` overrides on the source provider rather than the alias. Call `pi.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials.
+The source provider must already be registered and cannot be an alias itself. Alias IDs cannot replace an existing provider. Configure endpoints, headers, and `models.json` overrides on the source provider rather than the alias. Call `atomic.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials.
 
 ## Register new provider
 
@@ -40,7 +40,7 @@ Specify `models` alongside the provider endpoint and API to register a new provi
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default async function (pi: ExtensionAPI) {
+export default async function (atomic: ExtensionAPI) {
   const response = await fetch("http://localhost:1234/v1/models");
   const payload = (await response.json()) as {
     data: Array<{
@@ -51,7 +51,7 @@ export default async function (pi: ExtensionAPI) {
     }>;
   };
 
-  await pi.registerProvider("local-openai", {
+  await atomic.registerProvider("local-openai", {
     baseUrl: "http://localhost:1234/v1",
     apiKey: "$LOCAL_OPENAI_API_KEY",
     api: "openai-completions",
@@ -71,7 +71,7 @@ export default async function (pi: ExtensionAPI) {
 Or register static models directly:
 
 ```typescript
-await pi.registerProvider("my-llm", {
+await atomic.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
   apiKey: "$MY_LLM_API_KEY", // env var reference; omit $ for a literal value
   api: "openai-completions", // streaming API implementation
@@ -100,10 +100,10 @@ Registered providers appear in `/login` like built-in providers: `/login my-llm`
 
 ## Unregister provider
 
-Call `pi.unregisterProvider(name)` to remove a provider registered with `pi.registerProvider(name, ...)`:
+Call `atomic.unregisterProvider(name)` to remove a provider registered with `atomic.registerProvider(name, ...)`:
 
 ```typescript
-await pi.registerProvider("my-llm", {
+await atomic.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
   apiKey: "$MY_LLM_API_KEY",
   api: "openai-completions",
@@ -121,7 +121,7 @@ await pi.registerProvider("my-llm", {
 });
 
 // Remove later without needing /reload
-await pi.unregisterProvider("my-llm");
+await atomic.unregisterProvider("my-llm");
 ```
 
 Unregistering removes the provider's dynamic models, API key fallback, OAuth registration, and custom stream handlers, restoring any overridden built-in provider behavior. Calls made after initial extension loading take effect immediately without `/reload`.
@@ -179,7 +179,7 @@ See [Compatibility fields](/models-configuration#compatibility) for every `compa
 Set `authHeader: true` when an endpoint expects `Authorization: Bearer <key>` using the resolved `apiKey`:
 
 ```typescript
-await pi.registerProvider("custom-api", {
+await atomic.registerProvider("custom-api", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
   authHeader: true,

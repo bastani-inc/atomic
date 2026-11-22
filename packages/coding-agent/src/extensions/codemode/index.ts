@@ -9,8 +9,8 @@ export interface CodemodeExtensionOptions {
 	models?: boolean;
 }
 export function createCodemodeExtension(options: CodemodeExtensionOptions = {}): ExtensionFactory {
-	return (pi) => {
-		pi.on("session_start", async (_event, ctx) => {
+	return (atomic) => {
+		atomic.on("session_start", async (_event, ctx) => {
 			if (!ctx.hasUI) return;
 			try {
 				const hasCodemodeHistory = ctx.sessionManager
@@ -26,19 +26,20 @@ export function createCodemodeExtension(options: CodemodeExtensionOptions = {}):
 				// Partial context without sessionManager entries leaves renderer lazy.
 			}
 		});
-		pi.registerTool(
+		atomic.registerTool(
 			createCodemodeToolDefinition({
 				models: options.models ?? true,
-				appendEntry: (type, data) => pi.appendEntry(type, data),
-				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
+				appendEntry: (type, data) => atomic.appendEntry(type, data),
+				getToolNamespace: (name) => atomic.getAllTools().find((tool) => tool.name === name)?.namespace,
 				getToolGuidelines: () =>
-					new Map(pi.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
+					new Map(atomic.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
 				getMode: () =>
-					options.mode ?? (pi.getSettings().codemode?.mode === "only" ? "only" : SETTINGS_DEFAULTS.codemode.mode),
-				getInlineBudget: () => options.inlineBudget ?? pi.getSettings().codemode?.inlineBudget,
+					options.mode ??
+					(atomic.getSettings().codemode?.mode === "only" ? "only" : SETTINGS_DEFAULTS.codemode.mode),
+				getInlineBudget: () => options.inlineBudget ?? atomic.getSettings().codemode?.inlineBudget,
 				getModelOnlyTools: () => {
-					const active = new Set(pi.getActiveTools());
-					return pi
+					const active = new Set(atomic.getActiveTools());
+					return atomic
 						.getAllTools()
 						.filter((tool) => tool.exposure === "model-only" && active.has(tool.name))
 						.map((tool) => tool.name);

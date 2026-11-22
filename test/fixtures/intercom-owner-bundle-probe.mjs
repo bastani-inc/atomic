@@ -53,14 +53,14 @@ for (const mode of ["print", "json", "rpc", "tui"]) {
 					registerCommand: (name, command) => commands.set(name, command),
 					registerShortcut() {}, events: { on() {} },
 				}, { importHeavy: async () => {
-					if (++imports > 1) return { default(pi) {
-						pi.registerTool({ name: "intercom", execute: async () => success });
-						pi.registerCommand("intercom", { handler() { commandRetries++; } });
+					if (++imports > 1) return { default(atomic) {
+						atomic.registerTool({ name: "intercom", execute: async () => success });
+						atomic.registerCommand("intercom", { handler() { commandRetries++; } });
 					} };
 					entered.resolve(); await gate.promise;
-					return { default(pi) {
+					return { default(atomic) {
 						if (phase === "factory" && transition !== "new-live") queueMicrotask(target.invalidate);
-						pi.on("session_start", (_event, ctx) => {
+						atomic.on("session_start", (_event, ctx) => {
 							assert.equal(ctx, replayContext);
 							if (transition !== "new-live") assert.throws(() => ctx.mode, /extension ctx is stale/);
 							throw failure;

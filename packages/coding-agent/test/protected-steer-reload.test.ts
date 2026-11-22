@@ -18,9 +18,9 @@ test.each([
 		let restoreApi = () => {};
 		const observed: number[] = [];
 		const factories: ExtensionFactory[] = [
-			(pi) => {
+			(atomic) => {
 				const current = ++generation;
-				pi.on("context", () => {
+				atomic.on("context", () => {
 					restoreApi();
 					observed.push(current);
 				});

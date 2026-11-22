@@ -166,15 +166,15 @@ test("a script that abandons launch during preflight starts no child", async () 
 		extensionFactories: [
 			createCodemodeExtension(),
 			registerSubagentExtension,
-			(pi) => {
-				pi.events.on("subagent:supervisor-authorization", (payload) => {
+			(atomic) => {
+				atomic.events.on("subagent:supervisor-authorization", (payload) => {
 					(payload as { completion?: Promise<void> }).completion = finish.promise;
 					preflight.resolve();
 				});
-				pi.on("tool_execution_end", (event) => {
+				atomic.on("tool_execution_end", (event) => {
 					if (event.toolName === "subagent") nestedEnded.resolve();
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "entered",
 					label: "Entered",
 					description: "Observe preflight",

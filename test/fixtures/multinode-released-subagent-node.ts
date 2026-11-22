@@ -128,7 +128,7 @@ async function release(args: ReleaseArgs): Promise<void> {
 		scope: { kind: "session", sessionId: owner.getSessionId() },
 		authorizeLaunch() {},
 	});
-	const pi = ownerPi(owner);
+	const atomic = ownerPi(owner);
 	const ctx = { cwd: args.ownerCwd, sessionManager: owner } as unknown as ExtensionContext;
 	// A forked subagent keeps its session in the owner's storage, as a database-backed owner's children do; a child
 	// started fresh keeps a session file on the node that launched it, which no other node can reopen.
@@ -155,7 +155,7 @@ async function release(args: ReleaseArgs): Promise<void> {
 				builtins: { subagents: false, mcp: false, "web-access": false },
 			}),
 		},
-		recordChild: createSubagentChildRecordSink(pi, ctx),
+		recordChild: createSubagentChildRecordSink(atomic, ctx),
 		runtime: { runSync },
 	});
 	if (response.kind !== "admitted") throw new Error(`the subagent was not admitted: ${response.kind}`);

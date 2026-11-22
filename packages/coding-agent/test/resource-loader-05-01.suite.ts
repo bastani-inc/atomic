@@ -39,9 +39,9 @@ describe("DefaultResourceLoader", () => {
 				{ name: "mcp", builtin: true, factory: () => void loaded.push("builtin:mcp") },
 				{
 					name: "replacement",
-					factory: (pi) => {
+					factory: (atomic) => {
 						loaded.push("replacement");
-						pi.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
+						atomic.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
 					},
 				},
 			],
@@ -72,8 +72,8 @@ describe("DefaultResourceLoader", () => {
 			extensionFactories: [
 				{
 					name: "replacement",
-					factory: (pi) => {
-						pi.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
+					factory: (atomic) => {
+						atomic.registerCommand("mcp", { description: "Replacement MCP", handler: async () => {} });
 					},
 				},
 			],

@@ -54,8 +54,8 @@ async function resumedFromCompaction(): Promise<SessionManager> {
 
 async function startWith(sessionManager: SessionManager, origin: "bundled" | undefined): Promise<boolean[]> {
 	const seen: boolean[] = [];
-	const extension: ExtensionFactory = (pi) => {
-		pi.on("session_start", async (_event, ctx) => {
+	const extension: ExtensionFactory = (atomic) => {
+		atomic.on("session_start", async (_event, ctx) => {
 			seen.push(ctx.sessionManager.hasFullHistory());
 		});
 	};
@@ -125,8 +125,8 @@ test("a user extension restores its pi.appendEntry state from before the boundar
 	const seen: { branch: unknown[]; entries: unknown[] }[] = [];
 	const rows = (entries: readonly SessionEntry[]) =>
 		entries.flatMap((entry) => (entry.type === "custom" && entry.customType === "plan-state" ? [entry.data] : []));
-	const extension: ExtensionFactory = (pi) => {
-		pi.on("session_start", async (_event, ctx) => {
+	const extension: ExtensionFactory = (atomic) => {
+		atomic.on("session_start", async (_event, ctx) => {
 			seen.push({ branch: rows(ctx.sessionManager.getBranch()), entries: rows(ctx.sessionManager.getEntries()) });
 		});
 	};

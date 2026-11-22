@@ -312,20 +312,20 @@ Discovered from `~/.atomic/agent/skills/`, `~/.agents/skills/`, `.atomic/skills/
 TypeScript modules that register tools, commands, keybindings, event handlers, and custom TUI components:
 
 ```typescript
-export default function (pi: ExtensionAPI) {
-  pi.registerTool({ name: "deploy", ... });
-  pi.registerCommand("stats", { ... });
-  pi.on("tool_call", async (event, ctx) => { ... });
+export default function (atomic: ExtensionAPI) {
+  atomic.registerTool({ name: "deploy", ... });
+  atomic.registerCommand("stats", { ... });
+  atomic.on("tool_call", async (event, ctx) => { ... });
 }
 ```
 
-The default export may be `async`; Atomic awaits it before continuing startup (for example to fetch a remote model list before `pi.registerProvider()`).
+The default export may be `async`; Atomic awaits it before continuing startup (for example to fetch a remote model list before `atomic.registerProvider()`). The factory parameter can have any name; older extensions and examples call it `pi`.
 
 `turn_end` and `agent_before_settle` handlers can append structural entries and request a one-shot continuation (later handlers see earlier proposals; error and aborted turns always exit):
 
 ```typescript
 let replacedResponse = false;
-pi.on("turn_end", (event) => {
+atomic.on("turn_end", (event) => {
   if (replacedResponse || event.outcome !== "completed" || event.toolResults.length > 0) return;
   replacedResponse = true;
   return {

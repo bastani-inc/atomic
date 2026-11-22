@@ -118,12 +118,12 @@ describe("resume recovery (#3760)", () => {
 			createHarness({
 				sessionManager,
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_recovery_restore", (event) => {
+					(atomic) => {
+						atomic.on("session_recovery_restore", (event) => {
 							seen.push({ type: event.type, reason: event.reason });
 							return { notices: ["Subagent gone-worker could not be restored and is gone."] };
 						});
-						pi.on("session_recovery_replay", (event) => {
+						atomic.on("session_recovery_replay", (event) => {
 							seen.push({ type: event.type, reason: event.reason, pending: event.pending });
 							const gone = event.pending.find((entry) => entry.stageAdmissionKey === "intercom:3");
 							return {
@@ -193,8 +193,8 @@ describe("resume recovery (#3760)", () => {
 			createHarness({
 				sessionManager,
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_recovery_replay", (event) => ({
+					(atomic) => {
+						atomic.on("session_recovery_replay", (event) => ({
 							decisions: event.pending.map((entry) => ({ entryId: entry.entryId, action: "drop" as const })),
 							notices: ["Worker gone is gone."],
 						}));
@@ -226,8 +226,8 @@ describe("resume recovery (#3760)", () => {
 			createHarness({
 				sessionManager,
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_recovery_replay", (event) => ({
+					(atomic) => {
+						atomic.on("session_recovery_replay", (event) => ({
 							decisions: event.pending.map((entry) => ({ entryId: entry.entryId, action: "defer" as const })),
 							notices: ["Intercom could not be reached; 1 interrupted delivery was deferred."],
 						}));
@@ -266,8 +266,8 @@ describe("resume recovery (#3760)", () => {
 			createHarness({
 				sessionManager,
 				extensionFactories: [
-					(pi) => {
-						pi.on("session_recovery_replay", (event) => {
+					(atomic) => {
+						atomic.on("session_recovery_replay", (event) => {
 							offered.push(...event.pending.map((entry) => entry.stageAdmissionKey));
 							return undefined;
 						});

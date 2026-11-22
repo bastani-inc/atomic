@@ -44,22 +44,24 @@ for (const api of ["single", "batch"] as const) {
 					},
 				],
 				extensionFactories: [
-					(pi) => {
-						intercomHeavy(pi, {
+					(atomic) => {
+						intercomHeavy(atomic, {
 							captureInboundHandler: (fn) => {
 								inbound = fn;
 							},
 						});
-						pi.on("session_start", (_event, context) => {
+						atomic.on("session_start", (_event, context) => {
 							ctx = context;
 						});
-						pi.on("tool_execution_start", async () => {
+						atomic.on("tool_execution_start", async () => {
 							hookEntered.resolve();
 							await releaseHook.promise;
 							const note = { customType: "local-tool-note", content: "ordinary hook note", display: true };
-							if (api === "single") await pi.sendMessage(note, { triggerTurn: false });
+							if (api === "single") await atomic.sendMessage(note, { triggerTurn: false });
 							else
-								await pi.sendMessages([note, { ...note, content: "second hook note" }], { triggerTurn: false });
+								await atomic.sendMessages([note, { ...note, content: "second hook note" }], {
+									triggerTurn: false,
+								});
 							hookDone = true;
 						});
 					},

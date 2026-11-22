@@ -17,8 +17,8 @@ function parseWorkflowToolRequest(text: string): JsonObject | undefined {
 	return undefined;
 }
 
-export default function (pi: ExtensionAPI): void {
-	pi.registerProvider("tool-abort-fixture", {
+export default function (atomic: ExtensionAPI): void {
+	atomic.registerProvider("tool-abort-fixture", {
 		api: "tool-abort-fixture",
 		apiKey: "fixture-only",
 		baseUrl: "http://127.0.0.1:1/unused",

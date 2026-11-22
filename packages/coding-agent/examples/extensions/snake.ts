@@ -306,8 +306,8 @@ class SnakeComponent {
 
 const SNAKE_SAVE_TYPE = "snake-save";
 
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("snake", {
+export default function (atomic: ExtensionAPI) {
+	atomic.registerCommand("snake", {
 		description: "Play Snake!",
 
 		handler: async (_args, ctx) => {
@@ -333,7 +333,7 @@ export default function (pi: ExtensionAPI) {
 					() => done(undefined),
 					(state) => {
 						// Save or clear state
-						void pi
+						void atomic
 							.appendEntry(SNAKE_SAVE_TYPE, state)
 							.catch((error: Error) => ctx.ui.notify(error.message, "error"));
 					},

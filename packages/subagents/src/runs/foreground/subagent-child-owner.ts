@@ -54,18 +54,18 @@ function createOwnerBinding(sessionId: string): OwnerBinding {
 }
 
 /** Publish at commit: neither an uncommitted candidate nor cleanup of its predecessor owns pending work. */
-export function bindSubagentChildOwner(pi: ChildOwnerAPI, ctx: ExtensionContext): () => void {
+export function bindSubagentChildOwner(atomic: ChildOwnerAPI, ctx: ExtensionContext): () => void {
 	const manager = ctx.sessionManager;
 	const sessionId = manager.getSessionId();
-	const hostWriter = (pi as BuiltinOwnerAPI)[acquireWriter]?.(sessionId);
+	const hostWriter = (atomic as BuiltinOwnerAPI)[acquireWriter]?.(sessionId);
 	const scope = hostWriter?.scope ?? manager;
 	let binding = bindings.owners.get(scope);
 	if (binding?.sessionId !== sessionId) {
 		binding = createOwnerBinding(sessionId);
 		bindings.owners.set(scope, binding);
 	}
-	bindings.apis.set(pi, binding);
-	const generation = { pi, ctx, hostWriter };
+	bindings.apis.set(atomic, binding);
+	const generation = { pi: atomic, ctx, hostWriter };
 	binding.current = generation;
 	binding.fallback = hostWriter?.save;
 	const retire = () => {
@@ -79,9 +79,9 @@ export function bindSubagentChildOwner(pi: ChildOwnerAPI, ctx: ExtensionContext)
 }
 
 /** Long-lived sinks choose the writer when their turn in the owner's append queue actually arrives. */
-export function subagentChildOwnerWriter(pi: Writer, manager: Manager): Writer {
-	const binding = bindings.apis.get(pi);
-	return binding?.sessionId === manager.getSessionId() ? binding.writer : pi;
+export function subagentChildOwnerWriter(atomic: Writer, manager: Manager): Writer {
+	const binding = bindings.apis.get(atomic);
+	return binding?.sessionId === manager.getSessionId() ? binding.writer : atomic;
 }
 
 const currentEvents = Symbol.for("@bastani/subagents/current-owner-events@1");
@@ -95,11 +95,11 @@ export function subagentChildRequestEvents(events: OwnerEvents): Events | undefi
 
 /** Keep the same owner across a reload, without retaining its old API or context in a suspended restoration. */
 export function subagentChildOwnerOperations(
-	pi: ChildOwnerAPI,
+	atomic: ChildOwnerAPI,
 	ctx: ExtensionContext,
 ): { pi: ChildOwnerAPI; ctx: ExtensionContext } {
-	const binding = bindings.apis.get(pi);
-	if (!binding || binding.sessionId !== ctx.sessionManager.getSessionId()) return { pi, ctx };
+	const binding = bindings.apis.get(atomic);
+	if (!binding || binding.sessionId !== ctx.sessionManager.getSessionId()) return { pi: atomic, ctx };
 	const live = () => {
 		if (!binding.current) throw new Error("The subagent's owning session is closed.");
 		return binding.current;

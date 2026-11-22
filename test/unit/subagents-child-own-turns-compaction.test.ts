@@ -224,8 +224,8 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 				: {
 						resourceLoaderInheritanceSnapshot: {
 							extensionFactories: [
-								(pi: ExtensionAPI) => {
-									pi.on("session_before_compact", () => ({ compactedText: options.compactedText }));
+								(atomic: ExtensionAPI) => {
+									atomic.on("session_before_compact", () => ({ compactedText: options.compactedText }));
 								},
 							],
 						},

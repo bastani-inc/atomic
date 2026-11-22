@@ -163,12 +163,12 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 	initTheme("dark");
 	const listenersByGeneration: Array<Set<() => void>> = [];
 	const itemsByGeneration: AgentPanelItem[][] = [];
-	const makeExtension = (gen: number) => (pi: { registerAgentPanelSource: AgentPanelSourceHub["register"] }) => {
+	const makeExtension = (gen: number) => (atomic: { registerAgentPanelSource: AgentPanelSourceHub["register"] }) => {
 		const listeners = new Set<() => void>();
 		const items: AgentPanelItem[] = [];
 		listenersByGeneration[gen] = listeners;
 		itemsByGeneration[gen] = items;
-		pi.registerAgentPanelSource({
+		atomic.registerAgentPanelSource({
 			items: () => items,
 			subscribe: (listener) => {
 				listeners.add(listener);

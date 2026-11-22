@@ -11,15 +11,15 @@
 import * as fs from "node:fs";
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+	atomic.on("session_start", async (_event, ctx) => {
 		const triggerFile = "/tmp/agent-trigger.txt";
 
 		fs.watch(triggerFile, () => {
 			try {
 				const content = fs.readFileSync(triggerFile, "utf-8").trim();
 				if (content) {
-					pi.sendMessage(
+					atomic.sendMessage(
 						{
 							customType: "file-trigger",
 							content: `External trigger: ${content}`,

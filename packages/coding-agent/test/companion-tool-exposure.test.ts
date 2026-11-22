@@ -12,8 +12,8 @@ test("script tool catalogs include subagent but exclude supervisor and human pro
 	const harness = await createHarness({
 		extensionFactories: [
 			subagents,
-			(pi) => {
-				registerContactSupervisorTool(pi, {
+			(atomic) => {
+				registerContactSupervisorTool(atomic, {
 					childOrchestratorMetadata: () => null,
 					ensureConnected: async () => {
 						throw new Error("Supervisor transport must not be reached");
@@ -24,7 +24,7 @@ test("script tool catalogs include subagent but exclude supervisor and human pro
 						throw new Error("Supervisor wait must not be reached");
 					},
 				});
-				pi.registerTool({
+				atomic.registerTool({
 					name: "catalog_probe",
 					label: "Catalog probe",
 					description: "Inspect callable tools",

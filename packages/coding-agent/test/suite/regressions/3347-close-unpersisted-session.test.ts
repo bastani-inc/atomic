@@ -42,8 +42,8 @@ describe("regression #3347: closing a committed session", () => {
 				authStorage,
 				resourceLoaderOptions: {
 					extensionFactories: [
-						(pi: ExtensionAPI) => {
-							pi.registerProvider(faux.getModel().provider, {
+						(atomic: ExtensionAPI) => {
+							atomic.registerProvider(faux.getModel().provider, {
 								baseUrl: faux.getModel().baseUrl,
 								apiKey: "faux-key",
 								api: faux.api,

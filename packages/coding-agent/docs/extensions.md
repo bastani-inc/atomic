@@ -25,12 +25,12 @@ Legacy extensions can import the running host API from `@mariozechner/pi-coding-
 
 Key capabilities:
 
-- **Custom tools.** Register tools the LLM can call via `pi.registerTool()`.
+- **Custom tools.** Register tools the LLM can call via `atomic.registerTool()`.
 - **Event interception.** Block or modify tool calls, inject context, observe or replace compaction, and customize branch summaries.
 - **User interaction.** Prompt users via `ctx.ui` (`select`, `confirm`, `input`, `editor`, `notify`).
 - **Custom UI components.** Render interactive TUI components with keyboard input via `ctx.ui.custom()`.
-- **Custom commands.** Register slash commands such as `/mycommand` via `pi.registerCommand()`.
-- **Session persistence.** Store durable state that survives restarts via `pi.appendEntry()`.
+- **Custom commands.** Register slash commands such as `/mycommand` via `atomic.registerCommand()`.
+- **Session persistence.** Store durable state that survives restarts via `atomic.appendEntry()`.
 - **Reload-surviving state.** Keep in-memory objects alive across `/reload` via `sessionScopedExtensionState()`.
 - **Custom rendering.** Control how tool calls, tool results, and custom messages appear in the TUI.
 
@@ -108,19 +108,19 @@ For structured forms, use `ctx.ui.hostInputForm(request)` with JSON-safe descrip
 
 ## Quick start
 
-Create `~/.atomic/agent/extensions/my-extension.ts`:
+Create `~/.atomic/agent/extensions/my-extension.ts` (the factory parameter can have any name; older extensions and examples call it `pi`):
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
   // React to events
-  pi.on("session_start", async (_event, ctx) => {
+  atomic.on("session_start", async (_event, ctx) => {
     ctx.ui.notify("Extension loaded!", "info");
   });
 
-  pi.on("tool_call", async (event, ctx) => {
+  atomic.on("tool_call", async (event, ctx) => {
     if (event.toolName === "bash" && event.input.command?.includes("rm -rf")) {
       const ok = await ctx.ui.confirm("Dangerous!", "Allow rm -rf?");
       if (!ok) return { block: true, reason: "Blocked by user" };
@@ -128,7 +128,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Register a custom tool
-  pi.registerTool({
+  atomic.registerTool({
     name: "greet",
     label: "Greet",
     description: "Greet someone by name",
@@ -144,7 +144,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Register a command
-  pi.registerCommand("hello", {
+  atomic.registerCommand("hello", {
     description: "Say hello",
     handler: async (args, ctx) => {
       ctx.ui.notify(`Hello ${args || "world"}!`, "info");

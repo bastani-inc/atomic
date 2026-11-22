@@ -123,8 +123,8 @@ async function createSession(
 }
 
 function staticExtensionTool(name: string): InlineExtension {
-	return (pi) => {
-		pi.registerTool({
+	return (atomic) => {
+		atomic.registerTool({
 			name,
 			label: name,
 			description: "Statically registered extension tool",
@@ -207,9 +207,9 @@ describe("defaultTools setting", () => {
 				},
 				[
 					staticExtensionTool("static_tool"),
-					(pi) => {
-						pi.on("session_start", () => {
-							pi.registerTool({
+					(atomic) => {
+						atomic.on("session_start", () => {
+							atomic.registerTool({
 								name: "dynamic_tool",
 								label: "Dynamic Tool",
 								description: "Dynamically registered extension tool",

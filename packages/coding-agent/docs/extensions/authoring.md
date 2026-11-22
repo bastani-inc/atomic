@@ -7,14 +7,14 @@ description: Write an extension, manage its state, and register custom tools.
 
 ## Writing an extension
 
-An extension exports a default factory function that receives `ExtensionAPI`. The factory can be synchronous or asynchronous:
+An extension exports a default factory function that receives `ExtensionAPI`. The parameter can have any name; older extensions and examples call it `pi`. The factory can be synchronous or asynchronous:
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
   // Subscribe to events
-  pi.on("event_name", async (event, ctx) => {
+  atomic.on("event_name", async (event, ctx) => {
     // ctx.ui for user interaction
     const ok = await ctx.ui.confirm("Title", "Are you sure?");
     ctx.ui.notify("Done!", "info");
@@ -23,10 +23,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Register tools, commands, shortcuts, flags
-  pi.registerTool({ ... });
-  pi.registerCommand("name", { ... });
-  pi.registerShortcut("ctrl+x", { ... });
-  pi.registerFlag("my-flag", { ... });
+  atomic.registerTool({ ... });
+  atomic.registerCommand("name", { ... });
+  atomic.registerShortcut("ctrl+x", { ... });
+  atomic.registerFlag("my-flag", { ... });
 }
 ```
 
@@ -36,7 +36,7 @@ Imports from Atomic's supplied core packages keep the running host's classes and
 
 In Bun single-file builds, installed builtin bundles retain module-scoped state across `/reload`. Restart Atomic to reload shipped code.
 
-If the factory returns a `Promise`, Atomic awaits it before continuing startup. That means async initialization completes before `session_start`, before `resources_discover`, and before provider registrations queued via `pi.registerProvider()` are flushed.
+If the factory returns a `Promise`, Atomic awaits it before continuing startup. That means async initialization completes before `session_start`, before `resources_discover`, and before provider registrations queued via `atomic.registerProvider()` are flushed.
 
 ### Async factory functions
 
@@ -45,7 +45,7 @@ Use an async factory for one-time startup work such as fetching remote configura
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default async function (pi: ExtensionAPI) {
+export default async function (atomic: ExtensionAPI) {
   const response = await fetch("http://localhost:1234/v1/models");
   const payload = (await response.json()) as {
     data: Array<{
@@ -56,7 +56,7 @@ export default async function (pi: ExtensionAPI) {
     }>;
   };
 
-  await pi.registerProvider("local-openai", {
+  await atomic.registerProvider("local-openai", {
     baseUrl: "http://localhost:1234/v1",
     apiKey: "$LOCAL_OPENAI_API_KEY",
     api: "openai-completions",
@@ -133,7 +133,7 @@ The manifest key is the configured Atomic app name (`atomic`), not the extension
 Choose the store that matches the lifetime you need:
 
 - **Tool result `details`.** Reconstructs across `/branch` and `/resume` from the transcript.
-- **`pi.appendEntry()`.** Durable custom entries that survive process restart. They do not enter model context.
+- **`atomic.appendEntry()`.** Durable custom entries that survive process restart. They do not enter model context.
 - **`sessionScopedExtensionState()`.** In-memory objects that survive `/reload` for the current process. They do not survive process restart.
 
 In Bun single-file builds, an editable file extension whose imported graph is unchanged can reuse its evaluated factory, so its module-scoped variables may survive `/reload`. An edit anywhere in that graph re-evaluates its modules and resets those singletons. Installed built-in bundles keep their evaluated module state across `/reload`; restart Atomic to reload shipped code.
@@ -141,11 +141,11 @@ In Bun single-file builds, an editable file extension whose imported graph is un
 Extensions with state that must follow conversation branches should store it in tool result `details`:
 
 ```typescript
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
   let items: string[] = [];
 
   // Reconstruct state from session
-  pi.on("session_start", async (_event, ctx) => {
+  atomic.on("session_start", async (_event, ctx) => {
     items = [];
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === "message" && entry.message.role === "toolResult") {
@@ -156,7 +156,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.registerTool({
+  atomic.registerTool({
     name: "my_tool",
     // ...
     async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -181,12 +181,12 @@ interface CounterState {
   count: number;
 }
 
-export default function (pi: ExtensionAPI) {
-  const state = sessionScopedExtensionState(pi.events, "my-extension:counter:v1", () => ({
+export default function (atomic: ExtensionAPI) {
+  const state = sessionScopedExtensionState(atomic.events, "my-extension:counter:v1", () => ({
     count: 0,
   }));
 
-  pi.registerCommand("bump", {
+  atomic.registerCommand("bump", {
     description: "Increment a counter that survives /reload",
     handler: async (_args, ctx) => {
       state.count += 1;
@@ -196,25 +196,25 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-**Required scope.** Pass the extension's `pi.events` facade (or the session `EventBus` itself). The host resolves that facade to the canonical session bus, so every load generation of one session re-binds to the same object. Two in-process sessions with distinct buses stay isolated. Do not pass an arbitrary object: an unregistered scope is treated as its own bus and will not re-bind after reload.
+**Required scope.** Pass the extension's `atomic.events` facade (or the session `EventBus` itself). The host resolves that facade to the canonical session bus, so every load generation of one session re-binds to the same object. Two in-process sessions with distinct buses stay isolated. Do not pass an arbitrary object: an unregistered scope is treated as its own bus and will not re-bind after reload.
 
 **Session-wide key namespace.** Keys are not automatically namespaced by extension. Two extensions that pass the same key on the same session receive the first extension's object, and the later factory is not called. Prefix every key with a stable extension identity.
 
 **Key versioning.** Append a version suffix and bump it when the stored shape changes, for example from `"my-extension:counter:v1"` to `"my-extension:counter:v2"`. The new key ignores the incompatible predecessor instead of reusing it under a new type.
 
-**Reload behavior.** `/reload` builds a new `pi.events` facade that still forwards to the same bus. Calling `sessionScopedExtensionState` again with the same namespaced key returns the existing object without invoking `create`.
+**Reload behavior.** `/reload` builds a new `atomic.events` facade that still forwards to the same bus. Calling `sessionScopedExtensionState` again with the same namespaced key returns the existing object without invoking `create`.
 
-The reload transaction does not clone this object or roll back mutations made in factory code. Keep factory setup idempotent, and mutate durable state only after the new generation starts when failed reloads must not affect it. Entries live as long as that bus and are not written to the session store; use `pi.appendEntry()` when data must survive process restart.
+The reload transaction does not clone this object or roll back mutations made in factory code. Keep factory setup idempotent, and mutate durable state only after the new generation starts when failed reloads must not affect it. Entries live as long as that bus and are not written to the session store; use `atomic.appendEntry()` when data must survive process restart.
 
 **Shutdown.** `session_shutdown` still runs for resources you opened. Close sockets, watchers, or timers there; the next `session_start` or first use can recreate them inside the same session-scoped object.
 
 ## Custom tools
 
-Register tools the LLM can call via `pi.registerTool()`. Tools appear in the system prompt and can define custom rendering.
+Register tools the LLM can call via `atomic.registerTool()`. Tools appear in the system prompt and can define custom rendering.
 
 Use `promptSnippet` for a short one-line entry in the `Available tools` section of the default system prompt. If omitted, custom tools are left out of that section.
 
-Use `promptGuidelines` to add tool-specific bullets to the default system prompt `Guidelines` section. These bullets are included only while the tool is active (for example, after `pi.setActiveTools([...])`).
+Use `promptGuidelines` to add tool-specific bullets to the default system prompt `Guidelines` section. These bullets are included only while the tool is active (for example, after `atomic.setActiveTools([...])`).
 
 **Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix or grouping. Each guideline must name the tool it refers to. Avoid "Use this tool when..." because the LLM cannot tell which tool "this" means; write "Use my_tool when..." instead.
 
@@ -261,7 +261,7 @@ import { Type } from "typebox";
 import { StringEnum } from "@bastani/atomic";
 import { Text } from "@bastani/atomic-tui";
 
-pi.registerTool({
+atomic.registerTool({
   name: "my_tool",
   label: "My Tool",
   description: "What this tool does (shown to LLM)",
@@ -294,8 +294,8 @@ pi.registerTool({
       details: { progress: 50 },
     });
 
-    // Run commands via pi.exec (captured from extension closure)
-    const result = await pi.exec("some-command", [], { signal });
+    // Run commands via atomic.exec (captured from extension closure)
+    const result = await atomic.exec("some-command", [], { signal });
 
     // Return result
     return {
@@ -340,7 +340,7 @@ async execute(toolCallId, params) {
 `ToolDefinition.constrainedSampling` is preserved for extension tools, SDK `customTools`, wrappers, and isolated execution. It accepts `false` or the exported `ConstrainedSamplingConfig`:
 
 ```typescript
-pi.registerTool({
+atomic.registerTool({
   name: "strict_edit",
   label: "Strict edit",
   description: "Edit one file",
@@ -368,7 +368,7 @@ Grammar tools require an object schema with exactly one required string property
 **Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
 
 ```typescript
-pi.registerTool({
+atomic.registerTool({
   name: "deploy_plan",
   label: "Deploy Plan",
   description: "Create a deployment plan for one target environment",
@@ -401,7 +401,7 @@ pi.registerTool({
 Built-in `edit`, `write`, `todo`, and `ask_user_question` are exclusive, and `bash` is exclusive when it runs with `pty: true`. Other `bash` calls are shared, so a later call in the same message can run before a shell command's file changes land. Declare `"exclusive"` for a tool that changes state later calls depend on. `executionMode: "sequential"` still runs the whole message one call at a time.
 
 ```typescript
-pi.registerTool({
+atomic.registerTool({
   name: "apply_migration",
   label: "Apply Migration",
   description: "Apply one database migration",
@@ -445,7 +445,7 @@ Scripts can launch and control their session's subagents and send exact-target I
 
 A `model-only` tool can offer scripts part of its actions with `scriptAccess: { description, outputSchema?, refuse(params) }`. While the tool is active, scripts see it with `description` and receive its `structuredContent` as described by `outputSchema`. `refuse` runs after schema validation and before permission hooks, and returns why a script may not make the call, or `undefined` to run the tool's own `execute`. Direct calls are unaffected. Intercom uses it to let scripts list sessions and send to exact targets.
 
-`direct` and `model-only` tools activate by default. Set `defaultActive: false` to keep a registered tool inactive until you select it with `pi.setActiveTools()`. `namespace: { name, description }` groups related tools. Optional `annotations` carry `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; these are advisory hints, not permission checks or verified guarantees. Set `writesFiles: true` on a tool that changes files, so a turn that calls it records a [worktree snapshot](/worktree-snapshots) as `bash`, `edit`, and `write` do.
+`direct` and `model-only` tools activate by default. Set `defaultActive: false` to keep a registered tool inactive until you select it with `atomic.setActiveTools()`. `namespace: { name, description }` groups related tools. Optional `annotations` carry `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; these are advisory hints, not permission checks or verified guarantees. Set `writesFiles: true` on a tool that changes files, so a turn that calls it records a [worktree snapshot](/worktree-snapshots) as `bash`, `edit`, and `write` do.
 
 An active orchestrator may implement `prepareLoadout(loadout)`. The loadout lists `declared`, `callable`, and `registered` tools and provides `getExposure(name)`, `getNamespace(name)`, and `getPromptGuidelines(name)`. Return `descriptions` to replace model-facing descriptions or `hiddenDeclarations` to hide declarations while retaining permitted nested access. This changes presentation, not authorization.
 
@@ -455,7 +455,7 @@ Extensions making requests directly through `@bastani/atomic-ai` can use native 
 
 Name the loader `ToolSearch` or `tool_search` to keep deferred schemas out of the initial prompt prefix. Other names work, but Fireworks includes the schemas in the prefix and loses that cache benefit. Fireworks GLM models and Kimi K3 still use Chat Completions; this feature does not change their routing.
 
-This is an AI SDK capability. Atomic's `pi.setActiveTools()` updates the active tool list and records chronological system-message tool deltas for the next request; it does not attach tool names to a tool result. See the [AI SDK deferred tool-loading guide](https://github.com/bastani-inc/atomic/blob/main/packages/ai/README.md#fireworks-deferred-tools) for details.
+This is an AI SDK capability. Atomic's `atomic.setActiveTools()` updates the active tool list and records chronological system-message tool deltas for the next request; it does not attach tool names to a tool result. See the [AI SDK deferred tool-loading guide](https://github.com/bastani-inc/atomic/blob/main/packages/ai/README.md#fireworks-deferred-tools) for details.
 
 ### Overriding built-in tools
 
@@ -506,7 +506,7 @@ const remoteRead = createReadTool(cwd, {
 });
 
 // Register, checking flag at execution time
-pi.registerTool({
+atomic.registerTool({
   ...remoteRead,
   async execute(id, params, signal, onUpdate, _ctx) {
     const ssh = getSshConfig();
@@ -602,14 +602,14 @@ See [examples/extensions/truncated-tool.ts](https://github.com/bastani-inc/atomi
 One extension can register multiple tools with shared state:
 
 ```typescript
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
   let connection = null;
 
-  pi.registerTool({ name: "db_connect", ... });
-  pi.registerTool({ name: "db_query", ... });
-  pi.registerTool({ name: "db_close", ... });
+  atomic.registerTool({ name: "db_connect", ... });
+  atomic.registerTool({ name: "db_query", ... });
+  atomic.registerTool({ name: "db_close", ... });
 
-  pi.on("session_shutdown", async () => {
+  atomic.on("session_shutdown", async () => {
     connection?.close();
   });
 }
@@ -619,7 +619,7 @@ export default function (pi: ExtensionAPI) {
 
 Tools can provide `renderCall` and `renderResult` for custom display in the interactive transcript and HTML exports. See [TUI components](/tui) for the full component API.
 
-To choose renderers dynamically for any tool, including MCP tools in resumed sessions before their server connects, register a resolver with `pi.registerToolRenderer((toolName, next) => renderers)`. Resolvers run in extension load order. `next()` returns the remaining resolvers' choice and then the registered tool's renderers, so `next() ?? mine` fills in only when no renderer exists. See [`pi.registerToolRenderer()`](/extensions/api-reference#pi-registertoolrenderer-resolver).
+To choose renderers dynamically for any tool, including MCP tools in resumed sessions before their server connects, register a resolver with `atomic.registerToolRenderer((toolName, next) => renderers)`. Resolvers run in extension load order. `next()` returns the remaining resolvers' choice and then the registered tool's renderers, so `next() ?? mine` fills in only when no renderer exists. See [`atomic.registerToolRenderer()`](/extensions/api-reference#atomic-registertoolrenderer-resolver).
 
 Extension `Image` components render JPEG, GIF, and WebP images on Kitty-protocol terminals automatically, just like tool result images.
 
@@ -628,7 +628,7 @@ By default, tool output is wrapped in a `Box` that handles padding and backgroun
 Set `renderShell: "self"` when the tool should draw its own shell instead of using the default `Box`. This is useful for tools that need complete control over framing or background behavior, for example large previews that must stay visually stable after the tool settles.
 
 ```typescript
-pi.registerTool({
+atomic.registerTool({
   name: "my_tool",
   label: "My Tool",
   description: "Custom shell example",

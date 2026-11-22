@@ -549,10 +549,10 @@ function asRecordFailure(record: SubagentChildRecord, error: Error): ReleasedChi
 }
 
 /** Append `record`, already observed as its child's full latest record, and point the index at its entry. */
-async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
+async function appendObserved(atomic: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
 	pendingSubagentChildWrites.add(record);
 	try {
-		await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		await atomic.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
 	} catch (error) {
 		throw recordAppendFailure(record, error as Error);
 	} finally {
@@ -567,10 +567,10 @@ async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: Sub
  * lost.
  */
 /** Settles once `record` is appended: `true`, or `false` when appending it failed, which is reported as a failure. */
-function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<boolean> {
+function appendInOrder(atomic: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<boolean> {
 	const full = observeSubagentChildRecord(record);
 	pendingSubagentChildWrites.add(full);
-	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).then(
+	return inOrder(full.owner.sessionId, () => appendObserved(atomic, full)).then(
 		() => true,
 		(error: Error) => {
 			observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
@@ -585,7 +585,7 @@ function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentCh
  * a wake waits for. Settles once each is appended; a failed append is counted, not lost.
  */
 export async function saveUnsavedSubagentChildRecords(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 ): Promise<void> {
 	// Newer records of a child whose earlier ones left the window are saved whole, merged over those.
@@ -594,7 +594,7 @@ export async function saveUnsavedSubagentChildRecords(
 	for (const record of unsavedSubagentChildRecordsOf(ownerSessionId)) {
 		if (pendingSubagentChildWrites.has(record)) continue;
 		void inOrder(ownerSessionId, async () => {
-			if (isUnsavedSubagentChildRecord(record)) await appendObserved(pi, record);
+			if (isUnsavedSubagentChildRecord(record)) await appendObserved(atomic, record);
 		}).catch((error: Error) => {
 			observeChildRecordFailure(ownerSessionId, asRecordFailure(record, error));
 		});
@@ -609,11 +609,11 @@ export function subagentChildRecordsAppended(ownerSessionId: string): Promise<vo
 
 /** Append child records to the owning session in launch order. */
 export function createSubagentChildRecordSink(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ctx: Pick<ExtensionContext, "sessionManager">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
-	pi = subagentChildOwnerWriter(pi, ctx.sessionManager);
+	atomic = subagentChildOwnerWriter(atomic, ctx.sessionManager);
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	const worktreeRootMappings = currentWorktreeRootMappings();
 	let appended: Promise<boolean> = Promise.resolve(true);
@@ -627,15 +627,15 @@ export function createSubagentChildRecordSink(
 				...(worktreeRootMappings.length > 0 ? { worktreeRootMappings } : {}),
 				...input,
 			};
-			appended = appendInOrder(pi, record);
+			appended = appendInOrder(atomic, record);
 		},
 		flushed: () => appended.then(() => undefined),
 		saved: () => appended,
 		clearHeldToolResults: (childId, toolCallIds) =>
-			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
-		holdNotices: (childId, notices) => holdSubagentChildNotices(pi, owner.sessionId, childId, notices),
+			clearSubagentChildHeldToolResults(atomic, owner.sessionId, childId, toolCallIds),
+		holdNotices: (childId, notices) => holdSubagentChildNotices(atomic, owner.sessionId, childId, notices),
 		clearHeldNotices: (childId, completionIds) =>
-			clearSubagentChildHeldNotices(pi, owner.sessionId, childId, completionIds),
+			clearSubagentChildHeldNotices(atomic, owner.sessionId, childId, completionIds),
 	};
 }
 
@@ -650,7 +650,7 @@ const STOPPED_STATUSES: ReadonlySet<string | undefined> = new Set(["paused", "qu
  * the caller delivers the messages some other way.
  */
 export async function holdSubagentChildMessages(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	messages: readonly string[],
@@ -670,7 +670,7 @@ export async function holdSubagentChildMessages(
 		if (kind === undefined || latest.taskId === undefined) return;
 		const held = latest.heldMessages?.taskId === latest.taskId ? latest.heldMessages : undefined;
 		await appendObserved(
-			pi,
+			atomic,
 			observeSubagentChildRecord({
 				...latest,
 				heldMessages: {
@@ -696,7 +696,7 @@ export async function holdSubagentChildMessages(
  * way.
  */
 export async function holdSubagentChildNotices(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	notices: readonly SubagentChildHeldNotice[],
@@ -717,7 +717,7 @@ export async function holdSubagentChildNotices(
 		const held = [...(latest.heldNotices ?? [])];
 		for (const notice of notices)
 			if (!held.some((kept) => kept.details.completionId === notice.details.completionId)) held.push(notice);
-		await appendObserved(pi, observeSubagentChildRecord({ ...latest, heldNotices: held }));
+		await appendObserved(atomic, observeSubagentChildRecord({ ...latest, heldNotices: held }));
 		outcome = kind;
 	});
 	return outcome;
@@ -725,7 +725,7 @@ export async function holdSubagentChildNotices(
 
 /** Stop holding the notices of `completionIds`: a run of the child saved them. */
 export async function clearSubagentChildHeldNotices(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	completionIds: readonly string[],
@@ -737,7 +737,7 @@ export async function clearSubagentChildHeldNotices(
 		const held = latest?.heldNotices ?? [];
 		const kept = held.filter((notice) => !completionIds.includes(notice.details.completionId));
 		if (latest === undefined || kept.length === held.length) return;
-		await appendObserved(pi, observeSubagentChildRecord({ ...latest, heldNotices: kept }));
+		await appendObserved(atomic, observeSubagentChildRecord({ ...latest, heldNotices: kept }));
 	}).catch((error: Error) => {
 		observeChildRecordFailure(
 			ownerSessionId,
@@ -781,7 +781,7 @@ export function takeSubagentChildStop(taskId: string): SubagentChildStopStatus |
  * child the index has no record of.
  */
 export async function recordSubagentChildStatus(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	record: SubagentChildRecord,
 	terminalStatus: string,
 ): Promise<void> {
@@ -789,7 +789,7 @@ export async function recordSubagentChildStatus(
 		const reading = recordReadable(record.owner.sessionId, record.childId);
 		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
-		await appendObserved(pi, observeSubagentChildRecord({ ...latest, state: "terminal", terminalStatus }));
+		await appendObserved(atomic, observeSubagentChildRecord({ ...latest, state: "terminal", terminalStatus }));
 	});
 }
 
@@ -799,7 +799,7 @@ export async function recordSubagentChildStatus(
  * Returns the child's latest record after it, which tells the caller what the child now is.
  */
 export async function recordSubagentChildStop(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
 ): Promise<SubagentChildRecord> {
@@ -814,7 +814,7 @@ export async function recordSubagentChildStop(
 		const paused = latest.terminalStatus === "paused";
 		if (!released && !(status === "quit" && paused)) return;
 		result = observeSubagentChildRecord({ ...latest, terminalStatus: status });
-		await appendObserved(pi, result);
+		await appendObserved(atomic, result);
 	});
 	return result;
 }
@@ -826,7 +826,7 @@ export async function recordSubagentChildStop(
  * that is not saved must not be dropped.
  */
 export async function recordSubagentChildHeldToolResults(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	heldToolResults: readonly DetachedToolResult[],
@@ -841,14 +841,14 @@ export async function recordSubagentChildHeldToolResults(
 			...latest,
 			heldToolResults: withHeldToolResults(latest.heldToolResults, heldToolResults),
 		});
-		await appendObserved(pi, record);
+		await appendObserved(atomic, record);
 		next = record;
 	});
 	return next as SubagentChildRecord;
 }
 
 export async function clearSubagentChildHeldToolResults(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	toolCallIds: readonly string[],
@@ -865,7 +865,7 @@ export async function clearSubagentChildHeldToolResults(
 		);
 		if (kept.length === held.length && waitingOn?.length === latest.waitingOn?.length) return;
 		await appendObserved(
-			pi,
+			atomic,
 			observeSubagentChildRecord({
 				...latest,
 				heldToolResults: kept,
@@ -890,13 +890,13 @@ export async function clearSubagentChildHeldToolResults(
  * arrives, and the held result tells the child so once. Undefined when there was nothing to report.
  */
 export async function holdInterruptedStillRunningCalls(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	generation: string,
 	resultOf: (call: SubagentChildStillRunningCall) => DetachedToolResult,
 ): Promise<SubagentChildRecord | undefined> {
-	return appendInTurn(pi, ownerSessionId, childId, (latest) => {
+	return appendInTurn(atomic, ownerSessionId, childId, (latest) => {
 		const tracked = latest.stillRunning ?? [];
 		const interrupted = tracked.filter((call) => call.ownerGeneration !== generation);
 		if (interrupted.length === 0) return undefined;
@@ -921,7 +921,7 @@ function withHeldToolResults(
 
 /** Record a reply before its broker acknowledges it; a duplicate or expired question is refused. */
 export async function recordSubagentChildReply(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	questionId: string,
@@ -950,7 +950,7 @@ export async function recordSubagentChildReply(
 			heldToolResults: withHeldToolResults(latest.heldToolResults, [result]),
 		};
 		try {
-			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+			await atomic.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
 		} catch (error) {
 			throw recordAppendFailure(record, error as Error);
 		}
@@ -961,7 +961,7 @@ export async function recordSubagentChildReply(
 }
 
 async function appendInTurn(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	next: (latest: SubagentChildRecord) => SubagentChildRecord | undefined,
@@ -975,20 +975,20 @@ async function appendInTurn(
 		const update = next(latest);
 		if (update === undefined) return;
 		const record = observeSubagentChildRecord(update);
-		await appendObserved(pi, record);
+		await appendObserved(atomic, record);
 		written = record;
 	});
 	return written;
 }
 
 export async function recordSubagentChildWakeFailure(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	toolResults: readonly DetachedToolResult[],
 	failure: ReleasedChildError,
 ): Promise<void> {
-	await appendInTurn(pi, ownerSessionId, childId, (latest) => {
+	await appendInTurn(atomic, ownerSessionId, childId, (latest) => {
 		const reported = currentWakeFailure(latest)?.reported;
 		return {
 			...latest,
@@ -1007,11 +1007,11 @@ export async function recordSubagentChildWakeFailure(
 }
 
 export function reportSubagentChildWakeFailure(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 ): Promise<SubagentChildRecord | undefined> {
-	return appendInTurn(pi, ownerSessionId, childId, (latest) => {
+	return appendInTurn(atomic, ownerSessionId, childId, (latest) => {
 		const failure = currentWakeFailure(latest);
 		return failure === undefined || failure.reported
 			? undefined
@@ -1025,10 +1025,10 @@ export function reportSubagentChildWakeFailure(
  * like every other record: the child keeps its identity and only its latest state changes.
  */
 export async function recordSubagentChildGone(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	record: SubagentChildRecord,
 ): Promise<void> {
-	await recordSubagentChildStatus(pi, record, SUBAGENT_CHILD_GONE_STATUS);
+	await recordSubagentChildStatus(atomic, record, SUBAGENT_CHILD_GONE_STATUS);
 }
 
 /**

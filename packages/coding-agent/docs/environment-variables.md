@@ -46,7 +46,7 @@ Atomic reads environment variables for configuration, provider credentials, term
 | `ATOMIC_STDIN_TIMEOUT_MS` | `PI_STDIN_TIMEOUT_MS` | Milliseconds a print-mode run (`-p`, `--mode json`) waits for the first piped byte or EOF before starting with a prompt argument; default `2000`, max `2147483647`, `0` waits until EOF. See [Modes](/reference/cli#modes) |
 | `ATOMIC_TOOL_ABORT_GRACE_MS` | None | Milliseconds an interrupted tool call may keep running before the turn moves on with `Operation aborted`; default `10000`, max `2147483647`, `0` stops waiting immediately. See [Message queue](/usage#message-queue) |
 | `ATOMIC_CODEMODE_MAX_WORKERS` | `PI_CODEMODE_MAX_WORKERS` | Maximum live codemode workers per Atomic process; default `2` (each worker caps at 256 MiB). Extra scripts queue until a slot opens. See [Codemode](/codemode) |
-| `ATOMIC_HOST_SPAWN` | None | Set to `child-process` to launch Atomic's internal helper processes (snapshot Git, `pi.exec`, `rg`, `fd`, worktree setup) through Node's `child_process`. On Linux this disables the fork-free native spawner; on Windows it also bypasses per-command Job objects for `!` shells and ownerless `bash`/`powershell` calls |
+| `ATOMIC_HOST_SPAWN` | None | Set to `child-process` to launch Atomic's internal helper processes (snapshot Git, `atomic.exec`, `rg`, `fd`, worktree setup) through Node's `child_process`. On Linux this disables the fork-free native spawner; on Windows it also bypasses per-command Job objects for `!` shells and ownerless `bash`/`powershell` calls |
 
 ## Runtime, terminal, and native environment variables
 

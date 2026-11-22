@@ -42,7 +42,7 @@ function pauseNow(ms: number): void {
 }
 
 /**
- * When this engine child exits after its host is gone without quitting, it ends the extensions' `pi.exec` commands
+ * When this engine child exits after its host is gone without quitting, it ends the extensions' `atomic.exec` commands
  * still running that a quit would have stopped, with the processes they started, at once (`SIGKILL`). Other processes
  * extensions started, a command a `session_shutdown` handler started, and what a finished command left running stay as
  * they are, as after a quit. Only for an engine its host started itself, and not on Windows, where the host's end ends

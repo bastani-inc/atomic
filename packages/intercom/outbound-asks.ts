@@ -246,11 +246,11 @@ function* settledOutcomes(value: unknown): Generator<[string, Exclude<OutboundAs
  * supervisor, was answered, once the reply is saved as taken: a reopened session then keeps none of its replies.
  */
 export async function recordAnsweredQuestion(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	atomic: Pick<ExtensionAPI, "appendEntry">,
 	questionId: string,
 ): Promise<void> {
 	try {
-		await pi.appendEntry(OUTBOUND_ASK_SETTLED_ENTRY, { askId: questionId, state: "answered" });
+		await atomic.appendEntry(OUTBOUND_ASK_SETTLED_ENTRY, { askId: questionId, state: "answered" });
 	} catch {
 		// Unsaved, the reply stays in a reopened session, which records the answer then.
 	}

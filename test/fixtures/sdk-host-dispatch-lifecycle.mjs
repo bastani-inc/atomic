@@ -38,8 +38,8 @@ export default function(pi) {
   const contexts = [];
   const calls = [];
   const humanInput = { confirm: async (title, message) => { calls.push([title, message]); return true; }, select: async () => undefined, input: async () => "", editor: async () => "", questionnaire: async () => ({ answers: [], cancelled: true }) };
-  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, extensionFactories: [pi => {
-   pi.on("session_start", async (event, context) => {
+  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, extensionFactories: [atomic => {
+   atomic.on("session_start", async (event, context) => {
     contexts.push(context);
     if (event.reason === "reload") {
      assert.equal(await context.ui.confirm("new generation", "  raw\n"), true);
@@ -70,14 +70,14 @@ export default function(pi) {
   let shutdowns = 0;
   let emitBus;
   const suspend = async () => { entered.resolve(); await release.promise; active++; };
-  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, extensionFactories: [pi => {
-   if (mode === "thinking") pi.on("thinking_level_select", suspend);
-   if (mode === "name") pi.on("session_info_changed", suspend);
-   if (mode === "context") pi.on("context", suspend);
-   pi.events.on("drain", suspend);
-   emitBus = () => pi.events.emit("drain", {});
-   pi.registerShortcut("ctrl+shift+j", { handler: suspend });
-   pi.on("session_shutdown", () => { shutdowns++; active = 0; });
+  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, extensionFactories: [atomic => {
+   if (mode === "thinking") atomic.on("thinking_level_select", suspend);
+   if (mode === "name") atomic.on("session_info_changed", suspend);
+   if (mode === "context") atomic.on("context", suspend);
+   atomic.events.on("drain", suspend);
+   emitBus = () => atomic.events.emit("drain", {});
+   atomic.registerShortcut("ctrl+shift+j", { handler: suspend });
+   atomic.on("session_shutdown", () => { shutdowns++; active = 0; });
   }] });
   await loader.reload();
   ({ session } = await createAgentSession({ ...options, resourceLoader: loader, model: getModel("anthropic", "claude-sonnet-4-5") }));

@@ -127,8 +127,8 @@ describe("compaction settings after the clear-and-recover change", () => {
 
 	/** An extension that registers one chat model under the `review-custom` provider. */
 	function customProvider(id: string): ExtensionFactory {
-		return (pi) => {
-			pi.registerProvider("review-custom", {
+		return (atomic) => {
+			atomic.registerProvider("review-custom", {
 				baseUrl: "http://127.0.0.1:9/v1",
 				apiKey: "review-custom-key",
 				api: "openai-completions",
