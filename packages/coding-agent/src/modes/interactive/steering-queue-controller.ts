@@ -37,6 +37,8 @@ export interface SteeringPromptOptions {
 	preflightResult?: (success: boolean, disposition?: PromptDisposition) => void;
 	/** When the message is queued, the id the target queues it with. */
 	queuedMessageId?: string;
+	/** Ephemeral send id linking this prompt submission to its relayed user `message_start`. */
+	originSendId?: string;
 }
 
 export interface SteeringClearOptions {
@@ -103,6 +105,8 @@ export interface SteeringSubmitOptions {
 	onAnswered?: (success: boolean, disposition?: PromptDisposition) => void;
 	/** Called as soon as the target's call for an accepted submission returns, before `submit` settles. */
 	onSent?: () => void;
+	/** Ephemeral send id linking this prompt submission to its relayed user `message_start`. */
+	originSendId?: string;
 }
 
 /**
@@ -397,6 +401,7 @@ export class SteeringQueueController {
 			await this.target.prompt(text, {
 				...(queueLane !== undefined ? { streamingBehavior: queueLane } : {}),
 				...(shown?.id === undefined ? {} : { queuedMessageId: shown.id }),
+				...(options.originSendId === undefined ? {} : { originSendId: options.originSendId }),
 				preflightResult: (success, answered) => {
 					accepted = success;
 					disposition = answered;

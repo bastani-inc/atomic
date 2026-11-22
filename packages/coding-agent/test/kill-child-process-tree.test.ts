@@ -9,7 +9,35 @@ const taskkill = vi.hoisted(() => ({
 	runs: [] as string[][],
 	ends: "exit" as "exit" | "error",
 	onExit: undefined as (() => void) | undefined,
+	nativeMode: "unavailable" as "unavailable" | "held" | "absent",
+	nativeHoldCalls: [] as number[],
+	nativeEnded: 0,
 }));
+
+vi.mock("../src/core/process-tree-containment.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/process-tree-containment.ts")>();
+	return {
+		...actual,
+		holdProcessDescendantsResult: (pid: number) => {
+			taskkill.nativeHoldCalls.push(pid);
+			if (taskkill.nativeMode === "held") {
+				return {
+					kind: "held" as const,
+					held: {
+						count: 1,
+						endAll: () => {
+							taskkill.nativeEnded++;
+							return true;
+						},
+						release: () => {},
+					},
+				};
+			}
+			if (taskkill.nativeMode === "absent") return { kind: "absent" as const };
+			return { kind: "unavailable" as const };
+		},
+	};
+});
 
 vi.mock("child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof ChildProcessModule>();
@@ -63,6 +91,9 @@ beforeEach(() => {
 	taskkill.runs.length = 0;
 	taskkill.ends = "exit";
 	taskkill.onExit = undefined;
+	taskkill.nativeMode = "unavailable";
+	taskkill.nativeHoldCalls.length = 0;
+	taskkill.nativeEnded = 0;
 });
 
 afterEach(() => {
@@ -127,6 +158,20 @@ describe("stopping a child's process tree without a Job object (#5377)", () => {
 
 		assert.deepEqual(taskkill.runs, [], "the pid may already name another process");
 		assert.equal(exited.kill.mock.calls.length, 0);
+	});
+
+	test("on Windows, with the native module available, a running root is ended via holdProcessDescendants without taskkill", async () => {
+		onPlatform("win32");
+		taskkill.nativeMode = "held";
+		const running = child(null);
+
+		killChildProcessTree(running as unknown as ChildProcess, false);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.deepEqual(taskkill.nativeHoldCalls, [ROOT_PID]);
+		assert.equal(taskkill.nativeEnded, 1);
+		assert.deepEqual(taskkill.runs, []);
+		assert.equal(running.kill.mock.calls.length, 0);
 	});
 
 	test.each(["linux", "win32"] as const)(

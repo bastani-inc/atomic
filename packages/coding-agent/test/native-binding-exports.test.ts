@@ -37,6 +37,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"SubagentControl",
 	"TerminationCause",
 	"containProcessTree",
+	"containProcessTreeAllowingBreakaway",
 	"glob",
 	"grep",
 	"hasMatch",

@@ -133,6 +133,8 @@ export type {
 	SessionHistoryTotals,
 	SessionRecoveryState,
 	SessionResume,
+	SessionResumeRetainedSetting,
+	SessionResumeRetainedSettings,
 	SessionSearchCoverage,
 	SessionSearchExtendOptions,
 	SessionSearchIndex,
