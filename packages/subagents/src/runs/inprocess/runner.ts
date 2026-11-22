@@ -1440,6 +1440,7 @@ function settledTranscript(
 	};
 	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
+		...(sessionFile === undefined ? {} : { getSessionFile: () => sessionFile }),
 		getEntries: () => [],
 		...(store !== undefined
 			? {
@@ -1525,6 +1526,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 			: undefined;
 	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
+		...(sessionFile === undefined ? {} : { getSessionFile: () => sessionFile }),
 		getEntries: () => [],
 		...(store !== undefined
 			? {
