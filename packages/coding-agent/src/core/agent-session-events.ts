@@ -893,11 +893,11 @@ export function closeAgentSession(
 		});
 		await attempt("event subscriptions", () => cancelSessionSubscriptions(session));
 		await attempt("shell abort", () => abortBash.call(session));
-		const abortSignal = session.agent.signal;
 		await attempt("abort", () => abortCurrentGeneration.call(session));
 		// Once disposal moves past the abort step (including when the shutdown deadline expires before a long abort
-		// grace), any remaining grace timer must not hold the process open past dispose().
-		releaseToolAbortGraceTimers(abortSignal);
+		// grace, or when nested/codemode tools armed grace timers under custom signals), unref every grace timer owned
+		// by this session so dispose() never leaves a timer holding the process open.
+		releaseToolAbortGraceTimers(session);
 		await attempt("reload rollback", () => drainSessionReload(session));
 		await attempt("tasks", () => session.closeSessionTasks());
 		await attempt("summary", () => session.abortSessionSummary());

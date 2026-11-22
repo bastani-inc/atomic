@@ -459,6 +459,7 @@ function enqueueBehindActiveCapture(
 		() => expireActiveCaptureWait(slots, key, active),
 		Math.max(0, active.startedMs + queuedCaptureWaitMs() - performance.now()),
 	);
+	timer.unref?.();
 	const queued: QueuedCheckoutCapture = {
 		start: () => beginCapture(slots, key, capture, true),
 		promise,

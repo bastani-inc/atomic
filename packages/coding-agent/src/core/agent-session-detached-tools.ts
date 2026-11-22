@@ -578,7 +578,7 @@ export function detachableTool(
 				interrupted = true;
 				abort(signal?.reason);
 				graceMs = toolAbortGraceMs();
-				graceTimer = armToolAbortGraceTimer(signal, graceMs, () => open(ABANDON));
+				graceTimer = armToolAbortGraceTimer(session, graceMs, () => open(ABANDON));
 			};
 			if (signal?.aborted) forwardAbort();
 			else signal?.addEventListener("abort", forwardAbort, { once: true });
@@ -614,7 +614,7 @@ export function detachableTool(
 			} finally {
 				hold.gate = undefined;
 				clearTimeout(timer);
-				clearToolAbortGraceTimer(signal, graceTimer);
+				clearToolAbortGraceTimer(session, graceTimer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}

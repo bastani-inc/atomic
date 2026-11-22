@@ -249,12 +249,14 @@ async function openPort(
 						panelDrawn(),
 						new Promise<void>((resolve) => {
 							panelTimer = setTimeout(resolve, PANEL_FIRST_FRAME_TIMEOUT_MS);
+							panelTimer.unref?.();
 						}),
 					]);
 				return first;
 			}),
 			new Promise<boolean>((resolve) => {
 				timer = setTimeout(() => resolve(true), FIRST_FRAME_TIMEOUT_MS);
+				timer.unref?.();
 			}),
 		]);
 	} finally {

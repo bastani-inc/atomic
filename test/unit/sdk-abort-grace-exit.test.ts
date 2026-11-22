@@ -17,6 +17,12 @@ const CHILD_PROCESS_TIMEOUT_MS = 30_000;
 const ABORT_GRACE_MS = 200;
 /** Detachment deadline shorter than the abort grace so the detachment timer expires before grace does. */
 const SHORT_DETACH_MS = 50;
+/** Grace window long enough to distinguish immediate exit from lingering through grace. */
+const LINGER_GRACE_MS = 4_000;
+/** Maximum acceptable process-exit linger after a script reaches its end with no awaited timer. */
+const MAX_EXIT_LINGER_MS = 1_500;
+/** Maximum acceptable process-exit linger for the 2 s remote-port frame timer regression test. */
+const MAX_REMOTE_PORT_LINGER_MS = 1_000;
 /** Large grace window used to prove idle and clean-abort processes do not wait for grace before exiting. */
 const LONG_GRACE_MS = 60_000;
 
@@ -29,6 +35,24 @@ const rpcTerminalDrainUrl = pathToFileURL(
 const storageStatusUrl = pathToFileURL(join(repoRoot, "packages/coding-agent/src/core/storage/storage-status.ts")).href;
 const toolAbortGraceUrl = pathToFileURL(
 	join(repoRoot, "packages/coding-agent/src/core/tools/tool-abort-grace.ts"),
+).href;
+const taskProjectionUrl = pathToFileURL(join(repoRoot, "test/helpers/task-projection.ts")).href;
+const sessionManagerUrl = pathToFileURL(join(repoRoot, "packages/coding-agent/src/core/session-manager.ts")).href;
+const taskViewSourceUrl = pathToFileURL(
+	join(repoRoot, "packages/coding-agent/src/core/tasks/task-view-source.ts"),
+).href;
+const taskResumerUrl = pathToFileURL(join(repoRoot, "packages/coding-agent/src/core/tasks/task-resumer.ts")).href;
+const worktreeSnapshotsUrl = pathToFileURL(
+	join(repoRoot, "packages/coding-agent/src/core/session-worktree-snapshots.ts"),
+).href;
+const worktreeSnapshotSettingsUrl = pathToFileURL(
+	join(repoRoot, "packages/coding-agent/src/core/worktree-snapshot/settings.ts"),
+).href;
+const remoteComponentUrl = pathToFileURL(
+	join(repoRoot, "packages/coding-agent/src/modes/interactive-engine/remote-component.ts"),
+).href;
+const remotePortUrl = pathToFileURL(
+	join(repoRoot, "packages/coding-agent/src/modes/interactive/agent-view/remote-port.ts"),
 ).href;
 
 // Atomic's sources import `.js` specifiers that name `.ts` files; Bun resolves them, and so does this hook for Node.
@@ -58,6 +82,7 @@ async function runScript(
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly elapsedMs: number;
+	readonly exitedWallMs: number;
 }> {
 	const dir = makeTempDirectory("atomic-sdk-abort-exit-");
 	tempDirs.push(dir);
@@ -79,7 +104,18 @@ async function runScript(
 		readStreamText(child.stdout),
 		readStreamText(child.stderr),
 	]);
-	return { exitCode, stdout, stderr, elapsedMs: performance.now() - startedAt };
+	return { exitCode, stdout, stderr, elapsedMs: performance.now() - startedAt, exitedWallMs: Date.now() };
+}
+
+/** Milliseconds the process lingered after printing `EXIT_AT:<epochMs>` at the end of its script. */
+function exitLingerMs(run: {
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly exitedWallMs: number;
+}): number {
+	const match = /EXIT_AT:(\d+)/.exec(run.stdout);
+	assert.ok(match, `expected EXIT_AT marker in stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+	return Math.max(0, run.exitedWallMs - Number(match[1]));
 }
 
 function sdkStuckAbortScript(options: {
@@ -362,17 +398,21 @@ console.log("JOINED_DRAIN_SETTLED:" + (settledError?.message ?? "none"));
 	);
 
 	test(
-		"releaseToolAbortGraceTimers unrefs active and subsequent grace timers for a disposed signal so the process exits promptly",
+		"releaseToolAbortGraceTimers unrefs active and subsequent grace timers for a disposed owner even while an observed wait was active",
 		async () => {
 			const run = await runScript(
 				"node",
 				`
-const { armToolAbortGraceTimer, releaseToolAbortGraceTimers } = await import(${JSON.stringify(toolAbortGraceUrl)});
-const controller = new AbortController();
-armToolAbortGraceTimer(controller.signal, ${LONG_GRACE_MS}, () => console.log("SHOULD_NOT_HOLD_EXIT_1"));
-releaseToolAbortGraceTimers(controller.signal);
-armToolAbortGraceTimer(controller.signal, ${LONG_GRACE_MS}, () => console.log("SHOULD_NOT_HOLD_EXIT_2"));
+const { armToolAbortGraceTimer, holdToolAbortGraceWhenObserved, releaseToolAbortGraceTimers } = await import(${JSON.stringify(toolAbortGraceUrl)});
+const owner = {};
+const held = holdToolAbortGraceWhenObserved(owner, new Promise(() => {}));
+// Observe the promise so active timers for owner are promoted to ref'd, then release on disposal.
+held.then(() => {});
+armToolAbortGraceTimer(owner, ${LONG_GRACE_MS}, () => console.log("SHOULD_NOT_HOLD_EXIT_1"));
+releaseToolAbortGraceTimers(owner);
+armToolAbortGraceTimer(owner, ${LONG_GRACE_MS}, () => console.log("SHOULD_NOT_HOLD_EXIT_2"));
 console.log("RELEASED_GRACE_EXITED");
+console.log("EXIT_AT:" + Date.now());
 `,
 				{},
 				{ sourceTs: true },
@@ -380,7 +420,8 @@ console.log("RELEASED_GRACE_EXITED");
 			assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
 			assert.match(run.stdout, /RELEASED_GRACE_EXITED/);
 			assert.doesNotMatch(run.stdout, /SHOULD_NOT_HOLD_EXIT/);
-			assert.ok(run.elapsedMs < LONG_GRACE_MS / 2, `released grace exited promptly (${run.elapsedMs} ms)`);
+			const lingerMs = exitLingerMs(run);
+			assert.ok(lingerMs < MAX_EXIT_LINGER_MS, `released grace lingered ${lingerMs} ms`);
 		},
 		CHILD_PROCESS_TIMEOUT_MS,
 	);
@@ -427,6 +468,460 @@ console.log("STATUS_SETTLED:" + sessions?.probe?.connection.status + ":" + sessi
 			);
 			assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
 			assert.match(run.stdout, /STATUS_SETTLED:failed:.*did not answer within 0\.15 s/);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"nested tool aborted under a custom signal does not linger past session.dispose() (#5486)",
+		async () => {
+			const run = await runScript(
+				"node",
+				`
+import { createAssistantMessageEventStream } from ${JSON.stringify(aiCompatEntryUrl)};
+import {
+	AuthStorage,
+	ModelRuntime,
+	SessionManager,
+	SettingsManager,
+	createAgentSession,
+	createExtensionRuntime,
+} from ${JSON.stringify(codingAgentEntryUrl)};
+
+const spec = {
+	id: "m",
+	name: "m",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200_000,
+	maxTokens: 1000,
+};
+const modelRuntime = await ModelRuntime.create({
+	credentials: AuthStorage.inMemory({ p: { type: "api_key", key: "x" } }),
+	modelsPath: null,
+	refreshOnCreate: false,
+});
+function reply(model, content, stopReason) {
+	const stream = createAssistantMessageEventStream();
+	const message = {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		timestamp: Date.now(),
+	};
+	stream.push({ type: "start", partial: message });
+	stream.push({ type: "done", reason: stopReason === "toolUse" ? "toolUse" : "stop", message });
+	stream.end(message);
+	return stream;
+}
+modelRuntime.registerProvider("p", {
+	api: "openai-completions",
+	baseUrl: "https://example.invalid",
+	apiKey: "x",
+	models: [spec],
+	streamSimple: (model, context) => {
+		const lastUser = context.messages.findLastIndex((message) => message.role === "user");
+		if (context.messages.slice(lastUser).some((message) => message.role === "toolResult"))
+			return reply(model, [{ type: "text", text: "done" }], "stop");
+		return reply(model, [{ type: "toolCall", id: "outer-1", name: "outer", arguments: {} }], "toolUse");
+	},
+});
+const stuckChild = {
+	name: "stuck_child",
+	label: "stuck_child",
+	description: "stuck nested tool",
+	parameters: { type: "object", properties: {} },
+	async execute() {
+		await new Promise(() => {});
+		return { content: [], details: undefined };
+	},
+};
+const outer = {
+	name: "outer",
+	label: "outer",
+	description: "calls nested tool with its own signal",
+	parameters: { type: "object", properties: {} },
+	async execute(_id, _params, _signal, _update, ctx) {
+		const local = new AbortController();
+		const nested = ctx.executeTool("stuck_child", {}, { signal: local.signal });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		local.abort(new Error("local timeout"));
+		void nested.catch(() => {});
+		return { content: [{ type: "text", text: "outer done" }], details: undefined };
+	},
+};
+const extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+const resourceLoader = {
+	getExtensions: () => extensionsResult,
+	getSkills: () => ({ skills: [], diagnostics: [] }),
+	getPrompts: () => ({ prompts: [], diagnostics: [] }),
+	getThemes: () => ({ themes: [], diagnostics: [] }),
+	getAgentsFiles: () => ({ agentsFiles: [] }),
+	getSystemPrompt: () => undefined,
+	getSystemPromptSource: () => undefined,
+	getAppendSystemPrompt: () => [],
+	getAppendSystemPromptSources: () => [],
+	extendResources: async () => {},
+	reload: async () => {},
+};
+const { session } = await createAgentSession({
+	cwd: process.cwd(),
+	agentDir: process.cwd(),
+	builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+	modelRuntime,
+	model: modelRuntime.getModel("p", "m"),
+	settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+	sessionManager: SessionManager.inMemory(),
+	resourceLoader,
+	customTools: [stuckChild, outer],
+});
+await session.prompt("go");
+await session.dispose();
+console.log("EXIT_AT:" + Date.now());
+`,
+				{ ATOMIC_TOOL_ABORT_GRACE_MS: String(LINGER_GRACE_MS) },
+			);
+			assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+			const lingerMs = exitLingerMs(run);
+			assert.ok(lingerMs < MAX_EXIT_LINGER_MS, `nested custom-signal grace lingered ${lingerMs} ms after dispose()`);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	for (const runtime of ["node", "bun"] as const) {
+		test(
+			`${runtime} unawaited void session.abort() against a stuck tool exits promptly without lingering for grace (#5486)`,
+			async () => {
+				const body = `
+const started = Promise.withResolvers();
+const modelRuntime = await ModelRuntime.create({
+	credentials: AuthStorage.inMemory({ p: { type: "api_key", key: "x" } }),
+	modelsPath: null,
+	refreshOnCreate: false,
+});
+modelRuntime.registerProvider("p", {
+	api: "openai-completions",
+	baseUrl: "https://example.invalid",
+	apiKey: "x",
+	models: [spec],
+	streamSimple: (model, context) => {
+		const lastUser = context.messages.findLastIndex((message) => message.role === "user");
+		if (context.messages.slice(lastUser).some((message) => message.role === "toolResult"))
+			return reply(model, [{ type: "text", text: "done" }], "stop");
+		return reply(model, [{ type: "toolCall", id: "stuck-1", name: "stuck", arguments: {} }], "toolUse");
+	},
+});
+const stuck = {
+	name: "stuck",
+	label: "stuck",
+	description: "stuck",
+	parameters: { type: "object", properties: {} },
+	async execute() {
+		started.resolve();
+		await new Promise(() => {});
+		return { content: [], details: undefined };
+	},
+};
+const { session } = await createAgentSession({
+	cwd: process.cwd(),
+	agentDir: process.cwd(),
+	builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
+	modelRuntime,
+	model: modelRuntime.getModel("p", "m"),
+	settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+	sessionManager: SessionManager.inMemory(),
+	resourceLoader: createTestResourceLoader(),
+	customTools: [stuck],
+});
+void session.prompt("go").catch(() => {});
+await started.promise;
+void session.abort();
+console.log("EXIT_AT:" + Date.now());
+`;
+				const wrapped =
+					runtime === "bun"
+						? `async function main() {\n${body}\n}\nmain().catch((error) => { console.error(error); process.exitCode = 1; });`
+						: body;
+				const run = await runScript(
+					runtime,
+					`
+import { createAssistantMessageEventStream } from ${JSON.stringify(aiCompatEntryUrl)};
+import {
+	AuthStorage,
+	ModelRuntime,
+	SessionManager,
+	SettingsManager,
+	createAgentSession,
+	createExtensionRuntime,
+} from ${JSON.stringify(codingAgentEntryUrl)};
+
+const spec = {
+	id: "m",
+	name: "m",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200_000,
+	maxTokens: 1000,
+};
+function createTestResourceLoader() {
+	const extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+	return {
+		getExtensions: () => extensionsResult,
+		getSkills: () => ({ skills: [], diagnostics: [] }),
+		getPrompts: () => ({ prompts: [], diagnostics: [] }),
+		getThemes: () => ({ themes: [], diagnostics: [] }),
+		getAgentsFiles: () => ({ agentsFiles: [] }),
+		getSystemPrompt: () => undefined,
+		getSystemPromptSource: () => undefined,
+		getAppendSystemPrompt: () => [],
+		getAppendSystemPromptSources: () => [],
+		extendResources: async () => {},
+		reload: async () => {},
+	};
+}
+function reply(model, content, stopReason) {
+	const stream = createAssistantMessageEventStream();
+	const message = {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		timestamp: Date.now(),
+	};
+	stream.push({ type: "start", partial: message });
+	stream.push({ type: "done", reason: stopReason === "toolUse" ? "toolUse" : "stop", message });
+	stream.end(message);
+	return stream;
+}
+${wrapped}
+`,
+					{ ATOMIC_TOOL_ABORT_GRACE_MS: String(LINGER_GRACE_MS) },
+				);
+				assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+				const lingerMs = exitLingerMs(run);
+				assert.ok(
+					lingerMs < MAX_EXIT_LINGER_MS,
+					`${runtime} unawaited void session.abort() lingered ${lingerMs} ms`,
+				);
+			},
+			CHILD_PROCESS_TIMEOUT_MS,
+		);
+	}
+
+	test(
+		"fire-and-forget sendTaskMessage does not pin process exit for 10 s when OwnerTaskStore disposes",
+		async () => {
+			const run = await runScript(
+				"node",
+				`
+const { taskFixture } = await import(${JSON.stringify(taskProjectionUrl)});
+const { SessionManager } = await import(${JSON.stringify(sessionManagerUrl)});
+const { ownerTaskViewSource } = await import(${JSON.stringify(taskViewSourceUrl)});
+const { bindTaskResumer } = await import(${JSON.stringify(taskResumerUrl)});
+const fixture = taskFixture();
+await fixture.start("subagent work");
+const session = SessionManager.inMemory();
+const transcript = Object.assign(session, {
+	subscribe: () => () => {},
+	isRunning: () => false,
+	queueMessage: async () => ({ delivered: false, reason: "ended" }),
+});
+fixture.runners[0].context.bindTranscript(transcript);
+bindTaskResumer(fixture.store.supervisor, { readOnlyReason: () => undefined, resume: async () => ({ ok: true }) });
+const source = ownerTaskViewSource(fixture.store);
+const taskId = fixture.store.tasks[0].ref.taskId;
+void source.sendTaskMessage(taskId, "follow up").catch(() => {});
+await new Promise((resolve) => setTimeout(resolve, 30));
+fixture.store.dispose();
+await fixture.supervisor.close?.();
+console.log("EXIT_AT:" + Date.now());
+`,
+				{},
+				{ sourceTs: true },
+			);
+			assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+			const lingerMs = exitLingerMs(run);
+			assert.ok(lingerMs < MAX_EXIT_LINGER_MS, `agentTaskSettles lingered ${lingerMs} ms after store.dispose()`);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"abandoned queued worktree snapshot capture does not pin process exit for 10 s",
+		async () => {
+			const run = await runScript(
+				"node",
+				`
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const { SessionWorktreeSnapshotRecorder } = await import(${JSON.stringify(worktreeSnapshotsUrl)});
+const { resolveWorktreeSnapshotSettings } = await import(${JSON.stringify(worktreeSnapshotSettingsUrl)});
+execFileSync("git", ["init", "-q"]);
+execFileSync("git", ["config", "user.email", "t@e.com"]);
+execFileSync("git", ["config", "user.name", "T"]);
+writeFileSync(join(process.cwd(), "a.txt"), "one\\n");
+execFileSync("git", ["add", "a.txt"]);
+execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+const firstEntered = Promise.withResolvers();
+let firstCall = true;
+const stall = async () => {
+	if (firstCall) {
+		firstCall = false;
+		firstEntered.resolve();
+		return await new Promise(() => {});
+	}
+};
+const fakeBlobs = {
+	identity: "fake-blobs",
+	getBlob: async () => undefined,
+	hasBlob: async () => { await stall(); return false; },
+	hasBlobs: async () => { await stall(); return new Set(); },
+	putBlob: async () => { await stall(); },
+	putBlobs: async () => { await stall(); },
+	recordCapture: async () => {},
+	deleteBlobs: async () => 0,
+	listBlobs: async () => [],
+};
+const fakeSessionManager = {
+	isPersisted: () => true,
+	getSessionId: () => "sess-1",
+	getSessionStore: () => ({ snapshotBlobs: fakeBlobs, descriptor: { adapter: "memory", location: ":memory:" } }),
+	getLatestWorktreeSnapshots: () => new Map(),
+	getWorktreeSnapshotRecords: () => new Map(),
+	getWorktreeRootMappings: () => [],
+	getWorktreePathContinuations: () => [],
+	appendWorktreeSnapshot: async () => {},
+	getBranch: () => [],
+	getEntries: () => [],
+};
+const settings = resolveWorktreeSnapshotSettings({ enabled: true });
+const recorder = new SessionWorktreeSnapshotRecorder({
+	cwd: () => process.cwd(),
+	settings: () => settings,
+	sessionManager: fakeSessionManager,
+	declaresWrites: () => false,
+	onUnavailable: () => {},
+});
+const toolMsg = {
+	role: "assistant",
+	content: [{ type: "toolCall", id: "1", name: "write", arguments: { path: "a.txt" } }],
+	api: "openai-completions",
+	provider: "p",
+	model: "m",
+	usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	stopReason: "toolUse",
+	timestamp: Date.now(),
+};
+void recorder.recordTurn(toolMsg).catch(() => {});
+await firstEntered.promise;
+void recorder.recordTurn(toolMsg).catch(() => {});
+await new Promise((resolve) => setTimeout(resolve, 150));
+console.log("EXIT_AT:" + Date.now());
+`,
+				{},
+				{ sourceTs: true },
+			);
+			assert.equal(run.exitCode, 0, `stderr:\n${run.stderr}\nstdout:\n${run.stdout}`);
+			const lingerMs = exitLingerMs(run);
+			assert.ok(lingerMs < MAX_EXIT_LINGER_MS, `enqueueBehindActiveCapture lingered ${lingerMs} ms`);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"abandoned openRemoteAgentViewPort does not delay host shutdown by its frame or panel timers",
+		async () => {
+			const cancelled = await runScript(
+				"node",
+				`
+const { RemoteComponentController } = await import(${JSON.stringify(remoteComponentUrl)});
+const { openRemoteAgentViewPort } = await import(${JSON.stringify(remotePortUrl)});
+const msgListeners = new Set();
+const runtime = {
+	onEngineMessage: (fn) => { msgListeners.add(fn); return () => msgListeners.delete(fn); },
+	onGenerationEnded: () => () => {},
+	sendEngineCommand: () => {},
+	getGeneration: () => 1,
+	requestAgentView: async (cmd) => {
+		if (cmd.type === "agent_view_open") {
+			for (const fn of msgListeners) {
+				fn({ type: "engine_custom_open", componentId: "c1", overlay: false, placement: "transcript", viewId: "v1" });
+			}
+			return { viewId: "v1", status: { agentKey: "k1", taskId: "t1", heldPrompt: false, gone: false } };
+		}
+		return {};
+	},
+};
+new RemoteComponentController(
+	runtime,
+	{ requestRender: () => {}, setWidget: () => {}, custom: () => new Promise(() => {}), onWidgetRelease: () => () => {} },
+	{ isFullscreen: () => true, onRendererReplaced: () => () => {} },
+);
+void openRemoteAgentViewPort(runtime, "t1", { width: 80, rows: 16 }).catch(() => {});
+await new Promise((resolve) => setTimeout(resolve, 20));
+console.log("EXIT_AT:" + Date.now());
+`,
+				{},
+				{ sourceTs: true },
+			);
+			assert.equal(cancelled.exitCode, 0, `stderr:\n${cancelled.stderr}\nstdout:\n${cancelled.stdout}`);
+			const cancelledLingerMs = exitLingerMs(cancelled);
+			assert.ok(
+				cancelledLingerMs < MAX_REMOTE_PORT_LINGER_MS,
+				`openRemoteAgentViewPort first-frame timer lingered ${cancelledLingerMs} ms`,
+			);
+
+			const panelShutdown = await runScript(
+				"node",
+				`
+const { RemoteComponentController } = await import(${JSON.stringify(remoteComponentUrl)});
+const { openRemoteAgentViewPort } = await import(${JSON.stringify(remotePortUrl)});
+const msgListeners = new Set();
+const runtime = {
+	onEngineMessage: (fn) => { msgListeners.add(fn); return () => msgListeners.delete(fn); },
+	onGenerationEnded: () => () => {},
+	sendEngineCommand: () => {},
+	getGeneration: () => 1,
+	requestAgentView: async (cmd) => {
+		if (cmd.type === "agent_view_open") {
+			for (const fn of msgListeners) {
+				fn({ type: "engine_custom_open", componentId: "c1", overlay: false, placement: "transcript", viewId: "v1" });
+				fn({ type: "engine_custom_frame", componentId: "c1", requestId: 0, lines: ["hello"] });
+			}
+			return { viewId: "v1", status: { agentKey: "k1", taskId: "t1", heldPrompt: false, gone: false } };
+		}
+		return {};
+	},
+};
+const controller = new RemoteComponentController(
+	runtime,
+	{ requestRender: () => {}, setWidget: () => {}, custom: () => new Promise(() => {}), onWidgetRelease: () => () => {} },
+	{ isFullscreen: () => true, onRendererReplaced: () => () => {} },
+);
+void openRemoteAgentViewPort(runtime, "t1", { width: 80, rows: 16 }, { panel: true }).catch(() => {});
+await new Promise((resolve) => setTimeout(resolve, 20));
+controller.dispose();
+console.log("EXIT_AT:" + Date.now());
+`,
+				{},
+				{ sourceTs: true },
+			);
+			assert.equal(panelShutdown.exitCode, 0, `stderr:\n${panelShutdown.stderr}\nstdout:\n${panelShutdown.stdout}`);
+			const panelLingerMs = exitLingerMs(panelShutdown);
+			assert.ok(
+				panelLingerMs < 200,
+				`openRemoteAgentViewPort panel timer lingered ${panelLingerMs} ms after controller.dispose()`,
+			);
 		},
 		CHILD_PROCESS_TIMEOUT_MS,
 	);

@@ -4,6 +4,7 @@ import { abortTurnRetries } from "./agent-session-retry.ts";
 import { releaseTurnPause, settleTurnPause } from "./agent-session-turn-pause.ts";
 import type { ClearedQueue, SessionAbortOptions } from "./agent-session-types.js";
 import { cancelFirstPromptModel } from "./first-prompt-model.ts";
+import { holdToolAbortGraceWhenObserved } from "./tools/tool-abort-grace.ts";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
 	let throwFirstFailure: (() => never) | undefined;
@@ -83,16 +84,22 @@ export function abort(this: AgentSession, options?: SessionAbortOptions): Promis
  * or held, so the session stays open for its next message, which starts a turn as usual. Between two attempts of a
  * retry nothing streams, and the interrupt cancels the retry, as Esc does in the main chat.
  */
-export async function interruptTurn(this: AgentSession): Promise<void> {
-	if (!this.isStreaming && !this.isRetrying) return;
+function interruptTurnInternal(this: AgentSession): Promise<void> {
+	if (!this.isStreaming && !this.isRetrying) return Promise.resolve();
 	this._turnInterruptedByUser = true;
 	this._awaitingMessageAfterInterrupt = false;
 	this._extensionRunner.cancelHostInput();
 	abortTurnRetries.call(this);
 	if (this._isPreparingRun === "custom" && !this.agent.state.isStreaming) this._abortPreparedRunAtStart = true;
 	this.agent.abort();
-	await this.agent.waitForIdle();
-	await this._agentEventQueue;
+	return (async () => {
+		await this.agent.waitForIdle();
+		await this._agentEventQueue;
+	})();
+}
+
+export function interruptTurn(this: AgentSession): Promise<void> {
+	return holdToolAbortGraceWhenObserved(this, interruptTurnInternal.call(this));
 }
 
 /**
@@ -102,7 +109,7 @@ export async function interruptTurn(this: AgentSession): Promise<void> {
  * after Esc, so nothing restarts the paused turn. The user's next message releases the hold and starts the next turn,
  * with that message first.
  */
-export async function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
+export function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
 	// A run is open while its turn streams, waits to retry, or settles after it: each would deliver what is queued.
 	const open = this.isStreaming || this.isRetrying || hasOpenRun(this);
 	const holds = !this._queuedMessagesPaused;
@@ -111,8 +118,14 @@ export async function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
 	const taken = this.clearQueue({ preserveUnprotectedCustomMessages: true });
 	if (!holds) {
 		// Already held, by an earlier pause or a stop: that hold's release stands; only a running turn still ends.
-		if (this.isStreaming || this.isRetrying) await this.interruptTurn();
-		return taken;
+		if (!this.isStreaming && !this.isRetrying) return Promise.resolve(taken);
+		return holdToolAbortGraceWhenObserved(
+			this,
+			(async () => {
+				await interruptTurnInternal.call(this);
+				return taken;
+			})(),
+		);
 	}
 	const settled = Promise.withResolvers<void>();
 	this._turnPause = settled;
@@ -121,13 +134,18 @@ export async function pauseTurn(this: AgentSession): Promise<ClearedQueue> {
 	if (!open) {
 		// No run to end: the session is paused as it stands, and the hold waits for the user's next message.
 		settled.resolve();
-		return taken;
+		return Promise.resolve(taken);
 	}
 	this._turnInterruptedByUser = true;
-	await this.interruptTurn();
-	// A child's run settles in `settleSubagentMessages`; any other session's has once its turn ended.
-	if (this._subagentMessageAdmission === undefined) settled.resolve();
-	return taken;
+	return holdToolAbortGraceWhenObserved(
+		this,
+		(async () => {
+			await interruptTurnInternal.call(this);
+			// A child's run settles in `settleSubagentMessages`; any other session's has once its turn ended.
+			if (this._subagentMessageAdmission === undefined) settled.resolve();
+			return taken;
+		})(),
+	);
 }
 
 /**
@@ -174,9 +192,9 @@ export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 	})();
 	if (this._queuedMessagesPaused) {
 		const tracked = composePauseAbortBoundaries([this._queuedMessagesPauseAbortBoundary, boundary]);
-		if (tracked === undefined) return boundary;
+		if (tracked === undefined) return holdToolAbortGraceWhenObserved(this, boundary);
 		this._queuedMessagesPauseAbortBoundary = tracked;
 		void tracked.catch(() => {});
 	}
-	return boundary;
+	return holdToolAbortGraceWhenObserved(this, boundary);
 }
