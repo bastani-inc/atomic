@@ -152,16 +152,21 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 	mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The process and the manual-reset event the host's release sets, which the thread waits on.
+struct Handles {
+	process: OwnedHandle,
+	stop: OwnedHandle,
+}
+
 /// What the host and the thread that waits for the process's exit share.
 pub(super) struct Shared {
 	pid: u32,
-	/// Held until this is dropped, so `pid` names the process all along.
-	process: OwnedHandle,
+	/// Until the thread saw the exit or the release, as `child_process` closes a child's handle at its exit: until then
+	/// `pid` names the process.
+	handles: Mutex<Option<Handles>>,
 	/// The job, until the host released the processes in it.
 	job: Mutex<Option<Job>>,
 	callback: Mutex<Option<EventCallback>>,
-	/// A manual-reset event set by the host's release.
-	stop: OwnedHandle,
 	stopping: AtomicBool,
 	/// The signal `kill` ended the process with, reported with its exit as `child_process` reports it.
 	killed_with: AtomicI32,
@@ -175,20 +180,18 @@ impl Shared {
 
 	pub(super) fn end(&self) {}
 
-	fn exited(&self) -> bool {
-		(unsafe { WaitForSingleObject(raw(&self.process), 0) }) == WAIT_OBJECT_0
-	}
-
 	/// As libuv kills a child on Windows: `SIGINT`, `SIGQUIT`, `SIGKILL` and `SIGTERM` end the process with exit code 1,
 	/// and signal 0 asks whether it still runs. Only the process itself: its job is ended by `end_tree`.
 	pub(super) fn kill(&self, signal: i32, _group: bool) -> bool {
-		if self.exited() {
+		let handles = locked(&self.handles);
+		let Some(handles) = handles.as_ref() else { return false };
+		if (unsafe { WaitForSingleObject(raw(&handles.process), 0) }) == WAIT_OBJECT_0 {
 			return false;
 		}
 		match signal {
 			0 => true,
 			2 | 3 | 9 | 15 => {
-				let ended = unsafe { TerminateProcess(raw(&self.process), 1) } != 0;
+				let ended = unsafe { TerminateProcess(raw(&handles.process), 1) } != 0;
 				if ended {
 					self.killed_with.store(signal, Ordering::Release);
 				}
@@ -203,11 +206,15 @@ impl Shared {
 	pub(super) fn end_tree(&self) -> bool {
 		let job = locked(&self.job);
 		let Some(job) = job.as_ref() else { return false };
-		if !self.exited()
+		// The process's handle stays open meanwhile, so its ID names no other process during the walk.
+		let handles = locked(&self.handles);
+		if let Some(handles) = handles.as_ref()
+			&& (unsafe { WaitForSingleObject(raw(&handles.process), 0) }) != WAIT_OBJECT_0
 			&& let Some(mut below) = crate::process_tree::hold_process_descendants(self.pid)
 		{
 			below.end_all();
 		}
+		drop(handles);
 		job.terminate()
 	}
 
@@ -233,8 +240,10 @@ impl Shared {
 	/// The host handled the process's `close`, or dropped its handle: its threads stop and let go of the pipes.
 	pub(super) fn release_by_host(&self) {
 		self.stopping.store(true, Ordering::Release);
-		unsafe {
-			SetEvent(raw(&self.stop));
+		if let Some(handles) = locked(&self.handles).as_ref() {
+			unsafe {
+				SetEvent(raw(&handles.stop));
+			}
 		}
 	}
 
@@ -475,11 +484,16 @@ fn null_device(write: bool) -> io::Result<File> {
 
 /// Waits for the exit and reports it, or for the host's release, after which nothing more is reported.
 fn supervise(shared: &Shared) {
-	let waited = [raw(&shared.process), raw(&shared.stop)];
+	// Valid until this thread closes them below.
+	let Some(waited) =
+		locked(&shared.handles).as_ref().map(|handles| [raw(&handles.process), raw(&handles.stop)])
+	else {
+		return;
+	};
 	let woke = unsafe { WaitForMultipleObjects(2, waited.as_ptr(), 0, INFINITE) };
 	if woke == WAIT_OBJECT_0 && !shared.stopping.load(Ordering::Acquire) {
 		let mut status = 0u32;
-		let read = unsafe { GetExitCodeProcess(raw(&shared.process), &mut status) } != 0;
+		let read = unsafe { GetExitCodeProcess(waited[0], &mut status) } != 0;
 		let signal = shared.killed_with.load(Ordering::Acquire);
 		shared.emit(HostProcessEvent {
 			code: (signal == 0).then_some(if read { i64::from(status) } else { -1 }),
@@ -487,6 +501,7 @@ fn supervise(shared: &Shared) {
 			..HostProcessEvent::of(HostProcessEventKind::Exit)
 		});
 	}
+	drop(locked(&shared.handles).take());
 	drop(locked(&shared.callback).take());
 }
 
@@ -624,10 +639,12 @@ pub(super) fn start(
 	}
 	let shared = Arc::new(Shared {
 		pid: info.dwProcessId,
-		process,
+		handles: Mutex::new(Some(Handles {
+			process,
+			stop: unsafe { OwnedHandle::from_raw_handle(stop) },
+		})),
 		job: Mutex::new(Some(job)),
 		callback: Mutex::new(Some(on_event)),
-		stop: unsafe { OwnedHandle::from_raw_handle(stop) },
 		stopping: AtomicBool::new(false),
 		killed_with: AtomicI32::new(0),
 	});
