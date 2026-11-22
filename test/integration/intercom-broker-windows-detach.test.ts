@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { terminateRpcClientProcess } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "../../packages/intercom/broker/control-request.js";
 import { getBrokerLogPath, getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
@@ -406,6 +407,8 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 		readonly otherPid: number;
 		readonly brokerCreated: string;
 		readonly otherCreated: string;
+		readonly peer: IntercomClient;
+		readonly peerDisconnected: () => boolean;
 		readonly natives: {
 			holdProcessDescendants(pid: number): { readonly count: number; endAll(): boolean; release(): void } | null;
 			processCreationTime(pid: number): string | null;
@@ -415,7 +418,9 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 
 	/**
 	 * Starts a child that mimics an isolated engine: it starts the shared Intercom broker via `spawnBrokerIfNeeded`
-	 * plus one ordinary child process, records both PIDs, and then hangs (ignoring stdin EOF).
+	 * plus one ordinary child process, records both PIDs, and then hangs (ignoring stdin EOF). Connects a separate
+	 * peer session to the shared broker so we verify both that the broker does not idle-retire during the 5 s grace and
+	 * that another session connected to the shared broker stays connected without disconnecting.
 	 */
 	async function startHungEngineWithBroker(prefix: string): Promise<HungEngineFixture> {
 		const root = makeTempDirectory(prefix);
@@ -463,6 +468,30 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 		const otherCreated = natives.processCreationTime(info.otherPid);
 		assert.ok(brokerCreated !== null, "broker was not running before hung-engine escalation");
 		assert.ok(otherCreated !== null, "ordinary engine child was not running before hung-engine escalation");
+		const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+		const previousPiDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+		delete process.env.PI_CODING_AGENT_DIR;
+		let disconnected = false;
+		const peer = new IntercomClient("other-live-session");
+		peer.on("disconnected", () => {
+			disconnected = true;
+		});
+		try {
+			await peer.connect({
+				name: "other-live-session",
+				cwd: root,
+				model: "test-model",
+				pid: process.pid,
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+			});
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+			if (previousPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousPiDir;
+		}
 		return {
 			root,
 			agentDir,
@@ -472,6 +501,8 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 			otherPid: info.otherPid,
 			brokerCreated,
 			otherCreated,
+			peer,
+			peerDisconnected: () => disconnected,
 			natives,
 		};
 	}
@@ -525,11 +556,22 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 						`shared Intercom broker was killed by hung-engine ${escalation} escalation`,
 					);
 					assert.equal(
+						fixture.peerDisconnected(),
+						false,
+						`other session was disconnected from the shared broker by hung-engine ${escalation} escalation`,
+					);
+					const listed = await fixture.peer.listSessions();
+					assert.ok(
+						listed.some((session) => session.name === "other-live-session"),
+						"other session could no longer query the shared broker after hung-engine escalation",
+					);
+					assert.equal(
 						await queryBrokerPid(fixture.agentDir),
 						fixture.brokerPid,
 						`shared Intercom broker stopped answering after hung-engine ${escalation} escalation`,
 					);
 				} finally {
+					fixture.peer.disconnect();
 					try {
 						fixture.engine.kill("SIGKILL");
 					} catch {}
