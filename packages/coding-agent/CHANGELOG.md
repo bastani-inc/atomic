@@ -17,7 +17,6 @@
 - A `/` command or `@` file typed before Atomic's screen appears, as when it starts with a command-line argument such as `-c`, now opens its completion menu once completions are ready, instead of no menu until the next key. A click in the prompt before completions are ready drops such a completion, as a key does, so clicking away and back no longer opens a menu ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
 - Resuming or going back in a session kept in a database (SQLite, libSQL or PostgreSQL) no longer fails with a `SyntaxError`, or takes an extension's text for one of Atomic's lists, when an extension's custom entry has text that looks like JSON under `owner`, `tasks` or `groups`, such as `"[draft"`: the session reads that text as text, as a session kept in JSONL files does.
 
-
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Breaking Changes
