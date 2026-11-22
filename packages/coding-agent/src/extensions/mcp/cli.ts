@@ -721,7 +721,7 @@ async function login(
 				showAuthorizationUrl: (authorizationUrl) => {
 					const displayUrl = redactAuthorizationUrlForDisplay(authorizationUrl);
 					log(`Sign in to MCP server "${name}" in your browser:\n${displayUrl}`);
-					openUrl(authorizationUrl.href);
+					openUrl(displayUrl);
 				},
 				promptForRedirectUrl: (signal) => waitForRedirectUrl(signal, interactive),
 			},

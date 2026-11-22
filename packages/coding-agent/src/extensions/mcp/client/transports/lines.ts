@@ -70,8 +70,15 @@ export class JsonRpcLineReader {
 			}
 			const text = line.toString("utf8").replace(/\r$/, "");
 			if (!text.trim()) continue;
+			let parsed: unknown;
 			try {
-				this.options.onMessage(parseJsonRpcMessage(JSON.parse(text)));
+				parsed = JSON.parse(text);
+			} catch {
+				this.options.onError(new Error("Invalid MCP stdio JSON message"));
+				continue;
+			}
+			try {
+				this.options.onMessage(parseJsonRpcMessage(parsed));
 			} catch (error) {
 				this.options.onError(error);
 			}

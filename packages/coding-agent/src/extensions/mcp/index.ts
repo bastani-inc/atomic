@@ -1479,7 +1479,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				{
 					showAuthorizationUrl: (url) => {
 						authorizationUrl = redactAuthorizationUrlForDisplay(url);
-						openUrl(url.href);
+						openUrl(authorizationUrl);
 					},
 					promptForRedirectUrl: async (signal) => {
 						const value = await ui.redirectUrl(title, authorizationUrl, signal);
@@ -1641,11 +1641,9 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			} else {
 				failure = await signIn(server, {
 					showAuthorizationUrl: (url) => {
-						ctx.ui.notify(
-							`Sign in to MCP server "${name}" in your browser:\n${redactAuthorizationUrlForDisplay(url)}`,
-							"info",
-						);
-						openUrl(url.href);
+						const safeUrl = redactAuthorizationUrlForDisplay(url);
+						ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${safeUrl}`, "info");
+						openUrl(safeUrl);
 					},
 					promptForRedirectUrl: (signal) =>
 						ctx.ui.input(

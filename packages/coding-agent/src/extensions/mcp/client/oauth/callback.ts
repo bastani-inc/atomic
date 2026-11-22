@@ -45,6 +45,7 @@ export class OAuthCallbackServer {
 			reject: (error: Error) => void;
 			timer: ReturnType<typeof setTimeout>;
 			path: string | undefined;
+			extraSecrets: readonly (string | undefined)[];
 		}
 	>();
 
@@ -87,14 +88,18 @@ export class OAuthCallbackServer {
 		return instance;
 	}
 
-	waitForCallback(state: string, path?: string): Promise<OAuthCallback> {
+	waitForCallback(
+		state: string,
+		path?: string,
+		extraSecrets: readonly (string | undefined)[] = [],
+	): Promise<OAuthCallback> {
 		if (this.pending.has(state)) throw new Error("OAuth state is already pending");
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(state);
 				reject(new Error("OAuth callback timed out"));
 			}, this.timeoutMs);
-			this.pending.set(state, { resolve, reject, timer, path });
+			this.pending.set(state, { resolve, reject, timer, path, extraSecrets });
 		});
 	}
 
@@ -145,6 +150,7 @@ export class OAuthCallbackServer {
 		if (error) {
 			const description = redactOAuthErrorText(url.searchParams.get("error_description") || error, [
 				url.searchParams.get("code") ?? undefined,
+				...pending.extraSecrets,
 			]);
 			pending.reject(new Error(description));
 			this.reply(response, 200, {

@@ -305,7 +305,13 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			maxStderrBytes: this.options.maxStderrBytes,
 			onStderr: this.options.onStderr,
 			onMessage: (message) => this.emitMessage(this.scrubIncomingMessage(message)),
-			onError: (error) => this.emitError(error),
+			onError: (error) => {
+				const message = redactOAuthErrorText(
+					error instanceof Error ? error.message : String(error),
+					this.activeSecrets(),
+				);
+				this.emitError(new Error(message));
+			},
 		});
 	}
 

@@ -20,7 +20,14 @@ import {
 	OAuthRegistrationError,
 	OAuthTemporarilyUnavailableError,
 } from "./errors.js";
-import { extractHeaderSecrets, redactOAuthErrorText, redactUrlForDisplay, stripUrlUserinfoAndHash } from "./redact.js";
+import {
+	extractHeaderSecrets,
+	isSensitiveKeyName,
+	redactOAuthErrorText,
+	redactUrlForDisplay,
+	scrubFetchError,
+	stripUrlUserinfoAndHash,
+} from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	isHttpUrl,
@@ -238,20 +245,17 @@ function responseBodySecrets(value: unknown, depth = 0): string[] {
 	}
 	const secrets: string[] = [];
 	for (const [key, entry] of Object.entries(value)) {
-		if (typeof entry === "string" && entry.length > 0 && SENSITIVE_BODY_FIELDS.has(key.toLowerCase())) {
+		if (
+			typeof entry === "string" &&
+			entry.length > 0 &&
+			(SENSITIVE_BODY_FIELDS.has(key.toLowerCase()) || isSensitiveKeyName(key))
+		) {
 			secrets.push(entry);
 		} else if (typeof entry === "object" && entry !== null) {
 			secrets.push(...responseBodySecrets(entry, depth + 1));
 		}
 	}
 	return secrets;
-}
-
-function scrubTokenFetchError(error: unknown, secrets: readonly string[]): Error {
-	const message = redactOAuthErrorText(error instanceof Error ? error.message : String(error), secrets);
-	if (error instanceof TypeError) return new TypeError(message);
-	if (error instanceof DOMException) return new DOMException(message, error.name);
-	return new Error(message);
 }
 
 async function tokenRequest(
@@ -285,7 +289,7 @@ async function tokenRequest(
 			signal: options.signal,
 		});
 	} catch (error) {
-		throw scrubTokenFetchError(error, requestSecrets);
+		throw scrubFetchError(error, requestSecrets);
 	}
 	const text = await response.text();
 	let value: unknown;
@@ -332,9 +336,10 @@ export async function registerClient(
 	const endpoint = options.metadata?.registration_endpoint;
 	if (options.metadata && !endpoint)
 		throw new Error("Authorization server does not support dynamic client registration");
-	const response = await (options.fetch ?? globalThis.fetch)(
-		new URL(endpoint ?? new URL("/register", authorizationServerUrl)),
-		{
+	const endpointUrl = new URL(endpoint ?? new URL("/register", authorizationServerUrl));
+	let response: Response;
+	try {
+		response = await (options.fetch ?? globalThis.fetch)(endpointUrl, {
 			method: "POST",
 			headers: { Accept: "application/json", "content-type": "application/json" },
 			body: JSON.stringify({
@@ -344,8 +349,10 @@ export async function registerClient(
 				...(options.scope ? { scope: options.scope } : {}),
 			}),
 			signal: options.signal,
-		},
-	);
+		});
+	} catch (error) {
+		throw scrubFetchError(error, [endpointUrl.password || undefined]);
+	}
 	const text = await response.text();
 	let parsed: unknown;
 	try {
