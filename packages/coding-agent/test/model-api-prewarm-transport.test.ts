@@ -16,6 +16,8 @@ import { createAgentSessionFromServices, createAgentSessionServices } from "../s
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { prewarmDefaultModelApi, prewarmModelApi } from "../src/core/model-api-prewarm.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -103,7 +105,12 @@ describe("the API implementation a prewarm loads", () => {
 		// An alias of a provider an extension streams.
 		runtime.registerProvider("proxy-alias", { aliasOf: "proxy" });
 		await prewarmModelApi({ provider: "proxy-alias", api: "anthropic-messages" }, runtime);
+		// A provider an extension streams, named by its older id.
+		runtime.registerProvider("azure", { api: "azure-openai-responses", streamSimple: ownStream });
+		const azure = countLoads("azure-openai-responses");
+		await prewarmModelApi({ provider: "azure-openai-responses", api: "azure-openai-responses" }, runtime);
 		assert.equal(loads.count, 0);
+		assert.equal(azure.count, 0);
 	});
 
 	test("a provider an extension brings with its own stream functions: nothing", async () => {
@@ -185,7 +192,7 @@ describe("the API implementation a prewarm loads", () => {
 });
 
 describe("the API implementation a prewarmed engine loads while it waits for its host", () => {
-	/** An agent directory whose settings choose a built-in provider's model, with nothing else configured. */
+	/** An agent directory whose settings choose a built-in provider's model, beside an empty project. */
 	function agentDirWithDefault(settings: object = {}): { agentDir: string; cwd: string } {
 		const agentDir = tempDir("atomic-prewarm-agent-");
 		const cwd = tempDir("atomic-prewarm-project-");
@@ -196,33 +203,111 @@ describe("the API implementation a prewarmed engine loads while it waits for its
 		return { agentDir, cwd };
 	}
 
-	test("loads the settings' default model's api when nothing else can decide the model or stream its requests", async () => {
-		const { agentDir, cwd } = agentDirWithDefault();
+	test("loads the api of the default model the settings select, beside extensions, packages, a model scope or project models", async () => {
 		const loads = countLoads("anthropic-messages");
-		await prewarmDefaultModelApi(agentDir, cwd);
-		assert.equal(loads.count, 1);
+		const plain = agentDirWithDefault();
+		await prewarmDefaultModelApi(plain.agentDir, plain.cwd);
+		const configured = agentDirWithDefault({
+			extensions: ["./other.ts"],
+			packages: ["npm:some-package"],
+			enabledModels: ["anthropic/*"],
+		});
+		mkdirSync(join(configured.agentDir, "extensions"));
+		writeFileSync(join(configured.agentDir, "extensions", "noop.ts"), "export default () => {};\n");
+		mkdirSync(join(configured.cwd, ".atomic"));
+		writeFileSync(join(configured.cwd, ".atomic", "models.json"), JSON.stringify({ providers: {} }));
+		await prewarmDefaultModelApi(configured.agentDir, configured.cwd);
+		assert.equal(loads.count, 2);
 	});
 
-	test("loads nothing when an extension of the user's may load, a model scope is set, or the project has its own model settings", async () => {
+	test("loads the api of the default model a project's settings select over the agent directory's", async () => {
+		const { agentDir, cwd } = agentDirWithDefault();
+		mkdirSync(join(cwd, ".atomic"));
+		writeFileSync(
+			join(cwd, ".atomic", "settings.json"),
+			JSON.stringify({ defaultProvider: "local", defaultModel: "local-model" }),
+		);
+		writeFileSync(
+			join(cwd, ".atomic", "models.json"),
+			JSON.stringify({
+				providers: {
+					local: {
+						baseUrl: "http://127.0.0.1:9/v1",
+						apiKey: "test",
+						api: "openai-completions",
+						models: [modelConfig("local-model", "openai-completions")],
+					},
+				},
+			}),
+		);
+		const anthropic = countLoads("anthropic-messages");
+		const openai = countLoads("openai-completions");
+		await prewarmDefaultModelApi(agentDir, cwd);
+		assert.deepEqual([anthropic.count, openai.count], [0, 1]);
+	});
+
+	test("loads nothing for a provider only an extension registers, or a models.json provider with an api Atomic does not implement", async () => {
 		const loads = countLoads("anthropic-messages");
-		const listed = agentDirWithDefault({ extensions: ["./proxy.ts"] });
-		await prewarmDefaultModelApi(listed.agentDir, listed.cwd);
-		const packaged = agentDirWithDefault({ packages: ["npm:some-provider"] });
-		await prewarmDefaultModelApi(packaged.agentDir, packaged.cwd);
-		const scoped = agentDirWithDefault({ enabledModels: ["openai/*"] });
-		await prewarmDefaultModelApi(scoped.agentDir, scoped.cwd);
-		const inDirectory = agentDirWithDefault();
-		mkdirSync(join(inDirectory.agentDir, "extensions"));
-		writeFileSync(join(inDirectory.agentDir, "extensions", "proxy.ts"), "export default () => {};\n");
-		await prewarmDefaultModelApi(inDirectory.agentDir, inDirectory.cwd);
-		const projectExtension = agentDirWithDefault();
-		mkdirSync(join(projectExtension.cwd, ".atomic", "extensions"), { recursive: true });
-		writeFileSync(join(projectExtension.cwd, ".atomic", "extensions", "proxy.ts"), "export default () => {};\n");
-		await prewarmDefaultModelApi(projectExtension.agentDir, projectExtension.cwd);
-		const projectModel = agentDirWithDefault();
-		mkdirSync(join(projectModel.cwd, ".atomic"));
-		writeFileSync(join(projectModel.cwd, ".atomic", "settings.json"), JSON.stringify({ defaultProvider: "openai" }));
-		await prewarmDefaultModelApi(projectModel.agentDir, projectModel.cwd);
+		const extensionOnly = agentDirWithDefault({ defaultProvider: "proxy", defaultModel: "proxy-model" });
+		await prewarmDefaultModelApi(extensionOnly.agentDir, extensionOnly.cwd);
+		const customApi = agentDirWithDefault({ defaultProvider: "custom", defaultModel: "custom-model" });
+		writeFileSync(
+			join(customApi.agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					custom: {
+						baseUrl: "http://127.0.0.1:9",
+						apiKey: "test",
+						api: "custom-wire",
+						models: [modelConfig("custom-model", "custom-wire" as Api)],
+					},
+				},
+			}),
+		);
+		await prewarmDefaultModelApi(customApi.agentDir, customApi.cwd);
 		assert.equal(loads.count, 0);
+	});
+});
+
+describe("the API implementation an SDK session loads as it is created", () => {
+	async function createSession(extensionTakesOverAnthropic: boolean) {
+		const cwd = tempDir("atomic-prewarm-sdk-");
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const settingsManager = SettingsManager.inMemory();
+		// The resource loader the SDK is given: its extensions' provider registrations wait for the session to bind them.
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			noSkills: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+			extensionFactories: extensionTakesOverAnthropic
+				? [(pi) => pi.registerProvider("anthropic", { api: "anthropic-messages", streamSimple: ownStream })]
+				: [],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5"),
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+			authStorage: AuthStorage.inMemory({ anthropic: { type: "api_key", key: "test" } }),
+			resourceLoader,
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
+		});
+		return session;
+	}
+
+	test("loads the api of a built-in provider's model, and nothing once an extension it loaded streams that provider", async () => {
+		const loads = countLoads("anthropic-messages");
+		const plain = await createSession(false);
+		await plain.dispose();
+		assert.equal(loads.count, 1);
+		const takenOver = await createSession(true);
+		await takenOver.dispose();
+		assert.equal(loads.count, 1);
 	});
 });

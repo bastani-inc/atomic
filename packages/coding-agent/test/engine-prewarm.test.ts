@@ -208,10 +208,15 @@ describe("adopting a prewarmed engine child", () => {
 			["--approve", "-e", "./proxy.ts"],
 		])
 			assert.deepEqual(await startedArgv(hostArgs), ["--internal-engine-prewarm"], hostArgs.join(" "));
-		assert.deepEqual(await startedArgv(["--offline", "--no-mcp", "--approve"]), [
-			"--internal-engine-prewarm",
-			"--internal-engine-prewarm-default-model-api",
-		]);
+		for (const hostArgs of [
+			["--offline", "--no-mcp", "--approve"],
+			["--thinking", "high", "--tools", "read,bash", "--no-skills", "--no-themes", "--no-prompt-templates"],
+		])
+			assert.deepEqual(
+				await startedArgv(hostArgs),
+				["--internal-engine-prewarm", "--internal-engine-prewarm-default-model-api"],
+				hostArgs.join(" "),
+			);
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {

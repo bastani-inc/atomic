@@ -733,7 +733,8 @@ export class ModelRuntime implements Models {
 	 * streams itself (see `extensionOwnedApis`).
 	 */
 	streamsThroughExtension(model: Pick<Model<Api>, "provider" | "api">): boolean {
-		const providerId = this.extensionProviders.get(model.provider)?.aliasOf ?? model.provider;
+		const requested = normalizeProviderId(model.provider);
+		const providerId = this.extensionProviders.get(requested)?.aliasOf ?? requested;
 		return this.extensionOwnedApis(providerId)?.has(model.api) ?? false;
 	}
 

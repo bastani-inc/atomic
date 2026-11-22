@@ -134,7 +134,7 @@ export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = `${INTERACTIVE_ENGINE
  */
 export const INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-default-model-api`;
 
-/** Arguments that change neither the session's model, the session, nor the extensions that load. */
+/** Arguments that change neither the session's model nor the session it opens. */
 const ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
 	"--offline",
 	"--no-mcp",
@@ -145,7 +145,49 @@ const ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
 	"-a",
 	"--no-approve",
 	"-na",
+	"--no-skills",
+	"-ns",
+	"--no-prompt-templates",
+	"-np",
+	"--no-themes",
+	"--no-context-files",
+	"-nc",
+	"--no-tools",
+	"-nt",
+	"--no-builtin-tools",
+	"-nbt",
+	"--no-extensions",
+	"-ne",
+	"--no-fallback",
 ]);
+/** Such arguments that take a value: the value follows them. */
+const VALUE_ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
+	"--thinking",
+	"--tools",
+	"-t",
+	"--exclude-tools",
+	"-xt",
+	"--skill",
+	"--prompt-template",
+	"--theme",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--name",
+]);
+
+/** Whether a host started with `args` leaves the session's model to the settings' default, in a new session. */
+function argumentsKeepDefaultModel(args: readonly string[]): boolean {
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!;
+		if (ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg)) continue;
+		if (VALUE_ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg) && index + 1 < args.length) {
+			index++;
+			continue;
+		}
+		return false;
+	}
+	return true;
+}
 
 /**
  * How a prewarmed engine's launch compares with the one a host prewarmed before it gave the prewarm the environment
@@ -235,9 +277,7 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 			INTERACTIVE_ENGINE_PREWARM_FLAG,
 			...(args.includes("--no-session") ? [PREWARM_NO_DATABASE] : []),
 			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
-			...(args.every((arg) => ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg))
-				? [INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG]
-				: []),
+			...(argumentsKeepDefaultModel(args) ? [INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG] : []),
 		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,

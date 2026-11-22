@@ -591,10 +591,6 @@ async function constructAgentSession(
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	if (!deferStart && model) {
-		void prewarmModelApi(model, modelRuntime);
-	}
-
 	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
 	// narrow `allowedToolNames`: a narrow allowlist would drop every extension
 	// and SDK custom tool (subagent, intercom, mcp, web_search, ...)
@@ -1176,7 +1172,11 @@ async function constructAgentSession(
 		}
 		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
 		const unresolved = missingAccountModel ? session.model : undefined;
-		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
+		if (!deferStart) {
+			await session.bindExtensions(options.extensionBindings ?? {});
+			// Once binding has registered the extensions' providers, so a model an extension streams itself loads nothing.
+			if (session.model) void prewarmModelApi(session.model, modelRuntime);
+		}
 		bindChildTaskNotices(session as unknown as AgentSessionInternalSurface);
 		if (missingAccountModel && modelFallbackMessage && unresolved && session.model === unresolved) {
 			deferFirstPromptModel(session, {

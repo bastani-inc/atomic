@@ -7,10 +7,19 @@ import { test } from "vitest";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.js";
 import { sleep } from "../helpers/runtime.js";
 
-/** A real engine child: the built CLI loading every startup resource, on a loaded runner. */
-const ENGINE_TEST_TIMEOUT_MS = 120_000;
+/**
+ * A real engine child's cold start: the built CLI loading every startup resource. Beside seven other copies of this
+ * test and two busy loops, a Windows runner took up to about 120 s for it.
+ */
+const ENGINE_START_MAX_MS = 240_000;
+/** Each request after the start (the state, the switch), answered by an engine on such a runner. */
+const ENGINE_REQUEST_TIMEOUT_MS = 60_000;
 /** How long the test waits for the engine to load an API implementation after it has a reason to. */
-const MODULE_LOAD_WAIT_MS = 30_000;
+const MODULE_LOAD_WAIT_MS = 60_000;
+/** Long enough for a prewarm the engine starts once its resources are ready to reach the module. */
+const PREWARM_SETTLE_MS = 2_000;
+const ENGINE_TEST_TIMEOUT_MS =
+	ENGINE_START_MAX_MS + 2 * ENGINE_REQUEST_TIMEOUT_MS + PREWARM_SETTLE_MS + MODULE_LOAD_WAIT_MS;
 
 /** Records, for every module this process loads, when it loaded and its URL. */
 function writeModuleLog(dir: string): { preload: string; log: string } {
@@ -91,6 +100,7 @@ test(
 			cwd: project,
 			runtimeExecutable: process.execPath,
 			runtimeArgs: ["--import", pathToFileURL(preload).href],
+			requestTimeoutMs: ENGINE_REQUEST_TIMEOUT_MS,
 			args: ["--offline", "--no-session", "--no-mcp", "--approve"],
 			env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
 			interactiveEngine: { onDiagnostic: () => {} },
@@ -100,8 +110,7 @@ test(
 			await client.waitForInteractiveEngineResources();
 			const state = await client.getState();
 			assert.equal(state.model?.provider, "proxy");
-			// Long enough for a prewarm the engine starts once its resources are ready to reach the module.
-			await sleep(2_000);
+			await sleep(PREWARM_SETTLE_MS);
 			// Everything the engine began to load before it was asked to switch is in the log by now.
 			const beforeSwitch = readModuleLog(log);
 			assert.equal(

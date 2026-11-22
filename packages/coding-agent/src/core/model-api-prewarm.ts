@@ -1,7 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Api, getApiProvider, getModel, type Model } from "@bastani/atomic-ai/compat";
-import { getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
+import { getAgentDir, getAgentDirs, getModelsConfigPaths, getProjectConfigDirs } from "../config.js";
 import { stripJsonComments } from "../utils/json.ts";
 import { stripBom } from "../utils/text.ts";
 
@@ -54,80 +54,37 @@ async function readJsonRecord(filePath: string): Promise<Record<string, unknown>
 	}
 }
 
-/** A settings file's content: absent, unreadable, or its fields. */
-async function readSettingsFile(filePath: string): Promise<Record<string, unknown> | "absent" | "unreadable"> {
-	try {
-		const parsed: unknown = JSON.parse(stripJsonComments(stripBom(await readFile(filePath, "utf8"))));
-		return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-			? (parsed as Record<string, unknown>)
-			: "unreadable";
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
-	}
-}
-
-/** Whether a directory has an entry other than a hidden one; true when it cannot be read for another reason. */
-async function hasEntries(directory: string): Promise<boolean> {
-	try {
-		return (await readdir(directory)).some((name) => !name.startsWith("."));
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ENOENT";
-	}
-}
-
-/** Whether a setting is set to something other than an empty list. */
-function isSet(value: unknown): boolean {
-	return value !== undefined && !(Array.isArray(value) && value.length === 0);
+function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+	const value = record?.[key];
+	return typeof value === "string" ? value : undefined;
 }
 
 /**
- * Whether something other than the global settings' default may decide the session's model, or what streams its
- * requests: an extension of the user's (one the settings list under `extensions` or `packages`, or one in an
- * `extensions` directory, of the agent directory or the project), a model scope (`enabledModels`), or a project's own
- * model settings or models, or an older agent directory's models. Before extensions and project settings load, nothing tells which; true whenever that cannot be ruled
- * out.
+ * The model the settings select by default: the project's settings over the agent directory's, the Atomic directories
+ * over the older ones, as the session reads them.
  */
-async function defaultModelUncertain(agentDir: string, cwd: string): Promise<boolean> {
+async function settingsDefaultModel(agentDir: string, cwd: string): Promise<{ provider?: string; modelId?: string }> {
 	const agentDirs = agentDir === getAgentDir() ? getAgentDirs() : [agentDir];
-	const scans = [
-		...agentDirs.map((dir) => ({ dir, keys: ["extensions", "packages", "enabledModels"] })),
-		...getProjectConfigDirs(cwd).map((dir) => ({
-			dir,
-			keys: ["extensions", "packages", "enabledModels", "defaultProvider", "defaultModel"],
-		})),
-	];
-	for (const { dir, keys } of scans) {
-		const settings = await readSettingsFile(join(dir, "settings.json"));
-		if (settings === "unreadable") return true;
-		if (settings !== "absent" && keys.some((key) => isSet(settings[key]))) return true;
-		if (await hasEntries(join(dir, "extensions"))) return true;
-		// Only the agent directory's own models.json is read for the default's api; another one could change it.
-		if (dir !== agentDir && (await readSettingsFile(join(dir, "models.json"))) !== "absent") return true;
+	let provider: string | undefined;
+	let modelId: string | undefined;
+	for (const dir of [...getProjectConfigDirs(cwd), ...agentDirs]) {
+		const settings = await readJsonRecord(join(dir, "settings.json"));
+		provider ??= stringField(settings, "defaultProvider");
+		modelId ??= stringField(settings, "defaultModel");
+		if (provider !== undefined && modelId !== undefined) break;
 	}
-	return false;
+	return { provider, modelId };
 }
 
-/**
- * Resolve the configured default model's API from global settings/models.json
- * (or the built-in catalog) without loading credentials or touching the network,
- * and pre-warm that single lazy API implementation while a prewarmed engine
- * child waits for its host. Not when anything else may decide the session's
- * model or stream its requests (see `defaultModelUncertain`): the engine prewarms
- * again, for the model it selects, once its extensions have loaded.
- */
-export async function prewarmDefaultModelApi(
-	agentDir: string = getAgentDir(),
-	cwd: string = process.cwd(),
-): Promise<void> {
-	try {
-		if (await defaultModelUncertain(agentDir, cwd)) return;
-		const settings = await readJsonRecord(join(agentDir, "settings.json"));
-		const provider = typeof settings?.defaultProvider === "string" ? settings.defaultProvider : undefined;
-		const modelId = typeof settings?.defaultModel === "string" ? settings.defaultModel : undefined;
-		if (!provider || !modelId) return;
-
-		let api: Api | undefined;
-		const modelsJson = await readJsonRecord(join(agentDir, "models.json"));
+/** The api models.json gives this provider's model, from the models.json files in the order the session reads them. */
+async function modelsJsonApi(
+	provider: string,
+	modelId: string,
+	agentDir: string,
+	cwd: string,
+): Promise<Api | undefined> {
+	for (const path of getModelsConfigPaths(cwd, agentDir)) {
+		const modelsJson = await readJsonRecord(path);
 		const providers =
 			modelsJson?.providers !== null && typeof modelsJson?.providers === "object"
 				? (modelsJson.providers as Record<string, unknown>)
@@ -136,19 +93,34 @@ export async function prewarmDefaultModelApi(
 			providers?.[provider] !== null && typeof providers?.[provider] === "object"
 				? (providers[provider] as Record<string, unknown>)
 				: undefined;
-		if (providerConfig) {
-			const models = Array.isArray(providerConfig.models) ? providerConfig.models : undefined;
-			const entry = models?.find(
-				(item): item is Record<string, unknown> =>
-					item !== null && typeof item === "object" && (item as Record<string, unknown>).id === modelId,
-			);
-			const modelApi = typeof entry?.api === "string" ? entry.api : undefined;
-			const providerApi = typeof providerConfig.api === "string" ? providerConfig.api : undefined;
-			api = (modelApi ?? providerApi) as Api | undefined;
-		}
-		if (!api) {
-			api = (getModel(provider as never, modelId as never) as Model<Api> | undefined)?.api;
-		}
+		if (!providerConfig) continue;
+		const models = Array.isArray(providerConfig.models) ? providerConfig.models : undefined;
+		const entry = models?.find(
+			(item): item is Record<string, unknown> =>
+				item !== null && typeof item === "object" && (item as Record<string, unknown>).id === modelId,
+		);
+		const api = stringField(entry, "api") ?? stringField(providerConfig, "api");
+		if (api !== undefined) return api as Api;
+	}
+	return undefined;
+}
+
+/**
+ * Resolve the default model the settings select and its API from models.json (or the built-in catalog) without
+ * loading credentials or touching the network, and pre-warm that single lazy API implementation while a prewarmed
+ * engine child waits for its host. A provider only an extension registers, or an API Atomic does not implement, loads
+ * nothing; the engine prewarms again, for the model it selects, once its extensions have loaded.
+ */
+export async function prewarmDefaultModelApi(
+	agentDir: string = getAgentDir(),
+	cwd: string = process.cwd(),
+): Promise<void> {
+	try {
+		const { provider, modelId } = await settingsDefaultModel(agentDir, cwd);
+		if (!provider || !modelId) return;
+		const api =
+			(await modelsJsonApi(provider, modelId, agentDir, cwd)) ??
+			(getModel(provider as never, modelId as never) as Model<Api> | undefined)?.api;
 		if (api) await prewarmModelApi({ provider, api });
 	} catch {
 		// Best-effort prewarm; never fail startup or leak rejections.
