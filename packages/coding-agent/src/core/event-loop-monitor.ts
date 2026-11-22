@@ -318,10 +318,16 @@ class EventLoopMonitor {
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
 		process.once("exit", () => {
+			const probe = process.env.ATOMIC_ELBM_PROBE_LOG;
+			const note = (step: string) => {
+				if (probe) appendFileSync(probe, `${process.pid} ${step} ${Math.round(performance.now())}\n`);
+			};
+			note("monitor-exit-start");
 			const lateMs = (epochUs() - this.lastBeatUs) / 1000 - HEARTBEAT_MS;
 			this.sampler.exit();
 			if (lateMs >= this.thresholdMs) this.writeAtQuit(this.blockRecord(this.lastBeatUs, lateMs, []));
 			this.writeAtQuit(this.delayRecord(lateMs));
+			note("monitor-exit-end");
 		});
 		this.write({
 			type: "start",
