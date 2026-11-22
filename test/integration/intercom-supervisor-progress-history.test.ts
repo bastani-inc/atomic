@@ -33,7 +33,7 @@ function fixture() {
 	const admitted: Array<{ content: string; details: InboundMessageEntry }> = [];
 	const order: string[] = [];
 	const state = { idle: true, waiting: false, sessionId: "parent-session" };
-	let renderer: Parameters<ExtensionAPI["registerMessageRenderer"]>[1] | undefined;
+	const renderers = new Map<string, Parameters<ExtensionAPI["registerMessageRenderer"]>[1]>();
 	let inbound!: Inbound;
 	const pi = {
 		on(name: string, handler: (event: object, ctx: ExtensionContext) => void | Promise<void>) {
@@ -44,8 +44,8 @@ function fixture() {
 		registerShortcut() {},
 		async appendEntry() {},
 		getSessionName: () => undefined,
-		registerMessageRenderer(_name: string, render: typeof renderer) {
-			renderer = render;
+		registerMessageRenderer(name: string, render: Parameters<ExtensionAPI["registerMessageRenderer"]>[1]) {
+			renderers.set(name, render);
 		},
 		async sendMessage(message: { content: string; details: InboundMessageEntry }) {
 			admitted.push(message);
@@ -108,6 +108,7 @@ function fixture() {
 			return inbound(context, sender, message, channel);
 		},
 		render(message: (typeof admitted)[number]) {
+			const renderer = renderers.get("intercom_message");
 			assert.ok(renderer);
 			initTheme("dark", false);
 			const component = renderer(message as never, {} as never, theme);
