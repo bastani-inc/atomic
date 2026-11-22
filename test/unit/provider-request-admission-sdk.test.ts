@@ -620,10 +620,22 @@ test("a request waits on the process's request gate after its own admission, wit
 	assert.equal(dispatches, 1);
 });
 
-/** Keeps the process busy, as a loaded host does, so no timer can run until `until`. */
-function keepProcessBusyUntil(until: number): void {
+/**
+ * Keeps the process busy, as a loaded host does, so no timer can run until `untilPerfMs` (monotonic, matching libuv's
+ * timer clock). When `untilWallMs` is also given for `Date.now()`-based admission windows, waits for both clocks while
+ * capping the wall wait on the monotonic clock so a backward wall step can never stall the loop.
+ */
+function keepProcessBusyUntil(untilPerfMs: number, untilWallMs?: number): void {
 	const blocked = new Int32Array(new SharedArrayBuffer(4));
-	while (Date.now() < until) Atomics.wait(blocked, 0, 0, until - Date.now());
+	const wallCapPerfMs = untilPerfMs + 50;
+	while (true) {
+		const perfNow = performance.now();
+		const perfRemaining = untilPerfMs - perfNow;
+		const wallRemaining = untilWallMs !== undefined && perfNow < wallCapPerfMs ? untilWallMs - Date.now() : 0;
+		const remaining = Math.max(perfRemaining, wallRemaining);
+		if (remaining <= 0) return;
+		Atomics.wait(blocked, 0, 0, Math.ceil(remaining));
+	}
 }
 
 test("an already queued request keeps its opened slot when a later request arrives in the same timer pass (#5604)", async () => {
@@ -642,12 +654,18 @@ test("an already queued request keeps its opened slot when a later request arriv
 		const slotMs = 100;
 		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
 		assert.equal(tryAdmitProviderRequest(model.provider), 0);
+		const slotTakenWall = Date.now();
 		const queued = options.fetch!(`${url}/queued`, { signal: new AbortController().signal });
+		const queuedArmedPerf = performance.now();
 		const newcomer = new Promise<Response>((resolve) =>
 			setTimeout(() => resolve(options.fetch!(`${url}/new`)), slotMs + 10),
 		);
+		const newcomerArmedPerf = performance.now();
 		// By the time timers run, the old caller's slot has opened and the later arrival is due too.
-		keepProcessBusyUntil(Date.now() + slotMs + 25);
+		keepProcessBusyUntil(
+			Math.max(Math.ceil(queuedArmedPerf) + slotMs, Math.ceil(newcomerArmedPerf) + slotMs + 10) + 15,
+			slotTakenWall + slotMs + 15,
+		);
 		await Promise.all([queued, newcomer].map(async (request) => (await request).text()));
 		assert.deepEqual(received, ["/queued", "/new"]);
 	} finally {
@@ -677,56 +695,107 @@ test("a model's cooldown does not defer a request to an unrestricted sibling mod
 
 test("a caller deadline that is due when a busy process reaches the freed slot wins over the slot (#5604)", async () => {
 	vi.useRealTimers();
-	const slotMs = 50;
-	configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
-	assert.equal(tryAdmitProviderRequest(model.provider), 0);
+	const slotMs = 200;
 	let dispatches = 0;
 	const fetcher: typeof fetch = Object.assign(async () => {
 		dispatches++;
 		return new Response("{}", { status: 200 });
 	}, globalThis.fetch);
 	const admitted = await admitProviderStream(model as Model<Api>, { fetch: fetcher }, false);
+	configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
+	assert.equal(tryAdmitProviderRequest(model.provider), 0);
+	const slotTakenWall = Date.now();
 	const deadlineMs = slotMs + 10;
-	const createdAt = Date.now();
 	const deadline = AbortSignal.timeout(deadlineMs);
+	const deadlineArmedPerf = performance.now();
 	const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: deadline });
-	// The request is queued for the slot. The process stays busy until both the slot and the deadline are due, so
-	// both come due in the same timer pass: the deadline must win, and the request must never start.
-	keepProcessBusyUntil(createdAt + deadlineMs + 20);
+	const fetchArmedPerf = performance.now();
+	// The request is queued for the slot. Measure after both timers are armed so a host pause before or during
+	// AbortSignal.timeout() cannot end the busy wait before the deadline is actually due in the same timer pass.
+	keepProcessBusyUntil(
+		Math.max(Math.ceil(fetchArmedPerf) + slotMs, Math.ceil(deadlineArmedPerf) + deadlineMs) + 20,
+		slotTakenWall + slotMs + 20,
+	);
 	await assert.rejects(sent, { name: "TimeoutError" });
 	assert.equal(dispatches, 0);
 });
 
 test("a caller deadline in the same millisecond as the slot wins every time on a busy process (#5604)", async () => {
 	vi.useRealTimers();
-	const slotMs = 20;
-	const attempts = 60;
+	// Run 60 independent tie attempts as two waves of 30 providers with 500..529 ms slots so each pair of
+	// slot and deadline timers lands on its own millisecond with plenty of headroom against OS scheduler stalls.
+	const baseSlotMs = 500;
+	const waves = 2;
+	const perWave = 30;
+	const attempts = waves * perWave;
+	const busyMarginMs = 10;
 	let dispatches = 0;
 	const fetcher: typeof fetch = Object.assign(async () => {
 		dispatches++;
 		return new Response("{}", { status: 200 });
 	}, globalThis.fetch);
-	const admitted = await admitProviderStream(model as Model<Api>, { fetch: fetcher }, false);
+	const waveModels = Array.from({ length: perWave }, (_, index) => ({
+		...model,
+		provider: index === 0 ? model.provider : `${model.provider}-tie-${index}`,
+	}));
+	const admitted = await Promise.all(
+		waveModels.map((waveModel) => admitProviderStream(waveModel as Model<Api>, { fetch: fetcher }, false)),
+	);
 	const outcomes: string[] = [];
-	for (let attempt = 0; attempt < attempts; attempt++) {
-		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
-		const slotOpensAt = Date.now() + slotMs;
-		assert.equal(tryAdmitProviderRequest(model.provider), 0);
-		const caller = new AbortController();
-		const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: caller.signal }).then(
-			() => "dispatched",
-			(error: unknown) => (error as Error).name,
-		);
-		// The request is queued. The caller sets its deadline a little later for the millisecond the slot opens, so the
-		// slot's wake-up and the deadline are separate timers that come due together.
-		keepProcessBusyUntil(slotOpensAt - slotMs / 2);
-		const deadlineSetAt = Date.now();
-		const deadline = AbortSignal.timeout(Math.max(1, slotOpensAt - deadlineSetAt));
-		deadline.addEventListener("abort", () => caller.abort(deadline.reason), { once: true });
-		// The process stays busy until both are due, so both come due in the same timer pass.
-		keepProcessBusyUntil(Math.max(slotOpensAt, deadlineSetAt + 1) + 10);
-		outcomes.push(await sent);
-		configureProviderRequestBudget(model.provider, undefined);
+	try {
+		for (let wave = 0; wave < waves; wave++) {
+			const queued: {
+				caller: AbortController;
+				intervalMs: number;
+				sent: Promise<string>;
+				slotArmedPerf: number;
+				slotTakenWall: number;
+			}[] = [];
+			for (let index = 0; index < perWave; index++) {
+				const intervalMs = baseSlotMs + index;
+				const provider = waveModels[index]!.provider;
+				configureProviderRequestBudget(provider, { maxRequests: 1, intervalMs });
+				assert.equal(tryAdmitProviderRequest(provider), 0);
+				const slotTakenWall = Date.now();
+				const caller = new AbortController();
+				const sent = admitted[index]!.options.fetch!("https://example.invalid/v1/chat", {
+					signal: caller.signal,
+				}).then(
+					() => "dispatched",
+					(error: unknown) => (error as Error).name,
+				);
+				const slotArmedPerf = performance.now();
+				queued.push({ caller, intervalMs, sent, slotArmedPerf, slotTakenWall });
+			}
+			// The requests are queued. Each caller sets its deadline halfway through the slot for the millisecond its
+			// slot opens, so the slot's wake-up and the deadline are separate timers that come due together.
+			keepProcessBusyUntil(queued[0]!.slotArmedPerf + baseSlotMs / 2);
+			let busyUntilPerf = 0;
+			let busyUntilWall = 0;
+			for (const entry of queued) {
+				const beforeDeadlinePerf = performance.now();
+				const deadlineMs = Math.max(
+					1,
+					Math.floor(entry.slotArmedPerf) + entry.intervalMs - Math.floor(beforeDeadlinePerf),
+				);
+				const deadline = AbortSignal.timeout(deadlineMs);
+				const deadlineArmedPerf = performance.now();
+				deadline.addEventListener("abort", () => entry.caller.abort(deadline.reason), { once: true });
+				// Compute the busy-wait bound after AbortSignal.timeout() returns: if the host stalled before arming
+				// the deadline timer, its actual expiry is relative to deadlineArmedPerf rather than beforeDeadlinePerf.
+				busyUntilPerf = Math.max(
+					busyUntilPerf,
+					Math.ceil(entry.slotArmedPerf) + entry.intervalMs + busyMarginMs,
+					Math.ceil(deadlineArmedPerf) + deadlineMs + busyMarginMs,
+				);
+				busyUntilWall = Math.max(busyUntilWall, entry.slotTakenWall + entry.intervalMs + busyMarginMs);
+			}
+			keepProcessBusyUntil(busyUntilPerf, busyUntilWall);
+			outcomes.push(...(await Promise.all(queued.map((entry) => entry.sent))));
+			for (const waveModel of waveModels) configureProviderRequestBudget(waveModel.provider, undefined);
+		}
+	} finally {
+		for (const waveModel of waveModels) configureProviderRequestBudget(waveModel.provider, undefined);
 	}
 	assert.deepEqual(outcomes, Array(attempts).fill("TimeoutError"));
 	assert.equal(dispatches, 0);
