@@ -389,11 +389,34 @@ function isRestoreRecord(value: unknown, storeDir: string, id: string): value is
 	);
 }
 
-/** Git's registered worktree paths, without shell quoting or newline ambiguity. */
+/** The lines of `git worktree list --porcelain` other than a worktree's path, as Git before 2.36 writes them. */
+const WORKTREE_LIST_ATTRIBUTE = /^(?:HEAD|branch|bare|detached|locked|prunable)(?: |$)/;
+
+/**
+ * Git's registered worktree paths, without shell quoting or newline ambiguity. Git before 2.36 has no `-z` (it exits
+ * with 129 on it) and writes each path on a line of its own: there, a path with a line break, which those lines cannot
+ * tell from two, fails the listing rather than be misread.
+ */
 async function registeredWorktrees(git: GitRunOptions): Promise<string[]> {
-	return nulFields((await runGit(["worktree", "list", "--porcelain", "-z"], git)).stdout)
-		.filter((field) => field.startsWith("worktree "))
-		.map((field) => field.slice("worktree ".length));
+	const listed = await runGit(["worktree", "list", "--porcelain", "-z"], { ...git, allowExitCodes: [129] });
+	if (listed.exitCode === 0) {
+		return nulFields(listed.stdout)
+			.filter((field) => field.startsWith("worktree "))
+			.map((field) => field.slice("worktree ".length));
+	}
+	const paths: string[] = [];
+	for (const line of (await runGit(["worktree", "list", "--porcelain"], git)).stdout.toString("utf8").split("\n")) {
+		if (line.startsWith("worktree ")) paths.push(line.slice("worktree ".length));
+		else if (line !== "" && !WORKTREE_LIST_ATTRIBUTE.test(line)) {
+			throw new WorkspaceGitError({
+				operation: "worktree list",
+				cwd: git.cwd,
+				exitCode: null,
+				detail: "a worktree path has a line break, which Git before 2.36 cannot list; update Git",
+			});
+		}
+	}
+	return paths;
 }
 
 function includesPath(paths: readonly string[], target: string): boolean {
@@ -1331,6 +1354,33 @@ async function unshallowStore(
 	return false;
 }
 
+/** What Git before 2.31, which has no `--path-format`, prints first when asked for it: the option itself. */
+const PATH_FORMAT_ABSOLUTE = "--path-format=absolute";
+
+/**
+ * The common Git directory of the checkout at `git.cwd` as `git rev-parse --path-format=absolute --git-common-dir`
+ * prints it, through any symlink, and its exit code, one of `allowExitCodes` (128 outside a repository; any other code
+ * rejects as {@link runGit} does). Git before 2.31 prints the option back on a line of its own and exits with 0, then
+ * the directory relative to the working directory, which Git is asked to resolve as it resolves an absolute one. A path
+ * can hold a line break: all of what Git prints after the option is the path.
+ */
+async function absoluteCommonDir(
+	git: GitRunOptions,
+	allowExitCodes: readonly number[] = [128],
+): Promise<{ readonly exitCode: number; readonly path: string }> {
+	const asked = await runGit(["rev-parse", PATH_FORMAT_ABSOLUTE, "--git-common-dir"], { ...git, allowExitCodes });
+	const text = asked.stdout.toString("utf8").trim();
+	if (asked.exitCode !== 0 || !text.startsWith(`${PATH_FORMAT_ABSOLUTE}\n`)) {
+		return { exitCode: asked.exitCode, path: text };
+	}
+	const real = await runGit(["rev-parse", "--absolute-git-dir"], {
+		...git,
+		env: { ...git.env, GIT_DIR: resolve(git.cwd, text.slice(PATH_FORMAT_ABSOLUTE.length + 1)) },
+		allowExitCodes,
+	});
+	return { exitCode: real.exitCode, path: real.stdout.toString("utf8").trim() };
+}
+
 /** The shared object store a restored worktree's Git directory names: Atomic's own, never a user's repository. */
 const SHARED_STORE = /[\\/]repositories[\\/][0-9a-f]{24}\.git$/;
 
@@ -1344,12 +1394,8 @@ export async function unshallowRestoredWorktree(
 	commits: readonly string[],
 	signal?: AbortSignal,
 ): Promise<boolean> {
-	const common = await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-		cwd: root,
-		signal,
-		allowExitCodes: [128],
-	});
-	const store = common.stdout.toString("utf8").trim();
+	const common = await absoluteCommonDir({ cwd: root, signal });
+	const store = common.path;
 	if (common.exitCode !== 0 || !SHARED_STORE.test(store)) return false;
 	const git: GitRunOptions = { cwd: dirname(store), signal, env: { GIT_DIR: store } };
 	// Sibling worktrees of one store are compared at once: one fetches its history, the others find it complete.
@@ -1655,7 +1701,16 @@ const pullingHere = new Set<string>();
 
 /** `name` in the worktree's own Git directory. */
 async function worktreeGitPath(worktree: GitRunOptions, name: string): Promise<string> {
-	return resolve(worktree.cwd, await gitText(["rev-parse", "--path-format=absolute", "--git-path", name], worktree));
+	const text = await gitText(["rev-parse", PATH_FORMAT_ABSOLUTE, "--git-path", name], worktree);
+	if (!text.startsWith(`${PATH_FORMAT_ABSOLUTE}\n`)) return resolve(worktree.cwd, text);
+	// Git before 2.31 printed the option back on a line of its own, then the path relative to the working directory:
+	// resolve it as Git resolves an absolute one, through any symlink, the file itself perhaps not there yet.
+	const path = resolve(worktree.cwd, text.slice(PATH_FORMAT_ABSOLUTE.length + 1));
+	try {
+		return await realpath(path);
+	} catch {
+		return join(await realpath(dirname(path)), basename(path));
+	}
 }
 
 function pendingLfsPath(worktree: GitRunOptions): Promise<string> {
@@ -2176,9 +2231,7 @@ export async function pooledWorktreeStore(
 	worktree: string,
 	signal: AbortSignal | undefined,
 ): Promise<string> {
-	const store = resolve(
-		await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, signal }),
-	);
+	const store = resolve((await absoluteCommonDir({ cwd: worktree, signal }, [])).path);
 	if (
 		(await canonicalizeWorktreePathAsync(dirname(store))) !==
 		(await canonicalizeWorktreePathAsync(join(storeDir, "repositories")))
@@ -2793,14 +2846,8 @@ export async function removeRestoredWorktree(
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
 	}
 	const repositories = join(storeDir, "repositories");
-	const common = entry.isDirectory()
-		? await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-				cwd: target,
-				signal: options.signal,
-				allowExitCodes: [128],
-			})
-		: undefined;
-	const store = common ? resolve(common.stdout.toString("utf8").trim()) : "";
+	const common = entry.isDirectory() ? await absoluteCommonDir({ cwd: target, signal: options.signal }) : undefined;
+	const store = common ? resolve(common.path) : "";
 	if (
 		common?.exitCode !== 0 ||
 		!isWithin(repositories, store) ||

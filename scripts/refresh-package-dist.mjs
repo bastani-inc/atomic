@@ -11,8 +11,9 @@
 // longer emitted stay in dist, except under @bastani/atomic-ai's providers/data, which mirrors src/providers/data.
 //
 // A package with a `build:bundle` script is bundled from the staged files before anything moves (see
-// bundle-package-dist.mjs), so its dist only ever holds bundled files, its `_modules` mirrors the staged one, and the
-// shared files an earlier bundle wrote that this one did not are removed.
+// bundle-package-dist.mjs), so its dist only ever holds bundled files and its `_modules` mirrors the staged one. A shared
+// file an earlier bundle wrote that this one did not is removed once no other file of the dist imports it: the file of a
+// module whose source is gone stays, as above, and still loads.
 //
 // Windows refuses to replace a file that another program has open. The rename is tried again while a reader finishes
 // with the file; only a file still held after about two seconds is written in place, as the package build does.
@@ -32,9 +33,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isSharedFile } from "./bundle-package-dist.mjs";
+import { isSharedFile, MODULES_DIRECTORY } from "./bundle-package-dist.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -152,6 +153,35 @@ function ensureModelData(/** @type {string} */ packageDir) {
 }
 
 /**
+ * The shared files directly in `dist` that its other JavaScript files import by a relative path, directly or through
+ * other shared files; `_modules`, the modules' copy for bundlers, imports none.
+ * @param {string} dist @returns {Set<string>}
+ */
+function reachedSharedFiles(dist) {
+	const reached = new Set();
+	/** @type {string[]} */
+	const queue = [];
+	const visit = (/** @type {string} */ file) => {
+		const source = readFileSync(join(dist, file), "utf8");
+		for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/g)) {
+			const target = posix.normalize(posix.join(posix.dirname(file), match[1] ?? ""));
+			if (target.includes("/") || !isSharedFile(target) || reached.has(target)) continue;
+			reached.add(target);
+			if (existsSync(join(dist, target))) queue.push(target);
+		}
+	};
+	for (const file of listFiles(dist))
+		if (
+			file.endsWith(".js") &&
+			!file.startsWith(`${MODULES_DIRECTORY}/`) &&
+			(file.includes("/") || !isSharedFile(file))
+		)
+			visit(file);
+	for (let next = queue.shift(); next !== undefined; next = queue.shift()) visit(next);
+	return reached;
+}
+
+/**
  * @param {string} packageDir absolute
  * @param {{ generateModelData?: boolean, tsBuildInfoFile?: string }} [options] With `generateModelData: false`,
  *   @bastani/atomic-ai's model data is copied as it is, for a caller that has checked it, as the build does; by default
@@ -198,10 +228,12 @@ export function refreshPackageDist(packageDir, { generateModelData = true, tsBui
 		const dist = join(packageDir, "dist");
 		const sharedFiles = new Set(readdirSync(output).filter(isSharedFile));
 		const { files, replaced, removed } = moveChangedFiles(output, dist, prune);
-		// A shared file an earlier bundle wrote that this one did not: nothing the package has now imports it.
+		// A shared file an earlier bundle wrote that this one did not, and that no other file of the dist imports, even
+		// one a removed source left there (as the package build leaves it).
 		if (bundled !== undefined) {
+			const reached = reachedSharedFiles(dist);
 			for (const file of readdirSync(dist)) {
-				if (!isSharedFile(file) || sharedFiles.has(file)) continue;
+				if (!isSharedFile(file) || sharedFiles.has(file) || reached.has(file.replace(/\.map$/, ""))) continue;
 				unlinkSync(join(dist, file));
 				removed.push(file);
 			}

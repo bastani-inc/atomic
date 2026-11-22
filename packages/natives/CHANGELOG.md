@@ -4,6 +4,16 @@
 
 ### Added
 
+- `nativeVersion()`: the Atomic release the native module was built for (`0.0.0` from a source checkout).
+
+### Fixed
+
+- `terminateProcessCreatedAt(pid, created, descendants)` takes a process as one `pid` started only while the parent id its own handle reports is its parent's and the kernel's order of process starts puts it after that parent. It compared creation times on the system clock, so a clock set back, or two processes created within one tick, could end an older process that had nothing to do with `pid`. On a Windows that does not report that order (before Windows 10), only `pid` itself ends.
+
+## [0.10.4-alpha.1] - 2026-11-22
+
+### Added
+
 - `signalIgnored(signal)`: whether this process ignores a signal, as a process started under `nohup` ignores `SIGHUP`; `null` on Windows ([#6178](https://github.com/bastani-inc/atomic/pull/6178)).
 - `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing ([#6187](https://github.com/bastani-inc/atomic/pull/6187)).
 - `startHostProcess` takes `endWithParent`: the process gets `SIGKILL` when the process that started it ends, however it ends; not the processes it starts.

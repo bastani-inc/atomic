@@ -151,7 +151,11 @@ export async function loadFinalExtensionSet(
 		inlineExtensions.push(...lateInline.extensions);
 		inlineExtensions.sort((a, b) => (inlineFactoryIndex.get(a) ?? 0) - (inlineFactoryIndex.get(b) ?? 0));
 	}
-	const orderedExtensions = extensionPaths
+	const orderedPaths = [
+		...extensionPaths.filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
+		...extensionPaths.filter((path) => path.startsWith(BUILTIN_PATH_PREFIX)),
+	];
+	const orderedExtensions = orderedPaths
 		.map((path) => loadedByPath.get(extensionPathKey(path)))
 		.filter((extension): extension is Extension => extension !== undefined);
 	orderedExtensions.push(...inlineExtensions);

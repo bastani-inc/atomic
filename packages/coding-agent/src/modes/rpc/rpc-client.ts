@@ -122,6 +122,8 @@ export class RpcClient extends RpcClientApi {
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
+	/** The latest generation whose child's exit this client has handled. */
+	private exitedGeneration = 0;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
 	private startingMonitor: Promise<InteractiveEngineMonitor | undefined> | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
@@ -146,6 +148,11 @@ export class RpcClient extends RpcClientApi {
 	private stoppingEngine: ChildProcess | undefined;
 	/** Contains and reports what the listeners of an interactive engine's host throw; a raw client has none. */
 	private readonly listenerFailures: HostListenerFailures | undefined;
+	/**
+	 * What the engine child wrote, and how it ended, in arrival order, while {@link holdChildOutput} holds them and until
+	 * their release has handed all of them over.
+	 */
+	private heldChildOutput: { readonly items: Array<() => void>; released: boolean } | undefined;
 
 	private declare options: RpcClientOptions;
 
@@ -155,6 +162,43 @@ export class RpcClient extends RpcClientApi {
 		this.listenerFailures = options.interactiveEngine
 			? new HostListenerFailures((diagnostic) => this.options.interactiveEngine?.onDiagnostic(diagnostic))
 			: undefined;
+	}
+
+	/**
+	 * Hold what the engine child writes, and its exit, until the returned function releases them. They then reach this
+	 * client in the order they arrived, as if the child had only started then, so a host can start its engine before the
+	 * listeners that read it exist. A stop releases them first.
+	 */
+	holdChildOutput(): () => void {
+		const held = { items: [] as Array<() => void>, released: false };
+		this.heldChildOutput = held;
+		return () => this.releaseChildOutput(held);
+	}
+
+	/**
+	 * Hand over what is held one item per turn of the event loop, from the next turn on, as the child's output and exit
+	 * arrive when nothing holds them: what each item starts settles before the next one runs. What arrives meanwhile
+	 * waits behind them; the hold ends once nothing is left.
+	 */
+	private releaseChildOutput(held = this.heldChildOutput): void {
+		if (held === undefined || this.heldChildOutput !== held || held.released) return;
+		held.released = true;
+		const handOver = (): void => {
+			const handle = held.items.shift();
+			if (handle === undefined) {
+				if (this.heldChildOutput === held) this.heldChildOutput = undefined;
+				return;
+			}
+			setImmediate(handOver);
+			handle();
+		};
+		setImmediate(handOver);
+	}
+
+	/** Handle something the engine child wrote or did now, or once its held output is handed over. */
+	private receive(handle: () => void): void {
+		if (this.heldChildOutput) this.heldChildOutput.items.push(handle);
+		else handle();
 	}
 
 	async start(restartPermit?: number): Promise<void> {
@@ -239,10 +283,17 @@ export class RpcClient extends RpcClientApi {
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
 
 		childProcess.once("exit", (code, signal) =>
-			this.failGeneration(this.createProcessExitError(code, signal), generation, "exit"),
+			this.receive(() => {
+				this.exitedGeneration = generation;
+				this.failGeneration(this.createProcessExitError(code, signal), generation, "exit");
+			}),
 		);
-		childProcess.once("error", (rawError) => this.failGeneration(rawError, generation, "process-error"));
-		childProcess.stdin?.on("error", (rawError) => this.failGeneration(rawError, generation, "stdin-error"));
+		childProcess.once("error", (rawError) =>
+			this.receive(() => this.failGeneration(rawError, generation, "process-error")),
+		);
+		childProcess.stdin?.on("error", (rawError) =>
+			this.receive(() => this.failGeneration(rawError, generation, "stdin-error")),
+		);
 		const reportStderr = createStderrReporter((message) => {
 			if (generation !== this.generation) return;
 			if (this.options.interactiveEngine) {
@@ -257,11 +308,13 @@ export class RpcClient extends RpcClientApi {
 		});
 		// Decode continuously per child, including split code points and the final incomplete sequence at EOF.
 		childProcess.stderr?.setEncoding("utf8");
-		childProcess.stderr?.on("data", (data: string) => {
-			if (generation !== this.generation) return;
-			this.stderr = appendBoundedStderr(this.stderr, data);
-			reportStderr(data);
-		});
+		childProcess.stderr?.on("data", (data: string) =>
+			this.receive(() => {
+				if (generation !== this.generation) return;
+				this.stderr = appendBoundedStderr(this.stderr, data);
+				reportStderr(data);
+			}),
+		);
 		const readerOptions = createInteractiveJsonlOptions(this.engineMonitor !== undefined);
 		let markStdoutDrained!: () => void;
 		this.stdoutDrained = new Promise<void>((resolve) => {
@@ -269,24 +322,27 @@ export class RpcClient extends RpcClientApi {
 		});
 		this.stopReadingStdout = attachJsonlLineReader(
 			childProcess.stdout!,
-			(line) => {
-				if (generation === this.generation) this.handleLine(line, generation);
-			},
-			{ ...readerOptions, onDrained: () => markStdoutDrained() },
+			(line) =>
+				this.receive(() => {
+					if (generation === this.generation) this.handleLine(line, generation);
+				}),
+			{ ...readerOptions, onDrained: () => this.receive(() => markStdoutDrained()) },
 		);
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
 		else await sleep(100);
 
-		if (generation !== this.generation || this.process?.exitCode !== null) {
+		// An exit this client has not handled yet, such as one still held, has not happened for it.
+		if (generation !== this.generation || this.process === null || this.exitedGeneration === generation) {
 			throw rpcTransportError(`Agent process exited immediately. Stderr: ${this.stderr}`);
 		}
 	}
 
 	/**
 	 * Tell the engine child the host is quitting on purpose, and wait (bounded) for it to
-	 * record that. Call it before `stop()` for a quit the user asked for: stopping closes
-	 * stdin and sends SIGTERM, which is also how the child is stopped when the host itself
-	 * was signalled, so only this announcement lets the child tell the two apart.
+	 * record that. Call it before `stop()` for a quit the user asked for: stopping sends a
+	 * signal on Linux and macOS and closes stdin on Windows, which is also how the child is
+	 * stopped when the host itself was signalled, so only this announcement lets the child
+	 * tell the two apart.
 	 * Resolves true only when the child acknowledged the quit, and false without waiting when
 	 * there is no live engine child, or when the child exits or misses the deadline first.
 	 */
@@ -328,6 +384,7 @@ export class RpcClient extends RpcClientApi {
 	 * ending that group at once always did.
 	 */
 	stop(options?: { graceful?: boolean; hostSignaled?: boolean }): Promise<void> {
+		this.releaseChildOutput();
 		this.restartRevision += 1;
 		if (this.stopPromise) return this.stopPromise;
 		if (!this.process) return Promise.resolve();
@@ -348,6 +405,8 @@ export class RpcClient extends RpcClientApi {
 	 * request; only then is the generation retired (see RpcTerminalDrain).
 	 */
 	private async stopCurrentGeneration(graceful = false, hostSignaled = false): Promise<void> {
+		// The stop waits for the child's output to drain: whatever is held reaches the client first.
+		this.releaseChildOutput();
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
