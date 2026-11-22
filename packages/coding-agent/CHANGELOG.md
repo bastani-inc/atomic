@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Node.js, requests through an `https://` proxy now handle TLS SNI consistently across hostnames and IP addresses: plain-HTTP Amazon Bedrock endpoints send SNI for hostname `https://` proxies (fixing virtual-hosted and SNI-requiring proxies), and the global HTTP dispatcher omits IP-literal `servername` values for IPv4 and IPv6 `https://` proxies (fixing IPv6 `https://[::1]` proxy certificate verification and removing RFC 6066 IP-SNI deprecation warnings while preserving IP SAN checks and explicit non-IP `servername` overrides).
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

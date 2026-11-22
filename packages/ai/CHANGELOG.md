@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Fixed
+
+- On Node.js, Amazon Bedrock requests to plain-HTTP endpoints through an `https://` proxy by hostname now send TLS SNI (`servername`) on the proxy connection, matching HTTPS Bedrock endpoints and Bun so virtual-hosted and SNI-requiring HTTPS proxies select the right certificate instead of failing TLS verification or the handshake. IP-literal proxies continue to omit SNI per RFC 6066 while verifying IP SANs.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added
