@@ -249,6 +249,10 @@ export abstract class RpcClientApi {
 	async startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport> {
 		return this.data(await this.request({ type: "start_pending_recovery", reason }));
 	}
+	/** Restore background subagents after an isolated-engine crash without replaying deliveries or prompting. */
+	async startPendingRecoveryRestore(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport> {
+		return this.data(await this.request({ type: "start_pending_recovery_restore", reason }));
+	}
 	async getSessionStats(): Promise<SessionStats> {
 		return this.data(await this.request({ type: "get_session_stats" }));
 	}
