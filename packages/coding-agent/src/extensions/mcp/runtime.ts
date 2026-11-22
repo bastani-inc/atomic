@@ -233,6 +233,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	/** Last OAuth challenge from the server; sign-in uses its resource metadata URL and scope. */
 	challenge: OAuthChallenge | undefined;
 	private client: McpClient | undefined;
+	private activeTransport: McpTransport | undefined;
 	private opening: Promise<McpClient> | undefined;
 	private initializingClient: McpClient | undefined;
 	private initializingTransport: McpTransport | undefined;
@@ -243,8 +244,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	private readonly shutdown = new AbortController();
 	/** Stderr of the last stdio server that failed to connect. */
 	private stderrTail: string | undefined;
-	/** Active secrets of the most recent transport attempt, preserved past `connectOnce`'s `finally` for `connectFailed`. */
-	private lastTransportSecrets: readonly string[] = [];
+	/** Secrets observed across transports for the lifetime of this connection (survives retries and token rotations). */
+	private readonly seenSecrets = new Set<string>();
 	private readonly cwd: string;
 	private readonly createTransport: McpTransportFactory;
 	private readonly authProvider: McpAuthProvider | undefined;
@@ -290,7 +291,16 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 				})
 			: provider
 				? // Read on every request, so the provider's refreshes apply; MCP stores no copy.
-					{ token: async () => options.providerToken?.(provider), settled: async () => {} }
+					{
+						token: async () => {
+							try {
+								return await options.providerToken?.(provider);
+							} catch (error) {
+								throw new Error(errorMessage(error, this.activeSecrets()));
+							}
+						},
+						settled: async () => {},
+					}
 				: undefined;
 	}
 
@@ -445,7 +455,11 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	}
 
 	private dropClient(client: McpClient, drainRequests = false): Promise<void> {
-		if (this.client === client) this.client = undefined;
+		if (this.client === client) {
+			this.recordTransportSecrets(this.activeTransport);
+			this.client = undefined;
+			this.activeTransport = undefined;
+		}
 		const pending = this.retiringClients.get(client);
 		if (pending) {
 			if (!drainRequests) void pending.close();
@@ -478,7 +492,6 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		let sessionExpired = false;
 		for (let attempt = 0; ; attempt++) {
 			this.stderrTail = undefined;
-			this.lastTransportSecrets = [];
 			try {
 				return await this.connectOnce();
 			} catch (error) {
@@ -518,15 +531,16 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		let transport: McpTransport | undefined;
 		if (log) {
 			client.onNotification("notifications/message", (params) =>
-				log.write(this.entry.name, params, transportSecrets(transport)),
+				log.write(this.entry.name, params, transport ? transportSecrets(transport) : this.activeSecrets()),
 			);
 		}
 		try {
 			transport = await this.createTransport(this.entry, this.cwd, this.authProvider);
 			this.initializingTransport = transport;
-			this.lastTransportSecrets = transportSecrets(transport);
+			this.recordTransportSecrets(transport);
 			if (this.closed) throw new Error("shut down while connecting");
 			await client.connect(transport);
+			this.recordTransportSecrets(transport);
 			client.onNotification("notifications/tools/list_changed", () => {
 				void this.refreshTools(client);
 			});
@@ -537,6 +551,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			if (this.closed) throw new Error("shut down while connecting");
 			if (client.connectionState !== "connected") throw new Error("connection closed during setup");
 			this.client = client;
+			this.activeTransport = transport;
+			this.recordTransportSecrets(transport);
 			this.tools = tools;
 			this.hasResources = client.serverCapabilities?.resources !== undefined;
 			this.instructions = client.instructions?.trim() || undefined;
@@ -546,12 +562,12 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			this.changed();
 			return client;
 		} catch (error) {
-			if (transport) this.lastTransportSecrets = transportSecrets(transport);
+			this.recordTransportSecrets(transport);
 			await closeClient();
 			if (transport instanceof StdioTransport) {
 				const rawStderr = transport.stderr.trim();
 				this.stderrTail = rawStderr
-					? sliceTail(redactOAuthErrorText(rawStderr, transport.activeSecrets()), STDERR_TAIL_CHARS) || undefined
+					? sliceTail(redactOAuthErrorText(rawStderr, this.activeSecrets()), STDERR_TAIL_CHARS) || undefined
 					: undefined;
 			}
 			throw error;
@@ -566,17 +582,33 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		}
 	}
 
+	private recordTransportSecrets(transport: McpTransport | undefined): void {
+		for (const secret of transportSecrets(transport)) {
+			if (!secret) continue;
+			if (this.seenSecrets.has(secret)) {
+				this.seenSecrets.delete(secret);
+			} else if (this.seenSecrets.size >= 128) {
+				const oldest = this.seenSecrets.values().next().value;
+				if (oldest !== undefined) this.seenSecrets.delete(oldest);
+			}
+			this.seenSecrets.add(secret);
+		}
+	}
+
+	private activeSecrets(): readonly string[] {
+		const live = transportSecrets(this.activeTransport ?? this.initializingTransport);
+		if (live.length === 0) return [...this.seenSecrets];
+		if (this.seenSecrets.size === 0) return live;
+		return [...new Set([...live, ...this.seenSecrets])];
+	}
+
 	private connectFailed(error: unknown): Error {
 		if (this.needsSignIn(error) && !this.closed) {
 			this.markNeedsAuth();
 			return new Error(signInRequiredMessage(this.entry));
 		}
 		this.state = this.closed ? "closed" : "failed";
-		const secrets =
-			this.initializingTransport !== undefined
-				? transportSecrets(this.initializingTransport)
-				: this.lastTransportSecrets;
-		const message = errorMessage(error, secrets);
+		const message = errorMessage(error, this.activeSecrets());
 		this.error = this.stderrTail ? `${message}\n${this.stderrTail}` : message;
 		this.changed();
 		return new Error(`MCP server "${this.entry.name}" failed to connect: ${this.error}`);
@@ -585,12 +617,14 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	/** The transport dropped. The next call reconnects; until then the status shows why. */
 	private handleClientClose(client: McpClient, stdio: StdioTransport | undefined): void {
 		if (this.client !== client || this.closed) return;
+		this.recordTransportSecrets(this.activeTransport);
 		this.client = undefined;
+		this.activeTransport = undefined;
 		this.state = "disconnected";
 		const rawStderr = stdio?.stderr.trim();
 		const stderr =
 			rawStderr && stdio
-				? sliceTail(redactOAuthErrorText(rawStderr, stdio.activeSecrets()), STDERR_TAIL_CHARS) || undefined
+				? sliceTail(redactOAuthErrorText(rawStderr, this.activeSecrets()), STDERR_TAIL_CHARS) || undefined
 				: undefined;
 		this.error = stderr ? `Connection closed\n${stderr}` : "Connection closed";
 		this.changed();
@@ -603,7 +637,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			this.tools = tools;
 			this.onTools(this);
 		} catch (error) {
-			this.error = `Failed to refresh tools: ${errorMessage(error, this.lastTransportSecrets)}`;
+			this.error = `Failed to refresh tools: ${errorMessage(error, this.activeSecrets())}`;
 		}
 		this.changed();
 	}

@@ -36,7 +36,7 @@ import {
 	parseWwwAuthenticate,
 	stepUpScope,
 } from "./client/oauth/index.js";
-import { redactOAuthErrorText } from "./client/oauth/redact.js";
+import { redactAuthorizationUrlForDisplay, redactOAuthErrorText } from "./client/oauth/redact.js";
 
 const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/callback";
@@ -543,7 +543,7 @@ async function waitForAuthorizationResponse(
 ): Promise<AuthorizationResponse> {
 	const controller = new AbortController();
 	const promptSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-	const fromBrowser = callback.waitForCallback(state, redirectUrl.pathname);
+	const fromBrowser = callback.waitForCallback(state, redirectUrl.pathname, extraSecrets);
 	const fromUser = prompt.promptForRedirectUrl(promptSignal).then((input) => {
 		if (!input?.trim()) throw new McpSignInCancelledError();
 		return responseFromRedirectUrl(input, state, redirectUrl, extraSecrets);
@@ -664,15 +664,17 @@ export async function signInMcpServer(options: {
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 
 		const state = await provider.state();
-		const authorizationRedirectUrl = new URL(authorizationUrl.searchParams.get("redirect_uri") ?? redirectUrl);
-		options.prompt.showAuthorizationUrl(authorizationUrl);
+		const signInSecrets = [settings.clientSecret, pending.load()?.codeVerifier];
+		const safeAuthorizationUrl = new URL(redactAuthorizationUrlForDisplay(authorizationUrl, signInSecrets));
+		const authorizationRedirectUrl = new URL(safeAuthorizationUrl.searchParams.get("redirect_uri") ?? redirectUrl);
+		options.prompt.showAuthorizationUrl(safeAuthorizationUrl);
 		const { code, iss } = await waitForAuthorizationResponse(
 			callback,
 			state,
 			authorizationRedirectUrl,
 			options.prompt,
 			signal,
-			[settings.clientSecret],
+			signInSecrets,
 		);
 		await authorizeMcp(provider, { ...flow, authorizationCode: code, iss });
 		await complete();

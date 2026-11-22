@@ -1,4 +1,10 @@
 import { redactUrlCredentials } from "../core/error-contract.ts";
+import {
+	isAsciiWordCode,
+	isJsWhitespaceCode,
+	isLineTerminatorCode,
+	matchesAsciiCaseInsensitiveAt,
+} from "./linear-text.js";
 
 const REDACTED = "[redacted]";
 
@@ -777,9 +783,1954 @@ function redactStep(text: string, pattern: RegExp, redaction: Redaction): string
  * code identifiers are left as they are. ANSI styling anywhere does not hide a credential. Every pattern is linear in
  * the length of `text`.
  */
-export function redactCredentialShapes(text: string): string {
-	return STEPS.reduce(
-		(masked, [pattern, redaction]) => redactStep(masked, pattern, redaction),
-		redactUrlCredentials(text),
+function redactCredentialShapesBase(urlRedacted: string): string {
+	return STEPS.reduce((masked, [pattern, redaction]) => redactStep(masked, pattern, redaction), urlRedacted);
+}
+
+// ============================================================================
+// Shared linear helpers (ANSI stripping with origin map & RFC 7617 Basic check)
+// ============================================================================
+
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+function isAsciiLetterCode(code: number): boolean {
+	return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
+
+function isHexCode(code: number): boolean {
+	return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66);
+}
+
+function isHorizontalWsCode(code: number): boolean {
+	return code === 0x20 || code === 0x09;
+}
+
+function isHighSurrogate(code: number): boolean {
+	return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+	return code >= 0xdc00 && code <= 0xdfff;
+}
+
+function codePointWidthAt(text: string, index: number): number {
+	return index + 1 < text.length &&
+		isHighSurrogate(text.charCodeAt(index)) &&
+		isLowSurrogate(text.charCodeAt(index + 1))
+		? 2
+		: 1;
+}
+
+function base64DigitValue(code: number): number {
+	if (code >= 0x41 && code <= 0x5a) return code - 0x41;
+	if (code >= 0x61 && code <= 0x7a) return code - 0x61 + 26;
+	if (code >= 0x30 && code <= 0x39) return code - 0x30 + 52;
+	if (code === 0x2b) return 62; // +
+	if (code === 0x2f) return 63; // /
+	return -1;
+}
+
+/**
+ * Whether `value` is an RFC 7617 `Basic` credential payload: canonical standard Base64 (padded or unpadded,
+ * length >= 4) whose decoded bytes are valid printable UTF-8 (no C0/DEL control bytes other than HTAB) containing
+ * the `:` (`0x3a`) user-id/password separator. Leaves ordinary prose (`auth`, `mode`, `HTTP`, `Settings`, `Overview`)
+ * and challenge parameters (`realm="example"`) untouched while covering every `base64(userid:password)` form.
+ */
+export function isBasicAuthPayload(value: string): boolean {
+	if (value.length < 4 || value.length % 4 === 1) return false;
+	let pad = 0;
+	for (let i = value.length - 1; i >= 0 && value.charCodeAt(i) === 0x3d; i--) pad++;
+	if (pad > 2) return false;
+	if (pad > 0 && value.length % 4 !== 0) return false;
+	const end = value.length - pad;
+	if (end < 2) return false;
+	let lastSextet = 0;
+	for (let i = 0; i < end; i++) {
+		const sextet = base64DigitValue(value.charCodeAt(i));
+		if (sextet === -1) return false;
+		lastSextet = sextet;
+	}
+	// Canonical RFC 4648 trailing-bit check (unused trailing bits must be 0).
+	const mod4 = end % 4;
+	if ((pad === 1 || (pad === 0 && mod4 === 3)) && (lastSextet & 0x03) !== 0) return false;
+	if ((pad === 2 || (pad === 0 && mod4 === 2)) && (lastSextet & 0x0f) !== 0) return false;
+
+	const decoded = Buffer.from(value, "base64");
+	if (!decoded.includes(0x3a)) return false;
+	for (let i = 0; i < decoded.length; i++) {
+		const byte = decoded[i]!;
+		if ((byte < 0x20 && byte !== 0x09) || byte === 0x7f) return false;
+	}
+	try {
+		UTF8_FATAL_DECODER.decode(decoded);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Find the end index of an ANSI CSI or OSC sequence starting at `esc` (where `text.charCodeAt(esc) === 0x1b`),
+ * or `-1` if `esc` does not begin a valid CSI/OSC sequence. Breaks on any `ESC` inside OSC so scanning stays O(n).
+ */
+function matchAnsiSequenceEndAt(text: string, esc: number): number {
+	if (esc + 1 >= text.length) return -1;
+	const next = text.charCodeAt(esc + 1);
+	if (next === 0x5b) {
+		// CSI: ESC [ [0-?]* [ -/]* [@-~]
+		let j = esc + 2;
+		while (j < text.length && text.charCodeAt(j) >= 0x30 && text.charCodeAt(j) <= 0x3f) j++;
+		while (j < text.length && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
+		if (j < text.length && text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) return j + 1;
+		return -1;
+	}
+	if (next === 0x5d) {
+		// OSC: ESC ] [^\x07\x1b]* (BEL | ESC \)
+		let j = esc + 2;
+		while (j < text.length) {
+			const c = text.charCodeAt(j);
+			if (c === 0x07) return j + 1;
+			if (c === 0x1b) {
+				if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) return j + 2;
+				return -1;
+			}
+			j++;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Strip ANSI CSI (`ESC [ [0-?]* [ -/]* [@-~]`) and OSC (`ESC ] [^\x07\x1b]* (BEL | ESC \)`) sequences from `text`,
+ * returning `plain` and an `origin` array mapping each index in `plain` to its UTF-16 index in `text` (plus
+ * `text.length` at the end). Strictly linear single pass (`<= 2 * text.length` steps), with zero regular expressions.
+ */
+export function stripAnsiWithOrigin(text: string): {
+	readonly plain: string;
+	readonly origin: Int32Array | undefined;
+} {
+	if (!text.includes("\x1b")) return { plain: text, origin: undefined };
+	const chunks: string[] = [];
+	const origin = new Int32Array(text.length + 1);
+	let plainLen = 0;
+	let copied = 0;
+	let i = 0;
+
+	const flush = (end: number) => {
+		if (end <= copied) return;
+		chunks.push(text.slice(copied, end));
+		for (let index = copied; index < end; index++) origin[plainLen++] = index;
+		copied = end;
+	};
+
+	while (i < text.length) {
+		const esc = text.indexOf("\x1b", i);
+		if (esc === -1) {
+			flush(text.length);
+			break;
+		}
+		const seqEnd = matchAnsiSequenceEndAt(text, esc);
+		if (seqEnd !== -1) {
+			flush(esc);
+			copied = seqEnd;
+			i = seqEnd;
+			continue;
+		}
+		i = esc + 1;
+	}
+	if (copied < text.length) flush(text.length);
+	origin[plainLen] = text.length;
+	return { plain: chunks.join(""), origin: origin.subarray(0, plainLen + 1) };
+}
+
+// ============================================================================
+// Single structural monotonicity gate: `applyRedactionRanges`
+// ============================================================================
+
+/**
+ * A range `[start, end)` in a buffer's UTF-16 coordinates to replace with `[redacted]`.
+ * Every additive pass returns only ranges; only {@link applyRedactionRanges} rewrites text.
+ */
+interface RedactionRange {
+	readonly start: number;
+	readonly end: number;
+	/** Optional pure-whitespace prefix (e.g. `" "` or `"\n  "`) emitted before `[redacted]` at `start`. */
+	readonly leadingSpace?: string;
+}
+
+function collectProtectedSpans(buffer: string): [number, number][] {
+	const markers: [number, number][] = [];
+	for (let pos = buffer.indexOf(REDACTED); pos !== -1; pos = buffer.indexOf(REDACTED, pos + REDACTED.length)) {
+		markers.push([pos, pos + REDACTED.length]);
+	}
+	if (!buffer.includes("\x1b")) return markers;
+
+	const ansi: [number, number][] = [];
+	let i = 0;
+	while (i < buffer.length) {
+		const esc = buffer.indexOf("\x1b", i);
+		if (esc === -1) break;
+		const end = matchAnsiSequenceEndAt(buffer, esc);
+		if (end !== -1) {
+			ansi.push([esc, end]);
+			i = end;
+		} else {
+			i = esc + 1;
+		}
+	}
+	if (markers.length === 0) return ansi;
+	if (ansi.length === 0) return markers;
+
+	// Merge two sorted disjoint lists into one sorted disjoint list in O(|markers| + |ansi|).
+	const merged: [number, number][] = [];
+	let mi = 0;
+	let ai = 0;
+	while (mi < markers.length || ai < ansi.length) {
+		const next =
+			ai >= ansi.length || (mi < markers.length && markers[mi]![0] <= ansi[ai]![0]) ? markers[mi++]! : ansi[ai++]!;
+		if (merged.length > 0 && next[0] <= merged[merged.length - 1]![1]) {
+			if (next[1] > merged[merged.length - 1]![1]) merged[merged.length - 1]![1] = next[1];
+		} else {
+			merged.push([next[0], next[1]]);
+		}
+	}
+	return merged;
+}
+
+function isAllWhitespaceRange(text: string, start: number, end: number): boolean {
+	for (let i = start; i < end; i++) {
+		if (!isJsWhitespaceCode(text.charCodeAt(i))) return false;
+	}
+	return true;
+}
+
+/**
+ * Structurally monotone range applier: merges `ranges`, subtracts every existing `[redacted]` marker and every
+ * ANSI CSI/OSC escape sequence in `buffer`, and replaces only the resulting non-marker, non-ANSI fragments with
+ * `[redacted]`. Existing `[redacted]` markers, ANSI escape sequences, and bytes outside `ranges` are never modified.
+ */
+function applyRedactionRanges(buffer: string, ranges: readonly RedactionRange[]): string {
+	if (ranges.length === 0) return buffer;
+	const clamped: RedactionRange[] = [];
+	for (const r of ranges) {
+		const start = Math.max(0, Math.min(r.start, buffer.length));
+		const end = Math.max(0, Math.min(r.end, buffer.length));
+		if (end > start) clamped.push({ start, end, leadingSpace: r.leadingSpace });
+	}
+	if (clamped.length === 0) return buffer;
+
+	clamped.sort((a, b) => a.start - b.start || b.end - a.end);
+	const merged: { start: number; end: number; leadingSpace: string }[] = [];
+	for (const r of clamped) {
+		const prev = merged.at(-1);
+		if (prev !== undefined && r.start <= prev.end) {
+			if (r.end > prev.end) prev.end = r.end;
+		} else {
+			merged.push({ start: r.start, end: r.end, leadingSpace: r.leadingSpace ?? "" });
+		}
+	}
+
+	const prot = collectProtectedSpans(buffer);
+	const parts: string[] = [];
+	let copied = 0;
+	let p = 0;
+
+	const emitFragment = (fStart: number, fEnd: number, wasSplit: boolean, prefix: string) => {
+		if (fEnd <= fStart || fStart < copied) return;
+		if (wasSplit && isAllWhitespaceRange(buffer, fStart, fEnd)) return;
+		parts.push(buffer.slice(copied, fStart), prefix, REDACTED);
+		copied = fEnd;
+	};
+
+	for (const range of merged) {
+		let cur = range.start;
+		const end = range.end;
+		while (p < prot.length && prot[p]![1] <= cur) p++;
+		const overlapsProt = p < prot.length && prot[p]![0] < end;
+		if (!overlapsProt) {
+			emitFragment(cur, end, false, range.leadingSpace);
+			continue;
+		}
+		let usedPrefix = false;
+		while (cur < end && p < prot.length && prot[p]![0] < end) {
+			if (prot[p]![1] <= cur) {
+				p++;
+				continue;
+			}
+			if (prot[p]![0] > cur) {
+				const prefix = !usedPrefix && cur === range.start ? range.leadingSpace : "";
+				if (!isAllWhitespaceRange(buffer, cur, prot[p]![0])) {
+					emitFragment(cur, prot[p]![0], true, prefix);
+					usedPrefix = true;
+				}
+			}
+			if (prot[p]![1] >= end) {
+				cur = end;
+				break;
+			}
+			cur = prot[p]![1];
+			p++;
+		}
+		if (cur < end) {
+			const prefix = !usedPrefix && cur === range.start ? range.leadingSpace : "";
+			emitFragment(cur, end, true, prefix);
+		}
+	}
+
+	if (copied === 0) return buffer;
+	parts.push(buffer.slice(copied));
+	return parts.join("");
+}
+
+// ============================================================================
+// Pure linear scanning helpers shared by the additive range collectors
+// ============================================================================
+
+function isOtherRunCode(code: number): boolean {
+	return (
+		!isJsWhitespaceCode(code) &&
+		code !== 0x2c && // ,
+		code !== 0x3b && // ;
+		code !== 0x7d && // }
+		code !== 0x22 && // "
+		code !== 0x27 && // '
+		code !== 0x26 // &
 	);
+}
+
+function isPasswordJsonRunCode(code: number): boolean {
+	return (
+		!isJsWhitespaceCode(code) &&
+		code !== 0x2c && // ,
+		code !== 0x3b && // ;
+		code !== 0x7d && // }
+		code !== 0x5d // ]
+	);
+}
+
+function isRfc6750BodyCode(code: number): boolean {
+	return (
+		isAsciiWordCode(code) ||
+		code === 0x2e || // .
+		code === 0x7e || // ~
+		code === 0x2b || // +
+		code === 0x2f || // /
+		code === 0x2d // -
+	);
+}
+
+function scanQuotedValueEnd(text: string, start: number): number {
+	const quote = text.charCodeAt(start);
+	let i = start + 1;
+	while (i < text.length) {
+		const c = text.charCodeAt(i);
+		if (c === 0x0a) break;
+		if (c === 0x5c) {
+			if (i + 1 < text.length && !isLineTerminatorCode(text.charCodeAt(i + 1))) {
+				i += 1 + codePointWidthAt(text, i + 1);
+				continue;
+			}
+			break;
+		}
+		if (c === quote) {
+			if (i + 1 < text.length && text.charCodeAt(i + 1) === quote) {
+				i += 2;
+				continue;
+			}
+			i += 1;
+			break;
+		}
+		i += 1;
+	}
+	return i;
+}
+
+function scanEscapedQuotedValueEnd(text: string, start: number): number {
+	let bs = start;
+	while (bs < text.length && text.charCodeAt(bs) === 0x5c) bs++;
+	if (bs >= text.length || text.charCodeAt(bs) !== 0x22) return start;
+	const bsCount = bs - start;
+	let i = bs + 1;
+	if (bsCount === 1) {
+		while (i < text.length) {
+			const c = text.charCodeAt(i);
+			if (c === 0x0a || c === 0x22) break;
+			if (c === 0x5c) {
+				if (i + 1 < text.length && text.charCodeAt(i + 1) === 0x5c && i + 2 < text.length) {
+					const c2 = text.charCodeAt(i + 2);
+					if (c2 === 0x5c) {
+						if (i + 3 < text.length && (text.charCodeAt(i + 3) === 0x22 || text.charCodeAt(i + 3) === 0x5c)) {
+							i += 4;
+							continue;
+						}
+					} else if (c2 !== 0x0a) {
+						i += 2 + codePointWidthAt(text, i + 2);
+						continue;
+					}
+				}
+				break;
+			}
+			i += 1;
+		}
+		if (i + 1 < text.length && text.charCodeAt(i) === 0x5c && text.charCodeAt(i + 1) === 0x22) {
+			i += 2;
+		}
+		return i;
+	}
+	while (i < text.length && text.charCodeAt(i) !== 0x22 && text.charCodeAt(i) !== 0x0a) i++;
+	if (i < text.length && text.charCodeAt(i) === 0x22) i++;
+	return i;
+}
+
+/** Whether `plain` after `pos` has `[ \t]*[redacted]`. */
+function followedByRedactedMarker(plain: string, pos: number): boolean {
+	let p = pos;
+	while (p < plain.length && isHorizontalWsCode(plain.charCodeAt(p))) p++;
+	return plain.startsWith(REDACTED, p);
+}
+
+// ============================================================================
+// Additive Collector A: Standalone RFC 7617 `Basic <base64(user:pass)>`
+// ============================================================================
+
+const BASIC_FAST_CHECK = /basic[ \t]/iu;
+
+function isBasicBoundaryAt(text: string, pos: number): boolean {
+	if (pos >= text.length) return true;
+	const code = text.charCodeAt(pos);
+	if (isJsWhitespaceCode(code)) return true;
+	if (
+		code === 0x2c || // ,
+		code === 0x3b || // ;
+		code === 0x29 || // )
+		code === 0x7d || // }
+		code === 0x5d || // ]
+		code === 0x22 || // "
+		code === 0x27 || // '
+		code === 0x3e || // >
+		code === 0x3c || // <
+		code === 0x60 || // `
+		code === 0x5c // \ (escaped quote \" or escaped newline \n)
+	) {
+		return true;
+	}
+	// Trailing sentence period (e.g. `Basic <b64>.`), not a version/host dot like `HTTP/1.1`.
+	if (code === 0x2e) {
+		return pos + 1 >= text.length || isJsWhitespaceCode(text.charCodeAt(pos + 1));
+	}
+	return false;
+}
+
+function collectStandaloneBasicRanges(buffer: string): RedactionRange[] {
+	if (!buffer.includes("\x1b") && !BASIC_FAST_CHECK.test(buffer)) return [];
+	const { plain, origin } = stripAnsiWithOrigin(buffer);
+	if (!BASIC_FAST_CHECK.test(plain)) return [];
+	const at = (index: number) => (origin === undefined ? index : origin[index]!);
+	const ranges: RedactionRange[] = [];
+	let i = 0;
+
+	while (i < plain.length) {
+		if (plain.charCodeAt(i) === 0x5b && plain.startsWith(REDACTED, i)) {
+			i += REDACTED.length;
+			continue;
+		}
+		const c = plain.charCodeAt(i);
+		if ((c === 0x42 || c === 0x62) && !(i > 0 && isAsciiWordCode(plain.charCodeAt(i - 1)))) {
+			if (matchesAsciiCaseInsensitiveAt(plain, "basic", i)) {
+				let valStart = i + 5;
+				while (valStart < plain.length && isHorizontalWsCode(plain.charCodeAt(valStart))) valStart++;
+				if (valStart > i + 5 && valStart < plain.length) {
+					let valEnd = valStart;
+					while (valEnd < plain.length && base64DigitValue(plain.charCodeAt(valEnd)) !== -1) valEnd++;
+					const padStart = valEnd;
+					while (valEnd < plain.length && plain.charCodeAt(valEnd) === 0x3d && valEnd - padStart < 2) valEnd++;
+					const candidate = plain.slice(valStart, valEnd);
+					const nextChar = valEnd < plain.length ? plain.charCodeAt(valEnd) : -1;
+					const afterQuote = valEnd + 1 < plain.length ? plain.charCodeAt(valEnd + 1) : -1;
+					// Do not treat `Basic name="value"` (1 `=` before an opening quote) as Base64, but do match JSON keys `{"Basic <b64>": true}` where `:` follows the closing quote.
+					const quotedAttrStart =
+						(nextChar === 0x22 || nextChar === 0x27) &&
+						valEnd - padStart === 1 &&
+						afterQuote !== -1 &&
+						afterQuote !== 0x3a &&
+						!isBasicBoundaryAt(plain, valEnd + 1);
+					if (!quotedAttrStart && isBasicBoundaryAt(plain, valEnd) && isBasicAuthPayload(candidate)) {
+						ranges.push({ start: at(i), end: at(valEnd - 1) + 1 });
+						i = valEnd;
+						continue;
+					}
+				}
+			}
+		}
+		i++;
+	}
+	return ranges;
+}
+
+// ============================================================================
+// Additive Collector B: RFC 7636 PKCE `code_verifier` (option, block, field)
+// ============================================================================
+
+const VERIFIER_FAST_CHECK = /verifier/iu;
+const CODE_VERIFIER_NAME = fieldName("code[-_]?verifier", "CodeVerifier");
+const CODE_VERIFIER_BLOCK = blockField(CODE_VERIFIER_NAME);
+const CODE_VERIFIER_OPTION = new RegExp(
+	String.raw`(?<![\w-])--?(?:[a-z0-9]+-)*code-verifier(?:=|[ \t]+)(?:(?![-<>|])|(?=${DASHED_SECRET}))${OPTION_VALUE_GROUPS}`,
+	"dgiu",
+);
+const CODE_VERIFIER_HEADER = new RegExp(
+	String.raw`${CODE_VERIFIER_NAME}(?:\\*["'][ \t]*:[ \t]*|[ \t]*:(?![ \t]*${BLOCK_INDICATOR})[ \t]*|(?:\\*["'])?[ \t]*=(?![=>]|~(?![A-Za-z0-9._~-]{42})))`,
+	"gu",
+);
+const CODE_VERIFIER_PLACEHOLDER =
+	/^(?:<[^<>\n]{1,200}>|\(?(?:not set|unset|none|empty|hidden|masked|redacted|required|optional)\)?|\*{3,}|•{3,}|x{3,42}|X{3,42}|\.{3}|…)$/u;
+const MAX_TYPE_NAME_LENGTH = 40;
+const MIN_PKCE_VERIFIER_LENGTH = 43;
+const CODE_VERIFIER_NAME_END =
+	/(?:AccessToken|RefreshToken|AuthSecret|ClientSecret|ApiKey|CodeVerifier|Secret|Password|Passwd|Pwd|Passphrase)$/u;
+
+function holdsCodeVerifierSecret(
+	input: string,
+	matchIndex: number,
+	matchEnd: number,
+	valueStart: number,
+	value: string,
+	quotedName: boolean,
+): boolean {
+	if (isGenericType(input.slice(valueStart, valueStart + MAX_GENERIC_LENGTH + 2))) return false;
+	if (/^<[^<>\n]{1,200}>/u.test(input.slice(valueStart, valueStart + 202))) return false;
+	if (CODE_VERIFIER_PLACEHOLDER.test(value.replace(/[,;.]$/u, ""))) return false;
+	const first = /[^\s,;)}\]]*/u.exec(value)![0];
+	const rest = value.slice(first.length).trim();
+	if (!/^[,;)}\]]*:?$/u.test(rest)) return true;
+	if (LITERAL.test(first)) return false;
+	if (quotedName && /^-?\d+(?:\.\d+)?$/u.test(first)) return false;
+	if (first.length < MIN_PKCE_VERIFIER_LENGTH && isMemberAccess(first)) return false;
+	const typeName = first.endsWith("[") ? first.slice(0, -1) : first;
+	if (typeName.length <= MAX_TYPE_NAME_LENGTH && TYPE_NAME.test(typeName)) {
+		if (DECLARATION_LINE.test(lineBefore(input, matchIndex))) return false;
+		const list = openParameterList(input, matchIndex);
+		if (list !== undefined) {
+			const after = input.slice(matchEnd, matchEnd + CODE_CONTEXT_LENGTH).split(/[)\n]/u, 1)[0]!;
+			if (BUILTIN_PARAMETER.test(`${list}${after}`)) return false;
+		}
+	}
+	return true;
+}
+
+function ordinaryCodeVerifierCamelCase(input: string, index: number, name: string): boolean {
+	const before = /[A-Za-z0-9]*$/u.exec(input.slice(Math.max(0, index - 64), index))![0];
+	const identifier = before + /^[A-Za-z0-9]*/u.exec(name)![0];
+	return ORDINARY_CAMEL_CASE_PREFIX.test(/^[a-z]*/u.exec(before)![0]) && !CODE_VERIFIER_NAME_END.test(identifier);
+}
+
+function continuedOnNextLineAt(input: string, matchIndex: number, valueStart: number, valueEnd: number): boolean {
+	const lineStart = input.lastIndexOf("\n", matchIndex) + 1;
+	const valueLineStart = input.lastIndexOf("\n", valueStart) + 1;
+	const valueLineEnd = input.indexOf("\n", valueStart);
+	const valueLine = input.slice(valueLineStart, valueLineEnd === -1 ? input.length : valueLineEnd).replace(/\r$/u, "");
+	const keyIndent = indentation(input.slice(lineStart, matchIndex));
+	const trimmed = valueLine.trim();
+	return (
+		indentation(valueLine) > keyIndent &&
+		trimmed === input.slice(valueStart, valueEnd).trim() &&
+		/^[^\s:=()]+$/u.test(trimmed)
+	);
+}
+
+function collectCodeVerifierRanges(buffer: string): RedactionRange[] {
+	if (!buffer.includes("\x1b") && !VERIFIER_FAST_CHECK.test(buffer)) return [];
+	const { plain, origin } = stripAnsiWithOrigin(buffer);
+	if (!VERIFIER_FAST_CHECK.test(plain)) return [];
+	const at = (index: number) => (origin === undefined ? index : origin[index]!);
+	const ranges: RedactionRange[] = [];
+
+	// 1. CLI `--code-verifier` option ranges (in `buffer` coordinates).
+	for (const match of plain.matchAll(CODE_VERIFIER_OPTION)) {
+		for (const { start, end } of GROUPS(match)) {
+			const absFrom = match.index + start;
+			const absTo = match.index + end;
+			const val = plain.slice(absFrom, absTo);
+			if (val.startsWith(REDACTED)) continue;
+			if (val.endsWith(":") && followedByRedactedMarker(plain, absTo)) continue;
+			ranges.push({ start: at(absFrom), end: at(absTo - 1) + 1 });
+		}
+	}
+
+	// 2. YAML block scalar `code_verifier: |` ranges (in `buffer` coordinates).
+	for (const match of plain.matchAll(CODE_VERIFIER_BLOCK)) {
+		for (const { start, end, replacement } of BLOCK(match)) {
+			const absFrom = match.index + start;
+			const absTo = match.index + end;
+			if (absTo <= absFrom) continue;
+			const leadingSpace = replacement.slice(0, replacement.length - REDACTED.length);
+			ranges.push({ start: at(absFrom), end: at(absTo - 1) + 1, leadingSpace });
+		}
+	}
+
+	// 3. Field values (JSON, escaped JSON, query/env `=`, YAML bare `:` and indented next-line).
+	let scanPos = 0;
+	for (;;) {
+		CODE_VERIFIER_HEADER.lastIndex = scanPos;
+		const header = CODE_VERIFIER_HEADER.exec(plain);
+		if (header === null) break;
+		const matchIndex = header.index;
+		const headerText = header[0];
+		const headerEnd = matchIndex + headerText.length;
+		const separator = /[:=]/u.exec(headerText)!.index;
+		const sepAbs = matchIndex + separator;
+		const name = headerText.slice(0, separator);
+		const sepChar = headerText[separator]!;
+		const quotedName = name.includes('"') || name.includes("'");
+		const form: "json" | "bare" | "equals" = sepChar === "=" ? "equals" : quotedName ? "json" : "bare";
+
+		let valueStart = headerEnd;
+		let replaceFrom = sepAbs + 1;
+		let leadingSpace = " ";
+		let isNextLine = false;
+
+		if (form === "equals") {
+			let ws = headerEnd;
+			while (ws < plain.length && isHorizontalWsCode(plain.charCodeAt(ws))) ws++;
+			if (ws > headerEnd && isEnvAssignmentAt(plain, ws)) {
+				scanPos = headerEnd;
+				continue;
+			}
+			valueStart = ws;
+		} else if (form === "bare") {
+			if (
+				valueStart < plain.length &&
+				(plain.charCodeAt(valueStart) === 0x0a ||
+					(plain.charCodeAt(valueStart) === 0x0d && plain.charCodeAt(valueStart + 1) === 0x0a))
+			) {
+				let nextPos = plain.charCodeAt(valueStart) === 0x0d ? valueStart + 2 : valueStart + 1;
+				const indentStart = nextPos;
+				while (nextPos < plain.length && isHorizontalWsCode(plain.charCodeAt(nextPos))) nextPos++;
+				if (nextPos === indentStart) {
+					scanPos = headerEnd;
+					continue;
+				}
+				valueStart = nextPos;
+				replaceFrom = nextPos;
+				leadingSpace = "";
+				isNextLine = true;
+			}
+		}
+
+		if (valueStart >= plain.length) {
+			scanPos = headerEnd;
+			continue;
+		}
+		if (plain.startsWith(REDACTED, valueStart)) {
+			scanPos = valueStart + REDACTED.length;
+			continue;
+		}
+		let valueEnd = valueStart;
+		const first = plain.charCodeAt(valueStart);
+		if (first === 0x22 || first === 0x27) {
+			valueEnd = scanQuotedValueEnd(plain, valueStart);
+		} else if (first === 0x5c) {
+			const escEnd = scanEscapedQuotedValueEnd(plain, valueStart);
+			if (escEnd > valueStart) valueEnd = escEnd;
+		}
+		if (valueEnd === valueStart) {
+			while (valueEnd < plain.length && isOtherRunCode(plain.charCodeAt(valueEnd))) valueEnd++;
+		}
+		if (valueEnd <= valueStart) {
+			scanPos = headerEnd;
+			continue;
+		}
+		scanPos = valueEnd;
+
+		if (plain[matchIndex - 1] === "`" && plain[sepAbs + 1] === "`") continue;
+		if (isNextLine && !continuedOnNextLineAt(plain, matchIndex, valueStart, valueEnd)) continue;
+
+		let end = valueEnd;
+		while (end > valueStart && isJsWhitespaceCode(plain.charCodeAt(end - 1))) end--;
+		const value = plain.slice(sepAbs + 1, end).trimStart();
+		if (value.startsWith(REDACTED)) continue;
+		if (value.endsWith(":") && followedByRedactedMarker(plain, end)) continue;
+		if (!holdsCodeVerifierSecret(plain, matchIndex, valueEnd, end - value.length, value, quotedName)) continue;
+		if (ordinaryCodeVerifierCamelCase(plain, matchIndex, name)) continue;
+		if (end <= replaceFrom) continue;
+
+		ranges.push({ start: at(replaceFrom), end: at(end - 1) + 1, leadingSpace });
+	}
+
+	return ranges;
+}
+
+// ============================================================================
+// Additive Collector C: Position-aligned assigned auth schemes & Bearer tails
+// ============================================================================
+
+const AUTH_SCHEMES = ["bearer", "basic", "digest", "token", "apikey", "oauth"] as const;
+const AUTH_SCHEME_FAST_CHECK = /(?:bearer|basic|digest|token|apikey|oauth)[ \t]/iu;
+const ASSIGNED_SCHEME_FIELD_END = new RegExp(
+	String.raw`(?:${OTHER_NAME}|${PASSWORD_NAME})(?:\\*["'][ \t]*:[ \t]*|(?:\\*["'])?[ \t]*=(?![=>~])[ \t]*)$`,
+	"u",
+);
+
+function isExactAuthSchemeWord(text: string): boolean {
+	const trimmed = text.trim();
+	for (const scheme of AUTH_SCHEMES) {
+		if (trimmed.length === scheme.length && matchesAsciiCaseInsensitiveAt(trimmed, scheme, 0)) return true;
+	}
+	return false;
+}
+
+function isStandaloneBearerMatch(text: string): boolean {
+	if (!matchesAsciiCaseInsensitiveAt(text, "bearer", 0)) return false;
+	let pos = 6;
+	while (pos < text.length && isHorizontalWsCode(text.charCodeAt(pos))) pos++;
+	return pos > 6 && pos < text.length && isRfc6750BodyCode(text.charCodeAt(pos));
+}
+
+function scanBearerExtendedTailEnd(text: string, start: number): number {
+	let i = start;
+	while (i < text.length) {
+		const c = text.charCodeAt(i);
+		if (isRfc6750BodyCode(c)) {
+			i++;
+		} else if (
+			c === 0x25 &&
+			i + 2 < text.length &&
+			isHexCode(text.charCodeAt(i + 1)) &&
+			isHexCode(text.charCodeAt(i + 2))
+		) {
+			i += 3;
+		} else if (
+			c === 0x3a &&
+			!(i + 2 < text.length && text.charCodeAt(i + 1) === 0x2f && text.charCodeAt(i + 2) === 0x2f) &&
+			i + 1 < text.length &&
+			(isRfc6750BodyCode(text.charCodeAt(i + 1)) ||
+				(text.charCodeAt(i + 1) === 0x25 &&
+					i + 3 < text.length &&
+					isHexCode(text.charCodeAt(i + 2)) &&
+					isHexCode(text.charCodeAt(i + 3))))
+		) {
+			i++;
+		} else {
+			break;
+		}
+	}
+	while (i < text.length && text.charCodeAt(i) === 0x3d) i++;
+	return i;
+}
+
+/**
+ * Find the position in `urlRedacted` of chunk `piece` (the text between two consecutive `[redacted]` markers in
+ * `base`), handling the synthetic space `base` inserts after `:`/`=` or YAML block indentation before `[redacted]`.
+ */
+function findAlignedPiece(
+	urlRedacted: string,
+	uPos: number,
+	piece: string,
+	isFirst: boolean,
+	beforeMarker: boolean,
+): { readonly matchStart: number; readonly matchEnd: number } | undefined {
+	if (piece.length === 0) return { matchStart: uPos, matchEnd: uPos };
+	if (isFirst) {
+		if (urlRedacted.startsWith(piece, 0)) return { matchStart: 0, matchEnd: piece.length };
+		if (beforeMarker && piece.endsWith(" ")) {
+			const trimmed = piece.slice(0, -1);
+			if (urlRedacted.startsWith(trimmed, 0)) return { matchStart: 0, matchEnd: trimmed.length };
+		}
+		const blockTrim = beforeMarker ? piece.replace(/\n[ ]+$/u, "") : piece;
+		if (blockTrim !== piece && urlRedacted.startsWith(blockTrim, 0)) {
+			return { matchStart: 0, matchEnd: blockTrim.length };
+		}
+		return undefined;
+	}
+	// If `piece` ends with `" "` right after `:`/`=` before a marker, prefer trimming that synthetic space when exact match fails or matches later.
+	const syntheticSpace =
+		beforeMarker &&
+		piece.length >= 2 &&
+		piece.endsWith(" ") &&
+		(piece.charCodeAt(piece.length - 2) === 0x3a || piece.charCodeAt(piece.length - 2) === 0x3d);
+	if (syntheticSpace) {
+		const trimmed = piece.slice(0, -1);
+		const idx = urlRedacted.indexOf(trimmed, uPos);
+		if (idx !== -1) return { matchStart: idx, matchEnd: idx + trimmed.length };
+		return undefined;
+	}
+	const exact = urlRedacted.indexOf(piece, uPos);
+	if (exact !== -1) return { matchStart: exact, matchEnd: exact + piece.length };
+	if (beforeMarker && piece.endsWith(" ")) {
+		const trimmed = piece.slice(0, -1);
+		if (trimmed.length === 0) return { matchStart: uPos, matchEnd: uPos };
+		const idx = urlRedacted.indexOf(trimmed, uPos);
+		if (idx !== -1) return { matchStart: idx, matchEnd: idx + trimmed.length };
+	}
+	if (beforeMarker) {
+		const blockTrim = piece.replace(/\n[ ]+$/u, "");
+		if (blockTrim !== piece) {
+			const idx = urlRedacted.indexOf(blockTrim, uPos);
+			if (idx !== -1) return { matchStart: idx, matchEnd: idx + blockTrim.length };
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Position-aligned collector for tokens left behind by `base`:
+ * 1. Assigned auth-scheme values (`auth=Bearer <tok>`, `Authorization=Basic <b64>`, `"auth": Bearer <tok>`) where
+ *    `base` replaced the scheme word at this exact marker site with `[redacted]` and left `<tok>` right after it.
+ * 2. Standalone `Bearer` percent-encoded (`%XX`) or internal `:` tails (excluding `://` URLs) where `base` replaced
+ *    `Bearer <prefix>` at this exact marker site with `[redacted]` and left the tail immediately after it.
+ *
+ * Matches strictly by alignment of each `[redacted]` marker in `base` back to `urlRedacted` (never by multiset value
+ * matching across lines).
+ */
+function collectAssignedSchemeAndBearerTailRanges(urlRedacted: string, base: string): RedactionRange[] {
+	if (!urlRedacted.includes("\x1b") && !AUTH_SCHEME_FAST_CHECK.test(urlRedacted)) return [];
+	if (!base.includes(REDACTED)) return [];
+
+	// Locate every `[redacted]` marker in `base`.
+	const markerStarts: number[] = [];
+	for (let pos = base.indexOf(REDACTED); pos !== -1; pos = base.indexOf(REDACTED, pos + REDACTED.length)) {
+		markerStarts.push(pos);
+	}
+	if (markerStarts.length === 0) return [];
+
+	// Align each literal piece between markers in `base` monotonically against `urlRedacted` in O(|urlRedacted| + |base|).
+	const pieceCount = markerStarts.length + 1;
+	const origPieceStart = new Int32Array(pieceCount);
+	const origPieceEnd = new Int32Array(pieceCount);
+	origPieceStart.fill(-1);
+	origPieceEnd.fill(-1);
+
+	let uPos = 0;
+	let basePrevEnd = 0;
+	for (let k = 0; k < pieceCount; k++) {
+		const pieceEnd = k < markerStarts.length ? markerStarts[k]! : base.length;
+		const piece = base.slice(basePrevEnd, pieceEnd);
+		const found = findAlignedPiece(urlRedacted, uPos, piece, k === 0, k < markerStarts.length);
+		if (found === undefined) break;
+		origPieceStart[k] = found.matchStart;
+		origPieceEnd[k] = found.matchEnd;
+		uPos = found.matchEnd;
+		// Advance past an existing literal `[redacted]` in `urlRedacted` when the marker wasn't newly introduced.
+		if (k < markerStarts.length && urlRedacted.startsWith(REDACTED, uPos)) {
+			uPos += REDACTED.length;
+		}
+		basePrevEnd = pieceEnd + REDACTED.length;
+	}
+
+	const { plain: basePlain, origin: baseOrigin } = stripAnsiWithOrigin(base);
+	const atBase = (index: number) => (baseOrigin === undefined ? index : baseOrigin[index]!);
+	// Map raw marker end index in `base` -> plain index in `basePlain` via monotonic cursor.
+	let plainCursor = 0;
+	const rawToPlain = (rawIdx: number): number => {
+		if (baseOrigin === undefined) return rawIdx;
+		while (plainCursor < baseOrigin.length - 1 && baseOrigin[plainCursor]! < rawIdx) plainCursor++;
+		return plainCursor;
+	};
+
+	const ranges: RedactionRange[] = [];
+
+	for (let k = 0; k < markerStarts.length; k++) {
+		const origReplacedStart = origPieceEnd[k]!;
+		const origReplacedEnd = origPieceStart[k + 1]!;
+		if (origReplacedStart === -1 || origReplacedEnd === -1 || origReplacedEnd <= origReplacedStart) continue;
+
+		const replacedPlain = stripAnsiWithOrigin(urlRedacted.slice(origReplacedStart, origReplacedEnd)).plain;
+		const markerEndRaw = markerStarts[k]! + REDACTED.length;
+		const markerEndPlain = rawToPlain(markerEndRaw);
+
+		// Case 1: Standalone `Bearer <prefix>` replaced at this exact marker -> extend over `%XX` or `:(?!//)` tail.
+		if (isStandaloneBearerMatch(replacedPlain)) {
+			if (markerEndPlain < basePlain.length) {
+				const nextCode = basePlain.charCodeAt(markerEndPlain);
+				if (nextCode === 0x25 || nextCode === 0x3a) {
+					const tailEndPlain = scanBearerExtendedTailEnd(basePlain, markerEndPlain);
+					if (tailEndPlain > markerEndPlain) {
+						ranges.push({ start: atBase(markerEndPlain), end: atBase(tailEndPlain - 1) + 1 });
+					}
+				}
+			}
+			continue;
+		}
+
+		// Case 2: Assigned auth scheme (`auth=Bearer <tok>`, `"auth": Bearer <tok>`, `Authorization=Basic <b64>`).
+		if (isExactAuthSchemeWord(replacedPlain)) {
+			// Verify the text immediately before `origReplacedStart` ends with a `=` or quoted `:` credential field header.
+			const lookback = stripAnsiWithOrigin(
+				urlRedacted.slice(Math.max(0, origReplacedStart - 96), origReplacedStart),
+			).plain;
+			if (!ASSIGNED_SCHEME_FIELD_END.test(lookback)) continue;
+
+			let tokStartPlain = markerEndPlain;
+			while (tokStartPlain < basePlain.length && isHorizontalWsCode(basePlain.charCodeAt(tokStartPlain))) {
+				tokStartPlain++;
+			}
+			if (tokStartPlain === markerEndPlain || tokStartPlain >= basePlain.length) continue;
+			if (basePlain.startsWith(REDACTED, tokStartPlain)) continue;
+
+			let tokEndPlain = tokStartPlain;
+			const first = basePlain.charCodeAt(tokStartPlain);
+			if (first === 0x22 || first === 0x27) {
+				tokEndPlain = scanQuotedValueEnd(basePlain, tokStartPlain);
+			} else {
+				while (tokEndPlain < basePlain.length && isOtherRunCode(basePlain.charCodeAt(tokEndPlain))) {
+					tokEndPlain++;
+				}
+			}
+			if (tokEndPlain <= tokStartPlain) continue;
+			const cand = basePlain.slice(tokStartPlain, tokEndPlain);
+			if (cand.endsWith(":") && followedByRedactedMarker(basePlain, tokEndPlain)) continue;
+			ranges.push({ start: atBase(tokStartPlain), end: atBase(tokEndPlain - 1) + 1 });
+		}
+	}
+
+	return ranges;
+}
+
+// ============================================================================
+// Additive Collector D: Linear fallback (>= 1024 chars) for Bun Yarr safety
+// Covers: password env/bare/quoted/escaped, other fields, YAML next-line,
+// provider keys, cookie headers/arrays/CLI options, netrc, PEM, --flag-password.
+// ============================================================================
+
+const LONG_LINE_THRESHOLD = 1024;
+
+const CONNECTION_KEYWORD_PATTERNS: readonly string[] = [
+	"server",
+	"data source",
+	"address",
+	"addr",
+	"network address",
+	"host",
+	"hostname",
+	"port",
+	"database",
+	"initial catalog",
+	"dbname",
+	"db",
+	"user ?id",
+	"uid",
+	"user ?name",
+	"user",
+	"pwd",
+	"password",
+	"encrypt",
+	"trust ?server ?certificate",
+	"trusted_connection",
+	"integrated security",
+	"persist security info",
+	"connect(?:ion)? ?timeout",
+	"timeout",
+	"command timeout",
+	"application ?name",
+	"app",
+	"application ?intent",
+	"multiple ?active ?result ?sets",
+	"multi ?subnet ?failover",
+	"pooling",
+	"min pool size",
+	"max pool size",
+	"provider",
+	"driver",
+	"dsn",
+	"attach ?db ?filename",
+	"authentication",
+	"workstation id",
+	"packet size",
+	"failover partner",
+	"charset",
+	"ssl ?mode",
+	"sslrootcert",
+	"sslcert",
+	"sslkey",
+	"options",
+	"schema",
+	"search_path",
+	"account ?name",
+	"account ?key",
+	"default ?endpoints ?protocol",
+	"endpoint ?suffix",
+	"blob ?endpoint",
+	"queue ?endpoint",
+	"table ?endpoint",
+	"file ?endpoint",
+	"shared ?access ?key ?name",
+	"shared ?access ?key",
+	"shared ?access ?signature",
+	"entity ?path",
+	"endpoint",
+	"tenant ?id",
+	"client ?id",
+	"column ?encryption ?setting",
+	"mars ?connection",
+	"language",
+	"current ?language",
+];
+
+interface KeywordTrieNode {
+	readonly next: Map<number, KeywordTrieNode>;
+	terminal: boolean;
+}
+
+function expandConnectionKeywordPattern(pattern: string): string[] {
+	let variants = [""];
+	let i = 0;
+	while (i < pattern.length) {
+		if (pattern.startsWith("(?:ion)?", i)) {
+			variants = variants.flatMap((v) => [v, `${v}ion`]);
+			i += 8;
+		} else if (i + 1 < pattern.length && pattern[i] === " " && pattern[i + 1] === "?") {
+			variants = variants.flatMap((v) => [v, `${v} `]);
+			i += 2;
+		} else {
+			const ch = pattern[i]!;
+			variants = variants.map((v) => v + ch);
+			i += 1;
+		}
+	}
+	return variants;
+}
+
+function buildConnectionKeywordTrie(patterns: readonly string[]): KeywordTrieNode {
+	const root: KeywordTrieNode = { next: new Map(), terminal: false };
+	for (const pattern of patterns) {
+		for (const word of expandConnectionKeywordPattern(pattern)) {
+			let node = root;
+			for (let i = 0; i < word.length; i++) {
+				const code = word.charCodeAt(i);
+				let child = node.next.get(code);
+				if (child === undefined) {
+					child = { next: new Map(), terminal: false };
+					node.next.set(code, child);
+				}
+				node = child;
+			}
+			node.terminal = true;
+		}
+	}
+	return root;
+}
+
+const CONNECTION_KEYWORD_TRIE = buildConnectionKeywordTrie(CONNECTION_KEYWORD_PATTERNS);
+
+function isEnvAssignmentAt(text: string, pos: number): boolean {
+	if (pos >= text.length) return false;
+	const first = text.charCodeAt(pos);
+	if (!isAsciiLetterCode(first) && first !== 0x5f) return false;
+	let p = pos + 1;
+	while (p < text.length) {
+		const c = text.charCodeAt(p);
+		if (isAsciiWordCode(c) || c === 0x2e || c === 0x2d) p++;
+		else break;
+	}
+	return p < text.length && text.charCodeAt(p) === 0x3d;
+}
+
+function isConnectionKeywordEqualsAt(text: string, wordStart: number): boolean {
+	let node: KeywordTrieNode | undefined = CONNECTION_KEYWORD_TRIE;
+	let p = wordStart;
+	while (p < text.length && node !== undefined) {
+		if (node.terminal) {
+			let q = p;
+			while (q < text.length && isHorizontalWsCode(text.charCodeAt(q))) q++;
+			if (q < text.length && text.charCodeAt(q) === 0x3d) return true;
+		}
+		let c = text.charCodeAt(p);
+		if (c >= 0x41 && c <= 0x5a) c += 32;
+		node = node.next.get(c);
+		p++;
+	}
+	if (node?.terminal) {
+		let q = p;
+		while (q < text.length && isHorizontalWsCode(text.charCodeAt(q))) q++;
+		if (q < text.length && text.charCodeAt(q) === 0x3d) return true;
+	}
+	return false;
+}
+
+function isPasswordEnvSemicolon(text: string, semiPos: number): boolean {
+	let p = semiPos + 1;
+	while (p < text.length && isHorizontalWsCode(text.charCodeAt(p))) p++;
+	if (p >= text.length) return false;
+	const c = text.charCodeAt(p);
+	if (c === 0x0a || (c === 0x0d && p + 1 < text.length && text.charCodeAt(p + 1) === 0x0a)) return false;
+	if (isConnectionKeywordEqualsAt(text, p)) return false;
+	if (p > semiPos + 1 && (isAsciiLetterCode(c) || c === 0x5f)) {
+		let q = p + 1;
+		while (q < text.length) {
+			const qc = text.charCodeAt(q);
+			if (isAsciiWordCode(qc) || qc === 0x20 || qc === 0x2e || qc === 0x2d) q++;
+			else break;
+		}
+		if (q < text.length && text.charCodeAt(q) === 0x3d) return false;
+	}
+	return true;
+}
+
+function scanPasswordEnvRun(text: string, start: number): number {
+	if (start >= text.length) return -1;
+	const first = text.charCodeAt(start);
+	if (isJsWhitespaceCode(first)) return -1;
+	if (first === 0x3b && !isPasswordEnvSemicolon(text, start)) return -1;
+	let p = start + 1;
+	while (p < text.length) {
+		const c = text.charCodeAt(p);
+		if (isJsWhitespaceCode(c)) break;
+		if (c === 0x3b && !isPasswordEnvSemicolon(text, p)) break;
+		p++;
+	}
+	return p;
+}
+
+function scanPasswordEnvEnd(text: string, start: number): { readonly valueEnd: number; readonly eolWsEnd: number } {
+	let end = scanPasswordEnvRun(text, start);
+	if (end === -1) return { valueEnd: start, eolWsEnd: start };
+	for (;;) {
+		let ws = end;
+		while (ws < text.length && isHorizontalWsCode(text.charCodeAt(ws))) ws++;
+		if (ws === end) return { valueEnd: end, eolWsEnd: end };
+		if (
+			ws === text.length ||
+			text.charCodeAt(ws) === 0x0a ||
+			(text.charCodeAt(ws) === 0x0d && text.charCodeAt(ws + 1) === 0x0a)
+		) {
+			return { valueEnd: end, eolWsEnd: ws };
+		}
+		if (isEnvAssignmentAt(text, ws)) return { valueEnd: end, eolWsEnd: end };
+		const nextEnd = scanPasswordEnvRun(text, ws);
+		if (nextEnd === -1) return { valueEnd: end, eolWsEnd: end };
+		end = nextEnd;
+	}
+}
+
+function scanPasswordBareEnd(text: string, start: number): number {
+	if (start >= text.length || isJsWhitespaceCode(text.charCodeAt(start))) return start;
+	let i = start;
+	while (i < text.length && !isJsWhitespaceCode(text.charCodeAt(i))) i++;
+	while (i + 1 < text.length && text.charCodeAt(i) === 0x20 && !isJsWhitespaceCode(text.charCodeAt(i + 1))) {
+		i++;
+		while (i < text.length && !isJsWhitespaceCode(text.charCodeAt(i))) i++;
+	}
+	return i;
+}
+
+function skipAuthSchemePrefix(text: string, start: number): number {
+	for (const scheme of AUTH_SCHEMES) {
+		if (!matchesAsciiCaseInsensitiveAt(text, scheme, start)) continue;
+		let pos = start + scheme.length;
+		if (pos < text.length && isHorizontalWsCode(text.charCodeAt(pos))) {
+			while (pos < text.length && isHorizontalWsCode(text.charCodeAt(pos))) pos++;
+			return pos;
+		}
+	}
+	return start;
+}
+
+function isCookieEscapeFollowCode(code: number): boolean {
+	return (
+		code === 0x72 ||
+		code === 0x6e ||
+		code === 0x74 ||
+		code === 0x62 ||
+		code === 0x66 ||
+		code === 0x75 ||
+		code === 0x22 ||
+		code === 0x5c ||
+		code === 0x2f
+	);
+}
+
+function isPlainCookieValueCode(code: number): boolean {
+	return (
+		code !== 0x3b &&
+		code !== 0x2c &&
+		!isJsWhitespaceCode(code) &&
+		code !== 0x22 &&
+		code !== 0x5c &&
+		code !== 0x29 &&
+		code !== 0x7d
+	);
+}
+
+function isUnquotedCookieValueAt(segment: string, index: number): boolean {
+	if (index >= segment.length) return false;
+	const code = segment.charCodeAt(index);
+	if (code === 0x5c) {
+		return index + 1 >= segment.length || !isCookieEscapeFollowCode(segment.charCodeAt(index + 1));
+	}
+	if (code === 0x7d) {
+		if (index + 1 >= segment.length) return false;
+		const next = segment.charCodeAt(index + 1);
+		return isPlainCookieValueCode(next) || next === 0x7d;
+	}
+	return isPlainCookieValueCode(code);
+}
+
+function isNextCookieAt(segment: string, pos: number): boolean {
+	let p = pos;
+	while (p < segment.length && segment.charCodeAt(p) === 0x20) p++;
+	const nameStart = p;
+	while (p < segment.length) {
+		const c = segment.charCodeAt(p);
+		if (c === 0x3b || c === 0x2c || c === 0x3d || c === 0x20) break;
+		p++;
+	}
+	return p > nameStart && p < segment.length && segment.charCodeAt(p) === 0x3d;
+}
+
+function cookieValuesLinear(segment: string, setCookie: boolean, context: CookieContext): [number, number][] {
+	const values: [number, number][] = [];
+	let first = true;
+	let pos = 0;
+	while (pos < segment.length) {
+		while (pos < segment.length) {
+			const c = segment.charCodeAt(pos);
+			if (c === 0x3b || c === 0x2c || c === 0x3d) break;
+			pos++;
+		}
+		let valueStart = -1;
+		let valueEnd = -1;
+		if (pos < segment.length && segment.charCodeAt(pos) === 0x3d) {
+			pos++;
+			if (pos < segment.length && segment.charCodeAt(pos) === 0x22) {
+				pos++;
+				valueStart = pos;
+				while (pos < segment.length && segment.charCodeAt(pos) !== 0x22) pos++;
+				valueEnd = pos;
+				if (pos < segment.length && segment.charCodeAt(pos) === 0x22) pos++;
+			} else {
+				const rawStart = pos;
+				let p = pos;
+				while (p < segment.length && isHorizontalWsCode(segment.charCodeAt(p))) p++;
+				if (isUnquotedCookieValueAt(segment, p)) {
+					valueStart = rawStart;
+					while (isUnquotedCookieValueAt(segment, p)) p++;
+					valueEnd = p;
+					pos = p;
+				}
+			}
+		}
+		while (pos < segment.length && segment.charCodeAt(pos) !== 0x3b && segment.charCodeAt(pos) !== 0x2c) pos++;
+		let endedWithComma = false;
+		if (pos < segment.length) {
+			endedWithComma = segment.charCodeAt(pos) === 0x2c;
+			pos++;
+		}
+		if (valueStart !== -1) {
+			const text = segment.slice(valueStart, valueEnd).trim();
+			const secret =
+				text !== "" &&
+				!text.startsWith(REDACTED) &&
+				!PLACEHOLDER_COOKIE.test(text) &&
+				(context === "header" || generatedCookieValue(text));
+			if (secret && (first || !setCookie)) values.push([valueStart, valueEnd]);
+		}
+		first = endedWithComma && isNextCookieAt(segment, pos);
+	}
+	return values;
+}
+
+const FALLBACK_PASSWORD_HEADER = new RegExp(
+	String.raw`${PASSWORD_NAME}(?:\\*["'][ \t]*:[ \t]*|[ \t]*:(?![ \t]*${BLOCK_INDICATOR})[ \t]*|(?:\\*["'])?[ \t]*=(?![=>~]))`,
+	"gu",
+);
+const FALLBACK_OTHER_HEADER = new RegExp(
+	String.raw`${OTHER_NAME}(?:\\*["'][ \t]*:[ \t]*|[ \t]*:(?![ \t]*${BLOCK_INDICATOR})[ \t]*|(?:\\*["'])?[ \t]*=(?![=>~]))`,
+	"gu",
+);
+const FALLBACK_BARE_PASSWORD_EOL = new RegExp(String.raw`${PASSWORD_NAME}[ \t]*:[ \t]*$`, "u");
+const FALLBACK_BARE_OTHER_EOL = new RegExp(String.raw`${OTHER_NAME}[ \t]*:[ \t]*$`, "u");
+const FALLBACK_PROVIDER_KEY_HEADER = /(?<![A-Za-z0-9])([a-z][a-z0-9]*)Key(?:\\*["'])?[ \t]*([:=])[ \t]*/gu;
+const FALLBACK_COOKIE_OPTION_HEADER = /(?<![\w-])(?:--cookie|-b)(?:=|[ \t]+)/gu;
+
+function collectFallbackCookieHeaderRanges(line: string, lineOffset: number, ranges: RedactionRange[]): void {
+	if (!line.includes("\x1b") && !/cookie/iu.test(line)) return;
+	const { plain, origin } = stripAnsiWithOrigin(line);
+	if (!/cookie/iu.test(plain)) return;
+	const at = (index: number) => lineOffset + (origin === undefined ? index : origin[index]!);
+
+	for (const match of plain.matchAll(COOKIE_HEADER)) {
+		const setCookie = match[1] !== undefined;
+		let from = match.index + match[0].length;
+		COOKIE_SEGMENT_END.lastIndex = from;
+		const end = COOKIE_SEGMENT_END.exec(plain)?.index ?? plain.length;
+		// Cookie JSON array: `{"set-cookie":["sid=...", ...]}`
+		if (plain[from] === "[" && (match[2] !== "" || match[3] !== ":")) {
+			ARRAY_ELEMENT.lastIndex = from + 1;
+			for (
+				let element = ARRAY_ELEMENT.exec(plain);
+				element !== null && element.index < end;
+				element = ARRAY_ELEMENT.exec(plain)
+			) {
+				const [elemStart, elemEnd] = element.indices![1] ?? element.indices![2]!;
+				for (const [start, valueEnd] of cookieValuesLinear(plain.slice(elemStart, elemEnd), setCookie, "header")) {
+					const absFrom = elemStart + start;
+					const absTo = elemStart + valueEnd;
+					if (absTo > absFrom) ranges.push({ start: at(absFrom), end: at(absTo - 1) + 1 });
+				}
+			}
+			continue;
+		}
+		OPENING_QUOTE.lastIndex = from;
+		const opening = OPENING_QUOTE.exec(plain)?.[0];
+		let quote: string | undefined;
+		let context: CookieContext = "header";
+		if (match[2] !== "" || match[3] !== ":") {
+			quote = opening?.at(-1);
+			from += opening?.length ?? 0;
+			if (match[2] === "" && plain[match.index - 1] === ".") context = "prose";
+		} else {
+			const anywhere = setCookie || match[0].startsWith("C");
+			({ quote, context } = headerQuote(plain, match.index, anywhere));
+			if (!anywhere && opening !== undefined) quote = undefined;
+		}
+		if (quote === undefined) continue;
+		let segmentEnd = end;
+		if (quote !== "") {
+			const closing = plain.slice(from, end).indexOf(quote);
+			if (closing !== -1) segmentEnd = from + closing;
+			while (segmentEnd > from && plain[segmentEnd - 1] === "\\") segmentEnd--;
+		}
+		for (const [start, valueEnd] of cookieValuesLinear(plain.slice(from, segmentEnd), setCookie, context)) {
+			const absFrom = from + start;
+			const absTo = from + valueEnd;
+			if (absTo > absFrom) ranges.push({ start: at(absFrom), end: at(absTo - 1) + 1 });
+		}
+	}
+}
+
+function collectFallbackCookieOptionRanges(line: string, lineOffset: number, ranges: RedactionRange[]): void {
+	if (!line.includes("\x1b") && !line.includes("--cookie") && !line.includes("-b")) return;
+	const { plain, origin } = stripAnsiWithOrigin(line);
+	if (!plain.includes("--cookie") && !plain.includes("-b")) return;
+	const at = (index: number) => lineOffset + (origin === undefined ? index : origin[index]!);
+
+	for (const match of plain.matchAll(FALLBACK_COOKIE_OPTION_HEADER)) {
+		let valStart = match.index + match[0].length;
+		if (valStart >= plain.length) continue;
+		const first = plain.charCodeAt(valStart);
+		let valEnd: number;
+		if (first === 0x22 || first === 0x27) {
+			valStart++;
+			valEnd = valStart;
+			while (valEnd < plain.length && plain.charCodeAt(valEnd) !== first && plain.charCodeAt(valEnd) !== 0x0a) {
+				valEnd++;
+			}
+		} else {
+			valEnd = valStart;
+			while (
+				valEnd < plain.length &&
+				!isJsWhitespaceCode(plain.charCodeAt(valEnd)) &&
+				plain.charCodeAt(valEnd) !== 0x22 &&
+				plain.charCodeAt(valEnd) !== 0x27
+			) {
+				valEnd++;
+			}
+		}
+		if (valEnd <= valStart) continue;
+		for (const [start, valueEnd] of cookieValuesLinear(plain.slice(valStart, valEnd), false, "header")) {
+			const absFrom = valStart + start;
+			const absTo = valStart + valueEnd;
+			if (absTo > absFrom) ranges.push({ start: at(absFrom), end: at(absTo - 1) + 1 });
+		}
+	}
+}
+
+function collectFallbackFieldRanges(
+	line: string,
+	lineOffset: number,
+	headerPattern: RegExp,
+	password: boolean,
+	ranges: RedactionRange[],
+): void {
+	const { plain, origin } = stripAnsiWithOrigin(line);
+	const at = (index: number) => lineOffset + (origin === undefined ? index : origin[index]!);
+	let scanPos = 0;
+
+	for (;;) {
+		headerPattern.lastIndex = scanPos;
+		const header = headerPattern.exec(plain);
+		if (header === null) break;
+		const matchIndex = header.index;
+		const headerText = header[0];
+		const headerEnd = matchIndex + headerText.length;
+		const separator = /[:=]/u.exec(headerText)!.index;
+		const sepAbs = matchIndex + separator;
+		const name = headerText.slice(0, separator);
+		const sepChar = headerText[separator]!;
+		const quotedName = name.includes('"') || name.includes("'");
+		const form: "json" | "bare" | "equals" = sepChar === "=" ? "equals" : quotedName ? "json" : "bare";
+
+		let valueStart = headerEnd;
+		if (form === "equals") {
+			let ws = headerEnd;
+			while (ws < plain.length && isHorizontalWsCode(plain.charCodeAt(ws))) ws++;
+			if (ws > headerEnd && isEnvAssignmentAt(plain, ws)) {
+				scanPos = headerEnd;
+				continue;
+			}
+			valueStart = ws;
+		}
+		if (valueStart >= plain.length) {
+			scanPos = headerEnd;
+			continue;
+		}
+		// Skip already-redacted values before scanning (prevents JSON `[^\s,;}\]]+` stopping before `]` of `[redacted]`).
+		if (plain.startsWith(REDACTED, valueStart)) {
+			scanPos = valueStart + REDACTED.length;
+			continue;
+		}
+
+		let valueEnd = valueStart;
+		let eolWsEnd = valueStart;
+		const first = plain.charCodeAt(valueStart);
+		if (first === 0x22 || first === 0x27) {
+			valueEnd = scanQuotedValueEnd(plain, valueStart);
+			eolWsEnd = valueEnd;
+		} else if (first === 0x5c) {
+			const escEnd = scanEscapedQuotedValueEnd(plain, valueStart);
+			if (escEnd > valueStart) {
+				valueEnd = escEnd;
+				eolWsEnd = escEnd;
+			}
+		}
+		if (valueEnd === valueStart) {
+			if (password) {
+				if (form === "equals") {
+					const scanned = scanPasswordEnvEnd(plain, valueStart);
+					valueEnd = scanned.valueEnd;
+					eolWsEnd = scanned.eolWsEnd;
+				} else if (form === "bare") {
+					const afterScheme = skipAuthSchemePrefix(plain, valueStart);
+					const runStart =
+						afterScheme > valueStart &&
+						afterScheme < plain.length &&
+						!isJsWhitespaceCode(plain.charCodeAt(afterScheme))
+							? afterScheme
+							: valueStart;
+					valueEnd = scanPasswordBareEnd(plain, runStart);
+					eolWsEnd = valueEnd;
+				} else {
+					while (valueEnd < plain.length && isPasswordJsonRunCode(plain.charCodeAt(valueEnd))) valueEnd++;
+					eolWsEnd = valueEnd;
+				}
+			} else {
+				const afterScheme = form === "bare" ? skipAuthSchemePrefix(plain, valueStart) : valueStart;
+				const runStart =
+					afterScheme > valueStart && afterScheme < plain.length && isOtherRunCode(plain.charCodeAt(afterScheme))
+						? afterScheme
+						: valueStart;
+				valueEnd = runStart;
+				while (valueEnd < plain.length && isOtherRunCode(plain.charCodeAt(valueEnd))) valueEnd++;
+				eolWsEnd = valueEnd;
+			}
+		}
+		if (valueEnd <= valueStart) {
+			scanPos = headerEnd;
+			continue;
+		}
+		scanPos = valueEnd;
+
+		if (plain[matchIndex - 1] === "`" && plain[sepAbs + 1] === "`") continue;
+
+		const afterSeparator = plain.slice(sepAbs + 1, valueEnd);
+		let trimmedEnd = valueEnd;
+		while (trimmedEnd > valueStart && isJsWhitespaceCode(plain.charCodeAt(trimmedEnd - 1))) trimmedEnd--;
+		// Only absorb trailing EOL whitespace when contiguous in raw `line` (never crossing an ANSI reset).
+		const contiguousEol =
+			eolWsEnd > trimmedEnd &&
+			(origin === undefined || origin[eolWsEnd - 1]! - origin[trimmedEnd - 1]! === eolWsEnd - trimmedEnd);
+		let end = contiguousEol ? eolWsEnd : trimmedEnd;
+
+		const unquoted = !/^\s*["'\\]/u.test(afterSeparator);
+		if (password && form === "bare" && unquoted) {
+			const sentence = afterSeparator.search(SENTENCE_END);
+			if (sentence > 0) {
+				trimmedEnd = Math.min(trimmedEnd, sepAbs + 1 + sentence);
+				end = trimmedEnd;
+			}
+		}
+		if (password && unquoted && openParameterList(plain, matchIndex) !== undefined) {
+			const stop = afterSeparator.search(/[,)]/u);
+			if (stop !== -1) {
+				trimmedEnd = sepAbs + 1 + stop;
+				end = trimmedEnd;
+			}
+		}
+
+		const value = plain.slice(sepAbs + 1, trimmedEnd).trimStart();
+		if (value.startsWith(REDACTED)) continue;
+		if (password && form === "bare" && !/^["'\\]/u.test(value) && describesPassword(value)) continue;
+		const pseudoMatch = Object.assign([plain.slice(matchIndex, valueEnd)], {
+			index: matchIndex,
+			input: plain,
+		}) as RegExpExecArray;
+		if (!holdsSecret(pseudoMatch, trimmedEnd - value.length, value, quotedName, password)) continue;
+		if (ordinaryCamelCase(plain, matchIndex, name)) continue;
+		const replaceFrom = sepAbs + 1;
+		if (end <= replaceFrom) continue;
+
+		ranges.push({ start: at(replaceFrom), end: at(end - 1) + 1, leadingSpace: " " });
+	}
+}
+
+function collectFallbackProviderKeyRanges(line: string, lineOffset: number, ranges: RedactionRange[]): void {
+	if (!line.includes("\x1b") && !line.includes("Key")) return;
+	const { plain, origin } = stripAnsiWithOrigin(line);
+	if (!plain.includes("Key")) return;
+	const at = (index: number) => lineOffset + (origin === undefined ? index : origin[index]!);
+	let scanPos = 0;
+
+	for (;;) {
+		FALLBACK_PROVIDER_KEY_HEADER.lastIndex = scanPos;
+		const header = FALLBACK_PROVIDER_KEY_HEADER.exec(plain);
+		if (header === null) break;
+		const matchIndex = header.index;
+		const headerText = header[0];
+		const headerEnd = matchIndex + headerText.length;
+		const separator = /[:=]/u.exec(headerText)!.index;
+		const valStart = headerEnd;
+		if (valStart >= plain.length) break;
+		if (plain.startsWith(REDACTED, valStart)) {
+			scanPos = valStart + REDACTED.length;
+			continue;
+		}
+		const first = plain.charCodeAt(valStart);
+		let valEnd: number;
+		if (first === 0x22 || first === 0x27) {
+			valEnd = scanQuotedValueEnd(plain, valStart);
+		} else {
+			valEnd = valStart;
+			while (valEnd < plain.length && isOtherRunCode(plain.charCodeAt(valEnd))) valEnd++;
+		}
+		scanPos = valEnd > valStart ? valEnd : headerEnd;
+		if (valEnd <= valStart) continue;
+		if (ORDINARY_KEY_PREFIX.test(header[1]!)) continue;
+		const rawVal = plain.slice(valStart, valEnd).trim();
+		if (rawVal.startsWith(REDACTED) || !looksSecret(rawVal)) continue;
+		ranges.push({ start: at(matchIndex + separator + 1), end: at(valEnd - 1) + 1, leadingSpace: " " });
+	}
+}
+
+/**
+ * Fallback for YAML next-line values (`password:\n  "\\a...SEC"`, `token:\n  "\\a...SEC"`) where the key sits on
+ * the short preceding line and the value sits indented on a `>= 1024`-char line.
+ */
+function collectFallbackYamlNextLineRange(
+	buffer: string,
+	prevStart: number,
+	prevEnd: number,
+	lineStart: number,
+	lineEnd: number,
+	ranges: RedactionRange[],
+): void {
+	const prevRaw = buffer.slice(prevStart, prevEnd).replace(/\r$/u, "");
+	const prevPlain = stripAnsiWithOrigin(prevRaw).plain;
+	if (!prevPlain.includes(":")) return;
+	const pwdMatch = FALLBACK_BARE_PASSWORD_EOL.exec(prevPlain);
+	const otherMatch = pwdMatch === null ? FALLBACK_BARE_OTHER_EOL.exec(prevPlain) : null;
+	const headerMatch = pwdMatch ?? otherMatch;
+	if (headerMatch === null) return;
+	const password = pwdMatch !== null;
+	const keyIndent = indentation(prevPlain.slice(0, headerMatch.index));
+
+	const valLineRaw = buffer.slice(lineStart, lineEnd);
+	const { plain: valPlain, origin: valOrigin } = stripAnsiWithOrigin(valLineRaw);
+	const valNoCr = valPlain.replace(/\r$/u, "");
+	const valIndent = indentation(valNoCr);
+	if (valIndent <= keyIndent) return;
+	const trimmed = valNoCr.trim();
+	if (trimmed === "" || trimmed.startsWith(REDACTED) || !/^[^\s:=()]+$/u.test(trimmed)) return;
+
+	const valStart = valIndent;
+	const first = valPlain.charCodeAt(valStart);
+	let valEnd = valStart;
+	if (first === 0x22 || first === 0x27) {
+		valEnd = scanQuotedValueEnd(valPlain, valStart);
+	} else if (first === 0x5c) {
+		const escEnd = scanEscapedQuotedValueEnd(valPlain, valStart);
+		if (escEnd > valStart) valEnd = escEnd;
+	}
+	if (valEnd === valStart) {
+		if (password) {
+			valEnd = scanPasswordBareEnd(valPlain, valStart);
+		} else {
+			while (valEnd < valPlain.length && isOtherRunCode(valPlain.charCodeAt(valEnd))) valEnd++;
+		}
+	}
+	if (valPlain.slice(valStart, valEnd).trim() !== trimmed) return;
+
+	const name = headerMatch[0].slice(0, headerMatch[0].indexOf(":"));
+	if (ordinaryCamelCase(prevPlain, headerMatch.index, name)) return;
+	const pseudoMatch = Object.assign([`${headerMatch[0]}\n${valPlain.slice(0, valEnd)}`], {
+		index: 0,
+		input: `${headerMatch[0]}\n${valPlain}`,
+	}) as RegExpExecArray;
+	if (!holdsSecret(pseudoMatch, headerMatch[0].length + 1 + valStart, trimmed, false, password)) return;
+
+	const atVal = (index: number) => lineStart + (valOrigin === undefined ? index : valOrigin[index]!);
+	ranges.push({ start: atVal(valStart), end: atVal(valEnd - 1) + 1 });
+}
+
+const CREDENTIAL_OPTION_SUFFIXES = [
+	"password",
+	"passwd",
+	"pass",
+	"token",
+	"secret",
+	"api-key",
+	"apikey",
+	"access-key",
+	"secret-key",
+	"client-secret",
+	"private-key",
+	"auth-token",
+] as const;
+
+const DASHED_SECRET_REGEX = new RegExp(`^${DASHED_SECRET}`, "u");
+
+function isCredentialOptionName(name: string): boolean {
+	if (name.length === 0) return false;
+	let matchedSuffixLen = 0;
+	for (const suffix of CREDENTIAL_OPTION_SUFFIXES) {
+		if (name.length === suffix.length && matchesAsciiCaseInsensitiveAt(name, suffix, 0)) {
+			matchedSuffixLen = suffix.length;
+			break;
+		}
+		if (
+			name.length > suffix.length &&
+			name.charCodeAt(name.length - suffix.length - 1) === 0x2d &&
+			matchesAsciiCaseInsensitiveAt(name, suffix, name.length - suffix.length)
+		) {
+			matchedSuffixLen = suffix.length;
+			break;
+		}
+	}
+	if (matchedSuffixLen === 0) return false;
+	const prefixEnd = name.length - matchedSuffixLen;
+	// Verify prefix is `(?:[a-z0-9]+-)*` (case-insensitive): no leading `-`, no `--`, only ASCII alnum and `-`.
+	let segLen = 0;
+	for (let i = 0; i < prefixEnd; i++) {
+		const c = name.charCodeAt(i);
+		if (c === 0x2d) {
+			if (segLen === 0) return false;
+			segLen = 0;
+		} else if (isAsciiLetterCode(c) || (c >= 0x30 && c <= 0x39)) {
+			segLen++;
+		} else {
+			return false;
+		}
+	}
+	return segLen === 0;
+}
+
+/**
+ * Linear fallback for `--(?:[a-z0-9]+-)*<credential-option> <value>` (F26/F27 on Bun at MB scale).
+ * Advances past each scanned `[A-Za-z0-9-]+` flag run so unmatched `--a-a-...-x` stays strictly O(n).
+ */
+function collectFallbackCredentialOptionRanges(line: string, lineOffset: number, ranges: RedactionRange[]): void {
+	if (!line.includes("-")) return;
+	const { plain, origin } = stripAnsiWithOrigin(line);
+	const at = (index: number) => lineOffset + (origin === undefined ? index : origin[index]!);
+	let i = 0;
+
+	while (i < plain.length) {
+		const dash = plain.indexOf("-", i);
+		if (dash === -1) break;
+		if (dash > 0) {
+			const prev = plain.charCodeAt(dash - 1);
+			if (isAsciiWordCode(prev) || prev === 0x2d) {
+				i = dash + 1;
+				continue;
+			}
+		}
+		let nameStart = dash + 1;
+		if (nameStart < plain.length && plain.charCodeAt(nameStart) === 0x2d) nameStart++;
+		let nameEnd = nameStart;
+		while (nameEnd < plain.length) {
+			const c = plain.charCodeAt(nameEnd);
+			if (isAsciiLetterCode(c) || (c >= 0x30 && c <= 0x39) || c === 0x2d) nameEnd++;
+			else break;
+		}
+		if (nameEnd === nameStart || nameEnd >= plain.length) {
+			i = Math.max(dash + 1, nameEnd);
+			continue;
+		}
+		let valStart = nameEnd;
+		const sep = plain.charCodeAt(valStart);
+		if (sep === 0x3d) {
+			valStart++;
+		} else if (isHorizontalWsCode(sep)) {
+			while (valStart < plain.length && isHorizontalWsCode(plain.charCodeAt(valStart))) valStart++;
+		} else {
+			i = nameEnd;
+			continue;
+		}
+		if (valStart >= plain.length || !isCredentialOptionName(plain.slice(nameStart, nameEnd))) {
+			i = nameEnd;
+			continue;
+		}
+		const first = plain.charCodeAt(valStart);
+		if (first === 0x3c || first === 0x3e || first === 0x7c) {
+			i = valStart;
+			continue;
+		}
+		if (first === 0x2d && !DASHED_SECRET_REGEX.test(plain.slice(valStart, valStart + 128))) {
+			i = valStart;
+			continue;
+		}
+		let groupStart = valStart;
+		let groupEnd = valStart;
+		let nextPos = valStart;
+		if (first === 0x22 || first === 0x27) {
+			groupStart = valStart + 1;
+			groupEnd = groupStart;
+			while (
+				groupEnd < plain.length &&
+				plain.charCodeAt(groupEnd) !== first &&
+				plain.charCodeAt(groupEnd) !== 0x0a
+			) {
+				groupEnd++;
+			}
+			nextPos = groupEnd < plain.length && plain.charCodeAt(groupEnd) === first ? groupEnd + 1 : groupEnd;
+		} else {
+			while (groupEnd < plain.length) {
+				const c = plain.charCodeAt(groupEnd);
+				if (isJsWhitespaceCode(c) || c === 0x22 || c === 0x27 || c === 0x3c || c === 0x3e || c === 0x7c) break;
+				groupEnd++;
+			}
+			nextPos = groupEnd;
+		}
+		if (groupEnd > groupStart && !plain.startsWith(REDACTED, groupStart)) {
+			ranges.push({ start: at(groupStart), end: at(groupEnd - 1) + 1 });
+		}
+		i = Math.max(nextPos, nameEnd);
+	}
+}
+
+function skipWs(text: string, pos: number): number {
+	while (pos < text.length && isJsWhitespaceCode(text.charCodeAt(pos))) pos++;
+	return pos;
+}
+
+function skipNonWs(text: string, pos: number): number {
+	while (pos < text.length && !isJsWhitespaceCode(text.charCodeAt(pos))) pos++;
+	return pos;
+}
+
+/**
+ * Memoized strictly O(n) linear fallback for netrc entries (`machine`/`default ... password <secret>`, single-line
+ * and multi-line at MB scale). Each failed Branch 1 position is recorded in `failedCur`, so repeated
+ * `default\nlogin\n` chains visit each position at most once.
+ */
+function collectFallbackNetrcRanges(buffer: string, ranges: RedactionRange[]): void {
+	if (!buffer.includes("\x1b")) {
+		if (!buffer.includes("password")) return;
+		if (!buffer.includes("machine") && !buffer.includes("default") && !buffer.includes("login")) return;
+	}
+	const { plain, origin } = stripAnsiWithOrigin(buffer);
+	if (!plain.includes("password")) return;
+	if (!plain.includes("machine") && !plain.includes("default") && !plain.includes("login")) return;
+	const at = (index: number) => (origin === undefined ? index : origin[index]!);
+	const failedCur = new Set<number>();
+	let lineStart = 0;
+
+	while (lineStart < plain.length) {
+		const nextNl = plain.indexOf("\n", lineStart);
+		const lineEnd = nextNl === -1 ? plain.length : nextNl;
+		let p = lineStart;
+		while (p < lineEnd && isHorizontalWsCode(plain.charCodeAt(p))) p++;
+
+		let handled = false;
+		let afterHeader = -1;
+		if (plain.startsWith("machine", p)) {
+			let q = p + 7;
+			const wsStart = q;
+			while (q < plain.length && isHorizontalWsCode(plain.charCodeAt(q))) q++;
+			if (q > wsStart && q < plain.length && !isJsWhitespaceCode(plain.charCodeAt(q))) {
+				afterHeader = skipNonWs(plain, q);
+			}
+		} else if (plain.startsWith("default", p)) {
+			const q = p + 7;
+			if (q < plain.length && isJsWhitespaceCode(plain.charCodeAt(q))) {
+				afterHeader = q;
+			}
+		}
+
+		if (afterHeader !== -1 && !failedCur.has(afterHeader)) {
+			let cur = afterHeader;
+			const visited: number[] = [];
+			let matched = false;
+			for (;;) {
+				if (failedCur.has(cur)) break;
+				visited.push(cur);
+				const kwStart = skipWs(plain, cur);
+				if (kwStart === cur || kwStart >= plain.length) break;
+				const kwEnd = skipNonWs(plain, kwStart);
+				const kw = plain.slice(kwStart, kwEnd);
+				if (kw === "login" || kw === "account" || kw === "port") {
+					const valStart = skipWs(plain, kwEnd);
+					if (valStart === kwEnd || valStart >= plain.length) break;
+					cur = skipNonWs(plain, valStart);
+					continue;
+				}
+				if (kw === "password") {
+					const valStart = skipWs(plain, kwEnd);
+					if (valStart > kwEnd && valStart < plain.length) {
+						const valEnd = skipNonWs(plain, valStart);
+						if (valEnd > valStart) {
+							if (!plain.startsWith(REDACTED, valStart)) {
+								ranges.push({ start: at(valStart), end: at(valEnd - 1) + 1 });
+							}
+							const afterEndNl = plain.indexOf("\n", valEnd);
+							lineStart = afterEndNl === -1 ? plain.length : afterEndNl + 1;
+							matched = true;
+							handled = true;
+						}
+					}
+				}
+				break;
+			}
+			if (!matched) {
+				for (const pos of visited) failedCur.add(pos);
+			}
+		}
+
+		if (!handled) {
+			lineStart = nextNl === -1 ? plain.length : nextNl + 1;
+		}
+	}
+}
+
+/** Match `-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----` or `END` linearly from `pos`, returning end index or -1. */
+function matchPemBoundaryEndAt(plain: string, pos: number, kind: "BEGIN" | "END"): number {
+	const prefix = `-----${kind} `;
+	if (!plain.startsWith(prefix, pos)) return -1;
+	let i = pos + prefix.length;
+	for (;;) {
+		if (plain.startsWith("PRIVATE KEY-----", i)) return i + 16;
+		if (plain.startsWith("PRIVATE KEY BLOCK-----", i)) return i + 22;
+		const wordStart = i;
+		while (i < plain.length) {
+			const c = plain.charCodeAt(i);
+			if ((c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39)) i++;
+			else break;
+		}
+		if (i === wordStart || i >= plain.length || plain.charCodeAt(i) !== 0x20) return -1;
+		i++; // consume single space
+	}
+}
+
+/** Linear fallback for `-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----` blocks (F25 at MB scale on Bun). */
+function collectFallbackPemRanges(buffer: string, ranges: RedactionRange[]): void {
+	if (!buffer.includes("\x1b") && !buffer.includes("-----BEGIN ")) return;
+	const { plain, origin } = stripAnsiWithOrigin(buffer);
+	if (!plain.includes("-----BEGIN ")) return;
+	const at = (index: number) => (origin === undefined ? index : origin[index]!);
+	let pos = 0;
+
+	while (pos < plain.length) {
+		const begin = plain.indexOf("-----BEGIN ", pos);
+		if (begin === -1) break;
+		const headerEnd = matchPemBoundaryEndAt(plain, begin, "BEGIN");
+		if (headerEnd === -1) {
+			// Skip past any `[A-Z0-9 ]` run after `-----BEGIN ` so unclosed `-----BEGIN A A ...` stays strictly O(n).
+			let skip = begin + 11;
+			while (skip < plain.length) {
+				const c = plain.charCodeAt(skip);
+				if ((c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39) || c === 0x20) skip++;
+				else break;
+			}
+			pos = skip;
+			continue;
+		}
+		let blockEnd = plain.length;
+		let endSearch = headerEnd;
+		while (endSearch < plain.length) {
+			const endPos = plain.indexOf("-----END ", endSearch);
+			if (endPos === -1) break;
+			const footerEnd = matchPemBoundaryEndAt(plain, endPos, "END");
+			if (footerEnd !== -1) {
+				blockEnd = footerEnd;
+				break;
+			}
+			endSearch = endPos + 9;
+		}
+		ranges.push({ start: at(begin), end: at(blockEnd - 1) + 1 });
+		pos = blockEnd;
+	}
+}
+
+/**
+ * Linear fallback range collector for inputs `>= 1024` characters: catches any credential field, YAML next-line
+ * scalar, provider key, cookie header/array/CLI option, netrc entry, PEM block, or long `--flag-password` option
+ * that Bun JavaScriptCore Yarr silently aborted on, returning only ranges for {@link applyRedactionRanges}.
+ */
+function collectLongLineFallbackRanges(buffer: string): RedactionRange[] {
+	if (buffer.length < LONG_LINE_THRESHOLD) return [];
+	const ranges: RedactionRange[] = [];
+
+	// 1. Per-line linear fallbacks for every line >= 1024 chars (plus YAML next-line looking at the preceding line).
+	let lineStart = 0;
+	let prevStart = -1;
+	let prevEnd = -1;
+	while (lineStart < buffer.length) {
+		const nl = buffer.indexOf("\n", lineStart);
+		const lineEnd = nl === -1 ? buffer.length : nl;
+		if (lineEnd - lineStart >= LONG_LINE_THRESHOLD) {
+			const line = buffer.slice(lineStart, lineEnd);
+			if (line.includes(":") || line.includes("=")) {
+				collectFallbackCookieHeaderRanges(line, lineStart, ranges);
+				collectFallbackFieldRanges(line, lineStart, FALLBACK_PASSWORD_HEADER, true, ranges);
+				collectFallbackFieldRanges(line, lineStart, FALLBACK_OTHER_HEADER, false, ranges);
+				collectFallbackProviderKeyRanges(line, lineStart, ranges);
+			}
+			if (line.includes("--cookie") || line.includes("-b") || line.includes("\x1b")) {
+				collectFallbackCookieOptionRanges(line, lineStart, ranges);
+			}
+			if (line.includes("-")) {
+				collectFallbackCredentialOptionRanges(line, lineStart, ranges);
+			}
+			if (prevStart !== -1 && (line.charCodeAt(0) === 0x20 || line.charCodeAt(0) === 0x09)) {
+				collectFallbackYamlNextLineRange(buffer, prevStart, prevEnd, lineStart, lineEnd, ranges);
+			}
+		}
+		prevStart = lineStart;
+		prevEnd = lineEnd;
+		if (nl === -1) break;
+		lineStart = nl + 1;
+	}
+
+	// 2. Whole-buffer linear fallbacks for multi-line / colon-free Bun Yarr families (netrc & PEM).
+	collectFallbackNetrcRanges(buffer, ranges);
+	collectFallbackPemRanges(buffer, ranges);
+
+	return ranges;
+}
+
+/**
+ * Redact what looks like a credential in `text`: user info in URLs (up to the last `@` of the authority), private key
+ * blocks (PEM, OpenSSH and PGP), cookie values in `Cookie` and `Set-Cookie` headers and `cookie` fields, credentials
+ * on a command line (`--password X`, `-p'X'`, `-u user:X`, `--code-verifier X`) or in a netrc entry, the value of a
+ * credential field in JSON (also JSON inside a JSON string), YAML (also a block scalar), HTTP-header or env-style
+ * text (including `code_verifier` and auth-scheme assignments like `auth=Bearer <token>`), and well-known token shapes
+ * (including RFC 6750 `Bearer` tokens and RFC 7617 `Basic` credentials). A password-like value runs to the end of its
+ * own value: its closing quote, the `,` or `}` after a JSON literal, the next `NAME=` of env-style text, or the end of
+ * its line after a bare `password:`. Literals, types and code identifiers are left as they are. ANSI styling anywhere
+ * does not hide a credential.
+ */
+export function redactCredentialShapes(text: string): string {
+	const urlRedacted = redactUrlCredentials(text);
+	const base = redactCredentialShapesBase(urlRedacted);
+
+	// Collect all new-shape ranges in `base`'s exact coordinates and apply through one structurally monotone gate.
+	const rangesA = collectStandaloneBasicRanges(base);
+	const rangesB = collectCodeVerifierRanges(base);
+	const rangesC = collectAssignedSchemeAndBearerTailRanges(urlRedacted, base);
+	const afterShapes =
+		rangesA.length === 0 && rangesB.length === 0 && rangesC.length === 0
+			? base
+			: applyRedactionRanges(base, [...rangesA, ...rangesB, ...rangesC]);
+
+	// Long-line linear fallback (>= 1024 chars) applied through the same structurally monotone gate.
+	return applyRedactionRanges(afterShapes, collectLongLineFallbackRanges(afterShapes));
 }

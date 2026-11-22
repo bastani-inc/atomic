@@ -18,6 +18,8 @@ export class QueuedWriter {
 	 * caller — a prompt, an abort — never learns the send failed.
 	 */
 	private active: PendingFrame | undefined;
+	/** Frames handed to the stream ahead of the queue ({@link writeUrgent}) whose writes have not completed. */
+	private readonly urgent = new Set<PendingFrame>();
 	private queuedBytes = 0;
 	private pumping = false;
 	private closedError: Error | undefined;
@@ -39,6 +41,26 @@ export class QueuedWriter {
 			this.critical.push({ bytes, resolve, reject });
 			this.queuedBytes += bytes.length;
 			this.pump();
+		});
+	}
+
+	/**
+	 * Hand `text` to the stream at once: behind the frame being written, which the stream holds whole, and ahead of
+	 * every queued frame. Once it is in the stream, closing this writer no longer holds it back: a stream ended then
+	 * still delivers it. For a control frame the reader must see before anything that waits, and that must not wait
+	 * itself, such as a quit announced while an earlier write is stuck on a reader that is not reading.
+	 */
+	async writeUrgent(text: string): Promise<void> {
+		const bytes = Buffer.from(text, "utf8");
+		if (this.closedError) throw this.closedError;
+		await new Promise<void>((resolve, reject) => {
+			const frame: PendingFrame = { bytes, resolve, reject };
+			this.urgent.add(frame);
+			this.stream.write(bytes, (error) => {
+				this.urgent.delete(frame);
+				if (error) reject(markRpcTransportFailure(error));
+				else resolve();
+			});
 		});
 	}
 
@@ -72,10 +94,12 @@ export class QueuedWriter {
 		if (this.closedError) return;
 		this.closedError = markRpcTransportFailure(error);
 		const closedError = this.closedError;
-		// The in-flight frame first: it is no longer in either queue.
+		// The in-flight frames first: they are no longer in either queue.
 		const active = this.active;
 		this.active = undefined;
 		active?.reject?.(closedError);
+		for (const frame of this.urgent) frame.reject?.(closedError);
+		this.urgent.clear();
 		for (const frame of this.critical.splice(0)) frame.reject?.(closedError);
 		this.coalesced.clear();
 		this.queuedBytes = 0;
