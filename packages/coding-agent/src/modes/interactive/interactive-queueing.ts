@@ -606,6 +606,16 @@ export function engineLossSubagentNotice(queue: LostSubagentQueue): string | und
 	].join("\n");
 }
 
+/** The notice when a lost engine's subagent messages came back to that subagent's own editor. */
+export function engineLossSubagentRestoredNotice(agent: string, count: number): string {
+	return `Engine restarted; ${queuedMessagesPhrase(count)} to ${agent} ${count === 1 ? "wasn't" : "weren't"} sent and ${count === 1 ? "is" : "are"} back in the editor`;
+}
+
+/** The notice on main when a lost engine's subagent messages wait for that subagent's chat to open. */
+export function engineLossSubagentPendingNotice(agent: string, count: number): string {
+	return `Engine restarted; ${queuedMessagesPhrase(count)} to ${agent} ${count === 1 ? "wasn't" : "weren't"} sent; ${count === 1 ? "it's" : "they're"} back in its editor when you open it`;
+}
+
 function textOfUserMessage(content: unknown): string | undefined {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return undefined;

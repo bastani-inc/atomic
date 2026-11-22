@@ -5,6 +5,7 @@
 ### Fixed
 
 - Restored interrupted running subagents in `/tasks` and the agent panel automatically after an isolated-engine crash without showing user-facing resume prompts or replaying interrupted deliveries.
+- Restored a lost subagent chat's known-unsaved queued messages into that child chat's own editor ahead of any draft (immediately if open and writable, or on first writable reopen in the same session, with a main-chat notice while closed and fallback to the full-text notice when read-only or from an older engine).
 
 ## [0.10.4] - 2026-11-22
 

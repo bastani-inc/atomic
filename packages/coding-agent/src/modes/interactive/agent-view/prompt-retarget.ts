@@ -1,9 +1,9 @@
 import { type Component, decodePrintableKey, isKeyRelease, matchesKey } from "@bastani/atomic-tui";
-import type { QueuedMessageReceipt } from "../../../core/queued-message-delivery.ts";
 import { firstSubagentAttempt } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
+import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import { promptHistoryFor } from "../components/agent-prompt-history.ts";
 import { AtomicWorkedStatusComponent, watchAtomicWorkingClock } from "../components/atomic-working-status.ts";
 import { keyText } from "../components/keybinding-hints.js";
@@ -14,6 +14,8 @@ import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { mergeRestoredDraft } from "../interactive-prompt-restore.ts";
 import {
 	engineLossSubagentNotice,
+	engineLossSubagentPendingNotice,
+	engineLossSubagentRestoredNotice,
 	engineLossUnconfirmedNotice,
 	RECEIPT_LOOKUP_TIMEOUT_MS,
 	settledWithin,
@@ -28,6 +30,13 @@ import {
 } from "./agent-drafts.ts";
 import type { AgentViewSwitcher, PendingOutcome } from "./agent-view-switcher.ts";
 import type { AgentViewChange, AgentViewPort, AgentWorkingLine, ViewedTarget } from "./contracts.ts";
+import {
+	type ChildViewSnapshot,
+	canTrackChildRestore,
+	type LostQueueRestoreAction,
+	SubagentQueueRestoreMachine,
+	type TakenSubagentMessage,
+} from "./lost-queue-restore.js";
 import { notifyViewed } from "./viewed-notices.ts";
 import {
 	backFromViewedAgent,
@@ -370,40 +379,160 @@ function reportLostAgentQueues(mode: InteractiveModeBase): () => void {
 	return attachLostAgentQueueNotices(mode, runtime);
 }
 
-/** What a subagent's lost engine had taken from its queue and not been seen to save, with its receipt if it has one. */
-interface TakenMessage {
-	readonly text: string;
-	readonly receipt?: QueuedMessageReceipt;
+function currentHostSessionId(mode: InteractiveModeBase): string | undefined {
+	return mode.sessionManager?.getSessionId?.();
+}
+
+function currentChildView(mode: InteractiveModeBase): ChildViewSnapshot | undefined {
+	const viewed = mode.agentView?.viewed;
+	if (viewed?.kind !== "agent") return undefined;
+	const status = viewed.port.status();
+	return {
+		agentKey: viewed.port.agentKey,
+		...(status.sessionId === undefined ? {} : { sessionId: status.sessionId }),
+		...(status.sessionFile === undefined ? {} : { sessionFile: status.sessionFile }),
+		...(status.readOnlyReason === undefined ? {} : { readOnlyReason: status.readOnlyReason }),
+		gone: status.gone,
+	};
+}
+
+function applyRestoreActions(mode: InteractiveModeBase, actions: readonly LostQueueRestoreAction[]): boolean {
+	if (actions.length === 0) return false;
+	for (const action of actions) {
+		switch (action.kind) {
+			case "unconfirmed-notice":
+				mode.showWarning(engineLossUnconfirmedNotice(action.messages, action.agent));
+				break;
+			case "notice-full": {
+				const notice = engineLossSubagentNotice({
+					agent: action.agent,
+					steering: action.messages,
+					followUp: [],
+				});
+				if (notice !== undefined) mode.showWarning(notice);
+				break;
+			}
+			case "notice-pending":
+				mode.showWarning(engineLossSubagentPendingNotice(action.agent, action.count));
+				break;
+			case "restore-now":
+				rewritePromptOwnText(mode, { kind: "agent", agentKey: action.agentKey }, (own) =>
+					combineQueuedMessagesForEditor(action.messages, own),
+				);
+				notifyViewed(mode, engineLossSubagentRestoredNotice(action.agent, action.messages.length), "warning");
+				break;
+			case "restore-on-open":
+				rewritePromptOwnText(mode, { kind: "agent", agentKey: action.agentKey }, (own) =>
+					combineQueuedMessagesForEditor(action.messages, own),
+				);
+				break;
+		}
+	}
+	return true;
 }
 
 /**
- * Show these notices when `runtime`'s engine generation ends unexpectedly. Answers the detach.
+ * Show notices and restore known-unsaved subagent messages when `runtime`'s engine generation ends unexpectedly.
+ * Answers the detach.
  *
  * A message a subagent had taken from its queue and not been seen to save may have been saved with its session. When it
  * has a receipt, its engine's replacement is asked (for up to two seconds once it is up) whether its session's store
- * holds it: one found saved is not reported; one the store provably never saved is listed with the messages that were
- * not sent; any other is listed in full as possibly undelivered, as is every one without a receipt. Nothing is sent
- * again, and nothing goes into any prompt.
+ * holds it: one found saved is not reported; one the store provably never saved (together with messages still listed
+ * in that subagent's queue) is restored into that exact child chat's own composer ahead of any draft when it is open
+ * and writable, or kept as a one-shot pending restore keyed by `(sessionId, sessionFile)` until that child opens
+ * writable in the same host session; any other is listed in full as possibly undelivered, as is every one without a
+ * receipt. Nothing is sent again, and nothing goes into the main prompt or another subagent's prompt.
  */
 export function attachLostAgentQueueNotices(
 	mode: InteractiveModeBase,
 	runtime: Pick<IsolatedInteractiveRuntime, "onGenerationEnded"> &
-		Partial<Pick<IsolatedInteractiveRuntime, "onEngineRecovered" | "findQueuedMessages">>,
+		Partial<Pick<IsolatedInteractiveRuntime, "onEngineRecovered" | "findQueuedMessages" | "onEngineMessage">>,
 ): () => void {
+	const machine = new SubagentQueueRestoreMachine();
 	const stops = new Set<() => void>();
-	let detached = false;
+	let unwatchOpenedPort: (() => void) | undefined;
+	let deferredOpenPort: AgentViewPort | undefined;
+	const consumeViewedPort = (port: AgentViewPort) => {
+		const viewed = mode.agentView?.viewed;
+		if (viewed?.kind !== "agent" || viewed.port !== port) return;
+		const status = port.status();
+		const actions = machine.onChildOpened(
+			{
+				agentKey: port.agentKey,
+				...(status.sessionId === undefined ? {} : { sessionId: status.sessionId }),
+				...(status.sessionFile === undefined ? {} : { sessionFile: status.sessionFile }),
+				...(status.readOnlyReason === undefined ? {} : { readOnlyReason: status.readOnlyReason }),
+				gone: status.gone,
+			},
+			currentHostSessionId(mode),
+		);
+		if (applyRestoreActions(mode, actions)) mode.ui.requestRender();
+	};
+	const watchOpenedPort = (port: AgentViewPort) => {
+		unwatchOpenedPort?.();
+		unwatchOpenedPort = undefined;
+		if (!machine.hasPending()) return;
+		consumeViewedPort(port);
+		if (!machine.hasPending()) return;
+		// A resumed child's session may bind shortly after its port opens; watch until consumed or switched away.
+		unwatchOpenedPort = port.subscribe(() => {
+			consumeViewedPort(port);
+			if (!machine.hasPending()) {
+				unwatchOpenedPort?.();
+				unwatchOpenedPort = undefined;
+			}
+		});
+	};
+	const switcher = mode.agentView;
+	const stopChange =
+		switcher?.onChange(({ to }) => {
+			unwatchOpenedPort?.();
+			unwatchOpenedPort = undefined;
+			deferredOpenPort = undefined;
+			if (to.kind !== "agent") return;
+			if (!machine.hasPending()) return;
+			// When a request is settling through `view()`, wait until `holdWhileOpening` finishes replaying keys typed
+			// during the open (same tick in `onPending("shown")`), so restored messages precede those keys cleanly.
+			if (switcher.pendingTaskId !== undefined) {
+				deferredOpenPort = to.port;
+				return;
+			}
+			watchOpenedPort(to.port);
+		}) ?? (() => {});
+	const stopPending =
+		switcher?.onPending((pending, settled) => {
+			if (pending !== undefined || settled === undefined) return;
+			const port = deferredOpenPort;
+			deferredOpenPort = undefined;
+			if (port !== undefined && settled.outcome === "shown") watchOpenedPort(port);
+		}) ?? (() => {});
+	const stopEngineMessage =
+		runtime.onEngineMessage?.((message) => {
+			if (message.type === "engine_extension_ui_reset") {
+				machine.hostSessionChanged();
+			} else if (message.type === "engine_agent_queue_invalidated") {
+				machine.invalidateChild(
+					{
+						sessionId: message.sessionId,
+						...(message.sessionFile === undefined ? {} : { sessionFile: message.sessionFile }),
+					},
+					message.reason,
+				);
+			}
+		}) ?? (() => {});
 	const stopEnded = runtime.onGenerationEnded((event) => {
 		if (event.expected) return;
 		// Two chats of one subagent report the same message with the same receipt: it is accounted for once.
 		const reported = new Set<string>();
 		for (const { port, controller } of liveAgentSteering(mode)) {
-			const { delivering, unsaved, receipts, name } = port.status();
+			const status = port.status();
+			const { delivering, unsaved, receipts, name } = status;
 			const texts = [
 				...(unsaved ?? []),
 				...(delivering === undefined ? [] : [...delivering.steering, ...delivering.followUp]),
 			];
 			// Receipts name the same messages in the same order; any other list is not theirs.
-			const taken: TakenMessage[] = texts.flatMap((text, index) => {
+			const taken: TakenSubagentMessage[] = texts.flatMap((text, index) => {
 				const receipt = receipts?.taken.length === texts.length ? receipts.taken[index] : undefined;
 				if (receipt === undefined || receipt === null) return [{ text }];
 				const key = JSON.stringify([receipts?.sessionId, receipt.epoch ?? null, receipt.id]);
@@ -421,9 +550,20 @@ export function attachLostAgentQueueNotices(
 				runtime.onEngineRecovered === undefined ||
 				!taken.some((message) => message.receipt !== undefined)
 			) {
-				showLostAgentNotices(mode, name, taken, listed, undefined);
+				// No receipts at all: keep immediate notice at generation end (no recovery wait, no editor write).
+				const unconfirmed = taken.map((message) => message.text);
+				if (unconfirmed.length > 0) mode.showWarning(engineLossUnconfirmedNotice(unconfirmed, name));
+				const notice = engineLossSubagentNotice({ agent: name, steering: listed, followUp: [] });
+				if (notice !== undefined) mode.showWarning(notice);
 				continue;
 			}
+			const ticket = machine.beginLookup({
+				agent: name,
+				taken,
+				listed,
+				identity: canTrackChildRestore(status),
+				hostSessionId: currentHostSessionId(mode),
+			});
 			const stop = runtime.onEngineRecovered((replaced) => {
 				stop();
 				stops.delete(stop);
@@ -435,10 +575,13 @@ export function attachLostAgentQueueNotices(
 					const found = replaced
 						? await settledWithin(find(taken, session), RECEIPT_LOOKUP_TIMEOUT_MS)
 						: undefined;
-					// A chat that stopped meanwhile shows nothing more.
-					if (detached) return;
-					showLostAgentNotices(mode, name, taken, listed, found);
-					mode.ui.requestRender();
+					const actions = machine.settleLookup(ticket, {
+						replaced,
+						found,
+						currentHostSessionId: currentHostSessionId(mode),
+						currentView: currentChildView(mode),
+					});
+					if (applyRestoreActions(mode, actions)) mode.ui.requestRender();
 				})();
 			});
 			stops.add(stop);
@@ -447,38 +590,15 @@ export function attachLostAgentQueueNotices(
 		mode.ui.requestRender();
 	});
 	return () => {
-		detached = true;
+		machine.dispose();
+		unwatchOpenedPort?.();
+		unwatchOpenedPort = undefined;
+		deferredOpenPort = undefined;
+		stopChange();
+		stopPending();
+		stopEngineMessage();
 		stopEnded();
 		for (const stop of [...stops]) stop();
 		stops.clear();
 	};
-}
-
-/**
- * The notices for one subagent whose engine was lost: what it had taken that `found` (its replacement's answer, if any)
- * does not account for, as possibly undelivered; what it never sent, `listed` and the taken messages its store never
- * saved, as not sent.
- */
-function showLostAgentNotices(
-	mode: InteractiveModeBase,
-	agent: string,
-	taken: readonly TakenMessage[],
-	listed: readonly string[],
-	found: { readonly saved: ReadonlySet<string>; readonly absent: ReadonlySet<string> } | undefined,
-): void {
-	const outcome = (message: TakenMessage) =>
-		message.receipt === undefined
-			? "unknown"
-			: found?.saved.has(message.receipt.id)
-				? "saved"
-				: found?.absent.has(message.receipt.id)
-					? "unsaved"
-					: "unknown";
-	const unconfirmed = taken.flatMap((message) => (outcome(message) === "unknown" ? [message.text] : []));
-	if (unconfirmed.length > 0) mode.showWarning(engineLossUnconfirmedNotice(unconfirmed, agent));
-	const unsent = taken.flatMap((message) =>
-		outcome(message) === "unsaved" ? [message.receipt?.typed ?? message.text] : [],
-	);
-	const notice = engineLossSubagentNotice({ agent, steering: [...unsent, ...listed], followUp: [] });
-	if (notice !== undefined) mode.showWarning(notice);
 }
