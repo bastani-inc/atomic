@@ -46,6 +46,7 @@ import {
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { codeStringLiteral } from "../packages/coding-agent/scripts/code-string-literal.mjs";
 
 /** Where a package with an exports map keeps its compiled modules for bundlers, below `dist`. */
 export const MODULES_DIRECTORY = "_modules";
@@ -438,7 +439,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 					const transformed = await esbuild.transform(withMap, {
 						...options,
 						sourcemap: "external",
-						banner: `const ${MODULE_URL} = ${JSON.stringify(`${MODULE_URL_MARKER}${toPosix(relative(dist, normalizeId(id)))}`)};`,
+						banner: `const ${MODULE_URL} = ${codeStringLiteral(`${MODULE_URL_MARKER}${toPosix(relative(dist, normalizeId(id)))}`)};`,
 					});
 					return { code: transformed.code, map: JSON.parse(transformed.map) };
 				},
@@ -650,7 +651,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			const fromDir = dirname(path);
 			contents = contents.replace(new RegExp(`"${MODULE_URL_MARKER}([^"]*)"`, "g"), (_, rel) => {
 				const target = relative(fromDir, join(dist, rel)).split(sep).map(encodeURIComponent).join("/");
-				return `new URL(${JSON.stringify(target.startsWith(".") ? target : `./${target}`)}, import.meta.url).href`;
+				return `new URL(${codeStringLiteral(target.startsWith(".") ? target : `./${target}`)}, import.meta.url).href`;
 			});
 			if (contents.includes(MODULE_URL_MARKER)) {
 				throw new Error(`bundle-package-dist: ${item.fileName} names a module URL the build could not replace`);

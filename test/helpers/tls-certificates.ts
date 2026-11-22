@@ -88,8 +88,32 @@ function extension(id: string, critical: boolean, value: Buffer): Buffer {
 const KEY_USAGE_BITS = { digitalSignature: 0, keyCertSign: 5, cRLSign: 6 } as const;
 const EXTENDED_KEY_USAGES = { serverAuth: "1.3.6.1.5.5.7.3.1", clientAuth: "1.3.6.1.5.5.7.3.2" } as const;
 
+function ipv6Bytes(address: string): Buffer {
+	const [leftText = "", rightText] = address.split("::");
+	const parsePart = (part: string): number[] => {
+		if (part === "") return [];
+		const out: number[] = [];
+		for (const group of part.split(":")) {
+			if (group.includes(".")) {
+				const octets = group.split(".").map(Number);
+				out.push(((octets[0] ?? 0) << 8) | (octets[1] ?? 0), ((octets[2] ?? 0) << 8) | (octets[3] ?? 0));
+			} else {
+				out.push(Number.parseInt(group, 16));
+			}
+		}
+		return out;
+	};
+	const left = parsePart(leftText);
+	const right = rightText === undefined ? [] : parsePart(rightText);
+	const groups = [...left, ...new Array<number>(8 - left.length - right.length).fill(0), ...right];
+	const buf = Buffer.alloc(16);
+	for (let i = 0; i < 8; i++) buf.writeUInt16BE(groups[i] ?? 0, i * 2);
+	return buf;
+}
+
 function altName(entry: string): Buffer {
 	if (isIP(entry) === 4) return tlv(0x87, Buffer.from(entry.split(".").map(Number)));
+	if (isIP(entry) === 6) return tlv(0x87, ipv6Bytes(entry));
 	return tlv(0x82, Buffer.from(entry, "latin1"));
 }
 

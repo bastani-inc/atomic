@@ -11,6 +11,14 @@ vi.mock("child_process", async (importOriginal) => {
 	return { ...actual, spawn: spawnMock };
 });
 
+vi.mock("../../../src/core/process-tree-containment.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../src/core/process-tree-containment.ts")>();
+	return {
+		...actual,
+		holdProcessDescendantsResult: () => ({ kind: "unavailable" as const }),
+	};
+});
+
 import { killProcessTree } from "../../../src/utils/shell.ts";
 
 function withWindowsPlatform(test: () => void): void {
