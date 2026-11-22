@@ -158,6 +158,24 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
  */
 function lostTerminalBoundEnded(mode: InteractiveModeBase): void {
 	const ending = hostEnding(mode);
+	const endedAt = probeSessionEndedAt.get(ending);
+	if (endedAt !== undefined && !ending.consoleClosed) {
+		probeLog(`bound-reached-without-notice sinceDisposeMs=${Math.round(performance.now() - endedAt)}`);
+		for (const extra of [3_000, 6_000, 9_000]) {
+			setTimeout(
+				() =>
+					probeLog(
+						`still-waiting sinceDisposeMs=${Math.round(performance.now() - endedAt)} consoleClosed=${ending.consoleClosed}`,
+					),
+				extra,
+			);
+		}
+		setTimeout(() => {
+			probeLog("giving-up-129");
+			mode.emergencyTerminalExit();
+		}, 12_000);
+		return;
+	}
 	if (process.platform === "win32" && !ending.consoleClosed) {
 		ending.lostExitDeciding = true;
 		// A quit that stopped the screen also removed the handler of uncaught exceptions: without one, an exception in
