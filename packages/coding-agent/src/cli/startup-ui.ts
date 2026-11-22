@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import {
 	Container,
 	decodePrintableKey,
@@ -11,7 +10,7 @@ import {
 	type TUI,
 	TuiMainScreen,
 } from "@bastani/atomic-tui";
-import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.js";
+import { getAgentDir } from "../config.js";
 import type { ExtensionUIDialogOptions } from "../core/extensions/index.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
@@ -36,6 +35,9 @@ import {
 	type TerminalTheme,
 	theme,
 } from "../modes/interactive/theme/theme.js";
+import { shouldRunFirstTimeSetup } from "./first-time-setup-check.ts";
+
+export { shouldRunFirstTimeSetup };
 
 export class StartupDialogInputGuard extends Container implements Focusable {
 	private enterArmed: boolean;
@@ -112,11 +114,6 @@ async function clearStartupTui(ui: TUI): Promise<void> {
  */
 export async function detectStartupTheme(ui: TUI): Promise<TerminalTheme> {
 	return detectTerminalThemeForAuto({ ui, timeoutMs: 100 });
-}
-
-/** First-run setup is eligible only in the default agent directory before settings.json exists. */
-export function shouldRunFirstTimeSetup(settingsPath: string = getSettingsPath()): boolean {
-	return !getEnvValue(ENV_AGENT_DIR) && !existsSync(settingsPath);
 }
 
 export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {

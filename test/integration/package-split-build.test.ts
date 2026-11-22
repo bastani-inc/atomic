@@ -256,7 +256,7 @@ test(
 		assert.equal(probe.status, 0, probe.stderr);
 		const loaded = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
 		// A dependency that stays external still loads from node_modules, as the probe sees.
-		assert.ok(loaded.includes("undici"), loaded.join(", "));
+		assert.ok(loaded.includes("chalk"), loaded.join(", "));
 		assert.deepEqual(
 			loaded.filter((name) => inlined.includes(name)),
 			[],
@@ -876,6 +876,53 @@ test(
 			failed.stderr,
 			/0\.0\.1 imports dist\/core\/a-module-this-package-never-had\.js on demand, and no module of this package compiles to it/,
 		);
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a shared file an earlier release imported on demand stays, holding this build's code of its module",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "released-shared-paths");
+		compiledPackage(build);
+		const shared = join(build, "dist", "_shared");
+		const split = () => spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		assert.equal(split().status, 0);
+		const current = fs.readdirSync(shared).find((file) => /^compile-cache-warmup-host-[A-Z2-7]{8}\.js$/.test(file));
+		assert.ok(
+			current,
+			"the shared file of the compile-cache helper's host module, which interactive startup imports on demand",
+		);
+		// A release whose file of that module, under another name, exported fewer names: as before its exports grew.
+		const released = "compile-cache-warmup-host-AAAAAAAA.js";
+		fs.writeFileSync(
+			join(build, "in-place-update", "0.0.1.json"),
+			JSON.stringify({
+				version: "0.0.1",
+				packages: {
+					"@bastani/atomic": {
+						files: { [`dist/_shared/${released}`]: ["warmCompileCache"] },
+						lazy: { [`@bastani/atomic:dist/_shared/${released}`]: ["dist/_shared/chunk-AAAAAAAA.js"] },
+					},
+				},
+			}),
+		);
+		const kept = split();
+		assert.equal(kept.status, 0, kept.stderr);
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`const kept = await import(${JSON.stringify(pathToFileURL(join(shared, released)).href)});
+const now = await import(${JSON.stringify(pathToFileURL(join(shared, current)).href)});
+process.stdout.write(JSON.stringify({ names: Object.keys(kept), same: kept.warmCompileCache === now.warmCompileCache }));`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		assert.deepEqual(JSON.parse(probe.stdout), { names: ["warmCompileCache"], same: true });
 	},
 	LAYOUT_TIMEOUT_MS,
 );

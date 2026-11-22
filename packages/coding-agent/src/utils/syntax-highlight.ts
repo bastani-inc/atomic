@@ -1,52 +1,83 @@
 /// <reference path="./highlight-js.d.ts" />
-import hljs from "highlight.js/lib/core.js";
-import bash from "highlight.js/lib/languages/bash.js";
-import c from "highlight.js/lib/languages/c.js";
-import cpp from "highlight.js/lib/languages/cpp.js";
-import csharp from "highlight.js/lib/languages/csharp.js";
-import dart from "highlight.js/lib/languages/dart.js";
-import go from "highlight.js/lib/languages/go.js";
-import groovy from "highlight.js/lib/languages/groovy.js";
-import java from "highlight.js/lib/languages/java.js";
-import javascript from "highlight.js/lib/languages/javascript.js";
-import kotlin from "highlight.js/lib/languages/kotlin.js";
-import lua from "highlight.js/lib/languages/lua.js";
-import nix from "highlight.js/lib/languages/nix.js";
-import perl from "highlight.js/lib/languages/perl.js";
-import php from "highlight.js/lib/languages/php.js";
-import python from "highlight.js/lib/languages/python.js";
-import ruby from "highlight.js/lib/languages/ruby.js";
-import rust from "highlight.js/lib/languages/rust.js";
-import scala from "highlight.js/lib/languages/scala.js";
-import swift from "highlight.js/lib/languages/swift.js";
-import typescript from "highlight.js/lib/languages/typescript.js";
 import { decodeHtmlEntityAt } from "./html.ts";
+import { createModuleRequire } from "./module-require.js";
 
-const eagerLanguages = {
-	python,
-	java,
-	go,
-	javascript,
-	cpp,
-	typescript,
-	php,
-	ruby,
-	c,
-	csharp,
-	nix,
-	bash,
-	rust,
-	scala,
-	kotlin,
-	swift,
-	dart,
-	groovy,
-	perl,
-	lua,
-};
+type HighlightCore = typeof import("highlight.js/lib/core.js").default;
+type HighlightLanguageFactory = typeof import("highlight.js/lib/languages/bash.js").default;
 
-for (const [name, language] of Object.entries(eagerLanguages)) {
-	hljs.registerLanguage(name, language);
+const EAGER_LANGUAGE_SPECIFIERS: readonly (readonly [string, string])[] = [
+	["python", "highlight.js/lib/languages/python.js"],
+	["java", "highlight.js/lib/languages/java.js"],
+	["go", "highlight.js/lib/languages/go.js"],
+	["javascript", "highlight.js/lib/languages/javascript.js"],
+	["cpp", "highlight.js/lib/languages/cpp.js"],
+	["typescript", "highlight.js/lib/languages/typescript.js"],
+	["php", "highlight.js/lib/languages/php.js"],
+	["ruby", "highlight.js/lib/languages/ruby.js"],
+	["c", "highlight.js/lib/languages/c.js"],
+	["csharp", "highlight.js/lib/languages/csharp.js"],
+	["nix", "highlight.js/lib/languages/nix.js"],
+	["bash", "highlight.js/lib/languages/bash.js"],
+	["rust", "highlight.js/lib/languages/rust.js"],
+	["scala", "highlight.js/lib/languages/scala.js"],
+	["kotlin", "highlight.js/lib/languages/kotlin.js"],
+	["swift", "highlight.js/lib/languages/swift.js"],
+	["dart", "highlight.js/lib/languages/dart.js"],
+	["groovy", "highlight.js/lib/languages/groovy.js"],
+	["perl", "highlight.js/lib/languages/perl.js"],
+	["lua", "highlight.js/lib/languages/lua.js"],
+];
+
+const BUNDLED_HIGHLIGHT_CORE_SYMBOL = Symbol.for("atomic.bundledHighlightCore");
+
+let hljsCore: HighlightCore | undefined;
+
+function getHighlightCore(): HighlightCore {
+	if (hljsCore !== undefined) return hljsCore;
+	const bundled = (globalThis as Record<symbol, unknown>)[BUNDLED_HIGHLIGHT_CORE_SYMBOL] as HighlightCore | undefined;
+	if (bundled !== undefined) {
+		hljsCore = bundled;
+		return bundled;
+	}
+	const req = createModuleRequire(import.meta.url);
+	const loaded = req("highlight.js/lib/core.js") as HighlightCore & { default?: HighlightCore };
+	const core = loaded.default ?? loaded;
+	// Match eager-registration semantics: grammars and aliases registered by an app or extension
+	// after importing @bastani/atomic (and before the first highlightCode call) always win over
+	// built-in eager grammars, while pre-registered overrides of an eager language name keep that
+	// language's unclaimed built-in aliases (e.g. overriding "python" keeps "py").
+	// Register missing eager grammars in two passes so aliases redirected to a later eager grammar
+	// (e.g. "hpp" -> "c" registered before "cpp") resolve before any built-in alias is judged free.
+	const eagerBuilt = EAGER_LANGUAGE_SPECIFIERS.map(([name, specifier]) => {
+		const mod = req(specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
+		const factory = mod.default ?? mod;
+		return { name, built: factory(core) };
+	});
+	const newlyRegistered = new Set<string>();
+	for (const { name, built } of eagerBuilt) {
+		if (core.getLanguage(name) === undefined) {
+			core.registerLanguage(name, () => ({ ...built, aliases: undefined }));
+			newlyRegistered.add(name);
+		}
+	}
+	for (const { name, built } of eagerBuilt) {
+		const freeAliases = (built.aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
+		if (freeAliases.length > 0) {
+			core.registerAliases(freeAliases, { languageName: name });
+		}
+		if (newlyRegistered.has(name)) {
+			const registered = core.getLanguage(name);
+			if (registered !== undefined) {
+				if (built.aliases !== undefined) {
+					registered.aliases = built.aliases;
+				} else {
+					delete registered.aliases;
+				}
+			}
+		}
+	}
+	hljsCore = core;
+	return core;
 }
 
 let allLanguagesPromise: Promise<void> | undefined;
@@ -56,7 +87,13 @@ export function loadAllHighlightLanguages(): Promise<void> {
 		allLanguagesPromise = new Promise((resolve) => {
 			setImmediate(() => {
 				void import("highlight.js/lib/index.js").then(
-					() => resolve(),
+					(mod) => {
+						const loaded = (mod as { default?: HighlightCore }).default ?? (mod as unknown as HighlightCore);
+						if (hljsCore === undefined && typeof loaded?.highlight === "function") {
+							hljsCore = loaded;
+						}
+						resolve();
+					},
 					() => {
 						// Eager languages and plaintext fallback remain available.
 						resolve();
@@ -204,6 +241,7 @@ export function renderHighlightedHtml(html: string, theme: HighlightTheme = {}):
 }
 
 export function highlight(code: string, options: HighlightOptions = {}): string {
+	const hljs = getHighlightCore();
 	const html = options.language
 		? hljs.highlight(code, {
 				language: options.language,
@@ -214,7 +252,7 @@ export function highlight(code: string, options: HighlightOptions = {}): string 
 }
 
 export function supportsLanguage(name: string): boolean {
-	return hljs.getLanguage(name) !== undefined;
+	return getHighlightCore().getLanguage(name) !== undefined;
 }
 
 /**
@@ -222,5 +260,5 @@ export function supportsLanguage(name: string): boolean {
  * code that embeds another language, such as HTML in a JavaScript template literal.
  */
 export function getHighlightLanguageCount(): number {
-	return hljs.listLanguages().length;
+	return getHighlightCore().listLanguages().length;
 }

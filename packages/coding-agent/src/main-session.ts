@@ -2,9 +2,7 @@ import { existsSync, writeSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
-import { selectSession } from "./cli/session-picker.ts";
 import { createStartupProgress, type StartupProgress } from "./cli/startup-progress.ts";
-import { showStartupSelector } from "./cli/startup-ui.ts";
 import { getAgentDir } from "./config.js";
 import {
 	RESUME_CATALOG_TIMEOUT_MS,
@@ -50,7 +48,7 @@ import type { SessionStore } from "./core/storage/session/types.js";
 import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
 import { keepStartupDialogDraft, withEarlyInputHeldForStartupDialog } from "./main-early-input.ts";
-import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
+import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/global-theme.ts";
 import { isSessionIdPrefix, resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
 import { createSessionCwdMatcherAsync, resolvePath } from "./utils/paths.ts";
 
@@ -480,6 +478,7 @@ async function createSessionManagerWithStore(
 	if (parsed.resume) {
 		initTheme(settingsManager.getTheme(), true);
 		try {
+			const { selectSession } = await import("./cli/session-picker.js");
 			const selected = await selectSession(
 				(onProgress) => SessionManager.list(cwd, store, onProgress),
 				(onProgress) => SessionManager.listAll(store, onProgress),
@@ -514,11 +513,12 @@ async function createSessionManagerWithStore(
 	return createProvisionalSession(store, cwd, parsed.sessionId);
 }
 
-function promptStartupSelector(
+async function promptStartupSelector(
 	title: string,
 	options: readonly string[],
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
+	const { showStartupSelector } = await import("./cli/startup-ui.ts");
 	return showStartupSelector(
 		settingsManager,
 		title,
