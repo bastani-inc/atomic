@@ -103,7 +103,7 @@ This setting is accepted only in global configuration and extension registration
 - **Issuer mismatch:** check the authorization server's metadata and callback behavior. Do not accept an unexpected issuer to bypass the failure.
 - **Provider token missing or rejected:** run `/login <provider>` and retry.
 
-For configuration, tool exposure, and connection diagnostics, see [MCP servers](../coding-agent/docs/mcp-servers.md).
+For configuration, tool exposure, and connection diagnostics, see [MCP servers](https://docs.bastani.ai/mcp-servers).
 
 ## References
 
