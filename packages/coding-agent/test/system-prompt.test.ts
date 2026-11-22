@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { stripSystemPromptEnvironmentPaths } from "../../../test/helpers/system-prompt-paths.js";
 import { getDocsPath } from "../src/config.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
 import type { Skill } from "../src/core/skills.ts";
@@ -120,12 +121,16 @@ describe("buildSystemPrompt", () => {
 		});
 
 		test("omits custom tools from available tools section when promptSnippet is not provided", () => {
-			const prompt = buildSystemPrompt({
-				selectedTools: ["read", "dynamic_tool"],
-				contextFiles: [],
-				skills: [],
-				cwd: process.cwd(),
-			});
+			const cwd = process.cwd();
+			const prompt = stripSystemPromptEnvironmentPaths(
+				buildSystemPrompt({
+					selectedTools: ["read", "dynamic_tool"],
+					contextFiles: [],
+					skills: [],
+					cwd,
+				}),
+				{ cwd },
+			);
 
 			expect(prompt).not.toContain("dynamic_tool");
 		});
@@ -286,49 +291,104 @@ describe("buildSystemPrompt", () => {
 		assert.deepEqual(missing, [], "every docs path the prompt names exists in the shipped docs folder");
 	});
 
-	test("routes automation requests to domain-specific tools and sends no one to model benchmarks", () => {
-		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
-		assert.doesNotMatch(prompt, /When the user asks which model to choose for a task/);
-		assert.doesNotMatch(prompt, /model-selection\.md|evals\.md|artificialanalysis\.ai|benchmark/);
+	function assertAutomationRoutingGuidance(guidance: string): void {
+		assert.doesNotMatch(guidance, /When the user asks which model to choose for a task/);
+		assert.doesNotMatch(guidance, /model-selection\.md|evals\.md|artificialanalysis\.ai|benchmark/);
 		assert.match(
-			prompt,
+			guidance,
 			/For computer use on native desktop apps and OS dialogs on macOS, Windows and Linux, use the bundled agent-desktop skill and one-shot `agent-desktop` commands/,
 		);
 		assert.match(
-			prompt,
+			guidance,
 			/Before the first action run `agent-desktop status`, `agent-desktop skills get desktop` and `agent-desktop skills get platform` and follow them/,
 		);
 		assert.match(
-			prompt,
+			guidance,
 			/In a codemode script, use the permitted shell tool to run one CLI command at a time, parse its JSON response and set a finite timeout/,
 		);
-		assert.match(prompt, /make one bounded `npm install -g agent-desktop` attempt and report its side effects/);
-		assert.match(prompt, /never run `npx skills add` for it or copy a skill into other agent directories/);
-		assert.match(prompt, /leave existing user-level skills alone/);
+		assert.match(guidance, /make one bounded `npm install -g agent-desktop` attempt and report its side effects/);
+		assert.match(guidance, /never run `npx skills add` for it or copy a skill into other agent directories/);
+		assert.match(guidance, /leave existing user-level skills alone/);
 		assert.match(
-			prompt,
+			guidance,
 			/`agent-desktop permissions --guide` on macOS; on Linux a graphical session with an AT-SPI bus/,
 		);
-		assert.match(prompt, /never script around a consent dialog/);
-		assert.match(prompt, /computer-use\.md/);
-		assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
-		assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-		assert.doesNotMatch(prompt, /cua/i);
+		assert.match(guidance, /never script around a consent dialog/);
+		assert.match(guidance, /computer-use\.md/);
+		assert.doesNotMatch(guidance, /PyAutoGUI|pyautogui/i);
+		assert.doesNotMatch(guidance, /uv run --with pyautogui/);
+		assert.doesNotMatch(guidance, /cua/i);
 		assert.match(
-			prompt,
+			guidance,
 			/Prefer the agent-browser skill for what it covers, because its text snapshots cost far fewer tokens: websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator[\s\S]*Electron and other CDP-exposing apps/,
 		);
-		assert.match(prompt, /Use agent-desktop for everything native and whenever agent-browser hits a limitation/);
+		assert.match(guidance, /Use agent-desktop for everything native and whenever agent-browser hits a limitation/);
 		assert.match(
-			prompt,
+			guidance,
 			/agent-desktop reads accessibility trees, not pixels, and has no native iOS or Android support: say what stayed unverified, and use `xcrun simctl`, Appium or `adb` for native mobile apps/,
 		);
-		assert.match(prompt, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
+		assert.match(guidance, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
+		assert.match(guidance, /install it if missing/);
+		assert.match(guidance, /fall back to tmux or native Windows psmux/);
+		assert.match(guidance, /explicit-request and HERDR_ENV=1 requirements/);
+		assert.match(guidance, /skills do not grant tools or authorization/);
+	}
+
+	test("routes automation requests to domain-specific tools and sends no one to model benchmarks", () => {
+		const cwd = process.cwd();
+		const prompt = buildSystemPrompt({ cwd, contextFiles: [], skills: [] });
+		const guidance = stripSystemPromptEnvironmentPaths(prompt, { cwd });
+		assertAutomationRoutingGuidance(guidance);
 		assert.ok(prompt.includes(`${getDocsPath()}/verification.md`), "the prompt points to the shipped evidence guide");
-		assert.match(prompt, /install it if missing/);
-		assert.match(prompt, /fall back to tmux or native Windows psmux/);
-		assert.match(prompt, /explicit-request and HERDR_ENV=1 requirements/);
-		assert.match(prompt, /skills do not grant tools or authorization/);
+	});
+
+	test("environment-derived paths containing forbidden or matched tokens neither defeat nor satisfy prompt checks", () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-test-run-DWbCua-benchmark-PyAutoGUI-"));
+		const agentDir = join(root, "agent-evals.md");
+		const seededCwd = join(root, "workspace-cua-computer-use.md");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(seededCwd, { recursive: true });
+		const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+		try {
+			const prompt = buildSystemPrompt({ cwd: seededCwd, contextFiles: [], skills: [] });
+			// Without stripping, the embedded environment paths carry every forbidden substring.
+			assert.match(prompt, /cua/i);
+			assert.match(prompt, /benchmark/i);
+			assert.match(prompt, /PyAutoGUI/i);
+			assert.match(prompt, /evals\.md/);
+
+			const guidance = stripSystemPromptEnvironmentPaths(prompt, { cwd: seededCwd, agentDir });
+			assertAutomationRoutingGuidance(guidance);
+
+			// Real instruction text naming a forbidden tool or benchmark is still caught after stripping.
+			const withForbiddenInstruction = stripSystemPromptEnvironmentPaths(
+				buildSystemPrompt({
+					cwd: seededCwd,
+					contextFiles: [],
+					skills: [],
+					appendSystemPrompt: "Use cua-driver for desktop automation.",
+				}),
+				{ cwd: seededCwd, agentDir },
+			);
+			assert.throws(() => assertAutomationRoutingGuidance(withForbiddenInstruction));
+
+			// A seeded path alone cannot satisfy a positive match when the instruction is absent.
+			const customPromptWithoutComputerUse = stripSystemPromptEnvironmentPaths(
+				buildSystemPrompt({
+					customPrompt: "Minimal prompt.",
+					cwd: seededCwd,
+					contextFiles: [],
+					skills: [],
+				}),
+				{ cwd: seededCwd, agentDir },
+			);
+			assert.doesNotMatch(customPromptWithoutComputerUse, /computer-use\.md/);
+		} finally {
+			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	describe("skills", () => {
@@ -650,12 +710,16 @@ describe("buildSystemPrompt", () => {
 			{ selectedTools: ["read", "ask_question", "ask_user_question"], excludedTools: ["ask_user_question"] },
 			{ excludedTools: ["ask_user_question"] },
 		])("uses equivalent question tools or autonomous best judgment: %j", (tools) => {
-			const prompt = buildSystemPrompt({
-				...tools,
-				contextFiles: [],
-				skills: [],
-				cwd: process.cwd(),
-			});
+			const cwd = process.cwd();
+			const prompt = stripSystemPromptEnvironmentPaths(
+				buildSystemPrompt({
+					...tools,
+					contextFiles: [],
+					skills: [],
+					cwd,
+				}),
+				{ cwd },
+			);
 
 			expect(prompt).toContain("If an equivalent user-question tool is available, use it for all questions");
 			expect(prompt).toContain("instead of plain text, including confirmations and approvals");

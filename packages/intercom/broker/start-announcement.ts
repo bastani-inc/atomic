@@ -78,6 +78,24 @@ export function processCreationTimeOf(pid: number): string | undefined {
 	}
 }
 
+/** The largest start a record holds on Windows and macOS: a count of 100-nanosecond intervals that fits in 64 bits. */
+const MAX_CREATION_TIME = 18_446_744_073_709_551_615n;
+
+/**
+ * `recorded`, a process's start as a record holds it (a lock, a found broker), when it is in the form this platform's
+ * reader gives: on Windows and macOS the decimal count {@link processCreationTimeOf} reads. A start in any other form,
+ * which no version writes there, is undefined: read as no start recorded, so its holder is judged by its pid alone, as
+ * before starts were recorded, and never by a start that cannot be compared. Elsewhere (Linux's `/proc` start token has
+ * a form of its own) `recorded` as it is.
+ */
+export function recognisedProcessStart(recorded: string | undefined): string | undefined {
+	if (recorded === undefined || (process.platform !== "win32" && process.platform !== "darwin")) return recorded;
+	// At most 20 digits, as 2^64 - 1 has, before it is parsed: a longer one is never a start.
+	return recorded.length <= 20 && CREATION_TIME_PATTERN.test(recorded) && BigInt(recorded) <= MAX_CREATION_TIME
+		? recorded
+		: undefined;
+}
+
 /**
  * When this process was created, as {@link processCreationTimeOf} reads it, on Windows: only the Windows launcher asks a
  * broker for it, and earlier versions read no other platform's start in that form.

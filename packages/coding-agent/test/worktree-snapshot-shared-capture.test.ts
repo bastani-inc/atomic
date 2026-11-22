@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
-import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { GIT_PROCESS_BUDGET_MS, GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { exportSessions } from "../src/core/session-transfer.js";
 import { QUEUED_CAPTURE_MIN_WAIT_MS, SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.js";
@@ -20,11 +20,22 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import { resolveWorktreeSnapshotSettings } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
+/**
+ * Budget for a synchronization point that waits on real Git work (up to one full snapshot capture plus a follow-up
+ * checkout lookup, roughly fifteen Git processes on a loaded runner).
+ */
+const CAPTURE_WAIT_TIMEOUT_MS = 50 * GIT_PROCESS_BUDGET_MS;
+const CAPTURE_WAIT = { timeout: CAPTURE_WAIT_TIMEOUT_MS, interval: 5 } as const;
+/** Upper multiplier matching the queued-capture wait formula (`4 * lastCaptureMs`) when advancing fake timers. */
+const QUEUED_CAPTURE_WAIT_MULTIPLIER = 4;
+
 const captures = vi.hoisted(() => ({
 	/** Turns that reached their capture: by then each has joined, queued or started one. */
 	entered: 0,
 	calls: 0,
 	previous: [] as (string | undefined)[],
+	/** Longest elapsed duration of any completed capture in this worker, bounding the module-level `lastCaptureMs`. */
+	maxElapsedMs: 0,
 	/** Captures of these checkouts wait until `until` settles. */
 	held: undefined as { readonly roots: ReadonlySet<string>; readonly until: Promise<void> } | undefined,
 }));
@@ -33,9 +44,14 @@ vi.mock("../src/core/worktree-snapshot/capture.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("../src/core/worktree-snapshot/capture.ts")>();
 	return {
 		...original,
-		recordWorktreeCapture: (...args: Parameters<typeof original.recordWorktreeCapture>) => {
+		recordWorktreeCapture: async (...args: Parameters<typeof original.recordWorktreeCapture>) => {
 			captures.entered++;
-			return original.recordWorktreeCapture(...args);
+			const started = performance.now();
+			try {
+				return await original.recordWorktreeCapture(...args);
+			} finally {
+				captures.maxElapsedMs = Math.max(captures.maxElapsedMs, performance.now() - started);
+			}
 		},
 		captureLocatedCheckout: async (...args: Parameters<typeof original.captureLocatedCheckout>) => {
 			captures.calls++;
@@ -159,14 +175,14 @@ test("turns that end while a capture of their checkout runs from before their wr
 	const running = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
 	let next: Promise<unknown> | undefined;
 	try {
-		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.calls, 1), CAPTURE_WAIT);
 		sandbox.write(join(clone, "b.txt"), "second\n");
 		sandbox.write(join(clone, "c.txt"), "third\n");
 		next = Promise.all([
 			second!.recorder.recordTurn(wrote(join(clone, "b.txt"))),
 			third!.recorder.recordTurn(wrote(join(clone, "c.txt"))),
 		]);
-		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.entered, 3), CAPTURE_WAIT);
 		assert.equal(captures.calls, 1, "no capture starts beside the running one");
 	} finally {
 		release.resolve();
@@ -198,17 +214,17 @@ test("a turn that ends while the capture queued for earlier turns runs gets a ca
 	sandbox.write(join(clone, "a.txt"), "first\n");
 	const turns: Promise<void>[] = [first!.recorder.recordTurn(wrote(join(clone, "a.txt")))];
 	try {
-		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.calls, 1), CAPTURE_WAIT);
 		sandbox.write(join(clone, "b.txt"), "second\n");
 		turns.push(second!.recorder.recordTurn(wrote(join(clone, "b.txt"))));
-		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.entered, 2), CAPTURE_WAIT);
 		// The capture queued for the second turn starts once the first ends, and runs until released.
 		captures.held = { roots: new Set([clone]), until: releaseSecond.promise };
 		releaseFirst.resolve();
-		await vi.waitFor(() => assert.equal(captures.calls, 2), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.calls, 2), CAPTURE_WAIT);
 		sandbox.write(join(clone, "c.txt"), "third\n");
 		turns.push(third!.recorder.recordTurn(wrote(join(clone, "c.txt"))));
-		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.entered, 3), CAPTURE_WAIT);
 	} finally {
 		releaseFirst.resolve();
 		releaseSecond.resolve();
@@ -229,16 +245,16 @@ test("a turn that commits and ends while a capture runs records a snapshot of th
 	const turns: Promise<void>[] = [first!.recorder.recordTurn(wrote(join(clone, "a.txt")))];
 	let committed = "";
 	try {
-		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.calls, 1), CAPTURE_WAIT);
 		// One turn ends and queues a capture, which it looked the checkout up for before the next turn's commit.
 		sandbox.write(join(clone, "b.txt"), "second\n");
 		turns.push(second!.recorder.recordTurn(wrote(join(clone, "b.txt"))));
-		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.entered, 2), CAPTURE_WAIT);
 		// The next commits its work, as `git commit` through bash does, and ends while the first capture still runs.
 		sandbox.write(join(clone, "c.txt"), "third\n");
 		committed = (await sandbox.commitAll(clone, "third's work")).trim();
 		turns.push(third!.recorder.recordTurn(wrote(join(clone, "c.txt"))));
-		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.entered, 3), CAPTURE_WAIT);
 	} finally {
 		release.resolve();
 		await Promise.all(turns);
@@ -256,24 +272,32 @@ test("a capture that runs far longer than captures do no longer holds the turns 
 	const release = Promise.withResolvers<void>();
 	captures.held = { roots: new Set([clone]), until: release.promise };
 	sandbox.write(join(clone, "a.txt"), "first\n");
+	const startedFirstMs = performance.now();
 	const stuck = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
 	let queued: Promise<void> | undefined;
 	try {
-		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.calls, 1), CAPTURE_WAIT);
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
 		sandbox.write(join(clone, "b.txt"), "second\n");
 		// Only the first turn's capture is held: the one that starts once the wait is over runs.
 		captures.held = { roots: new Set(), until: release.promise };
 		queued = second!.recorder.recordTurn(wrote(join(clone, "b.txt")));
-		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		await vi.waitFor(() => assert.equal(captures.entered, 2), CAPTURE_WAIT);
 		assert.equal(captures.calls, 1, "the turn waits for the running capture");
 		// However short the captures before were, it waits that long at least. A capture starts as its timer fires.
-		vi.advanceTimersByTime(QUEUED_CAPTURE_MIN_WAIT_MS / 2);
+		const elapsedSinceFirstMs = performance.now() - startedFirstMs;
+		const halfwayAdvanceMs = Math.max(0, Math.floor(QUEUED_CAPTURE_MIN_WAIT_MS / 2 - elapsedSinceFirstMs));
+		vi.advanceTimersByTime(halfwayAdvanceMs);
 		assert.equal(captures.calls, 1, "it still waits halfway through the wait");
-		vi.advanceTimersByTime(QUEUED_CAPTURE_MIN_WAIT_MS);
-		await vi.waitFor(() => assert.equal(captures.calls, 2, "past the wait, the queued capture starts beside it"), {
-			interval: 5,
-		});
+		const pastWaitMs = Math.max(
+			QUEUED_CAPTURE_MIN_WAIT_MS,
+			Math.ceil(QUEUED_CAPTURE_WAIT_MULTIPLIER * captures.maxElapsedMs) + 1,
+		);
+		vi.advanceTimersByTime(pastWaitMs);
+		await vi.waitFor(
+			() => assert.equal(captures.calls, 2, "past the wait, the queued capture starts beside it"),
+			CAPTURE_WAIT,
+		);
 		await queued;
 		const snapshot = second!.manager.getLatestWorktreeSnapshots().get(clone);
 		assert.ok(snapshot);
