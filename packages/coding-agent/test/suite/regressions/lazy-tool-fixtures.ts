@@ -159,6 +159,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"reply-tracker.ts",
 			"session-identity.ts",
 			"session-target.ts",
+			"tool-metadata.ts",
 		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });

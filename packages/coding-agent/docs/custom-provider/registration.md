@@ -1,13 +1,13 @@
 ---
 title: Register a provider
-description: Register and unregister a provider, and the API types a provider implements.
+description: Register provider aliases, add or remove custom providers, and choose a streaming API type.
 ---
 
 # Register a provider
 
 ## Multiple accounts for one provider
 
-Use `pi.registerProviderAlias()` instead of copying a provider's models, OAuth methods, and transport. Register aliases in the extension factory so they are available at startup:
+Use `pi.registerProviderAlias()` to reuse an existing provider's models, OAuth flows, and transport under separate logins. Register aliases inside the extension factory so they are available at startup:
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
@@ -23,25 +23,19 @@ export default async function (pi: ExtensionAPI) {
 }
 ```
 
-Run `/login openai-1` and choose **Sign in with ChatGPT**, then select an `openai-1` model with `/model`. Repeat for each account. The source `openai` uses the new OpenAI ChatGPT login, not the separate `openai-codex` login.
+Run `/login openai-1`, choose **Sign in with ChatGPT**, and select an `openai-1` model in `/model`. Repeat for each alias. The source `openai` uses OpenAI ChatGPT sign-in rather than `openai-codex`.
 
-Each alias stores and refreshes its own credentials. An alias does not borrow the source's stored login or ambient API key. Keeping an existing alias ID, such as `openai-1`, preserves credentials already saved under that ID. Confirm the intended account in the browser when logging into each alias; an alias name does not select a browser account or provide extra quota.
+Each alias stores and refreshes its own credentials without borrowing the source's stored login or ambient environment keys. Keeping the same alias ID preserves saved credentials. Confirm the intended account in your browser during login; an alias name does not select an account or increase quota.
 
-Aliases support OAuth credentials and non-empty stored API keys. For ambient-only authentication, such as an AWS profile or environment-based service account, use the original provider or a full custom registration instead.
+Aliases work with OAuth logins and non-empty stored API keys. For ambient-only authentication (such as an AWS profile or environment-based service account), use the original provider or register a full custom provider instead.
 
-Source endpoint and header configuration is shared too. Do not hard-code account credentials in source headers when using aliases; supply each account through `/login`.
+Aliases inherit the source's endpoint, shared headers, models, derived Fast variants, OAuth callbacks, and request handling. Do not hard-code account secrets in source headers; supply per-account credentials through `/login`. Saved messages and callbacks keep the alias ID. Source catalog updates are shared while availability filters run against each alias's credential; aliases do not run separate per-account catalog discovery.
 
-Aliases inherit the source's current models, Fast variants, OAuth callback support, and request handling. Callbacks and saved messages retain the alias ID. Source catalog updates are shared, while availability filters receive each alias's own credential. Aliases do not run account-specific catalog discovery with their credentials; use a full provider registration if each account requires a separately discovered catalog.
+The source provider must already be registered and cannot be an alias itself. Alias IDs cannot replace an existing provider. Configure endpoints, headers, and `models.json` overrides on the source provider rather than the alias. Call `pi.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials.
 
-The source must already be registered and cannot itself be an alias. Alias IDs must not replace an existing provider. Configure endpoints and models on the source rather than on the alias. Use `pi.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials. Aliases follow normal extension reload and rollback behavior.
+## Register new provider
 
-This API requires an Atomic version that includes provider aliases. Older versions report `registerProviderAlias is not a function`; upgrade Atomic before loading an alias extension.
-
-## Register New Provider
-
-To add a completely new provider, specify `models` along with the required configuration.
-
-If the model list comes from a remote endpoint, use an async extension factory:
+Specify `models` alongside the provider endpoint and API to register a new provider. For remote model discovery, fetch and register inside an async extension factory so startup waits for the models to load:
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
@@ -74,21 +68,21 @@ export default async function (pi: ExtensionAPI) {
 }
 ```
 
-This registers the fetched models before startup finishes.
+Or register static models directly:
 
 ```typescript
 await pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
-  apiKey: "$MY_LLM_API_KEY",  // env var reference; omit $ for a literal value
-  api: "openai-completions",  // which streaming API to use
+  apiKey: "$MY_LLM_API_KEY", // env var reference; omit $ for a literal value
+  api: "openai-completions", // streaming API implementation
   models: [
     {
       id: "my-llm-large",
       name: "My LLM Large",
-      reasoning: true,        // supports extended thinking
+      reasoning: true,
       input: ["text", "image"],
       cost: {
-        input: 3.0,           // $/million tokens
+        input: 3.0, // USD per million tokens
         output: 15.0,
         cacheRead: 0.3,
         cacheWrite: 3.75
@@ -100,16 +94,15 @@ await pi.registerProvider("my-llm", {
 });
 ```
 
-When `models` is provided, it **replaces** all existing chat, image, and classifier models for that provider. A missing `type` means chat; image and classifier models need `type: "image"` or `type: "classifier"` and implementations in the `images` or `classifiers` maps keyed by each model's `api`. See the [mixed-operation provider example](/custom-provider#quick-reference).
+Providing `models` replaces all existing chat, image, and classifier models for that provider. Omitting `type` registers a chat model; image and classifier models require `type: "image"` or `type: "classifier"` plus handlers in `images` or `classifiers`. See the [mixed-operation provider example](/custom-provider#quick-reference).
 
-A provider registered this way is listed in `/login` like a built-in provider: `/login my-llm` prompts for an API key and saves it to `auth.json`, and the selector shows whether the provider is configured (for example `✓ env: MY_LLM_API_KEY`). `/model` lists its models once it is configured. When `$MY_LLM_API_KEY` is unset and no key is stored, using one of its models reports `No API key found for my-llm` with the `/login` hint, as for a built-in provider. This also holds in interactive sessions, where extensions run in the engine process.
+Registered providers appear in `/login` like built-in providers: `/login my-llm` prompts for an API key and stores it in `auth.json`, and the selector shows configured status (such as `✓ env: MY_LLM_API_KEY`). Once configured, `/model` lists its models; without credentials, selecting one reports `No API key found for my-llm` with the `/login` hint.
 
-## Unregister Provider
+## Unregister provider
 
-Use `pi.unregisterProvider(name)` to remove a provider that was previously registered via `pi.registerProvider(name, ...)`:
+Call `pi.unregisterProvider(name)` to remove a provider registered with `pi.registerProvider(name, ...)`:
 
 ```typescript
-// Register
 await pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
   apiKey: "$MY_LLM_API_KEY",
@@ -127,20 +120,18 @@ await pi.registerProvider("my-llm", {
   ]
 });
 
-// Later, remove it
+// Remove later without needing /reload
 await pi.unregisterProvider("my-llm");
 ```
 
-Unregistering removes that provider's dynamic models, API key fallback, OAuth provider registration, and custom stream handler registrations. Any built-in models or provider behavior that were overridden are restored.
-
-Calls made after the initial extension load phase are applied immediately, so no `/reload` is required.
+Unregistering removes the provider's dynamic models, API key fallback, OAuth registration, and custom stream handlers, restoring any overridden built-in provider behavior. Calls made after initial extension loading take effect immediately without `/reload`.
 
 ### API Types
 
-The `api` field determines which streaming implementation is used:
+The `api` field selects the built-in streaming implementation:
 
 | API | Use for |
-|-----|---------|
+| --- | --- |
 | `anthropic-messages` | Anthropic Claude API and compatibles |
 | `openai-completions` | OpenAI Chat Completions API and compatibles |
 | `openai-responses` | OpenAI Responses API |
@@ -151,14 +142,18 @@ The `api` field determines which streaming implementation is used:
 | `google-vertex` | Google Vertex AI API |
 | `bedrock-converse-stream` | Amazon Bedrock Converse API |
 
-Most OpenAI-compatible providers work with `openai-completions`. Use model-level `thinkingLevelMap` for model-specific thinking levels, and `compat` for provider quirks:
+Most OpenAI-compatible servers use `openai-completions`. Configure model-specific thinking controls with `thinkingLevelMap` and endpoint quirks with `compat`:
 
 ```typescript
 models: [{
   id: "custom-model",
-  // ...
+  name: "Custom Model",
   reasoning: true,
-  thinkingLevelMap: {              // map Atomic thinking levels to provider values; null hides unsupported levels
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 128000,
+  maxTokens: 16384,
+  thinkingLevelMap: { // map Atomic thinking levels; null hides unsupported levels
     minimal: null,
     low: null,
     medium: null,
@@ -167,31 +162,28 @@ models: [{
     max: "max"
   },
   compat: {
-    supportsDeveloperRole: false,   // use "system" instead of "developer"
+    supportsDeveloperRole: false,
     supportsReasoningEffort: true,
-    maxTokensField: "max_tokens",   // instead of "max_completion_tokens"
-    requiresToolResultName: true,   // tool results need name field
-    thinkingFormat: "qwen",        // top-level enable_thinking: true
-    cacheControlFormat: "anthropic" // Anthropic-style cache_control markers
+    maxTokensField: "max_tokens",
+    requiresToolResultName: true,
+    thinkingFormat: "qwen",
+    cacheControlFormat: "anthropic"
   }
 }]
 ```
 
-Use `openrouter` for OpenRouter-style `reasoning: { effort }` controls. Use `together` for Together-style `reasoning: { enabled }` controls; with `supportsReasoningEffort`, it also sends `reasoning_effort`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`.
-Use `cacheControlFormat: "anthropic"` for OpenAI-compatible providers that expose Anthropic-style prompt caching via `cache_control` on the system prompt, last tool definition, and last user/assistant text content.
-
-Use `mistral-conversations` for native Mistral models. If you intentionally route a Mistral-compatible or custom endpoint through `openai-completions`, set the required `compat` flags explicitly.
+See [Compatibility fields](/models-configuration#compatibility) for every `compat` option (`thinkingFormat`, `cacheControlFormat`, session affinity, and tool flags). Use `mistral-conversations` for native Mistral endpoints; if routing a Mistral-compatible endpoint through `openai-completions`, configure `compat` flags explicitly.
 
 ### Auth Header
 
-If your provider expects `Authorization: Bearer <key>` but doesn't use a standard API, set `authHeader: true`:
+Set `authHeader: true` when an endpoint expects `Authorization: Bearer <key>` using the resolved `apiKey`:
 
 ```typescript
 await pi.registerProvider("custom-api", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
-  authHeader: true,  // adds Authorization: Bearer header
+  authHeader: true,
   api: "openai-completions",
-  models: [...]
+  models: []
 });
 ```

@@ -8,9 +8,9 @@ description: "Run Atomic sessions behind a Next.js App Router route and stream t
 
 This guide puts an Atomic agent behind an HTTP endpoint, using a Next.js App Router project as the example. The same pattern works in any long-running Node.js server: keep one session per conversation, start a prompt per request, and stream the session's events back as newline-delimited JSON (NDJSON).
 
-Read the [SDK](/sdk) page first for `createAgentSession()` and session events.
+Read the [SDK](/sdk) page first for `createAgentSession()`, `AgentSession`, `AgentSessionRuntime`, and session events.
 
-The examples use `createTranscript()`, `createAgentSessionAdapter()`, and `RunOpts.onStageSessionEvent`, which require an Atomic release newer than 0.9.28-alpha.1. Check the [changelog](/changelog) for your installed version.
+The examples below use `createAgentSession()`, `ModelRuntime`, `SessionManager`, and `createTranscript()` from `@bastani/atomic`. For servers that release idle sessions and rehydrate them on later requests, wrap sessions with `createAgentSessionRuntime()` instead (see [Releasing idle sessions](/sdk#releasing-idle-sessions)).
 
 ## Install
 
@@ -18,9 +18,7 @@ The examples use `createTranscript()`, `createAgentSessionAdapter()`, and `RunOp
 npm install @bastani/atomic
 ```
 
-Atomic needs Node.js 22.19 or newer and does not require dependency install scripts.
-
-Dependency install scripts are not required. If your package manager reports blocked scripts, you do not need to enable them for Atomic.
+Atomic requires Node.js 22.19 or newer. Dependency install scripts are not required; if your package manager reports blocked scripts, leave them disabled.
 
 ## Keep Atomic out of the server bundle
 

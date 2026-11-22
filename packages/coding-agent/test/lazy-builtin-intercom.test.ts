@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
 import intercomEagerFactory from "../../../packages/intercom/index.js";
+import intercomHeavyFactory from "../../../packages/intercom/index-heavy.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getMandatoryBuiltinExtensionPaths } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.js";
@@ -60,7 +61,7 @@ describe("lazy builtin intercom", () => {
 		assert.equal(lazyLoaded.extensions.length, 1);
 		assert.equal(extensionLoaderTestHooks.hasNativeBuiltinFactory(intercomEntry), false);
 
-		// Load eager directly from packages/intercom/index.ts.
+		// Load eager directly from packages/intercom/index.ts and heavy directly from packages/intercom/index-heavy.ts.
 		const eagerExt = await loadExtensionFromFactory(
 			intercomEagerFactory,
 			dir,
@@ -68,14 +69,25 @@ describe("lazy builtin intercom", () => {
 			createExtensionRuntime(),
 			intercomEntry,
 		);
+		const heavyExt = await loadExtensionFromFactory(
+			intercomHeavyFactory,
+			dir,
+			createEventBus(),
+			createExtensionRuntime(),
+			intercomEntry,
+		);
 		const lazyExt = lazyLoaded.extensions[0]!;
 
-		// Tool names & serialized JSON schemas/descriptions/snippets/guidelines/scriptAccess must be byte-identical.
+		// Tool names & serialized JSON schemas/descriptions/snippets/guidelines/scriptAccess must be byte-identical
+		// across lazy builtin, light wrapper, and heavy implementation.
 		assert.deepEqual([...lazyExt.tools.keys()], [...eagerExt.tools.keys()]);
-		assert.equal(
-			serializeToolSurface(lazyExt.tools.get("intercom")?.definition),
-			serializeToolSurface(eagerExt.tools.get("intercom")?.definition),
-		);
+		const heavySurface = serializeToolSurface(heavyExt.tools.get("intercom")?.definition);
+		assert.equal(serializeToolSurface(lazyExt.tools.get("intercom")?.definition), heavySurface);
+		assert.equal(serializeToolSurface(eagerExt.tools.get("intercom")?.definition), heavySurface);
+		const intercomParams = lazyExt.tools.get("intercom")?.definition.parameters as {
+			properties?: Record<string, unknown>;
+		};
+		assert.ok(intercomParams.properties && "delivery" in intercomParams.properties, "delivery parameter must exist");
 
 		// scriptAccess.refuse parity across all actions
 		const lazyRefuse = lazyExt.tools.get("intercom")!.definition.scriptAccess!.refuse!;
@@ -102,17 +114,21 @@ describe("lazy builtin intercom", () => {
 			assert.equal(lazyDetach({ action }), eagerDetach({ action }), `detachable mismatch for ${action}`);
 		}
 
-		// Commands & shortcuts parity
+		// Commands & shortcuts parity (lazy === light === heavy)
 		assert.deepEqual([...lazyExt.commands.keys()], [...eagerExt.commands.keys()]);
-		assert.equal(lazyExt.commands.get("intercom")?.description, eagerExt.commands.get("intercom")?.description);
+		assert.deepEqual([...lazyExt.commands.keys()], [...heavyExt.commands.keys()]);
+		assert.equal(lazyExt.commands.get("intercom")?.description, heavyExt.commands.get("intercom")?.description);
+		assert.equal(eagerExt.commands.get("intercom")?.description, heavyExt.commands.get("intercom")?.description);
 		assert.deepEqual([...lazyExt.shortcuts.keys()], [...eagerExt.shortcuts.keys()]);
-		assert.equal(lazyExt.shortcuts.get("alt+m")?.description, eagerExt.shortcuts.get("alt+m")?.description);
+		assert.deepEqual([...lazyExt.shortcuts.keys()], [...heavyExt.shortcuts.keys()]);
+		assert.equal(lazyExt.shortcuts.get("alt+m")?.description, heavyExt.shortcuts.get("alt+m")?.description);
+		assert.equal(eagerExt.shortcuts.get("alt+m")?.description, heavyExt.shortcuts.get("alt+m")?.description);
 		assert.equal(lazyExt.messageRenderers.has("intercom_message"), true);
 		assert.equal(lazyExt.messageRenderers.has("intercom_subagent_wake"), true);
 		assert.deepEqual([...lazyExt.messageRenderers.keys()], [...eagerExt.messageRenderers.keys()]);
 	});
 
-	test("registers byte-identical contact_supervisor tool when subagent orchestrator env is present", async () => {
+	test("registers byte-identical contact_supervisor tool across lazy, light, and heavy when subagent orchestrator env is present", async () => {
 		process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET = "supervisor-session";
 		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-intercom-sub-"));
 		tempDirs.push(dir);
@@ -127,13 +143,116 @@ describe("lazy builtin intercom", () => {
 			createExtensionRuntime(),
 			intercomEntry,
 		);
+		const heavyExt = await loadExtensionFromFactory(
+			intercomHeavyFactory,
+			dir,
+			createEventBus(),
+			createExtensionRuntime(),
+			intercomEntry,
+		);
 		const lazyExt = lazyLoaded.extensions[0]!;
 
 		assert.deepEqual([...lazyExt.tools.keys()], [...eagerExt.tools.keys()]);
-		assert.equal(
-			serializeToolSurface(lazyExt.tools.get("contact_supervisor")?.definition),
-			serializeToolSurface(eagerExt.tools.get("contact_supervisor")?.definition),
+		const heavySupervisorSurface = serializeToolSurface(heavyExt.tools.get("contact_supervisor")?.definition);
+		assert.equal(serializeToolSurface(lazyExt.tools.get("contact_supervisor")?.definition), heavySupervisorSurface);
+		assert.equal(serializeToolSurface(eagerExt.tools.get("contact_supervisor")?.definition), heavySupervisorSurface);
+	});
+
+	test("typed subagent contact_supervisor registration matches heavy schema byte-for-byte", async () => {
+		delete process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET;
+		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-intercom-typed-"));
+		tempDirs.push(dir);
+		const [intercomEntry] = getMandatoryBuiltinExtensionPaths();
+		assert.ok(intercomEntry);
+
+		const heavyExt = await loadExtensionFromFactory(
+			intercomHeavyFactory,
+			dir,
+			createEventBus(),
+			createExtensionRuntime(),
+			intercomEntry,
 		);
+		const heavySupervisorSurface = serializeToolSurface(heavyExt.tools.get("contact_supervisor")?.definition);
+
+		const lazyFactory = createLazyBuiltinFactory(intercomLazyBuiltinSpec, async () => () => {});
+		const lazyRuntime = createExtensionRuntime();
+		const lazyExt = await loadExtensionFromFactory(
+			lazyFactory,
+			dir,
+			createEventBus(),
+			lazyRuntime,
+			"builtin:intercom",
+		);
+		const subagentPolicy = {
+			depth: 1,
+			intercom: {
+				sessionName: "worker-1",
+				orchestratorTarget: "supervisor-1",
+				group: "g1",
+			},
+			startup: {
+				signal: AbortSignal.abort(),
+				firstTurnPending: () => false,
+				enterStep: () => {},
+			},
+		};
+		const bindRunner = (ext: typeof lazyExt, runtime: ReturnType<typeof createExtensionRuntime>) => {
+			const runner = new ExtensionRunner(
+				[ext],
+				runtime,
+				dir,
+				SessionManager.inMemory(dir),
+				new ModelRegistry(AuthStorage.inMemory()),
+				undefined,
+				subagentPolicy as never,
+			);
+			runner.bindCore(
+				{
+					sendMessage: () => {},
+					sendMessages: () => {},
+					sendUserMessage: () => {},
+					appendEntry: async () => {},
+					setSessionName: async () => {},
+					getSessionName: () => undefined,
+					setLabel: async () => {},
+					getActiveTools: () => ["intercom"],
+					getAllTools: () => [],
+					setActiveTools: () => {},
+					refreshTools: () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => "off",
+					setThinkingLevel: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					getScopedModels: () => [],
+					isIdle: () => true,
+					isProjectTrusted: () => true,
+					getSignal: () => undefined,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: () => {},
+					getSystemPrompt: () => "",
+				},
+			);
+			return runner;
+		};
+		await bindRunner(lazyExt, lazyRuntime).emit({ type: "session_start", reason: "startup" });
+		assert.equal(serializeToolSurface(lazyExt.tools.get("contact_supervisor")?.definition), heavySupervisorSurface);
+
+		const lightRuntime = createExtensionRuntime();
+		const lightExt = await loadExtensionFromFactory(
+			intercomEagerFactory,
+			dir,
+			createEventBus(),
+			lightRuntime,
+			intercomEntry,
+		);
+		await bindRunner(lightExt, lightRuntime).emit({ type: "session_start", reason: "startup" });
+		assert.equal(serializeToolSurface(lightExt.tools.get("contact_supervisor")?.definition), heavySupervisorSurface);
 	});
 
 	test("answers dormant drop/ack/mark-ended/release bus requests and format-released-reply without activating", async () => {
