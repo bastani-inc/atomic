@@ -22,14 +22,14 @@ npm install -g @bastani/atomic
 ```
 
 - Atomic does not require package install scripts; pass `--ignore-scripts` if you disable lifecycle scripts.
-- Package managers select the right platform runtime automatically. Keep a standalone archive's complete directory (`node_modules`, libraries, licenses) intact.
-- Atomic's native module ships as one optional package per platform (`@bastani/atomic-natives-<platform>`), and npm, pnpm and Bun install only the one for your platform. A global install writes about 17,660 files and 224 MiB on Linux, and about 17,690 files and 211 MiB on Windows.
-- Atomic publishes no shrinkwrap: the package manager resolves Atomic's dependencies when you install, so two installs of the same release can get different versions of packages Atomic depends on indirectly. The packages Atomic depends on directly are pinned to exact versions. The [release archive](#release-archive) carries the exact dependency tree its release was tested with. Atomic 0.10.4-alpha.1 and earlier published a shrinkwrap, and npm 11.6.2 and later installed the native module package of every platform for them.
-- On Linux, `npm ci` from a project lockfile that npm 11.10 or older wrote (npm 10 included) installs both the glibc and the musl package, about 5 MiB more, because those lockfiles do not record which C library each package needs. Atomic loads the one that matches.
-- Do not omit optional dependencies (`npm install --omit=optional`, `pnpm install --no-optional`, `bun install --omit=optional`) in a project: without your platform's package Atomic stops at startup with an error that names the package. Reinstall Atomic without those options to fix it. A global npm install is unaffected: npm installs the platform package of a global package even with `--omit=optional`.
-- Atomic also stops when its native module is from another release. If you updated Atomic while it was running, the message says so: restart it. Otherwise the installation is broken, and the message names both releases: reinstall Atomic. A process that stopped this way, such as an SDK program, keeps refusing until it restarts; if you reinstall while it runs, its message then says to restart it.
+- Package managers select the matching platform runtime automatically. Keep a standalone archive's complete directory (`node_modules`, libraries, and licenses) intact.
+- Atomic ships its native module as one optional package per platform (`@bastani/atomic-natives-<platform>`), so npm, pnpm, and Bun install the package for your platform.
+- Atomic pins its direct dependencies to exact versions and publishes no shrinkwrap, so package managers resolve transitive dependencies at install time. Use the [release archive](#release-archive) if you want the exact dependency tree the release was tested with.
+- On Linux, `npm ci` from an older project lockfile that does not record C-library tags can install both the glibc and musl native packages. Atomic loads the matching one automatically.
+- Do not omit optional dependencies (`npm install --omit=optional`, `pnpm install --no-optional`, or `bun install --omit=optional`) in a project. Without your platform's native package, Atomic stops at startup with an error naming the missing package; reinstall without those flags to fix it. Global npm installs still pull transitive optional native packages even with `--omit=optional`.
+- Atomic also stops when its native module comes from another release. If you updated Atomic while it was running, restart it. Otherwise the installation is broken, and reinstalling fixes it. A process that stopped this way, such as an SDK program, keeps refusing until it restarts; once you reinstall, the error asks you to restart. This exact `@bastani/atomic-natives` version check applies to packaged releases and skips standalone binaries, source checkouts, `NAPI_RS_NATIVE_LIBRARY_PATH` overrides, and apps that bundle the SDK without pinning `@bastani/atomic-natives`.
 - Sessions are stored locally in `~/.atomic/workflows/journal.sqlite` with no database server needed. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
-- On Node 22, `AsyncLocalStorage` runs on promise hooks, which make every `await` in an Atomic process cost more. Node 24 and Bun have no such cost, so run Atomic on Node 24 or later to avoid it. Do not set `NODE_OPTIONS=--experimental-async-context-frame` for this: Node 24 and later refuse to start with that option, and commands Atomic runs for you inherit `NODE_OPTIONS`.
+- On Node 22, async operations have higher overhead than on Node 24 or Bun. Run Atomic on Node 24 or later to avoid this overhead. Do not set `NODE_OPTIONS=--experimental-async-context-frame`: Node 24 and later refuse to start with that option, and commands Atomic runs inherit `NODE_OPTIONS`.
 
 ### Release archive
 
@@ -75,8 +75,9 @@ Pins are honored literally: if GitHub returns a different tag, the installer abo
 If the requested version (or latest release when unpinned) is already installed and healthy, the installer prints `atomic <tag> is already installed; skipping download (use --force to reinstall)`, prints the install path and any PATH guidance, and exits without downloading.
 
 - **Offline reruns:** Pinned reruns make no network request. Unpinned reruns still check for the latest tag.
-- **Health checks:** An install is healthy when `current` points to the target version inside the install root (a `current` that points at a versions directory somewhere else is repaired), the launcher matches its recorded hash and resolves to `current`, and the version directory must still hold the files Atomic needs to start: `package.json`, `app.js`, `native-modifiers.js`, `native-module-path.js`, `native-platform.js`, `builtin/`, and `node_modules/`. On macOS/Linux, the launcher link must resolve to an executable `current/atomic` (without executing it). On Windows, `current\atomic.exe --version` must match, `atomic.cmd` and `atomic-current` must match, and a missing User PATH entry is restored. Any broken or missing piece triggers a full repair install.
-- **Concurrency and atomic switches:** Only one installer runs per install directory at a time. A second run waits up to 30 minutes (override in seconds with `ATOMIC_INSTALL_LOCK_TIMEOUT`), printing `Waiting for another atomic installer ... to finish...`. A killed installer releases its lock and the next run cleans up partial files. The previous `atomic` version stays usable until the final switch.
+- **Health checks:** An install is healthy when `current` points to the target version inside the install root (a `current` that points at a versions directory somewhere else is repaired), the launcher matches its recorded hash and resolves to `current`, and the version directory must still hold the files Atomic needs to start: `package.json`, `app.js`, `native-modifiers.js`, `native-module-path.js`, `native-platform.js`, `builtin/`, and `node_modules/`.
+- **Platform verification:** On macOS and Linux, the launcher link must resolve to an executable `current/atomic` without executing it. On Windows, `current\atomic.exe --version` must match, `atomic.cmd` and `atomic-current` must match, and a missing User PATH entry is restored. Any broken or missing piece triggers a full repair install.
+- **Concurrency and atomic switches:** Only one installer runs per install directory at a time. A second run waits up to 30 minutes (override in seconds with `ATOMIC_INSTALL_LOCK_TIMEOUT`) and prints `Waiting for another atomic installer ... to finish...`. A killed installer releases its lock and the next run cleans up partial files. The previous `atomic` version stays usable until the final switch.
 
 To force a reinstall, pass `--force` on macOS/Linux or `-Force` on Windows, or set `ATOMIC_FORCE_INSTALL=1`:
 
@@ -112,7 +113,13 @@ Package-manager installs run on Node.js; standalone release archives run on Bun.
 
 ### Git
 
-Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if it reports 2.30.0+. Otherwise, Atomic downloads a verified portable Git ([desktop/dugite-native](https://github.com/desktop/dugite-native)) just like `fd` and `rg`. A few things differ with an older Git: SDK workspace bindings need Git 2.33+; before Git 2.33, a named subagent worktree whose creation was cut off (for example by a killed Atomic) is reported as busy after a 30-second wait rather than at once; and before Git 2.36, a worktree snapshot restore stops with an error when a worktree of its store has a path with a line break.
+Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if that binary reports 2.30.0 or newer. Otherwise, Atomic downloads a verified portable Git from [desktop/dugite-native](https://github.com/desktop/dugite-native), just as it does for `fd` and `rg`.
+
+A few capabilities require newer Git versions:
+
+- SDK workspace bindings require Git 2.33 or newer.
+- Before Git 2.33, a named subagent worktree whose creation was interrupted reports busy after a 30-second wait rather than failing immediately.
+- Before Git 2.36, a worktree snapshot restore stops with an error when a worktree in its store has a path containing a line break.
 
 - **Location:** `~/.atomic/agent/bin/git/` (or under `ATOMIC_CODING_AGENT_DIR`).
 - **When:** Downloaded at interactive startup or on the first git package install/update. Run `/tools` to check which Git Atomic uses and why.
@@ -186,7 +193,7 @@ npm uninstall -g @bastani/atomic
 # or: bun remove -g @bastani/atomic
 ```
 
-Uninstalling removes only the CLI. Your config, credentials, sessions, and installed packages remain in `~/.atomic/agent/` until you delete that directory.
+Uninstalling removes only the CLI. Your config, credentials, and installed packages remain in `~/.atomic/agent/`, and your default SQLite sessions remain in `~/.atomic/workflows/journal.sqlite`, until you delete `~/.atomic/`.
 
 ## Verify the install
 

@@ -227,15 +227,49 @@ function parseOptions(
 	return { positional, values, lists };
 }
 
+const MCP_ADD_VALUE_OPTIONS = new Set([
+	"--url",
+	"--env",
+	"--cwd",
+	"--header",
+	"--bearer-token-env-var",
+	"--oauth-client-id",
+	"--oauth-client-secret",
+	"--oauth-callback-port",
+	"--oauth-client-name",
+	"--exposure",
+	"--description",
+]);
+
+function isMcpHelpRequest(args: readonly string[]): boolean {
+	const [command, ...rest] = args;
+	if (command === undefined || command === "help" || command === "--help" || command === "-h") return true;
+	const valueOptions =
+		command === "add" ? MCP_ADD_VALUE_OPTIONS : command === "login" ? new Set(["--timeout"]) : undefined;
+	const maxPositionals = command === "add" ? 2 : Number.POSITIVE_INFINITY;
+	let positionals = 0;
+	for (let index = 0; index < rest.length; index++) {
+		const arg = rest[index]!;
+		if (arg === "--" || positionals >= maxPositionals) return false;
+		if (valueOptions?.has(arg)) {
+			index++;
+			continue;
+		}
+		if (arg === "--help" || arg === "-h") return true;
+		if (!arg.startsWith("-")) positionals++;
+	}
+	return false;
+}
+
 /** Run `pi mcp <args>` and return the exit code. */
 export async function runMcpCommand(args: string[], options: McpCommandOptions): Promise<number> {
 	const log = options.log ?? ((line: string) => console.log(line));
 	const error = options.error ?? ((line: string) => console.error(line));
-	const [command, ...rest] = args;
-	if (command === undefined || command === "help" || args.includes("--help") || args.includes("-h")) {
+	if (isMcpHelpRequest(args)) {
 		log(HELP);
 		return 0;
 	}
+	const [command, ...rest] = args;
 
 	const projectConfig = join(options.cwd, CONFIG_DIR_NAME, "mcp.json");
 	if (command === "add" || command === "remove") {

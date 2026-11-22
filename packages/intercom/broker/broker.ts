@@ -390,6 +390,9 @@ class IntercomBroker {
    * send, so a broker that idles out having served no session leaves no durable state in the agent directory. A broker
    * that does serve one reads what its predecessors recorded, so a retried send is still deduplicated across restarts.
    */
+  /** #5607: the store of asks for away sessions, once opened: it keeps the multi-node id hand-overs too. */
+  private awayAsks: AwayAsks | undefined;
+
   private openDeliveredMessages(): DeliveredMessageCache {
     if (this.deliveredMessageCache !== undefined) return this.deliveredMessageCache;
     // Kept in memory once the directory this broker created is gone: it never creates a removed directory again.
@@ -401,8 +404,10 @@ class IntercomBroker {
     // #4751: what waits for away sessions is kept with the same lifetime as the delivered-message authority.
     try {
       // #4829: live asks are written to it too, with their peers' return addresses, so they outlive this broker.
+      const awayAsks = new AwayAsks(durable ? getBrokerAwayAsksPath() : undefined);
+      this.awayAsks = awayAsks;
       this.pendingQuestions.useAwayStore(
-        new AwayAsks(durable ? getBrokerAwayAsksPath() : undefined),
+        awayAsks,
         (sessionId) =>
           this.sessions.get(sessionId)?.registrationReturnAddress ?? this.sessionIdReclaim.retiredReturnAddress(sessionId),
       );
@@ -2164,6 +2169,24 @@ class IntercomBroker {
               instanceKey: SOCKET_PATH,
               // A machine id saved for it goes into this broker's Intercom directory only, never a removed one again.
               hostIdentity: (await this.hostIdentity()) ?? null,
+              // #5607: a hand-over presented after this broker restarted still takes back what it was given for. Kept
+              // with the asks for away sessions, which the first registration opens, before any hand-over, and written
+              // there only while that directory is still this broker's.
+              handoffs: () => {
+                const awayAsks = this.awayAsks;
+                return awayAsks === undefined
+                  ? undefined
+                  : {
+                      take: (holder, keepMs) => {
+                        if (!this.holdsIntercomDirectory()) throw new Error("its Intercom directory was removed");
+                        return awayAsks.takeIdHandoffs(holder, keepMs);
+                      },
+                      put: (holder, changes) => {
+                        if (!this.holdsIntercomDirectory()) throw new Error("its Intercom directory was removed");
+                        awayAsks.putIdHandoffs(holder, changes);
+                      },
+                    };
+              },
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,

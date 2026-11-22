@@ -16,24 +16,24 @@ Atomic's session engine supports three non-interactive entry points. Use the tab
 
 ## Print mode
 
-`atomic --print "..."` runs a single turn and exits. It also reads piped stdin and merges it into the prompt, so it composes with ordinary shell pipelines. Flags, exit codes, and the stdin merge rules are in the [CLI reference](/reference/cli).
+`atomic --print "..."` (or `-p`) runs a single turn and exits. It reads piped stdin and merges it into the prompt, so it composes with shell pipelines. See the [CLI reference](/reference/cli) for all flags, exit codes, and stdin merge rules.
 
-If a text response reaches the model's output token limit, print mode keeps the partial text on stdout, writes a truncation warning to stderr, and exits with code `1`. Check the exit code before treating redirected output as complete.
+If a text response hits the model's output token limit, print mode keeps the partial text on stdout, writes a truncation warning to stderr, and exits with code `1`. Check the exit code before treating redirected output as complete.
 
-On Linux and macOS, `SIGTERM` or `SIGHUP` ends a print-mode run once its session has shut down, with code `143` or `129`. The standalone binary started with `SIGHUP` ignored, as `nohup atomic -p ...` starts it, keeps running when its terminal closes. An npm installation runs on Node, which does not keep an ignored `SIGHUP`; start it with `setsid` to keep it running instead.
+On Linux and macOS, `SIGTERM` or `SIGHUP` stops a print-mode run after the session shuts down and exits with code `143` or `129`. The standalone binary preserves an ignored `SIGHUP` (as under `nohup atomic -p ...`) and keeps running after its terminal closes. An npm installation runs on Node.js, which resets an ignored `SIGHUP`; start it with `setsid` to keep it running after disconnect.
 
-An extension command works as a prompt too: `atomic --session <id> -p "/curator off"` prints the command's answer. When the command answers with a message, or with a turn that message starts, print mode waits for it, prints it, and only then runs the next prompt or exits.
+Extension commands also work as prompts. Running `atomic --session <id> -p "/curator off"` prints the command's reply. If the command sends a message or starts a turn, print mode waits for that response and prints it before running the next prompt or exiting.
 
 ## JSON events
 
-When you need to observe a run rather than read it, the JSON event stream emits one structured record per message, tool call, and result. Use it for logging, CI annotations, or piping into another tool. The event shapes are in [JSON event stream](/json).
+Use the JSON event stream when another program needs to observe a run rather than read plain text. Atomic emits one JSON record per message, tool call, and result for logging, CI annotations, or downstream scripts. See [JSON event stream](/json) for the event shapes.
 
 ## RPC
 
-RPC keeps a session alive so another process can send prompts, answer prompts, and receive events. Use it for editors, bots, and long-running services that need more than a single request/response. Start at [RPC](/rpc) and the [RPC protocol](/rpc/protocol).
+RPC keeps a session alive so another process can send prompts, answer UI requests, and receive events over stdin and stdout. Use it for editors, bots, and long-running services that need multi-turn control. Start at [RPC](/rpc) and the [RPC protocol](/rpc/protocol).
 
 ## Next steps
 
 - [CLI reference](/reference/cli) for every flag and exit code.
-- [Programmatic use](/programmatic) for choosing between the SDK, RPC, and the event stream.
-- [Background and parallel work](/background-tasks) if the work should continue while you keep chatting interactively.
+- [Programmatic use](/programmatic) to choose between the SDK, RPC, and the JSON event stream.
+- [Background tasks](/background-tasks) when work should continue while you keep chatting interactively.

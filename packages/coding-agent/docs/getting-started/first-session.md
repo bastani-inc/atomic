@@ -55,7 +55,7 @@ Ask one subagent to trace the retry logic and another to find its tests. Compare
 - Run `/tasks` to inspect background subagents and read their output.
 - Run `/resume` to return to a saved session.
 
-**Converting older workflows:** Workflows are now skills. Give Atomic an older workflow file path and ask it to convert it. In a trusted project, Atomic reads the file as text and uses `skill-creator` to write a skill under `.atomic/skills/<name>/` (project) or `~/.atomic/agent/skills/<name>/` (global), combining codemode, subagents, and helper scripts in `scripts/`. Nothing converts automatically at startup, the original file is never executed or modified, and existing skills are not overwritten.
+**Converting older workflows.** Workflows are now skills. Give Atomic an older workflow file path and ask it to convert the file into a skill. In a trusted project, Atomic reads the file as text and writes a skill under `.atomic/skills/<name>/` (project) or `~/.atomic/agent/skills/<name>/` (global). The original file stays untouched, and existing skills are never overwritten. See [Migrating workflows](/orchestration/migrating-workflows).
 
 ### Top skills to invoke directly
 
@@ -63,18 +63,18 @@ Skills are reusable expert instructions invoked with `/skill:<name>`:
 
 | Skill | When to use | Example |
 | --- | --- | --- |
-| `research-codebase` | Scoped research writing a grounded artifact for one subsystem or question. | `/skill:research-codebase how the rate limiter works in src/middleware/` |
+| `research-codebase` | Scoped research that writes a grounded summary for one subsystem or question. | `/skill:research-codebase how the rate limiter works in src/middleware/` |
 | `create-spec` | Turn research into an implementation-ready plan. | `/skill:create-spec from research/docs/2026-03-rate-limit.md` |
 | `prompt-engineer` | Write, evaluate, migrate, or troubleshoot GPT and Claude prompts with model-specific guides. | `/skill:prompt-engineer Draft a sharper repo-research prompt for payment retries end to end.` |
 | `tdd` | Test-first feature or bug work. | `/skill:tdd` |
-| `impeccable` | Critique or refine web/native frontend and product UI (detector hooks, live review, mount-failure recovery). | `/skill:impeccable` |
+| `impeccable` | Critique or refine web and native frontend UI. | `/skill:impeccable` |
 | `agent-browser` | Drive a real browser for end-to-end UI checks, screenshots, and proof videos. | `/skill:agent-browser` |
-| `agent-desktop` | Drive a native desktop app via its accessibility tree: snapshot, act on a ref, wait for postcondition. | `/skill:agent-desktop` |
-| `qlty` | Lint, auto-format, and measure complexity, duplication, and smells across languages. | `/skill:qlty check this branch before I hand it off` |
+| `agent-desktop` | Drive a native desktop app through its accessibility tree: snapshot, act on a ref, wait for postcondition. | `/skill:agent-desktop` |
+| `qlty` | Lint, auto-format, and measure complexity, duplication, and code smells across languages. | `/skill:qlty check this branch before I hand it off` |
 | `liteparse` | Extract text, tables, or values from PDF, DOCX, PPTX, XLSX, and images locally. | `/skill:liteparse` |
-| `show-me` | Explain topics visually with diagrams, code sketches, or focused HTML artifacts (HumanLayer, MIT). | `/skill:show-me` |
+| `show-me` | Explain topics visually with diagrams, code sketches, or focused HTML views (HumanLayer, MIT). | `/skill:show-me` |
 
-Impeccable 4.10.0 runs its commands (`context`, `live`, `detect`, hooks, and the rest) through a self-contained engine binary instead of Node scripts. The bundled launcher, `scripts/impeccable` (`impeccable.cmd` on Windows), looks for a binary next to itself, then in `~/.impeccable/bin/`, and otherwise downloads the pinned engine release for your platform into `~/.impeccable/bin/<version>/` and verifies it against the SHA-256 digest that ships with the skill (`scripts/engine-checksums.txt`) before running it, so the first use needs network access. A download or a cached engine that does not match its digest is refused, and a binary next to the launcher that reports a different engine version is skipped. Point `IMPECCABLE_BIN` at a preinstalled engine or set `IMPECCABLE_HOME` to a writable cache when that is not possible. Atomic's launcher keeps the engine's anonymous telemetry pings and its `npx impeccable update` check switched off, since the skill ships with each Atomic release. A concept roll still fetches its catalog with a `GET /api/roll` request to `impeccable.style`, which carries the scope, mode, a short seed key, and a re-roll counter, but no project files, prompts, code, or conversation. Live sessions resolve to the selected app root and support SvelteKit, Nuxt, TanStack Start, Astro, Next.js, Vite, and static HTML injection. The image fallback runs only with `OPENAI_API_KEY`, sends prompts and optional reference images to OpenAI, or to the endpoint in `OPENAI_BASE_URL` when that variable is set, and spends that account's API credit. Generated image prompts are embedded in the image or a sidecar, so do not include secrets.
+Atomic bundles these skills with every release, and you can also add your own project or user skills. See [Skills](/skills) for skill discovery, built-in skill requirements, and authoring details.
 
 ### Default tools and prompts
 

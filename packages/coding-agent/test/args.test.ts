@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, expect, test, vi } from "vitest";
 import { parseArgs, printHelp } from "../src/cli/args.ts";
+import { allToolNames, defaultToolNamesFor, defaultToolSelectionFor } from "../src/core/tools/index.ts";
 
 describe("parseArgs", () => {
 	test("parses --no-mcp alongside tool patterns", () => {
@@ -61,6 +62,41 @@ describe("parseArgs", () => {
 				assert.match(help, /intercom <command>\s+Show or restart this machine's Intercom broker/);
 				assert.match(help, /<command> --help\s+Show help for .*\/storage\/team\/intercom/);
 				assert.match(help, /ATOMIC_PROFILE\s+- ci: use the team database for sessions and Intercom/);
+			} finally {
+				output.mockRestore();
+			}
+		});
+
+		test("lists both blueprint cache-key and blueprint prebuild commands", () => {
+			const output = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				printHelp();
+				const help = output.mock.calls.map(([text]) => String(text)).join("\n");
+				assert.match(help, /atomic blueprint cache-key\s+/);
+				assert.match(help, /atomic blueprint prebuild\s+/);
+			} finally {
+				output.mockRestore();
+			}
+		});
+
+		test("derives summary and Built-in Tool Names from the real tool registry, including kill and codemode", () => {
+			const output = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				printHelp();
+				const help = output.mock.calls.map(([text]) => String(text)).join("\n");
+				const firstLine = help.split("\n")[0] ?? "";
+				const expectedDefaults = defaultToolNamesFor(false);
+				assert.ok(expectedDefaults.includes("kill"), "kill must be a default built-in tool");
+				assert.match(firstLine, new RegExp(`with ${expectedDefaults.join(", ")} tools`));
+
+				const section = help.split("Built-in Tool Names:")[1] ?? "";
+				assert.notEqual(section, "", "help must include Built-in Tool Names section");
+				const listedNames = [...section.matchAll(/^ {2}([a-z_]+)\s+- /gmu)].map((match) => match[1]!);
+				const expectedBuiltinHelpTools = [...new Set([...allToolNames, ...defaultToolSelectionFor(false)])];
+				assert.ok(expectedBuiltinHelpTools.includes("kill"));
+				assert.ok(expectedBuiltinHelpTools.includes("codemode"));
+				assert.deepEqual([...listedNames].sort(), [...expectedBuiltinHelpTools].sort());
+				assert.equal(listedNames.length, new Set(listedNames).size, "Built-in Tool Names must have no duplicates");
 			} finally {
 				output.mockRestore();
 			}

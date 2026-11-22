@@ -1,6 +1,11 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
-import { Type } from "@bastani/atomic-ai";
+import {
+  CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+  CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+  CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+  createContactSupervisorToolParameters,
+} from "./tool-metadata.js";
 import type { IntercomClient } from "./broker/client.js";
 import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
@@ -54,34 +59,10 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
       detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && contactSupervisorCallMayDetach(params),
       detachmentRequiresReady: true,
       label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. need_decision and interview_request ask the supervisor over Intercom and wait for its reply, which this same child continues with; if the result instead ends the child with a fresh-subagent handoff, follow it. One blocking supervisor request is allowed per child and may coexist with ordinary intercom asks. progress_update is fire-and-forget. Do not use for routine completion handoffs.",
-      promptSnippet: "Subagent-only: ask the supervisor for decisions or structured interviews and continue with its answers, or send meaningful plan-changing progress updates.",
-      promptGuidelines: [
-        "Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision. The supervisor's reply comes back to this child; follow the actual tool result.",
-        "Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers. The answers come back to this child; follow the actual tool result.",
-        "Use contact_supervisor with reason='progress_update' only for meaningful progress or unexpected discoveries that change the plan.",
-        "Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
-      ],
-      parameters: Type.Object({
-        reason: Type.String({
-          enum: ["need_decision", "progress_update", "interview_request"],
-          description: "Contact reason: 'need_decision' and 'interview_request' wait for the supervisor's reply; 'progress_update' sends a non-blocking update",
-        }),
-        message: Type.Optional(Type.String({
-          description: "Decision request, optional interview note, or meaningful progress update for the supervisor",
-        })),
-        interview: Type.Optional(Type.Object({
-          title: Type.Optional(Type.String()),
-          description: Type.Optional(Type.String()),
-          questions: Type.Array(Type.Object({
-            id: Type.String(),
-            type: Type.String({ description: "Question type: single, multi, text, image, or info" }),
-            question: Type.String(),
-            options: Type.Optional(Type.Array(Type.Unknown())),
-            context: Type.Optional(Type.String()),
-          })),
-        }, { description: "Structured interview request for reason='interview_request'" })),
-      }),
+      description: CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+      promptSnippet: CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+      promptGuidelines: CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+      parameters: createContactSupervisorToolParameters(),
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         const reason = params.reason as ContactSupervisorReason;
         if (reason !== "need_decision" && reason !== "progress_update" && reason !== "interview_request") {

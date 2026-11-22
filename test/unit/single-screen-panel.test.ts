@@ -332,7 +332,9 @@ test("Enter on a subagent's shell row opens that shell's output, and never shows
 	assert.deepEqual(bridge.requests, []);
 	assert.equal(mounts.length, 2, mounts.map((lines) => lines.join("\n")).join("\n----\n"));
 	// The shell's output page, whose ← goes back to the agent panel.
-	assert.match(mounts[1]![0] ?? "", /^Transcript · bash/, mounts[1]!.join("\n"));
+	assert.match(mounts[1]![0] ?? "", /^▔+$/, mounts[1]!.join("\n"));
+	assert.match(mounts[1]![1] ?? "", /^ {2}npm run watch$/, mounts[1]!.join("\n"));
+	assert.match(mounts[1]![2] ?? "", /^ {2}shell$/, mounts[1]!.join("\n"));
 	assert.ok(
 		mounts[1]!.some((line) => line.replace(/_pi:\/?h(:k:[^←\s]*)?/g, "").includes("← agents")),
 		mounts[1]!.join("\n"),
@@ -571,7 +573,9 @@ test("the waited-shell key of a shown subagent that waits opens /tasks at the ne
 	});
 	await openWaitedShellOf(session, ui, "a1");
 	assert.equal(mounts.length, 1);
-	assert.match(page[0] ?? "", /^Transcript · bash/, page.join("\n"));
+	assert.match(page[0] ?? "", /^▔+$/, page.join("\n"));
+	assert.match(page[1] ?? "", /^ {2}npm test$/, page.join("\n"));
+	assert.match(page[2] ?? "", /^ {2}shell$/, page.join("\n"));
 	assert.ok(
 		page.some((line) => line.includes("no output kept for s2")),
 		page.join("\n"),

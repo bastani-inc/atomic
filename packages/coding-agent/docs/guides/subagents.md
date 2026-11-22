@@ -5,20 +5,21 @@ description: "What subagents are, when delegation helps, and where the full suba
 
 # Subagents
 
-A subagent is a second agent session your main session launches for a focused piece of work. It has its own context window, so a noisy investigation does not crowd out your conversation.
+This short overview introduces subagents and when to delegate work. A subagent is a separate agent session that your main session launches for a focused task. It runs in its own context window, so a long search or debugging trace does not crowd out your main conversation.
 
 ## When to use one
 
-Delegate when the work is bounded and separable: searching an unfamiliar area of the codebase, reproducing a failure, reviewing a change with fresh eyes, or several independent tasks that can run at once. Keep work in your own session when it is small, or when it depends on context the subagent would have to rediscover.
+Delegate bounded, independent work. Good fits include searching an unfamiliar area of the codebase, reproducing a failure, reviewing a diff with fresh context, or running several independent tasks at once. Keep work in your main session when it is small or relies on context the subagent would need to rediscover.
 
 ## What you get
 
-- Single or parallel runs, with results returned to your session.
-- Fresh or forked context, so a delegate can start clean or inherit what you know.
-- Background execution — launch, keep chatting, and collect results later.
+- Single or parallel runs that return results to your session.
+- Fresh or forked context, so a child can start clean or reuse the parent's conversation.
+- Background execution, so you can keep chatting while children run and collect results as they finish.
 
 ## Next steps
 
-- [Subagents](/subagents) — the full guide, including builtin agents and execution modes.
-- [Authoring](/subagents/authoring) — define your own agents.
-- [Background and parallel work](/background-tasks) — inspect, wait on, and stop delegated work.
+- [Subagents](/subagents) is the full guide to bundled agents, run control, worktrees, and execution modes.
+- [Custom subagents](/subagents/authoring) explains how to define and scope your own agents.
+- [Background and parallel work](/background-tasks) covers inspecting, waiting on, messaging, and stopping delegated tasks.
+- [Orchestration](/orchestration) shows how to combine codemode scripts with subagents for multi-step work.

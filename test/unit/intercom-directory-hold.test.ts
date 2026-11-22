@@ -44,7 +44,13 @@ function heldDirectory(): { readonly path: string; readonly hold: HeldDirectory 
 	return { path, hold };
 }
 
-for (const reported of ["its creation time", "its change time as its creation time"] as const)
+// Where the system cannot report a creation time (statx refused, or an old kernel), Node and Bun report the change time
+// in its place. Windows always reports it, and its change time moves with every file written in the directory.
+const reports =
+	process.platform === "win32"
+		? (["its creation time"] as const)
+		: (["its creation time", "its change time as its creation time"] as const);
+for (const reported of reports)
 	test(`a directory files are written in and whose mode changes is still held, where the system reports ${reported}`, () => {
 		noCreationTime.on = reported !== "its creation time";
 		const { path, hold } = heldDirectory();

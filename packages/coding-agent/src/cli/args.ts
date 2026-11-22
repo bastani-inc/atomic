@@ -22,6 +22,11 @@ import { validateStoragePrefix } from "../core/storage/prefix.js";
 import type { StorageFlagArgument } from "../core/storage/process-selection.js";
 import { isValidThinkingLevel, VALID_THINKING_LEVELS } from "../core/thinking-levels.ts";
 import { getToolListError } from "../core/tool-list-entries.js";
+import {
+	BUILTIN_HELP_TOOL_NAMES,
+	type BuiltinHelpToolName,
+	defaultToolNamesFor,
+} from "../core/tools/builtin-tool-names.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -324,6 +329,28 @@ export function parseArgs(args: string[]): Args {
 	return result;
 }
 
+const BUILTIN_TOOL_HELP_DESCRIPTIONS: Record<BuiltinHelpToolName, string> = {
+	read: "Read path selectors (files, dirs, archives, URLs)",
+	bash: "Execute shell commands",
+	powershell: "Execute PowerShell commands on Windows",
+	kill: "Stop an owned background shell task by task ID (default)",
+	edit: "Edit files with find/replace",
+	write: "Create or overwrite writable path selectors",
+	find: "Find filesystem paths by glob pattern (default)",
+	search: "Search file contents with regex (default)",
+	ask_user_question: "Ask structured questions in the TUI (default)",
+	todo: "Manage file-based todos (default)",
+	codemode: "Run JavaScript to call tools and combine results in one step (default)",
+	ls: "Legacy directory listing helper (read-only, off by default)",
+};
+
+function formatBuiltinToolHelpLines(): string {
+	const width = Math.max(...BUILTIN_HELP_TOOL_NAMES.map((name) => name.length));
+	return BUILTIN_HELP_TOOL_NAMES.map(
+		(name) => `  ${name.padEnd(width)} - ${BUILTIN_TOOL_HELP_DESCRIPTIONS[name]}`,
+	).join("\n");
+}
+
 export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 	const extensionFlagsText =
 		extensionFlags && extensionFlags.length > 0
@@ -335,7 +362,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write, find, search, ask_user_question, todo tools
+	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with ${defaultToolNamesFor(false).join(", ")} tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [--] [@files...] [messages...]
@@ -353,6 +380,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} team <command>            Join or leave a team database (shared Intercom, private sessions)
   ${APP_NAME} intercom <command>        Show or restart this machine's Intercom broker
   ${APP_NAME} blueprint cache-key       Print cache keys and paths for a runner's cache action (actions/cache)
+  ${APP_NAME} blueprint prebuild        Prebuild a repository into an idle worktree for later resume
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/team/intercom/blueprint
 
 ${chalk.bold("Options:")}
@@ -544,15 +572,6 @@ ${chalk.bold("Environment Variables:")}
   ATOMIC_TEAM_PREFIX               - Team table prefix for ATOMIC_PROFILE=ci
 
 ${chalk.bold("Built-in Tool Names:")}
-  read              - Read path selectors (files, dirs, archives, URLs)
-  bash              - Execute shell commands
-  powershell        - Execute PowerShell commands on Windows
-  edit              - Edit files with find/replace
-  write             - Create or overwrite writable path selectors
-  find              - Find filesystem paths by glob pattern (default)
-  search            - Search file contents with regex (default)
-  ask_user_question - Ask structured questions in the TUI (default)
-  todo              - Manage file-based todos (default)
-  ls                - Legacy directory listing helper (read-only, off by default)
+${formatBuiltinToolHelpLines()}
 `);
 }
