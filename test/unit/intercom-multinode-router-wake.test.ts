@@ -3169,6 +3169,114 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal((await here.state.knownSessions.owners!.ownerOf(id))?.token, claim.grant.token);
 	});
 
+	test("a session that keeps its id with its hand-over's second unanswered claim still owns it when the first registration's write chose a fresh id meanwhile and the hold ends (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const id = live.info.id;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const identity = deliveryTargetIdentity(fresh);
+		// Handed the id again once (its registration took a fresh id; its claim's late write keeps the hold's id owned), the
+		// session is not handed it a third time.
+		const earlier = await claimLandingLate(here, id, returnAddress, identity, here.handoffs[0]!.handoff);
+		const rehanded = registerUnanswered(here, earlier.claim, returnAddress, true);
+		await rehanded.registered;
+		await earlier.land();
+		await untilMovedBack(here, rehanded.target);
+		const handoff = here.handoffs.at(-1)!.handoff;
+		const knownSessions = here.state.knownSessions;
+		const reclaim = knownSessions.reclaim!.bind(knownSessions);
+		const bind = knownSessions.bind.bind(knownSessions);
+		// Each registration's binding write is answered only when the test says so.
+		const answers = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+		vi.spyOn(knownSessions, "reclaim")
+			.mockImplementationOnce(async (request) => {
+				const reclaimed = await reclaim(request);
+				await answers[0]!.promise;
+				return reclaimed;
+			})
+			.mockImplementationOnce(async (request) => {
+				const reclaimed = await reclaim(request);
+				await answers[1]!.promise;
+				return reclaimed;
+			});
+		// A registration presents the hand-over; its claim's write never lands, so its own write chooses a fresh id.
+		const late = await claimLandingLate(here, id, returnAddress, identity, handoff);
+		const first = registerUnanswered(here, late.claim, returnAddress);
+		await vi.advanceTimersByTimeAsync(1_000);
+		// Another presents it again: its claim's write lands, its answer does not, and its own write keeps the id.
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await bind(...args);
+			return new Promise<never>(() => {});
+		});
+		const pending = here.router.claimSessionId(id, returnAddress, identity, handoff);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claimed = await pending;
+		assert.equal(claimed.status, "unanswered", JSON.stringify(claimed));
+		const unanswered = (claimed as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered;
+		const second = registerUnanswered(here, unanswered, returnAddress);
+		await vi.advanceTimersByTimeAsync(500);
+		// The first registration's write is answered: fresh. The hold then ends while the second's answer is on its way.
+		answers[0]!.resolve();
+		await first.registered;
+		// Past the hold (handed again at most a second before the first claim), within the second's presence wait.
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + 500 - (2 * SESSION_ID_CLAIM_BOUND_MS + 1_500));
+		answers[1]!.resolve();
+		await second.registered;
+
+		assert.deepEqual(second.settles, [true]);
+		assert.equal(
+			(await knownSessions.owners!.ownerOf(id))?.token,
+			unanswered.token,
+			"the second registration owns the id",
+		);
+	});
+
+	test("a session that takes its id with its hand-over again keeps it when the first registration's claim, which gave the id up, writes it late (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const id = live.info.id;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const identity = deliveryTargetIdentity(fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		const knownSessions = here.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		const landing = Promise.withResolvers<void>();
+		const written = Promise.withResolvers<void>();
+		vi.spyOn(knownSessions, "bind")
+			.mockImplementationOnce(async (...args) => {
+				await landing.promise;
+				try {
+					return await bind(...args);
+				} finally {
+					written.resolve();
+				}
+			})
+			// The second claim's write is answered a turn of the event loop after it is sent.
+			.mockImplementationOnce(async (...args) => {
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				return bind(...args);
+			});
+		const first = here.router.claimSessionId(id, returnAddress, identity, handoff);
+		vi.advanceTimersByTime(SESSION_ID_CLAIM_BOUND_MS);
+		const claimed = await first;
+		assert.equal(claimed.status, "unanswered", JSON.stringify(claimed));
+		const unanswered = (claimed as Extract<SessionIdClaim, { status: "unanswered" }>).unanswered;
+		// In the same turn, its connection closes (the id is given back) and the session presents the hand-over again.
+		void here.router.releaseOwner({ intercomSessionId: id, token: unanswered.token }, unanswered.claim);
+		const again = await here.router.claimSessionId(id, returnAddress, identity, handoff);
+		assert.ok(again.status === "granted", JSON.stringify(again));
+		// The first claim's write lands before the second registration is registered here.
+		landing.resolve();
+		await written.promise;
+		for (let microtask = 0; microtask < 200; microtask++) await Promise.resolve();
+
+		assert.equal(
+			(await knownSessions.owners!.ownerOf(id))?.token,
+			again.grant.token,
+			"the id stays the second claim's",
+		);
+	});
+
 	test("a session handed its id again gets it back once the hold ends, though its unanswered claim's late write bound it with the hold's token (#5607)", async () => {
 		const { here, live, fresh } = await awaitingWhileStopped();
 		await untilMovedBack(here, fresh);
