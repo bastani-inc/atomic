@@ -10,7 +10,8 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { type BatchWrite, statementBatch } from "../storage/statement-sequence.js";
+import { statementBatch } from "../storage/statement-batches.js";
+import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 

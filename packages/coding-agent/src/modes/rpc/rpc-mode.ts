@@ -19,6 +19,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
+import { prewarmModelApi } from "../../core/model-api-prewarm.ts";
 import { flushRawStdout, rawStdoutWriteFailed, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { QueuedDeliveryRelay } from "../../core/queued-message-delivery.ts";
 import { onBlueprintBuildFinished, onBlueprintBuildWaiting } from "../../core/resume/blueprint/barrier.ts";
@@ -180,6 +181,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 				markLifecycleTiming("engine-resources-ready");
 				markEventLoopStartupComplete();
 				engineLiveness.resourcesReady();
+				setImmediate(() => {
+					void prewarmModelApi(sessionBinding.currentSession.model);
+				});
 			} catch (error) {
 				const resourceError = error instanceof Error ? error : new Error(String(error));
 				engineLiveness.resourcesFailed(resourceError);
@@ -407,6 +411,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		markLifecycleTiming("engine-resources-ready");
 		markEventLoopStartupComplete();
 		engineLiveness.resourcesReady();
+		setImmediate(() => {
+			void prewarmModelApi(sessionBinding.currentSession.model);
+		});
+	} else {
+		setImmediate(() => {
+			void prewarmModelApi(sessionBinding.currentSession.model);
+		});
 	}
 	inputReady = true;
 	checkShutdownRequested();
