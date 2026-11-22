@@ -16,11 +16,22 @@ function defaultWorkerUrl(): URL {
  * (`node --input-type=module --eval ...`), so there this package's own worker is imported from evaluated source. A
  * `workerUrl` given in the options starts as given.
  */
+const ENGINE_WORKER_HEAP_MB_SYMBOL = Symbol.for("atomic.engine-worker-heap-mb.v1");
+
+function inheritedWorkerResourceLimits(): { maxOldGenerationSizeMb: number } | undefined {
+	const heapMb = (globalThis as Record<symbol, unknown>)[ENGINE_WORKER_HEAP_MB_SYMBOL];
+	return typeof heapMb === "number" && Number.isSafeInteger(heapMb) && heapMb > 0
+		? { maxOldGenerationSizeMb: heapMb }
+		: undefined;
+}
+
 function startWorker(workerUrl: string | URL | undefined, workerData: WorkerData): Worker {
-	if (workerUrl !== undefined) return new Worker(workerUrl, { workerData });
+	const resourceLimits = inheritedWorkerResourceLimits();
+	const options = resourceLimits ? { workerData, resourceLimits } : { workerData };
+	if (workerUrl !== undefined) return new Worker(workerUrl, options);
 	const url = defaultWorkerUrl();
-	if (!startedWithInputType()) return new Worker(url, { workerData });
-	return new Worker(`import(${JSON.stringify(url.href)});`, { eval: true, workerData });
+	if (!startedWithInputType()) return new Worker(url, options);
+	return new Worker(`import(${JSON.stringify(url.href)});`, { eval: true, ...options });
 }
 
 /**
