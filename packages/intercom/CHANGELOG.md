@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - With multi-node routing, a session answering a sender outside its groups can no longer send a fourth answer after that sender's latest message when the shared database failed to record that message as delivered and it was handed to the session again. Answers the session sent since the message first reached it now count toward that message's 3.
+- On Windows, an Intercom broker no longer waits for good to start when an earlier broker stopped while it was starting and Windows gave that broker's process ID to another process. Brokers now record when their process was created next to its ID, so a later process with the same ID is not taken for the earlier broker. A broker of an earlier version still goes by the process ID alone.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

@@ -440,8 +440,9 @@ describe("where the private index may not go (#4748)", () => {
 		let invocations = 0;
 		const executable = sandbox.executable;
 		const restore = setWorktreeSnapshotGit(async () => {
-			// After locating the checkout and its index: the working copy of the private index exists by then.
-			if (++invocations === 5) controller.abort(new Error("cancelled by the user"));
+			// The third, `update-index`, after locating the checkout and listing its files: the working copy of the
+			// private index exists by then.
+			if (++invocations === 3) controller.abort(new Error("cancelled by the user"));
 			return executable;
 		});
 		try {
