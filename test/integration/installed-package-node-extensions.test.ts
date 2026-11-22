@@ -722,13 +722,8 @@ console.log(JSON.stringify({ ...outcome, stderr: written.join("") }));
 					.filter(
 						(line) => line !== "" && !line.includes("ExperimentalWarning") && !line.includes("--trace-warnings"),
 					);
-				// The early editor may have painted its empty frame before the session started; nothing else is shown.
-				assert.deepEqual(
-					lines.filter((line) => !/^(?:─+|❯)$/.test(line)),
-					[`Error: ${expected}`],
-					`${trust}:\n${program.screen()}`,
-				);
-				assert.equal(lines.at(-1), `Error: ${expected}`, trust);
+				// The message alone: nothing of the early editor, which may have shown before the session started, stays.
+				assert.deepEqual(lines, [`Error: ${expected}`], `${trust}:\n${program.screen()}`);
 			} finally {
 				program.kill();
 			}
