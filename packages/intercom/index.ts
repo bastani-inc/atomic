@@ -724,7 +724,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "model_select", event, ctx));
 	});
 	pi.registerShortcut("alt+m", {
-		description: "Open session intercom",
+		description: "Open session intercom overlay",
 		handler: async (ctx) => {
 			const handle = await loadHeavy(ctx);
 			handle.assertCurrent();

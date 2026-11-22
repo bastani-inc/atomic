@@ -832,7 +832,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 		}
 
 		pi.registerShortcut("alt+m", {
-			description: "Open session intercom",
+			description: "Open session intercom overlay",
 			handler: (ctx) => controller.runShortcut("alt+m", ctx),
 		});
 
