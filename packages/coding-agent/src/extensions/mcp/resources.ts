@@ -22,6 +22,7 @@ import type {
 	Resource,
 	ResourceTemplate,
 } from "./client/index.js";
+import { redactOAuthErrorText } from "./client/oauth/redact.js";
 import type { McpExposure } from "./config.ts";
 import {
 	limitMcpContent,
@@ -175,7 +176,7 @@ function stringArgument(params: unknown, key: string): string | undefined {
 }
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return redactOAuthErrorText(error instanceof Error ? error.message : String(error));
 }
 
 async function jsonResult(

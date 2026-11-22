@@ -39,6 +39,8 @@ const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
 const EXIT_HEADROOM_MS = 3_000;
 /** Longer than a killed process takes to be gone, however loaded the machine. */
 const PROCESS_GONE_MS = 5_000;
+/** The status of a process whose terminal is gone, with nothing to prove its console was closed (#6104). */
+const TERMINAL_LOST_EXIT_CODE = 129;
 
 interface ShutdownRecord {
 	readonly pid: number;
@@ -47,9 +49,18 @@ interface ShutdownRecord {
 	readonly finished: boolean;
 }
 
+/** The engine heard Windows' notice that its console was closed. */
+interface EngineNotice {
+	readonly pid: number;
+	/** Whether the extension's shutdown handler had already finished then. */
+	readonly afterHandler: boolean;
+}
+
 interface ClosedSession {
 	readonly run: ClosedConsoleRun;
 	readonly calls: readonly ShutdownRecord[];
+	/** Every close notice Windows gave the engine before it exited. */
+	readonly engineNotices: readonly EngineNotice[];
 	readonly records: readonly LogRecord[];
 	readonly enginePid: number;
 	/** How many engine processes the session started: a replacement for a lost engine would be a second. */
@@ -70,6 +81,7 @@ async function closeSession(handlerWorkMs = HANDLER_WORK_MS): Promise<ClosedSess
 	const extension = join(root, "shutdown.ts");
 	const started = join(root, "started");
 	const shutdown = join(root, "shutdown.jsonl");
+	const notices = join(root, "notices.jsonl");
 	const eventLoopLog = join(root, "event-loop.jsonl");
 	try {
 		prepareAgentDir(agentDir, "http://127.0.0.1:9");
@@ -78,12 +90,18 @@ async function closeSession(handlerWorkMs = HANDLER_WORK_MS): Promise<ClosedSess
 		writeFileSync(
 			extension,
 			`import { appendFileSync, writeFileSync } from "node:fs";
+let handlerFinished = false;
+// Windows reports a closed console to a process as SIGHUP; Atomic's engine listens for it too.
+process.on("SIGHUP", () =>
+	appendFileSync(${JSON.stringify(notices)}, JSON.stringify({ pid: process.pid, afterHandler: handlerFinished }) + "\\n"),
+);
 export default (pi) => {
 	pi.on("session_start", () => writeFileSync(${JSON.stringify(started)}, String(process.pid)));
 	pi.on("session_shutdown", async (event) => {
 		const call = { pid: process.pid, reason: event.reason, fromSignal: event.fromSignal };
 		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: false }) + "\\n");
 		await new Promise((resolve) => setTimeout(resolve, ${handlerWorkMs}));
+		handlerFinished = true;
 		appendFileSync(${JSON.stringify(shutdown)}, JSON.stringify({ ...call, finished: true }) + "\\n");
 	});
 };`,
@@ -135,8 +153,22 @@ export default (pi) => {
 					.filter((line) => line.length > 0)
 					.map((line) => JSON.parse(line) as ShutdownRecord)
 			: [];
+		const engineNotices = fileExistsSync(notices)
+			? readTextSync(notices, "utf8")
+					.split("\n")
+					.filter((line) => line.length > 0)
+					.map((line) => JSON.parse(line) as EngineNotice)
+			: [];
 		const enginesStarted = records.filter((record) => record.type === "start" && record.role === "engine").length;
-		return { run, calls, records, enginePid: engine.pid, enginesStarted, engineGone: run.readyProcessExited };
+		return {
+			run,
+			calls,
+			engineNotices,
+			records,
+			enginePid: engine.pid,
+			enginesStarted,
+			engineGone: run.readyProcessExited,
+		};
 	} finally {
 		await removeTempRootReleasingBroker(root, agentDir);
 	}
@@ -185,10 +217,25 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 				],
 				`the handler ran once, in the engine, told that the session was ended for it\n${closed.run.screen}`,
 			);
-			assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
-			// The handler finished, so Atomic exits within its bound; on a starved runner Windows can end it first, with the
-			// same status, which a user cannot tell apart.
-			console.info(`After its console closed, ${consoleCloseEnding(closed)} ended Atomic.`);
+			// Windows tells the processes on a closed console one at a time, the engine first. Atomic finds its console gone
+			// at once and stops the engine; a handler as quick as this one can let the engine exit before Windows has told
+			// it, and in the runs where that happened Windows then told neither process: Atomic has nothing that proves a
+			// close and exits as a lost terminal does. Whenever the engine heard the close, Atomic must exit with the
+			// console-close status.
+			if (closed.run.exitCode === TERMINAL_LOST_EXIT_CODE) {
+				assert.deepEqual(
+					closed.engineNotices,
+					[],
+					"Atomic exited as a lost terminal although Windows had told the engine its console was closed",
+				);
+				assertExitedWithinBound(closed);
+				console.info("After its console closed, Windows told no process; Atomic ended itself as a lost terminal.");
+			} else {
+				assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
+				// The handler finished, so Atomic exits within its bound; on a starved runner Windows can end it first, with
+				// the same status, which a user cannot tell apart.
+				console.info(`After its console closed, ${consoleCloseEnding(closed)} ended Atomic.`);
+			}
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
 			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 			assert.ok(delayOf(closed.records, "engine", "shutdown"), "the engine wrote its shutdown record");

@@ -470,7 +470,7 @@ The `key` field accepts shell commands, environment interpolation, escapes, and 
   { "type": "api_key", "key": "public" }
   ```
 
-Legacy bare uppercase variable names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is present in the environment; otherwise they remain literals. The same syntax applies to `apiKey` and `headers` in `models.json`; see [Custom models](/models). OAuth tokens from `/login` are also stored in `auth.json`.
+Legacy bare uppercase variable names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is present in the environment; otherwise they remain literals. When resolution fails, Atomic omits `!command` text; braced `${NAME}` references always report the unset variable name, while unbraced `$NAME` references report the name only when it reads like a POSIX environment variable name so literal secrets containing `$` do not leak fragments. The same syntax applies to `apiKey` and `headers` in `models.json`; see [Custom models](/models). OAuth tokens from `/login` are also stored in `auth.json`.
 
 ## Provider specific config
 

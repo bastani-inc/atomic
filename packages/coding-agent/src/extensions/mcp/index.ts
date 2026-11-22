@@ -54,6 +54,11 @@ import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
 import type { Tool as McpTool } from "./client/index.js";
 import {
+	redactAuthorizationUrlForDisplay,
+	redactOAuthErrorText,
+	redactUrlForTransportDisplay,
+} from "./client/oauth/redact.js";
+import {
 	getMcpToolExposure,
 	type LoadedMcpConfig,
 	loadMcpConfigAsync,
@@ -148,7 +153,7 @@ const EXPOSURE_DESCRIPTIONS: Record<Exclude<McpExposure, "hidden">, string> = {
 };
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return redactOAuthErrorText(error instanceof Error ? error.message : String(error));
 }
 
 function firstLine(text: string): string {
@@ -430,8 +435,8 @@ function attentionRank(server: McpServer): number {
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
-	if ("url" in config) return config.url;
-	return [config.command, ...(config.args ?? [])].join(" ");
+	if ("url" in config) return redactUrlForTransportDisplay(config.url);
+	return redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 
 const MCP_USAGE = "Usage: /mcp, /mcp login [server], /mcp logout [server], /mcp reconnect [server]";
@@ -1473,7 +1478,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				server,
 				{
 					showAuthorizationUrl: (url) => {
-						authorizationUrl = url.href;
+						authorizationUrl = redactAuthorizationUrlForDisplay(url);
 						openUrl(url.href);
 					},
 					promptForRedirectUrl: async (signal) => {
@@ -1636,7 +1641,10 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			} else {
 				failure = await signIn(server, {
 					showAuthorizationUrl: (url) => {
-						ctx.ui.notify(`Sign in to MCP server "${name}" in your browser:\n${url.href}`, "info");
+						ctx.ui.notify(
+							`Sign in to MCP server "${name}" in your browser:\n${redactAuthorizationUrlForDisplay(url)}`,
+							"info",
+						);
 						openUrl(url.href);
 					},
 					promptForRedirectUrl: (signal) =>

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 // `lstatSync`, `chmodSync` and `symlinkSync` have no equivalent in test/helpers/runtime.ts: the socket directory's
 // owner, mode and kind are what these tests pin.
 import { randomUUID } from "node:crypto";
-import { chmodSync, chownSync, existsSync, lstatSync, symlinkSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lstatSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import net from "node:net";
 import { basename, dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -58,8 +58,14 @@ let previousRuntimeDir: string | undefined;
 /** The base the per-user socket directory is created in, standing in for `$XDG_RUNTIME_DIR`. */
 let runtimeDir: string;
 
+/**
+ * A directory of this test's. On macOS the system temp directory lies so deep under /var/folders that a per-user socket
+ * directory made in it is past the socket path limit already: there these directories go under /tmp, so the only paths
+ * past a limit are the ones a test makes long on purpose.
+ */
 function tempDir(prefix: string): string {
-	const dir = makeTempDirectory(prefix);
+	const dir =
+		process.platform === "darwin" ? realpathSync(mkdtempSync(join("/tmp", prefix))) : makeTempDirectory(prefix);
 	tempDirs.push(dir);
 	return dir;
 }
