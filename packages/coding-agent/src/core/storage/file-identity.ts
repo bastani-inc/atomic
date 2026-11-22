@@ -1471,11 +1471,14 @@ function* maybeDisplaceConflictingExactCandidateSteps(
 		return { ownerPath: candidate };
 	}
 
-	const pathMatchesCaller =
-		context !== undefined &&
-		(pathsEqual(candidate, context.path) ||
-			(context.canonicalPath !== undefined && pathsEqual(candidate, context.canonicalPath)));
-	let isSelf: boolean | undefined = pathMatchesCaller ? true : undefined;
+	const directPathMatchesCaller = context !== undefined && pathsEqual(candidate, context.path);
+	const cachedCanonicalMatchesCaller =
+		context !== undefined && context.canonicalPath !== undefined && pathsEqual(candidate, context.canonicalPath);
+	const pathMatchesCaller = directPathMatchesCaller || cachedCanonicalMatchesCaller;
+	// Only trust cached canonicalPath as proving isSelf when freshly resolved in this call; a warm cached
+	// symlink may have been repointed to a sibling, so leave isSelf undefined for live sameDirectorySteps verification.
+	let isSelf: boolean | undefined =
+		directPathMatchesCaller || (context?.fresh && cachedCanonicalMatchesCaller) ? true : undefined;
 	if (!pathMatchesCaller && context?.onlySelf) {
 		isSelf = yield* sameDirectorySteps(candidate, context.path);
 	}
@@ -1490,7 +1493,7 @@ function* maybeDisplaceConflictingExactCandidateSteps(
 			if (context.verifiedCache !== undefined && liveStamp !== undefined) {
 				context.verifiedCache.verifiedDecision = { id: context.decisionId, stamp: liveStamp };
 			}
-			return { ownerPath: candidate, isSelf: true };
+			return { ownerPath: candidate, isSelf };
 		}
 		const cached = context.verifiedCache?.verifiedDecision;
 		if (
@@ -1499,7 +1502,7 @@ function* maybeDisplaceConflictingExactCandidateSteps(
 			liveStamp !== undefined &&
 			sameDecisionStamp(cached.stamp, liveStamp)
 		) {
-			return { ownerPath: candidate, isSelf: true };
+			return { ownerPath: candidate, isSelf };
 		}
 	}
 

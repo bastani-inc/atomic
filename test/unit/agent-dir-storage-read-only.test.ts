@@ -1165,6 +1165,22 @@ test("stale cached decision IDs never reject a live refreshed owner, and symlink
 		fsFaults.recordedReads.filter((p) => p === ownerDecisionPath),
 		[],
 	);
+
+	// 3. Repointing a cached symlink from a1 to sibling a2 on warm storagePathBaseDir must isolate a2 (never leak a1's target).
+	fsFaults.unreadableFiles.clear();
+	const repointParent = join(root, "repoint-sym-parent");
+	const repointA1 = join(repointParent, "a1");
+	const repointA2 = join(repointParent, "a2");
+	const repointLink = join(root, "repoint-sym-link");
+	mkdirSync(repointA1, { recursive: true });
+	mkdirSync(repointA2, { recursive: true });
+	writeFileSync(join(repointParent, "history.sqlite"), "a1-private");
+	symlinkSync(repointA1, repointLink, "junction");
+	resetStorageHomeCacheForTests();
+	assert.equal(storagePathBaseDir("history.sqlite", repointLink, settings), repointParent);
+	rmSync(repointLink);
+	symlinkSync(repointA2, repointLink, "junction");
+	assert.equal(storagePathBaseDir("history.sqlite", repointLink, settings), repointLink);
 });
 
 test("in-place decision file replacement, zero-inode shares, and homeIdentity-false races keep ownership even beside a backup clone (#5242)", () => {
