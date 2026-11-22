@@ -121,6 +121,7 @@ export {
 	getChangelogPath,
 	getEntriesForVersion,
 	getNewEntries,
+	needsChangelogPreload,
 	normalizeChangelogLinks,
 	parseChangelog,
 	parseChangelogAsync,
