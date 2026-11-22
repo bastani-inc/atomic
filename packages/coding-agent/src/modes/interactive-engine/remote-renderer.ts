@@ -559,7 +559,7 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 
 	protected frameIdentity(): string {
 		// Not the timestamp: a message shown live and the same message restored from the session can differ in it.
-		this.contentDigest ??= createHash("sha1")
+		this.contentDigest ??= createHash("sha256")
 			.update(JSON.stringify([this.message.content, this.message.details]) ?? "")
 			.digest("base64");
 		const stopped = this.reopenedStopName;

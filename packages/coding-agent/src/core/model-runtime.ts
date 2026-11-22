@@ -1015,7 +1015,7 @@ export class ModelRuntime implements Models {
 	private readModelsFileTokenSync(): string {
 		if (!this.modelsPath) return "none";
 		try {
-			return createHash("sha1")
+			return createHash("sha256")
 				.update(readFileSync(normalizePath(this.modelsPath)))
 				.digest("hex");
 		} catch (error) {
@@ -1027,7 +1027,7 @@ export class ModelRuntime implements Models {
 	private async readModelsFileToken(): Promise<string> {
 		if (!this.modelsPath) return "none";
 		try {
-			return createHash("sha1")
+			return createHash("sha256")
 				.update(await readFile(normalizePath(this.modelsPath)))
 				.digest("hex");
 		} catch (error) {

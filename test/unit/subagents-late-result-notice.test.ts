@@ -264,7 +264,7 @@ test("a late result notice's admission key is the same for the same results, and
 		result: { content: [{ type: "text" as const, text }], details: undefined },
 		isError,
 	});
-	const issuedBy = (entryId: string) => new Map([["functions.bash:0", entryId]]);
+	const issuedBy = (entryId: string) => [entryId];
 	const key = lateToolResultNoticeKey([late("exit 0")], issuedBy("entry-1"));
 	// Saved again, after a restart, it adds nothing.
 	assert.equal(lateToolResultNoticeKey([late("exit 0")], issuedBy("entry-1")), key);
