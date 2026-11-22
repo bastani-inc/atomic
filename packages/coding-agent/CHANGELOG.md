@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed echoed user messages in the main chat crossing or disappearing when an extension's `input` hook or a slash template rewrites one submission to the same text as another submission already echoed on screen. Each prompt submission now matches its own echoed row directly, while older interactive engines and hosts continue falling back to text matching.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.
