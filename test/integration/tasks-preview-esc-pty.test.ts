@@ -171,22 +171,27 @@ test(
 			await program.waitForScreen(isTasksOpen, WAIT_MS, "/tasks list with 3 finished subagents");
 		};
 
+		const isMainPanelHidden = (screen: string): boolean =>
+			!isViewingBeta(screen) &&
+			screen.includes("/tasks to see subagents") &&
+			!dockLines(screen).some(
+				(line) => line.includes("● main") || line.includes("◯ main") || line.includes("worker"),
+			);
+
 		try {
 			await program.waitForScreen((s) => s.includes("❯"), WAIT_MS, "initial prompt");
 			program.write("LAUNCH_THREE_DONE");
 			await program.waitForScreen((s) => s.includes("❯ LAUNCH_THREE_DONE"), WAIT_MS, "prompt text");
 			program.write(ENTER);
-			await program.waitForScreen((s) => s.includes("ALL_SUBAGENTS_LAUNCHED"), WAIT_MS, "subagents launched");
 
-			// Wait until all 3 subagents finished and the idle agent panel is empty (0 rows -> triggers panelOnView: true).
+			// Wait until all 3 subagents finished and the idle agent panel is hidden
+			// (`/tasks to see subagents` in footer -> 0-row idle panel -> opening any subagent triggers panelOnView: true).
 			await program.waitForScreen(
 				(s) =>
 					server.completed.includes("alpha") &&
 					server.completed.includes("beta") &&
 					server.completed.includes("gamma") &&
-					!dockLines(s).some(
-						(line) => line.includes("● main") || line.includes("◯ main") || line.includes("worker"),
-					),
+					isMainPanelHidden(s),
 				WAIT_MS,
 				"all 3 subagents finished and idle panel hidden",
 			);
@@ -205,20 +210,14 @@ test(
 
 			// 2. Return via Left -> main shown, idle panel hides again, /tasks restores TASK-BETA.
 			program.write(LEFT);
-			await program.waitForScreen(
-				(s) =>
-					s.includes("ALL_SUBAGENTS_LAUNCHED") &&
-					!dockLines(s).some((line) => line.includes("● worker") || line.includes("◯ main")),
-				WAIT_MS,
-				"returned to main and idle panel hidden",
-			);
+			await program.waitForScreen(isMainPanelHidden, WAIT_MS, "returned to main and idle panel hidden");
 			await openTasks();
 			assert.match(selectedRow(program.screen()), /TASK-BETA/, "/tasks keeps TASK-BETA after returning via Left");
 
 			// 3. Dismiss /tasks on main with Esc -> next /tasks resets to top (TASK-GAMMA, matching reference).
 			program.write(ESC);
 			await program.waitForScreen(
-				(s) => !s.includes("↑↓ select") && !dockLines(s).some((line) => line.includes("● worker")),
+				(s) => !s.includes("↑↓ select") && isMainPanelHidden(s),
 				WAIT_MS,
 				"/tasks dismissed on main",
 			);
@@ -250,9 +249,7 @@ test(
 					// Open committed before Esc reached the host: Left returns cleanly, and Esc resets /tasks to top.
 					program.write(LEFT);
 					await program.waitForScreen(
-						(s) =>
-							s.includes("ALL_SUBAGENTS_LAUNCHED") &&
-							!dockLines(s).some((line) => line.includes("● worker") || line.includes("◯ main")),
+						isMainPanelHidden,
 						WAIT_MS,
 						`returned from committed TASK-BETA (delay=${delayMs}ms)`,
 					);
