@@ -727,14 +727,22 @@ function compiledPackage(target: string): void {
 	fs.mkdirSync(target, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(target, "package.json"));
 	fs.mkdirSync(join(target, "scripts"), { recursive: true });
-	for (const script of ["split-dist.mjs", "split-dist-names.mjs"])
+	for (const script of ["split-dist.mjs", "split-dist-names.mjs", "in-place-update-gate.mjs"])
 		fs.copyFileSync(join(packageDir, "scripts", script), join(target, "scripts", script));
 	copyTree(join(packageDir, "in-place-update"), join(target, "in-place-update"));
-	copyTree(dist, join(target, "dist"), (source) => !source.includes(join("dist", "_shared")));
 	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
-	const bundled = Object.keys(
-		(JSON.parse(fs.readFileSync(join(state, "state.json"), "utf8")) as { entries: Record<string, string> }).entries,
-	);
+	const { entries, gateFiles, gatedImporters } = JSON.parse(fs.readFileSync(join(state, "state.json"), "utf8")) as {
+		entries: Record<string, string>;
+		gateFiles: Record<string, string>;
+		gatedImporters: Record<string, string>;
+	};
+	// The split's own files go: its shared files and the files beside its gates (the gates are entries, below).
+	const written = new Set(Object.keys(gateFiles).map((path) => join(dist, path)));
+	copyTree(dist, join(target, "dist"), (source) => !source.includes(join("dist", "_shared")) && !written.has(source));
+	// The compiled files whose imports the split pointed at gated modules' code, as compiled.
+	for (const path of Object.keys(gatedImporters))
+		fs.copyFileSync(join(state, "gated-importers", path), join(target, "dist", path));
+	const bundled = Object.keys(entries);
 	for (const entry of bundled)
 		for (const suffix of [".js", ".js.map"])
 			fs.copyFileSync(join(state, "compiled", `${entry}${suffix}`), join(target, "dist", `${entry}${suffix}`));

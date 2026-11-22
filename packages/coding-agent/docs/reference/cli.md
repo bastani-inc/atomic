@@ -38,7 +38,7 @@ These commands manage Atomic packages, and `atomic update` updates the Atomic CL
 
 After updating the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands) when `atomic` on `PATH` reports the installed version and lists that command. Otherwise it prints a note and leaves the broker alone. A failed broker upgrade prints a warning and keeps exit code `0`.
 
-A session that runs while an update replaces Atomic keeps the code it already loaded and reads remaining modules from disk on demand. If an updated module cannot load beside the running session, Atomic reports `atomic was updated to <version> while this session was running; restart it to keep using <feature>.`, followed by the original error. Restart the session (for example with `atomic --resume`) to use that feature again.
+A session that runs while an update replaces Atomic keeps the code it already loaded and reads remaining modules from disk on demand. If an updated module cannot load beside the running session, Atomic reports `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` Restart the session (for example with `atomic --resume`) to use that feature again.
 
 Two additional rules apply after an in-place update:
 

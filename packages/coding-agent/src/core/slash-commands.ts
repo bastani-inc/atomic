@@ -36,17 +36,18 @@ export interface BuiltinSlashCommand {
 	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 }
 
-/** The terminal and command registry use the same ordered names; descriptions belong to the application. */
+/**
+ * The terminal and command registry use the same ordered names; descriptions belong to the application. A name without
+ * a description here gets none, and never fails this module: a process updated in place can load this module against
+ * the earlier release's list of names it already holds (`test/unit/slash-commands.test.ts` checks that every name of
+ * this release has one).
+ */
 function commandList<const Name extends string>(
 	names: readonly Name[],
 	commands: readonly (BuiltinSlashCommand & { name: NoInfer<Name> })[],
 ): readonly BuiltinSlashCommand[] {
-	const byName = new Map(commands.map((command) => [command.name, command]));
-	return names.map((name) => {
-		const command = byName.get(name);
-		if (!command) throw new Error(`Missing built-in command description: /${name}`);
-		return command;
-	});
+	const byName = new Map<string, BuiltinSlashCommand>(commands.map((command) => [command.name, command]));
+	return names.map((name) => byName.get(name) ?? { name, description: "" });
 }
 
 export const BUILTIN_SLASH_COMMANDS = commandList(CORE_COMMAND_NAMES, [
