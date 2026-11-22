@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- With multi-node routing on a shared or pooled database, messages from one sender to the same recipient now stay in send order across local deliveries, cross-node deliveries, mixed replies and plain sends, reconnects, and broker startup, without serializing independent database lookups or blocking sends to other recipients.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added
