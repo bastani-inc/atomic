@@ -5,9 +5,11 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { BROKER_DISCONNECT_TIMEOUT_MS } from "../../packages/intercom/retry-policy.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { sleep } from "../helpers/runtime.js";
 import { startStandInBroker } from "../helpers/stand-in-broker.js";
+import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -255,7 +257,7 @@ test("cleanup lets a socket destroyed in the same stalled timers phase emit clos
 	Object.assign(child, { exitCode: 0 });
 	child.emit("exit", 0, null);
 	child.emit("close", 0, null);
-	// A half-open peer keeps the client's socket open until the client's own 2 s disconnect timer calls socket.destroy().
+	// A half-open peer keeps the client's socket open until the client's own disconnect timer calls socket.destroy().
 	const server = net.createServer({ allowHalfOpen: true }, (peer) => {
 		peer.resume();
 	});
@@ -264,10 +266,14 @@ test("cleanup lets a socket destroyed in the same stalled timers phase emit clos
 	assert.ok(address && typeof address !== "string");
 	const client = net.connect(address.port, "127.0.0.1");
 	await new Promise<void>((resolve) => client.once("connect", resolve));
+	// Fake only setTimeout/clearTimeout/performance so libuv's real check (`setImmediate`) and close-callbacks
+	// (`uv_close` -> socket `'close'`) phases still execute in true OS order when both timers expire in one turn.
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const derivedClientBudgetMs = Math.min(TEST_TIMEOUT_MS / 2, BROKER_DISCONNECT_TIMEOUT_MS * 5);
 	fixture.onCleanup(
 		() =>
 			new Promise<void>((resolve) => {
-				const timer = setTimeout(() => client.destroy(), 2_000);
+				const timer = setTimeout(() => client.destroy(), BROKER_DISCONNECT_TIMEOUT_MS);
 				client.once("close", () => {
 					clearTimeout(timer);
 					resolve();
@@ -277,13 +283,14 @@ test("cleanup lets a socket destroyed in the same stalled timers phase emit clos
 	);
 	try {
 		const cleanup = fixture.cleanup();
-		// Stall past both the client's 2 s destroy timer and the fixture's 10 s derived cleanup deadline so both timers
-		// expire in the same libuv timers phase, before close callbacks run.
-		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_200);
+		// Advance past both the client's destroy timer and the fixture's derived cleanup deadline synchronously in
+		// one turn so `client.destroy()` and the cleanup timeout fire together before libuv's close-callbacks phase.
+		vi.advanceTimersByTime(derivedClientBudgetMs);
 		await cleanup;
 		assert.equal(client.destroyed, true);
 		assert.equal(existsSync(agentDir), false);
 	} finally {
+		vi.useRealTimers();
 		client.destroy();
 		server.close();
 		rmSync(agentDir, { recursive: true, force: true });
@@ -291,21 +298,60 @@ test("cleanup lets a socket destroyed in the same stalled timers phase emit clos
 });
 
 test("cleanup allows a loaded client close past 5 s within its derived disconnect budget", async () => {
-	vi.useRealTimers();
 	const { agentDir, fixture, child } = resources();
 	Object.assign(child, { exitCode: 0 });
 	child.emit("exit", 0, null);
 	child.emit("close", 0, null);
 	let closed = false;
-	fixture.onCleanup(async () => {
-		await sleep(5_500);
-		closed = true;
-	});
+	const loadedCloseMs = BROKER_DISCONNECT_TIMEOUT_MS * 2 + 1_500;
+	fixture.onCleanup(
+		() =>
+			new Promise<void>((resolve) => {
+				setTimeout(() => {
+					closed = true;
+					resolve();
+				}, loadedCloseMs);
+			}),
+	);
 	try {
-		await fixture.cleanup();
+		const cleanup = fixture.cleanup();
+		await vi.advanceTimersByTimeAsync(loadedCloseMs);
+		await cleanup;
 		assert.equal(closed, true);
 		assert.equal(existsSync(agentDir), false);
+		assert.equal(vi.getTimerCount(), 0);
 	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("cleanup enforces a shared ceiling strictly below TEST_TIMEOUT_MS across a triple fault", async () => {
+	const { agentDir, files, fixture, child } = resources();
+	const startedAt = performance.now();
+	fixture.onCleanup(() => new Promise<void>(() => {}));
+	// Broker exits near the end of the exit phase, leaving stdio permanently open (triple fault: client + exit + stdio).
+	setTimeout(() => {
+		Object.assign(child, { exitCode: 0 });
+		child.emit("exit", 0, null);
+	}, TEST_TIMEOUT_MS - 5_100);
+	let failure: Error | undefined;
+	const cleanup = fixture.cleanup().catch((error: Error) => {
+		failure = error;
+	});
+	try {
+		await vi.runAllTimersAsync();
+		await cleanup;
+		const elapsedMs = performance.now() - startedAt;
+		assert.ok(failure instanceof Error, "triple fault must reject with the fixture's own error");
+		assert.match(failure.message, /Broker did not close before cleanup deadline/);
+		assert.ok(
+			elapsedMs <= TEST_TIMEOUT_MS - 4_000,
+			`expected cleanup to stay well below TEST_TIMEOUT_MS (${TEST_TIMEOUT_MS} ms), took ${elapsedMs} ms`,
+		);
+		for (const file of files) assert.equal(existsSync(file), true);
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		child.emit("close", 0, null);
 		rmSync(agentDir, { recursive: true, force: true });
 	}
 });

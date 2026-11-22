@@ -10,6 +10,10 @@ import { removeTestDirectory } from "./test-directory-removal.js";
 import { TEST_TIMEOUT_MS } from "./test-timeout.js";
 
 const BROKER_TERMINATE_GRACE_MS = 1_000;
+/** Margin kept below `TEST_TIMEOUT_MS` so even a multi-phase cleanup timeout reports the fixture's own error. */
+const CLEANUP_HOOK_MARGIN_MS = 5_000;
+/** Shared ceiling across all teardown phases so client, exit, and stdio waits never reach `TEST_TIMEOUT_MS`. */
+const CLEANUP_TOTAL_TIMEOUT_MS = TEST_TIMEOUT_MS - CLEANUP_HOOK_MARGIN_MS;
 /**
  * How long the suite's own client cleanups may take. Each Intercom client destroys its socket after
  * `BROKER_DISCONNECT_TIMEOUT_MS`, so this leaves load headroom for the disconnect timer and its close callback
@@ -196,7 +200,7 @@ export class IntercomBrokerFixture {
 		});
 	}
 
-	private async stopBroker(): Promise<void> {
+	private async stopBroker(remainingBudgetMs: (phaseBudgetMs: number) => number): Promise<void> {
 		const broker = this.broker;
 		if (!broker || this.hasClosed) return;
 		const signal = (name: NodeJS.Signals) => {
@@ -208,13 +212,13 @@ export class IntercomBrokerFixture {
 			signal("SIGTERM");
 			await bounded(
 				this.exited,
-				BROKER_EXIT_TIMEOUT_MS,
+				remainingBudgetMs(BROKER_EXIT_TIMEOUT_MS),
 				"Broker did not close before cleanup deadline (it had not exited); keeping its files",
 			);
 			// Unlike exit or kill success, close also proves inherited stdio was released.
 			await bounded(
 				this.closed,
-				BROKER_STDIO_RELEASE_TIMEOUT_MS,
+				remainingBudgetMs(BROKER_STDIO_RELEASE_TIMEOUT_MS),
 				"Broker did not close before cleanup deadline; keeping its files",
 			);
 		} finally {
@@ -231,15 +235,18 @@ export class IntercomBrokerFixture {
 	}
 
 	async cleanup(): Promise<void> {
+		const cleanupDeadline = performance.now() + CLEANUP_TOTAL_TIMEOUT_MS;
+		const remainingBudgetMs = (phaseBudgetMs: number): number =>
+			Math.min(phaseBudgetMs, Math.max(0, cleanupDeadline - performance.now()));
 		try {
 			try {
 				await bounded(
 					Promise.all(this.cleanups.splice(0).map(async (cleanup) => cleanup())),
-					CLIENT_CLEANUP_TIMEOUT_MS,
+					remainingBudgetMs(CLIENT_CLEANUP_TIMEOUT_MS),
 					"Broker clients did not close before cleanup deadline",
 				);
 			} finally {
-				await this.stopBroker();
+				await this.stopBroker(remainingBudgetMs);
 				await this.stopSuccessorBroker();
 			}
 			removeTestDirectory(this.agentDir, { retries: 20, retryDelayMs: 50 });
