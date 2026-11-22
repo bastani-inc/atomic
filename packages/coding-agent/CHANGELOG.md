@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- A session that started on 0.10.4 and keeps running after an in-place update (`npm install -g`, `bun add -g`) now says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` when the update's code for a feature it loads on demand cannot load into it, instead of failing with the runtime's error. A session that starts on this release or later says so by itself for every later update, whatever that release changes; features whose updated code loads keep working as before.
+- In the standalone binary and under Bun, Amazon Bedrock requests whose proxy or HTTP/1.1 TLS connection closes before its handshake finishes — including plain-HTTP Bedrock endpoints through an `https://` proxy — now retry at the provider SDK level (`retry.provider.maxRetries`) and recover from transient closes as on Node.js instead of failing on the first attempt ([#6448](https://github.com/bastani-inc/atomic/pull/6448)).
 - Fixed echoed user messages in the main chat crossing or disappearing when an extension's `input` hook or a slash template rewrites one submission to the same text as another submission already echoed on screen. Each prompt submission now matches its own echoed row directly, while older interactive engines and hosts continue falling back to text matching.
 
 ## [0.10.4] - 2026-11-22
