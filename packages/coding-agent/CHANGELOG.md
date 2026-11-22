@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- A session that started on 0.10.4 and keeps running after an in-place update (`npm install -g`, `bun add -g`) now says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` when the update's code for a feature it loads on demand cannot load into it, instead of failing with the runtime's error. A session that starts on this release or later says so by itself for every later update, whatever that release changes; features whose updated code loads keep working as before.
+- In the standalone binary and under Bun, Amazon Bedrock requests whose proxy or HTTP/1.1 TLS connection closes before its handshake finishes — including plain-HTTP Bedrock endpoints through an `https://` proxy — now retry at the provider SDK level (`retry.provider.maxRetries`) and recover from transient closes as on Node.js instead of failing on the first attempt ([#6448](https://github.com/bastani-inc/atomic/pull/6448)).
 - Moving or copying a custom agent directory and its adopted parent store on filesystems that reuse freed inodes (such as ext4) no longer lets a sibling or recreated directory hijack parent or relative-target ownership when its new `.atomic-storage-home` file receives a deleted owner's inode. Owner resolution now resolves to the eligible directory carrying the recorded decision ID when an inode-matched candidate has a conflicting on-disk decision ID.
 
 ## [0.10.4] - 2026-11-22
