@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, the forked pi packages (`@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `@bastani/atomic-ai`, `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`) from `packages/schema`, `packages/telemetry`, `packages/ai`, `packages/tui`, `packages/agent` and `packages/codemode`, `@bastani/atomic-storage-libsql` from `packages/storage-libsql`, and `@bastani/atomic-storage-postgres` from `packages/storage-postgres`. The other workspace packages remain private and are bundled into the coding-agent package. The storage adapters are the exception: each is a separate package that users install with `atomic install npm:<name>`, so neither is ever a dependency of `@bastani/atomic` and never enters its shrinkwrap or binaries. The first npm version of each forked pi package and of each storage adapter must be published by hand so npm trusted publishing can be attached; later tagged releases publish them from `publish.yml`.
+Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, the forked pi packages (`@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `@bastani/atomic-ai`, `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`) from `packages/schema`, `packages/telemetry`, `packages/ai`, `packages/tui`, `packages/agent` and `packages/codemode`, `@bastani/atomic-storage-libsql` from `packages/storage-libsql`, and `@bastani/atomic-storage-postgres` from `packages/storage-postgres`. The other workspace packages remain private and are bundled into the coding-agent package. The storage adapters are the exception: each is a separate package that users install with `atomic install npm:<name>`, so neither is ever a dependency of `@bastani/atomic` and never enters its binaries. The first npm version of each forked pi package and of each storage adapter must be published by hand so npm trusted publishing can be attached; later tagged releases publish them from `publish.yml`.
 
 ## Workflow overview
 
@@ -28,7 +28,7 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    │  Windows archives on the Windows runner) + alpine-binary-smoke, whose
    │  x64/ARM64 legs run embedded PostgreSQL initdb, start, connect, and shutdown
    ├─ build (after native-artifacts, in parallel with the smoke jobs):
-   │  shrinkwrap/package validation, target PostgreSQL staging in all eight
+   │  package validation, target PostgreSQL staging in all eight
    │  native npm leaves, six non-Windows archives, eighteen npm tarballs, and
    │  release notes
    ├─ stage-github-release (after build and every smoke job): join the
@@ -59,7 +59,7 @@ The release build downloads checksum-pinned PostgreSQL artifacts while preparing
 
 ### Static checks
 
-The `static-checks` job runs `npm run check`: Biome, the root TypeScript check, package typechecks, the published-shrinkwrap check and the interactive event-loop check. The root TypeScript check covers the root tests and scripts and every TypeScript file the bundled `subagents`, `mcp`, `web-access` and `intercom` packages ship, including the Intercom broker. The typecheck path first brings the `dist` of `@bastani/atomic-schema`, `@bastani/atomic-telemetry` and `@bastani/atomic-ai` up to date with `scripts/refresh-package-dist.mjs`, then runs the ai package's existing `tsconfig.json` check over both `src/` and `test/`, and refreshes `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode` the same way. The refresh compiles each package into a staging directory beside `dist` and moves only the files whose bytes changed into `dist`, one rename each, so tests that read those packages while a check runs never see a missing or half-written file, and an up-to-date `dist` is not touched. It generates the ai model catalog only when `check:model-data` finds it missing or stale; this job builds `@bastani/atomic-ai` from the live catalog just before. It also checks the coding-agent build and `test/types/` configurations. No pre-existing coding-agent `dist/` is required.
+The `static-checks` job runs `npm run check`: Biome, the root TypeScript check, package typechecks and the interactive event-loop check. The root TypeScript check covers the root tests and scripts and every TypeScript file the bundled `subagents`, `mcp`, `web-access` and `intercom` packages ship, including the Intercom broker. The typecheck path first brings the `dist` of `@bastani/atomic-schema`, `@bastani/atomic-telemetry` and `@bastani/atomic-ai` up to date with `scripts/refresh-package-dist.mjs`, then runs the ai package's existing `tsconfig.json` check over both `src/` and `test/`, and refreshes `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode` the same way. The refresh compiles each package into a staging directory beside `dist` and moves only the files whose bytes changed into `dist`, one rename each, so tests that read those packages while a check runs never see a missing or half-written file, and an up-to-date `dist` is not touched. It generates the ai model catalog only when `check:model-data` finds it missing or stale; this job builds `@bastani/atomic-ai` from the live catalog just before. It also checks the coding-agent build and `test/types/` configurations. No pre-existing coding-agent `dist/` is required.
 
 ### Release artifact storage
 
@@ -569,7 +569,7 @@ The publisher intentionally does not reconstruct the release tree, validate rele
 
 ## Versionless release bases
 
-`main` and supported workstream bases keep all versioned manifests at `0.0.0`. `scripts/cut-release.ts` resolves the selected remote branch SHA, creates a detached worktree, stamps the requested version, regenerates `packages/coding-agent/npm-shrinkwrap.json`, commits with subject `Release <version>`, tags that commit, removes the worktree, and pushes only the tag. The selected base never receives the version stamp. The stamp and the shrinkwrap generator run from the invoking checkout with `--root <worktree>`, so their imports resolve from that checkout's `node_modules`; the temporary worktree has none, and resolving from it would depend on whatever `node_modules` sits above the temp directory.
+`main` and supported workstream bases keep all versioned manifests at `0.0.0`. `scripts/cut-release.ts` resolves the selected remote branch SHA, creates a detached worktree, stamps the requested version, commits with subject `Release <version>`, tags that commit, removes the worktree, and pushes only the tag. The selected base never receives the version stamp. The stamp and the shrinkwrap generator run from the invoking checkout with `--root <worktree>`, so their imports resolve from that checkout's `node_modules`; the temporary worktree has none, and resolving from it would depend on whatever `node_modules` sits above the temp directory.
 
 ```sh
 bun run scripts/cut-release.ts 0.9.10 --base main --push
@@ -848,7 +848,7 @@ The `alpine-binary-smoke` matrix downloads each x64/arm64 musl binding, builds t
 
 After native and smoke jobs pass, `build`:
 
-1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
+1. Installs with `npm ci --ignore-scripts`.
 2. Generates native platform package directories and the native root manifest.
 3. Hydrates `@bastani/atomic-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by rebuilding the forked pi packages.
    Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
