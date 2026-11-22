@@ -1119,19 +1119,17 @@ const FILE_BUSY_TIMEOUT_MS = 5000;
  */
 const SERVER_BUSY_TIMEOUT_MS = 5000;
 /**
- * Smallest caller timeout awaiting a database call (`STORAGE_PRIORITY_CALL_MAX_WAIT_MS` in the facade's call queue
- * and Intercom's `SEND_RESPONSE_TIMEOUT_MS` are both 10 s) minus a 2 s safety margin, so persistent busy failures
- * surface as a known `SQLITE_BUSY` instead of tripping caller timeouts.
+ * `sqld`'s own write-lock transaction timeout (`TXN_TIMEOUT` = 5 s): an attempt waiting behind an abandoned write
+ * transaction can spend this long inside the server before hitting a periodic WAL checkpoint.
  */
-const SMALLEST_CALLER_TIMEOUT_MS = 10_000;
-const SERVER_BUSY_CALLER_MARGIN_MS = 2_000;
+const SERVER_LOCK_TIMEOUT_MS = 5000;
 /**
- * Hard total wall-clock cap from the start of a call (including every attempt's duration) for busy/schema retries.
- * Allows recovery when an attempt waited out `sqld`'s 5 s transaction timeout behind an abandoned write lock and then
- * met a periodic WAL checkpoint (~0.1–2.6 s), while keeping persistent fast/WAN-RTT refusals within `SERVER_BUSY_TIMEOUT_MS`
- * plus one RTT and keeping persistent slow-lock refusals bounded to `SERVER_BUSY_MAX_TOTAL_MS` plus one final attempt.
+ * Hard total wall-clock cap from the start of a call (including every attempt's duration) for busy/schema retries:
+ * one `sqld` 5 s transaction timeout plus one full 5 s checkpoint retry window (`SERVER_BUSY_TIMEOUT_MS`). Keeps
+ * fast and WAN-RTT persistent refusals within `SERVER_BUSY_TIMEOUT_MS` plus one RTT and stops repeated slow-lock
+ * refusals after two attempts, while giving a post-lock refusal a full 5 s checkpoint window.
  */
-const SERVER_BUSY_MAX_TOTAL_MS = SMALLEST_CALLER_TIMEOUT_MS - SERVER_BUSY_CALLER_MARGIN_MS;
+const SERVER_BUSY_MAX_TOTAL_MS = SERVER_LOCK_TIMEOUT_MS + SERVER_BUSY_TIMEOUT_MS;
 /** The first wait before a call a libSQL server answered busy runs again; each later wait doubles, up to the last. */
 const SERVER_BUSY_FIRST_WAIT_MS = 10;
 const SERVER_BUSY_LAST_WAIT_MS = 200;

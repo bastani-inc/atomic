@@ -537,12 +537,24 @@ test("a call whose retry waited past the busy timeout on the server lock after a
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1);
 });
 
-test("a call whose first attempt waited past the busy timeout still stops retrying once the 8 s call-start wall-clock cap passes", async () => {
+test("a call whose first attempt waited 5.5 s behind an abandoned lock still recovers across a 3.5 s checkpoint before the 10 s cap", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	// Attempt 1 spends 5.5 s waiting for the lock (within the 8 s cap -> gets one probe retry); Attempt 2 also
-	// spends 5.5 s (now 11 s >= 8 s cap), so the loop stops after 2 attempts instead of retrying for 20+ s.
+	// Attempt 1 spends 5.5 s on the server lock, then 6 checkpoint retries spend 500 ms each plus ~510 ms backoff
+	// (~9.0 s elapsed before the winning retry, past an 8 s cap but inside the 10 s cap = 5 s lock + 5 s checkpoint).
+	advanceClockOnPipelines("INSERT INTO events", 5_500, 500);
+	fake.fail(...Array.from({ length: 7 }, () => BUSY));
+	await database.run("INSERT INTO events VALUES (?)", 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1);
+});
+
+test("a call whose first attempt waited past the busy timeout still stops retrying once the 10 s call-start wall-clock cap passes", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	// Attempt 1 spends 5.5 s waiting for the lock (within the 10 s cap -> gets one probe retry); Attempt 2 also
+	// spends 5.5 s (now 11 s >= 10 s cap), so the loop stops after 2 attempts instead of retrying for 20+ s.
 	advanceClockOnPipelines("INSERT INTO events", 5_500, 5_500);
 	fake.fail(...Array.from({ length: 100 }, () => BUSY));
 	const before = fake.pipelines.length;
@@ -592,7 +604,7 @@ test("persistent busy refusals over 200-400 ms WAN RTT stay within the 5 s busy 
 	}
 });
 
-test("a slow busy refusal followed by schema-changed shares the 8 s wall-clock cap across the write-transaction fallback", async () => {
+test("a slow busy refusal followed by schema-changed shares the 10 s wall-clock cap across the write-transaction fallback", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
@@ -605,7 +617,7 @@ test("a slow busy refusal followed by schema-changed shares the 8 s wall-clock c
 	);
 	assert.ok(failure instanceof StorageUnavailableError);
 	assert.equal((failure.cause as { code?: unknown }).code, "SQLITE_BUSY");
-	// 1 slow BUSY + 1 slow SCHEMA_CHANGED + 1 locked write-transaction attempt (then elapsed >= 8 s -> stops immediately).
+	// 1 slow BUSY + 1 slow SCHEMA_CHANGED + 1 locked write-transaction attempt (then elapsed >= 10 s -> stops immediately).
 	assert.equal(fake.pipelines.length - before, 3);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
