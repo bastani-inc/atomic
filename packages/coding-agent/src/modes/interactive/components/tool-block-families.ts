@@ -186,8 +186,9 @@ function trimTrailingNewlines(text: string): string {
 }
 
 /**
- * Linear-time equivalent of `rawText.replace(/\n\n\[<body>\]\s*$/, "")` preserving leftmost match semantics
- * across any `\n\n[` strictly after the previous `]` before the trailing `]`.
+ * Linear-time stripper for trailing `\n\n[<body>]\s*$` footers.
+ * Preserves leftmost match semantics when no `]` precedes the closing `]`, and also matches
+ * balanced nested brackets (such as `app/[id]/missing.ts` in skipped-path notices or bash full-output paths).
  */
 function stripTrailingBracketedFooter(
 	rawText: string,
@@ -203,12 +204,35 @@ function stripTrailingBracketedFooter(
 	let searchFrom = prevClose + 1;
 	while (searchFrom < closeIdx) {
 		const idx = rawText.indexOf("\n\n[", searchFrom);
-		if (idx === -1 || idx + 3 >= closeIdx) return rawText;
+		if (idx === -1 || idx + 3 >= closeIdx) break;
 		const bodyStart = idx + 3;
 		if (!matchesBody || matchesBody(rawText, bodyStart, closeIdx)) {
 			return rawText.slice(0, idx);
 		}
 		searchFrom = bodyStart;
+	}
+	if (prevClose === -1) return rawText;
+	// Balanced-bracket fallback when the footer payload contains nested `[...]` (e.g. `app/[id]/missing.ts`).
+	let depth = 1;
+	for (let k = closeIdx - 1; k >= 0; k--) {
+		const code = rawText.charCodeAt(k);
+		if (code === 0x5d) {
+			depth++;
+		} else if (code === 0x5b) {
+			depth--;
+			if (depth === 0) {
+				if (
+					k >= 2 &&
+					rawText.charCodeAt(k - 2) === 0x0a &&
+					rawText.charCodeAt(k - 1) === 0x0a &&
+					k + 1 < closeIdx &&
+					(!matchesBody || matchesBody(rawText, k + 1, closeIdx))
+				) {
+					return rawText.slice(0, k - 2);
+				}
+				return rawText;
+			}
+		}
 	}
 	return rawText;
 }

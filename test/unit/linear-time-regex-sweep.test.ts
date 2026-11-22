@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@bastani/atomic-ai";
-import { isContextOverflow } from "@bastani/atomic-ai";
+import { getOverflowPatterns, isContextOverflow } from "@bastani/atomic-ai";
 import { beforeAll, describe, test } from "vitest";
 import { formatCacheWarmingUsage } from "../../packages/coding-agent/src/core/cache-warmer.js";
 import {
 	isContentFilterRefusal,
 	isSafetyRefusalFailure,
 } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
+import { extractLinkTags } from "../../packages/coding-agent/src/core/tools/fetch-url.js";
 import { workedVerb } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
 import { builtinToolBlockPresentation } from "../../packages/coding-agent/src/modes/interactive/components/tool-block-families.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -20,6 +21,7 @@ import {
 	stripProjectContext,
 	stripSubagentOrchestrationSkill,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
+import { extractHtmlBody } from "../../packages/web-access/extract.js";
 
 beforeAll(() => {
 	initTheme();
@@ -305,6 +307,72 @@ describe("tool-block-families linear-time footer parsing", () => {
 		const findRendered = stripAnsi(findNested?.details?.render(80).join("\n") ?? "");
 		assert.equal(findRendered.includes("1 file"), true, findRendered);
 		assert.equal(findRendered.includes("outer notice"), false, findRendered);
+
+		// Producer round-trip: find.ts skipped-missing-path notice with balanced brackets (e.g. app/[id]/missing.ts)
+		const findBracketPath = builtinToolBlockPresentation({
+			toolName: "find",
+			args: { pattern: "*.ts" },
+			result: {
+				content: [{ type: "text", text: "src/index.ts\n\n[Skipped missing paths: app/[id]/missing.ts]" }],
+				isError: false,
+			},
+			expanded: false,
+			isPartial: false,
+			cwd: "/tmp",
+			executionStarted: true,
+			argsComplete: true,
+			theme: identityTheme,
+		});
+		const findBracketRendered = stripAnsi(findBracketPath?.details?.render(120).join("\n") ?? "");
+		assert.equal(findBracketRendered.includes("1 file"), true, findBracketRendered);
+		assert.equal(findBracketRendered.includes("Skipped missing paths"), false, findBracketRendered);
+
+		// Producer round-trip: bash.ts truncation footers whose fullOutputPath contains balanced brackets
+		const bashBracketPath = builtinToolBlockPresentation({
+			toolName: "bash",
+			args: { command: "cat log" },
+			result: {
+				content: [
+					{
+						type: "text",
+						text: "ok line\n\n[Showing lines 1-20 of 100. Full output: /tmp/work[1]/full.log]",
+					},
+				],
+				isError: false,
+			},
+			expanded: true,
+			isPartial: false,
+			cwd: "/tmp",
+			executionStarted: true,
+			argsComplete: true,
+			theme: identityTheme,
+		});
+		const bashBracketRendered = stripAnsi(bashBracketPath?.details?.render(120).join("\n") ?? "");
+		assert.equal(bashBracketRendered.includes("ok line"), true, bashBracketRendered);
+		assert.equal(bashBracketRendered.includes("Showing lines"), false, bashBracketRendered);
+
+		const bashLastLineBracketPath = builtinToolBlockPresentation({
+			toolName: "bash",
+			args: { command: "cat huge.json" },
+			result: {
+				content: [
+					{
+						type: "text",
+						text: "partial tail\n\n[Showing last 50.0 KB of line 1 (line is 120.0 KB). Full output: /tmp/work[1]/full.log]",
+					},
+				],
+				isError: false,
+			},
+			expanded: true,
+			isPartial: false,
+			cwd: "/tmp",
+			executionStarted: true,
+			argsComplete: true,
+			theme: identityTheme,
+		});
+		const bashLastLineRendered = stripAnsi(bashLastLineBracketPath?.details?.render(120).join("\n") ?? "");
+		assert.equal(bashLastLineRendered.includes("partial tail"), true, bashLastLineRendered);
+		assert.equal(bashLastLineRendered.includes("Showing last"), false, bashLastLineRendered);
 	});
 });
 
@@ -341,6 +409,22 @@ describe("credential-redaction, overflow, ansi, working-status, intercom, scrub,
 			true,
 		);
 		assert.equal(isContextOverflow(errorAssistantMessage("input token count (10)\nexceeds the maximum")), false);
+		// Public getOverflowPatterns() API preserves unbounded matching on long gaps while staying linear
+		const longGap = `input token count ${"a".repeat(200)} exceeds the maximum`;
+		assert.equal(
+			getOverflowPatterns().some((p) => p.test(longGap)),
+			true,
+		);
+		assert.equal(
+			assertLinearTime(
+				"getOverflowPatterns()(input token count repeated)",
+				() => {
+					getOverflowPatterns().some((p) => p.test(sameLengthBenign));
+				},
+				() => getOverflowPatterns().some((p) => p.test(pathological)),
+			),
+			false,
+		);
 	});
 
 	test("stripAnsi completes in linear time on 40k+ unclosed OSC sequences and preserves exact CSI fallback", () => {
@@ -397,6 +481,46 @@ describe("credential-redaction, overflow, ansi, working-status, intercom, scrub,
 		assert.equal(formatCacheWarmingUsage(0.0123), "Cache warmed: $0.0123");
 		assert.equal(formatCacheWarmingUsage(0.01), "Cache warmed: $0.010");
 		assert.equal(formatCacheWarmingUsage(0.0123456), "Cache warmed: $0.012346");
+		assert.equal(formatCacheWarmingUsage(1.234e30), "Cache warmed: $1.234e+30");
+		assert.equal(formatCacheWarmingUsage(1.2e30), "Cache warmed: $1.2e+30");
+		assert.equal(formatCacheWarmingUsage(1.23456e100), "Cache warmed: $1.23456e+100");
+		assert.equal(formatCacheWarmingUsage(-1.234e30), "Cache warmed: $-1.234e+30");
+		assert.equal(formatCacheWarmingUsage(Number.NaN), "Cache warmed: $NaN");
+		assert.equal(formatCacheWarmingUsage(Number.POSITIVE_INFINITY), "Cache warmed: $Infinity");
+
+		// fetch-url extractLinkTags linear time + producer round-trip
+		const unclosedLinks = "<link ".repeat(LONG_QUADRATIC_REPS);
+		assert.deepEqual(
+			assertLinearTime(
+				"extractLinkTags(unclosed <link repeated)",
+				() => {
+					extractLinkTags("a".repeat(unclosedLinks.length));
+				},
+				() => extractLinkTags(unclosedLinks),
+			),
+			[],
+		);
+		assert.deepEqual(
+			extractLinkTags(
+				'<head><links href="skip"><link rel="alternate" type="text/markdown" href="/doc.md"><LINK rel="icon" href="/a.ico"></head>',
+			),
+			['<link rel="alternate" type="text/markdown" href="/doc.md">', '<LINK rel="icon" href="/a.ico">'],
+		);
+
+		// web-access extractHtmlBody linear time + rejects <bodydata> while matching real <body> tags
+		const unclosedBodies = "<body>".repeat(LONG_QUADRATIC_REPS);
+		assert.equal(
+			assertLinearTime(
+				"extractHtmlBody(unclosed <body> repeated)",
+				() => {
+					extractHtmlBody("a".repeat(unclosedBodies.length));
+				},
+				() => extractHtmlBody(unclosedBodies),
+			),
+			undefined,
+		);
+		assert.equal(extractHtmlBody("<html><bodydata>nope</body></html>"), undefined);
+		assert.equal(extractHtmlBody("<html><bodydata>skip</bodydata><BODY class='main'>real</BODY></html>"), "real");
 
 		const scrubResult = scrub("**api_key**: sk_live_1234567890abcdef1234***");
 		assert.equal(scrubResult.text.includes("sk_live_1234567890abcdef1234"), false);

@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Aligned the lightweight Web Access tool, command, and shortcut descriptions with the loaded extension (`web_search` `queries` examples, `/websearch` and `/curator` descriptions, and shortcut labels).
-- Extracting HTML `<body>` content when detecting JS-rendered pages no longer slows down on malformed pages with many unclosed `<body>` tags, returning the same result in one linear pass.
+- Extracting HTML `<body>` content when detecting JS-rendered pages no longer slows down on malformed pages with many unclosed `<body>` tags, and no longer matches unrelated tags whose name starts with `body` (such as `<bodydata>`).
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

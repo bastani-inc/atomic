@@ -496,7 +496,7 @@ async function tryLlmEndpoints(
 	return null;
 }
 
-function extractLinkTags(head: string): string[] {
+export function extractLinkTags(head: string): string[] {
 	const tags: string[] = [];
 	let searchFrom = 0;
 	while (searchFrom < head.length) {

@@ -327,7 +327,7 @@ export function formatCacheWarmingStatus(status: CacheWarmingStatus, now = Date.
 function formatWarmingCost(totalCost: number): string {
 	const fixed = totalCost.toFixed(6);
 	const dot = fixed.indexOf(".");
-	if (dot === -1) return fixed;
+	if (dot === -1 || fixed.includes("e")) return fixed;
 	const minEnd = dot + 4;
 	let end = fixed.length;
 	while (end > minEnd && fixed.charCodeAt(end - 1) === 0x30) {

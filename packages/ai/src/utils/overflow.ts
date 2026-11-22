@@ -35,6 +35,9 @@ import type { AssistantMessage } from "../types.ts";
  * - DashScope/Qwen: "Range of input length should be [1, X]" (HTTP 400 invalid_parameter_error)
  * - Ollama: Some deployments truncate silently, others return errors like "prompt too long; exceeded max context length by X tokens"
  */
+const INPUT_TOKEN_COUNT_OVERFLOW_PATTERN =
+	/input token count(?:(?!input token count)[^\r\n\u2028\u2029])*exceeds the maximum/i;
+
 const OVERFLOW_PATTERNS = [
 	/prompt (?:is )?too long/i, // Anthropic and z.ai token overflow
 	/prompt exceeds max length/i, // z.ai CN endpoint token overflow
@@ -43,7 +46,7 @@ const OVERFLOW_PATTERNS = [
 	/exceeds the context window/i, // OpenAI (Completions & Responses API)
 	/exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))/i, // OpenAI-compatible proxies (LiteLLM)
 	/context window exceeded/i, // LiteLLM pre-call check (ContextWindowExceededError)
-	/input token count[^\r\n\u2028\u2029]{0,128}exceeds the maximum/i, // Google (Gemini)
+	INPUT_TOKEN_COUNT_OVERFLOW_PATTERN, // Google (Gemini)
 	/maximum prompt length is \d+/i, // xAI (Grok)
 	/reduce the length of the messages/i, // Groq
 	/maximum context length is \d+ tokens/i, // OpenRouter (most backends)
@@ -65,6 +68,8 @@ const OVERFLOW_PATTERNS = [
 	// Match raw SDK errors and formatProviderError's prefix, not a status mentioned in the body.
 	/^(?:[\w .-]+ API error \(413\):|413(?:\s|:|$))/i,
 ];
+
+const DIRECT_OVERFLOW_PATTERNS = OVERFLOW_PATTERNS.filter((p) => p !== INPUT_TOKEN_COUNT_OVERFLOW_PATTERN);
 
 /** Typed GitHub Copilot rejections too general to rule overflow out; their provider text is checked instead. */
 const TEXT_CHECKED_COPILOT_CODES: ReadonlySet<GitHubCopilotErrorCode> = new Set<GitHubCopilotErrorCode>([
@@ -225,7 +230,7 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 		const isNonOverflow = NON_OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!));
 		if (!isNonOverflow) {
 			if (
-				OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!)) ||
+				DIRECT_OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!)) ||
 				matchesInputTokenCountOverflow(message.errorMessage)
 			) {
 				return true;

@@ -434,14 +434,36 @@ function findAsciiCaseInsensitive(text: string, lowerNeedle: string, fromIndex: 
 	return -1;
 }
 
-function extractHtmlBody(html: string): string | undefined {
-	const openStart = findAsciiCaseInsensitive(html, "<body", 0);
-	if (openStart === -1) return undefined;
-	const openEnd = html.indexOf(">", openStart + 5);
-	if (openEnd === -1) return undefined;
-	const closeStart = findAsciiCaseInsensitive(html, "</body>", openEnd + 1);
-	if (closeStart === -1) return undefined;
-	return html.slice(openEnd + 1, closeStart);
+function isBodyTagDelimiter(code: number): boolean {
+	return (
+		code === 0x3e ||
+		code === 0x2f ||
+		code === 0x20 ||
+		code === 0x09 ||
+		code === 0x0a ||
+		code === 0x0c ||
+		code === 0x0d
+	);
+}
+
+export function extractHtmlBody(html: string): string | undefined {
+	let searchFrom = 0;
+	while (searchFrom < html.length) {
+		const openStart = findAsciiCaseInsensitive(html, "<body", searchFrom);
+		if (openStart === -1) return undefined;
+		const afterName = openStart + 5;
+		if (afterName >= html.length) return undefined;
+		if (!isBodyTagDelimiter(html.charCodeAt(afterName))) {
+			searchFrom = afterName;
+			continue;
+		}
+		const openEnd = html.indexOf(">", afterName);
+		if (openEnd === -1) return undefined;
+		const closeStart = findAsciiCaseInsensitive(html, "</body>", openEnd + 1);
+		if (closeStart === -1) return undefined;
+		return html.slice(openEnd + 1, closeStart);
+	}
+	return undefined;
 }
 
 function isLikelyJSRendered(html: string): boolean {
