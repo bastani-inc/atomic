@@ -175,6 +175,14 @@ function consoleClosed(mode: InteractiveModeBase, closedMsAgo = 0): void {
  * shutting down), adding the listeners' removal to `cleanups`.
  */
 function listenForConsoleClose(mode: InteractiveModeBase, cleanups: Array<() => void>): void {
+	// MUTANT: no close notice ever reaches the host's ending; a SIGHUP listener stays so Windows does not end it at once.
+	if (process.platform === "win32") {
+		const ignore = () => {};
+		process.prependListener("SIGHUP", ignore);
+		cleanups.push(() => process.off("SIGHUP", ignore));
+		void mode;
+		return;
+	}
 	if (process.platform !== "win32") return;
 	const handler = () => consoleClosed(mode);
 	process.prependListener("SIGHUP", handler);
