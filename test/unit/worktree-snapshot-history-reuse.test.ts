@@ -238,6 +238,9 @@ describe("unpushed history over the cap, packed under other settings", () => {
 		const second = captured(await captureWorktreeSnapshot(clone, { settings, previous: first.snapshot }));
 		assert.deepEqual(historyOmissions(second.snapshot.omitted), []);
 		assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+		// The setting is no remote: the snapshot names the clone's one remote, as before.
+		assert.equal(first.snapshot.remotes.length, 1);
+		assert.deepEqual(second.snapshot.remotes, first.snapshot.remotes);
 	});
 
 	test("settings that do not change a bundle, such as core.hooksPath, keep the commits left out without bundling them again", async () => {
