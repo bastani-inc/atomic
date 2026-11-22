@@ -131,7 +131,11 @@ export function _refreshToolRegistry(
 		};
 		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
 		// Inside the scheduler: a call its interrupted turn stopped waiting for no longer holds back later calls (#5486).
-		const scheduled = scheduleToolExecution(withToolAbortGrace(guarded), this._toolExecutionScheduler, abortError);
+		const scheduled = scheduleToolExecution(
+			withToolAbortGrace(guarded, this),
+			this._toolExecutionScheduler,
+			abortError,
+		);
 		const definition = definitionRegistry.get(tool.name)?.definition;
 		const detachable = builtInQuestion ? undefined : definition?.detachable;
 		return definition !== undefined && (detachable === true || typeof detachable === "function")

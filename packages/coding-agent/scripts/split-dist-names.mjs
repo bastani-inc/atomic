@@ -412,12 +412,15 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 
 /** Placeholder string literal in `engine-prewarm.ts` replaced at build time with the split build's 30-hex digest. */
 export const PREWARM_BUILD_STAMP_MARK = "__ATOMIC_PREWARM_BUILD_STAMP__";
+/** Matches either an unstamped or previously stamped `PREWARM_BUILD_STAMP` string assignment. */
+export const PREWARM_BUILD_STAMP_ASSIGNMENT =
+	/\bPREWARM_BUILD_STAMP\s*=\s*"(?:__ATOMIC_PREWARM_BUILD_STAMP__|[0-9a-f]{30})"/gu;
 
 /**
- * Deterministic 30-hex SHA-256 build digest of all `.js` chunks in a split build, sorted by binary UTF-16 code-unit
- * order so the digest is identical across locales (`LANG=C`, `LANG=tr_TR`, etc.). Strips the quoted stamp placeholder
- * before hashing so the stamp itself never enters the digest while any code edit (including body-only edits to
- * `engine-prewarm.ts`) still changes it.
+ * Deterministic 30-hex SHA-256 build digest of all `.js` chunks in a build, sorted by binary UTF-16 code-unit order so
+ * the digest is identical across locales (`LANG=C`, `LANG=tr_TR`, etc.). Normalizes the stamp slot before hashing so
+ * the stamp itself never enters the digest (and re-hashing an already-stamped tree stays idempotent) while any code
+ * edit (including body-only edits to `engine-prewarm.ts`) still changes it.
  *
  * @param {readonly { type?: string, fileName: string, code?: string }[]} outputs
  * @returns {string}
@@ -434,23 +437,28 @@ export function computePrewarmBuildStamp(outputs) {
 		)
 		.sort((left, right) => (left.fileName < right.fileName ? -1 : left.fileName > right.fileName ? 1 : 0));
 	for (const item of chunks) {
+		const normalized = item.code
+			.replaceAll(quotedMark, '""')
+			.replace(PREWARM_BUILD_STAMP_ASSIGNMENT, 'PREWARM_BUILD_STAMP = ""');
 		hash.update(item.fileName);
 		hash.update("\0");
-		hash.update(item.code.replaceAll(quotedMark, '""'));
+		hash.update(normalized);
 		hash.update("\0");
 	}
 	return hash.digest("hex").slice(0, PREWARM_BUILD_STAMP_MARK.length);
 }
 
 /**
- * Replaces the quoted {@link PREWARM_BUILD_STAMP_MARK} literal in `contents` using {@link codeStringLiteral} (exact
- * same 32-character literal length, preserving source-map columns) and verifies no raw marker remains.
+ * Replaces the quoted {@link PREWARM_BUILD_STAMP_MARK} literal (or, when `allowRestamp` is true, an existing 30-hex
+ * `PREWARM_BUILD_STAMP` assignment) in `contents` using {@link codeStringLiteral} (exact same 32-character literal
+ * length, preserving source-map columns) and verifies no raw marker remains.
  *
  * @param {string} contents
  * @param {string} stamp
+ * @param {{ allowRestamp?: boolean }} [options]
  * @returns {{ contents: string, stamped: boolean }}
  */
-export function stampPrewarmBuildChunk(contents, stamp) {
+export function stampPrewarmBuildChunk(contents, stamp, options = {}) {
 	const quotedMark = codeStringLiteral(PREWARM_BUILD_STAMP_MARK);
 	const stampedLiteral = codeStringLiteral(stamp);
 	let stamped = false;
@@ -458,7 +466,12 @@ export function stampPrewarmBuildChunk(contents, stamp) {
 	if (next.includes(quotedMark)) {
 		next = next.replaceAll(quotedMark, stampedLiteral);
 		stamped = true;
+	} else if (options.allowRestamp && PREWARM_BUILD_STAMP_ASSIGNMENT.test(next)) {
+		PREWARM_BUILD_STAMP_ASSIGNMENT.lastIndex = 0;
+		next = next.replace(PREWARM_BUILD_STAMP_ASSIGNMENT, `PREWARM_BUILD_STAMP = ${stampedLiteral}`);
+		stamped = true;
 	}
+	PREWARM_BUILD_STAMP_ASSIGNMENT.lastIndex = 0;
 	if (next.includes(PREWARM_BUILD_STAMP_MARK)) {
 		throw new Error(`split-dist: retained an unrewritten ${PREWARM_BUILD_STAMP_MARK} stamp`);
 	}

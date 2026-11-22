@@ -30,6 +30,8 @@ const requiredPiTuiFiles = [
 const frozenNativeModifiersMarker = "@bastani/atomic-tui/dist/native-modifiers.js";
 const barePiTuiRequirePattern = /require\((["'])@bastani\/atomic-tui\1\)/u;
 const externalNativeModifiersPattern = /require\((["'])\.\/native-modifiers\.js\1\)/u;
+const unstampedPrewarmMarker = "__ATOMIC_PREWARM_BUILD_STAMP__";
+const stampedPrewarmPattern = /\bPREWARM_BUILD_STAMP\s*=\s*"[0-9a-f]{30}"/u;
 const requiredAppMarkers = [
 	"global.anthropic.claude-opus-5",
 	"https://openrouter.ai/auth",
@@ -91,6 +93,11 @@ export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 		if (appBundle.includes(frozenNativeModifiersMarker)) {
 			throw new Error(
 				`pi-tui native modifiers must stay external to ${appBundlePath}; bundling freezes the build host's import.meta.url`,
+			);
+		}
+		if (appBundle.includes(unstampedPrewarmMarker) || !stampedPrewarmPattern.test(appBundle)) {
+			throw new Error(
+				`PREWARM_BUILD_STAMP must be stamped with a 30-hex digest in ${appBundlePath} before bundling`,
 			);
 		}
 	}
