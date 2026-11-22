@@ -206,14 +206,20 @@ for (const { stallAt, resume } of [
 			// A child-only extension: the first start stalls past its budget, then lets go once its launch reports the retry.
 			// A stall of a fixed length would also have to cover how long the start took to get there, which a loaded
 			// runner stretches past the time the launch waits for a stalled start to let go of its session.
-			let starts = 0;
+			// The hook knows which start it runs in from the attempt the launch reported last: a loaded runner can run the
+			// first start out of its budget before it gets here, and the retry is then the only start that does.
+			let attempt = 1;
+			let retryStarted = false;
 			const retryReported = Promise.withResolvers<void>();
 			const retryDisposing = Promise.withResolvers<void>();
 			const releaseRetry = Promise.withResolvers<void>();
 			globals[STALL_HOOK] = (point) => {
-				if (point === "start")
-					return ++starts === 1 ? Promise.race([retryReported.promise, sleep(STALL_BOUND_MS)]) : undefined;
-				if (starts !== 2) return undefined;
+				if (point === "start") {
+					if (attempt === 1) return Promise.race([retryReported.promise, sleep(STALL_BOUND_MS)]);
+					retryStarted = true;
+					return undefined;
+				}
+				if (!retryStarted) return undefined;
 				retryDisposing.resolve();
 				return releaseRetry.promise;
 			};
@@ -285,6 +291,7 @@ for (const { stallAt, resume } of [
 				reportStart: (progress) => {
 					if (progress === undefined) return;
 					reports.push(`attempt ${progress.attempt}: ${progress.step}`);
+					attempt = progress.attempt;
 					if (progress.attempt === 2) retryReported.resolve();
 					if (progress.attempt === 2 && gapSend === undefined)
 						gapSend = peer.send(childName, { text: "GAP-2 while the first start stalled" });
@@ -332,9 +339,8 @@ for (const { stallAt, resume } of [
 			});
 			startHold.settle(result);
 			try {
-				assert.equal(
-					starts,
-					2,
+				assert.ok(
+					retryStarted,
 					`the first start stalled and was retried once: ${JSON.stringify({ reports, cause: result.cause })}`,
 				);
 				assert.equal(result.status, "ok", JSON.stringify(result));
