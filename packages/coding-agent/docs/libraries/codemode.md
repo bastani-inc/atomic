@@ -48,22 +48,24 @@ else console.error(result.error.kind, result.error.message);
 await sandbox.close();
 ```
 
-`code` is the body of an async function: `return` and top-level `await` work. Inside the script, with every sandbox:
+`code` is the body of an async function, so `return` and top-level `await` work. Inside the script, every sandbox provides:
 
-- `tools.<name>(args)` returns a promise. Arguments and results make a JSON round trip. A tool that throws rejects with an `Error` carrying the same message. Tool names are also exposed as identifiers: characters that are not valid in identifiers become `_` (`toCodemodeIdentifier`), so `my-tool` is `tools.my_tool` as well as `tools["my-tool"]`.
-- `ALL_TOOLS` lists `{ name, description }` for every tool, with `name` as the identifier.
-- `text(value)` appends a text item to `result.output`; values other than strings are JSON-stringified. `console.log/info/warn/error/debug` append text items with `console: true`.
+- `tools.<name>(args)` returns a promise. Arguments and results go through a JSON round trip, and a tool that throws rejects with an `Error` carrying the same message. Tool names are also exposed as identifiers with invalid characters replaced by `_` via `toCodemodeIdentifier`, so `my-tool` is available as both `tools.my_tool` and `tools["my-tool"]`.
+- `ALL_TOOLS` lists `{ name, description }` for every tool, using the identifier form for `name`.
+- `text(value)` appends a text item to `result.output`, JSON-stringifying non-string values. `console.log`, `info`, `warn`, `error`, and `debug` append text items with `console: true`.
 - `image(urlOrItem)` appends an image item. It accepts a base64 `data:` URL, `{ image_url }`, or an image block (`{ type: "image", data, mimeType }`, as MCP tools and `@bastani/atomic-ai` produce). Remote URLs are rejected.
-- `exit()` ends the script successfully right away, keeping its output and store writes.
-- `globals` passed to the sandbox are called as top-level functions, for example a host helper `image(ref)`. They behave like tools but are not recorded in `result.calls`. A name like `models.classify` puts the function on a frozen `models` object. With `spread: true`, `execute` receives all call arguments as an array instead of the first one, and `signature` replaces the declaration generated from the schemas.
+- `exit()` ends the script immediately with a successful result, keeping its output and store writes.
+- `globals` passed to the sandbox are callable as top-level functions, such as a host helper `image(ref)`. They behave like tools but are not recorded in `result.calls`. A dotted name like `models.classify` places the function on a frozen `models` object. With `spread: true`, `execute` receives all call arguments as an array instead of only the first argument, and `signature` replaces the declaration generated from the schemas.
 - `store(key, value)` and `load(key)` read and write JSON values synchronously. See [Store](#store).
-- Nothing else: no timers, `fetch`, `process`, `require`, modules, or `WebAssembly`. `eval` and `Function` work but only produce more code inside the same VM.
+- Nothing else is available. There are no timers, `fetch`, `process`, `require`, modules, or `WebAssembly`. `eval` and `Function` work, but they only evaluate code inside the same VM.
 
-`timeoutMs: Infinity` disables the deadline; the script then runs until it settles or `signal` aborts it. A script that waits on a promise nothing can settle (no tool call pending, and the VM has no timers or I/O) fails right away instead of hanging.
+Setting `timeoutMs: Infinity` disables the deadline so the script runs until it settles or `signal` aborts it. A script that awaits a promise nothing can settle (with no tool call pending and no timers or I/O in the VM) fails immediately instead of hanging.
 
-`memoryLimitBytes` caps the VM's heap. Allocations beyond it fail inside the script as `InternalError: out of memory`.
+`memoryLimitBytes` caps the VM heap. Allocations beyond that limit fail inside the script with `InternalError: out of memory`.
 
-Aborts, timeouts, and `close()` request worker termination without waiting for the worker to exit. On Bun, a built-in such as a long `String.prototype.indexOf` may not poll QuickJS's interrupt handler, so its worker can keep computing until the built-in returns. Stopping unrefs the worker after requesting termination, because `terminate()` refs it internally. This does not guarantee computation has stopped. On Bun 1.4.0, a pending `terminate()` can still delay host process exit despite `unref()`; cancellation results and `close()` do not wait for it.
+Aborts, timeouts, and `close()` request worker termination without waiting for the worker to exit. On Bun, a built-in such as a long `String.prototype.indexOf` may not poll QuickJS's interrupt handler, so its worker can continue computing until the built-in returns.
+
+Stopping unrefs the worker after requesting termination because `terminate()` refs it internally. That does not guarantee computation has stopped, and on Bun a pending `terminate()` can still delay host process exit. Cancellation results and `close()` never wait for worker exit.
 
 Hosts that limit concurrency can track actual worker lifetime with `onWorkerStarted(exited)`, called for each worker started by `execute()` or `start()`. Its promise resolves when that worker exits, not when the script result settles:
 
@@ -83,7 +85,7 @@ To enforce an admission limit, pass `acquireWorker()`. It runs synchronously aft
 
 ## Store
 
-`store`/`load` let scripts keep values across executions. The sandbox does not persist anything itself: pass the current values as `options.store`, and a successful result reports what the script changed as `result.storeWrites` (`{ set, delete }`). Failed executions report no writes.
+`store()` and `load()` let scripts keep values across executions. The sandbox does not persist anything itself. Pass the current values in `options.store`, and a successful result returns what the script changed in `result.storeWrites` (`{ set, delete }`). Failed executions report no writes.
 
 ```ts
 const result = await sandbox.execute(`store("runs", (load("runs") ?? 0) + 1)`, { store: saved });
@@ -93,7 +95,7 @@ if (result.ok) {
 }
 ```
 
-`load` returns a copy, so mutating it does not change the store. Storing `undefined` deletes the key. A value may be at most `MAX_STORE_VALUE_CHARS` (256 Ki) characters of JSON and all values together at most `MAX_STORE_TOTAL_CHARS` (1 Mi); larger writes throw a `RangeError` inside the script.
+`load()` returns a copy, so mutating it does not change the store. Storing `undefined` deletes the key. Each stored value may be at most `MAX_STORE_VALUE_CHARS` (256 Ki) characters of JSON, and all stored values together may be at most `MAX_STORE_TOTAL_CHARS` (1 Mi) characters. Larger writes throw a `RangeError` inside the script.
 
 ## Source format
 
@@ -105,11 +107,13 @@ const source = await tools.read({ path: "package.json" });
 text(JSON.parse(source).name);
 ```
 
-Supported fields are `max_output_tokens`, a token budget for the output, and `timeout_ms`, a hard deadline. The sandbox does not act on them; the caller decides. The options line is replaced by an empty line, so line numbers in stack traces still match the input. Empty input, invalid JSON, unknown fields, an options line without code, or an options line on any line but the first throw `CodemodeSourceError`. `CODEMODE_SOURCE_GRAMMAR` is a Lark grammar for providers that support grammar-constrained tool input. Both are also available from the lightweight `@bastani/atomic-codemode/source` entry.
+Supported fields are `max_output_tokens` (an output token budget) and `timeout_ms` (a hard deadline). The sandbox does not enforce them; the caller decides how to apply them. The options line is replaced by an empty line so line numbers in stack traces still match the input.
+
+Empty input, invalid JSON, unknown fields, an options line without code, or an options line after line 1 throw `CodemodeSourceError`. `CODEMODE_SOURCE_GRAMMAR` is a Lark grammar for providers that support grammar-constrained tool input. Both exports are also available from the lightweight `@bastani/atomic-codemode/source` entry.
 
 ## Bundled Node and Bun hosts
 
-By default `CodemodeSandbox` loads `quickjs-wasi/quickjs.wasm` from the installed package and starts the worker file that sits next to this package's module. Neither exists on disk when the host is bundled, so pass both:
+By default, `CodemodeSandbox` loads `quickjs-wasi/quickjs.wasm` from the installed package and starts the worker file next to this package's module. Neither exists on disk in a bundled host, so pass both explicitly:
 
 ```ts
 import { CodemodeSandbox, loadQuickJSWasm } from "@bastani/atomic-codemode";
@@ -123,30 +127,25 @@ const sandbox = new CodemodeSandbox({
 });
 ```
 
-`workerUrl` accepts a URL or string. For a Bun compiled executable, include the worker as an
-additional build entrypoint and pass its relative source path as a string, for example
-`"./src/codemode-worker.ts"`; Bun resolves that form from its embedded module graph.
+`workerUrl` accepts a `URL` or string. For a Bun compiled executable, include the worker as an additional build entrypoint and pass its relative source path as a string, such as `"./src/codemode-worker.ts"`. Bun resolves that form from its embedded module graph.
 
 ## Usage on Cloudflare Workers
 
-`CodemodeSandbox` needs Node or Bun. It runs each script in a worker thread and reads the QuickJS binary from disk. Cloudflare Workers have neither, and they cannot compile WebAssembly at runtime. Two other sandboxes have the same API, the same script environment, and the same `CodemodeResult`. Only where the VM runs differs:
+`CodemodeSandbox` requires Node or Bun because it starts a worker thread per script and reads the QuickJS binary from disk. Cloudflare Workers have neither, and they cannot compile WebAssembly at runtime. Two other sandboxes share the same API, script environment, and `CodemodeResult`, differing only in where the VM runs:
 
 | Sandbox | Where the VM runs | Use it for |
 | --- | --- | --- |
-| `CodemodeSandbox` | a worker thread | Node and Bun |
-| `RemoteCodemodeSandbox` | another isolate, usually a Durable Object in a separate Worker | a Durable Object that runs an agent session |
-| `InlineCodemodeSandbox` | the calling thread | anywhere else with WebAssembly, when blocking the caller is acceptable |
+| `CodemodeSandbox` | A worker thread | Node and Bun |
+| `RemoteCodemodeSandbox` | Another isolate, usually a Durable Object in a separate Worker | A Durable Object that runs an agent session |
+| `InlineCodemodeSandbox` | The calling thread | Other runtimes with WebAssembly when blocking the caller is acceptable |
 
-Import the last two from `@bastani/atomic-codemode/portable`, which has no Node imports. On Cloudflare, `@bastani/atomic-codemode/cloudflare` adds the deployable Durable Object and the QuickJS module compiled by Wrangler.
+Import `RemoteCodemodeSandbox` and `InlineCodemodeSandbox` from `@bastani/atomic-codemode/portable`, which has no Node imports. On Cloudflare, `@bastani/atomic-codemode/cloudflare` adds the deployable Durable Object and the QuickJS module compiled by Wrangler.
 
 ### Why a separate Worker
 
-QuickJS runs synchronously, so a script that computes holds its thread until it awaits a tool. Measured on Cloudflare (October 2026), a script that computed for ten seconds delayed every other request to the session object by the full ten seconds in two placements:
+QuickJS runs synchronously, so a script that computes holds its thread until it awaits a tool. Running the VM inside the session's Durable Object or inside a Dynamic Worker loaded by that object blocks other requests to the session object for the entire compute burst.
 
-- inside the session's Durable Object
-- in a Dynamic Worker loaded by that object
-
-In a Durable Object of a separately deployed Worker, the delay was about 50 ms. `RemoteCodemodeSandbox` therefore keeps the tools and call records in the session and sends only the VM to the sandbox Worker. Each tool call travels back to the session over Workers RPC.
+Running the VM in a Durable Object of a separately deployed Worker moves computation to another isolate and keeps the session object responsive. `RemoteCodemodeSandbox` keeps the tools and call records in the session and sends only the VM to the sandbox Worker. Each tool call travels back to the session over Workers RPC.
 
 ### Deploying the sandbox Worker
 
@@ -217,11 +216,11 @@ Run both Workers locally with `wrangler dev -c agent/wrangler.jsonc -c sandbox/w
 
 ### Limits on Cloudflare
 
-- **Interrupt budget.** While a script computes without calling a tool, no timer can run, and `Date.now()` does not advance. A script that never yields is limited only by the interrupt budget, not by `timeoutMs`. QuickJS polls an interrupt handler while it runs, and the sandbox counts the polls. Past the budget, the execution fails with `kind: "timeout"`.
-   - The default `DEFAULT_INTERRUPT_BUDGET` of 100,000 polls is about 2 seconds of a tight loop on an Apple M-series laptop and about 10 seconds on Cloudflare.
-   - Keep the budget below the Worker's `cpu_ms` limit (30 seconds by default). Hitting that limit resets the object instead of failing one script.
-- **Memory.** Each VM may use up to 32 MiB by default. All VMs in one isolate share its 128 MB.
-- **Changing the limits.** The Durable Object caps every request at its own limits, whatever the client asks for. To change them, subclass it in the sandbox Worker:
+- **Interrupt budget.** While a script computes without calling a tool, no timer runs and `Date.now()` does not advance. A script that never yields is bounded by the interrupt budget rather than `timeoutMs`. QuickJS polls an interrupt handler while running, and the sandbox counts polls. Past the budget, execution fails with `kind: "timeout"`.
+   * The default `DEFAULT_INTERRUPT_BUDGET` of 100,000 polls allows roughly 10 seconds of a tight loop on Cloudflare Workers.
+   * Keep the budget below the Worker's `cpu_ms` limit (30 seconds by default). Hitting that limit resets the Durable Object instead of failing only the script.
+- **Memory.** Each VM may use up to 32 MiB by default. All VMs in one isolate share its 128 MB limit.
+- **Changing the limits.** The Durable Object caps every request at its own limits regardless of what the client requests. Subclass it in the sandbox Worker to raise or lower those caps:
 
 ```ts
 import { CodemodeSandboxDurableObject } from "@bastani/atomic-codemode/cloudflare";
@@ -232,12 +231,12 @@ export class CodemodeSandbox extends CodemodeSandboxDurableObject {
 }
 ```
 
-- **Aborts and timeouts.** `timeoutMs` and `signal` end the execution in the caller right away, with `kind: "timeout"` or `kind: "aborted"`. The remote VM stops at its next tool call. A remote VM that is computing at that moment keeps running until it calls a tool or uses up its budget.
+- **Aborts and timeouts.** `timeoutMs` and `signal` end execution in the caller immediately with `kind: "timeout"` or `kind: "aborted"`. The remote VM stops at its next tool call, or keeps running until it calls a tool or exhausts its interrupt budget.
 - **Billing.** Each execution is one Durable Object request. The sandbox object is billed for wall-clock duration while an execution runs, including time spent waiting on tools.
 
 ### On the calling thread
 
-When blocking the caller is acceptable, for example in a stateless Worker that serves one request, run the VM on the caller's thread instead. Nothing extra needs to be deployed:
+When blocking the caller is acceptable, such as in a stateless Worker serving a single request, run the VM on the caller's thread instead with no extra deployment:
 
 ```ts
 import { createInlineCodemodeSandbox } from "@bastani/atomic-codemode/cloudflare";
@@ -246,10 +245,10 @@ const sandbox = createInlineCodemodeSandbox({ tools, timeoutMs: 60_000, interrup
 const result = await sandbox.execute(code);
 ```
 
-`createInlineCodemodeSandbox()` passes the QuickJS module Wrangler compiled to `InlineCodemodeSandbox`. With another bundler, import `InlineCodemodeSandbox` from `/portable` and pass your own compiled module as `wasm`.
+`createInlineCodemodeSandbox()` passes the Wrangler-compiled QuickJS module to `InlineCodemodeSandbox`. With another bundler, import `InlineCodemodeSandbox` from `/portable` and pass your own compiled module as `wasm`.
 
-- **Blocking.** A script that computes blocks the caller until it awaits a tool or uses up its `interruptBudget`.
-- **Stack.** QuickJS's stack guard is reduced to `INLINE_MAX_STACK_SIZE`, so that it trips before the caller's smaller stack runs out.
+- **Blocking.** A script that computes blocks the caller until it awaits a tool or exhausts its `interruptBudget`.
+- **Stack.** QuickJS's stack guard is lowered to 256 KiB so deep recursion trips before the caller's smaller stack overflows.
 
 ## Declarations for the model
 
@@ -350,11 +349,11 @@ Call the runner from each sandbox tool's `execute` instead of `tool.execute()`, 
 
 The VM only runs when the host hands it something, and has no timers or I/O, so it is deterministic except for what it reads from its environment. `start()` fixes that:
 
-- **Time:** `Date.now()` reads `startedAt`, then the `now` of the result being processed, never going backwards. `performance.now()` counts from `startedAt`.
-- **Randomness:** `Math.random()` and the VM's other randomness come from `seed`.
-- **Timezone:** UTC, whatever the host's.
-- **Garbage collection:** `WeakRef` and `FinalizationRegistry` do not exist.
-- **Result order:** the host answers each call with a result number (1, 2, ...), and the VM applies results strictly in that order, whatever order a transport delivers them in.
+- **Time.** `Date.now()` reads `startedAt`, then the `now` of each delivered result without ever going backwards. `performance.now()` counts from `startedAt`.
+- **Randomness.** `Math.random()` and the VM's other randomness come from `seed`.
+- **Timezone.** The VM always uses UTC, regardless of the host timezone.
+- **Garbage collection.** `WeakRef` and `FinalizationRegistry` are absent.
+- **Result order.** The host answers each call with a sequential result number (`1`, `2`, ...), and the VM applies results strictly in that order regardless of transport delivery order.
 
 The run declares its own tools and globals, and the host answers every call itself:
 
@@ -379,29 +378,31 @@ A run has no deadline unless `timeoutMs` is given. Result numbers must run 1, 2,
 
 `execute()` never rejects for script failures. `result.error.kind` is one of:
 
-| kind      | meaning                                                                     |
-| --------- | --------------------------------------------------------------------------- |
-| `script`  | the script threw or failed to parse; `stack` points at `codemode.js:<line>` |
-| `timeout` | the deadline expired or the interrupt budget ran out; VM shutdown was requested |
-| `aborted` | `options.signal` fired or `close()` was called; VM shutdown was requested |
-| `sandbox` | the VM or its transport failed, for example a wasm trap, a missing worker file, or a failed remote |
+| Kind | Meaning |
+| --- | --- |
+| `script` | The script threw or failed to parse. `stack` points at `codemode.js:<line>`. |
+| `timeout` | The deadline expired or the interrupt budget ran out, and VM shutdown was requested. |
+| `aborted` | `options.signal` fired or `close()` was called, and VM shutdown was requested. |
+| `sandbox` | The VM or its transport failed, such as a WebAssembly trap, a missing worker file, or a failed remote. |
 
-`result.output` holds the text and image items in the order the script produced them, also for failed executions. The host keeps all of it until the script ends, so output is limited to `MAX_OUTPUT_CHARS` (16 Mi) characters of text and base64 image data and `MAX_OUTPUT_ITEMS` (100000) items. Past either limit the script fails with a `RangeError`, even if it catches the error. `result.calls` lists every tool call with `status: "ok" | "error" | "cancelled"`. A call that is still running when the script returns (not awaited) is aborted through the tool's `signal` and reported as `cancelled`.
+`result.output` holds text and image items in the order the script produced them, including for failed executions. Because the host retains all output until the script ends, output is capped at `MAX_OUTPUT_CHARS` (16 Mi) characters of text and base64 image data and `MAX_OUTPUT_ITEMS` (100,000) items. Past either limit, the script fails with a `RangeError` even if it catches the error.
+
+`result.calls` lists every tool call with `status: "ok" | "error" | "cancelled"`. Any unawaited call still running when the script returns is aborted through its `signal` and reported as `cancelled`.
 
 ## How it works
 
-This section describes `CodemodeSandbox`. The other sandboxes share the same host side, prelude, and VM, and replace only the worker thread. See [Usage on Cloudflare Workers](#usage-on-cloudflare-workers).
+This section describes `CodemodeSandbox`. The other sandboxes share the same host code, prelude, and VM, replacing only the worker thread. See [Usage on Cloudflare Workers](#usage-on-cloudflare-workers).
 
-Each `execute()` starts a worker thread (about 20 ms including VM creation) that instantiates a fresh QuickJS VM from the compiled wasm module. The VM is a separate wasm instance with its own linear memory. Its only imports are a WASI shim (clock, random, and stdout/stderr writes, which the worker discards) and one host-call entry point, so the script cannot reach the host except through the functions the worker registers.
+Each `execute()` starts a worker thread that instantiates a fresh QuickJS VM from the compiled WebAssembly module. Each VM is a separate WebAssembly instance with its own linear memory. Its only imports are a WASI shim (clock, random, and discarded stdout/stderr writes) and one host-call entry point, so the script can reach the host only through functions registered by the worker.
 
-The worker evaluates a prelude inside the VM that holds the single host bridge in a closure and builds `tools`, `console`, and globals on top of it. The script is compiled as an async function body.
+The worker evaluates a prelude inside the VM that holds the single host bridge in a closure and builds `tools`, `console`, and globals on top of it. The script compiles as an async function body.
 
-Tool calls are relayed to the host thread as messages; the host runs the tool and posts the JSON result back. The host owns the deadline and the abort signal. When either fires, it sets a shared interrupt flag that the VM polls, then calls `worker.terminate()`. The flag is needed on Bun, where `terminate()` cannot stop a thread that is spinning in wasm (`while (true) {}` or `while (true) await null`).
+Tool calls travel to the host thread as messages; the host runs each tool and posts the JSON result back. The host owns the deadline and abort signal. When either fires, it sets a shared interrupt flag that the VM polls and then calls `worker.terminate()`. The shared flag stops tight loops on Bun, where `terminate()` alone cannot stop a thread spinning inside WebAssembly.
 
-The worker keeps script execution off the host thread: QuickJS runs synchronously, so a spinning script on the host thread would block its event loop.
+Running scripts in a worker keeps execution off the host thread. Because QuickJS runs synchronously, a spinning script on the host thread would block its event loop.
 
 ## Runtime notes
 
-- Node and Bun support memory limits, interrupts, and a catchable `RangeError` for deep recursion (QuickJS's stack guard is enabled; without it the wasm stack overflows and traps). Bun may delay worker exit during non-interruptible built-ins; results do not wait for exit.
-- Stack traces use QuickJS frames (`at f (codemode.js:2:31)`), prefixed with `Name: message` like V8. The wrapper prefix shares line 1 with the script, so line numbers are exact; column numbers on line 1 are shifted.
-- QuickJS is an interpreter. Glue code and filtering tool results are fast enough; heavy computation is slower than in V8.
+- Node and Bun support memory limits, interrupts, and a catchable `RangeError` for deep recursion because QuickJS's stack guard is enabled. Bun may delay worker exit during non-interruptible built-ins, though script results do not wait for exit.
+- Stack traces use QuickJS frames (`at f (codemode.js:2:31)`), prefixed with `Name: message` like V8. The wrapper prefix shares line 1 with the script, so line numbers are exact while column numbers on line 1 are shifted.
+- QuickJS is an interpreter. Glue code and tool-result filtering run fast enough, while heavy computation is slower than in V8.

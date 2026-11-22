@@ -1,6 +1,6 @@
 ---
 title: "Local models"
-description: "Run models locally with a llama.cpp server: discovery, load management, and downloads."
+description: "Run models locally with a llama.cpp router server: discovery, load management, downloads, and local classification."
 ---
 
 # llama.cpp
@@ -21,11 +21,11 @@ Verify the installation:
 llama --version
 ```
 
-See [llama.app](https://llama.app) for other installation methods, including package managers and building from source.
+See [llama.app](https://llama.app) for package managers and building from source.
 
 ## Start the router
 
-Start `llama serve` without `--model`, `-m`, or `-hf`; those options start single-model mode instead of router mode. See the [llama.cpp server guide](https://llama.app/docs/serve#serving-multiple-models-router-mode) for router configuration.
+Start `llama serve` without `--model`, `-m`, or `-hf`, which start single-model mode instead of router mode. See the [llama.cpp server guide](https://llama.app/docs/serve#serving-multiple-models-router-mode) for full router options.
 
 ```bash
 llama serve \
@@ -35,24 +35,20 @@ llama serve \
   -c 32768
 ```
 
-- `--no-models-autoload` leaves loading under explicit `/llama` control.
-- `-ngl all` offloads all layers to the GPU. Omit it to use automatic GPU offloading.
-- `-c 32768` sets the context size in tokens. Use `-c 0` for the model's full context window, which may require substantially more memory. Context is shared across parallel server slots.
-- `--models-dir ~/models` also discovers local GGUF files in that directory.
+- `--no-models-autoload` keeps model loading under explicit `/llama` control.
+- `-ngl all` offloads all layers to the GPU. Omit it for automatic GPU offloading.
+- `-c 32768` sets the context size in tokens. Use `-c 0` for a model's full context window, which uses more memory. Parallel server slots share context.
+- `--models-dir ~/models` discovers local GGUF files in that directory.
 
-Single-file models can sit directly in the model directory. Put multimodal and multi-shard models in separate subdirectories with their projection or shard files. Restart the router after manually adding files. The router also supports cached models and preset files through `--models-preset`, as described in the [server guide](https://llama.app/docs/serve#serving-multiple-models-router-mode).
+Place single-file models directly in the model directory, and put multimodal or multi-shard models in separate subdirectories with their projection or shard files. Restart the router after adding files manually. The router also reads cached models and `--models-preset` files; see the [server guide](https://llama.app/docs/serve#serving-multiple-models-router-mode).
 
 For settings tuned to a specific NVIDIA GPU and model, see [NVIDIA RTX recipes](#nvidia-rtx-recipes).
 
 ## Configure Atomic
 
-Run:
+Run `/login llama.cpp` and enter the router URL and optional API key. The default URL is `http://127.0.0.1:9931`. When the router runs with `--no-models-autoload`, login saves only the connection; load a model with `/llama`, then select it with `/model`.
 
-```text
-/login llama.cpp
-```
-
-Enter the router URL and optional API key. The default URL is `http://127.0.0.1:9931`. If the router uses `--no-models-autoload`, login only stores the connection; use `/llama` to load a model, then `/model` to select it. The same values can be supplied without `/login`:
+You can configure the same values with environment variables instead of `/login`:
 
 ```bash
 export LLAMA_BASE_URL=http://127.0.0.1:9931
@@ -60,52 +56,52 @@ export LLAMA_API_KEY=optional-secret
 atomic
 ```
 
-If the server requires a key, start `llama serve` with the matching `--api-key`. Keep `--host 127.0.0.1` for local-only access.
+If the server requires an API key, start `llama serve` with the matching `--api-key`. Keep `--host 127.0.0.1` for local-only access.
 
 ## Manage models
 
-Run `/llama` in interactive mode:
+Run `/llama` in interactive mode to manage router models:
 
 - Select an unloaded model to load it, or a loaded model to unload it.
-- Select **Download model…**, search Hugging Face, then choose a repository and quantization. Exact `owner/repository[:quant]` values also work: type one and press Enter to download it as typed.
+- Select **Download model…** to search Hugging Face and pick a repository and quantization. Typing an exact `owner/repository[:quant]` value and pressing Enter downloads it directly.
 - Press Escape during a load or download to confirm cancellation.
 
-Hugging Face search uses `HF_TOKEN` when set, then checks `$HF_TOKEN_PATH`, `$HF_HOME/token`, `$XDG_CACHE_HOME/huggingface/token`, and `~/.cache/huggingface/token`. Unauthenticated search has lower rate limits. Atomic warns before gated downloads and links to the access page. Because llama.cpp performs the download, its process must also have `HF_TOKEN` for gated repositories.
+Hugging Face search checks `HF_TOKEN`, then `$HF_TOKEN_PATH`, `$HF_HOME/token`, `$XDG_CACHE_HOME/huggingface/token`, and `~/.cache/huggingface/token`. Unauthenticated search has lower rate limits. Atomic warns before gated downloads and links to the access page; because llama.cpp performs the download, its process also needs `HF_TOKEN` for gated repositories.
 
-Atomic asks before unloading other models, never silently unloads models, and never deletes model files. `/llama` displays the router's current state because other clients may share it. Loaded and sleeping models appear in `/model`; sleeping models wake automatically when selected. With router autoload enabled, unloaded preset models also appear and load when selected. With `--no-models-autoload`, load a model through `/llama` before selecting it.
+Atomic asks before unloading other models, never silently unloads models, and never deletes model files. `/llama` reads the router's live state because other clients may share the server. Loaded and sleeping models appear in `/model`, and sleeping models wake automatically when selected. With router autoload enabled, unloaded preset models also appear in `/model` and load on selection; with `--no-models-autoload`, load them through `/llama` first.
 
-Atomic saves the last successful loaded-model catalog in `~/.atomic/agent/models-store.json`, or the active custom agent directory. Those entries remain selectable after restart until the first successful refresh. If the first online refresh fails, Atomic reports the router error and keeps the validated persisted catalog available. A later successful refresh replaces stale loaded-state entries without duplicates.
+Atomic caches the last loaded-model catalog in `~/.atomic/agent/models-store.json` (or the active agent directory). Cached entries stay selectable across restarts until the next successful refresh. If an online refresh fails, Atomic reports the router error and keeps the cached catalog; a later successful refresh replaces stale entries without duplicates.
 
-If the router disconnects, choose **Retry** to reconnect and refresh state without replaying the interrupted operation.
+If the router disconnects, select **Retry** to reconnect and refresh state without replaying the interrupted action.
 
-Each llama model uses the router-reported loaded context (`meta.n_ctx`, then training context, otherwise Atomic's fallback) for both `contextWindow` and `maxTokens`; Atomic no longer applies a separate 16K output cap. The server remains authoritative and may impose a smaller practical generation limit.
+Each llama.cpp model sets both `contextWindow` and `maxTokens` from the router-reported context window (`meta.n_ctx`, then the model's configured `--ctx-size`, cached context, training context `meta.n_ctx_train`, or the 128,000-token fallback). The server remains authoritative and may enforce a smaller generation limit.
 
 ## NVIDIA RTX recipes
 
-[NVIDIA Local AI Inference Recipes](https://nvidia.github.io/local-ai-inference-recipes/index.html) provides llama.cpp settings tuned for specific NVIDIA hardware and models. Each recipe gives a single-model `llama-server` command. Convert it into a router preset so the router can serve it alongside other models, and start the router with `llama serve`, which accepts the same options as `llama-server`. The examples below use Windows PowerShell.
+[NVIDIA Local AI Inference Recipes](https://nvidia.github.io/local-ai-inference-recipes/index.html) publishes llama.cpp settings tuned for specific NVIDIA GPUs and models. Each recipe provides a single-model `llama-server` command. Convert it into a router preset file so `llama serve` (which accepts the same options) can serve it alongside other models. The examples below use Windows PowerShell.
 
 ### Before you begin
 
-1. Open the [recipe catalog](https://nvidia.github.io/local-ai-inference-recipes/index.html), select your hardware, operating system, and model, then choose **llama.cpp**. Check the prerequisites and memory requirements. Keep the recipe's launch command for the conversion below.
-2. Install llama.cpp with the recipe's setup instructions. The recipe's settings depend on its build, for example CUDA support or speculative decoding options.
-3. Run `llama serve --help` and check that it lists `--models-preset`. If the build has no `llama` program or the option is missing, it cannot load the recipe as a router preset. Use a newer build that still meets the recipe's requirements.
-4. Install Atomic with the [Quickstart](/quickstart). On native Windows, also see [Run Atomic on Windows](/windows).
+1. Open the [recipe catalog](https://nvidia.github.io/local-ai-inference-recipes/index.html), choose your hardware, OS, and model, then select **llama.cpp**. Check prerequisites and memory requirements, and keep the launch command.
+2. Install llama.cpp using the recipe's setup instructions so your build includes any required CUDA or speculative-decoding features.
+3. Run `llama serve --help` and verify that `--models-preset` is listed. If `llama` or `--models-preset` is missing, update to a newer compatible build.
+4. Install Atomic via the [Quickstart](/quickstart). On native Windows, see [Run Atomic on Windows](/windows).
 
 ### Convert the recipe to a preset
 
-A preset lists the settings for one or more models. Each section name becomes the model ID shown in Atomic. Save the preset in the llama.cpp folder, or pass its full path when starting the router.
+A preset file defines settings for one or more models, and each section header becomes the model ID in Atomic. Save the file in the llama.cpp directory or pass its full path to `llama serve`.
 
-Convert each option from the recipe command into one preset line:
+Convert each command-line option into a preset line:
 
-- Remove the leading dashes: `--ctx-size 65536` becomes `ctx-size = 65536`.
-- Write options without a value as `true`: `--jinja` becomes `jinja = true`.
-- Remove quotes and PowerShell line-continuation backticks around values.
-- Leave out `--host` and `--port`. They belong on the router command line.
-- Add `load-on-startup = true` so the router loads the model when it starts.
-- Replace short model-file options with their long preset keys:
+- Drop leading dashes: `--ctx-size 65536` becomes `ctx-size = 65536`.
+- Set boolean flags to `true`: `--jinja` becomes `jinja = true`.
+- Strip quotes and PowerShell line-continuation backticks around values.
+- Omit `--host` and `--port` (pass them to `llama serve` instead).
+- Add `load-on-startup = true` to load the model when the router starts.
+- Map short model-file flags to their preset keys:
 
 | Recipe option | Preset key |
-|---|---|
+| --- | --- |
 | `-hf` | `hf-repo` |
 | `-hff` | `hf-file` |
 | `-hfrd` | `hf-repo-draft` |
@@ -159,39 +155,43 @@ spec-draft-backend-sampling = true
 
 ### Start the recipe router
 
-Open PowerShell in the llama.cpp folder and run:
+Open PowerShell in the llama.cpp directory and run:
 
 ```powershell
 .\llama.exe serve --models-preset qwen3.8-27b.ini --host 127.0.0.1
 ```
 
-If the recipe requires a Hugging Face token, set `$env:HF_TOKEN` in the same PowerShell window before starting the router. On its first start, the router downloads the model files.
+If the recipe needs a Hugging Face token, set `$env:HF_TOKEN` in the same PowerShell session before starting the router. The first launch downloads the model files.
 
-Use the [health checks](#troubleshooting) to confirm that the server is ready. In Windows PowerShell, use `curl.exe` rather than `curl`, which PowerShell maps to a different command. The model is ready when `/models` lists `qwen3.8-27b` with the status `loaded`.
+Check readiness with the [troubleshooting commands](#troubleshooting). In PowerShell, use `curl.exe` instead of `curl`. The model is ready when `/models` lists `qwen3.8-27b` with status `loaded`.
 
-Then follow [Configure Atomic](#configure-atomic) and connect to `http://127.0.0.1:9931`. The preset section name is the model ID, so select `qwen3.8-27b` in `/model` for this example.
+Follow [Configure Atomic](#configure-atomic) to connect to `http://127.0.0.1:9931`, then select `qwen3.8-27b` in `/model`.
 
-NVIDIA recipe memory settings assume that only the selected model uses the GPU. If `/llama` shows other loaded models, unload them before using the recipe model.
+NVIDIA recipe memory budgets assume only that model occupies the GPU. Unload any other loaded models in `/llama` before running the recipe model.
 
 ## Classification
 
-Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, like TypeSafe's Jev models, so a local model can answer `decide()` and `structured_output` decisions as your [`decisionModel`](/settings#decisionmodel). Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](/models#use-classifier-models). Atomic lists llama.cpp models as classifiers in two ways:
+Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, letting a local model serve `decide()` and `structured_output` decisions as your [`decisionModel`](/settings#decisionmodel). Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](/models#use-classifier-models).
 
-- **Decision models** such as Julia-1, Laya, Kev, lev, and OpenJev answer natively through llama.cpp's `/v1/systemone` endpoint with the `typesafe-system-one` API. Decision-only models do not appear in `/model`.
-- **Chat models** are also listed as classifiers with the same ID and the `llama-cpp-classify` API, which reads answers from next-token probabilities as described below.
+Atomic exposes llama.cpp models as classifiers in two ways:
 
-llama.cpp 0.6.0 and later report decision models through `architecture.output_modalities` containing `decisions`. Atomic recognizes these models even when sleeping or unloaded, without loading them during discovery. Unloaded presets are selectable only when router autoload is enabled. Older servers omit this metadata, so their models use the chat-model fallback.
+- **Decision models** (such as Julia-1, Laya, Kev, lev, and OpenJev) answer natively through llama.cpp's `/v1/systemone` endpoint with the `typesafe-system-one` API. Decision-only models do not appear in `/model`.
+- **Chat models** are also exposed as classifiers under the same ID with the `llama-cpp-classify` API, using next-token log-probabilities.
+
+llama.cpp 0.6.0 and newer identify decision models by including `decisions` in `architecture.output_modalities`. Atomic detects them even when sleeping or unloaded without waking them during discovery. Unloaded presets are selectable only when router autoload is enabled. Older servers omit this metadata and fall back to `llama-cpp-classify`.
 
 ### Chat models as classifiers
 
-The model does not generate an answer. Each question becomes one chat prompt: the state, every question of the request, the state again, and then the question with its answers under single-token labels. Labels are letters for a choice (up to 62 options), `Yes`/`No` for a bool, and digits for a score (up to 10 levels). Atomic reads the probabilities of the labels as the next token and normalizes them. A choice returns every option's probability and a confidence of `(n * peak - 1) / (n - 1)`; a score returns the expected level.
+Rather than generating text, Atomic formats each question as a single chat prompt (state, all request questions, state again, then the target question and single-token labels) and reads next-token probabilities for the labels. Labels are alphanumeric characters for `choice` (2 to 62 options), `Yes`/`No` for `bool`, and digits for `score` (2 to 10 levels). Choices return normalized option probabilities and a confidence of `(n * peak - 1) / (n - 1)`; scores return the expected level.
 
-- An explicit [`decisionModel`](/settings#decisionmodel) resolves a classifier before a chat model, so `decisionModel: "llama.cpp/<id>"` decides with the classifier, not the chat model. A choice with more than 62 options fails on the chat-model classifier, and the decision switches to the current chat model. The **Decision model** picker lists each chat-capable llama.cpp model twice, once as a classifier and once as a chat model; both rows save the same ID. Decision-only models have only a classifier row.
-- The `structured_output` tool and `generateStructuredOutput()` resolve the chat model first when a chat and a classifier model share an ID, so naming `llama.cpp/<id>` there keeps using the chat model.
-- Raw label probabilities are usually overconfident. The `temperature` option of SDK `classify()` calls divides the label logits before normalizing; values above 1 soften the distribution. It changes no answer.
-- Questions run one after another. Everything before the final question is the same for all questions of a request, so the server's prompt cache evaluates it once. The state appears twice, so it needs twice its size in context.
-- Small models may follow instructions written inside the state. The prompt tells the model to judge the state as data, but that is not a guarantee.
-- Hybrid models such as Qwen3.5 cannot rewind a partially cached prompt without context checkpoints. If each question reprocesses the whole state, start the router with `--ctx-checkpoints 32 --checkpoint-min-step 0`.
+Key behavior for chat-model classifiers:
+
+- An explicit [`decisionModel`](/settings#decisionmodel) resolves classifiers before chat models, so `decisionModel: "llama.cpp/<id>"` uses the classifier. A choice with more than 62 options fails on `llama-cpp-classify` and falls back to the active chat model. The **Decision model** picker lists each chat model twice (classifier and chat), saving the same ID; decision-only models have only a classifier row.
+- `structured_output` and `generateStructuredOutput()` resolve chat models before classifiers when both share an ID, so naming `llama.cpp/<id>` there uses the chat model.
+- SDK `classify()` accepts a `temperature` option that divides label logits before normalizing. Values above `1` soften overconfident probabilities without changing the winning answer.
+- Questions run sequentially and share the prompt prefix so the server's prompt cache evaluates it once. Because the state appears twice in the prompt, reserve twice the state size in context.
+- Small models may follow prompt-injection instructions inside the state despite the system prompt instructing them to judge the state as data.
+- Hybrid models such as Qwen3.5 need context checkpoints to reuse a cached prefix across questions. If every question reprocesses the full state, start the router with `--ctx-checkpoints 32 --checkpoint-min-step 0`.
 
 ## Troubleshooting
 
@@ -200,7 +200,7 @@ curl http://127.0.0.1:9931/health
 curl http://127.0.0.1:9931/models
 ```
 
-- **No models in `/llama`:** Check the cached models, `--models-dir` and its directory layout, then restart the router.
-- **Model missing from `/model` with `--no-models-autoload`:** Load it with `/llama` first.
-- **Load fails or uses too much memory:** Lower `-c` or unload another model.
-- **Server is not in router mode:** Start it without `--model`, `-m`, or `-hf`.
+- **No models in `/llama`:** Verify cached models or `--models-dir` layout, then restart the router.
+- **Model missing from `/model` with `--no-models-autoload`:** Load it in `/llama` first.
+- **Load fails or runs out of memory:** Lower `-c` or unload another model.
+- **Server is not in router mode:** Start `llama serve` without `--model`, `-m`, or `-hf`.
