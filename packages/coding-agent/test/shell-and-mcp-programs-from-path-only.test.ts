@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+	appendFileSync,
 	chmodSync,
 	copyFileSync,
 	existsSync,
@@ -21,6 +22,23 @@ const windows = process.platform === "win32";
 const hiddenPaths = vi.hoisted(() => new Set<string>());
 /** Folders whose real path is read without an answer, as on a network share that stopped responding. */
 const heldRealpaths = vi.hoisted(() => new Set<string>());
+const probeSpawned = vi.hoisted(
+	() => [] as { child: import("node:child_process").ChildProcess; file: string; cwd: string; at: number }[],
+);
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const spawn = ((file: string, args: readonly string[], options?: { cwd?: string }) => {
+		const child = actual.spawn(file, args as string[], options as object);
+		probeSpawned.push({
+			child,
+			file: `${file} ${(args ?? []).join(" ")}`,
+			cwd: options?.cwd ?? `inherited ${process.cwd()}`,
+			at: performance.now(),
+		});
+		return child;
+	}) as typeof actual.spawn;
+	return { ...actual, spawn, default: { ...actual, spawn } };
+});
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
 	const accessSync: typeof actual.accessSync = (path, mode) => {
@@ -94,7 +112,21 @@ afterEach(() => {
 	hiddenPaths.clear();
 	heldRealpaths.clear();
 	vi.unstubAllEnvs();
-	rmSync(root, { recursive: true, force: true });
+	const now = performance.now();
+	const live = probeSpawned
+		.filter(({ child }) => child.exitCode === null && child.signalCode === null)
+		.map(({ child, file, cwd, at }) => `${file} pid=${child.pid} cwd=${cwd} age=${Math.round(now - at)}ms`);
+	probeSpawned.length = 0;
+	try {
+		rmSync(root, { recursive: true, force: true });
+		appendFileSync(join(previousCwd, ".probe-mcp.log"), `PROBE rm-ok live=${live.length} ${JSON.stringify(live)}\n`);
+	} catch (error) {
+		appendFileSync(
+			join(previousCwd, ".probe-mcp.log"),
+			`PROBE rm-failed ${(error as Error).message.slice(0, 80)} live=${live.length} ${JSON.stringify(live)}\n`,
+		);
+		throw error;
+	}
 });
 
 describe("shells and MCP servers Atomic starts by name come only from PATH, never from the project folder", () => {
