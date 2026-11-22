@@ -110,6 +110,7 @@ export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
 	private readonly disposedIds = new Set<string>();
 	private session: AgentSession | undefined;
+	private watchedRunner: AgentSession["extensionRunner"] | undefined;
 	private stopRendererWatch: (() => void) | undefined;
 	private readonly write: (line: string) => void;
 	/** Row renders and repaint checks wait here, behind keyboard input and custom UI frames. */
@@ -122,7 +123,15 @@ export class EngineRenderService {
 	bindSession(session: AgentSession): void {
 		this.dispose();
 		this.session = session;
-		this.stopRendererWatch = session.extensionRunner?.onRenderersChanged?.(() => {
+		this.ensureRendererWatch(session.extensionRunner);
+	}
+
+	private ensureRendererWatch(runner: AgentSession["extensionRunner"] | undefined): void {
+		if (runner === this.watchedRunner) return;
+		this.stopRendererWatch?.();
+		this.stopRendererWatch = undefined;
+		this.watchedRunner = runner;
+		this.stopRendererWatch = runner?.onRenderersChanged?.(() => {
 			this.invalidateStaleRendererRecords();
 		});
 	}
@@ -207,6 +216,7 @@ export class EngineRenderService {
 	dispose(): void {
 		this.stopRendererWatch?.();
 		this.stopRendererWatch = undefined;
+		this.watchedRunner = undefined;
 		for (const id of [...this.records.keys()]) this.disposeRecord(id);
 	}
 
@@ -284,10 +294,12 @@ export class EngineRenderService {
 			];
 		}
 		let record = this.records.get(command.componentId);
-		const currentVersion = this.session?.extensionRunner?.rendererVersion ?? 0;
+		const currentRunner = this.session?.extensionRunner;
+		this.ensureRendererWatch(currentRunner);
+		const currentVersion = currentRunner?.rendererVersion ?? 0;
 		if (
 			record?.kind !== "tool" ||
-			record.runner !== this.session?.extensionRunner ||
+			record.runner !== currentRunner ||
 			record.rendererVersion !== currentVersion ||
 			record.toolOwner !== scope.identity ||
 			record.rendererTaskId !== command.rendererTaskId ||
@@ -367,12 +379,10 @@ export class EngineRenderService {
 
 	private renderMessage(command: MessageRenderCommand): string[] {
 		let record = this.records.get(command.componentId);
-		const currentVersion = this.session?.extensionRunner?.rendererVersion ?? 0;
-		if (
-			record?.kind !== "message" ||
-			record.runner !== this.session?.extensionRunner ||
-			record.rendererVersion !== currentVersion
-		) {
+		const currentRunner = this.session?.extensionRunner;
+		this.ensureRendererWatch(currentRunner);
+		const currentVersion = currentRunner?.rendererVersion ?? 0;
+		if (record?.kind !== "message" || record.runner !== currentRunner || record.rendererVersion !== currentVersion) {
 			const session = this.boundSession();
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);

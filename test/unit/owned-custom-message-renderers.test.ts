@@ -827,6 +827,74 @@ describe("extension message renderer precedence over builtin notice cards", () =
 			}
 		}
 
+		// 3. CLI -e: ALL 14 -> CLI_E
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-3-"));
+			tempDirs.push(root);
+			const cwd = join(root, "proj");
+			const agentDir = join(root, "agent");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			const cliExtPath = join(root, "cli-ext.js");
+			writeMatrixExt(cliExtPath, "CLI_E");
+			const runner = await loadAndBuildRunner(
+				new DefaultResourceLoader({
+					cwd,
+					agentDir,
+					settingsManager: SettingsManager.inMemory(),
+					builtinPackagePaths: getBuiltinPackagePaths(),
+					additionalExtensionPaths: [cliExtPath],
+				}),
+			);
+			checkRunner("3. CLI -e", runner, all("CLI_E"));
+		}
+
+		// 4. Project .atomic/extensions: ALL 14 -> PROJ_ATOMIC
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-4-"));
+			tempDirs.push(root);
+			const cwd = join(root, "proj");
+			const agentDir = join(root, "agent");
+			mkdirSync(join(cwd, ".atomic", "extensions"), { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			writeMatrixExt(join(cwd, ".atomic", "extensions", "proj.js"), "PROJ_ATOMIC");
+			const runner = await loadAndBuildRunner(
+				new DefaultResourceLoader({
+					cwd,
+					agentDir,
+					settingsManager: SettingsManager.inMemory(),
+					builtinPackagePaths: getBuiltinPackagePaths(),
+				}),
+			);
+			checkRunner("4. Project .atomic/extensions", runner, all("PROJ_ATOMIC"));
+		}
+
+		// 5. Package in .atomic/settings.json: ALL 14 -> PKG_ATOMIC
+		{
+			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-5-"));
+			tempDirs.push(root);
+			const cwd = join(root, "proj");
+			const agentDir = join(root, "agent");
+			const pkgDir = join(root, "matrix-pkg");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			mkdirSync(pkgDir, { recursive: true });
+			writeMatrixExt(join(pkgDir, "index.mjs"), "PKG_ATOMIC");
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({ name: "matrix-pkg", version: "1.0.0", atomic: { extensions: ["./index.mjs"] } }),
+			);
+			const runner = await loadAndBuildRunner(
+				new DefaultResourceLoader({
+					cwd,
+					agentDir,
+					settingsManager: SettingsManager.inMemory({ packages: [pkgDir] }),
+					builtinPackagePaths: getBuiltinPackagePaths(),
+				}),
+			);
+			checkRunner("5. Package in .atomic/settings.json", runner, all("PKG_ATOMIC"));
+		}
+
 		// 6. Inherited-pi project (.pi/extensions) + user (~/.atomic/agent/extensions): ALL 14 -> INHERITED_PI_PROJ
 		{
 			const root = mkdtempSync(join(tmpdir(), "atomic-matrix-6-"));
