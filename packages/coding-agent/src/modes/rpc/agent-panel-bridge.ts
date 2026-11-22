@@ -60,6 +60,7 @@ import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
+import { clearTasksReturnAnchor, type ListSelectionAnchor } from "../interactive/components/task-selection-state.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getGlobalTheme } from "../interactive/theme/global-theme.ts";
 import { theme } from "../interactive/theme/theme.js";
@@ -724,7 +725,12 @@ export function bindAgentPanel(
 						}
 						const row = painted.rows.find((candidate) => candidate.id === id);
 						if (row === undefined) return undefined;
-						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
+						const anchor: ListSelectionAnchor = {
+							selectedId: row.id,
+							order: painted.rows.map((candidate) => candidate.id),
+							scroll: 0,
+						};
+						openPanelRow(session, inspector, materializePanelItem(row), report, anchor).catch(report);
 						return { handled: true };
 					},
 					render(width: number) {
@@ -900,11 +906,14 @@ async function openPanelRow(
 	ui: TaskInspectorUi,
 	item: AgentPanelItem,
 	report: (error: unknown) => void,
+	returnAnchor?: ListSelectionAnchor,
 ): Promise<void> {
 	const store = getOwnerTaskStore(session);
 	const taskId = panelTaskId(item);
 	const bridge = agentViewBridge(session);
 	if (taskId !== undefined && item.kind === "agent") {
+		// Opening a subagent directly from the panel leaves any prior `/tasks` return target behind.
+		if (store !== undefined) clearTasksReturnAnchor(store);
 		// The screen shows the subagent where the main chat was; the prompt below now writes to it. Every interactive
 		// session has a bridge: without one there is no screen to show it on.
 		if (bridge !== undefined) bridge.requestView(taskId);
@@ -913,18 +922,18 @@ async function openPanelRow(
 	}
 	const shell = bridge === undefined || taskId === undefined ? undefined : store?.taskRecord(taskId);
 	if (store !== undefined && shell?.kind === "command" && shell.parentTaskId !== undefined) {
-		// A subagent's own shell opens its output in that subagent's task list; back returns to its row.
+		// A subagent's own shell opens its output in that subagent's task list; back returns to its row (or neighbour).
 		const source = launchedTaskViewSource(ownerTaskViewSource(store), shell.parentTaskId);
 		if (
 			(await showTaskInspector(ui, store, shell.ref.taskId, { chat: true, backLabel: "agents", source })) === "back"
 		)
-			await showAgentPanel(session, ui, item.id);
+			await showAgentPanel(session, ui, item.id, returnAnchor);
 		return;
 	}
-	// An extension's row opens its own view; leaving it returns to the panel with the row selected.
+	// An extension's row opens its own view; leaving it returns to the panel with the row selected (or its neighbour).
 	const opened = openAgentPanelItem(session, item.id, {
 		onReturn: () => {
-			showAgentPanel(session, ui, item.id).catch(report);
+			showAgentPanel(session, ui, item.id, returnAnchor).catch(report);
 		},
 	});
 	if (!opened) ui.notify?.(`Could not open ${safeLabel(item.name)}.`, "warning");
@@ -934,6 +943,7 @@ export async function showAgentPanel(
 	session: AgentPanelSession & object,
 	ui: TaskInspectorUi,
 	selectId?: string,
+	returnAnchor?: ListSelectionAnchor,
 ): Promise<void> {
 	const state = panelState(session);
 	if (state.open) return;
@@ -958,6 +968,13 @@ export async function showAgentPanel(
 	const bridge = agentViewBridge(session);
 	/** The shown subagent's row, as the last ranking found it. */
 	let focusViewed: string | undefined;
+	const resolvePanelAlias = (id: string, nextOrder: readonly string[]): string | undefined => {
+		if (store === undefined || !id.startsWith("task:")) return undefined;
+		const latest = latestSubagentAttempt(ownerTaskViewSource(store).backgroundTasks, id.slice(5) as TaskId);
+		if (latest === undefined) return undefined;
+		const mapped = `task:${latest.ref.taskId}`;
+		return nextOrder.includes(mapped) ? mapped : undefined;
+	};
 	const focusedRows = (scroll: number) => {
 		const ranking = rankPanelSession(session, { start: Math.max(0, scroll), limit: AGENT_PANEL_FOCUSED_ROWS });
 		focusViewed = ranking.viewed;
@@ -1006,7 +1023,8 @@ export async function showAgentPanel(
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const item = materializePanelItem(row);
-						next = () => openPanelRow(session, ui, item, report);
+						const anchor = focus.captureAnchor(row.id);
+						next = () => openPanelRow(session, ui, item, report, anchor);
 						finish();
 					},
 					openMain() {
@@ -1047,7 +1065,7 @@ export async function showAgentPanel(
 						try {
 							dirty = false;
 							currentRows = focusedRows(focus.scroll);
-							focus.update(currentRows);
+							focus.update(currentRows, resolvePanelAlias);
 							if (currentRows.length === 0) finish();
 						} catch (error) {
 							report(error);
@@ -1056,8 +1074,8 @@ export async function showAgentPanel(
 					},
 					close: finish,
 				});
-				focus.update(currentRows);
-				focus.enter(selectId);
+				focus.update(currentRows, resolvePanelAlias);
+				focus.enter(selectId, returnAnchor, resolvePanelAlias);
 				const refreshRows = () => {
 					materializedScroll = focus.scroll;
 					currentRows = focusedRows(materializedScroll);
@@ -1065,7 +1083,7 @@ export async function showAgentPanel(
 						materializedScroll = 0;
 						currentRows = focusedRows(0);
 					}
-					focus.update(currentRows);
+					focus.update(currentRows, resolvePanelAlias);
 					// The last row left by itself (it finished, or nothing is active any more): the focus goes back
 					// to the prompt, as when the last row is cleared. Never from inside a paint.
 					if (currentRows.length === 0) queueMicrotask(finish);

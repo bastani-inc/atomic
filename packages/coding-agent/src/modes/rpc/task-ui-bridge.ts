@@ -20,6 +20,13 @@ import { agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts"
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
 import { taskDisplayText } from "../interactive/components/task-row.js";
+import {
+	clearTasksReturnAnchor,
+	type ListSelectionAnchor,
+	saveTasksReturnAnchor,
+	subagentChildKey,
+	tasksReturnAnchor,
+} from "../interactive/components/task-selection-state.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
@@ -126,6 +133,8 @@ export async function showTaskInspector(
 		readonly board?: TaskBoardSource;
 		/** The tasks it lists, when not the session's own: a subagent's, through its launched view of `store`. */
 		readonly source?: TaskViewSource;
+		/** Saved list anchor when returning from an item that closed `/tasks`. */
+		readonly returnAnchor?: ListSelectionAnchor;
 	} = {},
 ): Promise<"back" | "closed"> {
 	let requestRender = () => {};
@@ -134,7 +143,10 @@ export async function showTaskInspector(
 	let fullscreen = false;
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
-	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
+	const trackReturn = !options.chat && options.source === undefined;
+	const session = options.board ? boardSessions.get(options.board) : undefined;
+	const bridge = session === undefined ? undefined : agentViewBridge(session);
+	const panelTarget = session ?? store;
 	/** The agent panel this view takes the place of: hidden once the view is mounted, back in the step it closes. */
 	const panel = hideAgentPanelFor(panelTarget);
 	const inspector = new TaskInspector(
@@ -153,13 +165,14 @@ export async function showTaskInspector(
 	if (options.board) {
 		inspector.setBoardSource(options.board);
 		// On the single chat screen a subagent opens there, where the main chat was, and /tasks closes.
-		const session = boardSessions.get(options.board);
-		const bridge = session === undefined ? undefined : agentViewBridge(session);
 		if (bridge !== undefined) inspector.setAgentView((id) => bridge.requestView(id, { keepScreen: true }));
 
 		const reopenOptions = { board: options.board };
-		inspector.setReopen((id) => {
-			void showTaskInspector(ui, store, id, reopenOptions).catch((error: unknown) => {
+		inspector.setReopen((id, anchor) => {
+			void showTaskInspector(ui, store, id, {
+				...reopenOptions,
+				...(anchor === undefined ? {} : { returnAnchor: anchor }),
+			}).catch((error: unknown) => {
 				try {
 					ui.notify?.(taskDisplayText(error instanceof Error ? error.message : String(error)), "error");
 				} catch {}
@@ -168,7 +181,39 @@ export async function showTaskInspector(
 	}
 	if (options.chat && taskId !== undefined) {
 		pendingChat = taskId as TaskId;
-	} else inspector.open(taskId as TaskId | undefined);
+	} else if (options.returnAnchor !== undefined) {
+		inspector.restoreAnchor(options.returnAnchor);
+	} else if (taskId !== undefined) {
+		inspector.open(taskId as TaskId);
+	} else if (trackReturn) {
+		const viewedId = bridge?.viewedTaskId();
+		const listedViewed =
+			viewedId === undefined
+				? undefined
+				: (latestSubagentAttempt(store.backgroundTasks, viewedId) ?? store.taskRecord?.(viewedId));
+		const viewedChildKey = subagentChildKey(listedViewed);
+		const saved = tasksReturnAnchor(store);
+		const sameAsSaved =
+			saved !== undefined &&
+			viewedId !== undefined &&
+			(saved.selectedId === viewedId ||
+				(listedViewed !== undefined && saved.selectedId === listedViewed.ref.taskId) ||
+				(viewedChildKey !== undefined && saved.childKey === viewedChildKey));
+		if (viewedId !== undefined && !sameAsSaved) {
+			inspector.restoreAnchor({
+				selectedId: listedViewed?.ref.taskId ?? viewedId,
+				...(viewedChildKey === undefined ? {} : { childKey: viewedChildKey }),
+				order: [],
+				scroll: 0,
+			});
+		} else if (saved !== undefined) {
+			inspector.restoreAnchor(saved);
+		} else {
+			inspector.open(undefined);
+		}
+	} else {
+		inspector.open(undefined);
+	}
 	try {
 		while (!closed) {
 			fullscreen = inspector.fullscreen || pendingChat !== undefined;
@@ -254,6 +299,18 @@ export async function showTaskInspector(
 			if (inspector.fullscreen === fullscreen) closed = true;
 		}
 	} finally {
+		if (trackReturn) {
+			if (
+				(inspector.closeReason === "navigated-agent" || inspector.closeReason === "navigated-item") &&
+				inspector.returnAnchor !== undefined
+			) {
+				saveTasksReturnAnchor(store, inspector.returnAnchor);
+			} else if (bridge?.viewedTaskId() === undefined) {
+				// Only clear the saved return anchor when dismissing `/tasks` on `main`; closing `/tasks` with Esc
+				// while still viewing a subagent keeps its saved departure order & scroll intact.
+				clearTasksReturnAnchor(store);
+			}
+		}
 		inspector?.dispose();
 		panel.show();
 	}

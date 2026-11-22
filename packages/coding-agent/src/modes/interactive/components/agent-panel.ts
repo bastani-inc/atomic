@@ -30,6 +30,7 @@ import {
 } from "./nav-keys.ts";
 import { TASK_MARKS, taskMark } from "./task-marks.ts";
 import { taskDisplayText } from "./task-row.js";
+import { keepRowInView, type ListSelectionAnchor, resolveListSelection } from "./task-selection-state.js";
 
 export type AgentPanelRow = AgentPanelItem;
 export type { AgentPanelState };
@@ -728,8 +729,11 @@ export class AgentPanelFocus {
 		for (const row of rows) this.paintedFinished.set(row.id, isFinishedPanelRow(row));
 		this.selectionMovedUnseen = false;
 	}
-	update(rows: readonly AgentPanelRow[]): void {
-		const selectedIndex = this.rows.findIndex((row) => row.id === this.selectedId);
+	update(
+		rows: readonly AgentPanelRow[],
+		resolveAlias?: (id: string, nextOrder: readonly string[]) => string | undefined,
+	): void {
+		const previousOrder = this.rows.map((row) => row.id);
 		const mainWasShown = this.showMain;
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
 		this.rows = rows.filter((row) => {
@@ -749,9 +753,10 @@ export class AgentPanelFocus {
 		) {
 			this.finishedWhileArmed = undefined;
 		}
-		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId)) {
+		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !this.rows.some((row) => row.id === this.selectedId)) {
+			const nextOrder = this.rows.map((row) => row.id);
 			this.selectedId =
-				this.rows[Math.max(0, Math.min(selectedIndex, this.rows.length - 1))]?.id ?? AGENT_PANEL_MAIN_ID;
+				resolveListSelection(this.selectedId, previousOrder, nextOrder, resolveAlias) ?? AGENT_PANEL_MAIN_ID;
 			this.selectionMovedUnseen = true;
 		} else if (this.selectedId === AGENT_PANEL_MAIN_ID && !this.showMain && this.rows.length > 0) {
 			// The main row left with the last subagent: the selection moves to the first row.
@@ -759,6 +764,14 @@ export class AgentPanelFocus {
 			if (mainWasShown) this.selectionMovedUnseen = true;
 		}
 		this.keepInView();
+	}
+	/** Snapshot the panel's selection, order, and scroll offset before leaving for a nested detail view. */
+	captureAnchor(id = this.selectedId): ListSelectionAnchor {
+		return {
+			selectedId: id,
+			order: this.rows.map((row) => row.id),
+			scroll: this.scroll,
+		};
 	}
 	/** A click on a row opens it, as Enter on it does; a click on the main row returns to the prompt. */
 	click(id: string): void {
@@ -775,7 +788,20 @@ export class AgentPanelFocus {
 		this.keepInView();
 		this.actions.open(row);
 	}
-	enter(selectId?: string): void {
+	enter(
+		selectId?: string,
+		returnAnchor?: ListSelectionAnchor,
+		resolveAlias?: (id: string, nextOrder: readonly string[]) => string | undefined,
+	): void {
+		if (returnAnchor !== undefined) {
+			const nextOrder = this.rows.map((row) => row.id);
+			this.selectedId =
+				resolveListSelection(returnAnchor.selectedId, returnAnchor.order, nextOrder, resolveAlias) ??
+				AGENT_PANEL_MAIN_ID;
+			this.scroll = returnAnchor.scroll;
+			this.keepInView();
+			return;
+		}
 		this.selectedId = this.rows.some((row) => row.id === selectId)
 			? (selectId as string)
 			: (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
@@ -808,9 +834,7 @@ export class AgentPanelFocus {
 			this.scroll = 0;
 			return;
 		}
-		if (index < this.scroll) this.scroll = index;
-		if (index >= this.scroll + AGENT_PANEL_FOCUSED_ROWS) this.scroll = index - AGENT_PANEL_FOCUSED_ROWS + 1;
-		this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, this.rows.length - AGENT_PANEL_FOCUSED_ROWS)));
+		this.scroll = keepRowInView(this.scroll, index, AGENT_PANEL_FOCUSED_ROWS, this.rows.length);
 	}
 	private move(delta: number): void {
 		const ids = this.ids();

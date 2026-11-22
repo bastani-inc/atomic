@@ -1,9 +1,15 @@
 import { matchesKey } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import { childOfAttempt, waitingReleasedTools } from "../../../core/tasks/completion.js";
+import { waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { TwoPressConfirm } from "./nav-keys.ts";
 import type { TaskDetailAction } from "./task-detail.js";
+import {
+	type ListSelectionAnchor,
+	resolveChildAttemptId,
+	resolveListSelection,
+	subagentChildKey,
+} from "./task-selection-state.js";
 
 export type TaskFocus =
 	| { kind: "composer" }
@@ -31,6 +37,7 @@ export type TaskNavigationActions = {
 export class TaskNavigation {
 	focus: TaskFocus = { kind: "composer" };
 	selectedTaskId?: TaskId;
+	private selectedChildKey?: string;
 	private tasks: TaskRecord[] = [];
 
 	private order: string[] = [];
@@ -53,22 +60,17 @@ export class TaskNavigation {
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
 
-	update(
-		tasks: readonly TaskRecord[],
-		order: readonly string[] = [
-			...tasks.filter((task) => task.kind === "agent"),
-			...tasks.filter((task) => task.kind === "command"),
-		].map((task) => task.ref.taskId),
-	): void {
-		const before = this.tasks;
-		this.tasks = [...tasks];
-		const retained = new Set(tasks.map((task) => task.ref.taskId));
-		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
-		const previous = this.order;
-		this.order = [...order];
-		if (!this.order.includes(this.selectedTaskId ?? ""))
-			this.selectedTaskId = (sameChildAttempt(before, this.tasks, this.order, this.selectedTaskId) ??
-				nearestSurvivor(previous, this.order, this.selectedTaskId)) as TaskId | undefined;
+	private syncSelectedChildKey(): void {
+		const selected = this.selectedTaskId;
+		if (selected === undefined) {
+			this.selectedChildKey = undefined;
+			return;
+		}
+		const task = this.tasks.find((candidate) => candidate.ref.taskId === selected);
+		if (task !== undefined) this.selectedChildKey = subagentChildKey(task);
+	}
+
+	private syncStopConfirm(): void {
 		const armed = this.stopConfirm.pending();
 		// A subagent released while it waits is not finished: its stop stays armed.
 		const settled = this.tasks.find(
@@ -82,8 +84,67 @@ export class TaskNavigation {
 		}
 	}
 
+	update(
+		tasks: readonly TaskRecord[],
+		order: readonly string[] = [
+			...tasks.filter((task) => task.kind === "agent"),
+			...tasks.filter((task) => task.kind === "command"),
+		].map((task) => task.ref.taskId),
+	): void {
+		const before = this.tasks;
+		const previousChildKey =
+			this.selectedChildKey ??
+			subagentChildKey(
+				this.selectedTaskId === undefined
+					? undefined
+					: before.find((task) => task.ref.taskId === this.selectedTaskId),
+			);
+		this.tasks = [...tasks];
+		const retained = new Set(tasks.map((task) => task.ref.taskId));
+		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
+		const previous = this.order;
+		this.order = [...order];
+		this.selectedTaskId = resolveListSelection(this.selectedTaskId, previous, this.order, (_id, nextOrder) =>
+			resolveChildAttemptId(this.tasks, nextOrder, previousChildKey),
+		) as TaskId | undefined;
+		this.syncSelectedChildKey();
+		this.syncStopConfirm();
+	}
+
+	/**
+	 * Refresh the live task records while a detail/transcript/waited-shell/stdin view is open,
+	 * without resolving `selectedTaskId` against a stale list order.
+	 */
+	updateTasksWhileAway(tasks: readonly TaskRecord[]): void {
+		this.tasks = [...tasks];
+		const retained = new Set(tasks.map((task) => task.ref.taskId));
+		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
+		this.syncSelectedChildKey();
+		this.syncStopConfirm();
+	}
+
+	/**
+	 * Restore list selection from an anchor captured before leaving the list:
+	 * exact id -> same child attempt -> nearest surviving neighbour -> head.
+	 */
+	resolveFromAnchor(tasks: readonly TaskRecord[], order: readonly string[], anchor: ListSelectionAnchor): void {
+		this.tasks = [...tasks];
+		const retained = new Set(tasks.map((task) => task.ref.taskId));
+		for (const id of this.paintedExecution.keys()) if (!retained.has(id)) this.paintedExecution.delete(id);
+		this.order = [...order];
+		this.selectedTaskId = resolveListSelection(anchor.selectedId, anchor.order, this.order, (_id, nextOrder) =>
+			resolveChildAttemptId(this.tasks, nextOrder, anchor.childKey),
+		) as TaskId | undefined;
+		this.selectedChildKey = anchor.childKey;
+		this.syncSelectedChildKey();
+		this.syncStopConfirm();
+	}
+
 	open(taskId?: TaskId): void {
-		if (taskId !== undefined && this.order.includes(taskId)) this.selectedTaskId = taskId;
+		if (taskId !== undefined && this.order.includes(taskId)) {
+			this.selectedTaskId = taskId;
+			this.syncSelectedChildKey();
+		}
 		this.focus = { kind: "tasks" };
 	}
 
@@ -138,8 +199,14 @@ export class TaskNavigation {
 	get selectedId(): string | undefined {
 		return this.selectedTaskId;
 	}
+	get currentChildKey(): string | undefined {
+		return this.selectedChildKey;
+	}
 	select(id: string): void {
-		if (this.order.includes(id)) this.selectedTaskId = id as TaskId;
+		if (this.order.includes(id)) {
+			this.selectedTaskId = id as TaskId;
+			this.syncSelectedChildKey();
+		}
 	}
 
 	moveSelection(delta: number): void {
@@ -147,6 +214,7 @@ export class TaskNavigation {
 		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, index + delta))] as
 			| TaskId
 			| undefined;
+		this.syncSelectedChildKey();
 	}
 
 	handleInput(data: string, inputOwner: "composer" | "hil" | "tasks"): boolean {
@@ -185,45 +253,7 @@ export class TaskNavigation {
 		else if (matchesKey(data, "pageDown")) next += 10;
 		else return false;
 		this.selectedTaskId = this.order[Math.max(0, Math.min(this.order.length - 1, next))] as TaskId | undefined;
+		this.syncSelectedChildKey();
 		return true;
 	}
-}
-
-/**
- * The listed attempt of the subagent `selected` was an attempt of, when `selected` left the list because that subagent
- * woke or was resumed: the selection follows the subagent rather than moving to a neighbour.
- */
-function sameChildAttempt(
-	before: readonly TaskRecord[],
-	tasks: readonly TaskRecord[],
-	order: readonly string[],
-	selected: string | undefined,
-): string | undefined {
-	const left = selected === undefined ? undefined : before.find((task) => task.ref.taskId === selected);
-	// A record that names no launch operation is its own subagent, with no other attempts.
-	if (left?.kind !== "agent" || typeof left.launchOperationId !== "string") return undefined;
-	const child = childOfAttempt(left);
-	const listed = new Set(order);
-	let latest: TaskRecord | undefined;
-	for (const task of tasks) {
-		if (task.kind !== "agent" || !listed.has(task.ref.taskId) || typeof task.launchOperationId !== "string") continue;
-		if (childOfAttempt(task) !== child) continue;
-		if (latest === undefined || task.launchOrdinal >= latest.launchOrdinal) latest = task;
-	}
-	return latest?.ref.taskId;
-}
-
-function nearestSurvivor(
-	previous: readonly string[],
-	next: readonly string[],
-	selected: string | undefined,
-): string | undefined {
-	const index = selected === undefined ? -1 : previous.indexOf(selected);
-	if (index >= 0) {
-		const survivors = new Set(next);
-		for (let after = index + 1; after < previous.length; after++)
-			if (survivors.has(previous[after]!)) return previous[after];
-		for (let before = index - 1; before >= 0; before--) if (survivors.has(previous[before]!)) return previous[before];
-	}
-	return next[0];
 }

@@ -89,6 +89,13 @@ import { type TaskListSection, taskListSections } from "./task-list.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
 import {
+	type InspectorCloseReason,
+	keepSpanInView,
+	type ListSelectionAnchor,
+	type ListSelectionPhase,
+	subagentChildKey,
+} from "./task-selection-state.js";
+import {
 	TaskAgentTranscriptPage,
 	TaskCommandOutputPage,
 	type TaskTranscriptEnvironment,
@@ -277,6 +284,12 @@ export class TaskInspector implements Component {
 		| undefined;
 
 	closedByBack = false;
+	/** Why this inspector closed: navigation keeps its return anchor; dismissal clears it. */
+	closeReason: InspectorCloseReason = "dismissed";
+	/** Return anchor captured when leaving `/tasks` to view a subagent or extension item. */
+	returnAnchor?: ListSelectionAnchor;
+	/** Typed state machine for list selection & viewport scroll across away/return transitions. */
+	private selectionPhase: ListSelectionPhase = { kind: "browsing", scroll: 0 };
 	/** What ← from a chat opened by the caller names, such as `main chat`. */
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
@@ -327,7 +340,7 @@ export class TaskInspector implements Component {
 	private itemFinishedWhileArmed?: { readonly id: string; readonly name: string };
 	private itemFinishedAcknowledged = false;
 
-	private reopen?: (id: string) => void;
+	private reopen?: (id: string, anchor?: ListSelectionAnchor) => void;
 	private agentView?: (taskId: TaskId) => void;
 
 	private selectionChosen = false;
@@ -371,7 +384,8 @@ export class TaskInspector implements Component {
 		this.close = privateClose;
 		this.transcriptEnvironment = transcriptEnvironment;
 		this.navigation = new TaskNavigation(getKeybindings() as KeybindingsManager, {
-			inspect: () => {
+			inspect: (task) => {
+				this.enterAwayView(task);
 				this.closeTranscript();
 				this.actionIndex = 0;
 				this.scroll = 0;
@@ -379,6 +393,7 @@ export class TaskInspector implements Component {
 			},
 			openChat: (task) => {
 				if (this.showAgent(task)) return;
+				this.enterAwayView(task);
 				this.chatFrom = "list";
 				this.detailGeneration++;
 				this.openTranscript();
@@ -387,6 +402,7 @@ export class TaskInspector implements Component {
 			},
 			transcript: (task) => {
 				if (this.showAgent(task)) return;
+				this.enterAwayView(task);
 				this.chatFrom = "detail";
 				this.detailGeneration++;
 				this.openTranscript();
@@ -400,8 +416,8 @@ export class TaskInspector implements Component {
 			dismiss: (task) => {
 				dismissedTasks(this.store).add(task.ref.taskId);
 				this.boardSource?.dismiss?.(`task:${task.ref.taskId}`);
-				this.refreshOrder();
-				if (this.navigation.focus.kind === "detail") this.navigation.focus = { kind: "tasks" };
+				if (this.navigation.focus.kind === "detail") this.returnToList();
+				else this.refreshOrder();
 				this.requestRender();
 			},
 			cancel: (task) => {
@@ -423,6 +439,7 @@ export class TaskInspector implements Component {
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: (task) => {
+				this.enterAwayView(task);
 				this.inputTask = task;
 				this.input.setValue(this.inputDrafts.get(task.ref.taskId) ?? "");
 			},
@@ -434,6 +451,7 @@ export class TaskInspector implements Component {
 				}
 				const asking = this.selected();
 				if (asking !== undefined && this.showAgent(asking)) return;
+				this.enterAwayView(asking);
 				this.chatFrom = "detail";
 				this.detailGeneration++;
 				this.openTranscript();
@@ -458,7 +476,9 @@ export class TaskInspector implements Component {
 			} else {
 				const dismissed = dismissedTasks(this.store);
 				const tasks = this.store.backgroundTasks.filter((task) => !dismissed.has(task.ref.taskId));
-				this.navigation.update(tasks, this.navigationOrder);
+				// Keep the away anchor intact while a detail/transcript/waited-shell/stdin view is open;
+				// do not resolve selection against a stale `navigationOrder`.
+				this.navigation.updateTasksWhileAway(tasks);
 				// An open subagent page follows its subagent: once resumed, it is about the attempt that runs now.
 				const selected = this.navigation.selectedTaskId;
 				const latest = selected === undefined ? undefined : latestSubagentAttempt(tasks, selected);
@@ -494,10 +514,54 @@ export class TaskInspector implements Component {
 	private readonly store: TaskViewSource;
 	private readonly requestRender: () => void;
 	private readonly close: () => void;
+	private currentBoardScroll(): number {
+		return this.selectionPhase.kind === "browsing" ? this.selectionPhase.scroll : this.selectionPhase.anchor.scroll;
+	}
+	private captureListAnchor(overrideId?: string, overrideTask?: TaskRecord): ListSelectionAnchor | undefined {
+		if (overrideId === undefined && this.selectionPhase.kind === "away") return this.selectionPhase.anchor;
+		const selectedId = overrideId ?? this.navigation.selectedId;
+		if (selectedId === undefined) return undefined;
+		const task =
+			overrideTask ??
+			this.tasksById.get(selectedId as TaskId) ??
+			this.store.taskRecord?.(selectedId as TaskId) ??
+			this.store.backgroundTasks.find((candidate) => candidate.ref.taskId === selectedId);
+		const childKey =
+			subagentChildKey(task) ?? (overrideId === undefined ? this.navigation.currentChildKey : undefined);
+		return {
+			selectedId,
+			...(childKey === undefined ? {} : { childKey }),
+			order: [...this.navigationOrder],
+			scroll: this.currentBoardScroll(),
+		};
+	}
+	private enterAwayView(task?: TaskRecord): void {
+		if (this.selectionPhase.kind === "away") return;
+		const anchor = this.captureListAnchor(task?.ref.taskId, task);
+		if (anchor !== undefined) this.selectionPhase = { kind: "away", anchor };
+	}
+	private returnToList(): void {
+		const anchor = this.selectionPhase.kind === "away" ? this.selectionPhase.anchor : undefined;
+		this.selectionPhase = { kind: "browsing", scroll: anchor?.scroll ?? this.currentBoardScroll() };
+		this.navigation.focus = { kind: "tasks" };
+		if (anchor !== undefined) this.refreshOrder(undefined, anchor);
+		else if (this.boardStale) this.refreshOrder();
+	}
 	open(id?: TaskId): void {
 		if (this.boardStale) this.refreshOrder();
 		if (id !== undefined) this.selectionChosen = true;
+		this.selectionPhase = { kind: "browsing", scroll: 0 };
 		this.navigation.open(id === undefined ? undefined : this.listedAttempt(id));
+	}
+	/**
+	 * Restore list selection and scroll position from an anchor captured before leaving `/tasks`:
+	 * exact id -> resumed child attempt -> nearest surviving neighbour -> head.
+	 */
+	restoreAnchor(anchor: ListSelectionAnchor): void {
+		this.selectionChosen = true;
+		this.selectionPhase = { kind: "browsing", scroll: anchor.scroll };
+		this.refreshOrder(undefined, anchor);
+		this.navigation.focus = { kind: "tasks" };
 	}
 	/**
 	 * The listed row of task `id`: a subagent is one row, its latest attempt, so an attempt a resume continued (as a
@@ -602,7 +666,7 @@ export class TaskInspector implements Component {
 		this.rowsById = new Map(rows.map((row) => [row.id, row]));
 		return rows;
 	}
-	private refreshOrder(rows?: TaskBoardRow[]): void {
+	private refreshOrder(rows?: TaskBoardRow[], anchor?: ListSelectionAnchor): void {
 		let all: TaskBoardRow[] | undefined;
 		let computedRows = rows;
 		if (computedRows === undefined) {
@@ -622,7 +686,8 @@ export class TaskInspector implements Component {
 				? this.cachedNativeRows.rows.map((row) => row.task)
 				: sections.flatMap((section) => section.tasks);
 		this.navigationOrder = finalRows.map((row) => row.id);
-		this.navigation.update(tasks, this.navigationOrder);
+		if (anchor !== undefined) this.navigation.resolveFromAnchor(tasks, this.navigationOrder, anchor);
+		else this.navigation.update(tasks, this.navigationOrder);
 		if (this.peekId !== undefined && !finalRows.some((row) => row.id === this.peekId)) this.closePeek();
 
 		const armed = this.navigation.stopConfirm.pending();
@@ -670,7 +735,9 @@ export class TaskInspector implements Component {
 		this.reply.setValue("");
 	}
 	private openTaskDetail(): void {
-		if (!this.selected()) return;
+		const task = this.selected();
+		if (!task) return;
+		this.enterAwayView(task);
 		this.navigation.focus = { kind: "detail" };
 		this.closeTranscript();
 		this.actionIndex = 0;
@@ -678,7 +745,7 @@ export class TaskInspector implements Component {
 		void this.loadDetail();
 	}
 
-	setReopen(reopen: ((id: string) => void) | undefined): void {
+	setReopen(reopen: ((id: string, anchor?: ListSelectionAnchor) => void) | undefined): void {
 		this.reopen = reopen;
 	}
 	/**
@@ -695,6 +762,28 @@ export class TaskInspector implements Component {
 	private showAgent(task: TaskRecord): boolean {
 		const view = this.agentView;
 		if (view === undefined || task.kind !== "agent") return false;
+		const baseAnchor = this.selectionPhase.kind === "away" ? this.selectionPhase.anchor : undefined;
+		const childKey = subagentChildKey(task) ?? baseAnchor?.childKey;
+		const targetId = task.ref.taskId;
+		let anchorOrder = baseAnchor?.order ?? [...this.navigationOrder];
+		// If the subagent resumed to a new attempt while in detail, replace its prior attempt id in place
+		// inside the departure order so nearest-neighbour fallback still finds its original neighbours if gone.
+		if (
+			baseAnchor !== undefined &&
+			!anchorOrder.includes(targetId) &&
+			baseAnchor.childKey !== undefined &&
+			baseAnchor.childKey === childKey &&
+			anchorOrder.includes(baseAnchor.selectedId)
+		) {
+			anchorOrder = anchorOrder.map((id) => (id === baseAnchor.selectedId ? targetId : id));
+		}
+		this.returnAnchor = {
+			selectedId: targetId,
+			...(childKey === undefined ? {} : { childKey }),
+			order: anchorOrder,
+			scroll: baseAnchor?.scroll ?? this.currentBoardScroll(),
+		};
+		this.closeReason = "navigated-agent";
 		this.navigation.focus = { kind: "composer" };
 		view(task.ref.taskId);
 		this.close();
@@ -912,6 +1001,7 @@ export class TaskInspector implements Component {
 		if (shell === undefined) return false;
 		const suspended = this.transcript;
 		const returnTo = suspended !== undefined ? "chat" : this.navigation.focus.kind === "tasks" ? "list" : "detail";
+		if (returnTo === "list") this.enterAwayView(this.selected());
 		// The chat, a peek or the detail page stays as it is under the shell's output, for the back key.
 		this.transcript = undefined;
 		const taskId = shell.ref.taskId;
@@ -946,7 +1036,7 @@ export class TaskInspector implements Component {
 			this.navigation.focus = { kind: "detail" };
 			back.suspended.refresh();
 		} else if (back.returnTo === "list") {
-			this.navigation.focus = { kind: "tasks" };
+			this.returnToList();
 		} else {
 			this.navigation.focus = { kind: "detail" };
 			void this.loadDetail();
@@ -1117,7 +1207,7 @@ export class TaskInspector implements Component {
 			if (matchesKey(data, "escape")) return true;
 			// ← on an empty input, or at its start (the draft is kept for the return), goes back to the list.
 			if (getKeybindings().matches(data, "app.nav.back") && (this.input.getCursor() === 0 || isHintActivation())) {
-				this.navigation.focus = { kind: "tasks" };
+				this.returnToList();
 				this.status = "";
 				this.requestRender();
 				return true;
@@ -1137,8 +1227,12 @@ export class TaskInspector implements Component {
 			matchesKey(data, "escape") ||
 			(getKeybindings().matches(data, "app.nav.back") && !this.configuredTaskKey(data))
 		) {
-			this.navigation.handleInput("\x1b", "tasks");
-			if (this.navigation.focus.kind === "composer") this.close();
+			if (focus.kind === "detail") {
+				this.returnToList();
+			} else {
+				this.navigation.handleInput("\x1b", "tasks");
+				if (this.navigation.focus.kind === "composer") this.close();
+			}
 			this.requestRender();
 			return true;
 		}
@@ -1163,7 +1257,12 @@ export class TaskInspector implements Component {
 				void this.navigation.activate(actions[Math.min(this.actionIndex, actions.length - 1)]);
 			else {
 				if (this.boardStale && (matchesKey(data, "home") || matchesKey(data, "end"))) this.refreshOrder();
+				const beforeId = this.navigation.selectedId;
 				if (!this.navigation.handleInput(data, "tasks")) return false;
+				if (this.navigation.selectedId !== beforeId && this.selectionPhase.kind === "away") {
+					const moved = this.captureListAnchor(this.navigation.selectedId, this.selected());
+					if (moved !== undefined) this.selectionPhase = { kind: "away", anchor: moved };
+				}
 			}
 		} else {
 			if (this.boardStale && (matchesKey(data, "home") || matchesKey(data, "end"))) this.refreshOrder();
@@ -1266,13 +1365,14 @@ export class TaskInspector implements Component {
 			}
 			if (this.chatFrom === "caller") {
 				this.closedByBack = true;
+				this.closeReason = "back-to-caller";
 				this.close();
 				return true;
 			}
 			this.closeTranscript();
 			this.detailGeneration++;
 			this.scroll = 0;
-			if (this.chatFrom === "list") this.navigation.focus = { kind: "tasks" };
+			if (this.chatFrom === "list") this.returnToList();
 			else void this.loadDetail();
 			this.requestRender();
 			return true;
@@ -1394,10 +1494,18 @@ export class TaskInspector implements Component {
 		if (keys.matches(data, "app.list.open")) {
 			if (this.boardSource?.open) {
 				const reopen = this.reopen;
+				const anchor = this.captureListAnchor(row.id);
 				try {
-					const opened = this.boardSource.open(row.id, reopen ? { onReturn: () => reopen(row.id) } : undefined);
+					const opened = this.boardSource.open(
+						row.id,
+						reopen ? { onReturn: () => reopen(row.id, anchor) } : undefined,
+					);
 					if (opened === false) this.failureNotice = `Could not open ${rowName(row)}.`;
-					else this.close();
+					else {
+						this.returnAnchor = anchor;
+						this.closeReason = "navigated-item";
+						this.close();
+					}
 				} catch (error) {
 					const reason = taskDisplayText(error instanceof Error ? error.message : String(error));
 					this.failureNotice = reason
@@ -2218,15 +2326,13 @@ export class TaskInspector implements Component {
 		const room = shortViewport
 			? Math.max(1, lineBudget - (lineBudget >= 2 ? 1 : 0))
 			: lineBudget - head.length - footerLines;
-		const selectedSpan = selectedLine < 0 ? 0 : selectedEnd - selectedLine + 1;
-		const above = room > 1 && selectedSpan < room ? 1 : 0;
 		const end = room === 1 && (this.sending || replying) ? selectedEnd - 1 : selectedEnd;
+		const topNeeded =
+			selectedLine > 0 && typeof body[selectedLine - 1] === "string" ? selectedLine - 1 : selectedLine;
 		let start =
 			selectedLine < 0
 				? 0
-				: peekOpen && selectedSpan > room
-					? Math.max(0, end - room + 1)
-					: Math.max(0, Math.min(selectedLine - above, body.length - room));
+				: keepSpanInView(this.currentBoardScroll(), topNeeded, selectedLine, end, room, body.length);
 		if (replying && selected?.kind === "item") {
 			const currentPrompt = promptAnswerOptionsOf(selected.item);
 			const previousPrompt = this.paintedPrompts.get(selected.id);
@@ -2239,6 +2345,7 @@ export class TaskInspector implements Component {
 				start = questionLine;
 			}
 		}
+		this.selectionPhase = { kind: "browsing", scroll: start };
 		const cardChoices = replying && selected !== undefined ? this.peekChoices(selected, budget, notice) : [];
 		const firstChoiceLine = selectedLine + 3;
 		const visibleChoices =
