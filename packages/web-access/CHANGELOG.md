@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-22
+
+### Changed
+
+- Curator configuration, Google account status, curated web search results, and background content-fetch status and error notices now render as compact notice cards matching Atomic's other transcript notices instead of generic bracketed `[customType]` boxes, expanding and collapsing on both Ctrl+O and a click anywhere on the card, including before Web Access activates on resumed sessions ([#6372](https://github.com/bastani-inc/atomic/pull/6372)).
+
+### Fixed
+
+- `gh`, `git`, `ffmpeg`, `ffprobe`, `yt-dlp`, `npm`, the browser opener and the keychain helpers run only from the absolute directories in your PATH; the project folder counts only when PATH names it.
+- Before the builtin Web Access extension loads on first use, its `web_search` `queries` examples, `/websearch` and `/curator` descriptions and shortcut labels now match the loaded extension ([#6389](https://github.com/bastani-inc/atomic/pull/6389)).
+- Extracting HTML `<body>` content when detecting JS-rendered pages no longer slows down on malformed pages with many unclosed `<body>` tags, and no longer matches unrelated tags whose name starts with `body` (such as `<bodydata>`) ([#6397](https://github.com/bastani-inc/atomic/pull/6397)).
+
 ## [0.10.4-alpha.2] - 2026-11-22
 
 ### Changed
