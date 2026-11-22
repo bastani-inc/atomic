@@ -161,8 +161,6 @@ export interface ExtensionRuntimeState {
 	registerProvider: ((name: string, config: ProviderConfig, extensionPath?: string) => void | Promise<void>) &
 		((provider: Provider, extensionPath?: string) => void | Promise<void>);
 	unregisterProvider: (name: string, extensionPath?: string) => void | Promise<void>;
-	/** Notified whenever an extension registers a message, entry, tool, or markdown renderer after load. */
-	rendererChangeListeners?: Set<() => void>;
 }
 
 /**

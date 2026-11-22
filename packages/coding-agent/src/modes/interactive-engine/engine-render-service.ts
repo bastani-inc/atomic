@@ -1,7 +1,8 @@
 import type { Terminal, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import { runSynchronousCallback } from "../../core/callback-activity.ts";
-import type { ToolRenderers } from "../../core/extensions/types.ts";
+import type { RendererChange, ResolvedToolRenderers } from "../../core/extensions/runner.ts";
+import type { MessageRenderer, ToolRendererResolver, ToolRenderers } from "../../core/extensions/types.ts";
 import type { CustomMessage } from "../../core/messages.ts";
 import { bindSavedReadLines } from "../../core/storage/session/saved-read-summary.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -9,6 +10,7 @@ import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
+import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../core/tools/builtin-renderers.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import type { KeptTaskAction } from "../interactive/components/kept-task.ts";
@@ -47,15 +49,68 @@ function keptTaskActionOf(command: ToolRenderCommand): () => KeptTaskAction | un
  * once the session's extension runner changes, so rows rendered before
  * deferred resources loaded pick up the extensions' renderers.
  */
+interface ResolvedToolSource {
+	readonly source: ToolRendererResolver | "base";
+	readonly baseId: string | ToolRenderers;
+	readonly hasRenderers: boolean;
+	readonly renderShell: ToolRenderers["renderShell"] | undefined;
+}
+
+function baseToolIdentity(
+	session: AgentSession,
+	toolName: string,
+	base: ToolRenderers | undefined,
+): string | ToolRenderers {
+	if (base === undefined) return "none";
+	const entry = (
+		session as unknown as { _toolDefinitions?: Map<string, { sourceInfo?: { source?: string } }> }
+	)._toolDefinitions?.get(toolName);
+	if (entry?.sourceInfo?.source === "builtin") return `builtin:${toolName}`;
+	if (
+		(base.renderCall !== undefined || base.renderResult !== undefined) &&
+		(base.renderCall === undefined || isBuiltinToolCallRenderer(base.renderCall)) &&
+		(base.renderResult === undefined || isBuiltinToolResultRenderer(base.renderResult)) &&
+		(base.renderShell === undefined || base.renderShell === "default")
+	) {
+		return `builtin:${toolName}`;
+	}
+	return base;
+}
+
+function toolSourceFrom(session: AgentSession, toolName: string, resolved: ResolvedToolRenderers): ResolvedToolSource {
+	return {
+		source: resolved.source,
+		baseId: baseToolIdentity(session, toolName, resolved.base),
+		hasRenderers: resolved.renderers !== undefined,
+		renderShell: resolved.renderers?.renderShell,
+	};
+}
+
+function sameToolSource(a: ResolvedToolSource | undefined, b: ResolvedToolSource): boolean {
+	if (!a) return false;
+	return (
+		a.source === b.source &&
+		a.baseId === b.baseId &&
+		a.hasRenderers === b.hasRenderers &&
+		a.renderShell === b.renderShell
+	);
+}
+
 type RenderRecord = {
 	runner: AgentSession["extensionRunner"];
-	rendererVersion: number;
 	terminal: RenderTerminal;
 	tui: TUI;
 } & (
-	| { kind: "message"; component: CustomMessageComponent }
+	| {
+			kind: "message";
+			customType: string;
+			resolvedRenderer: MessageRenderer | undefined;
+			component: CustomMessageComponent;
+	  }
 	| {
 			kind: "tool";
+			toolName: string;
+			resolvedToolSource?: ResolvedToolSource;
 			component: ToolExecutionComponent;
 			toolOwner: object;
 			rendererTaskId?: string;
@@ -108,6 +163,8 @@ export const DISPOSED_RENDER_TOMBSTONE_LIMIT = 10_000;
 
 export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
+	private readonly messageRecordsByType = new Map<string, Set<string>>();
+	private readonly toolRecordsByName = new Map<string, Set<string>>();
 	private readonly disposedIds = new Set<string>();
 	private session: AgentSession | undefined;
 	private watchedRunner: AgentSession["extensionRunner"] | undefined;
@@ -131,18 +188,68 @@ export class EngineRenderService {
 		this.stopRendererWatch?.();
 		this.stopRendererWatch = undefined;
 		this.watchedRunner = runner;
-		this.stopRendererWatch = runner?.onRenderersChanged?.(() => {
-			this.invalidateStaleRendererRecords();
-		});
+		this.stopRendererWatch = runner?.onRenderersChanged?.(
+			(change) => {
+				this.invalidateStaleRendererRecords(change);
+			},
+			() => {
+				if (this.watchedRunner === runner) {
+					this.watchedRunner = undefined;
+					this.stopRendererWatch = undefined;
+				}
+			},
+		);
 	}
 
-	private invalidateStaleRendererRecords(): void {
-		const currentRunner = this.session?.extensionRunner;
-		const currentVersion = currentRunner?.rendererVersion ?? 0;
-		for (const [componentId, record] of [...this.records.entries()]) {
-			if (record.runner !== currentRunner || record.rendererVersion === currentVersion) continue;
-			this.disposeRecord(componentId);
-			this.send({ type: "engine_custom_invalidate", componentId });
+	private invalidateStaleRendererRecords(change: RendererChange): void {
+		const session = this.session;
+		const currentRunner = session?.extensionRunner;
+		if (!session || !currentRunner) return;
+
+		for (const customType of change.messageTypes) {
+			const ids = this.messageRecordsByType.get(customType);
+			if (!ids || ids.size === 0) continue;
+			const nextRenderer = currentRunner.getMessageRenderer(customType);
+			for (const componentId of [...ids]) {
+				const record = this.records.get(componentId);
+				if (record?.kind !== "message" || record.runner !== currentRunner) continue;
+				if (record.resolvedRenderer === nextRenderer) continue;
+				this.disposeRecord(componentId);
+				this.send({ type: "engine_custom_invalidate", componentId });
+			}
+		}
+
+		const candidateToolNames = change.hasToolResolvers ? [...this.toolRecordsByName.keys()] : [...change.toolNames];
+		for (const toolName of candidateToolNames) {
+			const ids = this.toolRecordsByName.get(toolName);
+			if (!ids || ids.size === 0) continue;
+			let hasRootRecord = false;
+			for (const componentId of ids) {
+				const record = this.records.get(componentId);
+				if (record?.kind === "tool" && record.toolOwner === currentRunner) {
+					hasRootRecord = true;
+					break;
+				}
+			}
+			if (!hasRootRecord) continue;
+			const nextSource = toolSourceFrom(
+				session,
+				toolName,
+				currentRunner.resolveToolRenderersWithSource(toolName, () => session.getToolDefinition(toolName)),
+			);
+			for (const componentId of [...ids]) {
+				const record = this.records.get(componentId);
+				if (
+					record?.kind !== "tool" ||
+					record.toolOwner !== currentRunner ||
+					record.resolvedToolSource === undefined
+				) {
+					continue;
+				}
+				if (sameToolSource(record.resolvedToolSource, nextSource)) continue;
+				this.disposeRecord(componentId);
+				this.send({ type: "engine_custom_invalidate", componentId });
+			}
 		}
 	}
 
@@ -296,11 +403,9 @@ export class EngineRenderService {
 		let record = this.records.get(command.componentId);
 		const currentRunner = this.session?.extensionRunner;
 		this.ensureRendererWatch(currentRunner);
-		const currentVersion = currentRunner?.rendererVersion ?? 0;
 		if (
 			record?.kind !== "tool" ||
 			record.runner !== currentRunner ||
-			record.rendererVersion !== currentVersion ||
 			record.toolOwner !== scope.identity ||
 			record.rendererTaskId !== command.rendererTaskId ||
 			record.keptTaskAction !== command.keptTaskAction
@@ -314,6 +419,14 @@ export class EngineRenderService {
 				tui.invalidate();
 				tui.requestRender();
 			});
+			const rootOwned = scope.identity === session.extensionRunner;
+			const rootResolved =
+				rootOwned && typeof session.extensionRunner.resolveToolRenderersWithSource === "function"
+					? session.extensionRunner.resolveToolRenderersWithSource(command.toolName, () =>
+							session.getToolDefinition(command.toolName),
+						)
+					: undefined;
+			const resolvedRenderers = rootResolved ? rootResolved.renderers : scope.resolve(command.toolName);
 			const component = new ToolExecutionComponent(
 				command.toolName,
 				command.toolCallId,
@@ -327,23 +440,30 @@ export class EngineRenderService {
 					...(command.keptTaskAction === undefined ? {} : { keptTaskAction: keptTaskActionOf(command) }),
 					getToolDefinition: scope.resolve,
 				},
-				scope.resolve(command.toolName),
+				resolvedRenderers,
 				tui,
 				scope.cwd,
 			);
 			tui.addChild(component);
 			record = {
 				kind: "tool",
+				toolName: command.toolName,
+				resolvedToolSource: rootResolved ? toolSourceFrom(session, command.toolName, rootResolved) : undefined,
 				component,
 				terminal,
 				tui,
 				runner: session.extensionRunner,
-				rendererVersion: session.extensionRunner?.rendererVersion ?? 0,
 				toolOwner: scope.identity,
 				rendererTaskId: command.rendererTaskId,
 				keptTaskAction: command.keptTaskAction,
 			};
 			this.records.set(command.componentId, record);
+			let toolIds = this.toolRecordsByName.get(command.toolName);
+			if (!toolIds) {
+				toolIds = new Set();
+				this.toolRecordsByName.set(command.toolName, toolIds);
+			}
+			toolIds.add(command.componentId);
 			if (scope.watchedTask) {
 				const { store, taskId, currentIdentity } = scope.watchedTask;
 				const ownerIdentity = scope.identity;
@@ -378,12 +498,17 @@ export class EngineRenderService {
 	}
 
 	private renderMessage(command: MessageRenderCommand): string[] {
-		let record = this.records.get(command.componentId);
-		const currentRunner = this.session?.extensionRunner;
+		const session = this.boundSession();
+		const currentRunner = session.extensionRunner;
 		this.ensureRendererWatch(currentRunner);
-		const currentVersion = currentRunner?.rendererVersion ?? 0;
-		if (record?.kind !== "message" || record.runner !== currentRunner || record.rendererVersion !== currentVersion) {
-			const session = this.boundSession();
+		const message = command.message as unknown as CustomMessage<object>;
+		const resolvedRenderer = currentRunner.getMessageRenderer(message.customType);
+		let record = this.records.get(command.componentId);
+		if (
+			record?.kind !== "message" ||
+			record.runner !== currentRunner ||
+			record.resolvedRenderer !== resolvedRenderer
+		) {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
@@ -392,10 +517,9 @@ export class EngineRenderService {
 				tui.invalidate();
 				tui.requestRender();
 			});
-			const message = command.message as unknown as CustomMessage<object>;
 			const component = new CustomMessageComponent(
 				message,
-				session.extensionRunner.getMessageRenderer(message.customType),
+				resolvedRenderer,
 				undefined,
 				command.outputPad,
 				undefined,
@@ -423,13 +547,20 @@ export class EngineRenderService {
 			tui.addChild(component);
 			record = {
 				kind: "message",
+				customType: message.customType,
+				resolvedRenderer,
 				component,
 				terminal,
 				tui,
-				runner: session.extensionRunner,
-				rendererVersion: session.extensionRunner?.rendererVersion ?? 0,
+				runner: currentRunner,
 			};
 			this.records.set(command.componentId, record);
+			let msgIds = this.messageRecordsByType.get(message.customType);
+			if (!msgIds) {
+				msgIds = new Set();
+				this.messageRecordsByType.set(message.customType, msgIds);
+			}
+			msgIds.add(command.componentId);
 		} else {
 			record.terminal.columns = Math.max(1, command.width);
 		}
@@ -442,7 +573,20 @@ export class EngineRenderService {
 		const record = this.records.get(id);
 		if (!record) return;
 		this.records.delete(id);
-		if (record.kind === "tool") runRendererCleanup(record.stopOwnerWatch);
+		if (record.kind === "message") {
+			const msgIds = this.messageRecordsByType.get(record.customType);
+			if (msgIds) {
+				msgIds.delete(id);
+				if (msgIds.size === 0) this.messageRecordsByType.delete(record.customType);
+			}
+		} else {
+			const toolIds = this.toolRecordsByName.get(record.toolName);
+			if (toolIds) {
+				toolIds.delete(id);
+				if (toolIds.size === 0) this.toolRecordsByName.delete(record.toolName);
+			}
+			runRendererCleanup(record.stopOwnerWatch);
+		}
 		disposeRenderer(record.component);
 		runRendererCleanup(() => record.tui.stop());
 	}

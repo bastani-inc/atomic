@@ -959,7 +959,7 @@ describe("extension message renderer precedence over builtin notice cards", () =
 		}
 	});
 
-	test("in-process CustomMessageComponent refreshes when attachStartupExtensions or registerMessageRenderer fires on the same runner", async () => {
+	test("attachStartupExtensions notifies once with exact changed types while newcomer loading and runtime third-party registrations do not fire listeners", async () => {
 		const bus = createEventBus();
 		const runtimeObj = createExtensionRuntime();
 		const runner = new ExtensionRunner(
@@ -980,33 +980,75 @@ describe("extension message renderer precedence over builtin notice cards", () =
 		const comp = new CustomMessageComponent(msg, runner.getMessageRenderer(msg.customType));
 		assert.ok(plain(comp.render(100)).join("\n").includes("[curator-config]"));
 
-		let versionBumps = 0;
-		const stop = runner.onRenderersChanged(() => {
-			versionBumps += 1;
-			comp.setCustomRenderer(runner.getMessageRenderer(msg.customType));
+		const changes: Array<{ messageTypes?: ReadonlySet<string> }> = [];
+		const stop = runner.onRenderersChanged((change?: { messageTypes?: ReadonlySet<string> }) => {
+			changes.push(change ?? {});
+			if (!change?.messageTypes || change.messageTypes.has(msg.customType)) {
+				comp.setCustomRenderer(runner.getMessageRenderer(msg.customType));
+			}
 		});
-		const v0 = runner.rendererVersion;
+
 		let lateApi: ExtensionAPI | undefined;
-		const ext = await loadExtensionFromFactory(
+		const subagentsExt = await loadExtensionFromFactory(
 			(pi) => {
-				lateApi = pi;
-				pi.registerMessageRenderer("curator-config", () => new Text("ATTACHED_RENDERER", 0, 0));
+				for (const t of ["subagent-notify", "subagent-resume-note"]) {
+					pi.registerMessageRenderer(t, () => new Text(`SUB:${t}`, 0, 0));
+				}
 			},
 			process.cwd(),
 			bus,
 			runtimeObj,
-			"inline:late",
+			"builtin:subagents",
 		);
-		const start = runner.attachStartupExtensions([ext]);
+		const webExt = await loadExtensionFromFactory(
+			(pi) => {
+				lateApi = pi;
+				pi.registerMessageRenderer("curator-config", () => new Text("ATTACHED_RENDERER", 0, 0));
+				pi.registerMessageRenderer("web-search-error", () => new Text("ERR_RENDERER", 0, 0));
+			},
+			process.cwd(),
+			bus,
+			runtimeObj,
+			"builtin:web-access",
+		);
+		// Loading newcomers before attachStartupExtensions must fire 0 callbacks.
+		assert.equal(changes.length, 0, `expected 0 callbacks during newcomer load, got ${changes.length}`);
+
+		const start = runner.attachStartupExtensions([subagentsExt, webExt]);
 		await start();
-		assert.ok(runner.rendererVersion > v0);
-		assert.ok(versionBumps >= 1);
+		assert.equal(changes.length, 1, `expected exactly 1 callback at attachStartupExtensions, got ${changes.length}`);
+		assert.ok(changes[0]?.messageTypes?.has("curator-config"));
+		assert.ok(changes[0]?.messageTypes?.has("web-search-error"));
 		assert.ok(plain(comp.render(100)).join("\n").includes("ATTACHED_RENDERER"));
 
-		const v1 = runner.rendererVersion;
-		lateApi!.registerMessageRenderer("curator-config", () => new Text("DYNAMIC_RENDERER", 0, 0));
-		assert.ok(runner.rendererVersion > v1);
-		assert.ok(plain(comp.render(100)).join("\n").includes("DYNAMIC_RENDERER"));
+		// Runtime third-party registerMessageRenderer must keep main's behavior (0 notifications).
+		lateApi!.registerMessageRenderer("late-type", () => new Text("DYNAMIC_RENDERER", 0, 0));
+		assert.equal(changes.length, 1, `runtime registerMessageRenderer must not fire listeners, got ${changes.length}`);
 		stop();
+	});
+
+	test("50 ExtensionRunner replacements on a shared runtime leave 0 extra listeners after revokeAuthority", async () => {
+		const runtimeObj = createExtensionRuntime();
+		const modelRegistry = new ModelRegistry(await ModelRuntime.create({ modelsPath: null }));
+		const runners: ExtensionRunner[] = [];
+		for (let i = 0; i < 50; i++) {
+			const runner = new ExtensionRunner(
+				[],
+				runtimeObj,
+				process.cwd(),
+				SessionManager.inMemory(process.cwd()),
+				modelRegistry,
+			);
+			runner.onRenderersChanged(() => {});
+			runner.revokeAuthority();
+			runners.push(runner);
+		}
+		const runtimeListeners = (runtimeObj as { rendererChangeListeners?: Set<unknown> }).rendererChangeListeners;
+		assert.equal(runtimeListeners?.size ?? 0, 0, "shared runtime must not accumulate runner listeners");
+		for (const runner of runners) {
+			const runnerListeners = (runner as unknown as { rendererChangeListeners?: Set<unknown> })
+				.rendererChangeListeners;
+			assert.equal(runnerListeners?.size ?? 0, 0, "revokeAuthority must clear runner rendererChangeListeners");
+		}
 	});
 });
