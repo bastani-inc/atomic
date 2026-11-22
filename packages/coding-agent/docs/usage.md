@@ -67,6 +67,7 @@ When no startup screen needs an answer:
 - Enter-submitted ordinary prompts wait until the session is ready.
 - Command-like submissions such as `/settings` or `!pwd` run as separate editor submissions through normal command routing.
 - Later submissions wait behind an earlier command and run in input order. Ordinary prompts cannot overtake commands, and commands are not merged with following prompts.
+- Text you have not submitted waits in the prompt. When it ends in a `/` command or an `@` file and no command was submitted before it, its completion menu opens once completions are ready, as if you had typed it there.
 
 When a startup screen appears, including project trust, first-time setup, the resume picker or a cross-project fork question, your earlier text waits in the prompt as a draft. Text typed into a screen that does not use text joins that draft, with line breaks between typed lines. Text left in a startup input that you cancel, or that times out, also joins the draft. Nothing is sent until you review the draft and press Enter after startup.
 
