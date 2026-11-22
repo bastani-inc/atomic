@@ -200,7 +200,15 @@ export class IntercomBrokerFixture {
 		});
 	}
 
-	private async stopBroker(remainingBudgetMs: (phaseBudgetMs: number) => number): Promise<void> {
+	/** Stops the tracked broker process (SIGTERM, escalating to SIGKILL) within the fixture's shared cleanup ceiling. */
+	async stopBroker(): Promise<void> {
+		const cleanupDeadline = performance.now() + CLEANUP_TOTAL_TIMEOUT_MS;
+		await this.stopTrackedBroker((phaseBudgetMs) =>
+			Math.min(phaseBudgetMs, Math.max(0, cleanupDeadline - performance.now())),
+		);
+	}
+
+	private async stopTrackedBroker(remainingBudgetMs: (phaseBudgetMs: number) => number): Promise<void> {
 		const broker = this.broker;
 		if (!broker || this.hasClosed) return;
 		const signal = (name: NodeJS.Signals) => {
@@ -246,7 +254,7 @@ export class IntercomBrokerFixture {
 					"Broker clients did not close before cleanup deadline",
 				);
 			} finally {
-				await this.stopBroker(remainingBudgetMs);
+				await this.stopTrackedBroker(remainingBudgetMs);
 				await this.stopSuccessorBroker();
 			}
 			removeTestDirectory(this.agentDir, { retries: 20, retryDelayMs: 50 });

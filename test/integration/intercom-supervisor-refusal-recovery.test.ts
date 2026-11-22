@@ -208,7 +208,7 @@ test(
 
 		// Broker restart: the broker dies; the supervisor stays away until the child has reconnected.
 		const { stopDetachedBroker } = await import("../helpers/detached-broker.js");
-		await (fixture as unknown as { stopBroker(): Promise<void> }).stopBroker();
+		await fixture.stopBroker();
 		await stopDetachedBroker(fixture.agentDir).catch(() => undefined);
 		await sleep(200);
 		// The child reconnects on its own backoff and spawns a successor broker; the supervisor stays away meanwhile.

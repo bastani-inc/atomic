@@ -361,3 +361,23 @@ test("cleanup enforces a shared ceiling strictly below TEST_TIMEOUT_MS across a 
 		rmSync(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("stopBroker can be called directly to restart the tracked broker without tearing down the fixture directory", async () => {
+	const { agentDir, files, fixture, child, kill } = resources();
+	const stopping = fixture.stopBroker();
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(kill.mock.calls, [["SIGTERM"]]);
+		Object.assign(child, { exitCode: 0 });
+		child.emit("exit", 0, null);
+		child.emit("close", 0, null);
+		await stopping;
+		for (const file of files) assert.equal(existsSync(file), true, "stopBroker must preserve agentDir files");
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		child.emit("close", 0, null);
+		await stopping;
+		await fixture.cleanup();
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
