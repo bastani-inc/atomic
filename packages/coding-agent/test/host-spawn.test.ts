@@ -273,10 +273,7 @@ describe("a host process started in a job of its own", () => {
 		for (const recorded of leftRunning.splice(0)) await signalRecordedProcess(recorded);
 	});
 
-	/**
-	 * A process that starts a program which outlives it, by itself for {@link LEFT_RUNNING_MS}, and then exits. Its
-	 * streams are ignored: a program inherits what its starter can pass on, a pipe to this process too.
-	 */
+	/** A process that starts a program which outlives it, by itself for {@link LEFT_RUNNING_MS}, and then exits. */
 	async function leavingAProgramRunning(): Promise<{ child: ContainedChildProcess; program: RecordedProcess }> {
 		const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-contained-")));
 		try {
@@ -285,7 +282,7 @@ describe("a host process started in a job of its own", () => {
 				node,
 				[
 					"-e",
-					`const c=require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},${LEFT_RUNNING_MS})'],{stdio:'ignore',detached:true});require('node:fs').writeFileSync(process.argv[1],String(c.pid))`,
+					`const c=require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},${LEFT_RUNNING_MS})'],{stdio:'ignore',detached:true});c.unref();require('node:fs').writeFileSync(process.argv[1],String(c.pid))`,
 					pidFile,
 				],
 				{ stdio: "ignore" },
