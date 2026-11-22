@@ -628,6 +628,12 @@ export interface HostProcessOptions {
   /** On Windows, join `args` verbatim without re-quoting, matching Node's `windowsVerbatimArguments`. */
   verbatimArguments?: boolean
   /**
+   * On Windows with `detached`, use `CREATE_NO_WINDOW` instead of `DETACHED_PROCESS` so the process starts with a
+   * windowless console inherited by its console descendants (prevents custom `.cmd`/`.bat` or wrapper children from
+   * allocating a visible console window).
+   */
+  noWindow?: boolean
+  /**
    * On Windows with `detached`, attach to an existing process ID instead of spawning a new process (requires
    * `watch_creation_time` matching its kernel creation time).
    */

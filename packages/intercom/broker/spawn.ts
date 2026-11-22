@@ -124,6 +124,11 @@ export interface BrokerLaunchSpec {
   readonly args: string[];
   /** Windows: pass `args` verbatim without re-quoting (used only when a custom `brokerCommand` is a `.cmd`/`.bat` script). */
   readonly verbatimArguments?: true;
+  /**
+   * Windows: start with `CREATE_NO_WINDOW` instead of `DETACHED_PROCESS` so a custom `brokerCommand` override
+   * (`.cmd`/`.bat` or wrapper `.exe`) receives a hidden windowless console inherited by any console child it spawns.
+   */
+  readonly noWindow?: true;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -283,6 +288,7 @@ export function getBrokerLaunchSpec(
       command: windowsCmdPath(),
       args: ["/d", "/s", "/c", formatWindowsCmdCommandLine(brokerCommand, [...brokerArgs, brokerPath])],
       verbatimArguments: true,
+      noWindow: true,
     };
   }
 
@@ -290,6 +296,7 @@ export function getBrokerLaunchSpec(
     kind: "direct",
     command: brokerCommand,
     args: [...brokerArgs, brokerPath],
+    ...(platform === "win32" ? { noWindow: true as const } : {}),
   };
 }
 
@@ -565,6 +572,7 @@ interface NativeDetachedStartOptions {
   readonly detached: true;
   readonly stderrLogPath?: string;
   readonly verbatimArguments?: boolean;
+  readonly noWindow?: boolean;
   readonly watchPid?: number;
   readonly watchCreationTime?: string;
 }
@@ -642,7 +650,7 @@ const WINDOWS_BROKER_RELAY_SCRIPT = [
   '    if (req.nativePath) { try { native = require(req.nativePath); } catch {} }',
   '    if (typeof native?.startHostProcess === "function") {',
   '      try {',
-  '        const p = native.startHostProcess({ file: req.file, args: req.args, cwd: req.cwd, env: req.env, pipeStdin: false, pipeStdout: false, pipeStderr: false, detached: true, stderrLogPath: req.stderrLogPath, ...(req.verbatimArguments ? { verbatimArguments: true } : {}) }, () => {});',
+  '        const p = native.startHostProcess({ file: req.file, args: req.args, cwd: req.cwd, env: req.env, pipeStdin: false, pipeStdout: false, pipeStderr: false, detached: true, stderrLogPath: req.stderrLogPath, ...(req.verbatimArguments ? { verbatimArguments: true } : {}), ...(req.noWindow ? { noWindow: true } : {}) }, () => {});',
   '        p.unref();',
   '        held = p;',
   '        reply({ ok: true, pid: p.pid, creationTime: p.creationTime ?? null });',
@@ -653,11 +661,11 @@ const WINDOWS_BROKER_RELAY_SCRIPT = [
   '    }',
   '    const fd = fs.openSync(req.stderrLogPath, "a");',
   '    try {',
-  '      const c = cp.spawn(req.file, req.args, { detached: true, windowsHide: true, cwd: req.cwd, env: req.env, stdio: ["ignore", "ignore", fd], ...(req.verbatimArguments ? { windowsVerbatimArguments: true } : {}) });',
+  '      const c = cp.spawn(req.file, req.args, { detached: !req.noWindow, windowsHide: true, cwd: req.cwd, env: req.env, stdio: ["ignore", "ignore", fd], ...(req.verbatimArguments ? { windowsVerbatimArguments: true } : {}) });',
   '      c.once("spawn", () => {',
   '        c.unref();',
   '        let started = null;',
-  '        if (c.pid && typeof native?.processCreationTime === "function") { try { started = native.processCreationTime(c.pid) ?? null; } catch {} }',
+  '        if (c.exitCode === null && c.signalCode === null && c.pid && typeof native?.processCreationTime === "function") { try { started = native.processCreationTime(c.pid) ?? null; } catch {} }',
   '        reply({ ok: true, pid: c.pid ?? null, creationTime: started });',
   '      });',
   '      c.once("error", (e) => reply({ ok: false, code: e?.code ?? "UNKNOWN", message: e?.message ?? String(e) }));',
@@ -705,8 +713,10 @@ function cleanRelayEnvironment(): NodeJS.ProcessEnv {
 
 interface SpawnedBrokerChild {
   readonly pid: number | undefined;
-  /** Kernel creation time read while the process handle was held at start (Windows), when available. */
+  /** Kernel creation time read while a live process handle was held (Windows), when available. */
   readonly started: string | undefined;
+  /** True while this process holds a live OS handle to the broker preventing Windows PID reuse. */
+  readonly holdsProcessHandle: boolean;
   readonly exitCode: number | null;
   readonly signalCode: NodeJS.Signals | null;
   /** Non-native Windows fallback only: poll liveness of the orphaned broker via waitForBroker. */
@@ -729,6 +739,7 @@ function wrapNativeProcessHandle(
   return {
     pid: proc.pid,
     started,
+    holdsProcessHandle: true,
     get exitCode() {
       return readExitCode();
     },
@@ -786,6 +797,7 @@ function wrapNativeDetachedProcess(
         detached: true,
         stderrLogPath: logPath,
         ...(launch.verbatimArguments ? { verbatimArguments: true } : {}),
+        ...(launch.noWindow ? { noWindow: true } : {}),
       },
       (event) => {
         if (event.kind !== "exit") return;
@@ -969,6 +981,7 @@ async function spawnOrphanedWindowsBrokerAsync(
         env: stringOnlyEnv(spawnOptions.env),
         stderrLogPath: logPath,
         ...(launch.verbatimArguments ? { verbatimArguments: true } : {}),
+        ...(launch.noWindow ? { noWindow: true } : {}),
         ...(bindings.modulePath ? { nativePath: bindings.modulePath } : {}),
       });
       relay.stdin?.write(`${payload}\n`);
@@ -1005,13 +1018,16 @@ async function spawnOrphanedWindowsBrokerAsync(
 
   if (watched !== undefined) return watched;
 
-  // Fallback when watchHostProcess is unavailable (older native addon or no addon): poll liveness by (pid, creationTime).
-  const started = creationTime ?? (pid === undefined ? undefined : nativeProcessCreationTime(pid));
+  // Fallback when watchPid is unavailable (older native addon or no addon): poll liveness via waitForBroker.
+  // #6133: the relay has already exited so no OS handle prevents PID reuse here; keep ONLY a creationTime captured
+  // while the relay held the handle, and never read a creation time lazily for an unheld bare PID.
+  const started = creationTime;
   const polledIdentity: (() => AnnouncedBroker | undefined) | undefined =
     pid === undefined ? undefined : () => (started === undefined ? { pid } : { pid, started });
   return {
     pid,
     started,
+    holdsProcessHandle: false,
     get exitCode() {
       return pid !== undefined && !isProcessAlive(pid) ? -1 : null;
     },
@@ -1061,6 +1077,7 @@ function wrapNodeChildProcess(
   return {
     pid: child.pid,
     started,
+    holdsProcessHandle: true,
     get exitCode() {
       return child.exitCode ?? bufferedExit?.code ?? null;
     },
@@ -1235,30 +1252,42 @@ async function spawnBrokerHoldingLock(
           // #4727 / #6133: the session that launched this broker is gone and the broker did not start in time; stop it
           // (and every descendant it started) before this call returns, never by an unverified bare PID on Windows.
           if (signal?.aborted && starting && spawned.pid !== undefined) {
-            let abandoned: StartingBroker;
+            let abandoned: StartingBroker | undefined;
             if (process.platform === "win32") {
-              const childStart = spawned.started ?? (await readProcessCreationTime(spawned.pid));
-              abandoned =
-                childStart !== undefined
-                  ? { kind: "announced", pid: spawned.pid, started: childStart }
-                  : { kind: "handle", kill: () => spawned.killHandle() };
+              // Only query creation time lazily while THIS process still holds the child's OS handle (preventing PID
+              // reuse); without a held handle, rely solely on a creation time captured while the relay held the handle.
+              // When neither is available, do not kill — leave the broker to its own idle exit, matching main.
+              const childStart =
+                spawned.started ?? (spawned.holdsProcessHandle ? await readProcessCreationTime(spawned.pid) : undefined);
+              if (childStart !== undefined) {
+                abandoned = { kind: "announced", pid: spawned.pid, started: childStart };
+              } else if (spawned.holdsProcessHandle) {
+                abandoned = { kind: "handle", kill: () => spawned.killHandle() };
+              }
             } else {
               abandoned = { kind: "group", pid: spawned.pid };
             }
-            await stopStartingBroker(abandoned);
+            if (abandoned !== undefined) {
+              await stopStartingBroker(abandoned);
+            }
             reject(toError(error));
             return;
           }
           // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
           // Only now does the lock name the broker: until this hand-off it follows this live spawner, so no other
           // spawner can judge it stale and replace it while this one may still release it.
-          // The child handle is still open, so its pid still names it: record its start now.
+          // On Windows, hand off only when the broker's identity is verified or its OS handle is still held (#6133).
+          const canHandOffLock =
+            starting && (process.platform !== "win32" || spawned.started !== undefined || spawned.holdsProcessHandle);
           keepLock =
-            starting &&
+            canHandOffLock &&
             (await handSpawnLockToBrokerAsync(
               spawned.pid,
               lockOwner,
-              spawned.started ?? (spawned.pid === undefined ? undefined : await lockProcessStartAsync(spawned.pid)),
+              spawned.started ??
+                (spawned.holdsProcessHandle && spawned.pid !== undefined
+                  ? await lockProcessStartAsync(spawned.pid)
+                  : undefined),
             ));
           reject(toError(error));
         } finally {

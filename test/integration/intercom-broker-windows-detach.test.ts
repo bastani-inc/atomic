@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, test } from "vitest";
 import { terminateRpcClientProcess } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
@@ -582,4 +583,394 @@ describe.skipIf(process.platform !== "win32")("Windows direct broker detachment 
 			WINDOWS_DETACH_TEST_TIMEOUT_MS,
 		);
 	}
+
+	test(
+		"console children of custom .cmd/.bat and .exe overrides inherit a windowless console (never WS_VISIBLE) and survive ConPTY close",
+		async () => {
+			const root = makeTempDirectory("ic-console-vis-");
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const csSrc = join(root, "inspect-console.cs");
+			const inspectExe = join(root, "inspect-console.exe");
+			writeFileSync(
+				csSrc,
+				[
+					"using System;",
+					"using System.IO;",
+					"using System.Runtime.InteropServices;",
+					"class Program {",
+					"  const int GWL_STYLE = -16;",
+					"  const uint WS_VISIBLE = 0x10000000;",
+					'  [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();',
+					'  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int nIndex);',
+					'  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);',
+					"  static int Main(string[] args) {",
+					"    IntPtr hwnd = GetConsoleWindow();",
+					"    uint style = hwnd != IntPtr.Zero ? (uint)GetWindowLong(hwnd, GWL_STYLE) : 0;",
+					"    bool hasWsVisible = (style & WS_VISIBLE) != 0;",
+					"    bool isWinVis = hwnd != IntPtr.Zero && IsWindowVisible(hwnd);",
+					'    File.WriteAllText(args[0], "{\\"hwnd\\":" + hwnd.ToInt64() + ",\\"styleHex\\":\\"0x" + style.ToString("X8") + "\\",\\"hasWsVisible\\":" + hasWsVisible.ToString().ToLowerInvariant() + ",\\"isWindowVisible\\":" + isWinVis.ToString().ToLowerInvariant() + "}");',
+					"    return 0;",
+					"  }",
+					"}",
+				].join("\r\n"),
+				"utf8",
+			);
+			const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+			const cscExe = join(systemRoot, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+			const compiled = spawnSync(cscExe, ["/nologo", `/out:${inspectExe}`, csSrc], {
+				encoding: "utf8",
+				timeout: 30_000,
+				windowsHide: true,
+			});
+			assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`);
+
+			const waitInspect = async (file: string) => {
+				const deadline = Date.now() + 10_000;
+				while (!existsSync(file) && Date.now() < deadline) await sleep(30);
+				assert.equal(existsSync(file), true, `console inspector did not write ${file}`);
+				return JSON.parse(readFileSync(file, "utf8")) as {
+					hwnd: number;
+					styleHex: string;
+					hasWsVisible: boolean;
+					isWindowVisible: boolean;
+				};
+			};
+
+			const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+			const previousPiDir = process.env.PI_CODING_AGENT_DIR;
+			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+			delete process.env.PI_CODING_AGENT_DIR;
+			try {
+				const natives = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+					startHostProcess(
+						options: Record<string, unknown>,
+						onEvent: (event: { kind: string; code?: number }) => void,
+					): { release(): void };
+				};
+				const fullEnv = Object.fromEntries(
+					Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+				);
+
+				// 1. Default native detached exe (DETACHED_PROCESS): hwnd === 0, not visible.
+				const outDefaultExe = join(root, "out-default-exe.json");
+				const pDefault = natives.startHostProcess(
+					{
+						file: inspectExe,
+						args: [outDefaultExe],
+						cwd: root,
+						env: fullEnv,
+						pipeStdin: false,
+						pipeStdout: false,
+						pipeStderr: false,
+						detached: true,
+					},
+					() => {},
+				);
+				try {
+					const defaultRes = await waitInspect(outDefaultExe);
+					assert.equal(defaultRes.hwnd, 0, JSON.stringify(defaultRes));
+					assert.equal(defaultRes.hasWsVisible, false, JSON.stringify(defaultRes));
+				} finally {
+					pDefault.release();
+				}
+
+				// 2. Custom .cmd override spawning a console child: must inherit windowless console (never WS_VISIBLE).
+				const outCustomCmd = join(root, "out-custom-cmd.json");
+				const cmdOverride = join(root, "custom-broker.cmd");
+				writeFileSync(cmdOverride, `@echo off\r\n"${inspectExe}" "${outCustomCmd}"\r\nexit /b 11\r\n`, "utf8");
+				await assert.rejects(
+					() => spawnBrokerIfNeeded(cmdOverride, [], 15_000, INTERCOM_DIR),
+					/Intercom broker exited before startup with code 11/u,
+				);
+				const cmdRes = await waitInspect(outCustomCmd);
+				assert.equal(cmdRes.hwnd, 0, JSON.stringify(cmdRes));
+				assert.equal(cmdRes.hasWsVisible, false, JSON.stringify(cmdRes));
+				assert.equal(cmdRes.isWindowVisible, false, JSON.stringify(cmdRes));
+
+				// 3. Custom .exe override spawning a console child without windowsHide: also inherits windowless console.
+				const outCustomExe = join(root, "out-custom-exe.json");
+				const wrapperJs = join(root, "wrapper.cjs");
+				writeFileSync(
+					wrapperJs,
+					`const { spawnSync } = require("node:child_process"); spawnSync(${JSON.stringify(inspectExe)}, [${JSON.stringify(outCustomExe)}], { stdio: "ignore" }); process.exit(12);\n`,
+					"utf8",
+				);
+				await assert.rejects(
+					() => spawnBrokerIfNeeded(process.execPath, [wrapperJs], 15_000, INTERCOM_DIR),
+					/Intercom broker exited before startup with code 12/u,
+				);
+				const exeRes = await waitInspect(outCustomExe);
+				assert.equal(exeRes.hwnd, 0, JSON.stringify(exeRes));
+				assert.equal(exeRes.hasWsVisible, false, JSON.stringify(exeRes));
+				assert.equal(exeRes.isWindowVisible, false, JSON.stringify(exeRes));
+
+				// 4. Custom .cmd broker using CREATE_NO_WINDOW still survives the parent's ConPTY console closing.
+				const conptyAgentDir = join(root, "conpty-cmd-agent");
+				mkdirSync(conptyAgentDir, { recursive: true });
+				const readyMarker = join(root, "conpty-cmd.ready");
+				const realCmdBroker = join(root, "start-real-broker.cmd");
+				writeFileSync(realCmdBroker, `@echo off\r\n"${process.execPath}" "${JITI_CLI}" %*\r\n`, "utf8");
+				const cmdParentRunner = join(root, "conpty-cmd-parent.ts");
+				writeFileSync(
+					cmdParentRunner,
+					[
+						`process.env.ATOMIC_CODING_AGENT_DIR = ${JSON.stringify(conptyAgentDir)};`,
+						"delete process.env.PI_CODING_AGENT_DIR;",
+						'import { writeFileSync } from "node:fs";',
+						`import { spawnBrokerIfNeeded } from ${JSON.stringify(SPAWN_ENTRY)};`,
+						`await spawnBrokerIfNeeded(${JSON.stringify(realCmdBroker)}, [], 30_000, ${JSON.stringify(INTERCOM_DIR)});`,
+						`writeFileSync(${JSON.stringify(readyMarker)}, "ready", "utf8");`,
+						"setInterval(() => {}, 1000);",
+					].join("\n"),
+					"utf8",
+				);
+				try {
+					const conptyReport = runHarness(
+						root,
+						"conpty-close",
+						`"${process.execPath}" "${JITI_CLI}" "${cmdParentRunner}"`,
+						conptyAgentDir,
+						readyMarker,
+					);
+					assert.equal(conptyReport.survivedConsoleClose, true, JSON.stringify(conptyReport));
+					assert.equal(await queryBrokerPid(conptyAgentDir), conptyReport.brokerPid);
+				} finally {
+					await removeTempRootReleasingBroker(conptyAgentDir, conptyAgentDir);
+				}
+			} finally {
+				if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+				else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+				if (previousPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+				else process.env.PI_CODING_AGENT_DIR = previousPiDir;
+				await removeTempRootReleasingBroker(root, agentDir);
+			}
+		},
+		WINDOWS_DETACH_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"non-native relay fallback never kills an unheld bare PID on abort (#6133)",
+		async () => {
+			const root = makeTempDirectory("ic-nonative-abort-");
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const pidMarker = join(root, "broker.pid");
+			const script = join(root, "nonative-abort.mjs");
+			writeFileSync(
+				script,
+				[
+					'import Module from "node:module";',
+					'import { existsSync } from "node:fs";',
+					"const origResolve = Module._resolveFilename;",
+					"const origLoad = Module._load;",
+					'const failNative = () => { const e = new Error("missing native"); e.code = "MODULE_NOT_FOUND"; throw e; };',
+					'Module._resolveFilename = function (req, ...rest) { if (req === "@bastani/atomic-natives") failNative(); return origResolve.call(this, req, ...rest); };',
+					'Module._load = function (req, ...rest) { if (req === "@bastani/atomic-natives") failNative(); return origLoad.call(this, req, ...rest); };',
+					`process.env.ATOMIC_CODING_AGENT_DIR = ${JSON.stringify(agentDir)};`,
+					"delete process.env.PI_CODING_AGENT_DIR;",
+					`const { spawnBrokerIfNeeded } = await import(${JSON.stringify(pathToFileURL(SPAWN_ENTRY).href)});`,
+					"const ac = new AbortController();",
+					`const childCode = 'require("node:fs").writeFileSync(' + ${JSON.stringify(JSON.stringify(pidMarker))} + ', String(process.pid)); setInterval(() => {}, 1000);';`,
+					`const pending = spawnBrokerIfNeeded(process.execPath, ["-e", childCode, "--"], 15_000, ${JSON.stringify(INTERCOM_DIR)}, ac.signal);`,
+					"const deadline = Date.now() + 10_000;",
+					`while (!existsSync(${JSON.stringify(pidMarker)}) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 30));`,
+					'ac.abort(new Error("cancelled"));',
+					'let errMsg = "";',
+					"try { await pending; } catch (e) { errMsg = e.message; }",
+					`console.log(JSON.stringify({ errMsg, markerExists: existsSync(${JSON.stringify(pidMarker)}) }));`,
+				].join("\n"),
+				"utf8",
+			);
+			const natives = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				processCreationTime(pid: number): string | null;
+				terminateProcessCreatedAt(pid: number, created: string, descendants: boolean): number | null;
+			};
+			let spawnedPid: number | undefined;
+			let spawnedCreated: string | null = null;
+			try {
+				const result = spawnSync(process.execPath, [JITI_CLI, script], {
+					cwd: root,
+					encoding: "utf8",
+					timeout: 30_000,
+					windowsHide: true,
+				});
+				assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+				const parsed = JSON.parse(result.stdout.trim().split("\n").pop() ?? "{}") as {
+					errMsg: string;
+					markerExists: boolean;
+				};
+				assert.equal(parsed.errMsg, "cancelled");
+				assert.equal(parsed.markerExists, true);
+				spawnedPid = Number.parseInt(readFileSync(pidMarker, "utf8").trim(), 10);
+				assert.ok(Number.isInteger(spawnedPid) && spawnedPid > 0);
+				spawnedCreated = natives.processCreationTime(spawnedPid);
+				assert.ok(
+					spawnedCreated !== null,
+					"non-native relay fallback must not kill an unheld bare PID on abort (#6133)",
+				);
+			} finally {
+				if (spawnedPid !== undefined && spawnedCreated !== null) {
+					natives.terminateProcessCreatedAt(spawnedPid, spawnedCreated, true);
+				}
+				await removeTempRootReleasingBroker(root, agentDir);
+			}
+		},
+		WINDOWS_DETACH_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"detached native process retains its handle until release() so watchPid preserves exact exit codes across 50 instant exits under load",
+		async () => {
+			const root = makeTempDirectory("ic-fast-exit-50x-");
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+			const cmdExe = join(systemRoot, "System32", "cmd.exe");
+			const natives = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				startHostProcess(
+					options: Record<string, unknown>,
+					onEvent: (event: { kind: string; code?: number }) => void,
+				): { readonly pid: number; readonly creationTime?: string | null; unref(): void; release(): void };
+			};
+			const minimalEnv = { SystemRoot: systemRoot };
+
+			const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+			const previousPiDir = process.env.PI_CODING_AGENT_DIR;
+			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+			delete process.env.PI_CODING_AGENT_DIR;
+			try {
+				// 1. Direct handle retention check: wait 200 ms after an immediate exit BEFORE calling watchPid.
+				const logFile = join(root, "direct-fast.log");
+				const direct = natives.startHostProcess(
+					{
+						file: cmdExe,
+						args: ["/d", "/c", "exit /b 7"],
+						cwd: root,
+						env: minimalEnv,
+						pipeStdin: false,
+						pipeStdout: false,
+						pipeStderr: false,
+						detached: true,
+						stderrLogPath: logFile,
+					},
+					() => {},
+				);
+				try {
+					direct.unref();
+					assert.ok(typeof direct.creationTime === "string" && direct.creationTime.length > 0);
+					await sleep(200);
+					const exitCode = await new Promise<number | undefined>((resolve, reject) => {
+						const watched = natives.startHostProcess(
+							{
+								file: "",
+								args: [],
+								env: {},
+								pipeStdin: false,
+								pipeStdout: false,
+								pipeStderr: false,
+								detached: true,
+								watchPid: direct.pid,
+								watchCreationTime: direct.creationTime,
+							},
+							(event) => {
+								if (event.kind === "exit") {
+									watched.release();
+									resolve(event.code);
+								}
+							},
+						);
+						watched.unref();
+						setTimeout(() => {
+							watched.release();
+							reject(new Error("watchPid timed out waiting for already-exited child"));
+						}, 5_000).unref();
+					});
+					assert.equal(exitCode, 7);
+				} finally {
+					direct.release();
+				}
+
+				// 2. 50 instant-exit watchPid handoffs in concurrent batches (load) — every single one must succeed with code 19.
+				for (let wave = 0; wave < 10; wave++) {
+					await Promise.all(
+						Array.from({ length: 5 }, async (_, slot) => {
+							const expectedCode = 10 + ((wave * 5 + slot) % 15);
+							const proc = natives.startHostProcess(
+								{
+									file: cmdExe,
+									args: ["/d", "/c", `exit /b ${expectedCode}`],
+									cwd: root,
+									env: minimalEnv,
+									pipeStdin: false,
+									pipeStdout: false,
+									pipeStderr: false,
+									detached: true,
+									noWindow: true,
+								},
+								() => {},
+							);
+							try {
+								proc.unref();
+								assert.ok(typeof proc.creationTime === "string" && proc.creationTime.length > 0);
+								// Deliberately delay before watchPid so supervise() races ahead of the handoff under load.
+								if (slot % 2 === 0) await sleep(40);
+								const code = await new Promise<number | undefined>((resolve, reject) => {
+									const watched = natives.startHostProcess(
+										{
+											file: "",
+											args: [],
+											env: {},
+											pipeStdin: false,
+											pipeStdout: false,
+											pipeStderr: false,
+											detached: true,
+											watchPid: proc.pid,
+											watchCreationTime: proc.creationTime,
+										},
+										(event) => {
+											if (event.kind === "exit") {
+												watched.release();
+												resolve(event.code);
+											}
+										},
+									);
+									watched.unref();
+									setTimeout(() => {
+										watched.release();
+										reject(new Error(`watchPid timed out on wave=${wave} slot=${slot}`));
+									}, 5_000).unref();
+								});
+								assert.equal(code, expectedCode, `wave=${wave} slot=${slot}`);
+							} finally {
+								proc.release();
+							}
+						}),
+					);
+				}
+
+				// 3. End-to-end spawnBrokerIfNeeded with a fast-exiting custom .cmd (10x): exact exit code every time.
+				const fastCmd = join(root, "fast9.cmd");
+				writeFileSync(fastCmd, "@echo off\r\necho FAST9_ERR 1>&2\r\nexit /b 9\r\n", "utf8");
+				for (let i = 0; i < 10; i++) {
+					await assert.rejects(
+						() => spawnBrokerIfNeeded(fastCmd, [], 15_000, INTERCOM_DIR),
+						(error: unknown) => {
+							assert.ok(error instanceof Error);
+							assert.match(error.message, /Intercom broker exited before startup with code 9/u, error.message);
+							assert.ok(error.message.includes("FAST9_ERR"), error.message);
+							return true;
+						},
+					);
+				}
+			} finally {
+				if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+				else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+				if (previousPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+				else process.env.PI_CODING_AGENT_DIR = previousPiDir;
+				await removeTempRootReleasingBroker(root, agentDir);
+			}
+		},
+		WINDOWS_DETACH_TEST_TIMEOUT_MS,
+	);
 });

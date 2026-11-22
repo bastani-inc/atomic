@@ -71,6 +71,7 @@ describe("Windows direct broker launch spec (no wscript or VBS launcher)", () =>
 			assert.deepEqual(tsSpec.args, [jitiCli, tsBroker]);
 			assert.equal(win32.basename(tsSpec.command).toLowerCase(), "node.exe");
 			assert.equal(tsSpec.verbatimArguments, undefined);
+			assert.equal(tsSpec.noWindow, undefined);
 
 			const bundleBroker = String.raw`C:\Users\100%user\atomic\builtin\intercom\broker\broker.bundle.mjs`;
 			const bundleSpec = spawnModule.getBrokerLaunchSpec(
@@ -89,6 +90,7 @@ describe("Windows direct broker launch spec (no wscript or VBS launcher)", () =>
 			assert.equal(bundleSpec.command, nodePath);
 			assert.deepEqual(bundleSpec.args, [bundleBroker]);
 			assert.equal(bundleSpec.verbatimArguments, undefined);
+			assert.equal(bundleSpec.noWindow, undefined);
 		} finally {
 			removePathSync(extDir, { recursive: true, force: true });
 		}
@@ -110,6 +112,7 @@ describe("Windows direct broker launch spec (no wscript or VBS launcher)", () =>
 		assert.equal(bunSpec.kind, "direct");
 		assert.equal(bunSpec.command, bunPath);
 		assert.deepEqual(bunSpec.args, [brokerPath]);
+		assert.equal(bunSpec.noWindow, undefined);
 
 		const atomicExe = String.raw`C:\Program Files\Atomic\atomic.exe`;
 		const binSpec = spawnModule.getBrokerLaunchSpec(
@@ -125,9 +128,10 @@ describe("Windows direct broker launch spec (no wscript or VBS launcher)", () =>
 		assert.equal(binSpec.kind, "direct");
 		assert.equal(binSpec.command, atomicExe);
 		assert.deepEqual(binSpec.args, [spawnModule.INTERNAL_INTERCOM_BROKER_ARG, brokerPath]);
+		assert.equal(binSpec.noWindow, undefined);
 	});
 
-	test("passes custom exe overrides directly on Windows without wscript or cmd", () => {
+	test("passes custom exe overrides directly on Windows with noWindow enabled and without wscript or cmd", () => {
 		const brokerPath = String.raw`C:\ext\broker\broker.ts`;
 		const spec = spawnModule.getBrokerLaunchSpec(
 			brokerPath,
@@ -144,9 +148,22 @@ describe("Windows direct broker launch spec (no wscript or VBS launcher)", () =>
 		assert.equal(spec.command, "bun");
 		assert.deepEqual(spec.args, ["--smol", "arg-%TEMP%-100%", brokerPath]);
 		assert.equal(spec.verbatimArguments, undefined);
+		assert.equal(spec.noWindow, true);
+
+		const linuxSpec = spawnModule.getBrokerLaunchSpec(
+			"/ext/broker/broker.ts",
+			"bun",
+			["--smol"],
+			"/ext",
+			"linux",
+			"/agent/intercom",
+			"/usr/bin/node",
+			"node",
+		);
+		assert.equal(linuxSpec.noWindow, undefined);
 	});
 
-	test("runs custom Windows .cmd/.bat overrides via direct cmd.exe without wscript or 2>> redirection", () => {
+	test("runs custom Windows .cmd/.bat overrides via direct cmd.exe with noWindow and without wscript or 2>> redirection", () => {
 		const brokerPath = String.raw`C:\ext\broker\broker.ts`;
 		const batchPath = String.raw`C:\tools\my broker.cmd`;
 		const spec = spawnModule.getBrokerLaunchSpec(
@@ -164,6 +181,7 @@ describe("Windows direct broker launch spec (no wscript or VBS launcher)", () =>
 		assert.match(spec.command, /cmd\.exe$/iu);
 		assert.doesNotMatch(spec.command, /wscript/iu);
 		assert.equal(spec.verbatimArguments, true);
+		assert.equal(spec.noWindow, true);
 		assert.deepEqual(spec.args.slice(0, 3), ["/d", "/s", "/c"]);
 		assert.ok(spec.args[3]?.includes(batchPath), spec.args[3]);
 		assert.equal(spec.args[3]?.includes(">>"), false, "stderr must travel via inherited handle, not 2>>");

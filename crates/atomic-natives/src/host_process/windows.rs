@@ -163,12 +163,25 @@ struct Handles {
 	stop: OwnedHandle,
 }
 
+/// Synchronizes handle lifetime between the supervisor thread and host `release()` / `Drop`.
+/// While `supervisor_done` is false, the supervisor thread holds raw handle copies in `WaitForMultipleObjects` and is
+/// solely responsible for dropping `handles` after waking. Once `supervisor_done` is true:
+/// - for normal (`retain_handle_until_release = false`) processes, the supervisor drops `handles` immediately;
+/// - for detached/watched (`retain_handle_until_release = true`) processes, `handles` stays open until `released` is
+///   set by `release_by_host()` / `Drop`, preventing kernel object destruction and PID reuse during relay handoff or
+///   parent abort/timeout cleanup even if the child exits in 0 ms.
+struct HandleState {
+	handles: Option<Handles>,
+	supervisor_done: bool,
+	released: bool,
+}
+
 /// What the host and the thread that waits for the process's exit share.
 pub(super) struct Shared {
 	pid: u32,
-	/// Until the thread saw the exit or the release, as `child_process` closes a child's handle at its exit: until then
-	/// `pid` names the process.
-	handles: Mutex<Option<Handles>>,
+	handles: Mutex<HandleState>,
+	/// When true (`start_detached` / `watch`), retain `handles.process` after child exit until host `release()` / `Drop`.
+	retain_handle_until_release: bool,
 	/// The job, until the host released the processes in it.
 	job: Mutex<Option<Job>>,
 	callback: Mutex<Option<EventCallback>>,
@@ -188,8 +201,8 @@ impl Shared {
 	/// As libuv kills a child on Windows: `SIGINT`, `SIGQUIT`, `SIGKILL` and `SIGTERM` end the process with exit code 1,
 	/// and signal 0 asks whether it still runs. Only the process itself: its job is ended by `end_tree`.
 	pub(super) fn kill(&self, signal: i32, _group: bool) -> bool {
-		let handles = locked(&self.handles);
-		let Some(handles) = handles.as_ref() else { return false };
+		let state = locked(&self.handles);
+		let Some(handles) = state.handles.as_ref() else { return false };
 		if (unsafe { WaitForSingleObject(raw(&handles.process), 0) }) == WAIT_OBJECT_0 {
 			return false;
 		}
@@ -212,14 +225,14 @@ impl Shared {
 		let job = locked(&self.job);
 		let Some(job) = job.as_ref() else { return false };
 		// The process's handle stays open meanwhile, so its ID names no other process during the walk.
-		let handles = locked(&self.handles);
-		if let Some(handles) = handles.as_ref()
+		let state = locked(&self.handles);
+		if let Some(handles) = state.handles.as_ref()
 			&& (unsafe { WaitForSingleObject(raw(&handles.process), 0) }) != WAIT_OBJECT_0
 			&& let Some(mut below) = crate::process_tree::hold_process_descendants(self.pid)
 		{
 			below.end_all();
 		}
-		drop(handles);
+		drop(state);
 		job.terminate()
 	}
 
@@ -242,14 +255,24 @@ impl Shared {
 		Ok(())
 	}
 
-	/// The host handled the process's `close`, or dropped its handle: its threads stop and let go of the pipes.
+	/// The host handled the process's `close`, or dropped its handle: wake the supervisor if still running, or drop
+	/// retained handles immediately if the supervisor already exited.
 	pub(super) fn release_by_host(&self) {
 		self.stopping.store(true, Ordering::Release);
-		if let Some(handles) = locked(&self.handles).as_ref() {
-			unsafe {
-				SetEvent(raw(&handles.stop));
+		let mut state = locked(&self.handles);
+		state.released = true;
+		let to_drop = if state.supervisor_done {
+			state.handles.take()
+		} else {
+			if let Some(handles) = state.handles.as_ref() {
+				unsafe {
+					SetEvent(raw(&handles.stop));
+				}
 			}
-		}
+			None
+		};
+		drop(state);
+		drop(to_drop);
 	}
 
 	fn emit(&self, event: HostProcessEvent) {
@@ -598,9 +621,11 @@ fn null_device(write: bool) -> io::Result<File> {
 
 /// Waits for the exit and reports it, or for the host's release, after which nothing more is reported.
 fn supervise(shared: &Shared) {
-	// Valid until this thread closes them below.
-	let Some(waited) =
-		locked(&shared.handles).as_ref().map(|handles| [raw(&handles.process), raw(&handles.stop)])
+	// Valid until `supervisor_done` becomes true below.
+	let Some(waited) = locked(&shared.handles)
+		.handles
+		.as_ref()
+		.map(|handles| [raw(&handles.process), raw(&handles.stop)])
 	else {
 		return;
 	};
@@ -615,8 +640,17 @@ fn supervise(shared: &Shared) {
 			..HostProcessEvent::of(HostProcessEventKind::Exit)
 		});
 	}
-	drop(locked(&shared.handles).take());
+	// Release the JS callback first so it never keeps the Node/Bun event loop alive while a handle is retained.
 	drop(locked(&shared.callback).take());
+	let mut state = locked(&shared.handles);
+	state.supervisor_done = true;
+	let to_drop = if !shared.retain_handle_until_release || state.released {
+		state.handles.take()
+	} else {
+		None
+	};
+	drop(state);
+	drop(to_drop);
 }
 
 /// The program's standard stream `index`: the client end of the host's pipe server when piped, else the null device.
@@ -760,10 +794,12 @@ pub(super) fn start(
 	}
 	let shared = Arc::new(Shared {
 		pid: info.dwProcessId,
-		handles: Mutex::new(Some(Handles {
-			process,
-			stop: unsafe { OwnedHandle::from_raw_handle(stop) },
-		})),
+		handles: Mutex::new(HandleState {
+			handles: Some(Handles { process, stop: unsafe { OwnedHandle::from_raw_handle(stop) } }),
+			supervisor_done: false,
+			released: false,
+		}),
+		retain_handle_until_release: false,
 		job: Mutex::new(Some(job)),
 		callback: Mutex::new(Some(on_event)),
 		stopping: AtomicBool::new(false),
@@ -775,6 +811,7 @@ pub(super) fn start(
 	{
 		// No thread can report it: end it and what it started rather than leave them running unowned.
 		shared.end_tree();
+		locked(&shared.handles).supervisor_done = true;
 		shared.release_by_host();
 		return Err(os_error(error));
 	}
@@ -863,7 +900,13 @@ fn start_detached(
 	startup.StartupInfo.hStdError = inherited[2];
 	startup.lpAttributeList = attribute_list;
 
-	let base_flags = DETACHED_PROCESS
+	// DETACHED_PROCESS and CREATE_NO_WINDOW are mutually exclusive in CreateProcessW. Default direct executables use
+	// DETACHED_PROCESS (zero conhost.exe). Custom scripts/wrappers request `no_window: true` so they receive a
+	// windowless console (`CREATE_NO_WINDOW`) independent of any parent console, which their console descendants
+	// inherit silently instead of allocating a visible console window.
+	let console_flag =
+		if options.no_window.unwrap_or(false) { CREATE_NO_WINDOW } else { DETACHED_PROCESS };
+	let base_flags = console_flag
 		| CREATE_NEW_PROCESS_GROUP
 		| CREATE_UNICODE_ENVIRONMENT
 		| EXTENDED_STARTUPINFO_PRESENT;
@@ -924,10 +967,12 @@ fn start_detached(
 	}
 	let shared = Arc::new(Shared {
 		pid: info.dwProcessId,
-		handles: Mutex::new(Some(Handles {
-			process,
-			stop: unsafe { OwnedHandle::from_raw_handle(stop) },
-		})),
+		handles: Mutex::new(HandleState {
+			handles: Some(Handles { process, stop: unsafe { OwnedHandle::from_raw_handle(stop) } }),
+			supervisor_done: false,
+			released: false,
+		}),
+		retain_handle_until_release: true,
 		job: Mutex::new(None),
 		callback: Mutex::new(Some(on_event)),
 		stopping: AtomicBool::new(false),
@@ -938,6 +983,7 @@ fn start_detached(
 		std::thread::Builder::new().name("host-process".into()).spawn(move || supervise(&worker))
 	{
 		shared.kill(9, false);
+		locked(&shared.handles).supervisor_done = true;
 		shared.release_by_host();
 		return Err(os_error(error));
 	}
@@ -976,10 +1022,12 @@ pub(super) fn watch(
 	}
 	let shared = Arc::new(Shared {
 		pid,
-		handles: Mutex::new(Some(Handles {
-			process,
-			stop: unsafe { OwnedHandle::from_raw_handle(stop) },
-		})),
+		handles: Mutex::new(HandleState {
+			handles: Some(Handles { process, stop: unsafe { OwnedHandle::from_raw_handle(stop) } }),
+			supervisor_done: false,
+			released: false,
+		}),
+		retain_handle_until_release: true,
 		job: Mutex::new(None),
 		callback: Mutex::new(Some(on_event)),
 		stopping: AtomicBool::new(false),
@@ -989,6 +1037,7 @@ pub(super) fn watch(
 	if let Err(error) =
 		std::thread::Builder::new().name("host-process".into()).spawn(move || supervise(&worker))
 	{
+		locked(&shared.handles).supervisor_done = true;
 		shared.release_by_host();
 		return Err(os_error(error));
 	}

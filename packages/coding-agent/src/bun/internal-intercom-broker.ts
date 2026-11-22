@@ -112,6 +112,7 @@ interface BrokerRelayRequest {
 	readonly env: Record<string, string>;
 	readonly stderrLogPath: string;
 	readonly verbatimArguments?: boolean;
+	readonly noWindow?: boolean;
 	readonly nativePath?: string;
 }
 
@@ -128,6 +129,7 @@ interface RelayNativeBinding {
 			readonly detached: true;
 			readonly stderrLogPath: string;
 			readonly verbatimArguments?: boolean;
+			readonly noWindow?: boolean;
 		},
 		onEvent: () => void,
 	) => { readonly pid: number; readonly creationTime?: string | null; unref(): void; release(): void };
@@ -195,6 +197,7 @@ export function runInternalIntercomBrokerRelay(): void {
 							detached: true,
 							stderrLogPath: req.stderrLogPath,
 							...(req.verbatimArguments ? { verbatimArguments: true } : {}),
+							...(req.noWindow ? { noWindow: true } : {}),
 						},
 						() => {},
 					);
@@ -210,7 +213,7 @@ export function runInternalIntercomBrokerRelay(): void {
 			const fd = openSync(req.stderrLogPath, "a");
 			try {
 				const child = spawn(req.file, req.args, {
-					detached: true,
+					detached: !req.noWindow,
 					windowsHide: true,
 					cwd: req.cwd,
 					env: req.env,
@@ -220,7 +223,7 @@ export function runInternalIntercomBrokerRelay(): void {
 				child.once("spawn", () => {
 					child.unref();
 					let creationTime: string | null = null;
-					if (child.pid !== undefined) {
+					if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
 						try {
 							creationTime = native?.processCreationTime?.(child.pid) ?? null;
 						} catch {}
