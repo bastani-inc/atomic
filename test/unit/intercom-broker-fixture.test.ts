@@ -248,3 +248,64 @@ test("cleanup stops a detached successor broker recorded at broker.pid after the
 		rmSync(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("cleanup lets a socket destroyed in the same stalled timers phase emit close before rejecting", async () => {
+	vi.useRealTimers();
+	const { agentDir, fixture, child } = resources();
+	Object.assign(child, { exitCode: 0 });
+	child.emit("exit", 0, null);
+	child.emit("close", 0, null);
+	// A half-open peer keeps the client's socket open until the client's own 2 s disconnect timer calls socket.destroy().
+	const server = net.createServer({ allowHalfOpen: true }, (peer) => {
+		peer.resume();
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address !== "string");
+	const client = net.connect(address.port, "127.0.0.1");
+	await new Promise<void>((resolve) => client.once("connect", resolve));
+	fixture.onCleanup(
+		() =>
+			new Promise<void>((resolve) => {
+				const timer = setTimeout(() => client.destroy(), 2_000);
+				client.once("close", () => {
+					clearTimeout(timer);
+					resolve();
+				});
+				client.end();
+			}),
+	);
+	try {
+		const cleanup = fixture.cleanup();
+		// Stall past both the client's 2 s destroy timer and the fixture's 10 s derived cleanup deadline so both timers
+		// expire in the same libuv timers phase, before close callbacks run.
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_200);
+		await cleanup;
+		assert.equal(client.destroyed, true);
+		assert.equal(existsSync(agentDir), false);
+	} finally {
+		client.destroy();
+		server.close();
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("cleanup allows a loaded client close past 5 s within its derived disconnect budget", async () => {
+	vi.useRealTimers();
+	const { agentDir, fixture, child } = resources();
+	Object.assign(child, { exitCode: 0 });
+	child.emit("exit", 0, null);
+	child.emit("close", 0, null);
+	let closed = false;
+	fixture.onCleanup(async () => {
+		await sleep(5_500);
+		closed = true;
+	});
+	try {
+		await fixture.cleanup();
+		assert.equal(closed, true);
+		assert.equal(existsSync(agentDir), false);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
