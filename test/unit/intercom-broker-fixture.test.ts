@@ -266,8 +266,9 @@ test("cleanup lets a socket destroyed in the same stalled timers phase emit clos
 	assert.ok(address && typeof address !== "string");
 	const client = net.connect(address.port, "127.0.0.1");
 	await new Promise<void>((resolve) => client.once("connect", resolve));
-	// Fake only setTimeout/clearTimeout/performance so libuv's real check (`setImmediate`) and close-callbacks
-	// (`uv_close` -> socket `'close'`) phases still execute in true OS order when both timers expire in one turn.
+	// Capture real setTimeout before faking timers so we can fire both fake timers from a true libuv timers phase
+	// (matching real OS loop ordering: timers -> poll/IOCP -> check -> close-callbacks) in ~1 ms instead of 10 s.
+	const realSetTimeout = globalThis.setTimeout;
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	const derivedClientBudgetMs = Math.min(TEST_TIMEOUT_MS / 2, BROKER_DISCONNECT_TIMEOUT_MS * 5);
 	fixture.onCleanup(
@@ -283,9 +284,14 @@ test("cleanup lets a socket destroyed in the same stalled timers phase emit clos
 	);
 	try {
 		const cleanup = fixture.cleanup();
-		// Advance past both the client's destroy timer and the fixture's derived cleanup deadline synchronously in
-		// one turn so `client.destroy()` and the cleanup timeout fire together before libuv's close-callbacks phase.
-		vi.advanceTimersByTime(derivedClientBudgetMs);
+		// Advance past both the client's destroy timer and the fixture's derived cleanup deadline synchronously inside
+		// a real timers-phase callback so `client.destroy()` and the cleanup timeout fire together before close callbacks.
+		await new Promise<void>((resolve) =>
+			realSetTimeout(() => {
+				vi.advanceTimersByTime(derivedClientBudgetMs);
+				resolve();
+			}, 1),
+		);
 		await cleanup;
 		assert.equal(client.destroyed, true);
 		assert.equal(existsSync(agentDir), false);
