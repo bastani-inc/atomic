@@ -730,6 +730,8 @@ function compiledPackage(target: string): void {
 	for (const script of ["split-dist.mjs", "split-dist-names.mjs", "in-place-update-gate.mjs"])
 		fs.copyFileSync(join(packageDir, "scripts", script), join(target, "scripts", script));
 	copyTree(join(packageDir, "in-place-update"), join(target, "in-place-update"));
+	// The sources say which compiled files are this build's (`split-dist.mjs` keeps no file an earlier build left).
+	fs.symlinkSync(join(packageDir, "src"), join(target, "src"), process.platform === "win32" ? "junction" : "dir");
 	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
 	const { entries, gateFiles, gatedImporters } = JSON.parse(fs.readFileSync(join(state, "state.json"), "utf8")) as {
 		entries: Record<string, string>;
@@ -852,6 +854,50 @@ test(
 		assert.equal(result.status, 0, result.stderr);
 		const missing = [...lazy].filter((path) => !fs.existsSync(join(compiledDist, path)));
 		assert.deepEqual(missing, [], "lazily imported modules without a file after the split");
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a split over files an earlier build left gates and stubs what a split of a clean dist does",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "stale-leftovers");
+		compiledPackage(build);
+		const dist = join(build, "dist");
+		const split = () => spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		/** The gated modules, the stubs and the modules a gate asks for a release, as the split wrote them. */
+		const decisions = () => {
+			const { gateFiles } = JSON.parse(
+				fs.readFileSync(join(build, "node_modules", ".cache", "atomic-split-dist", "state.json"), "utf8"),
+			) as { gateFiles: Record<string, string> };
+			const files = Object.keys(gateFiles).filter((path) => path.endsWith(".js"));
+			const gate = fs.readFileSync(join(dist, "core", "export-html", "index.js"), "utf8");
+			return {
+				gated: files.filter((path) => path.endsWith(".impl.js")).sort(),
+				stubs: files.filter((path) => !path.endsWith(".impl.js")).sort(),
+				probes: /for \(const path of (\[[^\]]*\])\)/.exec(gate)?.[1],
+			};
+		};
+		const clean = split();
+		assert.equal(clean.status, 0, clean.stderr);
+		const expected = decisions();
+		assert.ok(expected.stubs.includes("_shared/chunk-CDOYTDYM.js"), "0.10.4-alpha.1's module path holds a stub");
+		assert.ok(expected.gated.includes("core/export-html/index.impl.js"), "the export module is gated");
+		// What an earlier build leaves: its own shared file at 0.10.4-alpha.1's module path, a shared file that imports
+		// the export module statically, and the export module's code as an earlier build wrote it beside its gate.
+		fs.writeFileSync(
+			join(dist, "_shared", "chunk-CDOYTDYM.js"),
+			'export const VERSION = "0.10.4-alpha.1";\nexport const APP_NAME = "atomic";\n',
+		);
+		fs.writeFileSync(
+			join(dist, "_shared", "chunk-AAAAAAAA.js"),
+			'import { exportSessionToHtml } from "../core/export-html/index.js";\nexport { exportSessionToHtml };\n',
+		);
+		fs.writeFileSync(join(dist, "core", "export-html", "index.impl.js"), "export const exportSessionToHtml = 1;\n");
+		const over = split();
+		assert.equal(over.status, 0, over.stderr);
+		assert.deepEqual(decisions(), expected);
 	},
 	LAYOUT_TIMEOUT_MS,
 );

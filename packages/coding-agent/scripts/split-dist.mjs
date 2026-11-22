@@ -918,7 +918,8 @@ const sharedEntryStems = new Set(sharedChunks.filter((c) => c.isEntry).map((c) =
 const sharedOutputs = sharedChunks
 	.filter((c) => c.isEntry || !sharedEntryStems.has(c.stem))
 	.map(({ file, stem, exports }) => ({ file, stem, exports }));
-for (const { path, contents } of compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY)) {
+const compatFiles = compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY);
+for (const { path, contents } of compatFiles) {
 	writeFileSync(join(dist, path), contents);
 }
 
@@ -926,32 +927,37 @@ for (const { path, contents } of compatSharedFiles(releasedSharedTargets, shared
 // package imports it statically (a file importing it would wait on the gate) or loads it as it starts, as an earlier
 // release did too, before an update can land. When a gate's module cannot load, it asks for the release a process runs
 // through the modules of `releaseVersionModules`, with stubs where this build writes none. See `in-place-update-gate.mjs`.
-// The files the package keeps: the split's own and every other compiled file but those it removes below, the files of
-// the modules it bundled and, as the leftovers loop finds them, the files that import one of those. The startup stages an
-// earlier build wrote are written again from this split's files.
-const splitWritten = new Set(outputFiles.map((file) => toPosix(relative(dist, file.path))));
-let distFiles = readdirSync(dist, { recursive: true })
-	.map((file) => String(file).split(sep).join("/"))
-	.filter(
-		(file) =>
-			file.endsWith(".js") &&
-			!file.startsWith("builtin/") &&
-			!file.startsWith("startup-stages/") &&
-			!removedSet.has(file),
-	);
-for (let kept = new Set(distFiles), changed = true; changed; ) {
+// The files this build keeps, which alone decide what is gated and which modules tell a release apart: what this split
+// writes, and the compiled files of this package's current sources but those of the modules it bundled (removed below)
+// and, as the leftovers loop finds them, those that import a removed one. A file an earlier build left in `dist` (a shared
+// file it wrote, the startup stages, a compiled file whose source is gone) decides nothing: a build over it decides as a
+// build of a clean `dist` does.
+const sourceDir = join(packageDir, "src");
+const compiledFromSource = (path) =>
+	!path.startsWith(`${SHARED_DIRECTORY}/`) && existsSync(join(sourceDir, path.replace(/\.js$/, ".ts")));
+const kept = new Set([
+	...outputFiles.map((file) => toPosix(relative(dist, file.path))).filter((file) => file.endsWith(".js")),
+	...compatFiles.map((file) => file.path).filter((file) => file.endsWith(".js")),
+	...compiledModules,
+	...threadModules,
+]);
+const splitKept = new Set(kept);
+for (const file of readdirSync(dist, { recursive: true })) {
+	const path = String(file).split(sep).join("/");
+	if (path.endsWith(".js") && !removedSet.has(path) && compiledFromSource(path)) kept.add(path);
+}
+for (let changed = true; changed; ) {
 	changed = false;
 	for (const path of kept) {
-		if (splitWritten.has(path) || compiledModules.has(path) || threadModules.has(path) || path.startsWith(`${SHARED_DIRECTORY}/`))
-			continue;
+		if (splitKept.has(path)) continue;
 		const { static: imports, dynamic } = importsOf(path, readFileSync(join(dist, path), "utf8"));
-		if ([...imports, ...dynamic].every((target) => kept.has(target) || (existsSync(join(dist, target)) && !removedSet.has(target))))
-			continue;
+		const found = (target) => kept.has(target) || (!target.endsWith(".js") && existsSync(join(dist, target)));
+		if ([...imports, ...dynamic].every(found)) continue;
 		kept.delete(path);
 		changed = true;
 	}
-	distFiles = [...kept];
 }
+const distFiles = [...kept];
 const staticallyImported = new Set();
 for (const path of distFiles)
 	for (const match of readFileSync(join(dist, path), "utf8").matchAll(
@@ -999,11 +1005,7 @@ for (const path of compiledModules) {
 	writeFileSync(join(dist, path), rewritten);
 	gatedImporters[path] = digest(rewritten);
 }
-// What this build leaves in `dist`: its files, but the compiled modules the split bundled, removed below.
-const { probes, stubs } = releaseVersionModules(
-	releaseRecords,
-	(path) => existsSync(join(dist, path)) && !removedSet.has(path),
-);
+const { probes, stubs } = releaseVersionModules(releaseRecords, (path) => kept.has(path));
 const buildVersion = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version;
 const gateFiles = {};
 const emptyMap = (file) => `${JSON.stringify({ version: 3, file, sources: [], names: [], mappings: "" })}\n`;
@@ -1013,7 +1015,7 @@ const writeGateFile = (path, contents) => {
 };
 for (const path of gated) {
 	const implementation = gatedImplementation(path);
-	if (existsSync(join(dist, implementation)) || distFiles.includes(implementation))
+	if (kept.has(implementation) || compiledFromSource(implementation))
 		throw new Error(`split-dist: dist/${implementation}, where the gate of dist/${path} puts its code, is taken`);
 	const base = path.slice(path.lastIndexOf("/") + 1);
 	const implementationBase = implementation.slice(implementation.lastIndexOf("/") + 1);
