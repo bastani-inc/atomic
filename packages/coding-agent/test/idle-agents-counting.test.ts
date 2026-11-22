@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { queryObjects } from "node:v8";
@@ -308,8 +308,18 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 			listeners: h.subscriptions(),
 			stores: asyncContextStores(),
 		};
+		await h.settled();
+		const probeAfterRefreshes = asyncContextStores();
 		await wave(AGENTS_PER_WAVE);
 		await wave(AGENTS_PER_WAVE * 2);
+		await settledHandles();
+		const probeEndPlain = asyncContextStores();
+		await h.settled();
+		const probeEndRefreshes = asyncContextStores();
+		appendFileSync(
+			join(process.cwd(), ".probe-idle.log"),
+			`PROBE stores first=${afterFirst.stores} firstAfterRefreshes=${probeAfterRefreshes} endPlain=${probeEndPlain} endAfterRefreshes=${probeEndRefreshes} node=${process.version}\n`,
+		);
 
 		assert.equal(released.length, AGENTS_PER_WAVE * 3);
 		assert.deepEqual(await settledHandles(), afterFirst.handles);
