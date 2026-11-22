@@ -1,15 +1,24 @@
-# Termux (Android) Setup
+---
+title: "Termux"
+description: "Android Termux compatibility, native module requirements, clipboard support, and setup notes."
+---
 
-Atomic runs on Android via [Termux](https://termux.dev/), a terminal emulator and Linux environment for Android.
+# Termux (Android) setup
 
-Termux uses Android's bionic libc, not Alpine's musl libc. Do not run the root `install.sh` there. Atomic's glibc and musl Linux release archives are not Android packages and do not provide a Termux target. Use the npm path below.
+[Termux](https://termux.dev/) provides a terminal emulator and Linux environment on Android.
 
-Android ARM64 still has no Atomic native target, so musl support does not change Termux's native-addon limitations.
+Termux uses Android's bionic libc, not Alpine's musl libc. Do not run the root `install.sh` there. Atomic's glibc and musl Linux release archives are not Android packages and do not provide a Termux target.
+
+## Native module requirement
+
+Atomic requires its `@bastani/atomic-natives` native module to start any session. Without a compatible native binary, Atomic exits at startup with `NativeModuleUnavailableError`.
+
+Atomic does not publish a prebuilt `@bastani/atomic-natives` package for Android ARM64. To run Atomic in Termux, you must build the native binding locally for Android ARM64 and point `NAPI_RS_NATIVE_LIBRARY_PATH` to the compiled `.node` file before starting Atomic.
 
 ## Prerequisites
 
-1. Install [Termux](https://github.com/termux/termux-app#installation) from GitHub or F-Droid (not Google Play, that version is deprecated)
-2. Install [Termux:API](https://github.com/termux/termux-api#installation) from GitHub or F-Droid for clipboard and other device integrations
+1. Install [Termux](https://github.com/termux/termux-app#installation) from GitHub or F-Droid (the Google Play version is deprecated).
+2. Install [Termux:API](https://github.com/termux/termux-api#installation) from GitHub or F-Droid for clipboard and device integrations.
 
 ## Installation
 
@@ -23,27 +32,27 @@ pkg install nodejs termux-api git
 # Install Atomic with npm (included with Termux's nodejs package)
 npm install -g @bastani/atomic
 
-# If you have installed Bun separately in Termux, you can use Bun instead:
-# bun add -g @bastani/atomic
-
 # Create config directory
 mkdir -p ~/.atomic/agent
+
+# Point Atomic to your locally built Android ARM64 native binding
+export NAPI_RS_NATIVE_LIBRARY_PATH=/path/to/atomic_natives.android-arm64.node
 
 # Run Atomic
 atomic
 ```
 
-Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
+Atomic does not require package install scripts; pass `--ignore-scripts` if you disable lifecycle scripts during installation.
 
-## Clipboard Support
+## Clipboard support
 
-Clipboard operations use `termux-clipboard-set` and `termux-clipboard-get` when running in Termux. The Termux:API app must be installed for these to work.
+In Termux, Atomic uses `termux-clipboard-set` and `termux-clipboard-get` for text clipboard operations. Both the Termux:API app and the `termux-api` package must be installed.
 
-Image clipboard is not supported on Termux (the `ctrl+v` image paste feature will not work).
+Image clipboard paste (`Ctrl+V`) is not supported on Termux.
 
 ## Example AGENTS.md for Termux
 
-Create `~/.atomic/agent/AGENTS.md` to help the agent understand the Termux environment:
+Create `~/.atomic/agent/AGENTS.md` to document your Termux environment for the model:
 
 ````markdown
 # Agent Environment: Termux on Android
@@ -104,19 +113,21 @@ termux-camera-photo out.jpg   # Take photo
 
 ## Limitations
 
-- **No image clipboard**: Termux clipboard API only supports text
-- **No Atomic native target on Android ARM64**: Termux uses Android's bionic libc rather than Alpine's musl libc, so Alpine musl archives are not usable as Termux targets; optional native dependencies such as the clipboard module are unavailable and skipped during installation
-- **Storage access**: To access files in `/storage/emulated/0` (Downloads, etc.), run `termux-setup-storage` once to grant permissions
+- **No prebuilt Android ARM64 native module:** Termux uses Android's bionic libc rather than glibc or musl, and Atomic ships no prebuilt Android native package. Starting a session fails with `NativeModuleUnavailableError` unless `NAPI_RS_NATIVE_LIBRARY_PATH` points to a locally built Android ARM64 binding.
+- **No image clipboard:** Termux clipboard commands support text only.
+- **Shared storage access:** Run `termux-setup-storage` once to grant access to `/storage/emulated/0`.
 
 ## Troubleshooting
 
 ### Clipboard not working
 
-Ensure both apps are installed:
-1. Termux (from GitHub or F-Droid)
-2. Termux:API (from GitHub or F-Droid)
+Install both apps from GitHub or F-Droid:
+
+1. Termux
+2. Termux:API
 
 Then install the CLI tools:
+
 ```bash
 pkg install termux-api
 ```
@@ -124,15 +135,16 @@ pkg install termux-api
 ### Permission denied for shared storage
 
 Run once to grant storage permissions:
+
 ```bash
 termux-setup-storage
 ```
 
 ### Package installation issues
 
-Termux does not currently provide an official `pkg install bun` package. On a fresh Termux install, use npm from the `nodejs` package; use Bun only if you installed it separately for your device.
+Termux has no official `pkg install bun` package. Use npm from the `nodejs` package unless you installed Bun separately.
 
-If npm fails, try clearing the cache before retrying:
+If npm fails, clear its cache and retry:
 
 ```bash
 npm cache clean --force

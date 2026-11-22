@@ -10,31 +10,31 @@ description: "Unified LLM API: providers, models, auth, streaming, tools, images
 npm install @bastani/atomic-ai
 ```
 
-Inside an Atomic extension, import it without installing it: the host provides it. See [Libraries](/libraries) for how the packages fit together and for the older package names that keep working.
+Inside an Atomic extension, import it without installing it because the host provides it. See [Libraries](/libraries) for how the packages fit together and for legacy package names that still resolve inside Atomic.
 
-Unified LLM API with provider collections, automatic auth resolution, token and cost tracking, and simple context persistence and hand-off to other models mid-session.
+`@bastani/atomic-ai` provides one LLM API across providers with provider collections, automatic auth resolution, token and cost tracking, and JSON-serializable contexts for mid-session model handoffs.
 
-**Note**: The chat catalog only includes models that support tool calling (function calling), as this is essential for agentic workflows. Image and classifier catalogs use their operation-specific capabilities.
+**Note:** The chat catalog includes only models that support tool calling (function calling). Image and classifier catalogs use their operation-specific capabilities.
 
-## Supported Providers
+## Supported providers
 
-- **OpenAI** (API key or Sign in with ChatGPT)
+- **OpenAI** (API key or Sign in with ChatGPT; separate `openai-images` and `openai-decisions` providers share OpenAI API keys)
 - **Ant Ling**
-- **Azure OpenAI (Responses)**
-- **OpenAI Codex** (ChatGPT subscription, requires OAuth, see below)
+- **Azure** (Azure OpenAI Responses and Microsoft Foundry Chat Completions)
+- **OpenAI Codex** (ChatGPT subscription via OAuth)
 - **TypeSafe** (System One classifier API)
 - **DeepSeek**
 - **NVIDIA NIM**
-- **Anthropic**
+- **Anthropic** (API key, bearer token, workload identity federation, or Claude Pro/Max OAuth)
 - **Google**
-- **Vertex AI** (Gemini via Vertex AI)
+- **Vertex AI** (Gemini via Google Cloud Vertex AI)
 - **Mistral**
 - **Groq**
 - **Cerebras**
 - **Cloudflare AI Gateway**
 - **Cloudflare Workers AI**
-- **xAI**
-- **OpenRouter**
+- **xAI** (API key or SuperGrok/X Premium OAuth)
+- **OpenRouter** (API key or OAuth PKCE)
 - **Vercel AI Gateway**
 - **ZAI Coding Plan (Global)** (with separate China provider)
 - **MiniMax** (with separate China provider)
@@ -42,16 +42,17 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - **Baseten**
 - **Hugging Face**
 - **Moonshot AI** (with separate China provider)
-- **GitHub Copilot** (requires OAuth, see below)
+- **GitHub Copilot** (token or OAuth)
 - **Amazon Bedrock**
 - **OpenCode Zen**
 - **OpenCode Go**
-- **Fireworks** (uses OpenAI- and Anthropic-compatible APIs)
-- **Kimi For Coding** (Moonshot AI subscription endpoint, uses OpenAI Chat Completions)
-- **Meta** (Model API, uses OpenAI Responses-compatible API)
+- **Fireworks** (OpenAI- and Anthropic-compatible APIs)
+- **Kimi For Coding** (API key or Kimi Code subscription OAuth)
+- **Meta** (API key or Meta Muse subscription OAuth; OpenAI Responses-compatible API)
+- **Morph** (compaction API)
 - **Qwen Token Plan** (separate Team and Individual providers, each with a China provider)
-- **Xiaomi MiMo** (defaults to API billing endpoint, with separate Token Plan providers for `cn`/`ams`/`sgp` regions)
-- **Any OpenAI-compatible API**: Ollama, vLLM, LM Studio, etc.
+- **Xiaomi MiMo** (API billing endpoint, plus separate Token Plan providers for `cn`, `ams`, and `sgp` regions)
+- **Any OpenAI-compatible API**: Ollama, vLLM, LM Studio, and custom gateways
 
 ## Installation
 
@@ -59,11 +60,11 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 npm install @bastani/atomic-ai
 ```
 
-TypeBox exports are re-exported from `@bastani/atomic-ai`: `Type`, `Static`, and `TSchema`.
+`@bastani/atomic-ai` re-exports TypeBox's `Type`, `Static`, and `TSchema`.
 
-## Quick Start
+## Quick start
 
-You build a `Models` collection of providers and stream through it. The quickest start registers every built-in provider; apps that care about bundle size register individual providers instead (see [Provider Factories](#provider-factories) and [Bundling and Tree Shaking](#bundling-and-tree-shaking)).
+Build a `Models` collection of providers and stream through it. The fastest start registers every built-in provider; apps optimizing bundle size register individual providers instead (see [Provider factories](#provider-factories) and [Bundling and tree shaking](#bundling-and-tree-shaking)).
 
 ```typescript
 import { Type, type Context, type Tool } from '@bastani/atomic-ai';
@@ -195,35 +196,35 @@ Snippets in the rest of this page assume a `models` collection set up like this 
 
 `usage.cost.total` is the best available total cost. For OpenRouter chat responses, it uses the cost reported by OpenRouter, including both the OpenRouter charge and upstream inference cost for BYOK requests. When provider accounting is unavailable or invalid, it falls back to the model's catalog rates. The `input`, `output`, `cacheRead`, and `cacheWrite` cost components remain catalog estimates and may not sum to a provider-reported total.
 
-## Providers and Models
+## Providers and models
 
-A **provider** is the runtime unit: it owns its model catalog, its auth (API key resolution, OAuth flows), and its stream behavior. A `Models` collection holds providers and routes every request to the provider that owns the model.
+A **provider** is the runtime unit. It owns its model catalog, auth (API key resolution and OAuth flows), and stream behavior. A `Models` collection holds providers and routes each request to the provider that owns the model.
 
-Providers internally share **API implementations** (the wire protocols): Anthropic models use `anthropic-messages`, OpenAI uses `openai-responses`, while xAI, Groq, Cerebras, OpenRouter, and most others share `openai-completions`. Mixed-API providers (GitHub Copilot, OpenCode Zen) dispatch per model.
+Providers share **API implementations** (the wire protocols): Anthropic models use `anthropic-messages`, OpenAI uses `openai-responses`, and xAI, Groq, Cerebras, OpenRouter, and most others share `openai-completions`. Mixed-API providers such as Azure, GitHub Copilot, and OpenCode Zen dispatch per model.
 
-### Provider Factories
+### Provider factories
 
-For apps that only need specific providers, there is one factory per built-in provider, each a subpath import that pulls only that provider's catalog:
+For apps that need only specific providers, import one factory per built-in provider so your bundle pulls only that provider's catalog:
 
 ```typescript
 import { anthropicProvider } from '@bastani/atomic-ai/providers/anthropic';
 import { openaiProvider } from '@bastani/atomic-ai/providers/openai';
 import { openrouterProvider } from '@bastani/atomic-ai/providers/openrouter';
 import { amazonBedrockProvider } from '@bastani/atomic-ai/providers/amazon-bedrock';
-// ...one module per provider in the Supported Providers list
+// ...one module per provider in the Supported providers list
 
 const models = createModels();
 models.setProvider(anthropicProvider());
 models.setProvider(openrouterProvider());
 ```
 
-Provider factories import their model catalog and a lazy API wrapper. They do not import other providers. With bundler code splitting, SDK implementations (`@anthropic-ai/sdk`, `openai`, `@google/genai`, etc.) stay in lazy chunks loaded on the first request to a model of that API.
+Provider factories import their model catalog and a lazy API wrapper, without pulling in other providers. With bundler code splitting, SDK packages (`@anthropic-ai/sdk`, `openai`, `@google/genai`, and so on) stay in lazy chunks loaded on the first request to a model of that API.
 
-For a collection without TypeBox, built-in catalogs or provider SDKs, import `createModels` and `createProvider` from `@bastani/atomic-ai/models`. Import the provider factories you need separately.
+For a collection without TypeBox, built-in catalogs, or provider SDKs, import `createModels` and `createProvider` from `@bastani/atomic-ai/models` and import provider factories separately.
 
-### All Built-in Providers
+### All built-in providers
 
-For apps that want everything (as in Quick Start):
+For apps that want every built-in provider (as in Quick start):
 
 ```typescript
 import { builtinModels } from '@bastani/atomic-ai/providers/all';
@@ -231,9 +232,9 @@ import { builtinModels } from '@bastani/atomic-ai/providers/all';
 const models = builtinModels(); // a Models collection with every built-in provider registered
 ```
 
-This imports all catalogs and every built-in provider factory. It is the heavy, explicit entrypoint. `builtinModels()` accepts the same options as `createModels()` (`credentials`, `authContext`); `builtinProviders()` returns the provider array if you want to register them on your own collection.
+This imports all catalogs and every built-in provider factory. `builtinModels()` accepts the same options as `createModels()` (`credentials`, `authContext`, `identity`, `modelsStore`), and `builtinProviders()` returns the provider array if you want to register them on your own collection.
 
-### Querying Models
+### Querying models
 
 Reads are synchronous and return the last-known lists:
 
@@ -285,12 +286,12 @@ import { hasApi } from '@bastani/atomic-ai';
 
 const m = models.getModel('anthropic', 'claude-sonnet-4-5');
 if (m && hasApi(m, 'anthropic-messages')) {
-  // m: Model<'anthropic-messages'> — stream options fully typed
+  // m: Model<'anthropic-messages'> with fully typed stream options
   models.stream(m, context, { thinkingEnabled: true, thinkingBudgetTokens: 2048 });
 }
 ```
 
-### Static Catalog Reads
+### Static catalog reads
 
 For tooling that wants the generated built-in catalog with full literal typing (provider and model IDs auto-complete), independent of any collection:
 
@@ -316,9 +317,9 @@ const typesafeClassifiers = getBuiltinClassifierModels('typesafe'); // Classifie
 const openrouterAll = getAllBuiltinModels('openrouter');      // AnyModel[]
 ```
 
-### Dynamic Providers
+### Dynamic providers
 
-Providers may have dynamic model lists (a llama.cpp server, a live OpenRouter listing). Reads stay sync; fetching is an explicit async verb:
+Providers may have dynamic model lists, such as a `llama.cpp` server or a live OpenRouter listing. Reads stay synchronous while fetching is an explicit async call:
 
 ```typescript
 // getModels() returns the last-known list (empty before the first refresh)
@@ -327,13 +328,13 @@ await models.refresh();                            // refresh all providers conc
 const fresh = models.getModel('llamacpp', 'qwen3-30b');
 ```
 
-Static built-in providers are no-ops for `refresh()`. See [createProvider()](#createprovider) for building a dynamic provider.
+Static built-in providers are no-ops for `refresh()`. See [`createProvider()`](#createprovider) for building a dynamic provider.
 
 ## Auth
 
-Every provider owns its auth: how API keys resolve (stored credentials, environment variables, ambient sources like AWS profiles or gcloud ADC) and, where supported, OAuth login/refresh flows.
+Every provider owns its auth, covering API key resolution (stored credentials, environment variables, and ambient sources like AWS profiles or gcloud ADC) and, where supported, OAuth login and refresh flows.
 
-### How Auth Resolves
+### How auth resolves
 
 When you call `models.stream()`, the collection resolves auth through the owning provider and merges it into the request. Explicit per-request values always win:
 
@@ -359,15 +360,15 @@ if (modelAuth) {
 }
 ```
 
-Both overloads resolve credentials, refresh expired OAuth when necessary, and may return an auth-derived `apiKey`, `headers`, or `baseUrl`. `getAuth()` resolves `undefined` for unconfigured providers and rejects with `ModelsError` when something is actually broken (`"oauth"`: token refresh failed, credential preserved for re-login; `"auth"`: key resolution or credential store failure). Request paths surface the same failures as stream errors.
+Both overloads resolve credentials, refresh expired OAuth when necessary, and may return an auth-derived `apiKey`, `headers`, or `baseUrl`. `getAuth()` resolves `undefined` for unconfigured providers and rejects with `ModelsError` when resolution fails (`"oauth"` when token refresh fails, preserving the credential for re-login; `"auth"` for key resolution or credential store errors). Request paths report the same failures as stream errors.
 
-A provider can reuse other providers' stored API keys instead of offering its own login. List their IDs in `ApiKeyAuth.borrowCredentialsFrom`, or build the auth with `sharedApiKeyAuth(name, envVars, providerIds)`. The provider then has no stored credential of its own: the first listed provider with a stored API key supplies it, in the order given. Stored OAuth credentials are skipped, and the environment variables apply when none qualifies. `openai-decisions` and `openai-images` use this with `['openai-api', 'openai']`.
+A provider can reuse other providers' stored API keys instead of offering its own login. List their IDs in `ApiKeyAuth.borrowCredentialsFrom`, or build the auth with `sharedApiKeyAuth(name, envVars, providerIds)`. The provider then holds no stored credential of its own; the first listed provider with a stored API key supplies it in the order given. Stored OAuth credentials are skipped, and the environment variables apply when no stored key qualifies. `openai-decisions` and `openai-images` use this with `['openai-api', 'openai']`.
 
 `getAuth()`, `checkAuth()`, `getAvailable()`, login, and logout accept optional caller cancellation through their existing options or interaction objects and remain unbounded when no signal is supplied. Provider `login`, `ApiKeyAuth.check`, `ApiKeyAuth.resolve`, and `OAuthAuth.refresh` implementations always receive a concrete signal and must honor it for blocking work.
 
-### Transforming Request Headers
+### Transforming request headers
 
-`Models.stream()`, `complete()`, `streamSimple()`, and `completeSimple()` accept a Models-only `transformHeaders` option. It runs once after provider auth, `model.headers`, and explicit `options.headers` have been merged, but before provider dispatch:
+`Models.stream()`, `complete()`, `streamSimple()`, and `completeSimple()` accept a `Models`-only `transformHeaders` option. It runs once after provider auth, `model.headers`, and explicit `options.headers` have been merged, and before provider dispatch:
 
 ```typescript
 const response = await models.completeSimple(model, context, {
@@ -385,13 +386,13 @@ The ordering is:
 provider auth headers -> model.headers -> explicit options.headers -> transformHeaders -> Provider.stream*()
 ```
 
-Header names are merged case-insensitively. Explicit headers override auth/model headers, and the transform has final control; returning `null` for a header suppresses lower-level defaults that support deletion.
+Header names merge case-insensitively. Explicit headers override auth and model headers, and `transformHeaders` has final control. Returning `null` for a header suppresses lower-level defaults that support deletion.
 
-`transformHeaders` belongs to `Models`, not `Provider`. A `Models` implementation must consume it and remove it before calling `Provider.stream*()`. Provider implementations continue receiving ordinary `ApiStreamOptions` or `SimpleStreamOptions` and never handle the transform themselves. Use this option instead of calling `getAuth(model)` before `stream*()`, which would resolve request auth twice.
+`transformHeaders` belongs to `Models`, not `Provider`. A `Models` implementation consumes and removes it before calling `Provider.stream*()`, so providers receive ordinary `ApiStreamOptions` or `SimpleStreamOptions`. Use this option instead of calling `getAuth(model)` before `stream*()`, which would resolve auth twice.
 
-### Client Identity
+### Client identity
 
-`identity` controls how requests identify the calling app to providers. Set it on `createModels()` as a default, or per request; a request's fields override the `Models` default field by field:
+`identity` controls how requests identify the calling app to providers. Set it on `createModels()` as a default, or per request so request fields override the default field by field:
 
 ```typescript
 const models = createModels({
@@ -405,20 +406,22 @@ const models = createModels({
 await models.completeSimple(model, context, { identity: { attribution: null } });
 ```
 
-- `userAgent`: `"detailed"` (default) sends `atomic/<version> (<platform>; <runtime>; <arch>)`, `"short"` sends `atomic`, and `{ custom: "..." }` sends the given value. Set `{ custom: "my-app/1.0" }` to name your own app. On Bedrock the value is appended to the AWS SDK user agent.
-- `version`: the version in the detailed `User-Agent`. Default: the `@bastani/atomic-ai` version.
-- `attribution`: provider attribution headers. Absent (default) or `null` sends none; `null` also turns off attribution from a merged identity. `{ name, url, categories? }` maps to each provider's headers:
-  - OpenRouter: `HTTP-Referer: <url>` (the app's identity in OpenRouter's rankings, grouped by origin), `X-OpenRouter-Title: <name>`, and `X-OpenRouter-Categories` (comma-separated).
-  - NVIDIA NIM: `X-BILLING-INVOKE-ORIGIN: <name>` with its first letter upper-cased.
-  - OpenCode: `x-opencode-client: <name>`.
+- `userAgent`: `"detailed"` (default) sends `atomic/<version> (<platform>; <runtime>; <arch>)`, `"short"` sends `atomic`, and `{ custom: "..." }` sends the given value. Set `{ custom: "my-app/1.0" }` to name your own app. On Bedrock, the value appends to the AWS SDK user agent.
+- `version`: the version in the detailed `User-Agent`. Defaults to the `@bastani/atomic-ai` version.
+- `attribution`: provider attribution headers. Absent (default) or `null` sends none, and `null` disables attribution from a merged identity. Passing `{ name, url, categories? }` sets provider-specific headers:
+  * OpenRouter: `HTTP-Referer: <url>` (grouped by origin in OpenRouter rankings), `X-OpenRouter-Title: <name>`, and comma-separated `X-OpenRouter-Categories`.
+  * NVIDIA NIM: `X-BILLING-INVOKE-ORIGIN: <name>` with its first letter upper-cased.
+  * OpenCode: `x-opencode-client: <name>`.
 
-  `ATOMIC_ATTRIBUTION` is Atomic's own attribution, `{ name: "Atomic", url: "https://github.com/bastani-inc/atomic", categories: ["cli-agent"] }`; `PI_ATTRIBUTION` is a deprecated alias of it. Pass your own app's attribution instead.
+  `ATOMIC_ATTRIBUTION` is Atomic's own attribution (`{ name: "Atomic", url: "https://github.com/bastani-inc/atomic", categories: ["cli-agent"] }`); `PI_ATTRIBUTION` is a deprecated alias. Pass your own app's attribution instead.
 
-Identity headers are defaults below provider, model, and request headers, so configured headers win and a `null` request header removes one. Providers that send a fixed client identity, such as GitHub Copilot and Anthropic OAuth, keep it. `withClientIdentity(models, identity)` returns a wrapper of a `Models` (or `MutableModels`) whose requests use `identity` over the one the `Models` was created with, for libraries that receive a `Models` from their host. `identity` is plain JSON, so it can be persisted with other request options.
+Identity headers sit below provider, model, and request headers, so configured headers win and a `null` request header removes an identity header. Providers that require a fixed client identity, such as GitHub Copilot and Anthropic OAuth, keep their own identity.
 
-### Credential Store
+Use `withClientIdentity(models, identity)` to wrap a `Models` (or `MutableModels`) instance so its requests layer `identity` over the host's identity. Because `identity` is plain JSON, you can persist it alongside other request options.
 
-Stored credentials (API keys entered interactively, OAuth tokens) live in a `CredentialStore` — one type-tagged credential per provider. `@bastani/atomic-ai` ships an in-memory default; apps inject persistent storage:
+### Credential store
+
+Stored credentials (interactive API keys and OAuth tokens) live in a `CredentialStore`, holding one type-tagged credential per provider. `@bastani/atomic-ai` ships an in-memory default, and apps inject persistent storage:
 
 ```typescript
 import { createModels, type CredentialStore } from '@bastani/atomic-ai';
@@ -428,9 +431,11 @@ const models = createModels({ credentials: myFileBackedStore });
 // const models = builtinModels({ credentials: myFileBackedStore });
 ```
 
-The contract is small: `read(providerId)`, `list()` for non-secret `{ providerId, type }` metadata, `modify(providerId, fn)` (the only write path — a serialized read-modify-write), and `delete(providerId)`. Each operation accepts optional cancellation options. Enumeration must not resolve secrets or execute configured key commands. OAuth token refresh runs inside `modify`, so concurrent requests and processes cannot double-refresh a rotated token. A stored credential *owns* its provider: environment variables are only consulted when nothing is stored, and a failed refresh never silently falls back to an env key.
+The interface defines four operations: `read(providerId)`, `list()` for non-secret `{ providerId, type }` metadata, `modify(providerId, fn)` for serialized read-modify-write updates, and `delete(providerId)`. Each operation accepts optional cancellation options, and enumeration must not resolve secrets or run configured key commands.
 
-API-key credentials use the same discriminator as Atomic's `auth.json` and can carry provider-scoped env/config values:
+OAuth token refresh runs inside `modify()`, so concurrent requests and processes cannot double-refresh a rotated token. A stored credential owns its provider: environment variables are consulted only when nothing is stored, and a failed refresh never silently falls back to an environment key.
+
+API-key credentials use the same discriminator as Atomic's `auth.json` and can carry provider-scoped environment values:
 
 ```typescript
 const credential = {
@@ -443,16 +448,16 @@ const credential = {
 } as const;
 ```
 
-### Environment Variables
+### Environment variables
 
-Built-in providers resolve these env vars (Node.js; in browsers pass `apiKey` explicitly):
+Built-in providers resolve these environment variables in Node.js (in browsers, pass `apiKey` explicitly):
 
-| Provider | Environment Variable(s) |
+| Provider | Environment variable(s) |
 |----------|------------------------|
-| OpenAI | `OPENAI_API_KEY` |
+| OpenAI (plus `openai-images`, `openai-decisions`) | `OPENAI_API_KEY` |
 | Ant Ling | `ANT_LING_API_KEY` |
-| Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (e.g. `https://{resource}.ai.azure.com`) or `AZURE_OPENAI_RESOURCE_NAME`. Supports `*.openai.azure.com`, `*.cognitiveservices.azure.com` and `*.ai.azure.com`; root endpoints auto-normalize to `/openai/v1`. Optional: `AZURE_OPENAI_API_VERSION` (default `v1`), `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`. |
-| Anthropic | `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` |
+| Azure | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (e.g. `https://{resource}.ai.azure.com`) or `AZURE_OPENAI_RESOURCE_NAME`. Supports `*.openai.azure.com`, `*.cognitiveservices.azure.com`, and `*.ai.azure.com` (including `*.services.ai.azure.com`); root endpoints normalize to `/openai/v1`. Optional: `AZURE_OPENAI_API_VERSION` (default `v1`), `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`. |
+| Anthropic | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or workload identity federation (`ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_IDENTITY_TOKEN_FILE`, plus optional `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID`) |
 | TypeSafe | `TYPESAFE_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | NVIDIA NIM | `NVIDIA_API_KEY` |
@@ -474,6 +479,7 @@ Built-in providers resolve these env vars (Node.js; in browsers pass `apiKey` ex
 | MiniMax (Global) | `MINIMAX_API_KEY` |
 | MiniMax (China) | `MINIMAX_CN_API_KEY` |
 | Moonshot AI / Moonshot AI (China) | `MOONSHOT_API_KEY` |
+| Morph | `MORPH_API_KEY` |
 | Hugging Face | `HF_TOKEN` |
 | OpenCode Zen / OpenCode Go | `OPENCODE_API_KEY` |
 | Kimi For Coding | `KIMI_API_KEY` |
@@ -498,7 +504,7 @@ Amazon Bedrock resolves ambient AWS credentials (`AWS_PROFILE`, access key pairs
 
 Tools enable LLMs to interact with external systems. This library uses TypeBox schemas for type-safe tool definitions with automatic validation using TypeBox's built-in validator and value conversion utilities. TypeBox schemas can be serialized and deserialized as plain JSON, making them ideal for distributed systems.
 
-### Defining Tools
+### Defining tools
 
 ```typescript
 import { Type, type Tool, StringEnum } from '@bastani/atomic-ai';
@@ -528,9 +534,9 @@ const bookMeetingTool: Tool = {
 };
 ```
 
-### Constrained Sampling for Tools
+### Constrained sampling for tools
 
-Tools can opt in to provider-side constrained sampling. For JSON-schema tools, `strict: 'prefer'` uses provider-side strict schema enforcement when supported and otherwise falls back to normal tool calling. `strict: 'require'` fails the request when the active provider/model cannot honor it. Set `constrainedSampling: false` to explicitly opt out; it behaves the same as omitting the field.
+Tools can opt in to provider-side constrained sampling. For JSON-schema tools, `strict: 'prefer'` enables provider-side strict schema enforcement when supported and falls back to normal tool calling otherwise. `strict: 'require'` fails the request if the active provider or model cannot enforce it. Setting `constrainedSampling: false` opts out explicitly, matching an omitted field.
 
 ```typescript
 const strictTool: Tool = {
@@ -544,7 +550,13 @@ const strictTool: Tool = {
 };
 ```
 
-Strict JSON-schema constrained sampling is supported for OpenAI, Anthropic, supported Amazon Bedrock Converse models, Mistral, and Gemini 3 tool calls through the Google Generative AI and Vertex adapters. Google uses `VALIDATED` function-calling mode (or `ANY` when explicitly requested); earlier Gemini versions fall back for `strict: 'prefer'` and reject `strict: 'require'` because they do not enforce required parameters. Bedrock strict-tool capability is generated from model structured-output metadata; custom Bedrock models can override `compat.supportsStrictMode`. OpenAI Responses and Chat Completions can also emit grammar-constrained custom tools with OpenAI Lark or regex grammar variants. If multiple OpenAI variants are supplied, Lark is preferred over regex. Grammar constraints are enforced when the active model supports grammar tools; otherwise the tool falls back to normal function/JSON-schema handling. Grammar tool capability is model metadata: the generated catalog sets `compat.supportsOpenAIGrammarTools` for GPT-5+ models on endpoints that pass OpenAI custom tools through (OpenAI, OpenAI Codex, Azure OpenAI Responses, GitHub Copilot, opencode, and Cloudflare AI Gateway). OpenAI rejects `type: "custom"` tools for pre-GPT-5 models, and gateways that normalize tool schemas (e.g. OpenRouter) mangle them, so the flag stays off elsewhere. Custom model definitions can opt in via `compat`. Grammar-capable models reject grammar configurations without a non-empty supported variant. Native grammar tools must have an object parameter schema with exactly one required string property:
+Strict JSON-schema constrained sampling is supported for OpenAI, Anthropic, capable Amazon Bedrock Converse models, Mistral, and Gemini 3 tool calls through the Google Generative AI and Vertex adapters. Google uses `VALIDATED` function-calling mode (or `ANY` when requested); earlier Gemini versions fall back under `strict: 'prefer'` and reject `strict: 'require'` because they do not enforce required parameters. Bedrock strict-tool capability comes from model metadata, and custom Bedrock models can override `compat.supportsStrictMode`.
+
+OpenAI Responses and Chat Completions also support grammar-constrained custom tools using OpenAI Lark or regex grammar variants. When both are provided, Lark takes precedence over regex. If the active model does not support grammar tools, the tool falls back to normal function or JSON-schema handling.
+
+Grammar tool support is tracked by `compat.supportsOpenAIGrammarTools`. The generated catalog enables it for GPT-5 and newer models on endpoints that pass OpenAI custom tools through (OpenAI, OpenAI Codex, Azure OpenAI Responses, GitHub Copilot, OpenCode, and Cloudflare AI Gateway), while keeping it off on pre-GPT-5 models and gateways that rewrite tool schemas such as OpenRouter.
+
+Custom models can opt in through `compat`. Grammar-capable models reject grammar configurations that have no non-empty supported variant, and native grammar tools must declare an object parameter schema with one required string property:
 
 ```typescript
 const patchTool: Tool = {
@@ -562,7 +574,7 @@ const patchTool: Tool = {
 };
 ```
 
-### Handling Tool Calls
+### Handling tool calls
 
 Tool results use content blocks and can include both text and images:
 
@@ -616,7 +628,7 @@ Fireworks models using the Anthropic Messages API support native deferred tool l
 
 Name the discovery tool `ToolSearch` or `tool_search` for Fireworks prompt-prefix deferral. Other discovery names serialize correctly but do not get that prefix optimization. Set `model.compat.supportsToolReferences` to `false` to send ordinary tool schemas instead. This feature does not apply to Fireworks Chat Completions models.
 
-### Streaming Tool Calls with Partial JSON
+### Streaming tool calls with partial JSON
 
 During streaming, tool call arguments are progressively parsed as they arrive. This enables real-time UI updates before the complete arguments are available:
 
@@ -652,15 +664,16 @@ for await (const event of s) {
 ```
 
 **Important notes about partial tool arguments:**
-- During `toolcall_delta` events, `arguments` contains the best-effort parse of partial JSON
-- Fields may be missing or incomplete - always check for existence before use
-- String values may be truncated mid-word
-- Arrays may be incomplete
-- Nested objects may be partially populated
-- At minimum, `arguments` will be an empty object `{}`, never `undefined`
-- The Google provider does not support function call streaming. Instead, you will receive a single `toolcall_delta` event with the full arguments.
 
-### Validating Tool Arguments
+- During `toolcall_delta` events, `arguments` contains the best-effort parse of partial JSON.
+- Fields may be missing or incomplete, so always check for existence before use.
+- String values may be truncated mid-word.
+- Arrays may be incomplete.
+- Nested objects may be partially populated.
+- At minimum, `arguments` is an empty object `{}`, never `undefined`.
+- The Google provider does not stream function calls incrementally; it emits a single `toolcall_delta` event with the full arguments.
+
+### Validating tool arguments
 
 When implementing your own tool execution loop, use `validateToolCall` to validate arguments before passing them to your tools:
 
@@ -694,15 +707,15 @@ for await (const event of s) {
 }
 ```
 
-### Complete Event Reference
+### Complete event reference
 
-Successful generation follows `start → updates* → done`. A failure after generation starts follows `start → updates* → error`. Request setup may fail before generation starts, in which case the stream contains only `error`; `done` and update events are invalid before `start`. Direct API `streamSimple()` calls throw synchronously when request auth is missing.
+Successful generation follows `start -> updates* -> done`, and a failure after generation starts follows `start -> updates* -> error`. Request setup may fail before generation starts, emitting only `error`; `done` and update events never appear before `start`. Direct API `streamSimple()` calls throw synchronously when request auth is missing.
 
 Tool-call arguments at `toolcall_start` are provider-specific; `toolcall_delta` carries subsequent JSON updates.
 
 All streaming events emitted during assistant message generation:
 
-| Event Type | Description | Key Properties |
+| Event type | Description | Key properties |
 |------------|-------------|----------------|
 | `start` | Stream begins | `partial`: Initial assistant message structure |
 | `text_start` | Text block starts | `contentIndex`: Position in content array |
@@ -713,15 +726,15 @@ All streaming events emitted during assistant message generation:
 | `thinking_end` | Thinking block complete | `content`: Full thinking, `contentIndex`: Position |
 | `toolcall_start` | Tool call begins | `contentIndex`: Position in content array |
 | `toolcall_delta` | Tool arguments streaming | `delta`: JSON chunk, `partial.content[contentIndex].arguments`: Partial parsed args |
-| `toolcall_end` | Tool call complete | `toolCall`: Complete validated tool call with `id`, `name`, `arguments` |
-| `done` | Stream complete | `reason`: Stop reason ("stop", "length", "toolUse"), `message`: Final assistant message |
-| `error` | Error occurred | `reason`: Error type ("error" or "aborted"), `error`: AssistantMessage with partial content |
+| `toolcall_end` | Tool call complete | `toolCall`: Complete tool call with `id`, `name`, `arguments` |
+| `done` | Stream complete | `reason`: Stop reason (`"stop"`, `"length"`, `"toolUse"`), `message`: Final assistant message |
+| `error` | Error occurred | `reason`: Error type (`"error"` or `"aborted"`), `error`: AssistantMessage with partial content |
 
-Streaming events for different content blocks are not guaranteed to be contiguous. Providers may emit deltas for text, thinking, and tool calls in the same upstream chunk, and the library may surface corresponding events interleaved, for example `text_start`, `text_delta`, `toolcall_start`, `text_delta`, `toolcall_delta`. Consumers must use `contentIndex` to associate each delta/end event with its block and must not assume that a block's `*_start`/`*_delta`/`*_end` sequence is uninterrupted by events for other blocks.
+Streaming events for different content blocks are not guaranteed to be contiguous. Providers may emit deltas for text, thinking, and tool calls in the same upstream chunk, and the library may emit the corresponding events interleaved (for example `text_start`, `text_delta`, `toolcall_start`, `text_delta`, `toolcall_delta`). Consumers must use `contentIndex` to associate each delta or end event with its block rather than assuming uninterrupted `*_start`, `*_delta`, and `*_end` runs.
 
-## Image Input
+## Image input
 
-Models with vision capabilities can process images. You can check if a model supports images via the `input` property. If you pass images to a non-vision model, they are silently ignored.
+Models with vision capabilities can process images. Check `model.input` to see if a model accepts images; images sent to a non-vision model are ignored.
 
 ```typescript
 import { readFileSync } from 'fs';
@@ -755,11 +768,11 @@ for (const block of response.content) {
 }
 ```
 
-## Image Generation
+## Image generation
 
-Image models live in the same `Models` collection and on the same `Provider` as chat models, so one credential per provider covers both. They are typed `ImageModel` with `type: "image"` and are used through `generateImages()`, a one-shot API that waits for the provider response and returns the final `AssistantImages` result. Do not use the chat/stream APIs for them; `stream()` rejects image models.
+Image models live in the same `Models` collection and on the same `Provider` as chat models, so one credential per provider covers both. They are typed `ImageModel` with `type: "image"` and run through `generateImages()`, a one-shot API that waits for the provider response and returns `AssistantImages`. Do not pass image models to `stream()`, which rejects them.
 
-### Basic Image Generation
+### Basic image generation
 
 ```typescript
 import { builtinModels } from '@bastani/atomic-ai/providers/all';
@@ -859,7 +872,9 @@ console.log(model.output); // ['image'] or ['image', 'text']
 
 ### OpenAI Images API
 
-The `openai-images` provider serves OpenAI's GPT Image models (`gpt-image-2.6-sunburst`, `gpt-image-2.6-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) through the Images API. It borrows the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`; a ChatGPT OAuth credential on `openai` is skipped, so with only that credential the models are unavailable and `generateImages()` returns `Provider is not configured: openai-images`. Text blocks become the `prompt`. Without image blocks the request goes to `/images/generations`; with them it goes to `/images/edits`, uploading each image block. `OpenAIImagesOptions` adds the request fields below, each sent only when set:
+The `openai-images` provider serves OpenAI's GPT Image models (`gpt-image-2.6-sunburst`, `gpt-image-2.6-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, and `gpt-image-1-mini`) through the OpenAI Images API. It borrows the API key stored for `openai-api`, then `openai`, then `OPENAI_API_KEY`. A ChatGPT OAuth credential on `openai` is skipped, so with only OAuth stored those models are unavailable and `generateImages()` returns `Provider is not configured: openai-images`.
+
+Text blocks become the `prompt`. Requests without image blocks call `/images/generations`; requests with image blocks call `/images/edits` and upload each image block. `OpenAIImagesOptions` adds the request fields below, sending each only when set:
 
 ```typescript
 import { getBuiltinImageModel } from '@bastani/atomic-ai/providers/all';
@@ -870,23 +885,25 @@ const result = await models.generateImages(flare, {
 }, { size: '1024x1024', quality: 'low' });
 ```
 
-Each returned image is an `ImageContent` block whose `mimeType` follows the response's `output_format`: `image/png`, `image/jpeg`, `image/webp`, `image/gif` or `image/svg+xml`. An SVG block holds UTF-8 XML in `data` as base64; save a GIF with `.gif` and an SVG with `.svg`.
+Each returned image is an `ImageContent` block whose `mimeType` matches the response's `output_format`: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, or `image/svg+xml`. An SVG block stores UTF-8 XML in `data` as base64; save GIFs with `.gif` and SVGs with `.svg`.
 
 | Option | Sent as | Notes |
 | --- | --- | --- |
 | `size`, `quality`, `n`, `background` | same name | `n` is the number of images. `background: 'transparent'` needs `png` or `webp` output. |
-| `outputFormat` | `output_format` | `png`, `jpeg`, `webp`, `svg` or `gif`. `svg` and `gif` need a GPT Image 2.6 model and work on generations only. |
+| `outputFormat` | `output_format` | `png`, `jpeg`, `webp`, `svg`, or `gif`. `svg` and `gif` require a GPT Image 2.6 model and work on generations only. |
 | `outputCompression` | `output_compression` | Integer 0-100, for `jpeg` and `webp` output only. |
-| `frameCount` | `frame_count` | GIF frames, an integer from 2 to 16 (`OPENAI_IMAGES_LIMITS.gifFrameCount`). The API defaults to 9. Needs `outputFormat: 'gif'`. |
-| `frameDurationMs` | `frame_duration_ms` | Milliseconds per GIF frame, an integer from 20 to 2000. The API rounds to 10 ms and defaults to 200. Needs `outputFormat: 'gif'`. |
-| `svg` | `svg` | `{ model, reasoning?: { effort } }`: the model that writes the SVG. Needs `outputFormat: 'svg'`. The API requires `svg.model` when SVG model selection is enabled for your account and answers `missing_required_parameter` without it. |
-| `complexity` | `complexity` | `low`, `medium` or `high`: how much the model plans before rendering. GPT Image 2.6 only; the API defaults to `high`. |
+| `frameCount` | `frame_count` | GIF frames, an integer from 2 to 16 (`OPENAI_IMAGES_LIMITS.gifFrameCount`). The API defaults to 9. Requires `outputFormat: 'gif'`. |
+| `frameDurationMs` | `frame_duration_ms` | Milliseconds per GIF frame, an integer from 20 to 2000. The API rounds to 10 ms and defaults to 200. Requires `outputFormat: 'gif'`. |
+| `svg` | `svg` | `{ model, reasoning?: { effort } }`: the model that writes the SVG. Requires `outputFormat: 'svg'`. The API requires `svg.model` when SVG model selection is enabled for your account and answers `missing_required_parameter` without it. |
+| `complexity` | `complexity` | `low`, `medium`, or `high`: how much the model plans before rendering. GPT Image 2.6 only; the API defaults to `high`. |
 | `moderation` | `moderation` | `auto` or `low`. |
 | `safetyIdentifier` | `safety_identifier` | A stable, hashed end-user identifier of at most 128 characters. |
 
-GIF and SVG output are generation-only: they cannot be combined with image blocks, SVG needs `n` of 1, and neither supports streaming, partial images or `outputCompression`. `outputFormat: 'gif'` costs more tokens as `frameCount` grows; GIF `size` is the size of each frame, and the frames must fit the model's size limits, so a small `size` with few frames can be refused (`512x512` with 3 frames worked).
+GIF and SVG output are generation-only: they cannot be combined with input image blocks, SVG requires `n` of 1, and neither supports streaming, partial images, or `outputCompression`. `outputFormat: 'gif'` consumes more tokens as `frameCount` grows; `size` applies to each frame, and total frame dimensions must stay within the model's size limits.
 
-**Reference images, markup and mask.** With image blocks the first image without a `role` is the base image to edit and the others are references. Set `role: 'markup'` on a transparent PNG with annotations (circles, sketches) to send it as the `markup` field, which guides the edit of the first image and must have its dimensions; set `role: 'mask'` on an image with an alpha channel to send it as the `mask` field for the first image. A markup or mask image is not counted as a reference, a request takes at most one of each, and they cannot be combined. Markup-guided edits work on GPT Image 2.5 and 2.6.
+**Reference images, markup, and mask.** When sending input images, the first image without a `role` is the base image to edit and any remaining unroled images are references.
+
+Set `role: 'markup'` on a transparent PNG with annotations (circles or sketches) to send it as the `markup` field guiding edits to the base image; it must match the base image's dimensions. Set `role: 'mask'` on an image with an alpha channel to send it as the `mask` field. Markup and mask images do not count as references, each request accepts at most one of either, and you cannot send both together. Markup-guided edits work on GPT Image 2.5 and 2.6.
 
 ```typescript
 await models.generateImages(flare, {
@@ -898,56 +915,65 @@ await models.generateImages(flare, {
 }, { quality: 'medium' });
 ```
 
-**Validation.** A request that cannot succeed fails before anything is sent, with an `ImageGenerationConfigError` naming the `field`, the `reason` and what to change: a value out of range, `frameCount` or `frameDurationMs` without GIF output, GIF or SVG output on an edit, SVG with `n` above 1, `outputCompression` with anything but `jpeg` or `webp`, `svg` without SVG output, markup together with a mask, a role image without a base image, two images with the same role, and `complexity`, GIF, SVG or markup on a model that does not declare it. Models declare the optional features in `ImageModel.capabilities`; a feature that is not declared is unsupported, so a custom `openai-images` model needs `capabilities` to use them. The checks run before an `onPayload` hook sees the request and again on the request that is sent, whether the hook returns a replacement or changes it in place. `reason` is one of:
+**Validation.** Invalid requests fail locally before sending anything, returning an `ImageGenerationConfigError` with `field`, `reason`, and a hint for what to change. Checks cover out-of-range values, `frameCount` or `frameDurationMs` without GIF output, GIF or SVG on an edit, SVG with `n` above 1, `outputCompression` outside `jpeg` or `webp`, `svg` without SVG output, markup combined with a mask, a role image without a base image, duplicate roles, and features not declared by the model.
+
+Models declare optional features in `ImageModel.capabilities`; undeclared features are treated as unsupported, so custom `openai-images` models must set `capabilities` to use them. Validation runs both before `onPayload` sees the request and again on the final payload after `onPayload` returns or mutates it. `reason` is one of:
 
 | `reason` | When it fires | What to do |
 | --- | --- | --- |
 | `out-of-range` | `frameCount` outside 2-16, `frameDurationMs` outside 20-2000, `outputCompression` outside 0-100 (or not an integer), or `safetyIdentifier` longer than 128 characters. The bounds are in `OPENAI_IMAGES_LIMITS`. | Use a value within the bounds. |
 | `requires-option` | `frameCount` or `frameDurationMs` without `outputFormat: "gif"`, or `svg` without `outputFormat: "svg"`. `related` names the missing option. | Set the option in `related`, or remove `field`. |
-| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg` or no format; `background: "transparent"` with `jpeg`, `gif` or `svg`; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
-| `generation-only` | GIF or SVG output on a request with input images, which goes to the edits endpoint. | Remove the input images, or choose `png`, `jpeg` or `webp`. |
-| `unsupported-by-model` | `complexity`, GIF, SVG or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
+| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg`, or no format; `background: "transparent"` with `jpeg`, `gif`, or `svg`; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
+| `generation-only` | GIF or SVG output on a request with input images, which goes to the edits endpoint. | Remove the input images, or choose `png`, `jpeg`, or `webp`. |
+| `unsupported-by-model` | `complexity`, GIF, SVG, or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
 | `requires-base-image` | An image with `role: "markup"` or `role: "mask"` but no image without a role for it to apply to. | Put the base image first, without a role. |
 | `duplicate-role` | Two images with `role: "markup"`, or two with `role: "mask"`. | Send at most one image per role. |
 
-**Errors.** `generateImages()` still resolves with `stopReason: 'error'` and `errorMessage`, and now also `error`, a JSON-safe `ImageGenerationErrorData`. Rebuild the typed error with `imageGenerationErrorFromData(result.error)` and branch on its class or guard, `code` or `retryable`, never on the message. Cancellation resolves with `stopReason: 'aborted'` and no `error`. The typed error holds only the HTTP status and the provider's type, code and request ID, in `detail` and in its message; it never holds the provider's message, which can quote the prompt. `errorMessage` keeps the provider's text.
+**Errors.** `generateImages()` resolves with `stopReason: 'error'`, `errorMessage`, and a JSON-safe `error` (`ImageGenerationErrorData`). Rehydrate the typed error with `imageGenerationErrorFromData(result.error)` and branch on its class, guard, `code`, or `retryable` rather than parsing message text. Cancellation resolves with `stopReason: 'aborted'` and no `error`.
+
+The typed error retains only the HTTP status and the provider's type, code, and request ID in `detail` and its message; it excludes the provider's raw message because that can quote the prompt, while `errorMessage` keeps the provider's text.
 
 | Class (guard) | `code` | When | Retryable | Useful fields |
 | --- | --- | --- | --- | --- |
 | `ImageGenerationConfigError` (`isImageGenerationConfigError`) | `invalid-option` | The options or input are invalid. Nothing was sent. | No | `field`, `reason`, `related`, `model`, `hint` |
-| `ImageGenerationApiError` (`isImageGenerationApiError`) | `api-error` | Any other API failure, including connection errors. | Only 408, 409 and connection errors | `status`, `apiCode`, `apiType`, `requestId` |
-| `ImageGenerationQuotaError` (`isImageGenerationQuotaError`) | `quota-exceeded` | Out of quota or credit, even though it arrives as HTTP 429. | No | as `api-error` |
-| `ImageGenerationRateLimitError` (`isImageGenerationRateLimitError`) | `rate-limited` | HTTP 429 rate limit. | Yes | as `api-error` |
-| `ImageGenerationServerError` (`isImageGenerationServerError`) | `server-error` | HTTP 5xx. | Yes | as `api-error` |
-| `ImageGenerationUserError` (`isImageGenerationUserError`) | `user-error` | `error.type` is `image_generation_user_error`: change the prompt or input images. `apiCode` is the stable discriminator. | No | as `api-error` |
+| `ImageGenerationApiError` (`isImageGenerationApiError`) | `api-error` | Any other API failure, including connection errors. | Only 408, 409, and connection errors | `status`, `apiCode`, `apiType`, `requestId` |
+| `ImageGenerationQuotaError` (`isImageGenerationQuotaError`) | `quota-exceeded` | Out of quota or credit, even though it arrives as HTTP 429. | No | Same as `api-error` |
+| `ImageGenerationRateLimitError` (`isImageGenerationRateLimitError`) | `rate-limited` | HTTP 429 rate limit. | Yes | Same as `api-error` |
+| `ImageGenerationServerError` (`isImageGenerationServerError`) | `server-error` | HTTP 5xx. | Yes | Same as `api-error` |
+| `ImageGenerationUserError` (`isImageGenerationUserError`) | `user-error` | `error.type` is `image_generation_user_error`: change the prompt or input images. `apiCode` is the stable discriminator. | No | Same as `api-error` |
 | `ImageModerationBlockedError` (`isImageModerationBlockedError`) | `moderation-blocked` | `error.code` is `moderation_blocked`. | No | `moderationStage` (`input`, `output`, `unknown`), `categories` |
 | `ImageGenerationTimeoutError` (`isImageGenerationTimeoutError`) | `timeout` | The request exceeded `timeoutMs`. | Yes | `timeoutMs`, `elapsedMs`, `phase` |
 
-All extend `ImageGenerationError`, and `isImageGenerationError()` matches any of them. Guards check the value itself: an instance, or an object from another process whose `name` is the class name and whose `code` is that class's code. To search a `cause` chain (at most eight links), use `findImageGenerationError(error, guard)`, for example `findImageGenerationError(error, isImageGenerationQuotaError)`; `isRetryableImageGenerationError()` answers whether the nearest one in the chain is retryable. `result.error` keeps up to eight cause-chain links: family causes retain their data, while foreign causes retain a safe name and known errno code, if any, with their message replaced by `[foreign error message omitted]`. Rehydration preserves these links and codes. With `maxRetries`, rate-limit and server errors are retried; quota and user errors never are. Usage from an SVG request covers the image model only; OpenAI reports the tokens of the SVG-authoring model separately (`svg_usage`), and they are not added to `usage` or its cost.
+All classes extend `ImageGenerationError`, and `isImageGenerationError()` matches any of them. Type guards check either class instances or serialized objects from another process whose `name` and `code` match.
 
-### Notes and Limitations
+Use `findImageGenerationError(error, guard)` to search a `cause` chain (up to 8 links), for example `findImageGenerationError(error, isImageGenerationQuotaError)`, and `isRetryableImageGenerationError()` to test whether the nearest matching error in the chain is retryable. `result.error` preserves up to 8 cause-chain links: family causes retain their structured data, while foreign causes keep a safe name and any known errno code with their message replaced by `[foreign error message omitted]`.
 
-- Image models and chat models share `Models` and `Provider`; list them with `getModelsOfType('image')` and run them with `generateImages()`, never the chat/stream APIs.
+With `maxRetries`, rate-limit and server errors retry automatically while quota and user errors do not. Usage on an SVG request tracks the image model only; OpenAI reports the SVG-authoring model's tokens separately as `svg_usage`, which is not added to `usage` or its cost.
+
+### Notes and limitations
+
+- Image models and chat models share `Models` and `Provider`; list image models with `getModelsOfType('image')` and call `generateImages()`, never the chat streaming APIs.
 - Image-generation models do not participate in tool calling.
-- Outputs are returned in `AssistantImages.output` and can include both base64-encoded `ImageContent` blocks and `TextContent` blocks.
-- Some models return only images, others return images plus text. Check `model.output`.
-- Some models accept image input, others are text-to-image only. Check `model.input`.
-- Like the streaming APIs, image generation supports options such as `apiKey`, `signal`, `headers`, `onPayload`, and `onResponse`, and results may include `stopReason`, `responseId`, and `usage`.
-- If you want a model to analyze images in a conversation or call tools, use the regular chat APIs with a model that supports image input.
-- At the moment, image generation is available through only one provider, OpenRouter.
+- Outputs arrive in `AssistantImages.output` and can contain both base64-encoded `ImageContent` blocks and `TextContent` blocks.
+- Some models return only images while others return images plus text; check `model.output`.
+- Some models accept image input while others are text-to-image only; check `model.input`.
+- Like streaming APIs, image generation accepts options such as `apiKey`, `signal`, `headers`, `onPayload`, and `onResponse`, and results may include `stopReason`, `responseId`, and `usage`.
+- To analyze images in a conversation or call tools, use the chat APIs with a vision-capable model.
+- Built-in image generation is available through `openrouter` and `openai-images`.
 
 ## Classification
 
-Classifier models consume structured JSON state and answer one or more typed questions. They do not use chat or image-generation APIs. Built-in providers include TypeSafe's Jev and Microsoft-Decision-1:
+Classifier models consume structured JSON state and answer one or more typed questions. They do not use chat or image-generation APIs. Built-in classifier providers include:
 
-| Provider | Model IDs | Auth |
+| Provider | Classifier model IDs | Auth |
 | --- | --- | --- |
-| `typesafe` | `jev-latest` | `TYPESAFE_API_KEY` |
-| `openrouter` | `typesafe/jev-1.13`, `typesafe/jev-1.14`, `~typesafe/jev-latest`, `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `OPENROUTER_API_KEY` or OpenRouter OAuth |
+| `typesafe` | `jev-latest`, `jev-1.14.0` | `TYPESAFE_API_KEY` |
+| `openrouter` | `~typesafe/jev-latest`, `typesafe/jev-1.13`, `typesafe/jev-1.14`, `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni`, and other gateway classifiers | `OPENROUTER_API_KEY` or OpenRouter OAuth |
 | `cloudflare-workers-ai` | `typesafe/jev`, `typesafe/jev-1.14.0`, `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni` | `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID` |
-| `vercel-ai-gateway` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
+| `vercel-ai-gateway` | `typesafe-ai/jev`, `typesafe-ai/jev-1.13.0`, `typesafe-ai/jev-1.14.0`, and other gateway classifiers | `AI_GATEWAY_API_KEY` |
 | `opencode` | `jev-1.13`, `jev-1.13-free` | `OPENCODE_API_KEY` |
 | `github-copilot` | `microsoft-decision-1` | `COPILOT_GITHUB_TOKEN` or GitHub Copilot OAuth |
+| `openai-decisions` | `gpt-6-luna` | Shared OpenAI API key (`openai-api`, `openai`, or `OPENAI_API_KEY`) |
 
 ```typescript
 import { builtinModels } from '@bastani/atomic-ai/providers/all';
@@ -995,13 +1021,17 @@ System One results include `usage` when the service reports input or output toke
 - **Clef on Workers AI** takes up to four PNG, JPEG, or WebP images as an `images` list of data URLs, next to the unchanged state.
 - **OpenRouter** takes images as `{ type: "image_url", image_url: { url } }` parts before the state: `[part, ..., state]`. It answers requests with `assets` but drops the images, without an error.
 
-Built-in catalog entries set `compat` explicitly, so they keep their form when `baseUrl` points at a proxy. For models without it, the APIs detect the form: OpenRouter by provider `openrouter` or a `baseUrl` containing `openrouter.ai`, Clef by a model ID starting with `@cf/cloudflare/clef`, and TypeSafe's form with the opt-in header otherwise. A custom provider that reaches OpenRouter through a proxy matches neither check and must set `compat.imageInput: "state-image-urls"` and `compat.sendImageOptInHeader: false`; otherwise OpenRouter drops its images.
+Built-in catalog entries set `compat` explicitly so they keep their image format even when `baseUrl` points at a proxy. For models without `compat`, the APIs auto-detect the format: OpenRouter by provider `openrouter` or a `baseUrl` containing `openrouter.ai`, Clef by a model ID starting with `@cf/cloudflare/clef`, and TypeSafe's form with the opt-in header otherwise.
+
+A custom provider reaching OpenRouter through a proxy matches neither heuristic and must set `compat.imageInput: "state-image-urls"` and `compat.sendImageOptInHeader: false`, or OpenRouter will drop its images.
 
 Vercel AI Gateway and OpenCode list their Jev models with text input only.
 
 ### Chat models on llama.cpp
 
-The `llama-cpp-classify` API turns a chat model served by llama.cpp's `llama-server` into a classifier. Each question becomes one chat prompt: the state, every question of the request, the state again, and the question with its answers under single-token labels (letters for a choice, `Yes`/`No` for a bool, digits for a score). The prompt up to the final question is shared by all questions of a request, so the server's prompt cache evaluates the state once per request. The server returns the log-probabilities of the next token, and the answer is the softmax over the label tokens. Choices support up to 62 options and scores up to 10 levels. The model's `baseUrl` is the server URL; a trailing `/v1` is ignored. In router mode, the model ID selects the model.
+The `llama-cpp-classify` API turns a chat model served by llama.cpp's `llama-server` into a classifier. Each question becomes a chat prompt containing the state, every question in the request, the state again, and the target question with single-token labels (letters for choices, `Yes` and `No` for booleans, digits for scores).
+
+Because the prefix before the final question is identical across questions in a request, the server's prompt cache evaluates the state once. The server returns next-token log-probabilities, and the adapter takes the softmax over the label tokens. Choices support up to 62 options and scores up to 10 levels. Set `model.baseUrl` to the server URL (a trailing `/v1` is ignored); in router mode, `model.id` selects the model.
 
 ```typescript
 import { createProvider } from '@bastani/atomic-ai';
@@ -1040,11 +1070,11 @@ createProvider({
 });
 ```
 
-## Thinking/Reasoning
+## Thinking and reasoning
 
-Many models support thinking/reasoning capabilities where they can show their internal thought process. You can check if a model supports reasoning via the `reasoning` property. If you pass reasoning options to a non-reasoning model, they are silently ignored.
+Many models support thinking and reasoning and can emit their thought process in `thinking` blocks. Check `model.reasoning` to test support; reasoning options passed to non-reasoning models are ignored.
 
-### Unified Interface (streamSimple/completeSimple)
+### Unified interface (`streamSimple` / `completeSimple`)
 
 ```typescript
 // Many models across providers support thinking/reasoning
@@ -1083,7 +1113,7 @@ for (const block of response.content) {
 | GPT-6.1 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
 | GPT-6.1 Terra | OpenAI, Azure and Codex Responses | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Sends reasoning effort `none` | Codex UI alias that sends `low` |
 
-### Provider-Specific Options (stream/complete)
+### Provider-specific options (`stream` / `complete`)
 
 `models.stream()`/`complete()` accept the owning API's full option set. Use `hasApi()` to narrow a dynamically looked-up model to its API for full option typing:
 
@@ -1120,7 +1150,7 @@ if (hasApi(googleModel, 'google-generative-ai')) {
 }
 ```
 
-### Streaming Thinking Content
+### Streaming thinking content
 
 When streaming, thinking content is delivered through specific events:
 
@@ -1142,22 +1172,22 @@ for await (const event of s) {
 }
 ```
 
-## Stop Reasons
+## Stop reasons
 
-Every `AssistantMessage` includes a `stopReason` field that indicates how the generation ended:
+Every `AssistantMessage` includes a `stopReason` field indicating how generation ended:
 
-- `"pending"` - Only present in partial messages when we do not know what the stop reason will be
-- `"stop"` - This is the final message the model will produce this turn
-- `"length"` - Output hit the maximum token limit
-- `"toolUse"` - Model is calling tools and expects tool results
-- `"error"` - An error occurred during generation
-- `"aborted"` - Request was cancelled via abort signal
+- `"pending"`: Only present in partial messages before the stop reason is known.
+- `"stop"`: The final message the model produced for this turn.
+- `"length"`: Output hit the maximum token limit.
+- `"toolUse"`: The model called tools and expects tool results.
+- `"error"`: An error occurred during generation.
+- `"aborted"`: The request was canceled through an abort signal.
 
-`AssistantMessage` may also include `responseId`, a provider-specific upstream response or message identifier when the underlying API exposes one. Do not assume it is always present across providers.
+`AssistantMessage` may also include `responseId`, a provider-specific upstream response or message identifier when the underlying API exposes one. Do not assume it is present across all providers.
 
-## Error Handling
+## Error handling
 
-Request failures after a stream is returned never throw: when a request ends with an error (including aborts and tool call validation errors), the streaming API emits an error event and the final message carries the details. Direct API `streamSimple()` calls throw synchronously when their required auth is absent:
+Request failures after a stream is returned never throw. When a request ends with an error (including aborts and tool call validation errors), the stream emits an `error` event and the final message carries the details. Direct API `streamSimple()` calls throw synchronously when required auth is missing:
 
 ```typescript
 // In streaming
@@ -1179,9 +1209,9 @@ if (message.stopReason === 'error' || message.stopReason === 'aborted') {
 }
 ```
 
-When using a provider collection, auth failures (OAuth refresh failed, unknown provider) surface as a stream error with `stopReason: "error"`. Direct API `streamSimple()` calls instead throw synchronously when their required auth is absent.
+With a `Models` collection, auth failures (failed OAuth refresh or unknown provider) arrive as a stream error with `stopReason: "error"`. Direct API `streamSimple()` calls instead throw synchronously when required auth is absent.
 
-### Aborting Requests
+### Aborting requests
 
 The abort signal allows you to cancel in-progress requests. Aborted requests have `stopReason === 'aborted'`:
 
@@ -1215,7 +1245,7 @@ if (response.stopReason === 'aborted') {
 }
 ```
 
-### Continuing After Abort
+### Continuing after abort
 
 Aborted messages can be added to the conversation context and continued in subsequent requests:
 
@@ -1240,7 +1270,7 @@ context.messages.push({ role: 'user', content: 'Please continue', timestamp: Dat
 const continuation = await models.complete(model, context);
 ```
 
-### Debugging Provider Payloads
+### Debugging provider payloads
 
 Use the `onPayload` callback to inspect the request payload sent to the provider. This is useful for debugging request formatting issues or provider validation errors.
 
@@ -1254,7 +1284,7 @@ const response = await models.complete(model, context, {
 
 The callback is supported by `stream`, `complete`, `streamSimple`, and `completeSimple`.
 
-### Observing Provider Stream Events
+### Observing provider stream events
 
 Use `onProviderStreamEvent` to inspect provider-specific fields that the library does not include in `AssistantMessage`. The callback receives the parsed event available to the adapter before the library normalizes it. Treat the event as read-only because mutations can affect normalization. This is not guaranteed to be the original HTTP bytes or SSE frame.
 
@@ -1273,11 +1303,11 @@ const response = await models.complete(openRouterModel, context, {
 
 Callbacks are awaited in stream order, so slow callbacks delay stream consumption and thrown errors fail the request. SDK-backed adapters can expose only fields retained by their SDK.
 
-## Custom Providers
+## Custom providers
 
 ### createProvider()
 
-`createProvider()` builds a provider from parts: identity, auth, a model list, and an API implementation (`api` for chat models, `images` for image generation, `classifiers` for classification; at least one is required, see [Image Generation](#image-generation)). Use it for local inference servers, proxies, or any OpenAI/Anthropic-compatible endpoint:
+`createProvider()` builds a provider from identity, auth, a model list, and at least one API implementation (`api` for chat models, `images` for image generation, or `classifiers` for classification; see [Image generation](#image-generation)). Use it for local inference servers, proxies, or OpenAI- and Anthropic-compatible endpoints:
 
 ```typescript
 import { createModels, createProvider, envApiKeyAuth, type Model } from '@bastani/atomic-ai';
@@ -1385,7 +1415,7 @@ Handwritten providers whose catalog source needs no provider credential can set 
 
 `createProvider()` handles dynamic publication and persistence automatically. Handwritten `Provider.refreshModels()` implementations receive the read-only `context.stored` snapshot and publish through `context.publish({ persist?, update? })`. Omit `persist` to leave storage unchanged, pass a `ModelsStoreEntry` to write it, or pass `persist: null` to delete it. `ModelsStoreEntry.models` contains models of every type. Publication is generation-checked; put synchronous in-memory catalog changes in `update` rather than mutating state before publication.
 
-Custom models can carry `headers` (e.g. proxies behind bot detection) and `compat` flags. `Models.getAuth(model)` includes those model headers, and stream methods merge them before explicit request headers and `transformHeaders`. See [OpenAI Compatibility Settings](#openai-compatibility-settings).
+Custom models can carry `headers` (for example for proxies behind bot detection) and `compat` flags. `Models.getAuth(model)` includes those model headers, and stream methods merge them before explicit request headers and `transformHeaders`. See [OpenAI compatibility settings](#openai-compatibility-settings).
 
 Some OpenAI-compatible servers do not understand the `developer` role used for reasoning-capable models. For those providers, set `compat.supportsDeveloperRole` to `false` so the system prompt is sent as a `system` message instead. If the server also does not support `reasoning_effort`, set `compat.supportsReasoningEffort` to `false` too. This commonly applies to Ollama, vLLM, SGLang, and similar OpenAI-compatible servers.
 
@@ -1417,9 +1447,9 @@ const ollamaReasoningModel: Model<'openai-completions'> = {
 };
 ```
 
-### Calling API Implementations Directly
+### Calling API implementations directly
 
-The API implementations are importable on their own. Each module exports exactly `stream` and `streamSimple` with that API's full option typing. Direct calls bypass provider auth and context normalization — pass `apiKey` explicitly and wrap the context in `normalizeContext()`:
+API implementations are importable on their own. Each module exports `stream` and `streamSimple` with that API's full option typing. Direct calls bypass provider auth and context normalization, so pass `apiKey` explicitly and wrap the context in `normalizeContext()`:
 
 ```typescript
 import { normalizeContext } from '@bastani/atomic-ai';
@@ -1446,11 +1476,13 @@ Built-in API implementations live under `./api/<api-id>`:
 | `mistral-conversations` | `MistralOptions` |
 | `bedrock-converse-stream` | `BedrockOptions` |
 
-Importing an implementation module loads its SDK. The `./api/<id>.lazy` wrappers (used by the provider factories) defer that load to the first request when the runtime or bundler supports dynamic import chunking. Legacy raw API subpaths from older releases (`./anthropic`, `./google`, `./mistral`, `./openai-completions`, ...) were removed; use `@bastani/atomic-ai/api/<api-id>`.
+Importing an implementation module loads its SDK immediately. The `./api/<id>.lazy` wrappers used by provider factories defer that load to the first request when the runtime or bundler supports dynamic import chunking. Legacy raw API subpaths from older releases (`./anthropic`, `./google`, `./mistral`, `./openai-completions`, and similar) were removed; use `@bastani/atomic-ai/api/<api-id>`.
 
-**Anthropic message threads (beta):** with `sessionId` set and `cacheRetention` not `"none"`, Anthropic requests continue from the previous reply on the server (`message-threads-2026-08-12` beta) and send only the new messages. When anything earlier in the request changed, or the server can't continue, the full request is sent. Token counts and prompt caching are unchanged. On by default only for a `baseUrl` on `api.anthropic.com`; set `compat.supportsMessageThreads` to change that, for example for gateways that forward the `thread` field. Requests made with a caller-supplied `client` never use threads. Set `disableContinuation: true` on requests that repeat an earlier one, such as cache warming. Call `cleanupSessionResources(sessionId)` when a session ends.
+**Anthropic message threads (beta).** When `sessionId` is set and `cacheRetention` is not `"none"`, Anthropic requests continue from the previous reply on the server (`message-threads-2026-08-12` beta) and send only new messages. If anything earlier in the request changed or the server cannot continue, the full request is sent instead, with unchanged token counts and prompt caching.
 
-### OpenAI Compatibility Settings
+Threads are enabled by default only when `baseUrl` points to `api.anthropic.com`; set `compat.supportsMessageThreads` to override that for gateways forwarding the `thread` field. Requests with a caller-supplied `client` never use threads. Pass `disableContinuation: true` on requests that repeat an earlier request, such as cache warming, and call `cleanupSessionResources(sessionId)` when a session ends.
+
+### OpenAI compatibility settings
 
 The `openai-completions` API is implemented by many providers with minor differences. By default, the library auto-detects compatibility settings based on `baseUrl` for a small set of known OpenAI-compatible providers (Cerebras, xAI, Chutes, DeepSeek, NVIDIA NIM, Together AI, zAi, OpenCode, Cloudflare Workers AI, etc.). For custom proxies or unknown endpoints, you can override these settings via the `compat` field. For `openai-responses` models, the compat field supports Responses-specific flags.
 
@@ -1501,7 +1533,7 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 - **Self-hosted endpoints**: May have different feature support
 - **Codex-protocol gateways**: May reject the `max_output_tokens` parameter
 
-## Faux Provider for Tests
+## Faux provider for tests
 
 `fauxProvider()` builds an in-memory provider with scripted responses for tests and demos:
 
@@ -1578,26 +1610,25 @@ console.log(faux.state.callCount);
 ```
 
 Notes:
+
 - Responses are consumed from a queue in request start order.
 - If the queue is empty, the faux provider returns an assistant error message with `errorMessage: "No more faux responses queued"`.
 - Use `faux.setResponses([...])` to replace the remaining queue and `faux.appendResponses([...])` to add more responses.
 - `faux.models` exposes all faux models. `faux.getModel()` returns the first one, and `faux.getModel(id)` returns a specific one.
 - Use `fauxAssistantMessage(...)` for scripted assistant replies. Use `fauxText(...)`, `fauxThinking(...)`, and `fauxToolCall(...)` to build content blocks without filling in low-level fields manually.
 - Usage is estimated at roughly 1 token per 4 characters. When `sessionId` is present and `cacheRetention` is not `"none"`, prompt cache reads and writes are simulated automatically.
-- Tool call arguments stream incrementally via `toolcall_delta` chunks.
+- Tool call arguments stream incrementally through `toolcall_delta` chunks.
 - By default, each streamed chunk is emitted on its own microtask. Set `tokensPerSecond` to pace chunk delivery in real time.
-- The intended use is one deterministic scripted flow per handle. If you need independent concurrent flows, create separate faux providers with distinct `provider` ids.
+- Use one handle per deterministic flow. For independent concurrent flows, create separate faux providers with distinct `provider` IDs.
 
-## Cross-Provider Handoffs
+## Cross-provider handoffs
 
-The library supports seamless handoffs between different LLM providers within the same conversation. This allows you to switch models mid-conversation while preserving context, including text, tool calls, and tool results.
+Switch models and providers mid-conversation while preserving text, tool calls, and tool results. When messages from one provider go to a different provider, `@bastani/atomic-ai` converts them automatically:
 
-When messages from one provider are sent to a different provider, the library automatically transforms them for compatibility:
-
-- **User and tool result messages** are passed through unchanged
-- **Assistant messages from the same provider, API, and model** are preserved as-is, including thinking blocks
-- **Assistant messages from a different model** have their thinking blocks dropped. Signatures and encrypted reasoning only work with the model that produced them, and readable thinking sent as plain text makes the new model treat it as part of the reply. Anthropic models whose API decides which thinking blocks a model may read receive signed blocks from other models on the same provider unchanged
-- **Tool calls and regular text** are preserved unchanged
+- **User and tool result messages** pass through unchanged.
+- **Assistant messages from the same provider, API, and model** stay intact, including thinking blocks.
+- **Assistant messages from a different model** drop their thinking blocks because signatures and encrypted reasoning apply only to the producing model, and plain-text thinking would look like reply text. Anthropic models whose API manages cross-model thinking receive signed blocks from other models on the same provider unchanged.
+- **Tool calls and regular text** stay intact.
 
 ```typescript
 import { createModels, type Context } from '@bastani/atomic-ai';
@@ -1617,7 +1648,7 @@ const claude = models.getModel('anthropic', 'claude-sonnet-4-5')!;
 context.messages.push({ role: 'user', content: 'What is 25 * 18?', timestamp: Date.now() });
 context.messages.push(await models.completeSimple(claude, context, { reasoning: 'medium' }));
 
-// Switch to GPT-5 - it sees Claude's answer, but not Claude's thinking
+// Switch to GPT-5: it sees Claude's answer, but not Claude's thinking
 const gpt5 = models.getModel('openai', 'gpt-5-mini')!;
 context.messages.push({ role: 'user', content: 'Is that calculation correct?', timestamp: Date.now() });
 context.messages.push(await models.complete(gpt5, context));
@@ -1628,11 +1659,11 @@ context.messages.push({ role: 'user', content: 'What was the original question?'
 const geminiResponse = await models.complete(gemini, context);
 ```
 
-All providers can handle messages from other providers — text, tool calls and results (including images), thinking blocks (dropped when the model changes), and aborted messages with partial content. This enables flexible workflows: start with a fast model, switch to a more capable one for complex reasoning, or maintain continuity across provider outages.
+Every provider accepts messages produced by other providers, including text, tool calls and results with images, dropped cross-model thinking blocks, and aborted partial messages. You can start with a fast model, switch to a stronger model for harder steps, or fail over during provider outages.
 
-## System Messages
+## System messages
 
-Public entry points (`Models.stream()`, `streamSimple()`, `complete()`, and `completeSimple()`) accept `Context`. They normalize `systemPrompt` and `tools` into a leading system message. Provider implementations, `ProviderStreams`, and direct API modules receive a `TranscriptContext` containing only `messages`.
+Public entry points (`Models.stream()`, `streamSimple()`, `complete()`, and `completeSimple()`) accept `Context` and normalize `systemPrompt` and `tools` into a leading system message. Provider implementations, `ProviderStreams`, and direct API modules receive a `TranscriptContext` containing only `messages`.
 
 ```typescript
 interface SystemMessage {
@@ -1646,17 +1677,21 @@ interface SystemMessage {
 }
 ```
 
-Later system messages append instructions, patch named sections (`null` removes a section), and add or remove tools. `strictToolsDisabled` records that the provider rejected the conversation's `strict: 'prefer'` tools for its strict-tool limits; Anthropic and Bedrock then send them without strict schemas, as they do after such a rejection. Set it on the system message that replaces compacted history, so the record outlives the replies that held it. Section text is opaque and rendered verbatim, joined by blank lines. `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)` replay these changes for custom providers; do not read `context.systemPrompt` or `context.tools` inside provider implementations.
+Later system messages append instructions, patch named sections (`null` removes a section), and add or remove tools. Section text is opaque and rendered verbatim, joined by blank lines. Call `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)` inside custom providers rather than reading `context.systemPrompt` or `context.tools`.
 
-Models with `supportsMidConvoSystemMessages` receive updates in place. Other models receive the replayed prompt and tools as a leading checkpoint. Anthropic's `supportsMidConvoToolChanges`, OpenAI Responses' `supportsAdditionalTools`/`supportsToolSearch`, and OpenAI Completions' `supportsMidConvoToolAdditions` enable native tool transitions where representable. Unsupported transitions fall back to the current top-level tool list and may invalidate the cached prefix.
+`strictToolsDisabled` records that the provider rejected the conversation's `strict: 'prefer'` tools under its strict-tool limits, telling Anthropic and Bedrock to send them without strict schemas. Set it on the system message that replaces compacted history so the flag survives compaction.
 
-With Anthropic's `supportsMidConvoToolChanges`, the `inline-tools-2026-09-15` beta keeps the initial top-level tools and a deferred placeholder fixed. Later `tool_addition` blocks carry complete definitions, including replacements under an existing name; `tool_removal` blocks reference names. This preserves the cached prefix across tool changes. At least one initial tool is required; otherwise the current tool list is sent at the top level.
+Models with `supportsMidConvoSystemMessages` receive updates in place; other models receive the replayed prompt and tools as a leading checkpoint. Anthropic's `supportsMidConvoToolChanges`, OpenAI Responses' `supportsAdditionalTools` and `supportsToolSearch`, and OpenAI Completions' `supportsMidConvoToolAdditions` enable native tool transitions where representable. Unsupported transitions fall back to the current top-level tool list and may invalidate the cached prefix.
 
-With OpenAI Responses' `supportsAdditionalTools`, every tool is declared in `additional_tools` items, like Codex: the initial tools in one at the head of the input, and later additions and redefinitions at their message, with no top-level tool list. A later item replaces same-name definitions from earlier items but cannot remove a tool, so removals are announced as text, later updates restate the tools that are still unavailable, and calls to removed tools fail at execution. With only `supportsToolSearch`, or OpenAI Completions' `supportsMidConvoToolAdditions`, new tools are anchored at their message; a removal or a redeclared name moves the tool state up to that point into the top-level list once.
+With Anthropic's `supportsMidConvoToolChanges`, the `inline-tools-2026-09-15` beta keeps the initial top-level tools and a deferred placeholder fixed. Later `tool_addition` blocks carry complete definitions (including replacements under an existing name) and `tool_removal` blocks reference names, keeping the cached prefix intact. At least one initial tool is required; otherwise the current tool list is sent at the top level.
 
-## Context Serialization
+With OpenAI Responses' `supportsAdditionalTools`, every tool is declared in `additional_tools` items (initial tools at the head of the input, and later additions or redefinitions at their message) with no top-level tool list. A later item replaces same-name definitions from earlier items, while removals are announced as text and restated on later updates because `additional_tools` cannot delete a tool; calls to removed tools fail at execution.
 
-The `Context` object can be easily serialized and deserialized using standard JSON methods, making it simple to persist conversations, implement chat history, or transfer contexts between services:
+With only `supportsToolSearch`, or OpenAI Completions' `supportsMidConvoToolAdditions`, new tools anchor at their message, while a removal or redeclared name consolidates tool state up to that point into the top-level list once.
+
+## Context serialization
+
+`Context` serializes with standard JSON methods so you can persist conversations, store chat history, or move contexts across services:
 
 ```typescript
 const context: Context = {
@@ -1681,17 +1716,17 @@ const restored: Context = JSON.parse(localStorage.getItem('conversation')!);
 restored.messages.push({ role: 'user', content: 'Tell me more about its type system', timestamp: Date.now() });
 
 // Continue with any model
-const newModel = models.getModel('anthropic', 'claude-3-5-haiku-20241022')!;
+const newModel = models.getModel('anthropic', 'claude-haiku-4-5')!;
 const continuation = await models.complete(newModel, restored);
 ```
 
-Models are plain serializable data too — no functions or implementations attached — so persisting "which model was this conversation using" is a `JSON.stringify` away.
+Models are plain serializable data with no attached functions, so you can store the active model with `JSON.stringify()` as well.
 
-> **Note**: If the context contains images (encoded as base64 as shown in the Image Input section), those will also be serialized.
+> **Note**: If the context contains base64-encoded images (as shown in Image input), they are serialized with the context.
 
-## Browser Usage
+## Browser usage
 
-The library supports browser environments. The core entrypoint and provider factories are side-effect free and bundle cleanly. Environment variables are not available in browsers, so pass API keys explicitly — or inject a `CredentialStore` (e.g. localStorage-backed) and let provider auth resolve from stored credentials:
+The core entrypoint and provider factories are side-effect free and bundle cleanly for browsers. Because browsers have no process environment variables, pass API keys explicitly or inject a `CredentialStore` (for example backed by `localStorage`) so provider auth resolves from stored credentials:
 
 ```typescript
 import { createModels } from '@bastani/atomic-ai';
@@ -1700,7 +1735,7 @@ import { anthropicProvider } from '@bastani/atomic-ai/providers/anthropic';
 const models = createModels();
 models.setProvider(anthropicProvider());
 
-const model = models.getModel('anthropic', 'claude-3-5-haiku-20241022')!;
+const model = models.getModel('anthropic', 'claude-haiku-4-5')!;
 const response = await models.complete(model, {
   messages: [{ role: 'user', content: 'Hello!', timestamp: Date.now() }]
 }, {
@@ -1708,15 +1743,15 @@ const response = await models.complete(model, {
 });
 ```
 
-> **Security Warning**: Exposing API keys in frontend code is dangerous. Anyone can extract and abuse your keys. Only use this approach for internal tools or demos. For production applications, use a backend proxy that keeps your API keys secure.
+> **Security warning**: Exposing API keys in frontend code lets anyone extract and abuse them. Only use direct browser keys for internal tools or demos; in production, proxy requests through a backend.
 
 Browser compatibility notes:
 
-- Amazon Bedrock (`bedrock-converse-stream`) is not supported in browser environments. It can still appear in model lists; calls fail at runtime.
-- OAuth login flows are Node-only. They are lazy-loaded behind bundler-opaque imports, so registering an OAuth-capable provider does not pull Node-only code into a browser bundle — only actually logging in would.
-- Use a server-side proxy or backend service if you need Bedrock or OAuth-based auth from a web app.
+- Amazon Bedrock (`bedrock-converse-stream`) is not supported in browsers. Its models can still appear in lists, and calls fail at runtime.
+- OAuth login flows are Node-only and lazy-loaded behind bundler-opaque imports. Registering an OAuth-capable provider does not pull Node-only code into a browser bundle; only invoking login would.
+- Use a server-side proxy if a web app needs Bedrock or OAuth-based auth.
 
-## Bundling and Tree Shaking
+## Bundling and tree shaking
 
 For small bundles, import only the providers you need:
 
@@ -1737,7 +1772,7 @@ Rules:
 - Without code splitting, bundlers fold reachable lazy API implementations into the single bundle. A single-provider bundle then includes that provider's SDK; `providers/all` includes all statically visible SDKs. Bedrock is the exception: its AWS SDK implementation is loaded through a bundler-opaque Node-only import.
 - Importing `@bastani/atomic-ai/api/<api-id>` directly loads that API implementation and its SDK immediately.
 
-Avoid `@bastani/atomic-ai/compat` in new bundled apps; it preserves the old global API and imports the full built-in catalog surface.
+Avoid `@bastani/atomic-ai/compat` in new bundled apps because it preserves the legacy global API and pulls in the full built-in catalog.
 
 For single-file Node ESM bundles, some SDK dependencies may still use dynamic CommonJS `require()` internally. If you see errors such as `Dynamic require of "child_process" is not supported`, add a Node `require` shim to the bundle. With esbuild:
 
@@ -1782,9 +1817,9 @@ registerLazyOAuthFlows();
 
 Both modules are Node-only; never import them into a browser bundle.
 
-### Provider-Scoped Environment Overrides
+### Provider-scoped environment overrides
 
-Pass `env` in stream options to scope provider configuration to a request. Values in `env` are used before process environment variables for provider auth and configuration such as Cloudflare account IDs, Azure OpenAI settings, Vertex project/location, Bedrock settings, `PI_CACHE_RETENTION`, and `HTTP_PROXY`/`HTTPS_PROXY`.
+Pass `env` in stream options to scope provider configuration to a request. Values in `env` take precedence over process environment variables for provider auth and configuration such as Cloudflare account IDs, Azure OpenAI settings, Vertex project and location, Bedrock settings, `ATOMIC_CACHE_RETENTION` (legacy alias `PI_CACHE_RETENTION`), and `HTTP_PROXY` / `HTTPS_PROXY`.
 
 ```typescript
 const models = builtinModels();
@@ -1801,17 +1836,22 @@ const response = await models.complete(model, context, {
 
 Use this when one process needs different provider settings per request, or when ambient environment variables should not leak into a provider call.
 
-## OAuth Providers
+## OAuth providers
 
-Several providers support OAuth authentication instead of static API keys:
+These built-in providers support OAuth authentication in addition to or instead of static API keys:
 
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI** (Sign in with ChatGPT, direct Responses API access)
-- **OpenAI Codex** (ChatGPT subscription, Codex Responses access)
+- **OpenAI Codex** (ChatGPT Plus/Pro subscription, Codex Responses access)
 - **GitHub Copilot** (Copilot subscription)
 - **OpenRouter** (OAuth PKCE that mints a user-controlled API key)
+- **Kimi For Coding** (Kimi Code subscription)
+- **Meta** (Meta Muse subscription)
+- **xAI** (SuperGrok or X Premium subscription)
 
-Each of these providers carries an `OAuthAuth` on `provider.auth.oauth` with three operations: `login(interaction)` uses the provider-neutral `AuthInteraction.prompt()`/`notify()` protocol and returns a credential, `refresh(credential, signal)` refreshes expiring credentials when applicable, and `toAuth(credential)` derives request auth (GitHub Copilot's per-account base URL comes from here). Provider login interactions and refresh calls always carry a concrete abort signal. Refresh is automatic: `models.getAuth(providerId)` and request paths refresh expired tokens under a credential-store lock, so concurrent requests and processes cannot double-refresh. OpenRouter's OAuth flow instead returns a permanent API key, so its refresh operation is a no-op.
+Each of these providers exposes an `OAuthAuth` on `provider.auth.oauth` with three operations: `login(interaction)` runs the provider-neutral `AuthInteraction.prompt()` and `notify()` protocol and returns a credential, `refresh(credential, signal)` refreshes expiring credentials, and `toAuth(credential)` derives request auth (including per-account base URLs such as GitHub Copilot's).
+
+Provider login interactions and refresh calls always receive a concrete abort signal. Token refresh is automatic: `models.getAuth(providerId)` and request paths refresh expired tokens under a credential-store lock so concurrent requests and processes cannot double-refresh. OpenRouter's OAuth flow mints a permanent API key, so its refresh operation is a no-op.
 
 ```typescript
 import { createModels } from '@bastani/atomic-ai';
@@ -1847,7 +1887,7 @@ await models.complete(model, context);
 await models.logout('anthropic');
 ```
 
-For OpenAI Sign in with ChatGPT, pass a fourth `LoginOptions` argument with `getDeviceId: () => installationUuid`. Persist this UUID and return the same value on later logins. The login registers a user-owned client and stores its issued client ID and granted scopes with the credential. Direct ChatGPT access omits unsupported temperature, output-token limits and cache-retention fields. If its shared subscription limit is exhausted, check [ChatGPT usage](https://chatgpt.com/settings/usage).
+For OpenAI Sign in with ChatGPT, pass a fourth `LoginOptions` argument with `getDeviceId: () => installationUuid`. Persist this UUID and return the same value on later logins. The login registers a user-owned client and stores its issued client ID and granted scopes with the credential. Direct ChatGPT access omits unsupported temperature, output-token limits, and cache-retention fields. If its shared subscription limit is exhausted, check [ChatGPT usage](https://chatgpt.com/settings/usage).
 
 ### Vertex AI
 
@@ -1857,7 +1897,7 @@ Vertex AI models support either a Google Cloud API key or Application Default Cr
 - **Local development (ADC)**: Run `gcloud auth application-default login`
 - **CI/Production (ADC)**: Set `GOOGLE_APPLICATION_CREDENTIALS` to point to a service account JSON key file
 
-When using ADC, also set `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) and `GOOGLE_CLOUD_LOCATION`. You can also pass `project`/`location` in the call options. When using `GOOGLE_CLOUD_API_KEY`, `project` and `location` are not required.
+When using ADC, also set `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) and `GOOGLE_CLOUD_LOCATION`. You can also pass `project` and `location` in the call options. When using `GOOGLE_CLOUD_API_KEY`, `project` and `location` are not required.
 
 ```bash
 # Local (uses your user credentials)
@@ -1871,7 +1911,7 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
 
 Official docs: [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
 
-### CLI Login
+### CLI login
 
 The quickest way to authenticate:
 
@@ -1885,21 +1925,23 @@ Credentials are saved to `auth.json` in the current directory.
 
 ### Programmatic OAuth
 
-Built-in login and refresh flows are private provider implementations. Use provider-owned `OAuthAuth`, which composes with `CredentialStore` and gets locked auto-refresh through `Models`. The `@bastani/atomic-ai/oauth` entry point retains only type declarations required by coding-agent extension OAuth compatibility.
+Built-in login and refresh flows are private provider implementations. Use provider-owned `OAuthAuth`, which composes with `CredentialStore` and gets locked auto-refresh through `Models`. The `@bastani/atomic-ai/oauth` entry point retains only type declarations required for extension OAuth compatibility.
 
 Provider notes:
 
-**OpenAI Codex**: Requires a ChatGPT subscription with model access. Includes GPT-6.2 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
+**OpenAI Codex.** Requires a ChatGPT subscription with model access. Includes GPT-6.2 Sol and Codex models with extended context windows and reasoning capabilities. Prompt caching is enabled automatically when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
 
-Call `cleanupSessionResources(sessionId)` when finished with a Codex session so its pooled WebSocket connection does not keep the process alive. Import it from `@bastani/atomic-ai`.
+Call `cleanupSessionResources(sessionId)` (imported from `@bastani/atomic-ai`) when finished with a Codex session so its pooled WebSocket connection does not keep the process alive.
 
-**Azure OpenAI (Responses)**: Uses the Responses API only. Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` supports both `https://<resource>.openai.azure.com` and `https://<resource>.cognitiveservices.azure.com`; root endpoints are normalized to `.../openai/v1` automatically. Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version if needed. Deployment names are treated as model IDs by default, override with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are intentionally unsupported.
+**Azure.** Supports both Azure OpenAI Responses (`azure-openai-responses`) and Microsoft Foundry Chat Completions (`openai-completions`, such as `deepseek-v4-pro`). Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` accepts `https://<resource>.openai.azure.com`, `https://<resource>.cognitiveservices.azure.com`, and `https://<resource>.ai.azure.com` (including `*.services.ai.azure.com`); root endpoints normalize to `/openai/v1` automatically.
 
-**GitHub Copilot**: If you get "The requested model is not supported" error, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
+Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version. Deployment names default to model IDs and can be overridden with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are not supported.
 
-## Migrating from the Old Global API
+**GitHub Copilot.** If you get "The requested model is not supported", enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
 
-Older versions exposed a global API: `stream()`/`complete()` dispatching on `model.api` via a global registry, sync `getModel()`/`getModels()`/`getProviders()` catalog reads, `registerApiProvider()`, `getEnvApiKey()`, and per-API lazy stream functions. That surface lives unchanged on the **compat entrypoint**:
+## Migrating from the old global API
+
+Older versions exposed a global API: `stream()` and `complete()` dispatching on `model.api` through a global registry, synchronous `getModel()`, `getModels()`, and `getProviders()` catalog reads, `registerApiProvider()`, `getEnvApiKey()`, and per-API lazy stream functions. That API remains unchanged on the **compat entrypoint**:
 
 ```typescript
 // Before

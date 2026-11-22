@@ -4,19 +4,19 @@ sidebarTitle: "Telemetry"
 description: "Vendor-neutral telemetry contracts, a no-op and an in-memory context, metrics and typed schemas."
 ---
 
-Vendor-neutral telemetry contracts and typed schema utilities for Atomic's libraries. It contains no exporter and sends nothing anywhere: you supply the adapter.
+Vendor-neutral telemetry contracts and typed schema utilities for Atomic's libraries. This package contains no exporter and sends nothing on its own; you supply the adapter.
 
 This package provides:
 
-- an explicit, callback-based `TelemetryContext` / `TelemetrySpan` contract;
-- a shared `NOOP_TELEMETRY_CONTEXT`;
-- opaque cross-process propagation and span links;
-- counters, up-down counters, histograms, and typed metric schemas;
-- a reference `InMemoryTelemetryContext` implementation;
-- serializable schema definitions with inferred TypeScript types;
-- no exporter, global current-span state, or dependency on a telemetry backend.
+- An explicit, callback-based `TelemetryContext` and `TelemetrySpan` contract.
+- A shared `NOOP_TELEMETRY_CONTEXT`.
+- Opaque cross-process propagation and span links.
+- Counters, up-down counters, histograms, and typed metric schemas.
+- A reference `InMemoryTelemetryContext` implementation.
+- Serializable schema definitions with inferred TypeScript types.
+- No exporter, global current-span state, or dependency on a telemetry backend.
 
-Applications can use the in-memory reference or provide an adapter for OpenTelemetry, Sentry, logs, or another backend. Atomic's packages pass telemetry contexts explicitly and define their domain schemas separately.
+Applications can use the in-memory reference or supply an adapter for OpenTelemetry, Sentry, logs, or another backend. Atomic's packages pass telemetry contexts explicitly and define their domain schemas separately.
 
 ## Installation
 
@@ -24,9 +24,9 @@ Applications can use the in-memory reference or provide an adapter for OpenTelem
 npm install @bastani/atomic-telemetry
 ```
 
-## Telemetry Concepts
+## Telemetry concepts
 
-Telemetry describes what a program did while it was running. This package models that work using spans, attributes, events, statuses, and explicit context:
+Telemetry describes what a program did while running using spans, attributes, events, statuses, and explicit context:
 
 | Concept | Plain-language meaning |
 |---|---|
@@ -37,7 +37,7 @@ Telemetry describes what a program did while it was running. This package models
 | **Status** | The operation's outcome: `ok` or `error`. An error status may include an error name and message. |
 | **Context** | A handle identifying where new work belongs in the span tree. Starting a span from a context makes it a child of that context. |
 
-For example, loading an account could produce this telemetry:
+For example, loading an account produces this structure:
 
 ```text
 example.account.load                         span
@@ -49,9 +49,9 @@ example.account.load                         span
 
 A span is diagnostic data, not business state. An adapter translates these generic concepts into the corresponding concepts used by OpenTelemetry, Sentry, logs, or another backend.
 
-## Core Context API
+## Core context API
 
-A `TelemetryContext` starts a span around a callback. The callback receives a `TelemetrySpan`, which is also the explicit parent context for child spans. Contexts optionally expose their adapter's `metrics?: TelemetryMetrics` and `propagation?: TelemetryPropagation` capabilities; child spans and extracted parents carry the same capabilities. A `TelemetryContext` adapter starts root spans; hosts retain this adapter. Invocation contexts and `@bastani/atomic-ai` request options carry a `TelemetrySpan`, never the adapter. A tracing adapter that only implements `startSpan()` is still valid.
+A `TelemetryContext` starts a span around a callback. The callback receives a `TelemetrySpan`, which is also the explicit parent context for child spans. Contexts may expose their adapter's `metrics?: TelemetryMetrics` and `propagation?: TelemetryPropagation` capabilities, and child spans and extracted parents carry the same capabilities. A tracing adapter that implements only `startSpan()` is still valid.
 
 ```typescript
 import {
@@ -103,25 +103,25 @@ return telemetryContext.startSpan({ name: 'example.save' }, async (span) => {
 });
 ```
 
-## Adapter Contract
+## Adapter contract
 
-An adapter implements `TelemetryContext` and bridges the generic API to its backend. Typed inputs are trusted; malformed inputs have unspecified behavior. Adapters are not required to validate inputs or suppress adapter/backend failures.
+An adapter implements `TelemetryContext` and bridges the generic API to its backend. Typed inputs are trusted, and malformed inputs have unspecified behavior. Adapters are not required to validate inputs or suppress backend failures.
 
-The callback and recording contract is:
+The callback and recording contract requires an adapter to:
 
-- create a child span and invoke the callback synchronously, exactly once;
-- expose optional metric and propagation capabilities on its contexts, child spans, and extracted parents, including inert fallback spans;
-- preserve the callback's returned value and rejection value, returning a promise rejected with the same value after a synchronous throw;
-- keep the native span open until a returned promise settles;
-- treat normal completion as `ok` and throws/rejections as errors unless an explicit status was set;
-- make repeated `setStatus()` calls last-write-wins;
-- merge `setAttributes()` calls, with later defined values replacing earlier values and `undefined` ignored;
-- make recording methods synchronous;
-- ignore calls made after settlement.
+- Create a child span and invoke the callback synchronously, exactly once.
+- Expose optional metric and propagation capabilities on its contexts, child spans, and extracted parents, including inert fallback spans.
+- Preserve the callback's return value and rejection value, returning a rejected promise with the same error after a synchronous throw.
+- Keep the native span open until a returned promise settles.
+- Treat normal completion as `ok` and throws or rejections as errors unless an explicit status was set.
+- Make repeated `setStatus()` calls last-write-wins.
+- Merge `setAttributes()` calls so later defined values replace earlier ones while `undefined` is ignored.
+- Make recording methods synchronous.
+- Ignore calls made after settlement.
 
-Adapters may activate backend-native ambient context internally for automatic instrumentation, but Atomic's code always propagates the parent through `TelemetryContext` arguments. Exporter buffering, flushing, sampling, backend IDs, and backend-specific context objects belong to the adapter. Use the [adapter conformance suite](#adapter-conformance) to check these observable semantics.
+Adapters may activate backend ambient context for automatic instrumentation, while callers pass the parent through `TelemetryContext` arguments. Adapters own exporter buffering, flushing, sampling, backend IDs, and backend-specific context objects. Run the [adapter conformance suite](#adapter-conformance) to verify adapter behavior.
 
-## Propagation and Span Links
+## Propagation and span links
 
 An adapter may also implement `TelemetryPropagation`. Expose it through `context.propagation` so code can inject or extract using the context it already has. The root, spans, and extracted parents share the adapter's capability object:
 
@@ -185,11 +185,13 @@ const duration = telemetry.histogram('call.duration', {
 duration.record(elapsedMs, { method: 'read' }, currentSpan);
 ```
 
-Factories take an instrument name and optional `InstrumentOptions` (`description`, `unit`). Histograms additionally accept `HistogramOptions.boundaries`: callers supply finite, strictly increasing bucket hints. Backends own aggregation and may translate these hints. Callers are responsible for finite measurements and non-negative counter increments; up-down counters and histograms may use signed values. Histogram `record(value, attributes?, context?)` optionally correlates a measurement with a span, called an exemplar. Counter `add(value, attributes?)` has no context argument.
+Factories take an instrument name and optional `InstrumentOptions` (`description`, `unit`). Histograms also accept `HistogramOptions.boundaries` for finite, strictly increasing bucket hints. Backends own aggregation and may translate these hints.
 
-Factories and recording methods are synchronous and trust typed inputs. Adapters need not validate measurement values, metadata, attributes, or boundaries; malformed inputs have unspecified behavior. `NOOP_TELEMETRY_METRICS` returns shared frozen instruments that discard measurements. Record only values already available to business code; do not serialize or measure extra data for telemetry.
+Callers must supply finite measurements and non-negative counter increments, while up-down counters and histograms accept signed values. Histogram `record(value, attributes?, context?)` optionally correlates a measurement with a span as an exemplar. Counter `add(value, attributes?)` takes no context argument.
 
-Use only low-cardinality attributes: bounded values such as direction or method, not request IDs, user IDs, prompts, or arbitrary paths. The low-level attribute bag remains open; instrumentation owns this policy, not backend-specific heuristics.
+Factories and recording methods are synchronous and trust typed inputs. Adapters do not need to validate measurement values, metadata, attributes, or boundaries, and malformed inputs have unspecified behavior. `NOOP_TELEMETRY_METRICS` returns shared frozen instruments that discard measurements. Record only values already available to application code; do not serialize or measure extra data solely for telemetry.
+
+Use only low-cardinality attributes with bounded values such as direction or method, rather than request IDs, user IDs, prompts, or arbitrary paths. The low-level attribute bag remains open, so instrumentation code enforces this policy.
 
 ### Typed metric schemas
 
@@ -220,7 +222,7 @@ Metric definitions use `kind: 'counter' | 'upDownCounter' | 'histogram'`; only h
 
 `InMemoryTelemetryContext.getMetrics()` returns ordered, detached `RecordedTelemetryMeasurement` snapshots: `kind`, `name`, optional `description`/`unit`/`boundaries`, `value`, copied `attributes`, and a carrier-shaped exemplar `context` or `null`. This is a measurement log, not aggregated counters or buckets; storage is unbounded. Measurement times are retained privately for store queries, not exposed in these snapshots.
 
-## No-op Context
+## No-op context
 
 Use `NOOP_TELEMETRY_CONTEXT` when telemetry is optional:
 
@@ -235,15 +237,15 @@ const result = await NOOP_TELEMETRY_CONTEXT.startSpan(
 
 The no-op context:
 
-- invokes callbacks synchronously;
-- preserves returned values and asynchronous rejections, and converts a synchronous throw to a promise rejected with the same value;
-- uses one shared frozen inert span, including for nested spans;
-- exposes `NOOP_TELEMETRY_METRICS` and `NOOP_TELEMETRY_PROPAGATION` on its root and spans;
-- does not inspect or retain names, attributes, events, or statuses.
+- Invokes callbacks synchronously.
+- Preserves returned values and asynchronous rejections, and converts a synchronous throw to a promise rejected with the same value.
+- Uses one shared frozen inert span, including for nested spans.
+- Exposes `NOOP_TELEMETRY_METRICS` and `NOOP_TELEMETRY_PROPAGATION` on its root and spans.
+- Does not inspect or retain names, attributes, events, or statuses.
 
-## In-Memory Reference Adapter
+## In-memory reference adapter
 
-`InMemoryTelemetryContext` is the backend-neutral reference implementation. It is useful for tests, local diagnostics, and applications that intentionally want process-local capture without an exporter:
+`InMemoryTelemetryContext` is a backend-neutral reference adapter for tests, local diagnostics, and process-local capture without an exporter:
 
 ```typescript
 import { InMemoryTelemetryContext } from '@bastani/atomic-telemetry';
@@ -261,25 +263,25 @@ await telemetry.startSpan(
 console.log(telemetry.getSpans());
 ```
 
-`getSpans()` returns detached snapshots in span-start order. Each `RecordedTelemetrySpan` contains a deterministic numeric ID, local parent ID, carrier-shaped `context` and `parentContext` snapshots, ordered `links`, merged attributes, ordered events, final status, settlement state, and deterministic end sequence. These normalized snapshots expose no timestamps. A remote parent has `parentId: null` but a non-null `parentContext`; a root has both null. A `RecordedTelemetryLink` contains a target carrier and copied attributes.
+`getSpans()` returns detached snapshots in span-start order. Each `RecordedTelemetrySpan` contains a deterministic numeric ID, local parent ID, carrier-shaped `context` and `parentContext` snapshots, ordered `links`, merged attributes, ordered events, final status, settlement state, and deterministic end sequence without timestamps. A remote parent has `parentId: null` and a non-null `parentContext`; a root has both `null`. A `RecordedTelemetryLink` contains a target carrier and copied attributes.
 
-The adapter implements `TelemetryPropagation` with its own small carrier codec: a unique recorder scope, a deterministic numeric span ID, and an inherited trace ID. The carrier survives JSON round trips and works across independent processes without a shared registry. Its keys are an implementation detail, not a public wire format for other adapters.
+`InMemoryTelemetryContext` implements `TelemetryPropagation` with JSON-safe carriers that work across independent processes without a shared registry. Treat its carrier keys as opaque and specific to `InMemoryTelemetryContext`, not as a shared wire format for other adapters.
 
-The adapter is safe to use as an ordinary `TelemetryContext`, but storage is unbounded and process-local. Create a fresh instance to isolate tests or recording scopes, and do not capture sensitive attributes unless the caller's data policy allows them.
+Storage in `InMemoryTelemetryContext` is unbounded and process-local. Create a fresh instance per test or recording scope, and avoid recording sensitive attributes unless your data policy permits them.
 
-## Stored Telemetry
+## Stored telemetry
 
-`TelemetryStore` separates querying from recording. `InMemoryTelemetryContext` implements it, and a persistent adapter can implement it too:
+`TelemetryStore` separates querying from recording. `InMemoryTelemetryContext` implements it, and persistent adapters can implement it too:
 
-- `findTraces(query?)` returns complete locally stored traces, newest trace start first. Filters include the earliest stored span's `name`, inclusive `startMin`/`startMax`, `errors: true`, and scalar `attributes`. All requested attributes must match one span, anywhere in the trace. Pages default to 20 traces; pass the returned opaque `cursor` with the same filters to continue. Equal start times are ordered by trace ID.
+- `findTraces(query?)` returns locally stored traces, newest trace start first. Filters include the earliest stored span's `name`, inclusive `startMin` and `startMax`, `errors: true`, and scalar `attributes` (all requested attributes must match one span anywhere in the trace). Pages default to 20 traces; pass the returned opaque `cursor` with the same filters to continue. Equal start times order by trace ID.
 - `getTrace(traceId)` returns a trace or `undefined`.
-- `findMetrics({ name, startMin?, startMax?, attributes? })` returns metric rows with count, sum, minimum, and maximum. Time bounds are inclusive interval-start times. The in-memory adapter maps each raw measurement to a count-one row in its ten-second interval; SQLite aggregates measurements per series and interval.
+- `findMetrics({ name, startMin?, startMax?, attributes? })` returns metric rows with count, sum, minimum, and maximum. Time bounds are inclusive interval-start times. `InMemoryTelemetryContext` maps each raw measurement to a count-one row in its 10-second interval, while persistent stores can aggregate measurements per series and interval.
 
-Only settled spans are returned. A trace ID is the root's globally unique span ID (`<recorder UUID>:<counter>`) and propagates with the parent identity. Stores return the spans available locally: remote or expired parents can be absent, and a child can appear before its parent settles. Pagination is not a snapshot across requests; late settlements and retention can change a trace's earliest stored span. SQLite reads committed rows without implicitly flushing.
+Only settled spans are returned. A trace ID propagates from the root span with the parent identity. Stores return the spans available locally, so remote or expired parents may be absent and a child can appear before its parent settles. Pagination is not a frozen snapshot across requests because late settlements and retention can change a trace's earliest stored span.
 
-`StoredSpan` includes epoch-millisecond `startedMs`/`endedMs`, event offsets in `timeMs`, and links carrying both target `traceId` and `spanId`. Duration uses a monotonic clock; wall clocks across processes may disagree. Merge spans from several stores by trace ID; parent relationships, not timestamp containment, define the tree.
+`StoredSpan` includes epoch-millisecond `startedMs` and `endedMs`, event offsets in `timeMs`, and links carrying both target `traceId` and `spanId`. Durations use a monotonic clock because wall clocks across processes may disagree. Merge spans from multiple stores by trace ID; parent relationships, not timestamp containment, define the tree.
 
-Rendering is a separate subpath, kept out of the root entry graph:
+Trace formatting lives in `@bastani/atomic-telemetry/render`:
 
 ```typescript
 import { renderTrace } from '@bastani/atomic-telemetry/render';
@@ -288,9 +290,9 @@ const page = await telemetry.findTraces({ errors: true, limit: 10 });
 for (const trace of page.traces) console.log(renderTrace(trace.spans));
 ```
 
-`renderTrace()` accepts stored spans, deduplicates IDs, treats absent parents as roots, and prints attributes, durations, statuses, event offsets, and cross-trace links. It never follows links or queries a store.
+`renderTrace()` accepts stored spans, deduplicates IDs, treats absent parents as roots, and formats attributes, durations, statuses, event offsets, and cross-trace links. It never follows links or queries a store.
 
-## Adapter Conformance
+## Adapter conformance
 
 `@bastani/atomic-telemetry/testing` exports a runner-independent conformance suite modeled as grouped cases. A fixture supplies a fresh context and converts its backend's finished spans into normalized `RecordedTelemetrySpan` snapshots:
 
@@ -321,9 +323,11 @@ for (const group of new Set(conformance.map((testCase) => testCase.group))) {
 }
 ```
 
-The suite checks capability identity on roots, child spans, extracted parents and inert spans, synchronous single admission, result and rejection identity, automatic and explicit status, attribute merging, event ordering, inert post-settlement calls, nested and concurrent parentage, and links. Fixtures may supply `propagation` to additionally check JSON round trips, multiple adapter hops, and root fallback for absent or unknown carriers. Fixtures may also supply `metrics` and `getMetrics()` to check ordered measurements, histogram exemplars, and input copying. It does not test malformed inputs or require suppression of adapter/backend failures. `getSpans()` may flush an asynchronous exporter before returning. The testing subpath uses Node's assertion APIs; the root telemetry package remains runtime-neutral.
+The suite verifies capability identity on roots, child spans, extracted parents, and inert spans. It also checks synchronous single invocation, return and rejection identity, automatic and explicit statuses, attribute merging, event ordering, inert post-settlement calls, nested and concurrent parentage, and span links.
 
-## Typed Schemas
+Fixtures may supply `propagation` to verify JSON round trips, multi-adapter hops, and root fallback for absent or unknown carriers. Fixtures may also supply `metrics` and `getMetrics()` to verify ordered measurements, histogram exemplars, and input copying. The suite does not test malformed inputs or require suppressing backend failures. `getSpans()` may flush an asynchronous exporter before returning. `@bastani/atomic-telemetry/testing` uses Node's assertion APIs, while the root package remains runtime-neutral.
+
+## Typed schemas
 
 The low-level span API intentionally accepts open names and attribute bags so adapters remain generic. Domain packages can define closed, serializable schemas and infer exact TypeScript types from them.
 
@@ -404,7 +408,7 @@ await startSpan(
 );
 ```
 
-### Start and Completion Attributes
+### Start and completion attributes
 
 `startAttributes` and `endAttributes` describe when an attribute is normally known, not separate runtime storage:
 
@@ -429,7 +433,7 @@ await startSpan(
 ); // resolving the callback settles the span
 ```
 
-“End” means completion enrichment: an end attribute may be set at any point while the callback is active, and it may be omitted when unavailable. Calling `setAttributes()` zero times is valid. This matters for early failures, cancellation, and provider-specific data that may not exist on every path.
+"End" means completion enrichment. You can set an end attribute at any point while the callback runs, or omit it when unavailable. Calling `setAttributes()` zero times is valid, which accommodates early failures, cancellation, and provider-specific fields that are not present on every path.
 
 Repeated `setAttributes()` calls merge into the same attribute bag. A later defined value replaces an earlier value for the same key, while `undefined` is ignored. The schema-scoped method accepts only the current span's declared end attributes.
 
@@ -450,37 +454,34 @@ Schema-derived types reject missing required attributes, unknown keys, invalid c
 
 `defineTelemetrySchema()` is a typed identity function. It returns ordinary JSON-serializable data and performs no runtime validation or parent-rule enforcement.
 
-## Schema Metadata
+## Schema metadata
 
 Supported attribute types are:
 
-- `string`, `number`, and `boolean`;
-- `string[]`, `number[]`, and `boolean[]`.
+- `string`, `number`, and `boolean`
+- `string[]`, `number[]`, and `boolean[]`
 
 Attribute definitions support:
 
-- `values`: a closed set for scalar values;
-- `elementValues`: a closed set for array elements;
-- `examples`: documentation examples;
-- `sensitive`: marks data requiring special handling;
-- `cardinality`: records expected `low` or `high` cardinality.
+- `values`: a closed set for scalar values
+- `elementValues`: a closed set for array elements
+- `examples`: documentation examples
+- `sensitive`: marks data requiring special handling
+- `cardinality`: records expected `low` or `high` cardinality
 
-Start and event attributes declare `required`. End attributes do not; see [Start and Completion Attributes](#start-and-completion-attributes).
+Start and event attributes declare `required`. End attributes do not; see [Start and completion attributes](#start-and-completion-attributes).
 
 Parent metadata is descriptive schema data:
 
-- `{ kind: 'any' }`: root or any caller span;
-- `{ kind: 'root_or_external' }`: root or a caller-owned span outside the schema;
-- `{ kind: 'spans', spans: [...] }`: only the listed schema spans.
+- `{ kind: 'any' }`: root or any caller span
+- `{ kind: 'root_or_external' }`: root or a caller-owned span outside the schema
+- `{ kind: 'spans', spans: [...] }`: only the listed schema spans
 
 Adapters do not need to understand schema objects. Instrumentation helpers and tests use them to keep emitted names and attributes consistent.
 
-## Atomic Package Integration
+## Using with `@bastani/atomic-ai`
 
-Package ownership is intentionally split:
-
-- `@bastani/atomic-telemetry` owns the vendor-neutral contract, no-op and in-memory reference contexts, schema utilities, and adapter conformance suite;
-- `@bastani/atomic-ai` accepts a parent `TelemetryContext` through `telemetryContext` in its request options.
+Pass a parent `TelemetryContext` to `@bastani/atomic-ai` through `telemetryContext` in request options:
 
 ```typescript
 import { InMemoryTelemetryContext } from '@bastani/atomic-telemetry';
@@ -489,15 +490,15 @@ const telemetry = new InMemoryTelemetryContext();
 await models.completeSimple(model, context, { telemetryContext: telemetry });
 ```
 
-## Security and Portability
+## Security and portability
 
-Telemetry is diagnostics, not durable application state. Do not persist a `TelemetryContext`, `TelemetrySpan`, or backend-native trace object in records, messages, snapshots, or deferred handles. An injected `TelemetryCarrier` may cross a transport or be stored as optional diagnostic correlation data. Changing adapters may lose correlation; carriers are not application state.
+Telemetry is diagnostic data, not durable application state. Do not persist a `TelemetryContext`, `TelemetrySpan`, or backend-native trace object in records, messages, snapshots, or deferred handles. An injected `TelemetryCarrier` may cross a transport or be stored as optional diagnostic correlation data. Changing adapters may lose correlation because carriers are not application state.
 
-Attribute values are intentionally limited to primitive scalars and arrays. Domain instrumentation should avoid prompts, completions, tool arguments or output, file contents, provider payloads, headers, credentials, and free-form error details unless its schema and data policy explicitly allow them.
+Attribute values are limited to scalar values and homogeneous scalar arrays. Avoid recording prompts, completions, tool arguments or output, file contents, provider payloads, headers, credentials, and free-form error details unless your schema and data policy explicitly allow them.
 
-The package does not use `AsyncLocalStorage` or another runtime-specific ambient context API. It is suitable for Node.js, Bun, browsers, and workers; backend adapters remain responsible for their own runtime compatibility.
+This package does not use `AsyncLocalStorage` or any runtime-specific ambient context API. It works in Node.js, Bun, browsers, and workers; backend adapters remain responsible for their own runtime compatibility.
 
-## API Reference
+## API reference
 
 ### Core types and values
 
@@ -527,6 +528,13 @@ The package does not use `AsyncLocalStorage` or another runtime-specific ambient
 | `StoredSpan` / `StoredTrace` | Backend-independent timed span and trace snapshots |
 | `TraceQuery` / `MetricQuery` | Trace filters, pagination, and metric filters |
 | `StoredMetric` | Metric interval row with count, sum, minimum, and maximum |
+| `telemetryNow()` | Monotonic-anchored wall-clock milliseconds used by `StoredSpan` |
+
+### Render subpath (`@bastani/atomic-telemetry/render`)
+
+| Export | Purpose |
+|---|---|
+| `renderTrace()` | Formats `StoredSpan[]` into an indented chronological trace tree |
 
 ### Schema definitions and inference
 

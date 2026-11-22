@@ -7,9 +7,11 @@ description: Every extension event, its payload, and its return contract.
 
 ## Events
 
-### Lifecycle Overview
+### Lifecycle overview
 
-Interactive trust-gated startup first emits `session_start` and `resources_discover` for the permitted trust-safe extensions, then resolves `project_trust`. After authorization, newly loaded extensions receive `session_start`; resource discovery runs again against the completed set. A `resources_discover` handler that fails both times with the same error is reported once. Different handlers are reported separately, even if they throw the same message or their extensions have the same display name. Existing reporters keep their session and do not receive a second `session_start`. Noninteractive startup resolves trust before the ordinary session lifecycle.
+Interactive trust-gated startup first emits `session_start` and `resources_discover` for the permitted trust-safe extensions, then resolves `project_trust`. After authorization, newly loaded extensions receive `session_start`, and resource discovery runs again against the completed set.
+
+A `resources_discover` handler that fails both times with the same error is reported once. Different handlers are reported separately, even if they throw the same message or share a display name. Existing reporters keep their session and do not receive a second `session_start`. Noninteractive startup resolves trust before the ordinary session lifecycle.
 
 ```
 Atomic starts
@@ -96,11 +98,11 @@ exit (CTRL+C, CTRL+D, SIGHUP, SIGTERM)
   └─► session_shutdown
 ```
 
-### Startup Events
+### Startup events
 
 #### project_trust
 
-Fired before Atomic decides whether to trust a project with dynamic configs (`.atomic`, legacy `.pi`, or `.agents/skills`). It runs during startup and when session replacement (for example `/resume`) enters a cwd whose trust has not been resolved in the current process. Only user/global extensions and CLI `-e` extensions participate; project-local extensions are not loaded until after trust is resolved.
+Fired before Atomic decides whether to trust a project with dynamic configs (`.atomic`, legacy `.pi`, or `.agents/skills`). It runs during startup and when session replacement (for example `/resume`) enters a working directory whose trust has not been resolved in the current process. Only user or global extensions and CLI `-e` extensions participate; project-local extensions load only after trust is resolved.
 
 ```typescript
 pi.on("project_trust", async (event, ctx) => {
@@ -113,14 +115,15 @@ pi.on("project_trust", async (event, ctx) => {
 });
 ```
 
-A `project_trust` handler must return `{ trusted: "yes" | "no" | "undecided" }`. A user/global or CLI extension that returns `"yes"` or `"no"` owns the decision; the first yes/no decision wins and suppresses the built-in trust prompt. Use `remember: true` to persist a yes/no decision; otherwise it applies only to the current process. Return `"undecided"` to let later handlers or the built-in trust flow decide. Check `ctx.hasUI` before prompting. If no handler returns yes/no, normal trust resolution continues: saved `trust.json` decisions apply first, then `defaultProjectTrust` controls whether Atomic asks, trusts, or declines by default.
+A `project_trust` handler must return `{ trusted: "yes" | "no" | "undecided" }`. The first yes or no decision from a user, global, or CLI extension wins and suppresses the built-in trust prompt. Set `remember: true` to persist the decision; otherwise it applies only to the current process.
 
-### Resource Events
+Return `"undecided"` to let later handlers or the built-in trust flow decide, and check `ctx.hasUI` before prompting. If no handler returns yes or no, saved `trust.json` decisions apply first, then `defaultProjectTrust` decides whether Atomic asks, trusts, or declines.
+
+### Resource events
 
 #### resources_discover
 
-Fired after `session_start` so extensions can contribute additional skill, prompt, and theme paths.
-The startup path uses `reason: "startup"`. Reload uses `reason: "reload"`.
+Fired after `session_start` so extensions can contribute additional skill, prompt, and theme paths. Startup uses `reason: "startup"`, and `/reload` uses `reason: "reload"`.
 
 ```typescript
 pi.on("resources_discover", async (event, _ctx) => {
@@ -134,9 +137,9 @@ pi.on("resources_discover", async (event, _ctx) => {
 });
 ```
 
-### Session Events
+### Session events
 
-See [Session Format](/session-format) for session storage internals and the SessionManager API.
+See [Session format](/session-format) for session storage details and the `SessionManager` API.
 
 #### session_start
 
@@ -224,7 +227,11 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact / session_compact_failed
 
-Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares everything in context since the last boundary. Extensions may cancel or provide a `compactedText` replacement: the model then sees that text in a `Context compacted` message, followed by instructions for recovering the rest from session history, and the configured compactor is not called. Empty or whitespace text counts as no replacement, and the configured form runs instead. Text over the compactor's output limit, or too long to fit below the automatic trigger with the system prompt and recovery instructions, clears the context instead. The replacement is saved verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
+Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares everything in context since the last boundary.
+
+Extensions can cancel compaction or return a `compactedText` replacement. When you provide `compactedText`, the model sees that text in a `Context compacted` message followed by instructions for recovering the rest from session history, and Atomic does not call the configured compactor. Empty or whitespace-only text counts as no replacement, so the configured form runs instead.
+
+Text over the compactor's output limit, or too long to fit below the automatic trigger with the system prompt and recovery instructions, clears the context instead. The replacement is saved verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active agent loop without starting a separate continuation. Cancellation or failure stops that loop's follow-up provider request.
 
 ```typescript
 pi.on("session_before_compact", async (event) => {
@@ -296,13 +303,15 @@ pi.on("session_shutdown", async (event, ctx) => {
 });
 ```
 
-`fromSignal` is set only on `reason: "quit"`. Ctrl+D and `/quit` leave it unset. Use it to tell a deliberate exit from the host stopping the process, for example to keep externally registered state that a restart can resume from.
+`fromSignal` is set only on `reason: "quit"`. Ctrl+D and `/quit` leave it unset. Use it to distinguish a deliberate exit from the host stopping the process, for example to keep externally registered state that a restart can resume from.
 
-When you quit the interactive app, `session_shutdown` handlers have about five seconds to finish; a handler still running then is stopped with the rest of the session. The same applies, with `fromSignal: true`, when Atomic receives `SIGTERM` or `SIGHUP` or its terminal window is closed on Linux or macOS; a second `SIGTERM` stops the session at once. Closing the console window on Windows does the same, but Windows ends the process about five seconds after the window closes, so handlers there have about four seconds, and processes started on that console, such as MCP servers, may already have ended when they run. Signing out of Windows, or restarting or shutting it down, also gives them about four seconds, once Atomic has finished starting up; before that, Windows ends Atomic without running `session_shutdown`.
+When you quit the interactive app, `session_shutdown` handlers have about five seconds to finish before the rest of the session stops. The same applies with `fromSignal: true` when Atomic receives `SIGTERM` or `SIGHUP` or its terminal window closes on Linux or macOS; a second `SIGTERM` stops the session immediately.
 
-A signal that arrives while a quit is already shutting down joins that shutdown instead of ending Atomic at once; only a second `SIGTERM` does. A [`pi.exec`](/extensions/api-reference#pi-exec-command-args-options) command still running when you quit is ended first, so it cannot hold up the handlers.
+Closing the console window on Windows gives handlers about four seconds before Windows ends the process, and processes started on that console (such as MCP servers) may already have ended. Signing out of Windows, or restarting or shutting it down, also gives handlers about four seconds once Atomic has finished starting up; before that, Windows ends Atomic without running `session_shutdown`.
 
-### Agent Events
+A signal that arrives while a quit is already shutting down joins that shutdown instead of ending Atomic immediately; only a second `SIGTERM` forces an immediate exit. Any [`pi.exec`](/extensions/api-reference#pi-exec-command-args-options) command still running when you quit is stopped first so it cannot hold up shutdown handlers.
+
+### Agent events
 
 #### before_agent_start
 
@@ -444,11 +453,13 @@ pi.on("turn_end", async (event, ctx) => {
 });
 ```
 
-`turn_end` runs after the assistant and tool-result messages have been persisted and before the low-level `turn_end` event. Retry backoff and final-attempt recovery still happen after `agent_end`, preserving their existing lifecycle and queue ordering; `agent_before_settle` sees the repaired projection after that work completes. Boundary handlers run in extension load and registration order. Each handler sees prior proposals in `event.entries` and sees `event.context` rebuilt from them (`contextEntries`, `contextMessages`, `llmMessages`, `pendingMessages`, `canContinue`). Returning `entries` or `continue` replaces only that field; omitted fields preserve the current proposal. Allowed draft entry types are `custom`, `custom_message`, `context_edit`, and `compaction` (`summary` is the compacted transcript text; `firstKeptEntryId: null` keeps no preceding entries). The complete proposal is validated before it is appended in list order after all handlers finish; a handler error is reported and later handlers still run. Validation prevents partially applied semantic errors, but persistence is not transactional.
+`turn_end` runs after the assistant and tool-result messages have been persisted. Retry backoff and final-attempt recovery still happen after `agent_end`, and `agent_before_settle` sees the repaired projection after that work completes.
 
-`continue: true` ensures one next provider request for that boundary invocation. If tool results, steering, or a follow-up already cause that request, they satisfy the decision and no additional request is made; otherwise Atomic makes one context-only request. Error and aborted responses remain hard exits. `continue: false` never suppresses natural work. Guard continuation conditions: an unconditional `continue: true` is evaluated again after the next response and can create an endless loop. A `custom_message` draft contributes a user-role model message but is extension-authored: it does not run human input hooks, slash commands, skills, or prompt templates.
+Boundary handlers run in extension load and registration order. Each handler sees earlier proposals in `event.entries` and `event.context` rebuilt from them (`contextEntries`, `contextMessages`, `llmMessages`, `pendingMessages`, `canContinue`). Returning `entries` or `continue` replaces only that field; omitted fields keep the current proposal.
 
-Host integrations that construct `TurnEndEvent` values must provide `messageEntryId`, `toolResultEntryIds`, `outcome`, `entries`, `continue`, and `context`. `ExtensionEvent` exhaustive switches must also handle `agent_before_settle`. `ExtensionRunner.emit()` excludes actionable turn boundaries; dispatch `turn_end` and `agent_before_settle` through `emitBoundary(baseEvent, buildContext)` so handlers receive chained previews.
+Allowed draft entry types are `custom`, `custom_message`, `context_edit`, and `compaction` (`summary` is the compacted transcript text; `firstKeptEntryId: null` keeps no preceding entries). Atomic validates the complete proposal before appending it in list order after all handlers finish. A handler error is reported and later handlers still run. Validation prevents partially applied semantic errors, though persistence is not transactional.
+
+`continue: true` requests one next provider request for that boundary invocation. If tool results, steering, or a follow-up already trigger that request, they satisfy it and no extra request is made; otherwise Atomic makes one context-only request. Error and aborted responses remain hard exits, and `continue: false` never suppresses natural work. Guard continuation conditions because an unconditional `continue: true` runs again after the next response and can loop indefinitely. A `custom_message` draft contributes a user-role model message without running human input hooks, slash commands, skills, or prompt templates.
 
 #### message_start / message_update / message_end
 
@@ -523,7 +534,9 @@ pi.on("context", async (event, ctx) => {
 });
 ```
 
-`event.messages` holds the conversation without system messages. The prompt and tool declarations belong to Atomic and are not part of this hook: when the handler returns a changed list (or edits `event.messages` in place), Atomic replays the current prompt sections and tool declarations into one leading system message ahead of the returned messages. Filtering, windowing, or slicing from a compaction boundary therefore cannot drop the prompt or the tools. An unchanged list keeps mid-conversation system messages in place, so models that accept them retain their cached prefix. System messages a handler adds are kept after Atomic's head. To change the prompt or the tool set durably, use [`before_agent_start`](#before_agent_start) or `pi.setActiveTools()`; to edit system messages for one request, use [`context_with_system`](#context_with_system).
+`event.messages` holds the conversation without system messages. The prompt and tool declarations belong to Atomic and are not part of this hook. When a handler returns a changed list or edits `event.messages` in place, Atomic replays the current prompt sections and tool declarations into one leading system message ahead of the returned messages, so filtering or windowing cannot drop them.
+
+An unchanged list keeps mid-conversation system messages in place so models that accept them keep their cached prefix. System messages a handler adds stay after Atomic's leading message. To change the prompt or tool set durably, use [`before_agent_start`](#before_agent_start) or `pi.setActiveTools()`; to edit system messages for one request, use [`context_with_system`](#context_with_system).
 
 #### context_with_system
 
@@ -609,24 +622,24 @@ pi.on("provider_stream_event", (event, ctx) => {
 
 Handlers run in stream order and are awaited, so a slow handler delays the response. Handler errors are reported without changing the provider response. Custom providers registered with `streamSimple` emit this event only if they call `options.onProviderStreamEvent`. See [`debug-provider.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/debug-provider.ts) for an opt-in viewer.
 
-### Model Events
+### Model events
 
 #### model_select
 
-Fired when the model changes via `/model` command, model cycling (`CTRL+P`), or session restore.
+Fired when the model changes via `/model`, model cycling (`Ctrl+P`), session restore, or fallback selection.
 
 ```typescript
 pi.on("model_select", async (event, ctx) => {
   // event.model - newly selected model
   // event.previousModel - previous model (undefined if first selection)
-  // event.source - "set" | "cycle" | "restore"
+  // event.source - "set" | "cycle" | "restore" | "fallback"
 
   const prev = event.previousModel
     ? `${event.previousModel.provider}/${event.previousModel.id}`
     : "none";
   const next = `${event.model.provider}/${event.model.id}`;
 
-  ctx.ui.notify(`Model changed (${event.source}): ${prev} -> ${next}`, "info");
+  ctx.ui.notify(`Model changed (${event.source}): ${prev} to ${next}`, "info");
 });
 ```
 
@@ -647,7 +660,19 @@ pi.on("thinking_level_select", async (event, ctx) => {
 
 Use this to update extension UI when `pi.setThinkingLevel()`, model changes, or built-in thinking-level controls change the active thinking level.
 
-### Tool Events
+#### cache_warming_decision
+
+Fired when prompt cache warming evaluates whether to send a warming request. Handlers run in load order and receive `warmCost`, `missCost`, `continuationProbability`, and the current `action` (`"warm"` or `"stop"`). Return `{ action: "warm" }` or `{ action: "stop" }` to override the decision for later handlers and the cache warmer.
+
+```typescript
+pi.on("cache_warming_decision", (event) => {
+  if (event.continuationProbability < 0.5) {
+    return { action: "stop" };
+  }
+});
+```
+
+### Tool events
 
 #### tool_call
 
@@ -770,7 +795,7 @@ pi.on("tool_result", async (event, ctx) => {
 });
 ```
 
-### User Bash Events
+### User bash events
 
 #### user_bash
 
@@ -802,20 +827,21 @@ pi.on("user_bash", (event, ctx) => {
 });
 ```
 
-### Input Events
+### Input events
 
 #### input
 
-Fired when user input is received, after extension commands are checked but before skill and template expansion. The event sees the raw input text, so `/skill:foo` and `/template` are not yet expanded.
+Fired when user input is received, after extension commands are checked and before skill and template expansion. The event sees the raw input text, so `/skill:foo` and `/template` are not yet expanded.
 
-Direct `session.steer()` and `session.followUp()` calls also run input handlers before skill/template expansion and queue admission. A handled input is not queued; transformed text and images are queued instead. Their optional third argument sets `source`, defaulting to `interactive`; RPC queue commands use `rpc`.
+Direct `session.steer()` and `session.followUp()` calls also run input handlers before skill and template expansion and queue admission. Handled input is not queued; transformed text and images are queued instead. Their optional third argument sets `source`, defaulting to `interactive`; RPC queue commands use `rpc`.
 
-**Processing order:**
-1. Extension commands (`/cmd`) checked first - if found, handler runs and input event is skipped
-2. `input` event fires - can intercept, transform, or handle
-3. If not handled: skill commands (`/skill:name`) expanded to skill content
-4. If not handled: prompt templates (`/template`) expanded to template content
-5. Agent processing begins (`before_agent_start`, etc.)
+Processing order:
+
+1. Extension commands (`/cmd`) are checked first. If one matches, its handler runs and the `input` event is skipped.
+2. The `input` event fires and can intercept, transform, or handle the text.
+3. If not handled, skill commands (`/skill:name`) expand to skill content.
+4. If not handled, prompt templates (`/template`) expand to template content.
+5. Agent processing begins (`before_agent_start`, and then the turn lifecycle).
 
 ```typescript
 pi.on("input", async (event, ctx) => {
@@ -845,12 +871,13 @@ pi.on("input", async (event, ctx) => {
 });
 ```
 
-**Results:**
-- `continue` - pass through unchanged (default if handler returns nothing)
-- `transform` - modify text/images, then continue to expansion
-- `handled` - skip agent entirely (first handler to return this wins)
+Results:
 
-Transforms change the input sent to the agent and the prompt the session saves, including input queued while a turn runs or while queued messages are paused, and Ctrl+R prompt search lists the transformed text. ↑ and ↓ in the editor still walk through what was typed during the current run.
+- `continue`. Pass through unchanged (default when a handler returns nothing).
+- `transform`. Modify text or images, then continue to expansion.
+- `handled`. Skip the agent completely (the first handler returning `handled` wins).
+
+Transforms change the input sent to the agent and the prompt the session saves, including input queued while a turn runs or while queued messages are paused. Ctrl+R prompt search lists the transformed text. The Up and Down arrow keys in the editor still walk through what was typed during the current run.
 
 Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts) and [input-transform-streaming.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
 

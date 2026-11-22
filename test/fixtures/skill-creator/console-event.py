@@ -8,10 +8,15 @@ console, which sends CTRL_C_EVENT to the processes attached to it, or the consol
 closing its window does, which sends them CTRL_CLOSE_EVENT. Prints one JSON object: how many such
 records there were then, the command's exit status (null if it still ran <exit seconds> later, when
 it is ended), the seconds it took to exit, and what it wrote to the console.
+
+The command starts in this process's working folder. The pseudoconsole's host process starts in the
+Windows folder instead: it ends some time after this process, and a host still running in the
+caller's folder would keep the caller from removing that folder.
 """
 
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -23,6 +28,9 @@ action, records, count, key = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), 
 start_seconds, exit_seconds = float(sys.argv[5]), float(sys.argv[6])
 command = subprocess.list2cmdline(sys.argv[7:])
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+command_folder = os.getcwd()
+# The pseudoconsole's host starts in this process's working folder.
+os.chdir(os.environ["SystemRoot"])
 
 
 class Coord(ctypes.Structure):
@@ -158,7 +166,7 @@ assert kernel32.CreateProcessW(
     False,
     extended_startup_info | unicode_environment,
     None,
-    None,
+    command_folder,
     ctypes.byref(startup),
     ctypes.byref(process),
 ), ctypes.get_last_error()

@@ -14,7 +14,7 @@ Choose the provider and model you have configured, then add the settings you nee
 ```json
 {
   "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-4-20250514",
+  "defaultModel": "claude-sonnet-4-6",
   "defaultThinkingLevel": "medium",
   "theme": "dark",
   "compaction": {
@@ -25,21 +25,23 @@ Choose the provider and model you have configured, then add the settings you nee
     "enabled": true,
     "maxRetries": 3
   },
-  "httpIdleTimeoutMs": 300000,
-  "enabledModels": ["claude-*", "gpt-4o"],
+  "httpIdleTimeoutMs": 600000,
+  "enabledModels": ["claude-*", "gpt-5*"],
   "warnings": {
     "anthropicExtraUsage": true
   },
-  "packages": ["pi-skills"]
+  "packages": ["npm:@example/atomic-tools"]
 }
 ```
 
 ## Project overrides
 
-Project settings override global settings:
+Project settings in `.atomic/settings.json` override global settings in `~/.atomic/agent/settings.json` when the project is trusted:
 
-- Nested objects merge recursively. You can change one field without repeating its siblings.
-- Arrays and scalar values replace the global value.
+- Nested objects merge recursively, so you can override one field without repeating its siblings.
+- `storage` and `sessions.storage` replace as whole objects rather than merging field by field.
+- Arrays and scalar values replace the global value. An exception is `defaultTools`: a project array containing only `+tool` or `-tool` modifiers applies on top of the global tool list.
+- Global-only settings are ignored in project settings: `defaultProjectTrust`, `debug`, `httpProxy`, `cacheWarming`, `selfUpdateCommand`, `deviceId`, and the deprecated `resume.setupCommand`.
 
 This example changes only the compaction token reserve:
 

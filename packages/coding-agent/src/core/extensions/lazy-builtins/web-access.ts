@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@bastani/atomic-ai";
 import { type KeyId, Text } from "@bastani/atomic-tui";
+import { DORMANT_WEB_ACCESS_MESSAGE_RENDERERS } from "../../../modes/interactive/components/dormant-builtin-messages.js";
 import type { SessionEntry } from "../../session-manager.ts";
 import type { LazyBuiltinController, LazyBuiltinSpec } from "../lazy-builtin.js";
 import type { ToolDefinition } from "../types.ts";
@@ -81,7 +82,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 			[shortcuts.activity, "activity"],
 		] as const) {
 			pi.registerShortcut(shortcut as KeyId, {
-				description: name === "curate" ? "Open web search curator" : "Show web search activity",
+				description: name === "curate" ? "Review search results" : "Toggle web search activity",
 				handler: (ctx) => controller.runShortcut(shortcut, ctx),
 			});
 		}
@@ -103,7 +104,7 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 				queries: Type.Optional(
 					Type.Array(Type.String(), {
 						description:
-							"Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage.",
+							"Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results).",
 					}),
 				),
 				numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
@@ -254,14 +255,22 @@ export const webAccessLazyBuiltinSpec: LazyBuiltinSpec = {
 		});
 
 		for (const [name, description] of [
-			["websearch", "Configure web search"],
-			["curator", "Configure web search curator"],
+			["websearch", "Open web search curator"],
+			["curator", "Toggle or configure the search curator workflow"],
 			["google-account", "Show the active Google account for Gemini Web"],
 			["search", "Browse stored web search results"],
 		] as const) {
 			pi.registerCommand(name, {
 				description,
 				handler: (args, ctx) => controller.runCommand(name, args, ctx),
+			});
+		}
+
+		for (const [customType, dormantRenderer] of Object.entries(DORMANT_WEB_ACCESS_MESSAGE_RENDERERS)) {
+			pi.registerMessageRenderer(customType, (message, options, theme) => {
+				const loaded = controller.active?.captured.messageRenderers.get(customType);
+				if (loaded) return loaded(message, options, theme);
+				return dormantRenderer(message, options, theme);
 			});
 		}
 	},

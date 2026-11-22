@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Curator configuration, Google account status, curated web search results, and background content-fetch status and error notices now render as compact notice cards matching Atomic's other transcript notices instead of generic bracketed `[customType]` boxes, expanding and collapsing on both Ctrl+O and a click anywhere on the card, including before Web Access activates on resumed sessions.
+
+### Fixed
+
+- Aligned the lightweight Web Access tool, command, and shortcut descriptions with the loaded extension (`web_search` `queries` examples, `/websearch` and `/curator` descriptions, and shortcut labels).
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Fixed

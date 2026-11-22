@@ -25,6 +25,7 @@ import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } fr
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, mainSteering, showQueueRestoreFailure } from "./interactive-queueing.ts";
+import { stopRendererWatch } from "./interactive-session-runtime.ts";
 import { chatHistoryBuilt } from "./interactive-startup-chat-container.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 import { onWindowsSessionEnd } from "./windows-session-end.js";
@@ -250,6 +251,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 ): Promise<void> {
 	if (this.isShuttingDown) return;
 	this.isShuttingDown = true;
+	stopRendererWatch(this);
 	markEventLoopShutdown();
 	// Keep signal handlers registered until terminal cleanup has completed.
 	// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP

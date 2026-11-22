@@ -42,14 +42,28 @@ export function getAuthCommandUsage(kind: AuthCommandKind): string {
 	return AUTH_COMMAND_USAGE[kind];
 }
 
+const AUTH_HELP_SUBCOMMANDS = new Set(["login", "logout", "print-api-key", "print-bearer-token", "check"]);
+const AUTH_VALUE_OPTIONS = new Set(["--model", "--provider", "--min-expiry"]);
+
 export function isAuthCommandHelp(args: string[]): boolean {
 	if (args[0] !== "auth") return false;
-	if (args[1] === undefined || args[1] === "help" || args[1] === "--help" || args[1] === "-h") return true;
-	const terminator = args.indexOf("--", 2);
-	const flags = args.slice(2, terminator === -1 ? undefined : terminator);
-	// Checks accept direct help flags. The print commands reserve every extra
-	// parser flag, including --help, as a usage error to keep their export stream narrow.
-	return args[1] === "check" && (flags.includes("--help") || flags.includes("-h"));
+	const subcommand = args[1];
+	if (subcommand === undefined || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return true;
+	if (!AUTH_HELP_SUBCOMMANDS.has(subcommand)) return false;
+	// Only treat --help / -h as help when it is a standalone option before `--`,
+	// never when consumed as the value of --model, --provider, or --min-expiry.
+	const hasValueOptions =
+		subcommand === "check" || subcommand === "print-api-key" || subcommand === "print-bearer-token";
+	for (let index = 2; index < args.length; index++) {
+		const arg = args[index]!;
+		if (arg === "--") return false;
+		if (hasValueOptions && AUTH_VALUE_OPTIONS.has(arg)) {
+			index++;
+			continue;
+		}
+		if (arg === "--help" || arg === "-h") return true;
+	}
+	return false;
 }
 
 export function printAuthCommandHelp(): void {
