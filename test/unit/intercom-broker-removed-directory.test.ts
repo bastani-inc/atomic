@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -59,6 +60,24 @@ function registered(socket: net.Socket): Promise<void> {
 	});
 }
 
+/**
+ * The broker's answer to a health request: a connection is accepted as soon as the socket listens, before the broker
+ * has finished starting (it still renames and removes its startup lock files in the directory).
+ */
+function healthy(socket: net.Socket): Promise<void> {
+	return new Promise((resolveHealthy, reject) => {
+		const requestId = randomUUID();
+		const onData = createMessageReader((message) => {
+			if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+			if (message.type !== "health" || message.requestId !== requestId) return;
+			socket.off("data", onData);
+			resolveHealthy();
+		}, reject);
+		socket.on("data", onData);
+		writeMessage(socket, { type: "health", requestId });
+	});
+}
+
 async function startBrokerThenRemoveItsDirectory(): Promise<{ root: string; agentDir: string; socket: net.Socket }> {
 	// Short root: a Unix socket path must fit in about 104 bytes.
 	const root = mkdtempSync(join(tmpdir(), "icrm-"));
@@ -92,8 +111,10 @@ async function startBrokerThenRemoveItsDirectory(): Promise<{ root: string; agen
 	fixture.onCleanup(() => {
 		socket.destroy();
 	});
+	await healthy(socket);
 	// The agent directory goes while the broker runs, before any session registered.
 	rmSync(agentDir, { recursive: true, force: true });
+	assert.equal(existsSync(agentDir), false, "the agent directory was removed");
 	return { root, agentDir, socket };
 }
 
