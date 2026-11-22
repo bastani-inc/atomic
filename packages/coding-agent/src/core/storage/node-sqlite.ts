@@ -92,7 +92,7 @@ import {
 	type SequencedStatement,
 	type SqliteSequence,
 } from "./statement-sequence.js";
-import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
+import { configureConnection, isSqliteBusy, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** Loaded at the first degradation only, so opening a database does not load debug output. */
 let debugOutput: Promise<typeof import("../debug.ts")> | undefined;
@@ -635,12 +635,14 @@ class SqliteHolderRecord {
 
 	/**
 	 * Creates the record off the event loop as a writable connection opens, removing exited processes' records on the
-	 * way, so that taking the lock only writes to it in place.
+	 * way, so that taking the lock only writes to it in place. `prepared`, the directory prepared for this record's
+	 * database while the connection opened (`prepareHolderDirectory`), stands for those first steps.
 	 */
-	async open(): Promise<void> {
+	async open(prepared?: Promise<HolderDirectory>): Promise<void> {
 		try {
-			await mkdir(this.directory, { recursive: true });
-			await removeExitedHolderRecords(this.directory, this.unavailable);
+			const directory = await (prepared ?? prepareHolderDirectory(this.directory));
+			for (const cause of directory.removalFailures) this.unavailable(cause);
+			if (directory.failure !== undefined) throw directory.failure;
 			this.descriptor = await openFile(this.path, "w");
 		} catch (cause) {
 			this.unavailable(cause);
@@ -938,6 +940,28 @@ const writeFileAt = promisify(write) as (descriptor: number, data: string, posit
 function holderPid(name: string): number | undefined {
 	const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/** A holder records' directory as `prepareHolderDirectory` left it: why it could not be used, if it could not. */
+interface HolderDirectory {
+	readonly failure?: unknown;
+	/** The exited processes' records it could not remove, each failure as it came. */
+	readonly removalFailures: readonly unknown[];
+}
+
+/**
+ * The first steps of opening a holder record in `directory`, which need no record yet: the directory made, and the
+ * records of exited processes removed. Never rejects.
+ */
+async function prepareHolderDirectory(directory: string): Promise<HolderDirectory> {
+	const removalFailures: unknown[] = [];
+	try {
+		await mkdir(directory, { recursive: true });
+		await removeExitedHolderRecords(directory, (cause) => removalFailures.push(cause));
+		return { removalFailures };
+	} catch (failure) {
+		return { failure, removalFailures };
+	}
 }
 
 /**
@@ -1525,9 +1549,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	/** Creates this connection's write-lock record; see `SqliteHolderRecord`. */
-	async openHolderRecord(): Promise<void> {
-		await this.holderRecord?.open();
+	/**
+	 * Creates this connection's write-lock record; see `SqliteHolderRecord`. `prepared` is its directory, made ready
+	 * while the connection opened.
+	 */
+	async openHolderRecord(prepared?: Promise<HolderDirectory>): Promise<void> {
+		await this.holderRecord?.open(prepared);
 	}
 
 	writerQueueStats(): WriterQueueStats {
@@ -1586,12 +1613,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		let notices: ReleaseNotices | undefined;
 		let holding = false;
 		try {
-			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named.
-			await this.holderRecord?.trying();
-			// Writers already waiting in other processes go first.
+			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named. The writers'
+			// queue is looked at meanwhile, so the two file system calls cost one wait for its threads instead of two.
 			const queue = this.writeQueue;
 			queue?.observe();
-			if (queue !== undefined && (await queue.contendedOffLoop())) {
+			const [, contended] = await Promise.all([this.holderRecord?.trying(), queue?.contendedOffLoop()]);
+			// Writers already waiting in other processes go first.
+			if (queue !== undefined && contended === true) {
 				const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
 				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}
@@ -2390,9 +2418,15 @@ export async function openNodeSqliteDatabase(
 	const targetFile = sqliteTargetFilePath(path);
 	let heldOpenLock: HeldOpenLock | undefined;
 	let connection: SqliteConnection | undefined;
+	let opening: NodeSqliteDatabase | undefined;
 	try {
 		if (!readOnly && targetFile !== undefined) await mkdir(dirname(targetFile), { recursive: true });
 		heldOpenLock = await acquireOpenLock(targetFile, readOnly, busyTimeoutMs);
+		// The directory of this connection's write-lock record, made ready while the connection opens. It is named after
+		// the file the open lock names, which is the database's own unless a link takes the open elsewhere.
+		const likely = readOnly || isInMemoryDatabase(path) ? undefined : heldOpenLock?.target;
+		const holders =
+			likely === undefined ? undefined : { target: likely, ready: prepareHolderDirectory(holderDirectory(likely)) };
 		// A file-backed connection runs on a thread of its own, so opening it, waiting for its locks and its synced
 		// commits never hold this thread (#5376).
 		const opened = isInMemoryDatabase(path)
@@ -2401,12 +2435,14 @@ export async function openNodeSqliteDatabase(
 		const configured = opened.connection;
 		connection = configured;
 		const exec = (sql: string) => send(configured, { kind: "exec", sql });
-		await exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
-		if (!readOnly) {
-			// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
-			await switchToWriteAheadLog(exec, busyTimeoutMs);
-			await exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-		}
+		// The connection's settings, in one request where nothing refuses them, go to its thread while the rest of the
+		// open waits for the file system's threads: they need nothing of each other.
+		const settings = Promise.resolve(
+			readOnly
+				? exec(`PRAGMA busy_timeout=${busyTimeoutMs}`)
+				: configureConnection(exec, busyTimeoutMs, "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON"),
+		);
+		settings.catch(() => {});
 		const location = opened.location;
 		const identity =
 			location === null
@@ -2433,15 +2469,22 @@ export async function openNodeSqliteDatabase(
 			gateFile === undefined ? undefined : { file: gateFile, role: "holds" },
 		);
 		Object.defineProperty(database, "readOnly", { value: readOnly });
-		if (!readOnly) await database.openHolderRecord();
+		opening = database;
+		const [configuredSettings] = await Promise.allSettled([
+			settings,
+			readOnly ? undefined : database.openHolderRecord(holders?.target === identity ? holders.ready : undefined),
+		]);
+		if (configuredSettings.status === "rejected") throw configuredSettings.reason;
 		return database;
 	} catch (cause) {
 		try {
-			if (connection !== undefined) await send(connection, { kind: "close" });
+			// A database already made closes its connection, its write-lock record and its locks, as `close` does.
+			if (opening !== undefined) await opening.close();
+			else if (connection !== undefined) await send(connection, { kind: "close" });
 		} catch {
 			// Preserve the opening failure if cleanup also fails.
 		} finally {
-			await releaseOpenLock(heldOpenLock);
+			if (opening === undefined) await releaseOpenLock(heldOpenLock);
 		}
 		throw unavailable(descriptor, cause);
 	}

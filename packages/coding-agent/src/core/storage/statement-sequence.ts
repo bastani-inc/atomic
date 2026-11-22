@@ -67,3 +67,57 @@ export function sequenceRunner(executor: SqliteExecutor): RunSequence | undefine
 	const { statements } = offered;
 	return executor.run === statements.run && executor.get === statements.get ? offered.run : undefined;
 }
+
+/**
+ * A write of a {@link statementBatch}: SQL text of one or more statements without parameters, run as `exec` runs it, or
+ * one statement with its parameters, run as `run` runs it. `false` and `undefined` stand for a write left out.
+ */
+export type BatchWrite = string | SqliteStatement | false | undefined;
+
+/**
+ * Runs `writes` in order, then `reads`, each read one call of `executor`, and resolves with what the reads return. The
+ * statements, and what each read sees, are those of running each after the one before: the first statement that fails
+ * ends the batch with its failure, before anything after it is written. Where `executor` runs its calls in the order
+ * they are made, a transaction of a SQLite file connection on a thread of its own (`sequenceRunner`), the writes go to
+ * the thread as one request and the reads behind it without waiting for its answer, so a batch waits for the thread
+ * once rather than once per statement: on a loaded machine that wait, not the statement, is what a setup or a small
+ * write costs.
+ * A read sent behind a write that then failed changes nothing; its answer is not used. Reads alone on a database (not
+ * a transaction) are made together too. Any other executor runs each statement in turn, as before.
+ */
+export async function statementBatch<const Reads extends readonly (() => Promise<unknown>)[]>(
+	executor: SqliteExecutor,
+	writes: readonly BatchWrite[],
+	reads: Reads,
+): Promise<{ -readonly [K in keyof Reads]: Awaited<ReturnType<Reads[K]>> }> {
+	type Values = { -readonly [K in keyof Reads]: Awaited<ReturnType<Reads[K]>> };
+	const statements = writes.filter(
+		(write): write is string | SqliteStatement => write !== false && write !== undefined,
+	);
+	const runSequence = sequenceRunner(executor);
+	// A database queues each call in the order it is made, so reads alone go together there too, as the open's probes do.
+	const together =
+		statements.length === 0
+			? runSequence !== undefined || "transaction" in executor
+			: runSequence !== undefined && statements.length <= MAX_SEQUENCE_REQUEST_STATEMENTS;
+	if (!together) {
+		for (const write of statements) {
+			if (typeof write === "string") await executor.exec(write);
+			else await executor.run(write.sql, ...write.params);
+		}
+		const values: unknown[] = [];
+		for (const read of reads) values.push(await read());
+		return values as Values;
+	}
+	const sequenced = statements.map(
+		(write): SequencedStatement => (typeof write === "string" ? { sql: write, params: [], script: true } : write),
+	);
+	const outcomes = await Promise.allSettled([
+		sequenced.length === 0 || runSequence === undefined ? Promise.resolve(0) : runSequence({ statements: sequenced }),
+		...reads.map((read) => read()),
+	]);
+	// The first failure in the order the statements run, as when each waited for the one before.
+	const failed = outcomes.find((outcome) => outcome.status === "rejected");
+	if (failed !== undefined) throw failed.reason;
+	return outcomes.slice(1).map((outcome) => (outcome as PromiseFulfilledResult<unknown>).value) as Values;
+}
