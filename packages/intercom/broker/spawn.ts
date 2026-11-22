@@ -661,7 +661,7 @@ const WINDOWS_BROKER_RELAY_SCRIPT = [
   '    }',
   '    const fd = fs.openSync(req.stderrLogPath, "a");',
   '    try {',
-  '      const c = cp.spawn(req.file, req.args, { detached: !req.noWindow, windowsHide: true, cwd: req.cwd, env: req.env, stdio: ["ignore", "ignore", fd], ...(req.verbatimArguments ? { windowsVerbatimArguments: true } : {}) });',
+  '      const c = cp.spawn(req.file, req.args, { detached: true, windowsHide: true, cwd: req.cwd, env: req.env, stdio: ["ignore", "ignore", fd], ...(req.verbatimArguments ? { windowsVerbatimArguments: true } : {}) });',
   '      c.once("spawn", () => {',
   '        c.unref();',
   '        let started = null;',

@@ -213,7 +213,7 @@ export function runInternalIntercomBrokerRelay(): void {
 			const fd = openSync(req.stderrLogPath, "a");
 			try {
 				const child = spawn(req.file, req.args, {
-					detached: !req.noWindow,
+					detached: true,
 					windowsHide: true,
 					cwd: req.cwd,
 					env: req.env,
