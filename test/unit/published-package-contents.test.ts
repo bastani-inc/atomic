@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { parse } from "@babel/parser";
 import { test } from "vitest";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
+import { codingAgentDependencyClosure } from "../helpers/coding-agent-dependency-closure.js";
 import { npmSpawnPrefix, spawnSyncCollect } from "../helpers/runtime.js";
 
 const DIST = "packages/coding-agent/dist";
@@ -163,13 +164,9 @@ builtTest("@bastani/atomic depends on exactly the packages its published files l
 	);
 	const undeclared = [...loaded].filter(([name]) => !declared.has(name)).map(([name, file]) => `${name} (${file})`);
 	// A dependency that a loaded package requires is installed anyway; declaring it pins its version.
-	const shrinkwrap = JSON.parse(readFileSync("packages/coding-agent/npm-shrinkwrap.json", "utf8")) as {
-		packages: Record<string, { dependencies?: Record<string, string> }>;
-	};
-	const shrinkwrapPackages = shrinkwrap.packages;
-	const required = new Set(
-		[...loaded.keys()].flatMap((name) => Object.keys(shrinkwrapPackages[`node_modules/${name}`]?.dependencies ?? {})),
-	);
+	const installed = new Map<string, { dependencies?: Record<string, string> }>();
+	for (const { name, entry } of codingAgentDependencyClosure()) if (!installed.has(name)) installed.set(name, entry);
+	const required = new Set([...loaded.keys()].flatMap((name) => Object.keys(installed.get(name)?.dependencies ?? {})));
 	const notLoaded = [...declared].filter((name) => !loaded.has(name) && !named.has(name) && !required.has(name));
 	const unused = notLoaded.filter((name) => !KEPT_FOR_IN_PLACE_UPDATE.has(name));
 	// A package kept for in-place updates is one the published files no longer load, and still a dependency.

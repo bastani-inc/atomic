@@ -213,12 +213,12 @@ try {
 			"validator must come from the npm install",
 		);
 		const validator = JSON.parse(readFileSync(validatorPackage, "utf8"));
-		const shrinkwrap = JSON.parse(readFileSync(join(dirname(atomicPackage), "npm-shrinkwrap.json"), "utf8"));
+		const atomic = JSON.parse(readFileSync(atomicPackage, "utf8"));
 		assert.equal(validator.name, "@bastani/atomic-ai");
 		assert.equal(
 			validator.version,
-			shrinkwrap.packages["node_modules/@bastani/atomic-ai"].version,
-			"pi-agent-core must use the published shrinkwrap validator",
+			atomic.dependencies["@bastani/atomic-ai"],
+			"pi-agent-core must use the validator release Atomic pins",
 		);
 		const { Type } = await import("@bastani/atomic-ai");
 		const { createAssistantMessageEventStream, getModel } = await import("@bastani/atomic-ai/compat");
