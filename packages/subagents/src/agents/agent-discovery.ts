@@ -14,6 +14,7 @@ import {
 	getProjectAgentSettingsPath,
 	getProjectAgentSettingsPaths,
 	getUserAgentDirs,
+	getUserAgentReadDirs,
 	getUserAgentSettingsPath,
 	getUserAgentSettingsPaths,
 	resolveNearestProjectAgentDirs,
@@ -105,8 +106,6 @@ export async function discoverAgents(
 	scope: AgentScope,
 	options: AgentDiscoveryOptions,
 ): Promise<AgentDiscoveryResult> {
-	const userDirOld = getUserAgentDirs();
-	const userDirNew = path.join(os.homedir(), ".agents");
 	const {
 		readDirs: projectAgentDirs,
 		preferredDir: projectAgentsDir,
@@ -127,9 +126,7 @@ export async function discoverAgents(
 		projectSettingsPath,
 	);
 
-	const userAgentsOld = scope === "project" ? [] : await loadAgentsFromDirs(userDirOld, "user");
-	const userAgentsNew = scope === "project" ? [] : await loadAgentsFromDir(userDirNew, "user");
-	const userAgents = [...userAgentsOld, ...userAgentsNew];
+	const userAgents = scope === "project" ? [] : await loadAgentsFromDirs(getUserAgentReadDirs(), "user");
 
 	const projectAgents = scope === "user" ? [] : await loadAgentsFromDirs(projectAgentDirs, "project");
 	const merged = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents);

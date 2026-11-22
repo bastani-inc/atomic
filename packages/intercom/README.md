@@ -2,7 +2,7 @@
 
 `@bastani/intercom` is Atomic's bundled extension for direct messaging between Atomic sessions on one machine, or across machines that share storage. Send context, findings, or requests from one session to another, or let agents coordinate directly.
 
-See the [Intercom guide](../coding-agent/docs/intercom.md), [Intercom operations](../coding-agent/docs/intercom/operations.md), and [Intercom reference](../coding-agent/docs/intercom/reference.md) for full details.
+See the [Intercom guide](https://docs.bastani.ai/intercom), [Intercom operations](https://docs.bastani.ai/intercom/operations), and [Intercom reference](https://docs.bastani.ai/intercom/reference) for full details.
 
 ## Overview
 
