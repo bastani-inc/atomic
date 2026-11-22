@@ -529,9 +529,13 @@ export default function (atomic: ExtensionAPI) {
 
 ## ExtensionAPI methods
 
+<a id="pi-on-event-handler" />
+
 ### atomic.on(event, handler)
 
 Subscribe to events. See [Events](/extensions/events#events) for event types and return values.
+
+<a id="pi-registertool-definition" />
 
 ### atomic.registerTool(definition)
 
@@ -610,6 +614,8 @@ atomic.registerTool({
 
 Stop promptly when `signal` aborts because the user interrupted the turn or the session is stopping. A call that has not returned 10 seconds after the abort (`ATOMIC_TOOL_ABORT_GRACE_MS`) receives an `Operation aborted` error result so the turn can finish and later tool calls stop waiting. Its late return value or error is discarded rather than added to the transcript or sent to the model. A call still waiting for an earlier call when the turn is interrupted never starts and gets `Operation aborted` immediately.
 
+<a id="pi-sendmessage-message-options" />
+
 ### atomic.sendMessage(message, options?)
 
 Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(atomic.sendMessage(...))` when admission or routing failure must be observed. Atomic's `AgentSession` runtime returns an admission receipt that settles once the message enters the local queue, without waiting for the resulting model turn to finish.
@@ -641,6 +647,8 @@ Options:
 
 A command can answer with `sendMessage()`, `sendMessages()`, or `sendUserMessage()` without awaiting it. In print mode (`-p`) and JSON event stream mode, Atomic waits for messages sent before the command handler returns and for the turns they start before printing the result or running the next prompt. Messages sent later from a timer or background task are not waited for. With text output (`-p` without `--mode json`), a command whose messages could not be saved and that sent nothing else prints nothing and exits with status `1`.
 
+<a id="pi-sendmessages-messages-options" />
+
 ### atomic.sendMessages(messages, options?)
 
 Atomically admit a batch of custom messages in array order. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(atomic.sendMessages(...))` when admission or routing failure must be observed. The promise is an admission receipt and does not wait for the resulting model turn. Admission is indivisible, which keeps a prelude and terminal notice contiguous without globally serializing other extension work.
@@ -653,6 +661,8 @@ atomic.sendMessages([
 ```
 
 The batch supports `triggerTurn`, `excludeFromContext`, and `deliverAs: "steer" | "followUp" | "nextTurn"`. Interrupt delivery remains a single-message operation. Each message follows the `atomic.sendMessage()` rules; if any message breaks them, the call throws a `TypeError` and none are sent.
+
+<a id="pi-sendusermessage-content-options" />
 
 ### atomic.sendUserMessage(content, options?)
 
@@ -687,6 +697,8 @@ When idle, the message is sent immediately and triggers a new turn. When streami
 
 See [send-user-message.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/send-user-message.ts) for a complete example.
 
+<a id="pi-appendentry-customtype-data" />
+
 ### atomic.appendEntry(customType, data?)
 
 Persist extension state (does NOT participate in LLM context). `customType` must be a string; otherwise the returned promise rejects with a `TypeError` and nothing is saved.
@@ -708,6 +720,8 @@ Await `atomic.appendEntry` before using the new entry. The promise resolves afte
 
 During a transactional reload's `session_start` handler, `atomic.appendEntry`, `atomic.setSessionName`, and `atomic.setLabel` stage their writes instead. Awaiting them confirms staging; the writes and their notifications are published in call order only after reload succeeds. Rejected reloads discard these changes. Do not depend on reading the staged changes back during that handler.
 
+<a id="pi-registerentryrenderer-customtype-renderer" />
+
 ### atomic.registerEntryRenderer(customType, renderer)
 
 Register a TUI renderer for durable custom entries created by `atomic.appendEntry()`. These entries render in the transcript but do not enter model context. Ctrl+O, or a click on the entry in fullscreen mode, toggles `expanded`.
@@ -723,6 +737,8 @@ atomic.registerEntryRenderer("status-card", (entry, { expanded }, theme) =>
 ```
 
 
+<a id="pi-setsessionname-name" />
+
 ### atomic.setSessionName(name)
 
 Set the session display name (shown in session selector instead of first message).
@@ -730,6 +746,8 @@ Set the session display name (shown in session selector instead of first message
 ```typescript
 await atomic.setSessionName("Refactor auth module");
 ```
+
+<a id="pi-getsessionname" />
 
 ### atomic.getSessionName()
 
@@ -741,6 +759,8 @@ if (name) {
   console.log(`Session: ${name}`);
 }
 ```
+
+<a id="pi-setlabel-entryid-label" />
 
 ### atomic.setLabel(entryId, label)
 
@@ -758,6 +778,8 @@ const label = ctx.sessionManager.getLabel(entryId);
 ```
 
 Labels persist in the session and survive restarts. Use them to mark important points (turns, checkpoints) in the conversation tree.
+
+<a id="pi-registercommand-name-options" />
 
 ### atomic.registerCommand(name, options)
 
@@ -794,6 +816,8 @@ atomic.registerCommand("deploy", {
 });
 ```
 
+<a id="pi-getcommands" />
+
 ### atomic.getCommands()
 
 Get the slash commands available for invocation via `prompt` in the current session. Includes extension commands, prompt templates, and skill commands.
@@ -827,15 +851,21 @@ Use `sourceInfo` as the canonical provenance field. Do not infer ownership from 
 Built-in interactive commands (like `/model` and `/settings`) are not included here. They are handled only in interactive
 mode and would not execute if sent via `prompt`.
 
+<a id="pi-registermessagerenderer-customtype-renderer" />
+
 ### atomic.registerMessageRenderer(customType, renderer)
 
 Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` when that changes what the renderer draws, unless its in-process component handles the click itself. See [Custom UI](/extensions/ui#custom-ui).
+
+<a id="pi-registertoolrenderer-resolver" />
 
 ### atomic.registerToolRenderer(resolver)
 
 Register a resolver `(toolName, next) => renderers` that supplies `renderCall` and `renderResult` (and optional `renderShell`) for any tool in the interactive transcript and HTML exports, including MCP tools in resumed sessions before their server connects.
 
 Resolvers run in extension load order. Calling `next()` returns the remaining resolvers' choice and then the registered tool's own renderers, so `next() ?? myRenderers` fills in only when no renderer exists. Extension `Image` components returned by tool renderers also display JPEG, GIF, and WebP images automatically on Kitty-protocol terminals. See [Custom rendering](/extensions/authoring#custom-rendering).
+
+<a id="pi-registermarkdowntransformer-transformer" />
 
 ### atomic.registerMarkdownTransformer(transformer)
 
@@ -874,6 +904,8 @@ atomic.registerMarkdownTransformer((markdown) => markdown.replaceAll(":warning:"
 
 If a transformer throws, Atomic keeps the Markdown produced so far and continues with the next transformer. The hook never changes the original message, session transcript, or model context. It runs for new messages, assistant streaming updates, restored session messages, and terminal-width changes, so keep transformers synchronous and fast. Isolated-engine rendering does not run host-side display transformers.
 
+<a id="pi-registershortcut-shortcut-options" />
+
 ### atomic.registerShortcut(shortcut, options)
 
 Register a keyboard shortcut. See [Keybindings](/keybindings) for the shortcut format and built-in keybindings.
@@ -888,6 +920,8 @@ atomic.registerShortcut("ctrl+shift+p", {
 ```
 
 Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it.
+
+<a id="pi-registerflag-name-options" />
 
 ### atomic.registerFlag(name, options)
 
@@ -905,6 +939,8 @@ if (atomic.getFlag("plan")) {
   // Plan mode enabled
 }
 ```
+
+<a id="pi-registeragentpanelsource-source" />
 
 ### atomic.registerAgentPanelSource(source)
 
@@ -978,6 +1014,8 @@ The exported types from `@bastani/atomic` are `AgentPanelSource`, `AgentPanelIte
 
 The same rows are also available outside extensions: `agentPanelItems(session)` returns the session's tasks and every source's items; `subscribeAgentPanel(session, listener)` notifies on any change (including after reload); `openAgentPanelItem`, `stopAgentPanelItem`, and `answerAgentPanelItem` run actions by item ID; `dismissedAgentPanelItems(session)` returns dismissed IDs; and `agentPanelTaskId(id)` returns the task ID of a `task:` item. Obtain the item from `agentPanelItems(session)` before acting on it, and pass the question's captured `AgentPanelAnswerOptions` to `answerAgentPanelItem()`.
 
+<a id="pi-exec-command-args-options" />
+
 ### atomic.exec(command, args, options?)
 
 Execute a command without a shell.
@@ -996,6 +1034,8 @@ Process-tree termination rules:
 - **Timeout, abort, or `maxBuffer`.** Atomic terminates the command and child processes it started. On Linux and macOS, the command and its process group receive `SIGTERM`, followed by `SIGKILL` 5 seconds later; processes that started their own session (`setsid`) keep running. On Windows, descendant processes end immediately before the command itself (descendants whose parent already exited cannot be found).
 - **Quitting the interactive app.** Running commands and their process groups receive `SIGTERM` followed by `SIGKILL` after 1 second (immediate termination on Windows) so they cannot delay `session_shutdown` handlers. Commands started inside a `session_shutdown` handler are not terminated this way. Print mode and SDK `dispose()` wait for running commands instead.
 - **Forced exit (`SIGKILL` to Atomic).** The interactive engine kills running commands and their process groups with `SIGKILL`. On Linux, the OS also ends direct child commands (though not their descendants) when the owning Atomic process exits. On macOS, a command running in Atomic's own process keeps running. On Windows, the command ends with Atomic, while its children keep running unless the command placed them in its own job object (as Node.js commands do).
+
+<a id="pi-getactivetools-/-pi-getalltools-/-pi-setactivetools-names" />
 
 ### atomic.getActiveTools() / atomic.getAllTools() / atomic.setActiveTools(names)
 
@@ -1024,6 +1064,8 @@ Typical `sourceInfo.source` values:
 - `sdk` for tools passed via `createAgentSession({ customTools })`
 - extension source metadata for tools registered by extensions
 
+<a id="pi-setmodel-model" />
+
 ### atomic.setModel(model)
 
 Set the model for the current session. The change is recorded in session history and restored when that session is resumed, but it does not change the configured `defaultProvider` or `defaultModel` used by new sessions. Returns `false` if authentication is not configured for the model's provider. See [Custom models](/models) for configuring custom models.
@@ -1038,6 +1080,8 @@ if (model) {
 }
 ```
 
+<a id="pi-getthinkinglevel-/-pi-setthinkinglevel-level" />
+
 ### atomic.getThinkingLevel() / atomic.setThinkingLevel(level)
 
 Get the current thinking level. Level is clamped to model capabilities (non-reasoning models always use `"off"`; `"xhigh"` and `"max"` require model support). Changes emit `thinking_level_select`.
@@ -1048,6 +1092,8 @@ Get the current thinking level. Level is clamped to model capabilities (non-reas
 const current = atomic.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 await atomic.setThinkingLevel("high");
 ```
+
+<a id="pi-events" />
 
 ### atomic.events
 
@@ -1067,6 +1113,8 @@ If you implement an `ExtensionRuntime` for an embedded host, provide `trackEvent
 ### Native providers
 
 In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@bastani/atomic-ai` with `atomic.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
+
+<a id="pi-registerprovider-name-config" />
 
 ### atomic.registerProvider(name, config)
 
@@ -1164,6 +1212,8 @@ Config options:
 
 See [Custom providers](/custom-provider) for custom streaming APIs, OAuth details, and the model definition reference.
 
+<a id="pi-unregisterprovider-name" />
+
 ### atomic.unregisterProvider(name)
 
 Remove a previously registered provider and its models. Built-in models that were overridden by the provider are restored. Calling this for an unregistered name is a no-op.
@@ -1178,6 +1228,8 @@ atomic.registerCommand("my-setup-teardown", {
   },
 });
 ```
+
+<a id="pi-registermcpserver-name-config" />
 
 ### atomic.registerMcpServer(name, config)
 
