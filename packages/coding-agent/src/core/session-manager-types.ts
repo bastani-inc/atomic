@@ -112,7 +112,7 @@ export type LatestBranchSetting<T extends SessionEntry> =
 	| { readonly status: "none" }
 	| { readonly status: "not-held" };
 
-/** Per-axis result of `SessionManager.getLatestBranchSettings(afterSeq)`. */
+/** Per-axis result of `SessionManager.getLatestBranchSettingsWithProvenance(afterSeq)`. */
 export interface LatestBranchSettings {
 	readonly model: LatestBranchSetting<ModelChangeEntry>;
 	readonly thinkingLevel: LatestBranchSetting<ThinkingLevelChangeEntry>;

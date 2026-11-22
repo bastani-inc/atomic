@@ -398,9 +398,10 @@ function isRootCompleteBranch(branch: readonly SessionEntry[], leafId: string | 
 
 /**
  * Lowest sequence position from which a reopened manager can vouch for one setting axis (`model_change` or
- * `thinking_level_change`): `1` means the entire active branch is covered (either via full history, confirmed absence,
- * or a verified retained setting before the window); `tailFrom` covers the contiguous active-branch tail; `lastSeq + 1`
- * fails closed when the store explicitly reports `not-held` or contradicts the returned entries.
+ * `thinking_level_change`): `1` means the entire active branch is covered (either via full history, an older/custom
+ * store omitting `retainedSettings`, confirmed absence, or a verified retained setting before the window); `tailFrom`
+ * covers the contiguous active-branch tail; `lastSeq + 1` fails closed when the store explicitly reports `not-held` or
+ * contradicts the returned entries.
  */
 function vouchedFromForResumeAxis(
 	entryType: "model_change" | "thinking_level_change",
@@ -413,7 +414,7 @@ function vouchedFromForResumeAxis(
 ): number {
 	if (leafId === null) return 1;
 	if (hasFullHistory && retained?.status !== "not-held") return 1;
-	if (retained === undefined) return tailFrom;
+	if (retained === undefined) return 1;
 	if (retained.status === "not-held") return lastSeq + 1;
 	if (retained.status === "none") {
 		return path.some(({ entry }) => entry.type === entryType) ? lastSeq + 1 : 1;
@@ -939,13 +940,36 @@ export class SessionManager {
 
 	/**
 	 * @internal The latest model change and the latest thinking-level change on the active branch after position
+	 * `afterSeq`, each with its position; one the branch has none of after it (or does not hold) is absent. Answered
+	 * from memory, never from the store. Kept in the 0.10.4 shape for compatibility; prefer
+	 * {@link getLatestBranchSettingsWithProvenance} when callers must distinguish confirmed absence from `"not-held"`.
+	 */
+	getLatestBranchSettings(afterSeq = 0): {
+		readonly model?: { readonly entry: ModelChangeEntry; readonly seq: number };
+		readonly thinkingLevel?: { readonly entry: ThinkingLevelChangeEntry; readonly seq: number };
+	} {
+		const { model, thinkingLevel } = this.latestBranchSettingsWithProvenance(afterSeq);
+		return {
+			...(model.status === "found" ? { model: { entry: model.entry, seq: model.seq } } : {}),
+			...(thinkingLevel.status === "found"
+				? { thinkingLevel: { entry: thinkingLevel.entry, seq: thinkingLevel.seq } }
+				: {}),
+		};
+	}
+
+	/**
+	 * @internal The latest model change and the latest thinking-level change on the active branch after position
 	 * `afterSeq`, each reported as `"found"` (with its entry and position), `"none"` (confirmed absent after `afterSeq`),
-	 * or `"not-held"` (partial history or an unvouched resume plan omitted entries that could carry a change after
+	 * or `"not-held"` (partial history or a resume plan explicitly omitted entries that could carry a change after
 	 * `afterSeq`). Answered from memory, never from the store. A session opened through Atomic's resume plan retains
 	 * both axes (`setting:` state + `SessionResume.retainedSettings`), so normal full and tail resumes never report
-	 * `"not-held"`.
+	 * `"not-held"`; older or custom stores that omit `retainedSettings` preserve pre-existing behavior.
 	 */
-	getLatestBranchSettings(afterSeq = 0): LatestBranchSettings {
+	getLatestBranchSettingsWithProvenance(afterSeq = 0): LatestBranchSettings {
+		return this.latestBranchSettingsWithProvenance(afterSeq);
+	}
+
+	private latestBranchSettingsWithProvenance(afterSeq: number): LatestBranchSettings {
 		if (this.leafId === null) {
 			return { model: { status: "none" }, thinkingLevel: { status: "none" } };
 		}

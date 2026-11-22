@@ -263,7 +263,33 @@ test("when a partial resume omits thinkingLevel provenance, restore uses retaine
 	}
 });
 
-test("when a custom partial resume omits retainedSettings and leaves a stale pre-window model, restore keeps launch settings and emits one diagnostic via the host reporter when bound", async () => {
+test("a 0.10.4 custom SessionStore omitting retainedSettings keeps main's exact behavior and emits zero diagnostics", async () => {
+	const cwd = tempDir();
+	const { ctx, deps, observedOptions, storeReads } = await setupCompactedChild(cwd, (resume) => {
+		const { retainedSettings: _omitted, ...legacyResume } = resume;
+		return legacyResume;
+	});
+	const warnings: string[] = [];
+	const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args) => {
+		warnings.push(args.map(String).join(" "));
+	});
+	try {
+		const outcome = await restoreSubagentChild(deps, ctx, "prov1:0");
+		assert.equal(outcome.kind, "restored");
+		assert.equal(observedOptions.length, 1);
+		assert.equal(
+			observedOptions[0]!.modelOverride,
+			"anthropic/claude-opus-5:high",
+			"preserves the user's post-launch model and thinking changes from a 0.10.4 custom store",
+		);
+		assert.deepEqual(warnings, []);
+		assert.deepEqual(storeReads(), { readRangeCalls: 0, loadCalls: 0 });
+	} finally {
+		warnSpy.mockRestore();
+	}
+});
+
+test("when a partial resume explicitly marks both axes not-held and leaves a stale pre-window model, restore keeps launch settings and emits one diagnostic via the host reporter when bound", async () => {
 	const cwd = tempDir();
 	let staleEntry: SessionResume["branch"][number]["entry"] | undefined;
 	const { ctx, deps, observedOptions, backingStore, childSessionId } = await setupCompactedChild(cwd, (resume) => ({
@@ -274,7 +300,10 @@ test("when a custom partial resume omits retainedSettings and leaves a stale pre
 			),
 			...(staleEntry ? [{ seq: 1, entry: staleEntry, onBranch: true }] : []),
 		],
-		retainedSettings: undefined,
+		retainedSettings: {
+			model: { status: "not-held" },
+			thinkingLevel: { status: "not-held" },
+		},
 	}));
 	staleEntry = (await backingStore.load(childSessionId)).entries[0];
 
@@ -428,25 +457,19 @@ test("a full (uncompacted) child resume restores post-launch settings with zero 
 	}
 });
 
-test("remains compatible with an older getLatestBranchSettings shape lacking status fields", async () => {
+test("remains compatible with a 0.10.4 session manager that has only getLatestBranchSettings (no WithProvenance)", async () => {
 	const cwd = tempDir();
 	const { ctx, deps, observedOptions } = await setupCompactedChild(cwd);
-	const original = SessionManager.prototype.getLatestBranchSettings;
+	const originalWithProvenance = SessionManager.prototype.getLatestBranchSettingsWithProvenance;
 	const warnings: string[] = [];
 	const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args) => {
 		warnings.push(args.map(String).join(" "));
 	});
-	vi.spyOn(SessionManager.prototype, "getLatestBranchSettings").mockImplementation(function (
-		this: SessionManager,
-		afterSeq?: number,
-	) {
-		const res = original.call(this, afterSeq);
-		return {
-			...(res.model.status === "found" ? { model: { entry: res.model.entry, seq: res.model.seq } } : {}),
-			...(res.thinkingLevel.status === "found"
-				? { thinkingLevel: { entry: res.thinkingLevel.entry, seq: res.thinkingLevel.seq } }
-				: {}),
-		} as unknown as ReturnType<SessionManager["getLatestBranchSettings"]>;
+	// Simulate a 0.10.4 SessionManager that only implements getLatestBranchSettings (returning { model?, thinkingLevel? }).
+	Object.defineProperty(SessionManager.prototype, "getLatestBranchSettingsWithProvenance", {
+		value: undefined,
+		configurable: true,
+		writable: true,
 	});
 	try {
 		const outcome = await restoreSubagentChild(deps, ctx, "prov1:0");
@@ -454,21 +477,31 @@ test("remains compatible with an older getLatestBranchSettings shape lacking sta
 		assert.equal(observedOptions[0]!.modelOverride, "anthropic/claude-opus-5:high");
 		assert.deepEqual(warnings, []);
 	} finally {
-		vi.restoreAllMocks();
+		Object.defineProperty(SessionManager.prototype, "getLatestBranchSettingsWithProvenance", {
+			value: originalWithProvenance,
+			configurable: true,
+			writable: true,
+		});
 		warnSpy.mockRestore();
 	}
 });
 
-test("remains compatible with an external session manager lacking getLatestBranchSettings", async () => {
+test("remains compatible with an external session manager lacking both getLatestBranchSettings methods", async () => {
 	const cwd = tempDir();
 	const { ctx, deps, observedOptions } = await setupCompactedChild(cwd);
 	const original = SessionManager.prototype.getLatestBranchSettings;
+	const originalWithProvenance = SessionManager.prototype.getLatestBranchSettingsWithProvenance;
 	const warnings: string[] = [];
 	const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args) => {
 		warnings.push(args.map(String).join(" "));
 	});
-	// Simulate an external SDK SessionManager without getLatestBranchSettings.
+	// Simulate an external SDK SessionManager without either method.
 	Object.defineProperty(SessionManager.prototype, "getLatestBranchSettings", {
+		value: undefined,
+		configurable: true,
+		writable: true,
+	});
+	Object.defineProperty(SessionManager.prototype, "getLatestBranchSettingsWithProvenance", {
 		value: undefined,
 		configurable: true,
 		writable: true,
@@ -481,6 +514,11 @@ test("remains compatible with an external session manager lacking getLatestBranc
 	} finally {
 		Object.defineProperty(SessionManager.prototype, "getLatestBranchSettings", {
 			value: original,
+			configurable: true,
+			writable: true,
+		});
+		Object.defineProperty(SessionManager.prototype, "getLatestBranchSettingsWithProvenance", {
+			value: originalWithProvenance,
 			configurable: true,
 			writable: true,
 		});

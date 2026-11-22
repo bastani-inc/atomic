@@ -462,22 +462,24 @@ function reportSettingsNotHeldDiagnostic(
 /**
  * The latest model and thinking level the child's own session changed to after its launch, each on its own. They are
  * read from memory, never from the session's saved history: a session that holds only part of its history still holds
- * the latest change of each on its branch when its resume vouches for it, which `getLatestBranchSettings` reports as
- * `found | none | not-held` per axis. On `not-held`, the restore keeps the launch record's settings for that axis and
- * emits a diagnostic. A session without `getLatestBranchSettings` (an SDK caller's) is searched from its launch on.
+ * the latest change of each on its branch when its resume retains it, which `getLatestBranchSettingsWithProvenance`
+ * reports as `found | none | not-held` per axis. On `not-held`, the restore keeps the launch record's settings for
+ * that axis and emits a diagnostic. Older sessions with only `getLatestBranchSettings` fall back to that method, and
+ * external sessions without either (an SDK caller's) are searched from their launch on.
  */
 async function settingsChangedSinceLaunch(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 ): Promise<{ readonly model?: string; readonly thinking?: string }> {
 	let afterLaunch: ReturnType<SessionManager["getBranch"]>;
-	if (
-		typeof sessionManager.getLatestBranchSettings === "function" &&
-		typeof sessionManager.getEntrySeq === "function"
-	) {
+	const hasWithProvenance = typeof sessionManager.getLatestBranchSettingsWithProvenance === "function";
+	const hasLegacy = typeof sessionManager.getLatestBranchSettings === "function";
+	if ((hasWithProvenance || hasLegacy) && typeof sessionManager.getEntrySeq === "function") {
 		const launchSeq = await launchSeqOf(sessionManager, record);
 		if (launchSeq !== undefined) {
-			const raw = sessionManager.getLatestBranchSettings(launchSeq);
+			const raw = hasWithProvenance
+				? sessionManager.getLatestBranchSettingsWithProvenance(launchSeq)
+				: sessionManager.getLatestBranchSettings(launchSeq);
 			const model = normalizeBranchSetting(raw.model);
 			const thinkingLevel = normalizeBranchSetting(raw.thinkingLevel);
 			const notHeldAxes: ("model" | "thinking level")[] = [];

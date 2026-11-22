@@ -66,8 +66,17 @@ function wrapReadResume(store: SessionStore, transform: (resume: SessionResume) 
 	});
 }
 
-/** Readable summary of the three-way per-axis result. */
-function described(settings: ReturnType<SessionManager["getLatestBranchSettings"]>) {
+/** Readable summary of the 0.10.4 `getLatestBranchSettings` shape. */
+function describedLegacy(settings: ReturnType<SessionManager["getLatestBranchSettings"]>) {
+	return {
+		model: settings.model && `${settings.model.entry.provider}/${settings.model.entry.modelId}@${settings.model.seq}`,
+		thinkingLevel:
+			settings.thinkingLevel && `${settings.thinkingLevel.entry.thinkingLevel}@${settings.thinkingLevel.seq}`,
+	};
+}
+
+/** Readable summary of the three-way `getLatestBranchSettingsWithProvenance` result. */
+function describedProvenance(settings: ReturnType<SessionManager["getLatestBranchSettingsWithProvenance"]>) {
 	return {
 		model:
 			settings.model.status === "found"
@@ -82,7 +91,7 @@ function described(settings: ReturnType<SessionManager["getLatestBranchSettings"
 
 describe("the latest settings a session holds for its active branch", () => {
 	for (const kind of ["memory", "jsonl", "sqlite"] as const) {
-		test(`are held with three-way provenance after a context clear and a reopen, whatever the window (${kind})`, async () => {
+		test(`keep the 0.10.4 getLatestBranchSettings contract and carry three-way provenance after a context clear and reopen (${kind})`, async () => {
 			const session = await newSession(kind);
 			await session.appendModelChange("anthropic", "first");
 			await session.appendThinkingLevelChange("high");
@@ -95,7 +104,11 @@ describe("the latest settings a session holds for its active branch", () => {
 			const thinkingSeq = session.getEntrySeq(
 				session.getBranch().find((e) => e.type === "thinking_level_change")!.id,
 			)!;
-			const expected = {
+			const expectedLegacy = {
+				model: `anthropic/second@${modelSeq}`,
+				thinkingLevel: `high@${thinkingSeq}`,
+			};
+			const expectedProvenance = {
 				model: `found:anthropic/second@${modelSeq}`,
 				thinkingLevel: `found:high@${thinkingSeq}`,
 			};
@@ -109,10 +122,19 @@ describe("the latest settings a session holds for its active branch", () => {
 			const opened = await reopen(kind, session);
 
 			assert.ok(opened.getHeldTail().fromSeq > modelSeq + 1, "both changes are before the window it holds");
-			assert.deepEqual(described(session.getLatestBranchSettings()), expected);
-			assert.deepEqual(described(opened.getLatestBranchSettings()), expected);
-			// After a position, only what changed after it: genuinely "none", never "not-held".
-			assert.deepEqual(described(opened.getLatestBranchSettings(modelSeq)), {
+			// 0.10.4 API contract: exact `{ model?: { entry, seq }, thinkingLevel?: { entry, seq } }` shape (no `status`).
+			const legacyLive = session.getLatestBranchSettings();
+			const legacyOpened = opened.getLatestBranchSettings();
+			assert.equal("status" in (legacyOpened.model ?? {}), false, "0.10.4 shape has no status property");
+			assert.equal("status" in (legacyOpened.thinkingLevel ?? {}), false, "0.10.4 shape has no status property");
+			assert.deepEqual(describedLegacy(legacyLive), expectedLegacy);
+			assert.deepEqual(describedLegacy(legacyOpened), expectedLegacy);
+			assert.deepEqual(opened.getLatestBranchSettings(modelSeq), {});
+
+			// Three-way provenance API: exact `found | none | not-held` per axis.
+			assert.deepEqual(describedProvenance(session.getLatestBranchSettingsWithProvenance()), expectedProvenance);
+			assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance()), expectedProvenance);
+			assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(modelSeq)), {
 				model: "none",
 				thinkingLevel: "none",
 			});
@@ -128,10 +150,47 @@ describe("the latest settings a session holds for its active branch", () => {
 		await session.branch(forkPoint);
 		await say(session, "two");
 
-		const settings = described(session.getLatestBranchSettings());
+		const legacy = describedLegacy(session.getLatestBranchSettings());
+		assert.match(legacy.model ?? "", /^anthropic\/first@/);
+		assert.equal(legacy.thinkingLevel, undefined);
 
-		assert.match(settings.model, /^found:anthropic\/first@/);
-		assert.equal(settings.thinkingLevel, "none");
+		const provenance = describedProvenance(session.getLatestBranchSettingsWithProvenance());
+		assert.match(provenance.model, /^found:anthropic\/first@/);
+		assert.equal(provenance.thinkingLevel, "none");
+	});
+
+	test("a 0.10.4 custom SessionStore omitting retainedSettings keeps main's exact behavior across compaction", async () => {
+		const session = await newSession("memory");
+		const launchId = await say(session, "launch");
+		const modelId = await session.appendModelChange("anthropic", "custom-store-model");
+		const thinkingId = await session.appendThinkingLevelChange("xhigh");
+		await say(session, "work");
+		await session.appendCompaction("cleared", null, 300, CLEARED);
+		await say(session, "after clear");
+		const launchSeq = (await session.findEntrySeq(launchId))!;
+		const modelSeq = (await session.findEntrySeq(modelId))!;
+		const thinkingSeq = (await session.findEntrySeq(thinkingId))!;
+
+		// Valid 0.10.4 custom store: retains settings in `state` across compaction, but does not emit `retainedSettings`.
+		const customStore = wrapReadResume(session.getSessionStore(), (resume) => {
+			const { retainedSettings: _omitted, ...legacyResume } = resume;
+			return legacyResume;
+		});
+		const opened = await SessionManager.open(customStore, session.getSessionId(), undefined, { history: "tail" });
+
+		assert.ok(opened.getHeldTail().fromSeq > thinkingSeq, "both settings lie before the held window");
+		assert.deepEqual(describedLegacy(opened.getLatestBranchSettings(launchSeq)), {
+			model: `anthropic/custom-store-model@${modelSeq}`,
+			thinkingLevel: `xhigh@${thinkingSeq}`,
+		});
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(launchSeq)), {
+			model: `found:anthropic/custom-store-model@${modelSeq}`,
+			thinkingLevel: `found:xhigh@${thinkingSeq}`,
+		});
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(thinkingSeq)), {
+			model: "none",
+			thinkingLevel: "none",
+		});
 	});
 
 	test("sessionResumeFrom marks an axis not-held when the returned entries omit the planned setting, independently per axis", async () => {
@@ -179,20 +238,27 @@ describe("the latest settings a session holds for its active branch", () => {
 		});
 	});
 
-	test("reports not-held per axis when a store plan omits a setting axis, while keeping the retained axis accurate", async () => {
+	test("reports not-held per axis when a store plan explicitly marks an axis not-held, rejects stale state entries, and keeps the retained axis accurate", async () => {
 		const session = await newSession("memory");
+		await session.appendModelChange("anthropic", "stale-older");
 		const launchId = await say(session, "launch");
-		await session.appendModelChange("anthropic", "changed-model");
+		await session.appendModelChange("anthropic", "newer-omitted");
 		const thinkingId = await session.appendThinkingLevelChange("xhigh");
 		await say(session, "work");
 		await session.appendCompaction("cleared", null, 300, CLEARED);
 		await say(session, "after clear");
 		const launchSeq = (await session.findEntrySeq(launchId))!;
 		const thinkingSeq = (await session.findEntrySeq(thinkingId))!;
+		const snapshot = await session.getSessionStore().load(session.getSessionId());
+		const staleEntry = snapshot.entries[0]!;
 
+		// Store explicitly reports model as not-held while a stale earlier model_change sits in state.
 		const omitModelStore = wrapReadResume(session.getSessionStore(), (resume) => ({
 			...resume,
-			state: resume.state.filter((row) => row.entry.type !== "model_change"),
+			state: [
+				...resume.state.filter((row) => row.entry.type !== "model_change"),
+				{ seq: 1, entry: staleEntry, onBranch: true },
+			],
 			retainedSettings: {
 				model: { status: "not-held" },
 				thinkingLevel: resume.retainedSettings!.thinkingLevel,
@@ -202,56 +268,23 @@ describe("the latest settings a session holds for its active branch", () => {
 			history: "tail",
 		});
 
-		assert.deepEqual(described(opened.getLatestBranchSettings(launchSeq)), {
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(0)), {
 			model: "not-held",
 			thinkingLevel: `found:xhigh@${thinkingSeq}`,
+		});
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(launchSeq)), {
+			model: "not-held",
+			thinkingLevel: `found:xhigh@${thinkingSeq}`,
+		});
+		// Legacy 0.10.4 method omits the not-held axis rather than returning a status object or the stale entry.
+		assert.deepEqual(describedLegacy(opened.getLatestBranchSettings(0)), {
+			model: undefined,
+			thinkingLevel: `xhigh@${thinkingSeq}`,
 		});
 
 		// Loading full history recovers full provenance for every axis.
 		await opened.loadFullHistory();
-		assert.equal(opened.getLatestBranchSettings(launchSeq).model.status, "found");
-	});
-
-	test("a custom partial resume without retainedSettings treats pre-window axes as not-held, rejects stale state entries, and still resolves in-window entries", async () => {
-		const session = await newSession("memory");
-		await session.appendModelChange("anthropic", "stale-older");
-		const launchId = await say(session, "launch");
-		await session.appendModelChange("anthropic", "newer-omitted");
-		await session.appendCompaction("cleared", null, 300, CLEARED);
-		const inWindowLaunchId = await say(session, "inside window");
-		const inWindowThinkingId = await session.appendThinkingLevelChange("minimal");
-		await say(session, "after thinking");
-		const launchSeq = (await session.findEntrySeq(launchId))!;
-		const inWindowLaunchSeq = (await session.findEntrySeq(inWindowLaunchId))!;
-		const inWindowThinkingSeq = (await session.findEntrySeq(inWindowThinkingId))!;
-		const snapshot = await session.getSessionStore().load(session.getSessionId());
-		const staleEntry = snapshot.entries[0]!;
-
-		// Custom store omits retainedSettings and leaves an older stale model_change in state while omitting the newer one.
-		const customStore = wrapReadResume(session.getSessionStore(), (resume) => ({
-			...resume,
-			state: [
-				...resume.state.filter((row) => row.entry.type !== "model_change"),
-				{ seq: 1, entry: staleEntry, onBranch: true },
-			],
-			retainedSettings: undefined,
-		}));
-		const opened = await SessionManager.open(customStore, session.getSessionId(), undefined, { history: "tail" });
-
-		// Pre-window query: stale entry (seq 1 < tailFrom) must NOT be returned as found; thinking in window IS found!
-		assert.deepEqual(described(opened.getLatestBranchSettings(0)), {
-			model: "not-held",
-			thinkingLevel: `found:minimal@${inWindowThinkingSeq}`,
-		});
-		assert.deepEqual(described(opened.getLatestBranchSettings(launchSeq)), {
-			model: "not-held",
-			thinkingLevel: `found:minimal@${inWindowThinkingSeq}`,
-		});
-		// Query after an in-window position: window holds every entry from there on, so no change is genuinely "none".
-		assert.deepEqual(described(opened.getLatestBranchSettings(inWindowLaunchSeq)), {
-			model: "none",
-			thinkingLevel: `found:minimal@${inWindowThinkingSeq}`,
-		});
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(launchSeq).model.status, "found");
 	});
 
 	test("fails closed to not-held when a store's retainedSettings contradicts the returned branch entries", async () => {
@@ -273,7 +306,7 @@ describe("the latest settings a session holds for its active branch", () => {
 		const openedLyingHeld = await SessionManager.open(lyingHeldStore, session.getSessionId(), undefined, {
 			history: "tail",
 		});
-		assert.deepEqual(described(openedLyingHeld.getLatestBranchSettings(0)), {
+		assert.deepEqual(describedProvenance(openedLyingHeld.getLatestBranchSettingsWithProvenance(0)), {
 			model: "not-held",
 			thinkingLevel: "none",
 		});
@@ -290,7 +323,7 @@ describe("the latest settings a session holds for its active branch", () => {
 		const openedLyingNone = await SessionManager.open(lyingNoneStore, session.getSessionId(), undefined, {
 			history: "tail",
 		});
-		assert.equal(openedLyingNone.getLatestBranchSettings(0).thinkingLevel.status, "not-held");
+		assert.equal(openedLyingNone.getLatestBranchSettingsWithProvenance(0).thinkingLevel.status, "not-held");
 	});
 
 	test("an in-window branch rewind that drops an in-window setting exposes unretained pre-window history as not-held", async () => {
@@ -307,17 +340,17 @@ describe("the latest settings a session holds for its active branch", () => {
 		const targetSeq = opened.getEntrySeq(inWindowTargetId)!;
 		const tailStart = opened.getHeldTail().fromSeq;
 		// Before rewind, in-window model is found and pre-window thinking (held in state) is found.
-		assert.equal(opened.getLatestBranchSettings(0).model.status, "found");
-		assert.equal(opened.getLatestBranchSettings(0).thinkingLevel.status, "found");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).model.status, "found");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).thinkingLevel.status, "found");
 
 		// Rewind inside the window past "in-window-model": "pre-clear" was never held in state because
 		// "in-window-model" shadowed it, while "low" (thinking) IS still held in state!
 		await opened.branch(inWindowTargetId);
-		assert.equal(opened.getLatestBranchSettings(0).model.status, "not-held");
-		assert.equal(opened.getLatestBranchSettings(0).thinkingLevel.status, "found");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).model.status, "not-held");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).thinkingLevel.status, "found");
 		// After a position inside the held window, no model change happened in [tailStart..targetSeq] -> genuinely none.
-		assert.equal(opened.getLatestBranchSettings(tailStart - 1).model.status, "none");
-		assert.equal(opened.getLatestBranchSettings(targetSeq).model.status, "none");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(tailStart - 1).model.status, "none");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(targetSeq).model.status, "none");
 	});
 
 	test("compacting an unvouched partial manager preserves not-held, while a root-complete branch and resetLeaf keep exact provenance", async () => {
@@ -338,36 +371,36 @@ describe("the latest settings a session holds for its active branch", () => {
 		const opened = await SessionManager.open(omitModelStore, session.getSessionId(), undefined, {
 			history: "tail",
 		});
-		assert.equal(opened.getLatestBranchSettings(0).model.status, "not-held");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).model.status, "not-held");
 
 		// A live compaction must not fabricate provenance for an axis that was already not-held.
 		await opened.appendCompaction("cleared 2", null, 300, CLEARED);
 		await say(opened, "three");
-		assert.equal(opened.getLatestBranchSettings(0).model.status, "not-held");
-		assert.equal(opened.getLatestBranchSettings(0).thinkingLevel.status, "none");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).model.status, "not-held");
+		assert.equal(opened.getLatestBranchSettingsWithProvenance(0).thinkingLevel.status, "none");
 
 		// Switching to a brand-new root branch and compacting it has complete root-to-leaf history -> none, never not-held.
 		await opened.branchWithSummary(null, "fresh root");
-		assert.deepEqual(described(opened.getLatestBranchSettings(0)), {
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(0)), {
 			model: "none",
 			thinkingLevel: "none",
 		});
 		await opened.appendCompaction("cleared fresh root", null, 300, CLEARED);
 		await say(opened, "after fresh clear");
-		assert.deepEqual(described(opened.getLatestBranchSettings(0)), {
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(0)), {
 			model: "none",
 			thinkingLevel: "none",
 		});
 
 		// Resetting leaf to null has an empty active branch -> none.
 		await opened.resetLeaf();
-		assert.deepEqual(described(opened.getLatestBranchSettings(0)), {
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(0)), {
 			model: "none",
 			thinkingLevel: "none",
 		});
 	});
 
-	test("a root-complete active branch still resolves found and none even when an abandoned side branch was omitted without retainedSettings", async () => {
+	test("a root-complete active branch still resolves found and none even when an abandoned side branch was omitted", async () => {
 		const session = await newSession("memory");
 		await session.appendModelChange("anthropic", "abandoned-root");
 		await session.resetLeaf();
@@ -377,15 +410,20 @@ describe("the latest settings a session holds for its active branch", () => {
 		// active branch `[activeModel, compaction]` remains completely gap-free from root to leaf.
 		await session.appendCompaction("cleared", null, 300, CLEARED);
 
-		const customStore = wrapReadResume(session.getSessionStore(), (resume) => ({
+		const storeWithNotHeld = wrapReadResume(session.getSessionStore(), (resume) => ({
 			...resume,
-			retainedSettings: undefined,
+			retainedSettings: {
+				model: { status: "not-held" },
+				thinkingLevel: { status: "none" },
+			},
 		}));
-		const opened = await SessionManager.open(customStore, session.getSessionId(), undefined, { history: "tail" });
+		const opened = await SessionManager.open(storeWithNotHeld, session.getSessionId(), undefined, {
+			history: "tail",
+		});
 
 		assert.equal(opened.hasFullHistory(), false, "abandoned root branch was omitted");
 		assert.ok(opened.getHeldTail().fromSeq > activeModelSeq, "root setting lies before tailFrom");
-		assert.deepEqual(described(opened.getLatestBranchSettings(0)), {
+		assert.deepEqual(describedProvenance(opened.getLatestBranchSettingsWithProvenance(0)), {
 			model: `found:anthropic/active-model@${activeModelSeq}`,
 			thinkingLevel: "none",
 		});

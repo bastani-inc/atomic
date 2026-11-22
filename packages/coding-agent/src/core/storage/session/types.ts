@@ -386,7 +386,8 @@ export interface SessionResume {
 	};
 	/**
 	 * Per-axis retention provenance for the active branch's latest `model_change` and `thinking_level_change` entries.
-	 * Absent on older or custom stores that do not vouch for setting retention across partial windows.
+	 * Optional for older or custom stores; when absent, the manager preserves pre-existing retention assumptions, and
+	 * only an explicit `"not-held"` (or contradictory provenance) reports an axis as not held.
 	 */
 	readonly retainedSettings?: SessionResumeRetainedSettings;
 }

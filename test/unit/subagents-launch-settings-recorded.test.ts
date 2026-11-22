@@ -123,12 +123,9 @@ async function reopened(session: SessionManager) {
 	});
 	const { model, thinkingLevel } = opened.getLatestBranchSettings();
 	return {
-		model: model.status === "found" ? `${model.entry.provider}/${model.entry.modelId}` : undefined,
-		thinkingLevel: thinkingLevel.status === "found" ? thinkingLevel.entry.thinkingLevel : undefined,
-		seqs: [
-			model.status === "found" ? model.seq : undefined,
-			thinkingLevel.status === "found" ? thinkingLevel.seq : undefined,
-		],
+		model: model && `${model.entry.provider}/${model.entry.modelId}`,
+		thinkingLevel: thinkingLevel?.entry.thinkingLevel,
+		seqs: [model?.seq, thinkingLevel?.seq],
 		settings: opened
 			.getEntries()
 			.filter((entry) => entry.type === "model_change" || entry.type === "thinking_level_change").length,
@@ -163,9 +160,8 @@ test("a child is not prompted before its launch's model is recorded; a restart b
 	await store.appending.promise;
 
 	assert.equal(existsSync(child.promptLog), false, "nothing was sent while its model was not recorded");
-	const currentModel = session.getLatestBranchSettings().model;
 	assert.equal(
-		currentModel.status === "found" ? currentModel.entry.modelId : undefined,
+		session.getLatestBranchSettings().model?.entry.modelId,
 		"parent-model",
 		"the store has not taken the change: a restart now finds the session as it was",
 	);
@@ -325,14 +321,14 @@ test("a child opened with a partial session whose model axis is not-held records
 		},
 	});
 	const partial = await SessionManager.open(omitModelStore, session.getSessionId(), cwd, { history: "tail" });
-	assert.equal(partial.getLatestBranchSettings().model.status, "not-held");
+	assert.equal(partial.getLatestBranchSettingsWithProvenance().model.status, "not-held");
 
 	const child = await launch(cwd, partial, "openai/child-model", "high", { resumeSession: true });
 	await child.launched;
 	// Because model was not-held, launchSettingsWrite recorded openai/child-model in the held tail (no extra write for
 	// thinkingLevel, which was already held and matched "high").
 	const afterLaunch = await SessionManager.open(omitModelStore, session.getSessionId(), cwd, { history: "tail" });
-	assert.equal(afterLaunch.getLatestBranchSettings().model.status, "found");
+	assert.equal(afterLaunch.getLatestBranchSettingsWithProvenance().model.status, "found");
 	const full = await backingStore.load(session.getSessionId());
 	const modelChanges = full.entries.filter((entry) => entry.type === "model_change");
 	const thinkingChanges = full.entries.filter((entry) => entry.type === "thinking_level_change");
