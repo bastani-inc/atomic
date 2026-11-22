@@ -677,10 +677,80 @@ function splitKeyTokens(name: string): string[] {
 	return tokens;
 }
 
-/** Whether a header, env var, JSON field, or query key has a whole credential/session token (never substring). */
-export function isSensitiveKeyName(name: string): boolean {
+const UNAMBIGUOUS_CREDENTIAL_SUFFIXES = [
+	"token",
+	"secret",
+	"password",
+	"passwd",
+	"passphrase",
+	"pwd",
+	"apikey",
+	"cookie",
+	"credential",
+	"credentials",
+	"creds",
+	"authorization",
+	"bearer",
+	"session",
+	"sessionid",
+	"jwt",
+	"secretkey",
+	"accesskey",
+	"privatekey",
+	"signingkey",
+	"hmackey",
+	"masterkey",
+	"sessionkey",
+	"signature",
+	"cert",
+] as const;
+
+function hasUnambiguousCredentialSuffix(lower: string): boolean {
+	for (const suffix of UNAMBIGUOUS_CREDENTIAL_SUFFIXES) {
+		if (lower.endsWith(suffix)) return true;
+	}
+	return false;
+}
+
+/**
+ * Whether a header, env var, JSON field, or query key indicates credential/session material for masking.
+ * Matches substring stems so glued keys (`PGPASSWORD`, `MYTOKEN`, `DBPASSWORD`, `APITOKEN`, `SECRETKEY`,
+ * `ACCESSKEY`, `USERCOOKIE`, etc.) are always collected into the masking registry.
+ */
+export function isSensitiveKeyNameForMasking(name: string): boolean {
+	const lower = name.toLowerCase();
+	return (
+		lower === "authorization" ||
+		lower === "proxy-authorization" ||
+		lower.includes("cookie") ||
+		lower.includes("token") ||
+		lower.includes("secret") ||
+		lower.includes("key") ||
+		lower.includes("auth") ||
+		lower.includes("pass") ||
+		lower.includes("pwd") ||
+		lower.includes("cred") ||
+		lower.includes("session") ||
+		lower.includes("sid") ||
+		lower.includes("sign") ||
+		lower.includes("pat") ||
+		lower.includes("jwt") ||
+		lower.includes("bearer") ||
+		lower.includes("private") ||
+		lower.includes("cert")
+	);
+}
+
+/**
+ * Whether a URL query key or display-config header name indicates credential/session material for display hiding.
+ * Matches whole delimiter-separated tokens plus unambiguous credential suffixes so `path`, `design`, `bypass_cache`,
+ * and `authuser` remain visible while glued keys such as `PGPASSWORD` and `MYTOKEN` are hidden.
+ */
+export function isSensitiveKeyNameForDisplay(name: string): boolean {
+	const lower = name.toLowerCase();
+	if (hasUnambiguousCredentialSuffix(lower)) return true;
 	for (const token of splitKeyTokens(name)) {
-		if (SENSITIVE_KEY_TOKENS.has(token)) return true;
+		if (SENSITIVE_KEY_TOKENS.has(token) || hasUnambiguousCredentialSuffix(token)) return true;
 	}
 	return false;
 }
@@ -899,7 +969,7 @@ export function collectSecretsForMasking(input: SecretCollectionInput): string[]
 			if (!value) continue;
 			if (
 				SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
-				isSensitiveKeyName(key) ||
+				isSensitiveKeyNameForMasking(key) ||
 				isSecretValueForMasking(value)
 			) {
 				secrets.push(value);
@@ -909,7 +979,7 @@ export function collectSecretsForMasking(input: SecretCollectionInput): string[]
 	if (input.headers) {
 		for (const [name, value] of Object.entries(input.headers)) {
 			if (input.nonSecretHeaders?.has(name.toLowerCase())) continue;
-			if (isSensitiveKeyName(name) || isSecretValueForMasking(value)) {
+			if (isSensitiveKeyNameForMasking(name) || isSecretValueForMasking(value)) {
 				secrets.push(...extractHeaderSecrets(name, value));
 			}
 		}
@@ -917,7 +987,7 @@ export function collectSecretsForMasking(input: SecretCollectionInput): string[]
 	if (input.env) {
 		for (const [name, value] of Object.entries(input.env)) {
 			if (input.nonSecretEnv?.has(name.toUpperCase())) continue;
-			if (isSensitiveKeyName(name) || isSecretValueForMasking(value)) {
+			if (isSensitiveKeyNameForMasking(name) || isSecretValueForMasking(value)) {
 				secrets.push(...extractAuthorizationSecrets(value));
 			}
 		}
@@ -978,7 +1048,7 @@ export function collectDeclaredDisplaySecrets(
 	if (headers) {
 		for (const [name, value] of Object.entries(headers)) {
 			if (NON_SECRET_HTTP_HEADERS.has(name.toLowerCase()) || isEnvTemplatePlaceholder(value)) continue;
-			if (isSensitiveKeyName(name) || isLikelySecretForDisplay(value)) {
+			if (isSensitiveKeyNameForDisplay(name) || isLikelySecretForDisplay(value)) {
 				for (const extracted of extractHeaderSecrets(name, value)) {
 					if (!isEnvTemplatePlaceholder(extracted)) secrets.push(extracted);
 				}
@@ -1073,7 +1143,7 @@ export function redactUrlForTransportDisplay(rawUrl: string, secrets: Iterable<s
 	for (const [key, value] of parsed.searchParams.entries()) {
 		if (
 			SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
-			isSensitiveKeyName(key) ||
+			isSensitiveKeyNameForDisplay(key) ||
 			(!registry.empty && registry.mask(value) !== value) ||
 			isLikelySecretForDisplay(value)
 		) {
@@ -1116,7 +1186,11 @@ export function redactAuthorizationUrlForDisplay(
 	const updates: [string, string][] = [];
 	for (const [key, value] of url.searchParams.entries()) {
 		const lowerKey = key.toLowerCase();
-		if (AUTHORIZATION_URL_SECRET_PARAMS.has(lowerKey) || (!registry.empty && registry.mask(value) !== value)) {
+		if (
+			AUTHORIZATION_URL_SECRET_PARAMS.has(lowerKey) ||
+			hasUnambiguousCredentialSuffix(lowerKey) ||
+			(!registry.empty && registry.mask(value) !== value)
+		) {
 			keysToDelete.push(key);
 			continue;
 		}

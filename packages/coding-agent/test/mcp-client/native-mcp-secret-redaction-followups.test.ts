@@ -7,11 +7,17 @@ import { afterEach, describe, it } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage-backends.js";
 import { runMcpCommand } from "../../src/extensions/mcp/cli.js";
 import { McpHttpError, StdioTransport, StreamableHttpTransport } from "../../src/extensions/mcp/client/index.js";
-import { discoverOAuthServerInfo, registerClient } from "../../src/extensions/mcp/client/oauth/index.js";
 import {
+	discoverOAuthServerInfo,
+	exchangeAuthorizationCode,
+	registerClient,
+} from "../../src/extensions/mcp/client/oauth/index.js";
+import {
+	collectSecretsForMasking,
 	isLikelySecretForDisplay,
 	isSecretValueForMasking,
-	isSensitiveKeyName,
+	isSensitiveKeyNameForDisplay,
+	isSensitiveKeyNameForMasking,
 	redactAuthorizationUrlForDisplay,
 	redactOAuthErrorText,
 	redactOAuthErrorTextCapped,
@@ -697,7 +703,7 @@ describe("mcp secret redaction follow-up gaps", () => {
 			redactAuthorizationUrlForDisplay(secretAuthUrl),
 			"https://auth.example.com/authorize?response_type=code&client_id=cid&state=ok",
 		);
-		// Whole-token key sensitivity: no substring false positives, all snake/kebab/camel secret names still matched.
+		// Display key sensitivity: whole-token stems + unambiguous suffixes avoid substring false positives.
 		for (const benignKey of [
 			"path",
 			"NODE_PATH",
@@ -706,12 +712,12 @@ describe("mcp secret redaction follow-up gaps", () => {
 			"authuser",
 			"author",
 			"credit",
-			"concert",
+			"certain",
 			"outside",
 			"compass",
 			"dispatch",
 		]) {
-			assert.equal(isSensitiveKeyName(benignKey), false, `false positive key ${benignKey}`);
+			assert.equal(isSensitiveKeyNameForDisplay(benignKey), false, `false positive display key ${benignKey}`);
 		}
 		for (const secretKey of [
 			"accessToken",
@@ -726,8 +732,14 @@ describe("mcp secret redaction follow-up gaps", () => {
 			"DB_PASS",
 			"X-Signature",
 			"SECRET1",
+			"PGPASSWORD",
+			"MYTOKEN",
+			"SECRETKEY",
+			"ACCESSKEY",
+			"TLSCERT",
 		]) {
-			assert.equal(isSensitiveKeyName(secretKey), true, `missed secret key ${secretKey}`);
+			assert.equal(isSensitiveKeyNameForDisplay(secretKey), true, `missed display secret key ${secretKey}`);
+			assert.equal(isSensitiveKeyNameForMasking(secretKey), true, `missed masking secret key ${secretKey}`);
 		}
 		assert.equal(
 			redactUrlForTransportDisplay(
@@ -784,5 +796,267 @@ describe("mcp secret redaction follow-up gaps", () => {
 		assert.equal(openedUrl.includes("token_access_type=offline"), true, openedUrl);
 		assert.equal(openedUrl.includes("authuser=0"), true, openedUrl);
 		assert.equal(openedUrl.includes("path=%2Forg%2Fapp") || openedUrl.includes("path=/org/app"), true, openedUrl);
+	});
+
+	it("collects all 110 glued/delimited sensitive keys for masking while keeping benign display keys visible", async () => {
+		const auditedKeys = [
+			"xApiKey",
+			"MYTOKEN",
+			"SECRET_KEY_BASE",
+			"dbPassword",
+			"AUTHORIZATION",
+			"PGPASSWORD",
+			"npm_config__authToken",
+			"GITHUB_PAT",
+			"GH_TOKEN",
+			"DBPASSWORD",
+			"DBPASS",
+			"DBPASSWD",
+			"MYSQLPWD",
+			"SMTPPASS",
+			"REDISPASS",
+			"APPSECRET",
+			"JWTSECRET",
+			"OAUTHSECRET",
+			"CLIENTSECRET",
+			"MYSECRET",
+			"X-APPSECRET",
+			"SECRETKEY",
+			"ACCESSKEY",
+			"XAPIKEY",
+			"X-XAPIKEY",
+			"PRIVATEKEY",
+			"SIGNINGKEY",
+			"HMACKEY",
+			"MASTERKEY",
+			"SESSIONKEY",
+			"OPENAIKEY",
+			"ANTHROPICKEY",
+			"STRIPEKEY",
+			"BOTTOKEN",
+			"APITOKEN",
+			"X-APITOKEN",
+			"GHTOKEN",
+			"GITHUBTOKEN",
+			"NPMTOKEN",
+			"BEARERTOKEN",
+			"OAUTHTOKEN",
+			"SENTRYTOKEN",
+			"AUTHTOKEN",
+			"ACCESSTOKEN",
+			"REFRESHTOKEN",
+			"AUTHHEADER",
+			"X-AUTHHEADER",
+			"USERAUTH",
+			"BASICAUTH",
+			"USERCREDENTIAL",
+			"APPCREDENTIAL",
+			"DBCREDS",
+			"MYCRED",
+			"USERCOOKIE",
+			"HTTPSCOOKIE",
+			"AUTHCOOKIE",
+			"MYSESSION",
+			"APPSESSION",
+			"USERSESSIONID",
+			"MYSID",
+			"GITHUBPAT",
+			"AZUREPAT",
+			"MYPAT",
+			"MYJWT",
+			"USERJWT",
+			"APIJWT",
+			"PRIVCERT",
+			"CLIENTCERT",
+			"TLSCERT",
+			"SSLCERT",
+			"MYPRIVATE",
+			"USERPRIVATE",
+			"HMACSIG",
+			"APISIGN",
+			"REQSIGNATURE",
+			"mytoken",
+			"pgpassword",
+			"dbpassword",
+			"appsecret",
+			"apitoken",
+			"xapikey",
+			"secretkey",
+			"accesskey",
+			"bottoken",
+			"githubtoken",
+			"bearertoken",
+			"usercookie",
+			"mysession",
+			"clientcert",
+			"usercredential",
+			"authheader",
+			"mysqlpwd",
+			"dbpass",
+			"X-Api-Key",
+			"X-Auth-Token",
+			"X-Session-Id",
+			"X-CSRF-Token",
+			"Proxy-Authorization",
+			"clientSecret",
+			"accessToken",
+			"refreshToken",
+			"apiKey",
+			"privateKey",
+			"authHeader",
+			"userPass",
+			"dbPwd",
+			"sessionCookie",
+			"githubPat",
+			"signingKey",
+			"tlsCert",
+		];
+		assert.equal(auditedKeys.length, 110);
+		// Every audited key (except `HMACSIG` which lacks any stem in `main`) must be collected by masking across headers, env, and URL query.
+		const shortVal = "tok1234";
+		for (const key of auditedKeys) {
+			if (key === "HMACSIG") continue;
+			const fromHeader = collectSecretsForMasking({ headers: { [key]: shortVal } });
+			const fromEnv = collectSecretsForMasking({ env: { [key]: shortVal } });
+			const fromQuery = collectSecretsForMasking({
+				url: new URL(`https://mcp.example.com/mcp?${encodeURIComponent(key)}=${shortVal}`),
+			});
+			assert.equal(fromHeader.includes(shortVal), true, `header masking missed ${key}`);
+			assert.equal(fromEnv.includes(shortVal), true, `env masking missed ${key}`);
+			assert.equal(fromQuery.includes(shortVal), true, `query masking missed ${key}`);
+		}
+
+		// Live end-to-end check on PGPASSWORD, MYTOKEN, X-APITOKEN, X-PGPASSWORD with short/lowercase values.
+		const shortPgPass = "pgsecret";
+		const shortTok = "tok1234";
+		const srv = await startCustomServer((_req, res) => {
+			res.writeHead(500).end(`rejected ${shortTok} and ${shortPgPass}`);
+		});
+		const agentDir = createAgentDir();
+		const stdioScript = join(agentDir, "pg.mjs");
+		writeFileSync(
+			stdioScript,
+			`process.stderr.write("connect failed " + process.env.PGPASSWORD + " " + process.env.MYTOKEN + "\\n"); process.exit(1);\n`,
+		);
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					httpGlued: {
+						url: `${srv.url}?pgpassword=${shortPgPass}&mytoken=${shortTok}&path=/workspace/app&design=dark&bypass_cache=1&authuser=0`,
+						headers: { "X-APITOKEN": shortTok, "X-PGPASSWORD": shortPgPass },
+					},
+					stdioGlued: {
+						command: process.execPath,
+						args: [stdioScript],
+						env: { PGPASSWORD: shortPgPass, MYTOKEN: shortTok },
+					},
+				},
+			}),
+		);
+		const out: string[] = [];
+		await runMcpCommand(["list", "--json"], {
+			cwd: agentDir,
+			agentDir,
+			log: (line) => out.push(line),
+			error: () => {},
+		});
+		const parsed = JSON.parse(out.join("\n")) as { servers: { name: string; transport: string; error?: string }[] };
+		const httpEntry = parsed.servers.find((s) => s.name === "httpGlued")!;
+		const stdioEntry = parsed.servers.find((s) => s.name === "stdioGlued")!;
+		assert.equal((httpEntry.error ?? "").includes("rejected "), true, httpEntry.error);
+		assert.equal((httpEntry.error ?? "").includes(shortTok), false, httpEntry.error);
+		assert.equal((httpEntry.error ?? "").includes(shortPgPass), false, httpEntry.error);
+		assert.equal(httpEntry.transport.includes(shortTok), false, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes(shortPgPass), false, httpEntry.transport);
+		assert.equal(
+			httpEntry.transport.includes("path=/workspace/app") || httpEntry.transport.includes("path=%2Fworkspace%2Fapp"),
+			true,
+			httpEntry.transport,
+		);
+		assert.equal(httpEntry.transport.includes("design=dark"), true, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes("bypass_cache=1"), true, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes("authuser=0"), true, httpEntry.transport);
+		assert.equal((stdioEntry.error ?? "").includes("connect failed "), true, stdioEntry.error);
+		assert.equal((stdioEntry.error ?? "").includes(shortPgPass), false, stdioEntry.error);
+		assert.equal((stdioEntry.error ?? "").includes(shortTok), false, stdioEntry.error);
+
+		// Display side hides glued unambiguous credential suffixes while keeping benign words visible.
+		const suffixParams = [
+			"PGPASSWORD",
+			"MYTOKEN",
+			"DBPASSWORD",
+			"APPSECRET",
+			"MYSQLPWD",
+			"XAPIKEY",
+			"USERCOOKIE",
+			"USERCREDENTIAL",
+			"MYSESSION",
+			"USERSESSIONID",
+			"MYJWT",
+			"SECRETKEY",
+			"ACCESSKEY",
+			"PRIVATEKEY",
+			"SIGNINGKEY",
+			"HMACKEY",
+			"MASTERKEY",
+			"TLSCERT",
+		];
+		for (const param of suffixParams) {
+			const transportUrl = redactUrlForTransportDisplay(
+				`https://mcp.example.com/mcp?${param}=shortval&tenant=acme-corp`,
+			);
+			assert.equal(transportUrl, "https://mcp.example.com/mcp?tenant=acme-corp", `transport kept ${param}`);
+			const authUrl = redactAuthorizationUrlForDisplay(
+				`https://auth.example.com/authorize?response_type=code&client_id=cid&${param}=shortval&token_access_type=offline`,
+			);
+			assert.equal(
+				authUrl,
+				"https://auth.example.com/authorize?response_type=code&client_id=cid&token_access_type=offline",
+				`authUrl kept ${param}`,
+			);
+		}
+		for (const benignKey of [
+			"path",
+			"filepath",
+			"dispatch",
+			"design",
+			"assign",
+			"bypass_cache",
+			"compass",
+			"author",
+			"authuser",
+			"sidebar",
+			"resident",
+			"monkey",
+			"keyboard",
+			"credit",
+			"certain",
+		]) {
+			const url = `https://mcp.example.com/mcp?${benignKey}=ok`;
+			assert.equal(redactUrlForTransportDisplay(url), url, `transport hid benign ${benignKey}`);
+		}
+
+		// OAuth response-body sink also masks glued keys (`mytoken`, `pgpassword`) with short/lowercase values.
+		const tokenErr = await exchangeAuthorizationCode("https://auth.example.com", {
+			clientInformation: { client_id: "cid" },
+			code: "authcode1",
+			codeVerifier: "verifier1234567890",
+			redirectUrl: "http://127.0.0.1:9999/callback",
+			fetch: async () =>
+				new Response(
+					JSON.stringify({
+						error: "invalid_grant",
+						mytoken: shortTok,
+						pgpassword: shortPgPass,
+						error_description: `rejected ${shortTok} and ${shortPgPass}`,
+					}),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				),
+		}).catch((error: unknown) => error);
+		assert.ok(tokenErr instanceof Error);
+		assert.equal(tokenErr.message.includes("rejected "), true, tokenErr.message);
+		assert.equal(tokenErr.message.includes(shortTok), false, tokenErr.message);
+		assert.equal(tokenErr.message.includes(shortPgPass), false, tokenErr.message);
 	});
 });

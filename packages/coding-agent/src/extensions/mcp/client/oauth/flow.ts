@@ -22,7 +22,7 @@ import {
 } from "./errors.js";
 import {
 	extractHeaderSecrets,
-	isSensitiveKeyName,
+	isSensitiveKeyNameForMasking,
 	redactOAuthErrorText,
 	redactUrlForDisplay,
 	scrubFetchError,
@@ -250,7 +250,7 @@ function responseBodySecrets(value: unknown, depth = 0): string[] {
 		if (
 			typeof entry === "string" &&
 			entry.length > 0 &&
-			(SENSITIVE_BODY_FIELDS.has(lowerKey) || isSensitiveKeyName(key))
+			(SENSITIVE_BODY_FIELDS.has(lowerKey) || isSensitiveKeyNameForMasking(key))
 		) {
 			secrets.push(entry);
 		} else if (typeof entry === "object" && entry !== null) {
