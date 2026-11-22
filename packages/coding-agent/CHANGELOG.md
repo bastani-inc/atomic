@@ -8,6 +8,10 @@
 - Saving to the session database waits less on a busy machine: creating a session waits for the database connection's thread 4 times instead of 5, and saving a message 4 times instead of 6 or 7, so a subagent's first turn and every turn of a session save sooner where each wait is slow. Taking the database's write lock also waits for the file system once instead of twice.
 - Opening the session database file waits less on a busy machine: its settings (the busy timeout, the write-ahead log and the synchronous and foreign key settings) go to the database connection's thread in one request instead of three, while the file's identity and the record that names a writer holding the lock are made ready in parallel. On a loaded 8-core Windows machine opening the file took about 0.9–1.1 s and now takes about 0.6 s, for Atomic and for its engine each.
 
+### Fixed
+
+- On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Breaking Changes
