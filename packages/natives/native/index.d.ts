@@ -252,29 +252,6 @@ export type Attention =
   | { kind: 'input-needed'; requestId: string; prompt: string; route: PromptRoute }
   | { kind: 'no-recent-activity'; lastActivityAt?: string }
 
-export interface BlockRange {
-  /** 1-indexed inclusive first line of the resolved block. */
-  startLine: number
-  /** 1-indexed inclusive last line of the resolved block. */
-  endLine: number
-}
-
-/**
- * Resolve the block beginning on `options.line`. Returns `None` when the
- * language is unrecognized, the line is out of range / blank, no node begins
- * there, or the resolved subtree contains a syntax error.
- */
-export declare function blockRangeAt(options: BlockRangeOptions): BlockRange | null
-
-export interface BlockRangeOptions {
-  /** Source code to inspect. */
-  code: string
-  /** File path used to infer the language by extension. */
-  path: string
-  /** 1-indexed source line the block must begin on. */
-  line: number
-}
-
 export type CancelCause = 'user' | 'owner-close' | 'execution-timeout' | 'output-limit' | 'parent-handoff' | 'pause' | 'quit' | 'shutdown'
 
 export interface CancelReceipt {

@@ -36,7 +36,6 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"PtySession",
 	"SubagentControl",
 	"TerminationCause",
-	"blockRangeAt",
 	"containProcessTree",
 	"glob",
 	"grep",
