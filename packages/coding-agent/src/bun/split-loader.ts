@@ -6,8 +6,11 @@ import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { stripBom } from "../utils/text.ts";
 import {
 	INTERNAL_INTERCOM_BROKER_ARG,
+	INTERNAL_INTERCOM_BROKER_RELAY_ARG,
+	INTERNAL_INTERCOM_BROKER_RELAY_CAPABILITY,
 	importInternalIntercomBroker,
 	installBrokerHostModules,
+	runInternalIntercomBrokerRelay,
 } from "./internal-intercom-broker.js";
 
 installLifecycleTraceFromEnv();
@@ -33,7 +36,9 @@ function readVersion(): string {
 	}
 }
 
-if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
+if (args[0] === INTERNAL_INTERCOM_BROKER_RELAY_ARG) {
+	runInternalIntercomBrokerRelay();
+} else if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
 	if (args.length !== 2) {
 		console.error(`Atomic startup error: ${INTERNAL_INTERCOM_BROKER_ARG} requires exactly one broker module path`);
 		process.exit(1);
@@ -54,5 +59,6 @@ if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
 		process.exit(1);
 	}
 
+	(globalThis as Record<symbol, unknown>)[INTERNAL_INTERCOM_BROKER_RELAY_CAPABILITY] = true;
 	void import(pathToFileURL(appPath).href);
 }

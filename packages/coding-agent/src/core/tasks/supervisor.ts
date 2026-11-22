@@ -389,6 +389,36 @@ export function taskTranscriptSource(
 }
 
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
+const transcriptBindListeners = new WeakMap<TaskSupervisor, Set<(taskId: C.TaskId) => void>>();
+
+/** Viewer-only: runs `listener` whenever any task owned by `supervisor` binds a live transcript session. */
+export function watchTaskTranscriptBindings(
+	supervisor: TaskSupervisor,
+	listener: (taskId: C.TaskId) => void,
+): () => void {
+	if (supervisor == null || typeof supervisor !== "object") return () => {};
+	let listeners = transcriptBindListeners.get(supervisor);
+	if (listeners === undefined) {
+		listeners = new Set();
+		transcriptBindListeners.set(supervisor, listeners);
+	}
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+
+function notifyTranscriptBindListeners(supervisor: TaskSupervisor, taskId: C.TaskId): void {
+	const listeners = transcriptBindListeners.get(supervisor);
+	if (listeners === undefined || listeners.size === 0) return;
+	for (const listener of [...listeners]) {
+		try {
+			listener(taskId);
+		} catch {
+			// A viewer's update failure must not break transcript binding.
+		}
+	}
+}
 
 /** Extension statuses written by this task's own session, by status key; empty once it ends. */
 export function taskExtensionStatuses(task: TaskLease): ReadonlyMap<string, string> {
@@ -1773,6 +1803,7 @@ export class TaskSupervisor {
 						bindTranscript: (session) => {
 							taskState.inherited ??= { throughId: session.getEntries().at(-1)?.id ?? null };
 							taskState.transcript = session;
+							notifyTranscriptBindListeners(this, id);
 						},
 						reportActivity: (report) =>
 							mapped(this.#native.reportTaskActivity(runner.value, report), reportReceipt, reportErrors),

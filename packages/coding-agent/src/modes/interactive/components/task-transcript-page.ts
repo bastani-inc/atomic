@@ -484,6 +484,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
 	private followedSessionId?: string;
+	private followedSessionFile?: string;
 	private legacyWindow?: ReturnType<typeof retainTaskWindowReader>;
 	private legacyWindowActive = false;
 	private observedWrites?: ObservedChatWrites;
@@ -1051,10 +1052,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const readOnlyReason =
 			this.readOnlyReason() ??
 			(this.source.sendTaskMessage === undefined ? "Messages cannot reach this subagent from here." : undefined);
-		const working = this.chat.workingLine(this.source.followTaskTranscript(this.liveTaskId())?.publishedActivity);
+		const follow = this.source.followTaskTranscript(this.liveTaskId());
+		const sessionId = this.followedSessionId ?? follow?.session?.getSessionId?.();
+		const sessionFile = this.followedSessionFile ?? follow?.session?.getSessionFile?.();
+		const working = this.chat.workingLine(follow?.publishedActivity);
 		return {
 			taskId: this.liveTaskId(),
 			agentKey,
+			...(sessionId === undefined ? {} : { sessionId }),
+			...(sessionFile === undefined ? {} : { sessionFile }),
 			name,
 			ruleLabel: label,
 			placeholder,
@@ -1345,6 +1351,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		const session = follow?.session?.subscribe === undefined ? undefined : follow.session;
 		const nextSessionId = follow?.session?.getSessionId?.();
+		const nextSessionFile = follow?.session?.getSessionFile?.();
 		const sameConversation =
 			this.followedSessionId !== undefined &&
 			nextSessionId !== undefined &&
@@ -1374,6 +1381,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
+		this.followedSessionFile = nextSessionFile;
 		this.cancelAdjacent();
 		this.windowGeneration++;
 		this.savedPages.length = 0;

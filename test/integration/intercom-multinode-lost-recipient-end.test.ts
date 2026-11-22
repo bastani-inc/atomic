@@ -51,6 +51,22 @@ const outcomesOf = (asker: TwoBrokerClient, askId: string) =>
 async function askAcross(group: string) {
 	const asker = await harness.connect("a", "asker", { group });
 	const recipient = await harness.connect("b", "recipient", { group });
+	// Registration resolves at PRESENCE_REGISTRATION_BOUND_MS if the slow shared store has not finished writing the
+	// presence lease yet; wait until both brokers see the live presence leases before sending across nodes.
+	await vi.waitFor(async () => {
+		const [seenByAsker, seenByRecipient] = await Promise.all([
+			asker.client.listSessions(group),
+			recipient.client.listSessions(group),
+		]);
+		assert.ok(
+			seenByAsker.some((session) => session.id === recipient.sessionId),
+			"recipient presence is visible to broker a",
+		);
+		assert.ok(
+			seenByRecipient.some((session) => session.id === asker.sessionId),
+			"asker presence is visible to broker b",
+		);
+	}, WAIT);
 	const registration = { returnAddress: recipient.returnAddress, sessionId: recipient.sessionId };
 	const askId = randomUUID();
 	const sent = await asker.client.send(recipient.sessionId, {
@@ -58,7 +74,7 @@ async function askAcross(group: string) {
 		text: "which port?",
 		expectsReply: true,
 	});
-	assert.equal(sent.delivered, true, sent.reason);
+	assert.equal(sent.delivered, true, sent.reason ?? JSON.stringify(sent));
 	await vi.waitFor(() => assert.equal(recipient.messagesWithId(askId).length, 1, "the recipient has the ask"), WAIT);
 	return { asker, recipient, registration, askId };
 }
@@ -69,36 +85,40 @@ for (const killAfterMs of [0, 50, 100]) {
 		async () => {
 			const group = `lost-${randomUUID().slice(0, 8)}`;
 			const { asker, registration, recipient, askId } = await askAcross(group);
+			let back: TwoBrokerClient | undefined;
+			try {
+				const leaving = harness.disconnect(recipient);
+				await sleep(killAfterMs);
+				await harness.stopBroker("b", "SIGKILL");
+				await leaving;
+				await harness.startBroker("b");
+				const restartedAt = Date.now();
 
-			const leaving = harness.disconnect(recipient);
-			await sleep(killAfterMs);
-			await harness.stopBroker("b", "SIGKILL");
-			await leaving;
-			await harness.startBroker("b");
-			const restartedAt = Date.now();
+				await vi.waitFor(() => assert.equal(outcomesOf(asker, askId).length, 1, "told"), {
+					timeout: TOLD_WITHIN_MS,
+					interval: 100,
+				});
+				assert.ok(Date.now() - restartedAt >= LOST_AFTER_MS, "not told before the bound");
+				const [failure] = outcomesOf(asker, askId);
+				assert.match(failure!.message.replyError ?? "", /^Session "recipient" is unavailable: its broker stopped/);
+				assert.equal(failure!.message.retryLater, true);
 
-			await vi.waitFor(() => assert.equal(outcomesOf(asker, askId).length, 1, "told"), {
-				timeout: TOLD_WITHIN_MS,
-				interval: 100,
-			});
-			assert.ok(Date.now() - restartedAt >= LOST_AFTER_MS, "not told before the bound");
-			const [failure] = outcomesOf(asker, askId);
-			assert.match(failure!.message.replyError ?? "", /^Session "recipient" is unavailable: its broker stopped/);
-			assert.equal(failure!.message.retryLater, true);
-
-			// The session comes back after its ask failed: its late reply, as the intercom tool sends one, is refused.
-			const back = await harness.connect("b", "recipient", {
-				group,
-				returnAddress: registration.returnAddress,
-				preferredSessionId: registration.sessionId,
-			});
-			const late = await back.client
-				.send(asker.sessionId, { text: "8080", replyTo: askId, requirePendingReply: true })
-				.catch((error: Error) => ({ delivered: false, reason: error.message }));
-			assert.equal(late.delivered, false, "the late reply is refused");
-			await sleep(SETTLE_MS);
-			assert.equal(outcomesOf(asker, askId).length, 1, "told once");
-			await harness.disconnect(back);
+				// The session comes back after its ask failed: its late reply, as the intercom tool sends one, is refused.
+				back = await harness.connect("b", "recipient", {
+					group,
+					returnAddress: registration.returnAddress,
+					preferredSessionId: registration.sessionId,
+				});
+				const late = await back.client
+					.send(asker.sessionId, { text: "8080", replyTo: askId, requirePendingReply: true })
+					.catch((error: Error) => ({ delivered: false, reason: error.message }));
+				assert.equal(late.delivered, false, "the late reply is refused");
+				await sleep(SETTLE_MS);
+				assert.equal(outcomesOf(asker, askId).length, 1, "told once");
+			} finally {
+				if (back !== undefined) await harness.disconnect(back);
+				await harness.disconnect(asker);
+			}
 		},
 		TEST_TIMEOUT_MS,
 	);
@@ -109,31 +129,35 @@ test(
 	async () => {
 		const group = `back-${randomUUID().slice(0, 8)}`;
 		const { asker, registration, askId } = await askAcross(group);
+		let back: TwoBrokerClient | undefined;
+		try {
+			await harness.stopBroker("b", "SIGKILL");
+			await harness.startBroker("b");
+			back = await harness.connect("b", "recipient", {
+				group,
+				returnAddress: registration.returnAddress,
+				preferredSessionId: registration.sessionId,
+			});
+			// Past the bound and a backup poll: a recipient that came back is not failed.
+			await sleep(TOLD_WITHIN_MS - 15_000);
+			assert.deepEqual(outcomesOf(asker, askId), [], "nothing before the reply");
 
-		await harness.stopBroker("b", "SIGKILL");
-		await harness.startBroker("b");
-		const back = await harness.connect("b", "recipient", {
-			group,
-			returnAddress: registration.returnAddress,
-			preferredSessionId: registration.sessionId,
-		});
-		// Past the bound and a backup poll: a recipient that came back is not failed.
-		await sleep(TOLD_WITHIN_MS - 15_000);
-		assert.deepEqual(outcomesOf(asker, askId), [], "nothing before the reply");
-
-		const replied = await back.client.send(asker.sessionId, {
-			text: "8080",
-			replyTo: askId,
-			requirePendingReply: true,
-		});
-		assert.equal(replied.delivered, true, replied.reason);
-		await vi.waitFor(() => assert.equal(outcomesOf(asker, askId).length, 1), WAIT);
-		await sleep(SETTLE_MS);
-		const outcomes = outcomesOf(asker, askId);
-		assert.equal(outcomes.length, 1, "one outcome");
-		assert.equal(outcomes[0]!.message.replyError, undefined);
-		assert.equal(outcomes[0]!.message.content.text, "8080");
-		await harness.disconnect(back);
+			const replied = await back.client.send(asker.sessionId, {
+				text: "8080",
+				replyTo: askId,
+				requirePendingReply: true,
+			});
+			assert.equal(replied.delivered, true, replied.reason ?? JSON.stringify(replied));
+			await vi.waitFor(() => assert.equal(outcomesOf(asker, askId).length, 1), WAIT);
+			await sleep(SETTLE_MS);
+			const outcomes = outcomesOf(asker, askId);
+			assert.equal(outcomes.length, 1, "one outcome");
+			assert.equal(outcomes[0]!.message.replyError, undefined);
+			assert.equal(outcomes[0]!.message.content.text, "8080");
+		} finally {
+			if (back !== undefined) await harness.disconnect(back);
+			await harness.disconnect(asker);
+		}
 	},
 	TEST_TIMEOUT_MS,
 );

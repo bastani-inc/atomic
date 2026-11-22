@@ -1138,7 +1138,14 @@ async function reloadOwnedGeneration(
 		await options?.beforeSessionStart?.();
 		if (this._disposed) throw hostInputError("SessionClosed");
 		sessionGenerationClosing.delete(this);
-		await startExtensions(this, this._extensionRunner, this._resourceLoader, { type: "session_start", reason });
+		await startExtensions(
+			this,
+			this._extensionRunner,
+			this._resourceLoader,
+			reason === "startup" && this._sessionStartEvent.engineRestart
+				? { type: "session_start", reason, engineRestart: true }
+				: { type: "session_start", reason },
+		);
 		if (this._disposed) throw hostInputError("SessionClosed");
 		this._rebuildSystemPrompt(this.getActiveToolNames());
 		if (retiringFailures.length) throw retiringFailures[0];
@@ -1246,7 +1253,14 @@ async function reloadOwnedGeneration(
 		if (this._disposed) throw hostInputError("SessionClosed");
 		await options?.beforeSessionStart?.();
 		if (this._disposed) throw hostInputError("SessionClosed");
-		await startExtensions(this, candidateRunner, resourceTransaction.loader, { type: "session_start", reason });
+		await startExtensions(
+			this,
+			candidateRunner,
+			resourceTransaction.loader,
+			reason === "startup" && this._sessionStartEvent.engineRestart
+				? { type: "session_start", reason, engineRestart: true }
+				: { type: "session_start", reason },
+		);
 		if (this._disposed) throw hostInputError("SessionClosed");
 		const preparedResources = resourceTransaction.prepareCommit?.();
 		if (preparedResources) {

@@ -83,6 +83,7 @@ function followedChild(saved: Set<object> = new Set()) {
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const session: TaskTranscriptSource = {
 		getSessionId: () => "child",
+		getSessionFile: () => "/tmp/child.jsonl",
 		getEntries: () => [],
 		entryReceipt: (message) => (saved.has(message) ? { seq: 1 } : undefined),
 		subscribe: (listener) => {
@@ -283,5 +284,43 @@ test("two chats of one subagent report a shown queued message once, and its save
 	} finally {
 		panel.dispose();
 		tasks.dispose();
+	}
+});
+
+test("a subagent view's status carries its session id and file even without taken receipts, live or settled", async () => {
+	const child = followedChild();
+	const page = await child.open();
+	try {
+		const live = page.viewStatus("worker");
+		assert.equal(live.receipts, undefined);
+		assert.equal(live.sessionId, "child");
+		assert.equal(live.sessionFile, "/tmp/child.jsonl");
+	} finally {
+		page.dispose();
+	}
+
+	const historyOnlySession: TaskTranscriptSource = {
+		getSessionId: () => "settled-child",
+		getSessionFile: () => "/tmp/settled-child.jsonl",
+		getEntries: () => [],
+	};
+	const settledSource = transcriptOnlySource({
+		readTaskTranscript: () => ({ ok: true, value: { messages: [] } }),
+		followTaskTranscript: () => ({ session: historyOnlySession, historyOnly: true }),
+	});
+	initTheme("dark");
+	const settledPage = new TaskAgentTranscriptPage(
+		settledSource,
+		TASK,
+		taskTranscriptEnvironment({ keybindings: new KeybindingsManager() }),
+		() => {},
+	);
+	await settledPage.load();
+	try {
+		const settled = settledPage.viewStatus("worker");
+		assert.equal(settled.sessionId, "settled-child");
+		assert.equal(settled.sessionFile, "/tmp/settled-child.jsonl");
+	} finally {
+		settledPage.dispose();
 	}
 });

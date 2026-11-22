@@ -17,6 +17,7 @@ const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set([
 	"user_bash",
 	"refresh_models",
 	"start_pending_recovery",
+	"start_pending_recovery_restore",
 	"stop_all_background",
 	// A subagent shown on the host's screen: each command is about that subagent alone, and one waiting on it (a
 	// message it has not taken yet, a pause until its turn ends) must not hold the host's panel or /tasks.

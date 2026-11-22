@@ -16,6 +16,7 @@ import {
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import * as shellUtils from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
+import * as enginePrewarm from "../interactive-engine/engine-prewarm.ts";
 import { adoptPrewarmedEngine, engineLaunch, type PrewarmLaunchBasis } from "../interactive-engine/engine-prewarm.ts";
 
 export interface PreparedRpcClientBootstrap {
@@ -44,18 +45,25 @@ export async function prepareRpcClientBootstrap(
 	trustDecisions?: SessionTrustDecisions,
 	startedSessionId?: string,
 	startupExtensionCheck?: StartupExtensionCheck,
+	restarted?: boolean,
 ): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
-	const bootstrap = await writeInteractiveEngineBootstrapAsync({
-		hostPid: process.pid,
-		guardFile: guardianFile,
-		projectResourceWithdrawals: true,
-		queuedDeliveries: true,
-		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
-		...(trustDecisions ? { trustDecisions } : {}),
-		...(startedSessionId !== undefined ? { startedSessionId } : {}),
-		...(startupExtensionCheck ? { startupExtensionCheck } : {}),
-	});
+	const waitForPrewarm = (enginePrewarm as { waitForPrewarmedEngineReady?: () => Promise<void> })
+		.waitForPrewarmedEngineReady;
+	const [bootstrap] = await Promise.all([
+		writeInteractiveEngineBootstrapAsync({
+			hostPid: process.pid,
+			guardFile: guardianFile,
+			projectResourceWithdrawals: true,
+			queuedDeliveries: true,
+			...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
+			...(trustDecisions ? { trustDecisions } : {}),
+			...(startedSessionId !== undefined ? { startedSessionId } : {}),
+			...(startupExtensionCheck ? { startupExtensionCheck } : {}),
+			...(restarted === true ? { restarted: true as const } : {}),
+		}),
+		typeof waitForPrewarm === "function" ? waitForPrewarm() : Promise.resolve(),
+	]);
 	return { guardianFile, bootstrap };
 }
 
