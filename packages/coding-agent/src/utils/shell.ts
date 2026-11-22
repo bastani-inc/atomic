@@ -9,6 +9,7 @@ import * as processTreeContainment from "../core/process-tree-containment.ts";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { findHelperExecutable, findHelperExecutableAsync } from "./helper-command.ts";
 import { type HostChildProcess, spawnContainedProcess } from "./host-spawn.ts";
+import { resolutionBaseUrl } from "./module-require.js";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 import {
@@ -356,7 +357,7 @@ export async function getShellEnvAsync(): Promise<NodeJS.ProcessEnv> {
 }
 
 interface DetachedChildGuardian {
-	postMessage(message: { action: "track" | "exited" | "untrack"; pid: number }): void;
+	postMessage(message: { action: "track" | "exited" | "untrack"; pid: number; created?: string | null }): void;
 	terminate(): Promise<number>;
 	unref(): void;
 }
@@ -371,11 +372,23 @@ const { existsSync, lstatSync, realpathSync, statSync } = builtin("node:fs");
 const { tmpdir } = builtin("node:os");
 const { join, win32 } = builtin("node:path");
 const tracked = new Map();
-parentPort.on("message", ({ action, pid }) => {
-  if (action === "track") tracked.set(pid, false);
-  else if (action === "exited") { if (tracked.has(pid)) tracked.set(pid, true); }
+parentPort.on("message", ({ action, pid, created }) => {
+  if (action === "track") tracked.set(pid, { exited: false, created });
+  else if (action === "exited") { const e = tracked.get(pid); if (e) e.exited = true; }
   else tracked.delete(pid);
 });
+let nativeAddon;
+function loadNative() {
+  if (nativeAddon !== undefined) return nativeAddon;
+  if (!workerData.nativeWindowsHost || !workerData.resolutionBase) { nativeAddon = null; return null; }
+  try {
+    const { createRequire } = builtin("node:module");
+    nativeAddon = createRequire(workerData.resolutionBase)("@bastani/atomic-natives") || null;
+  } catch {
+    nativeAddon = null;
+  }
+  return nativeAddon;
+}
 function normalizeWinPath(v) {
   if (!v || v.includes("\\0")) return undefined;
   const s = v.replaceAll("/", "\\\\");
@@ -453,31 +466,80 @@ function safeKillCwd(commandPath) {
   }
   return fallback;
 }
-function killTree(pid, exited) {
+function exitHost() {
+  // Inside a worker thread, process.exit(1) only exits the worker; SIGKILL on our own PID terminates the host process.
+  try { process.kill(process.pid, "SIGKILL"); } catch {}
+  process.exit(1);
+}
+function fallbackTaskkillSelf() {
+  // Same System32 hardening as killProcessTree: PATH is not trusted here, and an
+  // unconsumed async "error" from a failed spawn would take the guardian thread
+  // down and leak every detached child it exists to reap.
+  try {
+    // In a verified directory outside the project: a kill never keeps the folder Atomic ran in in use.
+    const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\\\Windows";
+    const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+    const cwd = safeKillCwd(taskkillPath);
+    const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(process.pid)], { ...(cwd === undefined ? {} : { cwd }), stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
+    child.once("error", exitHost);
+    child.once("exit", exitHost);
+    return;
+  } catch {}
+  exitHost();
+}
+function killTracked(pid, entry, native) {
   if (process.platform === "win32") {
-    if (exited) return;
-    // Same System32 hardening as killProcessTree: PATH is not trusted here, and an
-    // unconsumed async "error" from a failed spawn would take the guardian thread
-    // down and leak every detached child it exists to reap.
-    try {
-      // In a verified directory outside the project: a kill never keeps the folder Atomic ran in in use.
-      const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\\\Windows";
-      const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
-      const cwd = safeKillCwd(taskkillPath);
-      const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(pid)], { ...(cwd === undefined ? {} : { cwd }), stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
-      child.once("error", () => {});
-    } catch {}
+    if (entry.exited) return;
+    // Only terminate a tracked Windows child when its creation time was captured and verified atomically
+    // on the opened handle; never kill an unverified bare PID that may have been reused.
+    if (native && typeof native.terminateProcessCreatedAt === "function" && typeof entry.created === "string") {
+      try { native.terminateProcessCreatedAt(pid, entry.created, true); } catch {}
+    }
     return;
   }
   try { process.kill(-pid, "SIGKILL"); }
-  catch { if (!exited) { try { process.kill(pid, "SIGKILL"); } catch {} } }
+  catch { if (!entry.exited) { try { process.kill(pid, "SIGKILL"); } catch {} } }
+}
+function killSelf(native) {
+  if (process.platform === "win32") {
+    if (native && typeof native.holdProcessDescendants === "function") {
+      let held;
+      try { held = native.holdProcessDescendants(process.pid); } catch {}
+      // Only take the native path when endDescendants() is available so verified descendants end BEFORE self;
+      // older native binaries lacking endDescendants() would terminate self first in endAll().
+      if (held && typeof held.endDescendants === "function") {
+        try {
+          held.endDescendants();
+          held.endAll();
+        } catch {}
+        exitHost();
+      }
+      if (held) {
+        try { held.release(); } catch {}
+      }
+    }
+    fallbackTaskkillSelf();
+    return;
+  }
+  try { process.kill(-process.pid, "SIGKILL"); }
+  catch { try { process.kill(process.pid, "SIGKILL"); } catch {} }
+}
+function isParentAlive(native) {
+  if (process.platform === "win32" && native && typeof native.processCreationTime === "function") {
+    if (workerData.parentCreated === null) return false;
+    if (typeof workerData.parentCreated === "string") {
+      try { return native.processCreationTime(workerData.parentPid) === workerData.parentCreated; } catch { return false; }
+    }
+  }
+  try { process.kill(workerData.parentPid, 0); return true; } catch { return false; }
 }
 const timer = setInterval(() => {
-  let parentAlive = true;
-  try { process.kill(workerData.parentPid, 0); } catch { parentAlive = false; }
+  const native = process.platform === "win32" ? loadNative() : null;
+  const parentAlive = isParentAlive(native);
   if (parentAlive && (!workerData.stopFile || !existsSync(workerData.stopFile))) return;
-  for (const [pid, exited] of tracked) killTree(pid, exited);
-  killTree(process.pid, false);
+  clearInterval(timer);
+  for (const [pid, entry] of tracked) killTracked(pid, entry, native);
+  killSelf(native);
 }, 50);
 timer.unref?.();
 `;
@@ -487,11 +549,18 @@ export function startParentProcessGuardian(parentPid: number, stopFile?: string)
 	const guardian = new Worker(PARENT_GUARDIAN_SOURCE, {
 		eval: true,
 		execArgv: evalWorkerExecArgv(),
-		workerData: { parentPid, stopFile, aiAgent: createChildProcessEnvironment().AI_AGENT },
+		workerData: {
+			parentPid,
+			parentCreated: captureWindowsCreationTime(parentPid),
+			stopFile,
+			aiAgent: createChildProcessEnvironment().AI_AGENT,
+			resolutionBase: resolutionBaseUrl(import.meta.url),
+			nativeWindowsHost: process.platform === "win32",
+		},
 	});
 	detachedChildGuardian = guardian;
 	for (const [pid, entry] of trackedDetachedChildPids) {
-		guardian.postMessage({ action: "track", pid });
+		guardian.postMessage({ action: "track", pid, created: entry.created });
 		if (entry.exited) guardian.postMessage({ action: "exited", pid });
 	}
 	guardian.unref();
@@ -506,8 +575,8 @@ interface TrackedDetachedChild {
 	exited: boolean;
 	readonly child?: ChildProcess;
 	/**
-	 * On Windows when tracked by bare PID without a ChildProcess handle: creation time captured via the native addon
-	 * while tracked, `null` when the native addon saw the process already absent, or `undefined` when unavailable.
+	 * On Windows: creation time captured via the native addon while tracked, `null` when the native addon saw the
+	 * process already absent, or `undefined` when unavailable.
 	 */
 	readonly created?: string | null;
 }
@@ -524,16 +593,20 @@ function captureWindowsCreationTime(pid: number): string | null | undefined {
 }
 
 export function trackDetachedChildPid(pid: number): void {
-	trackedDetachedChildPids.set(pid, { exited: false, created: captureWindowsCreationTime(pid) });
-	detachedChildGuardian?.postMessage({ action: "track", pid });
+	const created = captureWindowsCreationTime(pid);
+	trackedDetachedChildPids.set(pid, { exited: false, created });
+	detachedChildGuardian?.postMessage({ action: "track", pid, created });
 }
 
 /** Tracks `child` with its live handle so shutdown can stop it on Windows without bare-PID kills. */
 export function trackDetachedChildProcess(child: ChildProcess): void {
 	const pid = child.pid;
 	if (pid === undefined) return;
-	trackedDetachedChildPids.set(pid, { exited: child.exitCode !== null || child.signalCode !== null, child });
-	detachedChildGuardian?.postMessage({ action: "track", pid });
+	const exited = child.exitCode !== null || child.signalCode !== null;
+	const created = exited ? null : captureWindowsCreationTime(pid);
+	trackedDetachedChildPids.set(pid, { exited, child, created });
+	detachedChildGuardian?.postMessage({ action: "track", pid, created });
+	if (exited) detachedChildGuardian?.postMessage({ action: "exited", pid });
 }
 
 export function markDetachedChildExited(pid: number): void {
@@ -638,11 +711,10 @@ export function killTrackedDetachedChildren(spare?: ReadonlySet<number>): void {
 			killChildProcessTree(entry.child, entry.exited);
 		} else if (!entry.exited) {
 			if (process.platform === "win32") {
+				// Without a live ChildProcess handle on Windows, terminate only when the creation time was captured
+				// and verified atomically through the native module; never kill an unverified bare PID.
 				if (typeof entry.created === "string") {
-					const terminated = processStartToken.nativeTerminateProcess?.(pid, entry.created, true);
-					if (terminated === undefined) killProcessTree(pid);
-				} else if (entry.created === undefined) {
-					killProcessTree(pid);
+					processStartToken.nativeTerminateProcess?.(pid, entry.created, true);
 				}
 			} else {
 				killProcessTree(pid);
@@ -695,13 +767,17 @@ export function killChildProcessTree(
 			}
 			return;
 		}
-		taskkillTree(pid, () => {
-			if (child.exitCode === null && child.signalCode === null) {
-				try {
-					child.kill("SIGKILL");
-				} catch {}
-			}
-		});
+		taskkillTree(
+			pid,
+			() => {
+				if (child.exitCode === null && child.signalCode === null) {
+					try {
+						child.kill("SIGKILL");
+					} catch {}
+				}
+			},
+			() => child.exitCode === null && child.signalCode === null,
+		);
 		return;
 	}
 	if (exited) {
@@ -716,7 +792,7 @@ export function killChildProcessTree(
 	child.kill("SIGKILL");
 }
 
-function taskkillTree(pid: number, settled?: () => void): void {
+function taskkillTree(pid: number, settled?: () => void, shouldProceed?: () => boolean): void {
 	// Use the trusted System32 executable so cleanup does not depend on PATH.
 	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 	const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
@@ -727,6 +803,10 @@ function taskkillTree(pid: number, settled?: () => void): void {
 		settled?.();
 	};
 	const attempt = (cwd: string | undefined, allowRetry: boolean): void => {
+		if (shouldProceed !== undefined && !shouldProceed()) {
+			finish();
+			return;
+		}
 		try {
 			const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(pid)], {
 				// In a safe directory outside the project: a kill never keeps the folder Atomic runs in in use.
@@ -749,6 +829,10 @@ function taskkillTree(pid: number, settled?: () => void): void {
 					})
 						.then((freshCwd) => {
 							if (done) return;
+							if (shouldProceed !== undefined && !shouldProceed()) {
+								finish();
+								return;
+							}
 							if (freshCwd !== undefined && freshCwd.toLowerCase() !== (cwd ?? "").toLowerCase()) {
 								attempt(freshCwd, false);
 								return;

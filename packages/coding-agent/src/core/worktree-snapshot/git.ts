@@ -208,7 +208,7 @@ function treeRunning(tree: ProcessTreeContainment | undefined): boolean {
 	}
 }
 
-async function taskkillTree(pid: number, deadline: number): Promise<number[]> {
+async function taskkillTree(pid: number, deadline: number, isAlive: () => boolean): Promise<number[]> {
 	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 	const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
 	const budgetMs = Math.min(DEFAULT_WINDOWS_CWD_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
@@ -217,6 +217,8 @@ async function taskkillTree(pid: number, deadline: number): Promise<number[]> {
 		preferCommandDir: true,
 		timeoutMs: budgetMs,
 	});
+	// Re-check liveness after awaiting safe cwd resolution: a child that exited meanwhile may have had its PID reused.
+	if (!isAlive()) return [];
 	return new Promise((resolve) => {
 		let output = "";
 		let taskkill: ChildProcess;
@@ -284,7 +286,11 @@ async function stopCommand(
 		if (process.platform === "win32") {
 			if (!holdEnded && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
 				if (hold.kind === "unavailable") {
-					killed = await taskkillTree(child.pid, deadline);
+					killed = await taskkillTree(
+						child.pid,
+						deadline,
+						() => child.exitCode === null && child.signalCode === null,
+					);
 					if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 				} else {
 					child.kill("SIGKILL");

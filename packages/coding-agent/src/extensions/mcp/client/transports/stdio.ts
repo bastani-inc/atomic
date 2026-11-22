@@ -3,6 +3,7 @@ import { open, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import crossSpawn from "cross-spawn";
+import * as processTreeContainment from "../../../../core/process-tree-containment.ts";
 import {
 	findHelperExecutableAsync,
 	type HelperExecutableOptions,
@@ -83,20 +84,74 @@ function spawnWindowsTaskkill(
 	return undefined;
 }
 
+interface WindowsTreeStopState {
+	readonly tree: processTreeContainment.ProcessTreeContainment | undefined;
+	treeTerminated: boolean;
+}
+
+function holdDescendantsStatus(pid: number): processTreeContainment.ProcessDescendantsHold {
+	if (processTreeContainment.holdProcessDescendantsResult !== undefined) {
+		return processTreeContainment.holdProcessDescendantsResult(pid);
+	}
+	const held = processTreeContainment.holdProcessDescendants?.(pid);
+	return held === undefined ? { kind: "unavailable" } : { kind: "held", held };
+}
+
+function hasNativeProcessHold(): boolean {
+	return processTreeContainment.hasNativeProcessHold?.() ?? false;
+}
+
+function treeRunning(tree: processTreeContainment.ProcessTreeContainment | undefined): boolean {
+	try {
+		return tree !== undefined && tree.activeProcesses() > 0;
+	} catch {
+		return false;
+	}
+}
+
 /**
- * Ends `child` and the processes it started. On Windows, returns a promise that resolves once the kill command has
- * finished or failed to start; `undefined` when no kill command was started (elsewhere, already exited, or when
- * starting the kill command threw synchronously and the direct handle kill ran instead).
+ * Ends `child` and the processes it started. On Windows with the native module, uses handle-verified
+ * `holdProcessDescendantsResult` + the breakaway-allowing Job object (never spawning bare-PID `taskkill`).
+ * Only when the native module is unavailable and the child handle is still live does it fall back to
+ * `spawnWindowsTaskkill` in a verified safe working directory.
  */
 function killProcessTree(
 	child: ChildProcess,
 	signal: NodeJS.Signals,
 	onSettled?: () => void,
 	windowsKillCwd?: PendingWindowsKillCwd,
+	windowsTree?: WindowsTreeStopState,
 ): Promise<void> | undefined {
 	const pid = child.pid;
 	if (process.platform === "win32" && pid !== undefined) {
-		if (child.exitCode !== null || child.signalCode !== null) return undefined;
+		const live = child.exitCode === null && child.signalCode === null;
+		let hold: processTreeContainment.ProcessDescendantsHold = { kind: "unavailable" };
+		let holdEnded = false;
+		if (live) {
+			hold = holdDescendantsStatus(pid);
+			holdEnded = hold.kind === "held" && hold.held.endAll();
+		}
+		if (windowsTree !== undefined && !windowsTree.treeTerminated && windowsTree.tree !== undefined) {
+			windowsTree.treeTerminated = windowsTree.tree.terminate() === true;
+		}
+		if (windowsTree?.treeTerminated || holdEnded) {
+			onSettled?.();
+			return undefined;
+		}
+		if (!live) {
+			onSettled?.();
+			return undefined;
+		}
+		if (hold.kind !== "unavailable") {
+			// Native module is loaded and reported the root already exited or unopenable: never spawn taskkill.
+			onSettled?.();
+			if (child.exitCode === null && child.signalCode === null) {
+				try {
+					child.kill(signal);
+				} catch {}
+			}
+			return undefined;
+		}
 		if (windowsKillCwd !== undefined && !windowsKillCwd.done && windowsKillCwd.pending !== undefined) {
 			return windowsKillCwd.pending.then((safeCwd) => spawnWindowsTaskkill(child, pid, signal, safeCwd, onSettled));
 		}
@@ -318,6 +373,7 @@ const NON_SECRET_STDIO_ENV_VARS = new Set([
 export class StdioTransport extends TransportEvents implements McpTransport {
 	readonly options: Readonly<StdioTransportOptions>;
 	private child: ChildProcess | undefined;
+	private processTree: processTreeContainment.ProcessTreeContainment | undefined;
 	private readonly lines: JsonRpcLineReader;
 	private started = false;
 	private closed = false;
@@ -436,6 +492,9 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 				: spawn(launch.file, this.options.args ?? [], { ...options, ...missingHelperOptions(launch) });
 		this.child = child;
 		const pid = child.pid;
+		if (process.platform === "win32" && pid !== undefined) {
+			this.processTree = processTreeContainment.containProcessTreeAllowingBreakaway?.(pid);
+		}
 		if (USE_PROCESS_GROUPS && pid !== undefined) {
 			installExitHook();
 			liveProcessGroups.add(pid);
@@ -462,6 +521,8 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			};
 			const onError = (error: Error) => {
 				child.off("spawn", onSpawn);
+				this.processTree?.close();
+				this.processTree = undefined;
 				reject(error);
 			};
 			child.once("spawn", onSpawn);
@@ -486,21 +547,36 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		this.closed = true;
 		this.lookup.abort();
 		const child = this.child;
+		const tree = this.processTree;
+		this.processTree = undefined;
+		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
 		if (!child) {
+			tree?.release();
+			tree?.close();
 			this.emitClose();
 			return;
 		}
 		// With process groups, a server that already exited can leave children holding its pipes; the
-		// group cleanup below still has to run for them.
-		if (!USE_PROCESS_GROUPS && (child.exitCode !== null || child.signalCode !== null)) {
+		// group cleanup below still has to run for them. On Windows, a server that already exited before
+		// close() keeps any detached helpers it left behind, so release the Job without terminating them.
+		if (process.platform === "win32" && (child.exitCode !== null || child.signalCode !== null)) {
 			child.stdin?.end();
+			tree?.release();
+			tree?.close();
 			return;
 		}
 		// Shutdown per the spec: close stdin and let the server exit, then SIGTERM, then SIGKILL.
-		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
 		/** The kill commands this close started that are still running, waited for once the server has closed. */
 		const kills = new Set<Promise<void>>();
 		const closeAbort = new AbortController();
+		const windowsTreeState: WindowsTreeStopState = { tree, treeTerminated: false };
+		let forcedKill = false;
+		let treeReleased = false;
+		const releaseTree = () => {
+			if (treeReleased || tree === undefined) return;
+			treeReleased = true;
+			tree.release();
+		};
 		const windowsKillCwd: {
 			done: boolean;
 			value: string | undefined;
@@ -512,6 +588,8 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		};
 		const startWindowsKillCwd = () => {
 			if (process.platform !== "win32") return;
+			// When native containment or handle-held descendant termination is available, taskkill will never spawn.
+			if (tree !== undefined || hasNativeProcessHold()) return;
 			const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 			const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
 			const budgetMs = Math.min(DEFAULT_WINDOWS_CWD_TIMEOUT_MS, Math.max(20, closeTimeoutMs));
@@ -546,46 +624,74 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 					if (pending !== undefined) kills.delete(pending);
 				},
 				windowsKillCwd,
+				windowsTreeState,
 			);
 			if (pending !== undefined && !settled) kills.add(pending);
 		};
-		await new Promise<void>((resolve) => {
-			const timers: ReturnType<typeof setTimeout>[] = [];
-			let childClosed = false;
-			child.once("close", () => {
-				childClosed = true;
-				closeAbort.abort();
-				for (const timer of timers) clearTimeout(timer);
-				// Children of the server that ignored stdin closing would otherwise outlive it.
-				kill("SIGTERM");
-				if (kills.size === 0) {
-					resolve();
-					return;
-				}
-				// A kill command still finishing ends the rest of the server's processes: wait for it, as long as the
-				// server itself was given after SIGTERM, and no longer.
-				const bound = setTimeout(resolve, closeTimeoutMs);
-				void Promise.all(kills).then(() => {
-					clearTimeout(bound);
-					resolve();
+		try {
+			await new Promise<void>((resolve) => {
+				const timers: ReturnType<typeof setTimeout>[] = [];
+				let childClosed = false;
+				child.once("close", () => {
+					childClosed = true;
+					closeAbort.abort();
+					for (const timer of timers) clearTimeout(timer);
+					if (process.platform !== "win32") {
+						// Children of the server in its process group that ignored stdin closing would otherwise outlive it;
+						// detached daemons live in their own group and survive.
+						kill("SIGTERM");
+					} else if (forcedKill) {
+						// Forced close: finish terminating any remaining Job members (including orphaned grandchildren).
+						if (tree === undefined || treeRunning(tree)) kill("SIGTERM");
+					} else {
+						// Cooperative close on Windows: release the Job without terminating its members so detached
+						// helpers deliberately left running by the server survive.
+						releaseTree();
+					}
+					const needsTreeDrain = forcedKill && tree !== undefined && treeRunning(tree);
+					if (kills.size === 0 && !needsTreeDrain) {
+						resolve();
+						return;
+					}
+					// Wait for any running fallback kill helpers and remaining Job members, bounded by closeTimeoutMs.
+					const waits: Promise<void>[] = [...kills];
+					if (needsTreeDrain) waits.push(processTreeContainment.processTreeEnded(tree, closeTimeoutMs));
+					const bound = setTimeout(resolve, closeTimeoutMs);
+					void Promise.all(waits).then(() => {
+						clearTimeout(bound);
+						resolve();
+					});
 				});
+				const grace = Math.min(STDIN_CLOSE_GRACE_MS, closeTimeoutMs);
+				timers.push(
+					setTimeout(() => {
+						forcedKill = true;
+						kill("SIGTERM");
+					}, grace),
+				);
+				timers.push(
+					setTimeout(() => {
+						forcedKill = true;
+						kill("SIGKILL");
+					}, grace + closeTimeoutMs),
+				);
+				// A process that left the server's group can keep the pipes open after the kill; stop waiting for it.
+				timers.push(
+					setTimeout(
+						() => {
+							child.stdin?.destroy();
+							child.stdout?.destroy();
+							child.stderr?.destroy();
+						},
+						grace + closeTimeoutMs + PIPE_RELEASE_AFTER_KILL_MS,
+					),
+				);
+				child.stdin?.end();
+				if (!childClosed) startWindowsKillCwd();
 			});
-			const grace = Math.min(STDIN_CLOSE_GRACE_MS, closeTimeoutMs);
-			timers.push(setTimeout(() => kill("SIGTERM"), grace));
-			timers.push(setTimeout(() => kill("SIGKILL"), grace + closeTimeoutMs));
-			// A process that left the server's group can keep the pipes open after the kill; stop waiting for it.
-			timers.push(
-				setTimeout(
-					() => {
-						child.stdin?.destroy();
-						child.stdout?.destroy();
-						child.stderr?.destroy();
-					},
-					grace + closeTimeoutMs + PIPE_RELEASE_AFTER_KILL_MS,
-				),
-			);
-			child.stdin?.end();
-			if (!childClosed) startWindowsKillCwd();
-		});
+		} finally {
+			if (!forcedKill) releaseTree();
+			tree?.close();
+		}
 	}
 }
