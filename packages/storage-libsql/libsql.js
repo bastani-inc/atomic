@@ -1112,20 +1112,44 @@ function driverResult(result) {
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
 /**
- * How long a call to a libSQL server runs again while the server answers it `SQLITE_BUSY` or `SQLITE_SCHEMA`. sqld
+ * Total backoff sleep budget a call to a libSQL server spends retrying `SQLITE_BUSY` or `SQLITE_SCHEMA`. sqld
  * answers a writer that meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running any of the
  * call, and leaves the waiting to the client; its own checkpoint waits this long for the lock. It answers
  * `SQLITE_SCHEMA`, also without running the call, while other connections keep changing the schema.
  */
 const SERVER_BUSY_TIMEOUT_MS = 5000;
+/**
+ * Hard wall-clock cap from the first `SQLITE_BUSY` or `SQLITE_SCHEMA` refusal before giving up, even when individual
+ * attempts wait on the server's own 5 s write-lock timeout before returning `SQLITE_BUSY` (for example after an
+ * abandoned stream's lock expires into a checkpoint). Fast refusals still stop at `SERVER_BUSY_TIMEOUT_MS` of sleeps.
+ */
+const SERVER_BUSY_MAX_ELAPSED_MS = 15_000;
 /** The first wait before a call a libSQL server answered busy runs again; each later wait doubles, up to the last. */
 const SERVER_BUSY_FIRST_WAIT_MS = 10;
 const SERVER_BUSY_LAST_WAIT_MS = 200;
+/** Each busy retry wait varies by up to this fraction either way, so concurrent callers do not retry in lockstep. */
+const SERVER_BUSY_JITTER = 0.2;
 
 /**
- * Runs `operation` again, with growing waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the failed run
- * ran nothing, or with `SQLITE_SCHEMA`, until `SERVER_BUSY_TIMEOUT_MS` has passed; then it fails with the last run's
- * failure. `prepare` runs before each run after the first.
+ * The next backoff delay for a libSQL server refusal, or `0` when the retry budget is exhausted.
+ * @param {number} wait base wait before jitter, in ms
+ * @param {number} left remaining retry budget, in ms
+ * @returns {number}
+ */
+function serverBusyDelayMs(wait, left) {
+	if (left <= 0) return 0;
+	const factor = 1 + SERVER_BUSY_JITTER * (2 * Math.random() - 1);
+	return Math.min(Math.round(wait * factor), left);
+}
+
+/**
+ * Runs `operation` again, with growing jittered waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the
+ * failed run ran nothing, or with `SQLITE_SCHEMA`, for up to `SERVER_BUSY_TIMEOUT_MS` of backoff waits and at most
+ * `SERVER_BUSY_MAX_ELAPSED_MS` of wall-clock time counted from the first refusal; then it fails with the last run's
+ * failure. Separating the backoff sleep budget from the post-refusal wall-clock cap ensures an attempt that waited on
+ * the server's write lock (up to sqld's 5 s transaction timeout) or write lane before meeting a checkpoint still gets
+ * its retries, while fast refusals stop at `SERVER_BUSY_TIMEOUT_MS` and even a frozen `performance.now()` terminates.
+ * `prepare` runs before each run after the first.
  *
  * A server answers `SQLITE_SCHEMA` when other connections kept changing the database's schema while it prepared the
  * statement, as on a server shared by several stores that create and drop their tables: the statement never ran, so
@@ -1138,15 +1162,22 @@ const SERVER_BUSY_LAST_WAIT_MS = 200;
  * @returns {Promise<T>}
  */
 async function whileServerBusy(operation, ranNothing, prepare, rerunsAfterSchemaChange = () => true) {
-	const deadline = performance.now() + SERVER_BUSY_TIMEOUT_MS;
+	/** @type {number | undefined} */
+	let deadline;
+	let waited = 0;
 	for (let wait = SERVER_BUSY_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, SERVER_BUSY_LAST_WAIT_MS)) {
 		try {
 			return await operation();
 		} catch (error) {
-			const left = deadline - performance.now();
 			const rerun = isBusy(error) ? ranNothing() : isSchemaChanged(error) && rerunsAfterSchemaChange();
-			if (!rerun || left <= 0) throw error;
-			await new Promise((resolve) => setTimeout(resolve, Math.min(wait, left)));
+			if (!rerun) throw error;
+			const now = performance.now();
+			deadline ??= now + SERVER_BUSY_MAX_ELAPSED_MS;
+			const left = Math.min(deadline - now, SERVER_BUSY_TIMEOUT_MS - waited);
+			const delay = serverBusyDelayMs(wait, left);
+			if (delay <= 0) throw error;
+			waited += Math.max(delay, 1);
+			await new Promise((resolve) => setTimeout(resolve, delay));
 			await prepare?.();
 		}
 	}

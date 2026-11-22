@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A call to a libSQL server (`sqld` or Turso) that waited on the server's write lock or write lane before receiving `SQLITE_BUSY` or `SQLITE_SCHEMA` (for example after another client's abandoned write transaction timed out into a periodic WAL checkpoint) no longer fails immediately without retrying. The adapter now counts its 5 seconds of growing, jittered retry waits (up to a 15-second wall-clock cap) from the first refusal instead of before the first attempt, and stops after the wait budget even when `performance.now()` does not advance.
+
 ## [0.9.90] - 2026-11-19
 
 ### Fixed
