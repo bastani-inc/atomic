@@ -196,10 +196,10 @@ export function runsInteractiveEngine(runtime: AgentSessionRuntime): boolean {
  * engine to say so.
  */
 export function onEngineConsoleClosed(runtime: AgentSessionRuntime, listener: () => void): () => void {
-	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
-	return runtime.onEngineMessage((message) => {
-		if (message.type === "engine_console_closed") listener();
-	});
+	// MUTANT: the host ignores the engine's word that the console closed.
+	void listener;
+	void runtime;
+	return () => {};
 }
 
 /**
