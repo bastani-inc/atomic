@@ -15,9 +15,11 @@ import {
 	OAuthError,
 	OAuthTemporarilyUnavailableError,
 	registerClient,
+	startAuthorization,
 } from "../../src/extensions/mcp/client/oauth/index.js";
 import {
 	extractAuthorizationSecrets,
+	redactAuthorizationUrlForDisplay,
 	redactOAuthErrorText,
 	redactSecretValues,
 	redactWwwAuthenticateHeader,
@@ -25,6 +27,7 @@ import {
 import { createMcpExtension } from "../../src/extensions/mcp/index.js";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.js";
 import { createMcpResourceToolDefinitions } from "../../src/extensions/mcp/resources.js";
+import { McpServerConnection } from "../../src/extensions/mcp/runtime.js";
 import { initTheme } from "../../src/modes/interactive/theme/theme.js";
 import { startOAuthMcpServer } from "./native-oauth-server.js";
 
@@ -1371,5 +1374,153 @@ rl.on("line", (line) => {
 			),
 			false,
 		);
+	});
+
+	it("preserves non-secret diagnostics & RFC 8707 wire resource, scrubs connectFailed/lookahead-shrinkage/Basic-base64/escaped-JSON/ANSI/partial-overlap", async () => {
+		// 1. connectFailed + authorizedFetch throw never leak transport secrets (even after initializingTransport clears).
+		const fetchConnSecret = "opaqueFetchErrConnSecret9988";
+		const conn = new McpServerConnection({
+			entry: { name: "srv", config: { url: "https://mcp.example.com/mcp" }, source: "test" },
+			cwd: tmpdir(),
+			createTransport: () =>
+				new StreamableHttpTransport({
+					url: "https://mcp.example.com/mcp",
+					openGetStream: false,
+					headers: { Authorization: `Bearer ${fetchConnSecret}` },
+					fetch: async () => {
+						throw new Error(`proxy rejected ${fetchConnSecret}`);
+					},
+				}),
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			onTools: () => {},
+		});
+		const connErr = await conn.getClient().catch((error: unknown) => error);
+		await conn.close();
+		assert.ok(connErr instanceof Error);
+		assert.equal(connErr.message.includes(fetchConnSecret), false, connErr.message);
+		assert.equal((conn.error ?? "").includes(fetchConnSecret), false, conn.error);
+
+		// 2. Lookahead shrinkage must never emit raw bytes from >= 8192 (tail prefix cut at 8192 + lookahead).
+		const shrinkSec = "opaqueShrinkSecret30Chars12345";
+		const tailSec = "opaqueShrinkBoundaryTailSecret99";
+		const repeatedPrefix = `${shrinkSec} `.repeat(30); // 930 bytes -> shrinks by 600 bytes after redaction
+		const fillerLen = 8690 - repeatedPrefix.length;
+		const shrinkBody = `${repeatedPrefix}${"z".repeat(fillerLen)}${tailSec}`;
+		const shrinkTransport = new StreamableHttpTransport({
+			url: "https://mcp.example.com/mcp",
+			openGetStream: false,
+			headers: { Authorization: `Bearer ${shrinkSec}`, "X-Extra-Token": tailSec },
+			fetch: async () => new Response(shrinkBody, { status: 500 }),
+		});
+		await shrinkTransport.start();
+		const shrinkErr = await shrinkTransport
+			.send({ jsonrpc: "2.0", id: 1, method: "ping" })
+			.catch((error: unknown) => error);
+		await shrinkTransport.close();
+		assert.ok(shrinkErr instanceof McpHttpError);
+		assert.equal(shrinkErr.body.includes("opaqueShrinkBo"), false, shrinkErr.body.slice(-80));
+		assert.equal(shrinkErr.body.includes(shrinkSec), false);
+
+		// 3. Unbounded Basic Base64 credentials (including 4-char and all-lowercase Base64) + bare Base64 encoding of known secrets.
+		for (const b64 of [
+			Buffer.from("a:b").toString("base64"), // "YTpi"
+			Buffer.from("j:j").toString("base64"), // "ajpq"
+			Buffer.from("j:jjjj").toString("base64"), // "ajpqampq"
+			Buffer.from("j:jjjjjjj").toString("base64"), // "ajpqampqampq"
+			Buffer.from("jjjj:jjjjjjj").toString("base64"), // "ampqajpqampqampq"
+		]) {
+			const out = redactOAuthErrorText(`rejected Basic ${b64}`);
+			assert.equal(out.includes(b64), false, `Basic ${b64} leaked: ${out}`);
+		}
+		assert.equal(redactOAuthErrorText("Basic auth failed"), "Basic auth failed");
+		assert.equal(redactOAuthErrorText("Basic mode only"), "Basic mode only");
+		assert.equal(redactOAuthErrorText("Basic text format"), "Basic text format");
+
+		const rawKnown = "knownBareSecretValue7788";
+		const bareB64 = Buffer.from(rawKnown).toString("base64");
+		const bareB64Unpadded = bareB64.replace(/=+$/u, "");
+		assert.equal(
+			redactSecretValues(`b64=${bareB64} unpad=${bareB64Unpadded}`, [rawKnown]).includes(bareB64Unpadded),
+			false,
+		);
+
+		// 4. Escaped JSON `\"code_verifier\"` and ANSI sequences around `Basic` / `code_verifier`.
+		const verifier = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE";
+		assert.equal(redactOAuthErrorText(`{\\"code_verifier\\":\\"${verifier}\\"}`).includes(verifier), false);
+		assert.equal(
+			redactOAuthErrorText(`\x1b[31mBasic\x1b[0m Y2xpZW50OnNlY3JldA==`).includes("Y2xpZW50OnNlY3JldA=="),
+			false,
+		);
+		assert.equal(redactOAuthErrorText(`code_verifier\x1b[0m=${verifier}`).includes(verifier), false);
+
+		// 5. Partial sentinel boundary overlap stays strictly idempotent and preserves `[redacted]`.
+		const overlap1 = redactSecretValues("err foo1234 bar", ["foo1234", "ted] bar"]);
+		const overlap2 = redactSecretValues(overlap1, ["foo1234", "ted] bar"]);
+		assert.equal(overlap1, "err [redacted] bar");
+		assert.equal(overlap2, overlap1);
+
+		// 6. Ordinary prose, POSIX/OAuth error codes, and arbitrary WWW-Authenticate challenge params are never erased.
+		assert.equal(redactOAuthErrorText("Invalid bearer token format"), "Invalid bearer token format");
+		assert.equal(
+			redactOAuthErrorText("MCP server requires bearer authentication"),
+			"MCP server requires bearer authentication",
+		);
+		assert.equal(
+			redactOAuthErrorText("connect ECONNREFUSED (code=ECONNREFUSED)"),
+			"connect ECONNREFUSED (code=ECONNREFUSED)",
+		);
+		assert.equal(redactOAuthErrorText("spawn node failed: code=ENOENT"), "spawn node failed: code=ENOENT");
+		assert.equal(redactOAuthErrorText("OAuth failed code=invalid_grant"), "OAuth failed code=invalid_grant");
+		assert.equal(
+			redactOAuthErrorText('WWW-Authenticate: Bearer authorization_uri="https://auth.example.com"'),
+			'WWW-Authenticate: Bearer authorization_uri="https://auth.example.com"',
+		);
+
+		// 7. Non-secret HTTP query params/headers and stdio env vars do not erase normal error diagnostics.
+		const normalHttp = new StreamableHttpTransport({
+			url: "https://mcp.example.com/mcp?format=json&mode=read",
+			openGetStream: false,
+			headers: { "X-Env": "staging" },
+			fetch: async () => new Response("failed to read json in staging server", { status: 500 }),
+		});
+		await normalHttp.start();
+		const normalHttpErr = await normalHttp
+			.send({ jsonrpc: "2.0", id: 1, method: "ping" })
+			.catch((error: unknown) => error);
+		await normalHttp.close();
+		assert.ok(normalHttpErr instanceof McpHttpError);
+		assert.equal(normalHttpErr.body, "failed to read json in staging server");
+
+		const scriptDir = createAgentDir();
+		const normalStdioScript = join(scriptDir, "normal-stderr.mjs");
+		writeFileSync(
+			normalStdioScript,
+			'process.stderr.write("connection error to localhost:8080\\n"); process.exit(1);\n',
+		);
+		const normalAgentDir = createAgentDir({
+			normal: {
+				command: process.execPath,
+				args: [normalStdioScript],
+				env: { LOG_LEVEL: "error", HOST: "localhost", PORT: "8080" },
+			},
+		});
+		const normalList = await runCli(["list", "--json"], { agentDir: normalAgentDir });
+		assert.equal(normalList.exitCode, 1);
+		assert.equal(normalList.stdout.includes("connection error to localhost:8080"), true, normalList.stdout);
+
+		// 8. RFC 8707 wire `resource` keeps non-secret query params (`?tenant=acme`) while stripping userinfo; display strips query.
+		const { authorizationUrl } = await startAuthorization("https://auth.example.com", {
+			clientInformation: { client_id: "cid" },
+			redirectUrl: "http://127.0.0.1:9999/callback",
+			resource: "https://alice:resPass99@mcp.example.com/mcp?tenant=acme",
+		});
+		assert.equal(authorizationUrl.searchParams.get("resource"), "https://mcp.example.com/mcp?tenant=acme");
+		const displayAuthUrl = redactAuthorizationUrlForDisplay(authorizationUrl);
+		assert.equal(displayAuthUrl.includes("resPass99"), false);
+		assert.equal(displayAuthUrl.includes("tenant=acme"), false);
+
+		// 9. Long-line password= fallback (8KB line).
+		const longPwd = redactOAuthErrorText(`password=myEnvSecret9988 ${"z ".repeat(4000)}`);
+		assert.equal(longPwd.includes("myEnvSecret9988"), false);
 	});
 });

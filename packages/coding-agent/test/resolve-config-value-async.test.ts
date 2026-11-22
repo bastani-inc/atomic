@@ -78,18 +78,25 @@ describe("resolveConfigValueAsync", () => {
 			expect((error as Error).message).not.toContain(bangSecret);
 		}
 
-		// Glued / mixed-case unbraced `$` inside a literal secret must not leak the secret fragment.
-		await expect(
-			resolveConfigValueOrThrowAsync(`prefix$${dollarSuffix}`, 'MCP server "s" oauth.clientSecret', {}),
-		).rejects.toThrow('Failed to resolve MCP server "s" oauth.clientSecret from environment variable');
-		try {
-			await resolveConfigValueOrThrowAsync(`prefix$${dollarSuffix}`, 'MCP server "s" oauth.clientSecret', {});
-		} catch (error) {
-			expect((error as Error).message).not.toContain(dollarSuffix);
+		// Glued / unbraced literal secrets containing `$` or mixed literal+`${...}` must not leak fragments.
+		const envRef = (name: string) => `$\{${name}}`;
+		for (const [raw, leakedFragment] of [
+			[`prefix$${dollarSuffix}`, dollarSuffix],
+			["$SECRET9988", "SECRET9988"],
+			["abc-$A7B9C3D1", "A7B9C3D1"],
+			[`foo${envRef("MyLiteralSec99")}`, "MyLiteralSec99"],
+		] as const) {
+			await expect(resolveConfigValueOrThrowAsync(raw, 'MCP server "s" oauth.clientSecret', {})).rejects.toThrow(
+				'Failed to resolve MCP server "s" oauth.clientSecret from environment variable',
+			);
+			try {
+				await resolveConfigValueOrThrowAsync(raw, 'MCP server "s" oauth.clientSecret', {});
+			} catch (error) {
+				expect((error as Error).message).not.toContain(leakedFragment);
+			}
 		}
 
 		// Explicit braced `${VAR}` and standalone `$UPPER_VAR` references preserve missing env var names.
-		const envRef = (name: string) => `$\{${name}}`;
 		await expect(
 			resolveConfigValueOrThrowAsync(
 				`Bearer ${envRef("MISSING_DOCS_TOKEN")}`,

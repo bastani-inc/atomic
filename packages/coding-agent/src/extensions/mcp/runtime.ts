@@ -243,6 +243,8 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 	private readonly shutdown = new AbortController();
 	/** Stderr of the last stdio server that failed to connect. */
 	private stderrTail: string | undefined;
+	/** Active secrets of the most recent transport attempt, preserved past `connectOnce`'s `finally` for `connectFailed`. */
+	private lastTransportSecrets: readonly string[] = [];
 	private readonly cwd: string;
 	private readonly createTransport: McpTransportFactory;
 	private readonly authProvider: McpAuthProvider | undefined;
@@ -476,6 +478,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		let sessionExpired = false;
 		for (let attempt = 0; ; attempt++) {
 			this.stderrTail = undefined;
+			this.lastTransportSecrets = [];
 			try {
 				return await this.connectOnce();
 			} catch (error) {
@@ -521,6 +524,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		try {
 			transport = await this.createTransport(this.entry, this.cwd, this.authProvider);
 			this.initializingTransport = transport;
+			this.lastTransportSecrets = transportSecrets(transport);
 			if (this.closed) throw new Error("shut down while connecting");
 			await client.connect(transport);
 			client.onNotification("notifications/tools/list_changed", () => {
@@ -542,6 +546,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			this.changed();
 			return client;
 		} catch (error) {
+			if (transport) this.lastTransportSecrets = transportSecrets(transport);
 			await closeClient();
 			if (transport instanceof StdioTransport) {
 				const rawStderr = transport.stderr.trim();
@@ -567,7 +572,10 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			return new Error(signInRequiredMessage(this.entry));
 		}
 		this.state = this.closed ? "closed" : "failed";
-		const secrets = transportSecrets(this.initializingTransport);
+		const secrets =
+			this.initializingTransport !== undefined
+				? transportSecrets(this.initializingTransport)
+				: this.lastTransportSecrets;
 		const message = errorMessage(error, secrets);
 		this.error = this.stderrTail ? `${message}\n${this.stderrTail}` : message;
 		this.changed();
@@ -595,7 +603,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			this.tools = tools;
 			this.onTools(this);
 		} catch (error) {
-			this.error = `Failed to refresh tools: ${errorMessage(error)}`;
+			this.error = `Failed to refresh tools: ${errorMessage(error, this.lastTransportSecrets)}`;
 		}
 		this.changed();
 	}

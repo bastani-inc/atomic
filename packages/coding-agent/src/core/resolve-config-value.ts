@@ -495,10 +495,47 @@ export async function resolveConfigValueOrThrowAsync(
 	throw unresolvedConfigValueError(config, description, env);
 }
 
+const ALLOWED_AUTH_SCHEME_LITERALS = new Set(["bearer", "basic", "token", "apikey", "digest", "oauth"]);
+
+function isSafeDiagnosticLiteral(value: string, isFirstPart: boolean): boolean {
+	// Pure whitespace / structural delimiters (e.g. ":", "/", ",", "-", " ")
+	let allDelim = true;
+	for (let i = 0; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		const ok =
+			c <= 32 || c === 58 || c === 59 || c === 44 || c === 47 || c === 124 || c === 43 || c === 46 || c === 45;
+		if (!ok) {
+			allDelim = false;
+			break;
+		}
+	}
+	if (allDelim) return true;
+	// Leading HTTP auth scheme prefix (e.g. "Bearer ", "Basic ", "Token ")
+	if (isFirstPart) {
+		const trimmed = value.trim();
+		if (value.endsWith(" ") && ALLOWED_AUTH_SCHEME_LITERALS.has(trimmed.toLowerCase())) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function isMultiWordUpperEnvName(name: string): boolean {
+	return LEGACY_ENV_VAR_NAME_RE.test(name) && name.includes("_");
+}
+
 function safeDiagnosticMissingEnvVars(
 	parts: readonly TemplatePart[],
 	env?: Record<string, string>,
 ): { missingCount: number; safeNames: string[] } {
+	let allLiteralsSafe = true;
+	for (let index = 0; index < parts.length; index++) {
+		const part = parts[index]!;
+		if (part.type === "literal" && !isSafeDiagnosticLiteral(part.value, index === 0)) {
+			allLiteralsSafe = false;
+			break;
+		}
+	}
 	const seen = new Set<string>();
 	const safeNames: string[] = [];
 	for (const part of parts) {
@@ -506,7 +543,7 @@ function safeDiagnosticMissingEnvVars(
 		if (resolveEnvConfigValue(part.name, env) !== undefined) continue;
 		if (seen.has(part.name)) continue;
 		seen.add(part.name);
-		if (part.braced || (!part.glued && LEGACY_ENV_VAR_NAME_RE.test(part.name))) {
+		if (allLiteralsSafe && (part.braced || (!part.glued && isMultiWordUpperEnvName(part.name)))) {
 			const safe = allowlistedEnvVarName(part.name);
 			if (safe !== undefined) safeNames.push(safe);
 		}

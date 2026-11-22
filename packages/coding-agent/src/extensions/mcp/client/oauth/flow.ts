@@ -20,7 +20,7 @@ import {
 	OAuthRegistrationError,
 	OAuthTemporarilyUnavailableError,
 } from "./errors.js";
-import { extractHeaderSecrets, redactOAuthErrorText, redactUrlForDisplay } from "./redact.js";
+import { extractHeaderSecrets, redactOAuthErrorText, redactUrlForDisplay, stripUrlUserinfoAndHash } from "./redact.js";
 import {
 	type AuthorizationServerMetadata,
 	isHttpUrl,
@@ -194,7 +194,7 @@ export async function startAuthorization(
 	if (options.state) url.searchParams.set("state", options.state);
 	if (options.scope) url.searchParams.set("scope", options.scope);
 	if (options.scope?.split(/\s+/).includes("offline_access")) url.searchParams.set("prompt", "consent");
-	if (options.resource) url.searchParams.set("resource", redactUrlForDisplay(options.resource));
+	if (options.resource) url.searchParams.set("resource", stripUrlUserinfoAndHash(options.resource));
 	return { authorizationUrl: url, codeVerifier: verifier };
 }
 

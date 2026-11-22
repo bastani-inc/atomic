@@ -10,7 +10,13 @@ import {
 	helperLaunchAsync,
 	missingHelperOptions,
 } from "../../../../utils/helper-command.ts";
-import { extractAuthorizationSecrets, redactOAuthErrorText, scrubUnknownErrorData } from "../oauth/redact.js";
+import {
+	extractAuthorizationSecrets,
+	isSensitiveKeyName,
+	looksLikeSecretValue,
+	redactOAuthErrorText,
+	scrubUnknownErrorData,
+} from "../oauth/redact.js";
 import { isJsonRpcResponse, type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
 import { type McpTransport, TransportEvents } from "./transport.js";
@@ -211,7 +217,21 @@ const NON_SECRET_STDIO_ENV_VARS = new Set([
 	"TEMP",
 	"TMP",
 	"NODE_ENV",
+	"NODE_OPTIONS",
 	"DEBUG",
+	"LOG_LEVEL",
+	"HOST",
+	"HOSTNAME",
+	"PORT",
+	"WORKSPACE",
+	"ENV",
+	"ENVIRONMENT",
+	"STAGE",
+	"REGION",
+	"MODE",
+	"FORMAT",
+	"VERBOSE",
+	"QUIET",
 	"NO_COLOR",
 	"FORCE_COLOR",
 	"CI",
@@ -258,11 +278,12 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		});
 	}
 
-	/** Configured non-allowlisted `env` values that must be scrubbed from stderr, errors, and logs. */
+	/** Configured secret `env` values that must be scrubbed from stderr, errors, and logs. */
 	activeSecrets(): string[] {
 		const secrets: string[] = [];
 		for (const [name, value] of Object.entries(this.options.env ?? {})) {
-			if (!NON_SECRET_STDIO_ENV_VARS.has(name.toUpperCase())) {
+			if (NON_SECRET_STDIO_ENV_VARS.has(name.toUpperCase())) continue;
+			if (isSensitiveKeyName(name) || looksLikeSecretValue(value)) {
 				secrets.push(...extractAuthorizationSecrets(value));
 			}
 		}
