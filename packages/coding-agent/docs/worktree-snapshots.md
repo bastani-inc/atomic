@@ -29,7 +29,7 @@ Patches and bundles are stored once, by content hash, in the same storage as the
 
 - **Sessions:** at the end of each turn that called `bash`, `edit`, `write`, `powershell`, or an extension tool that declares `writesFiles: true`. The session's directory and the directories of the files `edit` and `write` targeted are captured.
 
-A capture that finds `HEAD`, the recomputed tree, and the set of left-out files all unchanged records a reference to the previous snapshot instead of a new one. A newly left-out file, such as a new `.env.local`, records a new snapshot that lists it in `omitted`, so a restore warns about it.
+A capture that finds `HEAD`, the recomputed tree, and the set of left-out files all unchanged records a reference to the previous snapshot instead of a new one. When that snapshot left unpushed commits out, the capture also checks them: once you pushed them, or their bundle fits under a raised `snapshots.maxSnapshotBytes`, it records a new snapshot that no longer lists them in `omitted`. A newly left-out file, such as a new `.env.local`, records a new snapshot that lists it in `omitted`, so a restore warns about it.
 
 Each checkout's captures share a private Git index under `~/.atomic/agent/worktree-snapshots/capture-index/`, so after the first capture, unchanged files are not read again; this matters most in fresh clones such as CI checkouts. It never changes what a snapshot records. Deleting the directory is safe: the next capture rebuilds it from your index, and a capture that cannot use it, for example because it is damaged, captures without it.
 
