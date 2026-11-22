@@ -64,3 +64,45 @@ test("an open whose settings fail closes what it opened: no write-lock record is
 	await database.exec("CREATE TABLE items (value TEXT)");
 	await database.close();
 });
+
+test("an open whose first switch to the write-ahead log is refused sets every setting once the switch is retried", async () => {
+	const path = databasePath();
+	let switches = 0;
+	const executed: string[] = [];
+	// Refused as a killed process's still-mapped wal-index refuses it (SQLITE_IOERR_TRUNCATE): retried, not failed.
+	const refusing = interceptConnectionRequests((request, send) => {
+		if (request.kind === "exec") executed.push(request.sql);
+		if (request.kind === "exec" && request.sql.includes("PRAGMA journal_mode")) {
+			switches += 1;
+			if (switches === 1)
+				return Promise.reject(
+					Object.assign(new Error("disk I/O error"), {
+						code: "ERR_SQLITE_ERROR",
+						errcode: 1546,
+						errstr: "disk I/O error",
+					}),
+				);
+		}
+		return send(request);
+	});
+	cleanups.push(() => refusing.restore());
+	const database = await openNodeSqliteDatabase(path);
+	refusing.restore();
+	assert.ok(switches >= 2, `${switches} switch attempts`);
+	// node:sqlite's own defaults are FULL and ON, so the settings are checked as sent too: after the switch that took.
+	const tookAt = executed.findLastIndex((sql) => sql.includes("PRAGMA journal_mode"));
+	assert.ok(
+		executed
+			.slice(tookAt + 1)
+			.some((sql) => sql.includes("PRAGMA synchronous=FULL") && sql.includes("PRAGMA foreign_keys=ON")),
+		executed.join(" | "),
+	);
+	const settings = await Promise.all(
+		["busy_timeout", "journal_mode", "synchronous", "foreign_keys"].map((name) => database.get(`PRAGMA ${name}`)),
+	);
+	assert.deepEqual(
+		settings.map((row) => Object.values(row ?? {})[0]),
+		[5000, "wal", 2, 1],
+	);
+	await database.close();
+});

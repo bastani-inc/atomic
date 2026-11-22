@@ -942,10 +942,6 @@ function holderPid(name: string): number | undefined {
 	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-/**
- * Removes the records of exited processes, off the event loop. One another connection removed first is gone; any
- * other failure to remove one goes to `failed`, and the rest are still removed.
- */
 /** A holder records' directory as `prepareHolderDirectory` left it: why it could not be used, if it could not. */
 interface HolderDirectory {
 	readonly failure?: unknown;
@@ -968,6 +964,10 @@ async function prepareHolderDirectory(directory: string): Promise<HolderDirector
 	}
 }
 
+/**
+ * Removes the records of exited processes, off the event loop. One another connection removed first is gone; any
+ * other failure to remove one goes to `failed`, and the rest are still removed.
+ */
 async function removeExitedHolderRecords(directory: string, failed: (cause: unknown) => void): Promise<void> {
 	for (const name of await readdir(directory)) {
 		const pid = holderPid(name);
