@@ -22,6 +22,18 @@ export function evalWorkerExecArgv(): string[] | undefined {
 export const EVAL_WORKER_BUILTIN =
 	'const builtin = typeof require === "function" ? require : (id) => process.getBuiltinModule(id);';
 
+const ENGINE_WORKER_HEAP_MB_SYMBOL = Symbol.for("atomic.engine-worker-heap-mb.v1");
+
+function withInheritedEngineHeapLimit(options: WorkerOptions): WorkerOptions {
+	if (options.resourceLimits?.maxOldGenerationSizeMb !== undefined) return options;
+	const heapMb = (globalThis as Record<symbol, unknown>)[ENGINE_WORKER_HEAP_MB_SYMBOL];
+	if (typeof heapMb !== "number" || !Number.isSafeInteger(heapMb) || heapMb <= 0) return options;
+	return {
+		...options,
+		resourceLimits: { ...options.resourceLimits, maxOldGenerationSizeMb: heapMb },
+	};
+}
+
 /**
  * Starts a worker thread that runs Atomic's own ES module at `url` with the process's flags, which can include the
  * loaders the module needs. Node refuses `--input-type` for an ES module given as a worker's entry, and a worker
@@ -29,6 +41,7 @@ export const EVAL_WORKER_BUILTIN =
  * module from evaluated source instead (#6079).
  */
 export function startModuleWorker(url: URL, options: WorkerOptions = {}): Worker {
-	if (!startedWithInputType()) return new Worker(url, options);
-	return new Worker(`import(${JSON.stringify(url.href)});`, { ...options, eval: true });
+	const resolved = withInheritedEngineHeapLimit(options);
+	if (!startedWithInputType()) return new Worker(url, resolved);
+	return new Worker(`import(${JSON.stringify(url.href)});`, { ...resolved, eval: true });
 }

@@ -1296,8 +1296,10 @@ async function bundlePinned(
 	const ref = `refs/atomic/capture/${randomUUID()}`;
 	await runGit(["update-ref", "--no-deref", ref, head, ""], { cwd: root, signal });
 	try {
-		const input = `${[ref, ...boundary.map((commit) => `^${commit}`)].join("\n")}\n`;
-		await runGit(["bundle", "create", "-q", file, "--stdin"], { cwd: root, signal, input });
+		// The ref goes on the command line: Git before 2.31 bundles no ref it reads from standard input. The commits
+		// the bundle starts from can be many, so they are read from there.
+		const input = boundary.map((commit) => `^${commit}\n`).join("");
+		await runGit(["bundle", "create", "-q", file, ref, "--stdin"], { cwd: root, signal, input });
 	} finally {
 		await runGit(["update-ref", "--no-deref", "-d", ref, head], { cwd: root });
 	}

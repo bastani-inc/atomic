@@ -23,7 +23,7 @@ import { existsSync } from "node:fs";
 import nodeModule from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cachedDataVersionTag } from "node:v8";
+import { cachedDataVersionTag, setFlagsFromString } from "node:v8";
 import { splitNodeOptions } from "@bastani/atomic-codemode/node-options";
 
 interface CompileCacheApi {
@@ -36,6 +36,12 @@ const compileCacheApi: CompileCacheApi = nodeModule;
 
 /** Set by a host that warms its engine's cache, so the engine leaves a cold cache to that helper too. */
 export const COMPILE_CACHE_ENGINE_WARMUP_ENV = "ATOMIC_INTERNAL_COMPILE_CACHE_WARMUP";
+/**
+ * Set by a Node host when it auto-sized the engine's heap (`--max-old-space-size=<N>`), so on Node 22 the engine
+ * aligns its V8 compile-cache tag back to the host's default tag while keeping its raised main and worker heap caps.
+ */
+export const COMPILE_CACHE_ENGINE_MATCH_HOST_ENV = "ATOMIC_INTERNAL_COMPILE_CACHE_MATCH_HOST";
+const ENGINE_WORKER_HEAP_MB_SYMBOL = Symbol.for("atomic.engine-worker-heap-mb.v1");
 
 /** What decides how a process starts with the compile cache. */
 export interface CompileCacheStartInput {
@@ -81,8 +87,81 @@ export function isCiValue(value: string | undefined): boolean {
 
 /** The only runtime flag a helper keeps: the heap size, which the engine gets from its host. */
 const HEAP_SIZE_FLAG = /^--max[-_]old[-_]space[-_]size=\d+$/;
+/** Heap size option names recognized on Node's command line (mirroring `engine-heap.ts`). */
+const HEAP_SIZE_OPTION_NAMES: ReadonlySet<string> = new Set([
+	"--max-old-space-size",
+	"--max-old-space-size-percentage",
+	"--max-heap-size",
+]);
+/** V8 heap size option names that Node also forwards with a single leading dash. */
+const V8_HEAP_SIZE_OPTION_NAMES: ReadonlySet<string> = new Set(["--max-old-space-size", "--max-heap-size"]);
 /** Flags that load user code before Atomic does. A helper drops them with their values. */
 const PRELOAD_FLAGS = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+
+/** What decides whether an auto-sized engine resets its V8 heap flag so its compile-cache tag matches the host's. */
+export interface CompileCacheEngineResetInput {
+	readonly runtimeIsBun: boolean;
+	readonly unsupported: boolean;
+	readonly alreadyEnabled: boolean;
+	readonly disabled: boolean;
+	readonly matchHostTag: boolean;
+	readonly execArgv: readonly string[];
+	readonly nodeOptions: string | undefined;
+}
+
+function flagsSetHeapSize(flags: readonly string[]): boolean {
+	for (const flag of flags) {
+		if (flag === "--") break;
+		if (!flag.startsWith("-")) continue;
+		const dashes = flag.startsWith("--") ? 2 : 1;
+		const equals = flag.indexOf("=");
+		const name = `--${(equals === -1 ? flag : flag.slice(0, equals)).slice(dashes).replaceAll("_", "-")}`;
+		if (!HEAP_SIZE_OPTION_NAMES.has(name)) continue;
+		if (dashes === 1 && !V8_HEAP_SIZE_OPTION_NAMES.has(name)) continue;
+		return true;
+	}
+	return false;
+}
+
+function parseAutoHeapMb(flag: string): number | undefined {
+	if (!HEAP_SIZE_FLAG.test(flag)) return undefined;
+	const mb = Number(flag.slice(flag.indexOf("=") + 1));
+	return Number.isSafeInteger(mb) && mb > 0 ? mb : undefined;
+}
+
+/**
+ * Whether `engineRuntimeArgs` adds an auto-synthesized `--max-old-space-size=<N>` while the host itself had no
+ * explicit heap size on `execArgv` or `NODE_OPTIONS`.
+ */
+export function hostAutoSizedEngineHeap(
+	hostExecArgv: readonly string[],
+	nodeOptions: string | undefined,
+	engineRuntimeArgs: readonly string[],
+): boolean {
+	if (flagsSetHeapSize(hostExecArgv)) return false;
+	const words = splitNodeOptions(nodeOptions ?? "");
+	if (!words || flagsSetHeapSize(words)) return false;
+	const added = engineRuntimeArgs.filter(
+		(flag) => parseAutoHeapMb(flag) !== undefined && !hostExecArgv.includes(flag),
+	);
+	return added.length === 1;
+}
+
+/**
+ * The raised `--max-old-space-size=<N>` MiB value an auto-sized engine should reset to `0` before enabling the compile
+ * cache so its Node 22 cache tag matches the untouched host while retaining its raised isolate and worker heap caps
+ * (#6222). Returns `undefined` when the host did not auto-size the engine, the cache is pre-enabled/disabled/unsupported,
+ * running under Bun, or `NODE_OPTIONS` already sets a heap size.
+ */
+export function engineCompileCacheResetHeapMb(input: CompileCacheEngineResetInput): number | undefined {
+	if (input.runtimeIsBun || input.unsupported || input.alreadyEnabled || input.disabled || !input.matchHostTag) {
+		return undefined;
+	}
+	const words = splitNodeOptions(input.nodeOptions ?? "");
+	if (!words || flagsSetHeapSize(words)) return undefined;
+	const heapValues = input.execArgv.map(parseAutoHeapMb).filter((mb): mb is number => mb !== undefined);
+	return heapValues.length === 1 ? heapValues[0] : undefined;
+}
 
 /** Runtime flags and `NODE_OPTIONS` for a helper, or undefined when these cannot be repeated without side effects. */
 export interface CompileCacheHelperRuntime {
@@ -181,19 +260,51 @@ export interface CompileCacheDeferral {
 let deferral: CompileCacheDeferral | undefined;
 
 /**
- * Enable the compile cache for this process. An `interactive` process on Windows whose cache is cold for `build`
- * runs without it instead, and its host starts a helper that writes it.
+ * Enable the compile cache for this process. When `matchHostTag` is set (an isolated engine whose heap was auto-sized
+ * by its Node host) and resetting `--max-old-space-size=0` changes V8's cache tag (Node 22), the engine aligns its
+ * cache tag with the untouched host while preserving its raised isolate heap limit and passing its original heap size
+ * to workers via `resourceLimits` (#6222). On Node 24 the tag is unchanged, so the flag is restored untouched.
+ * An `interactive` process on Windows whose cache is cold for `build` runs without it instead, and its host starts a
+ * helper that writes it.
  */
-export function enablePersistentCompileCache(options: { interactive?: boolean; build?: string } = {}): void {
+export function enablePersistentCompileCache(
+	options: { interactive?: boolean; build?: string; matchHostTag?: boolean } = {},
+): void {
 	try {
+		const runtimeIsBun = "bun" in process.versions;
+		const unsupported = typeof compileCacheApi.enableCompileCache !== "function";
+		const alreadyEnabled = compileCacheApi.getCompileCacheDir?.() !== undefined;
+		const disabled = process.env.NODE_DISABLE_COMPILE_CACHE !== undefined;
+		const resetHeapMb = engineCompileCacheResetHeapMb({
+			runtimeIsBun,
+			unsupported,
+			alreadyEnabled,
+			disabled,
+			matchHostTag: options.matchHostTag === true,
+			execArgv: process.execArgv,
+			nodeOptions: process.env.NODE_OPTIONS,
+		});
+		if (resetHeapMb !== undefined) {
+			try {
+				const beforeTag = cachedDataVersionTag();
+				setFlagsFromString("--max-old-space-size=0");
+				if (cachedDataVersionTag() === beforeTag) {
+					setFlagsFromString(`--max-old-space-size=${resetHeapMb}`);
+				} else {
+					(globalThis as Record<symbol, unknown>)[ENGINE_WORKER_HEAP_MB_SYMBOL] = resetHeapMb;
+				}
+			} catch {
+				// Best effort: keep the runtime's existing flags if V8 rejects the flag.
+			}
+		}
 		const runtime = compileCacheHelperRuntime(process.execArgv, process.env);
 		const buildId = compileCacheBuildId(`${import.meta.url}\0${options.build ?? ""}`);
 		const mode = compileCacheStartMode({
 			platform: process.platform,
-			runtimeIsBun: "bun" in process.versions,
-			unsupported: typeof compileCacheApi.enableCompileCache !== "function",
-			alreadyEnabled: compileCacheApi.getCompileCacheDir?.() !== undefined,
-			disabled: process.env.NODE_DISABLE_COMPILE_CACHE !== undefined,
+			runtimeIsBun,
+			unsupported,
+			alreadyEnabled,
+			disabled,
 			interactive: options.interactive === true && options.build !== undefined,
 			helperRuntime: runtime !== undefined,
 			warm: () => existsSync(currentCompileCacheWarmMarker(buildId)),
