@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import type { DetachedToolCall, DetachedToolResult, ExtensionContext, SessionStore } from "@bastani/atomic";
 import { Agent } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
@@ -87,6 +87,8 @@ import {
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import {
+	currentChildWorktreeNote,
+	finishingWorktreeStatus,
 	holdRunWorktree,
 	registerRunWorktrees,
 	WORKTREE_REPLY_WAIT_MS,
@@ -2462,10 +2464,18 @@ test("a paused worktree child keeps its uncommitted work after every sibling fin
 	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
 });
 
+const execFileAsync = promisify(execFile);
+const WORKTREE_CLEANUP_POLL_MS = 25;
+
 function gitOutput(cwd: string, args: string[]): string {
 	const result = spawnSync("git", args, { cwd, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
 	return result.stdout.trim();
+}
+
+async function gitOutputAsync(cwd: string, args: string[]): Promise<string> {
+	const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+	return stdout.trim();
 }
 
 async function launchWorktreeRun(
@@ -2489,13 +2499,25 @@ async function launchWorktreeRun(
 	return runs();
 }
 
+/**
+ * Wait for the in-process worktree sweep to settle, then verify asynchronously that Git removed the branch.
+ * Polling with synchronous `gitOutput` inside `vi.waitFor` blocks the same event loop that drives the sweep,
+ * and returning as soon as the branch ref disappears can race the exiting `git branch -D` process on Windows.
+ */
 async function waitForWorktreeCleanup(h: Harness, child: SubagentChildRecord): Promise<void> {
 	const branch = child.worktree?.branch;
 	assert.ok(branch, "the child record names its worktree branch");
-	await vi.waitFor(() => assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]), ""), {
-		timeout: RECORD_WAIT_MS,
-		interval: 10,
-	});
+	await vi.waitFor(
+		async () => {
+			assert.equal(currentChildWorktreeNote(child.runId, child.index), undefined);
+			assert.equal(finishingWorktreeStatus(child), undefined);
+			assert.equal(await gitOutputAsync(h.cwd, ["branch", "--list", branch]), "");
+		},
+		{
+			timeout: RECORD_WAIT_MS,
+			interval: WORKTREE_CLEANUP_POLL_MS,
+		},
+	);
 }
 
 test("stopping a queued worktree child releases its reservation without waiting for dispatch (#5600)", async () => {
@@ -3429,6 +3451,7 @@ test(
 				execute(task, { agent: "worker", task, worktree: true }, signal, undefined, h.ctx),
 			),
 		);
+		let filter: ReturnType<typeof holdGitFilter> | undefined;
 		try {
 			const [a, b] = await vi.waitFor(
 				() => {
@@ -3442,21 +3465,16 @@ test(
 			);
 			assert.ok(a && b);
 			assert.equal(a.runId, b.runId);
-			const marker = join(h.cwd, ".git", "filtered").replaceAll("\\", "/");
-			gitOutput(h.cwd, [
-				"config",
-				"filter.slow.clean",
-				`if ! test -f '${marker}'; then touch '${marker}'; sleep 12; fi; cat`,
-			]);
-			writeFileSync(join(h.cwd, ".git", "info", "attributes"), "*.slow filter=slow\n");
+			filter = holdGitFilter(h.cwd, "*.slow");
 			writeFileSync(join(a.cwd, "result.slow"), "save this edit\n");
 			first.resolve();
 			await h.waitForLatest(a.childId, (record) => record.state === "terminal");
 			last.resolve();
+			await filter.started();
 			const results = await replies;
+			filter.release();
 			await waitForWorktreeCleanup(h, a);
 			await waitForWorktreeCleanup(h, b);
-			assert.equal(existsSync(marker), true);
 			for (const [index, reply] of results.entries()) {
 				assert.deepEqual(
 					reply.details.results.map((child) => child.finalOutput),
@@ -3470,6 +3488,7 @@ test(
 				assert.doesNotMatch(text(reply), index ? /answer alpha/ : /answer beta/);
 			}
 		} finally {
+			filter?.release();
 			first.resolve();
 			last.resolve();
 			await replies;
