@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { describe, test } from "vitest";
+import { generatePKCE } from "../../packages/ai/src/auth/oauth/pkce.ts";
 import { redactUrlCredentials } from "../../packages/coding-agent/src/core/error-contract.ts";
 import { configuredSecretRedactor } from "../../packages/coding-agent/src/core/storage/sqlite-facade.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
+import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
 const ADVERSARIAL_LENGTH = 200_000;
@@ -1324,4 +1326,214 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 		const redacted = redactCredentialShapes(text);
 		assert.ok(["x\n[redacted]\ny", "x\nPASSWORD= [redacted]\ny"].includes(redacted), redacted.slice(0, 40));
 	});
+});
+
+/** Budget for spawning a Bun child process to verify JSC Yarr parity on MB-scale inputs. */
+const BUN_SUBPROCESS_TIMEOUT_MS = 60_000;
+
+describe("OAuth credential shapes and linear-time scanning across Node and Bun", () => {
+	test("redacts auth=Bearer, Authorization=Basic, and other assigned auth schemes without dropping the token", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			["auth=Bearer opaqueAuthEqTok9988", "auth= [redacted]"],
+			["auth=Bearer\topaqueTabTok9988", "auth= [redacted]"],
+			["Authorization=Bearer opaqueAuthEqTok9988", "Authorization= [redacted]"],
+			["Authorization=Basic Y2xpZW50OnNlY3JldDEyMw==", "Authorization= [redacted]"],
+			["auth=Digest opaqueDigTok99", "auth= [redacted]"],
+			["auth=Token opaqueTok99", "auth= [redacted]"],
+			["auth=ApiKey opaqueKey99", "auth= [redacted]"],
+			["auth=OAuth opaqueOAuth99", "auth= [redacted]"],
+			['{"auth": Bearer opaqueJsonBearer99}', '{"auth": [redacted]}'],
+			["auth=Bearer opaqueTok99 PORT=8080", "auth= [redacted] PORT=8080"],
+			["auth=Bearer\nnext", "auth= [redacted]\nnext"],
+			["Bearer tok%2Ftail%3D", "[redacted]"],
+			["Bearer tok:secretTail", "[redacted]"],
+			["Cookie: a=}}", "Cookie: a=[redacted]}"],
+			["login u password smachine h", "login u password [redacted]machine h"],
+			["password:  . Aa", "password: [redacted]. Aa"],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
+		}
+	});
+
+	test("redacts standalone RFC 7617 Basic credentials (including all-lowercase, empty side, Unicode, unpadded, ANSI) while keeping Basic prose", () => {
+		const producerPayloads = [
+			Buffer.from("client:secret123").toString("base64"),
+			Buffer.from("a:b").toString("base64"),
+			Buffer.from("j:j").toString("base64"),
+			Buffer.from("j:jjjj").toString("base64"),
+			Buffer.from("j:jjjjjjj").toString("base64"),
+			Buffer.from("jjjj:jjjjjjj").toString("base64"),
+			Buffer.from(":secretOnly").toString("base64"),
+			Buffer.from("userOnly:").toString("base64"),
+			Buffer.from(":").toString("base64"),
+			Buffer.from("üser:pässwörd").toString("base64"),
+			Buffer.from("client:secret").toString("base64").replace(/=+$/u, ""),
+		];
+		for (const b64 of producerPayloads) {
+			for (const sample of [
+				`rejected Basic ${b64}`,
+				`rejected basic\t${b64}`,
+				`rejected \x1b[31mBasic\x1b[0m ${b64}`,
+				`Proxy-Authorization: Basic ${b64}`,
+			]) {
+				const out = redactCredentialShapes(sample);
+				assert.equal(out.includes(b64), false, `${sample} => ${out}`);
+			}
+		}
+		for (const kept of [
+			"Basic auth failed",
+			"Basic mode enabled",
+			"Basic HTTP client",
+			"Basic Settings",
+			"Basic Authentication",
+			"Basic Credentials",
+			"Basic Examples",
+			"Basic Overview",
+			"Basic HTTP/1.1",
+			"Basic auth-flow",
+			"Basic user_id",
+			'Basic realm="example"',
+			"Basic (expected Bearer)",
+		]) {
+			assert.equal(redactCredentialShapes(kept), kept, kept);
+		}
+	});
+
+	test("redacts RFC 7636 code_verifier from generatePKCE() and edge 43-128 char unreserved verifiers across formats", async () => {
+		const { verifier } = await generatePKCE();
+		const edgeVerifiers = [
+			verifier,
+			"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE",
+			`data.${"A".repeat(38)}`,
+			`A${"a".repeat(42)}`,
+			"x".repeat(43),
+			`~${"aZ09._~-".repeat(6)}`,
+			`${"aZ09._~-".repeat(16)}`,
+		];
+		for (const v of edgeVerifiers) {
+			const samples = [
+				`{"code_verifier":"${v}"}`,
+				`{\\"code_verifier\\":\\"${v}\\"}`,
+				`code_verifier=${v}&grant_type=authorization_code`,
+				`code_verifier: ${v}`,
+				`code-verifier=${v}`,
+				`{"codeVerifier":"${v}"}`,
+				`pkceCodeVerifier=${v}`,
+				`code_verifier\x1b[0m=${v}`,
+				`const line = "code_verifier=${v}"`,
+				`tool --code-verifier ${v}`,
+				`tool --code-verifier=${v}`,
+			];
+			for (const sample of samples) {
+				const out = redactCredentialShapes(sample);
+				assert.equal(out.includes(v), false, `${sample} => ${out}`);
+			}
+		}
+		// Keep non-secret code/type forms and diagnostics main preserves
+		for (const kept of [
+			"codeVerifier: string",
+			'{"code_verifier": null}',
+			"codeVerifier: this.codeVerifier",
+			"hasCodeVerifier: false",
+			"connect ECONNREFUSED (code=ECONNREFUSED)",
+			"spawn node failed: code=ENOENT",
+			"OAuth failed code=invalid_grant",
+			"Unsupported token_type: Bearer (expected DPoP)",
+			"missing bearer.",
+			"use bearer, not basic",
+			"Bearer: required",
+			"Bearer =foo",
+		]) {
+			assert.equal(redactCredentialShapes(kept), kept, kept);
+		}
+	});
+
+	test("redacts long password=, password:, quoted, escaped-JSON, provider-key, cookie, and netrc lines linearly without engine limits on Node", () => {
+		const cases: readonly (readonly [string, string, string])[] = [
+			["pwd_env_8kb", `password=myEnvSecret9988 ${"z ".repeat(4000)}`, "myEnvSecret9988"],
+			["pwd_env_1mb", `password=myEnvSecret9988 ${"z ".repeat(500_000)}`, "myEnvSecret9988"],
+			["pwd_semi_40kb", `password=mySemiSecret9988${";x".repeat(20_000)}`, "mySemiSecret9988"],
+			["pwd_bare_260kb", `password: myBareSecret9988 ${"z ".repeat(130_000)}`, "myBareSecret9988"],
+			["quoted_esc_500kb", `"password":"${"\\a".repeat(250_000)}myQuotedSec99"`, "myQuotedSec99"],
+			["esc_json_750kb", `\\"password\\":\\"${"\\\\a".repeat(250_000)}myEscSec99\\"`, "myEscSec99"],
+			["provider_key_1mb", `openaiKey="${"\\a".repeat(550_000)}myProvSec99"`, "myProvSec99"],
+			["cookie_bs_1mb", `Cookie: sid=${"\\x".repeat(550_000)}myCookSec99`, "myCookSec99"],
+			["cookie_brace_1mb", `Cookie: sid=${"}x".repeat(550_000)}myCookSec99`, "myCookSec99"],
+			["netrc_1mb", `machine h ${"login a ".repeat(150_000)}password myNetrcSec99`, "myNetrcSec99"],
+		];
+		for (const [label, input, needle] of cases) {
+			const started = performance.now();
+			const out = redactCredentialShapes(input);
+			const elapsed = performance.now() - started;
+			assert.equal(out.includes(needle), false, `${label} leaked ${needle}`);
+			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `${label} took ${Math.round(elapsed)} ms`);
+		}
+		for (const ansi of ["\x1b]".repeat(100_000), "\x1b[0".repeat(100_000)]) {
+			const started = performance.now();
+			assert.equal(redactCredentialShapes(ansi), ansi);
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `unterminated ANSI took ${Math.round(elapsed)} ms`);
+		}
+	});
+
+	test(
+		"redacts assigned auth schemes, standalone Basic, code_verifier, and MB-scale inputs identically under Bun without silent match-limit bypasses",
+		() => {
+			const script = `
+import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
+import { redactCredentialShapes } from "./packages/coding-agent/src/utils/credential-redaction.ts";
+
+const cases = [
+	["auth_eq_bearer", "auth=Bearer opaqueAuthEqTok9988", "opaqueAuthEqTok9988"],
+	["authz_eq_basic", "Authorization=Basic Y2xpZW50OnNlY3JldDEyMw==", "Y2xpZW50OnNlY3JldDEyMw=="],
+	["standalone_basic", "rejected Basic Y2xpZW50OnNlY3JldDEyMw==", "Y2xpZW50OnNlY3JldDEyMw=="],
+	["standalone_basic_lower", "rejected Basic ajpqampq", "ajpqampq"],
+	["code_verifier_json", '{"code_verifier":"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE"}', "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE"],
+	["pwd_env_8kb", "password=myEnvSecret9988 " + "z ".repeat(4000), "myEnvSecret9988"],
+	["pwd_env_1mb", "password=myEnvSecret9988 " + "z ".repeat(500_000), "myEnvSecret9988"],
+	["pwd_semi_40kb", "password=mySemiSecret9988" + ";x".repeat(20_000), "mySemiSecret9988"],
+	["pwd_bare_260kb", "password: myBareSecret9988 " + "z ".repeat(130_000), "myBareSecret9988"],
+	["quoted_esc_500kb", '"password":"' + "\\\\a".repeat(250_000) + 'myQuotedSec99"', "myQuotedSec99"],
+	["esc_json_750kb", '\\\\"password\\\\":\\\\"' + "\\\\\\\\a".repeat(250_000) + 'myEscSec99\\\\"', "myEscSec99"],
+	["provider_key_1mb", 'openaiKey="' + "\\\\a".repeat(550_000) + 'myProvSec99"', "myProvSec99"],
+	["cookie_bs_1mb", "Cookie: sid=" + "\\\\x".repeat(550_000) + "myCookSec99", "myCookSec99"],
+	["cookie_brace_1mb", "Cookie: sid=" + "}x".repeat(550_000) + "myCookSec99", "myCookSec99"],
+	["netrc_1mb", "machine h " + "login a ".repeat(150_000) + "password myNetrcSec99", "myNetrcSec99"],
+];
+for (const [label, input, needle] of cases) {
+	const started = performance.now();
+	const out = redactCredentialShapes(input);
+	const elapsed = performance.now() - started;
+	assert.equal(out.includes(needle), false, label + " leaked on Bun");
+	assert.ok(elapsed < 2000, label + " took " + Math.round(elapsed) + " ms on Bun");
+}
+const huge = "x\\nPASSWORD=" + "a ".repeat(4 * 1024 * 1024) + "\\ny";
+assert.equal(redactCredentialShapes(huge), "x\\nPASSWORD= [redacted]\\ny");
+for (const ansi of ["\\x1b]".repeat(100_000), "\\x1b[0".repeat(100_000)]) {
+	const started = performance.now();
+	assert.equal(redactCredentialShapes(ansi), ansi);
+	assert.ok(performance.now() - started < 2000);
+}
+for (const kept of [
+	"connect ECONNREFUSED (code=ECONNREFUSED)",
+	"OAuth failed code=invalid_grant",
+	"Basic auth failed",
+	"Basic Settings",
+	"Basic Overview",
+	"Unsupported token_type: Bearer (expected DPoP)",
+]) {
+	assert.equal(redactCredentialShapes(kept), kept, kept);
+}
+console.log("BUN_REDACTION_OK");
+`;
+			const result = spawnSyncCollect([bunExecutable(), "-e", script]);
+			const stdout = result.stdout.toString();
+			const stderr = result.stderr.toString();
+			assert.equal(result.exitCode, 0, `Bun check failed:\nstdout=${stdout}\nstderr=${stderr}`);
+			assert.ok(stdout.includes("BUN_REDACTION_OK"), stdout);
+		},
+		BUN_SUBPROCESS_TIMEOUT_MS,
+	);
 });
