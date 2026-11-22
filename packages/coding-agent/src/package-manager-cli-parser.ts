@@ -9,7 +9,7 @@ export type UpdateTarget =
 	| { type: "extensions"; source?: string }
 	| { type: "models" };
 
-interface PackageCommandOptions {
+export interface PackageCommandOptions {
 	command: PackageCommand;
 	source?: string;
 	updateTarget?: UpdateTarget;
@@ -310,4 +310,47 @@ export function parsePackageCommand(args: string[]): PackageCommandOptions | und
 		missingOptionValue,
 		conflictingOptions,
 	};
+}
+
+/**
+ * Handles synchronous package-command help and argument-validation errors without loading
+ * `package-manager-cli.ts` (`semver`, `hosted-git-info`, package manager runtime).
+ * Returns `true` when the command was fully handled, `false` when execution should proceed.
+ */
+export function handlePackageCommandParseOutcome(options: PackageCommandOptions): boolean {
+	if (options.help) {
+		printPackageCommandHelp(options.command);
+		return true;
+	}
+	if (options.invalidOption) {
+		console.error(chalk.red(`Unknown option ${options.invalidOption} for "${options.command}".`));
+		console.error(chalk.dim(`Use "${APP_NAME} --help" or "${getPackageCommandUsage(options.command)}".`));
+		process.exitCode = 1;
+		return true;
+	}
+	if (options.missingOptionValue) {
+		console.error(chalk.red(`Missing value for ${options.missingOptionValue}.`));
+		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
+		process.exitCode = 1;
+		return true;
+	}
+	if (options.invalidArgument) {
+		console.error(chalk.red(`Unexpected argument ${options.invalidArgument}.`));
+		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
+		process.exitCode = 1;
+		return true;
+	}
+	if (options.conflictingOptions) {
+		console.error(chalk.red(options.conflictingOptions));
+		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
+		process.exitCode = 1;
+		return true;
+	}
+	if ((options.command === "install" || options.command === "remove") && !options.source) {
+		console.error(chalk.red(`Missing ${options.command} source.`));
+		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
+		process.exitCode = 1;
+		return true;
+	}
+	return false;
 }
