@@ -190,6 +190,25 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 	};
 	const stall = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 	/**
+	 * While a broker stalls on its claim and on the callback overdue after it, the other brokers hold off their writes,
+	 * as a stall test assumes: the binding write the stalled registration makes then finds the database free, and is under
+	 * way before that overdue callback runs. Another broker's write that held the lock just then (a lease renewal, every
+	 * few seconds) would make it wait for the lock past that callback, and the registration would miss its client's
+	 * deadline by the whole length of that stall.
+	 */
+	const quiet = `${gate}.quiet`;
+	const quietBeyondStallMs = 1_000;
+	const holdOffWhileAnotherStalls = async (): Promise<void> => {
+		let until: number | undefined;
+		try {
+			const [pid, at] = readFileSync(quiet, "utf8").split(" ").map(Number);
+			if (pid !== process.pid) until = at;
+		} catch {
+			return;
+		}
+		if (until !== undefined && until > Date.now()) await delay(until - Date.now());
+	};
+	/**
 	 * #5607 `uncommitted`: the broker stalls while its claim's binding is still being written, and the database holds that
 	 * write open for `writeDelayMs`, then refuses it, so the id is never bound by this claim.
 	 */
@@ -212,6 +231,10 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		rmSync(gate, { force: true });
 		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
 		const { stallMs, overdueCallbackMs } = named;
+		writeFileSync(
+			quiet,
+			`${process.pid} ${Date.now() + stallMs + (typeof overdueCallbackMs === "number" ? overdueCallbackMs : 0) + quietBeyondStallMs}`,
+		);
 		if (typeof named.writeDelayMs === "number" && typeof returnAddress === "string") {
 			if (named.slowWrite === "serial bindings") slowBindings = { address: returnAddress, ms: named.writeDelayMs };
 			else if (named.slowWrite === "known session") slowRecord = { address: returnAddress, ms: named.writeDelayMs };
@@ -232,6 +255,7 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		descriptor: database.descriptor,
 		exec: (sql) => database.exec(sql),
 		run: async (sql, ...params) => {
+			await holdOffWhileAnotherStalls();
 			if (slowRecord && /^\s*INSERT INTO \w*intercom_known_sessions\b/u.test(sql) && params[4] === slowRecord.address) {
 				const { ms } = slowRecord;
 				slowRecord = undefined;
@@ -242,6 +266,7 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.get<T>(sql, ...params),
 		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.all<T>(sql, ...params),
 		transaction: async (callback, options) => {
+			await holdOffWhileAnotherStalls();
 			const concurrency = options?.concurrency;
 			if (
 				nextBindingDelayMs !== undefined &&

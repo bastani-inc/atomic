@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 
-/** Runs once, right after the next read of a user's index (`.git/index`) by the code under test. */
-const hooks = vi.hoisted(() => ({ afterIndexRead: undefined as (() => void) | undefined }));
+/**
+ * Run once, right after a read of a user's index (`.git/index`) by the code under test: the next read of all of it
+ * (`afterIndexRead`), or the `opening`-th opening of it from now, once that is closed (`afterIndexOpen`).
+ */
+const hooks = vi.hoisted(() => ({
+	/** How many times the code under test read all of a user's index. */
+	indexReads: 0,
+	afterIndexRead: undefined as (() => void) | undefined,
+	afterIndexOpen: undefined as { opening: number; readonly hook: () => void } | undefined,
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -14,12 +22,28 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		readFile: async (...args: Parameters<typeof actual.readFile>) => {
 			const result = await actual.readFile(...args);
 			const path = String(args[0]);
+			if (basename(path) === "index" && basename(dirname(path)) === ".git") hooks.indexReads++;
 			if (hooks.afterIndexRead !== undefined && basename(path) === "index" && basename(dirname(path)) === ".git") {
 				const hook = hooks.afterIndexRead;
 				hooks.afterIndexRead = undefined;
 				hook();
 			}
 			return result;
+		},
+		open: async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			const path = String(args[0]);
+			if (hooks.afterIndexOpen === undefined || basename(path) !== "index" || basename(dirname(path)) !== ".git")
+				return handle;
+			if (--hooks.afterIndexOpen.opening > 0) return handle;
+			const { hook } = hooks.afterIndexOpen;
+			hooks.afterIndexOpen = undefined;
+			const close = handle.close.bind(handle);
+			handle.close = async () => {
+				await close();
+				hook();
+			};
+			return handle;
 		},
 	};
 });
@@ -36,6 +60,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	hooks.afterIndexRead = undefined;
+	hooks.afterIndexOpen = undefined;
 	sandbox.dispose();
 });
 
@@ -70,6 +95,18 @@ async function cloneIgnoringLogs(): Promise<string> {
 }
 
 describe("files staged in your index despite an ignore rule", () => {
+	test("are kept without reading all of the index again while its checksum stays the same", async () => {
+		const clone = await cloneIgnoringLogs();
+		sandbox.write(join(clone, "forced.log"), "forced\n");
+		await sandbox.git(clone, "add", "-f", "forced.log");
+		captured(await captureWorktreeSnapshot(clone));
+		hooks.indexReads = 0;
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const second = captured(await captureWorktreeSnapshot(clone));
+		assert.ok((await treePaths(clone, second.snapshot.tree)).includes("forced.log"));
+		assert.equal(hooks.indexReads, 0, "the index's last bytes, its checksum, were read, not all of it");
+	});
+
 	test("are listed again only once the index or HEAD changed", async () => {
 		const clone = await cloneIgnoringLogs();
 		const trace = sandbox.traceGitProcesses();
@@ -160,6 +197,70 @@ describe("files staged in your index despite an ignore rule", () => {
 		sandbox.write(join(clone, "edit.txt"), "edit\n");
 		const second = captured(await captureWorktreeSnapshot(clone));
 		assert.deepEqual(await treePaths(clone, second.snapshot.tree), [".gitignore", "README.md", "edit.txt"]);
+	});
+
+	test("are kept for the index bytes they were listed from, not for the last bytes read before them", async () => {
+		const clone = await cloneIgnoringLogs();
+		sandbox.write(join(clone, "late.log"), "late\n");
+		const indexPath = join(clone, ".git", "index");
+		const before = readFileSync(indexPath);
+		// The user stages the ignored file right after the first capture read the index's last bytes: its second
+		// opening of the index, after the one that reads what the private index is seeded from.
+		hooks.afterIndexOpen = {
+			opening: 2,
+			hook: () =>
+				execFileSync("git", ["add", "-f", "late.log"], {
+					cwd: clone,
+					env: { ...process.env, ...sandbox.executable.env },
+					stdio: "ignore",
+				}),
+		};
+		const first = captured(await captureWorktreeSnapshot(clone));
+		assert.equal(hooks.afterIndexOpen, undefined, "the index was opened");
+		assert.ok((await treePaths(clone, first.snapshot.tree)).includes("late.log"));
+
+		// The index is back to the bytes whose last bytes the first capture read, which stage nothing.
+		writeFileSync(indexPath, before);
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const second = captured(await captureWorktreeSnapshot(clone));
+		assert.deepEqual(await treePaths(clone, second.snapshot.tree), [".gitignore", "README.md", "edit.txt"]);
+	});
+
+	test("are listed again when an index written without a checksum changes and keeps its size", async () => {
+		const clone = await cloneIgnoringLogs();
+		// Git writes zeros where the checksum of the index goes: its last bytes no longer change with its content.
+		await sandbox.git(clone, "config", "index.skipHash", "true");
+		sandbox.write(join(clone, "aaa.log"), "a\n");
+		sandbox.write(join(clone, "bbb.log"), "b\n");
+		await sandbox.git(clone, "add", "-f", "aaa.log");
+		const indexPath = join(clone, ".git", "index");
+		const size = statSync(indexPath).size;
+		const first = captured(await captureWorktreeSnapshot(clone));
+		assert.ok((await treePaths(clone, first.snapshot.tree)).includes("aaa.log"));
+
+		await sandbox.git(clone, "rm", "-q", "--cached", "aaa.log");
+		await sandbox.git(clone, "add", "-f", "bbb.log");
+		assert.equal(statSync(indexPath).size, size, "the index keeps its size");
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const second = captured(await captureWorktreeSnapshot(clone));
+		const paths = await treePaths(clone, second.snapshot.tree);
+		assert.ok(paths.includes("bbb.log") && !paths.includes("aaa.log"), paths.join(" "));
+	});
+
+	test("are kept for at most 16 indexes: the one used longest ago is listed again", async () => {
+		const clone = await cloneIgnoringLogs();
+		const trace = sandbox.traceGitProcesses();
+		captured(await captureWorktreeSnapshot(clone));
+		// Sixteen other checkouts of the repository, each with an index of its own.
+		for (let worktree = 0; worktree < 16; worktree++) {
+			const path = sandbox.path(`worktree-${worktree}`);
+			await sandbox.git(clone, "worktree", "add", "-q", "--detach", path);
+			captured(await captureWorktreeSnapshot(path));
+		}
+		started(trace, "diff-index");
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		captured(await captureWorktreeSnapshot(clone));
+		assert.equal(started(trace, "diff-index"), 1, "the first checkout's index, used longest ago, is listed again");
 	});
 });
 
