@@ -4,14 +4,19 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.4-alpha.2] - 2026-11-22
+
+### Added
+
+- A built-in API provider carries, under the exported `API_PROVIDER_PREWARM` symbol, a function that loads its code, so a host can load the selected model's provider before the first request. The property is not enumerable, and a provider that fails to load still reports the failure on the request ([#6334](https://github.com/bastani-inc/atomic/pull/6334)).
+
 ### Changed
 
-- Bundled `openai`, `@anthropic-ai/sdk` (with `standardwebhooks`, `@stablelib/base64`, and `fast-sha256`), and `partial-json` into `@bastani/atomic-ai`'s shared files so first OpenAI and Anthropic requests load one lazy bundle instead of ~125–200 separate SDK files. Bundlers resolving the `module` or `browser` exports conditions continue to receive individual compiled modules under `dist/_modules/`.
-- Built-in lazy API providers expose a non-enumerable pre-warm hook so runtimes can load the selected model's API implementation before the first request without changing lazy error handling.
+- `openai`, `@anthropic-ai/sdk` (with `standardwebhooks`, `@stablelib/base64` and `fast-sha256`) and `partial-json` are bundled into the package's shared files, so the first OpenAI or Anthropic request loads one file instead of about 125 to 200. A bundler that resolves the `module` or `browser` export conditions still gets one compiled file per module, under `dist/_modules/` ([#6331](https://github.com/bastani-inc/atomic/pull/6331)).
 
 ### Fixed
 
-- Context-overflow detection (`isContextOverflow`) no longer slows down on long error messages with repeated `input token count` phrases, matching the same overflow messages in one linear pass.
+- Context-overflow detection (`isContextOverflow`) no longer slows down on long error messages with repeated `input token count` phrases, matching the same overflow messages in one linear pass ([#6397](https://github.com/bastani-inc/atomic/pull/6397)).
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
