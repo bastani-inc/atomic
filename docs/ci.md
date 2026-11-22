@@ -51,6 +51,10 @@ Push or manual dispatch on `main`
 Push or manual dispatch on `main`
 └─ warm-macos-release-cache.yml
    └─ dependencies: populate the isolated macOS release dependency cache
+
+Manual dispatch by a maintainer, on any branch
+└─ macos-tests.yml
+   └─ tests: build the package and native bindings on macOS, then run the chosen root test files
 ```
 
 This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
@@ -82,6 +86,7 @@ Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actio
 
 - **Pull-request-capable workflows** (`test.yml` and `codeql.yml`, which trigger on `pull_request`) run every job on a repository-specific [runner profile](#runner-profiles), `namespace-profile-atomic-ci-*`, whose Access Level is Restricted. The profile, not the workflow, holds the machine shape.
 - **Release-path workflows** never run pull-request code. Most jobs use inline machine labels, `nscloud-{os}-{arch}-{shape}`. Both macOS native builds and `warm-macos-release-cache.yml` share the dedicated `namespace-profile-atomic-release-macos-arm64-6x14` profile, never a PR profile.
+- **`macos-tests.yml`** runs only when a maintainer dispatches it. It runs on the macOS release profile too, with `nscloud-cache-exp-do-not-commit`; see [macOS test dispatch](#macos-test-dispatch).
 
 Namespace refuses to schedule a job whose `runs-on` names more than one Namespace machine label, so each job names exactly one profile or label.
 
@@ -105,6 +110,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | `warm-toolchain-cache.yml` release-linux-cache x64 (Zig/npm), msvc-crt / release-linux-cache arm64 (Zig/npm) | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders` / `nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders`, with release cache tags | 4 vCPU, 16 GB |
 | `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
 | `publish.yml` native `darwin-x64` | `macos-26-intel` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB; cross-compile and Rosetta smoke |
+| `macos-tests.yml` tests | (new) | `namespace-profile-atomic-release-macos-arm64-6x14` with `nscloud-cache-exp-do-not-commit` | 6 vCPU, 14 GB |
 
 `4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`. `8x16` is in the standard list.
 
@@ -479,6 +485,23 @@ errors. Whole-job timeouts remain independent hang limits. npm's request policy 
 and two retries; that is less than the smallest npm-installing job cap, but does
 not guarantee a whole install fits. Rust installation and its retry each have
 a four-minute step cap; PR-only Mintlify validation has a five-minute step cap.
+
+### macOS test dispatch
+
+`test.yml` has no macOS leg. `macos-tests.yml` lets a maintainer run chosen root test files on macOS before merging a change that behaves differently there, such as a macOS-only code path:
+
+```sh
+gh workflow run macos-tests.yml --ref <branch> \
+  -f project=unit \
+  -f tests="test/unit/<first>.test.ts test/unit/<second>.test.ts"
+```
+
+The job builds the packages and the native bindings from source, as the unit jobs do, and runs `vitest --run --project <project>` on the listed files. It accepts only paths under `test/` that end in `.test.ts`, and passes the inputs to the shell through environment variables, never by expression substitution.
+
+- **Trigger.** `workflow_dispatch` only. Starting it needs write access to the repository, so it never runs fork or pull-request code that a maintainer has not pushed.
+- **Runner.** The repository has no other macOS profile, so the job uses `namespace-profile-atomic-release-macos-arm64-6x14`, the release profile. It carries `nscloud-cache-exp-do-not-commit` and configures no cache action, so nothing it does is written to that profile's cache volume. A dispatch from a branch other than `main` cannot commit to the volume in any case (updates are allowed only from `main`).
+- **Permissions.** `contents: read`. The checkout does not persist credentials. Every action is pinned by SHA, as in the other workflows.
+- **Result.** The run is not a required check. A pull request that depends on it links the run.
 
 ### Storage backend matrix
 
@@ -930,6 +953,7 @@ Repository-wide workflow permissions are read-only. Only draft staging and undra
 | `.github/workflows/cancel-closed-pr-runs.yml` | a pull request closing, merged or not (`pull_request_target`) | cancel that pull request's queued and running `test.yml` runs |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version |
 | `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
+| `.github/workflows/macos-tests.yml` | manual dispatch by a maintainer | run chosen root test files on macOS against the dispatched ref; see [macOS test dispatch](#macos-test-dispatch) |
 
 ## Repository-local release gates
 

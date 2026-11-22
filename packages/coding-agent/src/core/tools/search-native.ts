@@ -11,11 +11,6 @@ type NativeBinding = {
 		multiline?: boolean | null,
 	) => boolean;
 	invalidateFsScanCache?: (path?: string | null) => void;
-	blockRangeAt?: (options: {
-		code: string;
-		path: string;
-		line: number;
-	}) => { startLine: number; endLine: number } | null;
 };
 
 export type NativeGlobMatch = {
