@@ -7,6 +7,7 @@ import {
 	type RecordedProcess,
 	recordProcess,
 	signalRecordedProcess,
+	stillRuns,
 	waitUntilGone,
 } from "../../../test/helpers/recorded-process.js";
 import { bunExecutable, spawnProcess } from "../../../test/helpers/runtime.js";
@@ -85,6 +86,42 @@ function orphanThenWait(): { command: string; pidFile: string } {
 		pidFile,
 	};
 }
+
+/** C# that starts a program asking to leave its job (`CREATE_BREAKAWAY_FROM_JOB`), as some installers and updaters do. */
+const BREAKAWAY_START = `using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AtomicBreakawayStart {
+	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+	struct StartupInfo {
+		public int cb; public string reserved; public string desktop; public string title;
+		public int x; public int y; public int width; public int height; public int columns; public int rows;
+		public int fillAttribute; public int flags; public short showWindow; public short reserved2Size;
+		public IntPtr reserved2; public IntPtr input; public IntPtr output; public IntPtr error;
+	}
+	[StructLayout(LayoutKind.Sequential)]
+	struct ProcessInformation { public IntPtr process; public IntPtr thread; public int processId; public int threadId; }
+	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+	static extern bool CreateProcessW(string application, StringBuilder commandLine, IntPtr processAttributes,
+		IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string directory,
+		ref StartupInfo startup, out ProcessInformation information);
+	[DllImport("kernel32.dll")]
+	static extern bool CloseHandle(IntPtr handle);
+	/** The process ID, or minus the error CreateProcess failed with. */
+	public static int Start(string commandLine) {
+		StartupInfo startup = new StartupInfo();
+		startup.cb = Marshal.SizeOf(typeof(StartupInfo));
+		ProcessInformation information;
+		const uint CreateBreakawayFromJob = 0x01000000, CreateNoWindow = 0x08000000;
+		if (!CreateProcessW(null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
+				CreateBreakawayFromJob | CreateNoWindow, IntPtr.Zero, null, ref startup, out information))
+			return -Marshal.GetLastWin32Error();
+		CloseHandle(information.thread);
+		CloseHandle(information.process);
+		return information.processId;
+	}
+}
+`;
 
 /** A PowerShell command that starts ping with Start-Process, records its process ID, and then runs `then`. */
 function startProcessThen(then: string): { command: string; pidFile: string } {
@@ -167,6 +204,25 @@ describe.runIf(process.platform === "win32")("on Windows, the bash and PowerShel
 
 		await assert.rejects(running, (error: Error) => error instanceof ShellTimeoutError);
 		assert.equal(await waitUntilGone(background, GONE_MS), true, "the background program outlived the timeout");
+	});
+
+	test("a program that asks to leave the command's job starts", async () => {
+		const dir = directory();
+		const source = join(dir, "breakaway.cs");
+		const pidFile = join(dir, "breakaway.pid");
+		writeFileSync(source, BREAKAWAY_START);
+		const result = await createLocalPowerShellOperations().exec(
+			`Add-Type -Path ${powerShellWord(source)}; $id = [AtomicBreakawayStart]::Start('ping -n ${FIXTURE_MS / 1000} 127.0.0.1'); Set-Content -NoNewline -Path ${powerShellWord(pidFile)} -Value $id`,
+			process.cwd(),
+			{ onData: () => {} },
+		);
+
+		const started = Number(readFileSync(pidFile, "utf8"));
+		assert.ok(started > 0, `the program could not start: CreateProcess failed with error ${-started}`);
+		const program = await recordProcess(started);
+		processes.push(program);
+		assert.equal(result.exitCode, 0);
+		assert.equal(await stillRuns(program), true, "the program is not running");
 	});
 
 	test("quitting ends the programs of a command still running", async () => {
