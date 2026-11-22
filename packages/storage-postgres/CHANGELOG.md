@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-22
+
+### Fixed
+
+- A `password` function whose own request fails with a certificate code, such as one reading from a secret store whose certificate is not trusted, is no longer reported as the database server's certificate with an `sslrootcert` fix. It is retried and reported like any other failure of the password function, with its own message ([#6171](https://github.com/bastani-inc/atomic/pull/6171))
+- Detecting SQLite `PRAGMA` statements to skip no longer slows down on long whitespace-padded statements with multiple semicolons, returning the same result in one linear pass ([#6397](https://github.com/bastani-inc/atomic/pull/6397)).
+
 ## [0.10.4-alpha.2] - 2026-11-22
 
 ### Fixed

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-22
+
+### Fixed
+
+- A call to a libSQL server (`sqld` or Turso) that waited on the server's write lock before receiving `SQLITE_BUSY` or `SQLITE_SCHEMA` (for example when another client's abandoned write timed out into a WAL checkpoint) now retries instead of failing at once. Retries use up to 5 seconds of jittered backoff and stop within at most 10 seconds from the start of the call, keeping fast refusals within about 5 seconds and stopping repeated slow-lock refusals after two attempts ([#6422](https://github.com/bastani-inc/atomic/pull/6422)).
+
 ## [0.10.4-alpha.2] - 2026-11-22
 
 ### Fixed

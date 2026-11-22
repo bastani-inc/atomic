@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-22
+
+### Breaking Changes
+
+- Removed `blockRangeAt` (`BlockRange`, `BlockRangeOptions`) and its bundled `tree-sitter` language grammars, which have had no caller since 0.9.72 replaced hashline editing with exact-text editing ([#6381](https://github.com/bastani-inc/atomic/pull/6381)).
+
+### Added
+
+- `signalIgnored(signal)`: whether this process ignores a signal, as a process started under `nohup` ignores `SIGHUP`; `null` on Windows ([#6178](https://github.com/bastani-inc/atomic/pull/6178)).
+- `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing ([#6187](https://github.com/bastani-inc/atomic/pull/6187)).
+- `startHostProcess` takes `endWithParent`: the process gets `SIGKILL` when the process that started it ends, however it ends; not the processes it starts.
+- `terminateProcessCreatedAt(pid, created, descendants)`: on Windows, ends the running process `pid` only if it was created at `created`, as `processCreationTime` reads it, and with `descendants` what it started, each through a handle checked before anything is ended; `null` when `pid` names no such process, and off Windows. It takes a process as one `pid` started only while the parent id its own handle reports is its parent's and the kernel's order of process starts puts it after that parent, never by the system clock; on a Windows that does not report that order (before Windows 10), only `pid` itself ends ([#6288](https://github.com/bastani-inc/atomic/pull/6288)).
+- `holdProcessDescendants(pid)`: on Windows, holds a running child process and the processes it started, and those they started, each through a handle of its own, taken only while it is still its parent's child and started after it (by the kernel's order of process starts, not by a clock), so a process given one of their ids is never held. `endAll()` ends the child and then them, only if it ended the child, so what a child that exited by itself left keeps running; `release()` lets go of them. `null` once the child has exited and elsewhere.
+- `nativeVersion()`: the Atomic release the native module was built for (`0.0.0` from a source checkout) ([#6319](https://github.com/bastani-inc/atomic/pull/6319)).
+
+### Changed
+
+- The package no longer includes the native binaries of every platform: each platform's binary comes from its own optional package (`@bastani/atomic-natives-<platform>`), which package managers install for the platform they run on. When the binary cannot load, the error says why instead of blaming an npm bug: which platform package an install that omitted optional dependencies left out and how to reinstall with it, an installed platform package that fails to load and its reason, a platform with no published package, or a `NAPI_RS_NATIVE_LIBRARY_PATH` override that fails.
+- Removing the unused `tree-sitter` grammars and unused network dependencies cuts the native module by about 72 to 74% (on Linux x64 glibc and musl from 18.2 to 18.4 MiB to 4.7 MiB unpacked and 3.6 MiB to 2.0 MiB compressed; on Windows x64 from 18.3 MiB to 5.2 MiB unpacked and 3.6 MiB to 2.1 MiB compressed) with no regression in search, glob, lock or process-tree performance ([#6381](https://github.com/bastani-inc/atomic/pull/6381)).
+- `processCreationTime(pid)` also reads a process's start on macOS, also of a process another user owns, to the microsecond, as 100-nanosecond intervals since 1601 like the Windows creation time. It still answers `null` on Linux ([#6394](https://github.com/bastani-inc/atomic/pull/6394)).
+
 ## [0.10.4-alpha.2] - 2026-11-22
 
 ### Breaking Changes
