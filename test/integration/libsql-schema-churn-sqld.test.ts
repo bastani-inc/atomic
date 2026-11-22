@@ -75,12 +75,25 @@ async function outcome(
 /**
  * How the server answers `sql` sent as one text, the way the adapter sent every `exec`, next to how the adapter's
  * `exec` ends for it; the adapter's failure holds the server's answer as its cause.
+ *
+ * The raw `@libsql/client` baseline does not retry `SQLITE_BUSY` or `SQLITE_SCHEMA` from a periodic checkpoint or
+ * another test file sharing the server, so if the baseline hits one of those transient refusals it re-measures on a
+ * fresh table; `database.exec` itself runs once.
  */
 async function serverAndExec(table: string, sql: string) {
 	const client = createClient(serverOptions());
 	try {
+		let server = await outcome(table, sql, (text) => client.executeMultiple(text));
+		for (
+			let attempt = 0;
+			attempt < 20 && (server.failure?.code === "SQLITE_BUSY" || server.failure?.code === "SQLITE_SCHEMA");
+			attempt++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			server = await outcome(table, sql, (text) => client.executeMultiple(text));
+		}
 		return {
-			server: await outcome(table, sql, (text) => client.executeMultiple(text)),
+			server,
 			exec: await outcome(
 				table,
 				sql,

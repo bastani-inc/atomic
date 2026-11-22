@@ -1112,20 +1112,52 @@ function driverResult(result) {
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
 /**
- * How long a call to a libSQL server runs again while the server answers it `SQLITE_BUSY` or `SQLITE_SCHEMA`. sqld
- * answers a writer that meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running any of the
- * call, and leaves the waiting to the client; its own checkpoint waits this long for the lock. It answers
+ * Normal wall-clock and cumulative backoff sleep budget for retrying `SQLITE_BUSY` or `SQLITE_SCHEMA` from a libSQL
+ * server. sqld answers a writer that meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running
+ * any of the call, and leaves the waiting to the client; its own checkpoint waits this long for the lock. It answers
  * `SQLITE_SCHEMA`, also without running the call, while other connections keep changing the schema.
  */
 const SERVER_BUSY_TIMEOUT_MS = 5000;
+/**
+ * `sqld`'s own write-lock transaction timeout (`TXN_TIMEOUT` = 5 s): an attempt waiting behind an abandoned write
+ * transaction can spend this long inside the server before hitting a periodic WAL checkpoint.
+ */
+const SERVER_LOCK_TIMEOUT_MS = 5000;
+/**
+ * Hard total wall-clock cap from the start of a call (including every attempt's duration) for busy/schema retries:
+ * one `sqld` 5 s transaction timeout plus one full 5 s checkpoint retry window (`SERVER_BUSY_TIMEOUT_MS`). Keeps
+ * fast and WAN-RTT persistent refusals within `SERVER_BUSY_TIMEOUT_MS` plus one RTT and stops repeated slow-lock
+ * refusals after two attempts, while giving a post-lock refusal a full 5 s checkpoint window.
+ */
+const SERVER_BUSY_MAX_TOTAL_MS = SERVER_LOCK_TIMEOUT_MS + SERVER_BUSY_TIMEOUT_MS;
 /** The first wait before a call a libSQL server answered busy runs again; each later wait doubles, up to the last. */
 const SERVER_BUSY_FIRST_WAIT_MS = 10;
 const SERVER_BUSY_LAST_WAIT_MS = 200;
+/** Each busy retry wait varies by up to this fraction either way, so concurrent callers do not retry in lockstep. */
+const SERVER_BUSY_JITTER = 0.2;
 
 /**
- * Runs `operation` again, with growing waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the failed run
- * ran nothing, or with `SQLITE_SCHEMA`, until `SERVER_BUSY_TIMEOUT_MS` has passed; then it fails with the last run's
- * failure. `prepare` runs before each run after the first.
+ * The next backoff delay for a libSQL server refusal, or `0` when the retry budget is exhausted.
+ * @param {number} wait base wait before jitter, in ms
+ * @param {number} left remaining retry budget, in ms
+ * @returns {number}
+ */
+function serverBusyDelayMs(wait, left) {
+	if (left <= 0) return 0;
+	const factor = 1 + SERVER_BUSY_JITTER * (2 * Math.random() - 1);
+	return Math.min(Math.round(wait * factor), left);
+}
+
+/**
+ * Runs `operation` again, with growing jittered waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the
+ * failed run ran nothing, or with `SQLITE_SCHEMA`; then it fails with the last run's failure.
+ *
+ * The wall-clock deadline is measured from `started` (the call's start) and includes every attempt's duration:
+ * `started + min(SERVER_BUSY_MAX_TOTAL_MS, SERVER_BUSY_TIMEOUT_MS + maxAttemptMs)`, paired with a cumulative backoff
+ * sleep budget of `SERVER_BUSY_TIMEOUT_MS` (which also guarantees termination when `performance.now()` does not
+ * advance). A retry starts only when `delay + min(prevAttemptMs, attemptMs)` fits in the remaining wall-clock time, so
+ * a single slow server lock wait still gets a probe retry for a fast checkpoint while persistent WAN-RTT or slow-lock
+ * refusals stay bounded. `prepare` runs before each run after the first.
  *
  * A server answers `SQLITE_SCHEMA` when other connections kept changing the database's schema while it prepared the
  * statement, as on a server shared by several stores that create and drop their tables: the statement never ran, so
@@ -1135,18 +1167,39 @@ const SERVER_BUSY_LAST_WAIT_MS = 200;
  * @param {() => boolean} ranNothing
  * @param {() => Promise<void>} [prepare]
  * @param {() => boolean} [rerunsAfterSchemaChange] whether a run that `SQLITE_SCHEMA` ended may run again
+ * @param {number} [started] call start time (`performance.now()`) shared across multi-phase fallbacks
+ * @param {number} [initialMaxAttemptMs] longest attempt duration already observed before this loop
  * @returns {Promise<T>}
  */
-async function whileServerBusy(operation, ranNothing, prepare, rerunsAfterSchemaChange = () => true) {
-	const deadline = performance.now() + SERVER_BUSY_TIMEOUT_MS;
+async function whileServerBusy(
+	operation,
+	ranNothing,
+	prepare,
+	rerunsAfterSchemaChange = () => true,
+	started = performance.now(),
+	initialMaxAttemptMs = 0,
+) {
+	let maxAttemptMs = Math.max(0, initialMaxAttemptMs);
+	let prevAttemptMs = 0;
+	let waited = 0;
 	for (let wait = SERVER_BUSY_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, SERVER_BUSY_LAST_WAIT_MS)) {
+		const attemptStarted = performance.now();
 		try {
 			return await operation();
 		} catch (error) {
-			const left = deadline - performance.now();
 			const rerun = isBusy(error) ? ranNothing() : isSchemaChanged(error) && rerunsAfterSchemaChange();
-			if (!rerun || left <= 0) throw error;
-			await new Promise((resolve) => setTimeout(resolve, Math.min(wait, left)));
+			if (!rerun) throw error;
+			const now = performance.now();
+			const attemptMs = Math.max(0, now - attemptStarted);
+			maxAttemptMs = Math.max(maxAttemptMs, attemptMs);
+			const wallDeadline = started + Math.min(SERVER_BUSY_MAX_TOTAL_MS, SERVER_BUSY_TIMEOUT_MS + maxAttemptMs);
+			const wallLeft = wallDeadline - now;
+			const left = Math.min(wallLeft, SERVER_BUSY_TIMEOUT_MS - waited);
+			const delay = serverBusyDelayMs(wait, left);
+			if (delay <= 0 || delay + Math.min(prevAttemptMs, attemptMs) > wallLeft) throw error;
+			prevAttemptMs = attemptMs;
+			waited += Math.max(delay, 1);
+			await new Promise((resolve) => setTimeout(resolve, delay));
 			await prepare?.();
 		}
 	}
@@ -1638,10 +1691,12 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 	/** @type {<T>(operation: () => Promise<T>, afterSchemaChange?: () => Promise<T>) => Promise<T>} */
 	const waitForLock = async (operation, afterSchemaChange) => {
 		// A server answers busy before it runs anything of one statement or a batch, and `SQLITE_SCHEMA` before it runs
-		// anything of one statement. After `SQLITE_SCHEMA`, `afterSchemaChange`, when given, runs in its place, with a
-		// wait of its own: the run the server answered `SQLITE_SCHEMA` may itself have taken the whole wait.
+		// anything of one statement. After `SQLITE_SCHEMA`, `afterSchemaChange`, when given, always runs once in its
+		// place (a slow first try under schema churn still gets the locked write transaction), sharing the call's start
+		// time so repeated busy refusals across both phases stay within `SERVER_BUSY_MAX_TOTAL_MS`.
 		if (!local) {
 			if (afterSchemaChange === undefined) return whileServerBusy(() => watch(operation), () => true);
+			const started = performance.now();
 			let schemaChanged = false;
 			try {
 				return await whileServerBusy(
@@ -1652,11 +1707,13 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 						schemaChanged = true;
 						return false;
 					},
+					started,
 				);
 			} catch (error) {
 				if (!schemaChanged) throw error;
 			}
-			return whileServerBusy(() => watch(afterSchemaChange), () => true);
+			const beforeLockedMs = Math.max(0, performance.now() - started);
+			return whileServerBusy(() => watch(afterSchemaChange), () => true, undefined, undefined, started, beforeLockedMs);
 		}
 		/** @type {bigint | number | undefined} */
 		let version;
