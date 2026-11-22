@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Added
 
 - `signalIgnored(signal)`: whether this process ignores a signal, as a process started under `nohup` ignores `SIGHUP`; `null` on Windows ([#6178](https://github.com/bastani-inc/atomic/pull/6178)).
