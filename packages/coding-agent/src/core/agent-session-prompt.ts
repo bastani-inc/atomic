@@ -56,6 +56,7 @@ import {
 import { expandSkillCommand, getSkillCatalog } from "./skill-catalog.ts";
 import { parseSlashCommand } from "./slash-commands.js";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
+import { noteUserMessageOrigin } from "./user-message-origin.js";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
 const openRuns = new WeakMap<AgentSession, number>();
@@ -339,8 +340,23 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (!acceptedWhileHeld || held.cancelled || isSessionClosed(error)) return;
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this)) return;
 		if (held.lane === "followUp")
-			await this._queueFollowUp(keptText, keptImages, text, keptRawText, options?.queuedMessageId);
-		else await this._queueSteer(keptText, keptImages, text, keptRawText, options?.queuedMessageId);
+			await this._queueFollowUp(
+				keptText,
+				keptImages,
+				text,
+				keptRawText,
+				options?.queuedMessageId,
+				options?.originSendId,
+			);
+		else
+			await this._queueSteer(
+				keptText,
+				keptImages,
+				text,
+				keptRawText,
+				options?.queuedMessageId,
+				options?.originSendId,
+			);
 	};
 
 	// Reserves the context through async input hooks and auth checks, so tree navigation cannot start
@@ -408,8 +424,23 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			if (held) stopWaiting(this, held);
 			if (delivery === "followUp")
-				await this._queueFollowUp(pausedText, pausedImages, text, undefined, options?.queuedMessageId);
-			else await this._queueSteer(pausedText, pausedImages, text, undefined, options?.queuedMessageId);
+				await this._queueFollowUp(
+					pausedText,
+					pausedImages,
+					text,
+					undefined,
+					options?.queuedMessageId,
+					options?.originSendId,
+				);
+			else
+				await this._queueSteer(
+					pausedText,
+					pausedImages,
+					text,
+					undefined,
+					options?.queuedMessageId,
+					options?.originSendId,
+				);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -481,8 +512,23 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			if (this._queuedMessagesPaused) {
 				if (held.lane === "followUp")
-					await this._queueFollowUp(expandedText, currentImages, text, currentText, options?.queuedMessageId);
-				else await this._queueSteer(expandedText, currentImages, text, currentText, options?.queuedMessageId);
+					await this._queueFollowUp(
+						expandedText,
+						currentImages,
+						text,
+						currentText,
+						options?.queuedMessageId,
+						options?.originSendId,
+					);
+				else
+					await this._queueSteer(
+						expandedText,
+						currentImages,
+						text,
+						currentText,
+						options?.queuedMessageId,
+						options?.originSendId,
+					);
 				preflightResult?.(true, "queued");
 				return;
 			}
@@ -509,8 +555,22 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			}
 			const queued =
 				delivery.streamingBehavior === "followUp"
-					? this._queueFollowUp(expandedText, currentImages, text, currentText, options?.queuedMessageId)
-					: this._queueSteer(expandedText, currentImages, text, currentText, options?.queuedMessageId);
+					? this._queueFollowUp(
+							expandedText,
+							currentImages,
+							text,
+							currentText,
+							options?.queuedMessageId,
+							options?.originSendId,
+						)
+					: this._queueSteer(
+							expandedText,
+							currentImages,
+							text,
+							currentText,
+							options?.queuedMessageId,
+							options?.originSendId,
+						);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
 			preflightResult?.(true, "queued");
@@ -609,6 +669,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			...(currentText !== userText ? { rawText: currentText } : {}),
 			timestamp: Date.now(),
 		};
+		if (options?.originSendId !== undefined) noteUserMessageOrigin(userMessage, options.originSendId);
 		messages.push(userMessage);
 
 		// Inject any pending "nextTurn" messages as context alongside the user message

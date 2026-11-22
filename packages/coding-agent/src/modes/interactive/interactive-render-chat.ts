@@ -29,6 +29,7 @@ import {
 	savedRowKey,
 	savedSeqOf,
 } from "../../core/tasks/transcript-origin.js";
+import { userMessageOrigin } from "../../core/user-message-origin.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import {
@@ -405,7 +406,9 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function (
 	if (index === -1) return false;
 	this.deferredRenderedUserInputs.splice(index, 1);
 	const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
-	forgetStartedEcho(this, text, trackedComponents?.shift());
+	const consumed = trackedComponents?.shift();
+	forgetOriginEcho(this, consumed);
+	forgetStartedEcho(this, text, consumed);
 	if (trackedComponents && trackedComponents.length === 0) {
 		this.deferredRenderedUserInputComponents.delete(text);
 	}
@@ -415,6 +418,153 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function (
 interface StartedEcho {
 	readonly text: string;
 	readonly echo: DeferredUserInputEcho | undefined;
+}
+
+interface OriginEcho {
+	readonly text: string;
+	readonly echo: DeferredUserInputEcho;
+}
+
+/** Per chat, pending deferred echoes indexed by their ephemeral host origin send id. */
+const originEchoes = new WeakMap<object, Map<string, OriginEcho>>();
+/** Reverse mapping from a pending echo's component array to its origin send id. */
+const echoOrigins = new WeakMap<DeferredUserInputEcho, string>();
+/** `taggedUserMessagesShownCount` snapshot captured alongside `shownBefore` for an echo's send. */
+const echoTaggedBaselines = new WeakMap<DeferredUserInputEcho, number>();
+/** Per chat, count of newly appended user messages (no echo matched) that carried an origin send id. */
+const taggedUserMessagesShown = new WeakMap<object, number>();
+/** Per chat, in-flight sends without a pre-rendered echo awaiting their prompt answer, by origin send id. */
+const awaitingOriginSends = new WeakMap<object, Map<string, { shown: boolean }>>();
+
+/** Count of unmatched user messages with an origin send id shown so far on `mode`. */
+export function taggedUserMessagesShownCount(mode: InteractiveModeBase): number {
+	return taggedUserMessagesShown.get(mode) ?? 0;
+}
+
+/**
+ * Number of untagged user messages shown as new since `(shownBefore, taggedBefore)`.
+ * Equal to `userMessagesShownBySession - shownBefore` when talking to an older engine that sends no origin ids, and
+ * unaffected by tagged messages from other sends on a current engine.
+ */
+export function untaggedUserMessagesShownSince(
+	mode: InteractiveModeBase,
+	shownBefore: number,
+	taggedBefore: number,
+): number {
+	return mode.userMessagesShownBySession - shownBefore - (taggedUserMessagesShownCount(mode) - taggedBefore);
+}
+
+/** Bind a pending deferred `echo` of `text` to host prompt send `originSendId`. */
+export function noteDeferredEchoOrigin(
+	mode: InteractiveModeBase,
+	text: string,
+	echo: DeferredUserInputEcho,
+	originSendId: string,
+	taggedBefore?: number,
+): void {
+	if (mode.deferredRenderedUserInputComponents?.get(text)?.includes(echo) !== true) return;
+	let byOrigin = originEchoes.get(mode);
+	if (byOrigin === undefined) {
+		byOrigin = new Map();
+		originEchoes.set(mode, byOrigin);
+	}
+	byOrigin.set(originSendId, { text, echo });
+	echoOrigins.set(echo, originSendId);
+	if (taggedBefore !== undefined) echoTaggedBaselines.set(echo, taggedBefore);
+}
+
+/** Record the `taggedUserMessagesShownCount` baseline captured with `shownBefore` for `echo`. */
+export function noteDeferredEchoShownBaseline(
+	mode: InteractiveModeBase,
+	echo: DeferredUserInputEcho,
+	taggedBefore: number = taggedUserMessagesShownCount(mode),
+): void {
+	echoTaggedBaselines.set(echo, taggedBefore);
+}
+
+/**
+ * Track an in-flight send without a pre-rendered echo (the busy-steer path) so `onAnswered` learns whether its own
+ * `message_start` already arrived before the answer. Dispose in `finally` to retain nothing once settled.
+ */
+export function beginPendingOriginSend(
+	mode: InteractiveModeBase,
+	originSendId: string,
+): { wasShown(): boolean; dispose(): void } {
+	let awaiting = awaitingOriginSends.get(mode);
+	if (awaiting === undefined) {
+		awaiting = new Map();
+		awaitingOriginSends.set(mode, awaiting);
+	}
+	const entry = { shown: false };
+	awaiting.set(originSendId, entry);
+	return {
+		wasShown: () => entry.shown,
+		dispose: () => {
+			const current = awaitingOriginSends.get(mode);
+			if (current === undefined) return;
+			if (current.get(originSendId) === entry) current.delete(originSendId);
+			if (current.size === 0) awaitingOriginSends.delete(mode);
+		},
+	};
+}
+
+function forgetOriginEcho(mode: InteractiveModeBase, echo: DeferredUserInputEcho | undefined): void {
+	if (echo === undefined) return;
+	const origin = echoOrigins.get(echo);
+	echoOrigins.delete(echo);
+	echoTaggedBaselines.delete(echo);
+	if (origin === undefined) return;
+	const byOrigin = originEchoes.get(mode);
+	if (byOrigin === undefined) return;
+	if (byOrigin.get(origin)?.echo === echo) byOrigin.delete(origin);
+	if (byOrigin.size === 0) originEchoes.delete(mode);
+}
+
+function pendingEchoComponentSet(mode: InteractiveModeBase): Set<Component> {
+	const pending = new Set<Component>();
+	for (const echoes of mode.deferredRenderedUserInputComponents.values()) {
+		for (const echo of echoes) {
+			for (const component of echo) pending.add(component);
+		}
+	}
+	return pending;
+}
+
+/**
+ * Whether any non-echo row appears after `echo` in `mode.chatContainer` (for example an assistant reply, tool block,
+ * earlier user message, or compaction boundary). Returns false when `echo` has no rendered components (such as minimal
+ * test doubles whose `addMessageToChat` does not attach children), and true when rendered components are no longer
+ * attached.
+ */
+function hasNonEchoRowsAfter(mode: InteractiveModeBase, echo: DeferredUserInputEcho): boolean {
+	if (echo.length === 0) return false;
+	const children = mode.chatContainer.children;
+	let lastEchoIndex = -1;
+	for (const component of echo) {
+		const index = children.indexOf(component);
+		if (index > lastEchoIndex) lastEchoIndex = index;
+	}
+	if (lastEchoIndex === -1) return true;
+	if (lastEchoIndex === children.length - 1) return false;
+	const pending = pendingEchoComponentSet(mode);
+	for (let index = lastEchoIndex + 1; index < children.length; index++) {
+		if (!pending.has(children[index]!)) return true;
+	}
+	return false;
+}
+
+/**
+ * Earliest component in the contiguous trailing suffix of pending deferred echoes at the end of `mode.chatContainer`,
+ * or undefined if the tail ends with a non-echo row (such as an assistant reply, tool block, or compaction boundary).
+ */
+function trailingDeferredEchoAnchor(mode: InteractiveModeBase): Component | undefined {
+	const children = mode.chatContainer.children;
+	if (children.length === 0 || mode.deferredRenderedUserInputs.length === 0) return undefined;
+	const pending = pendingEchoComponentSet(mode);
+	if (pending.size === 0) return undefined;
+	let start = children.length;
+	while (start > 0 && pending.has(children[start - 1]!)) start--;
+	return start < children.length ? children[start] : undefined;
 }
 
 /**
@@ -475,6 +625,7 @@ function forgetDeferredEcho(
 	const index = nthIndexOf(mode.deferredRenderedUserInputs, text, rank);
 	if (index !== -1) mode.deferredRenderedUserInputs.splice(index, 1);
 	const components = trackedComponents?.splice(rank, 1)[0];
+	forgetOriginEcho(mode, components ?? echo);
 	if (index !== -1 || components !== undefined) forgetStartedEcho(mode, text, components ?? echo);
 	if (trackedComponents && trackedComponents.length === 0) {
 		mode.deferredRenderedUserInputComponents.delete(text);
@@ -486,6 +637,8 @@ interface PendingEcho {
 	readonly text: string;
 	readonly epoch: number | undefined;
 	readonly components: DeferredUserInputEcho | undefined;
+	readonly origin: string | undefined;
+	readonly taggedBefore: number | undefined;
 }
 
 function takeDeferredEchoes(mode: InteractiveModeBase): PendingEcho[] {
@@ -494,17 +647,26 @@ function takeDeferredEchoes(mode: InteractiveModeBase): PendingEcho[] {
 		const occurrence = occurrences.get(text) ?? 0;
 		occurrences.set(text, occurrence + 1);
 		const components = mode.deferredRenderedUserInputComponents.get(text)?.[occurrence];
-		return { text, epoch: components ? echoReadEpochs.get(components) : undefined, components };
+		return {
+			text,
+			epoch: components ? echoReadEpochs.get(components) : undefined,
+			components,
+			origin: components ? echoOrigins.get(components) : undefined,
+			taggedBefore: components ? echoTaggedBaselines.get(components) : undefined,
+		};
 	});
 	mode.deferredRenderedUserInputs = [];
 	mode.deferredRenderedUserInputComponents.clear();
+	originEchoes.delete(mode);
 	return echoes;
 }
 
 function restoreDeferredEchoes(mode: InteractiveModeBase, echoes: readonly PendingEcho[]): void {
-	for (const { text, epoch, components } of echoes) {
+	for (const { text, epoch, components, origin, taggedBefore } of echoes) {
 		const echo = mode.renderDeferredUserInput(text, components);
 		if (epoch !== undefined) echoReadEpochs.set(echo, epoch);
+		if (origin !== undefined) noteDeferredEchoOrigin(mode, text, echo, origin, taggedBefore);
+		else if (taggedBefore !== undefined) echoTaggedBaselines.set(echo, taggedBefore);
 	}
 }
 
@@ -534,9 +696,9 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
  * The session started a run for a submission this host echoed as `text`. The run begins with the submission's message,
  * as sent: an `input` hook may have rewritten it, so its `message_start` need not match the echo (#4277). An engine's
  * answer can reach the host after that `message_start`, which the session then showed itself (#4272): if it showed any
- * message of its own since `shownBefore`, the echo goes. Otherwise the session's next message that matches no echo
- * takes the echo's place. A run starts only after the one before it showed its message, so an earlier run still
- * waiting here never got to show it, and its echo stays as it is.
+ * untagged message of its own since `shownBefore`, the echo goes. Otherwise the session's next matching message takes
+ * the echo's place. A run starts only after the one before it showed its message, so an earlier run still waiting here
+ * never got to show it, and its echo stays as it is.
  */
 InteractiveModeBase.prototype.expectStartedUserInput = function (
 	this: InteractiveModeBase,
@@ -546,7 +708,13 @@ InteractiveModeBase.prototype.expectStartedUserInput = function (
 ): void {
 	if (!this.deferredRenderedUserInputs.includes(text)) return;
 	if (echo !== undefined && this.deferredRenderedUserInputComponents.get(text)?.includes(echo) !== true) return;
-	if (this.userMessagesShownBySession !== shownBefore) this.discardDeferredRenderedUserInput(text, echo);
+	const taggedBefore = echo !== undefined ? echoTaggedBaselines.get(echo) : undefined;
+	const untaggedDelta =
+		taggedBefore === undefined
+			? this.userMessagesShownBySession - shownBefore
+			: untaggedUserMessagesShownSince(this, shownBefore, taggedBefore);
+	const stalePosition = echo !== undefined && this.chatContainer !== undefined && hasNonEchoRowsAfter(this, echo);
+	if (untaggedDelta !== 0 || stalePosition) this.discardDeferredRenderedUserInput(text, echo);
 	// Runs show their messages in the order they started.
 	else startedEchoesOf(this).push({ text, echo });
 };
@@ -575,6 +743,8 @@ export function followStartedRunEcho(
 		readonly sendShowsWorkingRow: boolean;
 		/** The echo drawn for this message when it was sent; only this echo is the message's. */
 		readonly echo?: DeferredUserInputEcho;
+		/** Ephemeral host send id for this submission; messages tagged with a different origin are never taken. */
+		readonly originSendId?: string;
 	},
 ): StartedRunEchoFollower {
 	let state = STARTED_RUN_ECHO_SENT;
@@ -632,7 +802,7 @@ export function followStartedRunEcho(
 			if (
 				echoEvent.type === "user-message" &&
 				event.type === "message_start" &&
-				!takeUserMessage(followers, event, text)
+				!takeUserMessage(followers, event, text, options.originSendId)
 			) {
 				// Another send's message: the run showing it is an earlier one, though the host had not seen it start. What
 				// that run did so far is not this message's run's.
@@ -671,15 +841,18 @@ const echoFollowers = new WeakMap<object, EchoFollowers>();
 
 /**
  * Whether the follower of a message sent as `text` takes the user message `event` shows. A shown message is one sent
- * message's: the first follower still waiting for it takes it, so another send of the same text, whose run may show no
- * message of its own (#5135), still decides its own echo (#6126). A message shown in place of another text's echo is
- * that send's.
+ * message's: when both carry an origin send id, only a matching origin takes it; otherwise the first follower still
+ * waiting for it takes it, so another send of the same text, whose run may show no message of its own (#5135), still
+ * decides its own echo (#6126). A message shown in place of another text's echo is that send's.
  */
 function takeUserMessage(
 	followers: EchoFollowers,
 	event: Extract<AgentSessionEvent, { type: "message_start" }>,
 	text: string,
+	originSendId: string | undefined,
 ): boolean {
+	const messageOrigin = userMessageOrigin(event.message);
+	if (messageOrigin !== undefined && originSendId !== undefined && messageOrigin !== originSendId) return false;
 	const replaced = followers.echoes.get(event.message);
 	if (typeof replaced === "string" && replaced !== text) return false;
 	if (followers.taken.has(event)) return false;
@@ -687,9 +860,76 @@ function takeUserMessage(
 	return true;
 }
 
-/** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
+/** Replace a pending deferred echo in place with `message`, keeping message-counter accounting intact. */
+function replaceDeferredEchoWithMessage(
+	mode: InteractiveModeBase,
+	message: Message,
+	echoText: string,
+	echo: DeferredUserInputEcho | undefined,
+	started?: StartedEcho,
+): void {
+	echoFollowers.get(mode)?.echoes.set(message, echoText);
+	const renderer = mode.ui as AltScreenMessageCounterHost;
+	const following = renderer.isFollowingOutput !== false;
+	const countedBefore = countChatMessages(mode.chatContainer);
+	renderer.newMessages?.observe(following, countedBefore);
+	const removed = forgetDeferredEcho(mode, echoText, echo);
+	if (started !== undefined) {
+		// Its run shows its message now, whether or not its echo is still drawn.
+		const waiting = startedEchoesOf(mode);
+		if (waiting[0] === started) waiting.shift();
+	}
+	appendNewChildrenBeforeAttachedChild(mode.chatContainer, removed?.[0], () => mode.addMessageToChat(message));
+	for (const component of removed ?? []) mode.chatContainer.removeChild(component);
+	const counted = countChatMessages(mode.chatContainer);
+	const counter = renderer.newMessages;
+	if (!following && counter && removed && echoReadEpochs.get(removed) === counter.epoch) {
+		counter.retract(countedBefore - counted);
+	}
+	counter?.replaced(counted);
+	mode.updatePendingMessagesDisplay();
+	mode.ui.requestRender();
+}
+
+/**
+ * Show a user message from the session: when it carries an origin send id, consume or replace only that exact send's
+ * echo (or insert before later pending echoes if none exists); otherwise fall back to text then oldest started run.
+ */
 InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
 	const text = this.getUserMessageText(message);
+	const origin = userMessageOrigin(message);
+	if (origin !== undefined) {
+		const matched = originEchoes.get(this)?.get(origin);
+		if (matched !== undefined) {
+			if (hasNonEchoRowsAfter(this, matched.echo)) {
+				// Non-echo rows (assistant reply, tool output, compaction boundary, or another turn) already sit below
+				// this echo, so keeping or replacing it in place would reorder conversation history. Discard the stale
+				// echo and append the message at the tail instead.
+				echoFollowers.get(this)?.echoes.set(message, matched.text);
+				this.discardDeferredRenderedUserInput(matched.text, matched.echo);
+				this.addMessageToChat(message);
+				return;
+			}
+			if (matched.text === text) {
+				const kept = forgetDeferredEcho(this, matched.text, matched.echo);
+				echoFollowers.get(this)?.echoes.set(message, matched.text);
+				// The echo stays as the session's message: its rows are that message's rows.
+				for (const component of kept ?? matched.echo) noteRowSource(component, { message, part: 0 });
+				return;
+			}
+			replaceDeferredEchoWithMessage(this, message, matched.text, matched.echo);
+			return;
+		}
+		const awaiting = awaitingOriginSends.get(this)?.get(origin);
+		if (awaiting !== undefined) awaiting.shown = true;
+		echoFollowers.get(this)?.echoes.set(message, null);
+		this.userMessagesShownBySession += 1;
+		taggedUserMessagesShown.set(this, taggedUserMessagesShownCount(this) + 1);
+		appendNewChildrenBeforeAttachedChild(this.chatContainer, trailingDeferredEchoAnchor(this), () =>
+			this.addMessageToChat(message),
+		);
+		return;
+	}
 	const echo = this.deferredRenderedUserInputComponents?.get(text)?.[0];
 	if (this.consumeDeferredRenderedUserInput(text)) {
 		echoFollowers.get(this)?.echoes.set(message, text);
@@ -700,25 +940,7 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 	// The oldest started run that has not shown its message yet shows this one.
 	const started = startedEchoes.get(this)?.[0];
 	if (started !== undefined) {
-		echoFollowers.get(this)?.echoes.set(message, started.text);
-		const renderer = this.ui as AltScreenMessageCounterHost;
-		const following = renderer.isFollowingOutput !== false;
-		const countedBefore = countChatMessages(this.chatContainer);
-		renderer.newMessages?.observe(following, countedBefore);
-		const echo = forgetDeferredEcho(this, started.text, started.echo);
-		// Its run shows its message now, whether or not its echo is still drawn.
-		const waiting = startedEchoesOf(this);
-		if (waiting[0] === started) waiting.shift();
-		appendNewChildrenBeforeAttachedChild(this.chatContainer, echo?.[0], () => this.addMessageToChat(message));
-		for (const component of echo ?? []) this.chatContainer.removeChild(component);
-		const counted = countChatMessages(this.chatContainer);
-		const counter = renderer.newMessages;
-		if (!following && counter && echo && echoReadEpochs.get(echo) === counter.epoch) {
-			counter.retract(countedBefore - counted);
-		}
-		counter?.replaced(counted);
-		this.updatePendingMessagesDisplay();
-		this.ui.requestRender();
+		replaceDeferredEchoWithMessage(this, message, started.text, started.echo, started);
 		return;
 	}
 	echoFollowers.get(this)?.echoes.set(message, null);

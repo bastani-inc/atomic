@@ -229,6 +229,8 @@ export interface QueuedDeliveryChange {
 	readonly dropped?: readonly QueuedDeliveryEntry[];
 	/** With a queued user message's start, or its save, the receipt id the message is queued (and saved) with. */
 	readonly message?: string;
+	/** With a user message's start, the host prompt send id it originated from, when the prompt named one. */
+	readonly origin?: string;
 }
 
 /**
@@ -252,9 +254,15 @@ export class QueuedDeliveryRelay {
 
 	/**
 	 * The change to send with `event`, which `session` sends now; undefined when there is none to send with it. `message`
-	 * is the receipt id of the queued user message `event` starts or saves.
+	 * is the receipt id of the queued user message `event` starts or saves; `origin` is the host prompt send id that
+	 * originated the user message `event` starts.
 	 */
-	note(session: object, event: { readonly type: string }, message?: string): QueuedDeliveryChange | undefined {
+	note(
+		session: object,
+		event: { readonly type: string },
+		message?: string,
+		origin?: string,
+	): QueuedDeliveryChange | undefined {
 		// Before it is written, a newer update of the same tool call can replace a tool update, and a change with it.
 		// Taken from a run's end even when it is not sent, so the event holds them no longer.
 		const dropped = event.type === "agent_end" ? (takeQueuedMessagesDroppedAt(event) ?? []) : [];
@@ -272,9 +280,11 @@ export class QueuedDeliveryRelay {
 			this.head = 0;
 		}
 		for (const delivery of taken) this.told.push(delivery);
-		if (ended === 0 && taken.length === 0 && dropped.length === 0 && message === undefined) return undefined;
+		if (ended === 0 && taken.length === 0 && dropped.length === 0 && message === undefined && origin === undefined)
+			return undefined;
 		return {
 			...(message === undefined ? {} : { message }),
+			...(origin === undefined ? {} : { origin }),
 			...(ended > 0 ? { ended } : {}),
 			...(taken.length > 0
 				? {
@@ -411,15 +421,17 @@ export function takeQueuedDeliveryChange(event: object): QueuedDeliveryChange | 
 /** `value` as a change in deliveries, as an engine writes one; undefined for anything else. */
 function parseQueuedDeliveryChange(value: unknown): QueuedDeliveryChange | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const { ended, taken, dropped, message } = value as {
+	const { ended, taken, dropped, message, origin } = value as {
 		ended?: unknown;
 		taken?: unknown;
 		dropped?: unknown;
 		message?: unknown;
+		origin?: unknown;
 	};
 	if (ended !== undefined && !(typeof ended === "number" && Number.isSafeInteger(ended) && ended >= 0))
 		return undefined;
 	if (message !== undefined && typeof message !== "string") return undefined;
+	if (origin !== undefined && typeof origin !== "string") return undefined;
 	const entries = parseQueuedDeliveryEntries(taken);
 	const droppedEntries = parseQueuedDeliveryEntries(dropped);
 	if (entries === undefined || droppedEntries === undefined) return undefined;
@@ -428,6 +440,7 @@ function parseQueuedDeliveryChange(value: unknown): QueuedDeliveryChange | undef
 		...(entries.length > 0 ? { taken: entries } : {}),
 		...(droppedEntries.length > 0 ? { dropped: droppedEntries } : {}),
 		...(message === undefined ? {} : { message }),
+		...(origin === undefined ? {} : { origin }),
 	};
 }
 
