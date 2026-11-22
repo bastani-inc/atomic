@@ -8,6 +8,7 @@ import {
 	type ReleasedChildErrorCode,
 } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
+	bindSubagentChildHeldToolResults,
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	observeChildRecordFailure,
@@ -19,6 +20,7 @@ import {
 	subagentChildRecordFailures,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { subagentChildrenAwaitingResume } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 
 const RESULT: DetachedToolResult = {
 	toolCallId: "ci-1",
@@ -110,7 +112,7 @@ test("held results are written onto the latest record, never over a newer one (#
 
 	const record = readSubagentChildRecords(sessionManager.getEntries()).get("run:0");
 	assert.deepEqual(
-		[record?.state, record?.terminalStatus, record?.heldToolResults],
+		[record?.state, record?.terminalStatus, heldAsArrived(record?.heldToolResults)],
 		["terminal", SUBAGENT_CHILD_RELEASED_STATUS, [RESULT]],
 		"the later released record's state survived the held-results write",
 	);
@@ -140,7 +142,7 @@ test("holding results for a child with no record, or when the save fails, reject
 	});
 	failing.enabled = false;
 	const kept = await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]);
-	assert.deepEqual(kept.heldToolResults, [RESULT]);
+	assert.deepEqual(heldAsArrived(kept.heldToolResults), [RESULT]);
 });
 
 test("held results are added beside those already held, and only the ids a run took are cleared, in the owner's order (#4326)", async () => {
@@ -156,17 +158,51 @@ test("held results are added beside those already held, and only the ids a run t
 
 	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]);
 	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT, later]);
-	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [
-		RESULT,
-		later,
-	]);
+	assert.deepEqual(
+		heldAsArrived(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults),
+		[RESULT, later],
+	);
 
 	const before = written();
 	await clearSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", ["unheld-9"]);
 	assert.equal(written(), before, "clearing ids it does not hold writes nothing");
 	await clearSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", ["ci-1"]);
-	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [later]);
+	assert.deepEqual(
+		heldAsArrived(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults),
+		[later],
+	);
 	assert.equal(written(), before + 1);
+});
+
+test("a result for a later call a provider gave the same id is held beside an earlier one a wake bound to its call, and outlives that one's release (#3274)", async () => {
+	const { sessionManager, ctx, pi, ownerSessionId } = owner();
+	const sink = createSubagentChildRecordSink(pi, ctx);
+	sink.record(launch);
+	await sink.flushed?.();
+	const latest = () => readSubagentChildRecords(sessionManager.getEntries()).get("run:0");
+	const later: DetachedToolResult = {
+		...RESULT,
+		result: { content: [{ type: "text", text: "run 8 passed" }], details: undefined },
+	};
+
+	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]);
+	const earlier = latest()?.heldToolResults?.[0]?.heldSeq;
+	assert.ok(earlier !== undefined);
+	// A wake read the child's transcript back for it and gave it to a run.
+	await bindSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", new Map([[earlier, "call-entry-7"]]));
+	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [later]);
+	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [later]);
+	assert.deepEqual(heldAsArrived(latest()?.heldToolResults), [RESULT, later], "the later call's result, once");
+
+	// The run that was given the earlier result saved it.
+	await clearSubagentChildHeldToolResults(
+		pi,
+		ownerSessionId,
+		"run:0",
+		["ci-1"],
+		new Map([["ci-1", ["call-entry-7"]]]),
+	);
+	assert.deepEqual(heldAsArrived(latest()?.heldToolResults), [later]);
 });
 
 test("a wake that fails with no reason of its own shows its code and hint once in status (#5551)", async () => {

@@ -61,6 +61,7 @@ import {
 import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	currentWakeFailure,
+	holdsToolResultFor,
 	observeChildRecordFailure,
 	recordSubagentChildReply,
 	recordSubagentChildWakeFailure,
@@ -253,9 +254,7 @@ export function bindReleasedChildWakes(
 		ctx,
 		{
 			wake: async (record, decision, slot) => {
-				const unsaved = decision.toolResults.filter(
-					(result) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === result.toolCallId),
-				);
+				const unsaved = decision.toolResults.filter((result) => !holdsToolResultFor(record, result.toolCallId));
 				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (refuseRelaunch(record)() !== undefined) return;
 				// #5551: only a released child is reserved; one that ended on its own and is woken for a late result is not.

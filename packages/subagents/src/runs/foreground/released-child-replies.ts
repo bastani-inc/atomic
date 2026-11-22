@@ -16,7 +16,11 @@ import {
 	type ReleasedReplyPayload,
 	type ReleasedReplyWaitData,
 } from "./released-reply-protocol.js";
-import type { SubagentChildRecord, SubagentChildWaitingCall } from "./subagent-child-records.js";
+import {
+	holdsToolResultFor,
+	type SubagentChildRecord,
+	type SubagentChildWaitingCall,
+} from "./subagent-child-records.js";
 
 /** Read only plain correlation facts from the child's saved session, for calls that actually detached. */
 export function releasedChildWaitingCalls(
@@ -68,15 +72,14 @@ export function releasedReplyTimeoutId(questionId: string): string {
  * asker costs the dispatcher one plain node, and a reply that came first is never overtaken by its own deadline.
  */
 export function withReleasedReplyTimeouts(
-	record: Pick<SubagentChildRecord, "waitingOn" | "heldToolResults">,
+	record: Pick<SubagentChildRecord, "waitingOn" | "heldToolResults" | "heldToolResultCalls">,
 	wakes: readonly AgentWake[],
 ): AgentWake[] {
 	return wakes.flatMap((wake): AgentWake[] => {
 		if (!wake.id.startsWith(REPLY_TIMEOUT_PREFIX)) return [wake];
 		const questionId = wake.id.slice(REPLY_TIMEOUT_PREFIX.length);
 		const call = record.waitingOn?.find((waiting) => waiting.replyWait?.questionId === questionId);
-		if (call === undefined || (record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId))
-			return [];
+		if (call === undefined || holdsToolResultFor(record, call.toolCallId)) return [];
 		return [{ ...wake, toolResult: releasedReplyTimeout(call) }];
 	});
 }

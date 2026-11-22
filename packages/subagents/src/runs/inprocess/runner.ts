@@ -3191,7 +3191,10 @@ export class SubagentControlRuntime {
 					},
 				);
 				// Its card holds them now: the owner lets them go (#5012).
-				taskHooks?.toolResultsSaved?.(lateResults.map((result) => result.toolCallId));
+				taskHooks?.toolResultsSaved?.(
+					lateResults.map((result) => result.toolCallId),
+					true,
+				);
 			} else if (note !== undefined)
 				// Read with whatever else starts its turn, in its first request, or starting that turn when nothing else does;
 				// a restart before then replays it.
@@ -3234,13 +3237,13 @@ export class SubagentControlRuntime {
 					const reported = new Set<string>();
 					await session.resumeDetachedTurn(admitted.spec.resumeToolResults, (toolCallIds) => {
 						for (const toolCallId of toolCallIds) reported.add(toolCallId);
-						taskHooks?.toolResultsSaved?.(toolCallIds);
+						taskHooks?.toolResultsSaved?.(toolCallIds, false);
 					});
 					// The rest the transcript already held, or no longer waited on.
 					const rest = admitted.spec.resumeToolResults
 						.map((result) => result.toolCallId)
 						.filter((toolCallId) => !reported.has(toolCallId));
-					if (rest.length > 0) taskHooks?.toolResultsSaved?.(rest);
+					if (rest.length > 0) taskHooks?.toolResultsSaved?.(rest, false);
 				}
 				startBudget.end();
 			} else {

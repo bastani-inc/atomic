@@ -84,6 +84,26 @@ test("a deadline whose call was already answered, or whose question the child no
 	assert.deepEqual(withReleasedReplyTimeouts({ waitingOn: [], heldToolResults: [] }, [deadline]), []);
 });
 
+test("a deadline still fires for a question asked by a later call a provider gave the id of an earlier one whose answer is held (#3274)", () => {
+	const deadline: AgentWake = { id: releasedReplyTimeoutId("question-1"), kind: "tool-result" };
+	// The earlier call's answer, which a wake bound to that call and gave to a run.
+	const earlier = {
+		toolCallId: "ask-1",
+		toolName: "intercom",
+		result: { content: [], details: undefined },
+		isError: false,
+		heldSeq: 1,
+	};
+
+	const [wake] = withReleasedReplyTimeouts(
+		{ waitingOn: [ASK], heldToolResults: [earlier], heldToolResultCalls: { "1": "earlier-call-entry" } },
+		[deadline],
+	);
+
+	assert.equal(wake?.toolResult?.toolCallId, "ask-1");
+	assert.equal(wake?.toolResult?.isError, true, "the later call's question timed out");
+});
+
 test("a wake that is not a deadline passes through unchanged and in order (#4326)", () => {
 	const result = {
 		toolCallId: "tool-1",

@@ -7,6 +7,7 @@ import {
 	readSubagentChildRecords,
 	recordSubagentChildReply,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 
 const result: DetachedToolResult = {
 	toolCallId: "call-1",
@@ -57,7 +58,10 @@ test("a released reply is acknowledged only after its result is saved once (#432
 	assert.equal(await recordSubagentChildReply(pi, ownerId, "run:0", "q-1", result, 50), false);
 	assert.equal(await recordSubagentChildReply(pi, ownerId, "run:0", "q-1", result, 101), false);
 	assert.equal(appends, after);
-	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [result]);
+	assert.deepEqual(
+		heldAsArrived(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults),
+		[result],
+	);
 });
 
 test("a reply to a permanently ended child is refused without appending (#4326)", async () => {

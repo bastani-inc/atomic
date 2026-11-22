@@ -43,6 +43,7 @@ import {
 	needsRedispatch,
 	pendingToolCalls,
 	planReleasedChildWake,
+	type ReadBackToolResult,
 	readHeldToolResultsBack,
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
@@ -57,7 +58,6 @@ import { SUBAGENT_RESERVE_RESTORING_CHILD_EVENT } from "../../packages/subagents
 import {
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	type SubagentChildHeldToolResult,
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
@@ -868,7 +868,7 @@ async function readThenReusedId(newer: "answered" | "still running" | "pending" 
 			isError: false,
 			timestamp: 3,
 		});
-	const bound: SubagentChildHeldToolResult = { ...late, callEntryId: first };
+	const bound: ReadBackToolResult = { ...late, callEntryId: first };
 	return { child, late, bound, first, second };
 }
 
@@ -888,9 +888,9 @@ test("a held result bound to an older call than the one its child waits on with 
 	const found = await readHeldToolResultsBack(child, [bound]);
 	assert.deepEqual(found.saved, []);
 	assert.deepEqual([...found.issuingCalls], [["ci-1", first]], "its own call");
-	assert.deepEqual([...found.olderCalls], ["ci-1"]);
+	assert.equal(found.results[0]?.older, true);
 
-	const plan = planReleasedChildWake(pendingToolCalls(child), [late], false, undefined, found.olderCalls);
+	const plan = planReleasedChildWake(pendingToolCalls(child), [late], false, undefined, new Set([late]));
 	assert.deepEqual(plan.lateResults, [late]);
 	assert.deepEqual(plan.resumeToolResults, [stillRunning("ci-1")], "the newer call is still running");
 });
@@ -933,6 +933,55 @@ test("a notice of an older call's result read after a newer call with the same i
 	const found = await readHeldToolResultsBack(child, [newerResult]);
 
 	assert.deepEqual(found.saved, [], "the newer call's result was never read");
+});
+
+test("a late result read in a notice admitted under the key that names its call is found read in the child's context too (#5012)", async () => {
+	const child = SessionManager.inMemory("/repo");
+	const call = await child.appendMessage({
+		...fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "7" }, { id: "ci-1" })], { stopReason: "toolUse" }),
+	});
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-1",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+		isError: false,
+		timestamp: 2,
+	});
+	const late = result("ci-1", "run 7 deployed");
+	const notice = lateToolResultNotice([late]);
+	await child.appendCustomMessageEntry(
+		notice.customType,
+		notice.content,
+		true,
+		notice.details,
+		true,
+		{ delivery: "steer" },
+		lateToolResultNoticeKey([late], new Map([["ci-1", call]])),
+	);
+
+	assert.deepEqual(savedToolResultIds(child, [late]), ["ci-1"]);
+	assert.deepEqual(await savedToolResultIdsInHistory(child, [late]), ["ci-1"]);
+});
+
+test("a result for a later call a provider gave the same id wakes its child, though one for an earlier call is still held (#3274)", () => {
+	const earlier = { ...result("ci-1", "run 7 deployed"), heldSeq: 1 };
+	const later = result("ci-1", "run 8 passed");
+	const wake = { id: "tool-result:later", kind: "tool-result" as const, toolResult: later };
+	const released = {
+		state: "terminal" as const,
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		heldToolResults: [earlier],
+	};
+
+	// A wake gave the earlier result to a run, bound to its call: the later one is another result.
+	assert.deepEqual(decideReleasedChildWake({ ...released, heldToolResultCalls: { "1": "call-entry-7" } }, [wake]), {
+		kind: "wake",
+		toolResults: [earlier, later],
+		prompt: false,
+	});
+	// Not bound yet: the one held is the result an arrival with its id repeats.
+	assert.deepEqual(decideReleasedChildWake(released, [wake]), { kind: "wake", toolResults: [earlier], prompt: false });
 });
 
 test("a woken child's history is read back only as far as the call of each result it may have read", async () => {

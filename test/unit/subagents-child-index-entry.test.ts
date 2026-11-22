@@ -46,6 +46,7 @@ import {
 	MAX_COLLECTION_ROUNDS,
 	trackCollection,
 } from "../helpers/collect-garbage.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -893,7 +894,7 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		};
 		assert.equal(await recordSubagentChildReply(host, ownerSessionId, "ix-later:0", "q-1", reply, Date.now()), true);
 		assert.equal(subagentChildIndexEntry("ix-later:0")?.entryId, latestEntryId());
-		assert.deepEqual(subagentChildRecordOf(ownerSessionId, "ix-later:0")?.heldToolResults, [reply]);
+		assert.deepEqual(heldAsArrived(subagentChildRecordOf(ownerSessionId, "ix-later:0")?.heldToolResults), [reply]);
 
 		await recordSubagentChildGone(host, base);
 		assert.equal(subagentChildIndexEntry("ix-later:0")?.entryId, latestEntryId());

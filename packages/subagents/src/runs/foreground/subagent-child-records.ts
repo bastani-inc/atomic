@@ -105,17 +105,15 @@ export function pendingMessagesOfResult(result: {
 	};
 }
 
-/** A detached tool call a released child waits on. */
 /**
- * A result held for a child, and, once a wake read the child's transcript back for it, the entry that issued the call
- * it is for. A later read-back goes back to that call rather than to a newer one a provider gave the same id (#3274):
- * a result a run saved, whose release the owner did not record, is then still found saved, never taken for the newer
- * call's.
+ * A result held for a child, with the number its record gave it as it was held (`heldToolResultSeq`): what the call it
+ * is for is kept under once a wake binds it (`heldToolResultCalls`).
  */
 export interface SubagentChildHeldToolResult extends DetachedToolResult {
-	readonly callEntryId?: string;
+	readonly heldSeq?: number;
 }
 
+/** A detached tool call a released child waits on. */
 export interface SubagentChildWaitingCall {
 	readonly toolCallId: string;
 	readonly toolName: string;
@@ -264,6 +262,16 @@ export interface SubagentChildRecord {
 	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
 	 */
 	readonly heldToolResults?: readonly SubagentChildHeldToolResult[];
+	/** The last `heldSeq` a held result was given. */
+	readonly heldToolResultSeq?: number;
+	/**
+	 * By `heldSeq`, the entry that issued the call each held result is for, once a wake read the child's transcript back
+	 * for it. A later read-back goes back to that call rather than to a newer one a provider gave the same id (#3274), so
+	 * a result a run saved, whose release the owner did not record, is still found saved, never taken for the newer
+	 * call's; and a result for that newer call is held beside it. Kept apart from the results, so a wake records it in a
+	 * record of its own without writing them again.
+	 */
+	readonly heldToolResultCalls?: Readonly<Record<string, string>>;
 	/**
 	 * Notices of finished background tasks the child launched that reached it while it could not take them (released,
 	 * paused or quit), in arrival order. Its next run that saves them delivers each as the notice a running child gets,
@@ -439,7 +447,11 @@ export interface SubagentChildRecordSink {
 	flushed?(): Promise<void>;
 	/** Settles once the latest record this sink was given is appended: `false` when it could not be. */
 	saved?(): Promise<boolean>;
-	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
+	clearHeldToolResults?(
+		childId: string,
+		toolCallIds: readonly string[],
+		calls?: ReadonlyMap<string, readonly string[]>,
+	): Promise<void>;
 	/** Keep notices for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildNotices}. */
 	holdNotices?(childId: string, notices: readonly SubagentChildHeldNotice[]): Promise<HeldMessagesOutcome>;
 	clearHeldNotices?(childId: string, completionIds: readonly string[]): Promise<void>;
@@ -641,8 +653,8 @@ export function createSubagentChildRecordSink(
 		},
 		flushed: () => appended.then(() => undefined),
 		saved: () => appended,
-		clearHeldToolResults: (childId, toolCallIds) =>
-			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
+		clearHeldToolResults: (childId, toolCallIds, calls) =>
+			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds, calls),
 		holdNotices: (childId, notices) => holdSubagentChildNotices(pi, owner.sessionId, childId, notices),
 		clearHeldNotices: (childId, completionIds) =>
 			clearSubagentChildHeldNotices(pi, owner.sessionId, childId, completionIds),
@@ -847,10 +859,7 @@ export async function recordSubagentChildHeldToolResults(
 		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
-		const record = observeSubagentChildRecord({
-			...latest,
-			heldToolResults: withHeldToolResults(latest.heldToolResults, heldToolResults),
-		});
+		const record = observeSubagentChildRecord({ ...latest, ...withHeldToolResults(latest, heldToolResults) });
 		await appendObserved(pi, record);
 		next = record;
 	});
@@ -858,41 +867,67 @@ export async function recordSubagentChildHeldToolResults(
 }
 
 /**
- * Let go of the results held for a child with these call ids. With `calls`, the read-back that found them saved also
- * found where the calls of the others are: each kept result not bound to its call yet is bound to the one `calls` names
- * for its id, in the same write, before a run is given it (`SubagentChildHeldToolResult.callEntryId`).
+ * Let go of the results held for a child with these call ids. With `calls`, a result held for one of those ids is let go
+ * only when a wake bound it to one of the calls `calls` names for its id: one not bound arrived since, for a later call
+ * a provider gave the same id (#3274).
  */
 export async function clearSubagentChildHeldToolResults(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	toolCallIds: readonly string[],
-	calls?: ReadonlyMap<string, string>,
+	calls?: ReadonlyMap<string, readonly string[]>,
+): Promise<void> {
+	await clearSubagentChildHeldToolResultsWhere(
+		pi,
+		ownerSessionId,
+		childId,
+		(held, latest) => {
+			if (!toolCallIds.includes(held.toolCallId)) return false;
+			const given = calls?.get(held.toolCallId);
+			if (given === undefined) return true;
+			const call = heldToolResultCall(latest, held);
+			return call !== undefined && given.includes(call);
+		},
+		toolCallIds,
+	);
+}
+
+/**
+ * Let go of the results held for a child that `which` names, and of what their record keeps for them; also of the reply
+ * waits of the calls `answered` names, whose results reached the child.
+ */
+export async function clearSubagentChildHeldToolResultsWhere(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	which: (held: SubagentChildHeldToolResult, latest: SubagentChildRecord) => boolean,
+	answered: readonly string[] = [],
 ): Promise<void> {
 	await inOrder(ownerSessionId, async () => {
 		const reading = recordReadable(ownerSessionId, childId);
 		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
-		const held = latest?.heldToolResults ?? [];
-		let bound = 0;
-		const kept = held.flatMap((result): SubagentChildHeldToolResult[] => {
-			if (toolCallIds.includes(result.toolCallId)) return [];
-			const callEntryId = result.callEntryId === undefined ? calls?.get(result.toolCallId) : undefined;
-			if (callEntryId === undefined) return [result];
-			bound++;
-			return [{ ...result, callEntryId }];
-		});
 		if (latest === undefined) return;
-		const waitingOn = latest.waitingOn?.filter(
-			(call) => call.replyWait === undefined || !toolCallIds.includes(call.toolCallId),
-		);
-		if (kept.length === held.length && bound === 0 && waitingOn?.length === latest.waitingOn?.length) return;
+		const held = latest.heldToolResults ?? [];
+		const kept = held.filter((result) => !which(result, latest));
+		// A reply wait ends with its call's result, unless a result for that id is still held: a later call's.
+		const ended = new Set(answered);
+		for (const result of kept) ended.delete(result.toolCallId);
+		const waitingOn = latest.waitingOn?.filter((call) => call.replyWait === undefined || !ended.has(call.toolCallId));
+		if (kept.length === held.length && waitingOn?.length === latest.waitingOn?.length) return;
+		const seqs = new Set(kept.flatMap((result) => (result.heldSeq === undefined ? [] : [String(result.heldSeq)])));
+		const calls =
+			latest.heldToolResultCalls === undefined
+				? undefined
+				: Object.fromEntries(Object.entries(latest.heldToolResultCalls).filter(([seq]) => seqs.has(seq)));
 		await appendObserved(
 			pi,
 			observeSubagentChildRecord({
 				...latest,
 				heldToolResults: kept,
 				...(waitingOn === undefined ? {} : { waitingOn }),
+				...(calls === undefined ? {} : { heldToolResultCalls: calls }),
 			}),
 		);
 	}).catch((error: Error) => {
@@ -904,6 +939,48 @@ export async function clearSubagentChildHeldToolResults(
 				? error
 				: new ReleasedChildError("record-append-failed", { ownerSessionId, childId }, { cause: error }),
 		);
+	});
+}
+
+/**
+ * Bind results held for a child to the calls they are for, by `heldSeq` (`SubagentChildRecord.heldToolResultCalls`),
+ * before a run is given them. Written as a record of its own that names only the bindings, not the results.
+ */
+export async function bindSubagentChildHeldToolResults(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	calls: ReadonlyMap<number, string>,
+): Promise<void> {
+	if (calls.size === 0) return;
+	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest === undefined) return;
+		const bound = { ...latest.heldToolResultCalls };
+		let added = 0;
+		for (const result of latest.heldToolResults ?? []) {
+			const call = result.heldSeq === undefined ? undefined : calls.get(result.heldSeq);
+			if (call === undefined || bound[String(result.heldSeq)] !== undefined) continue;
+			bound[String(result.heldSeq)] = call;
+			added++;
+		}
+		if (added === 0) return;
+		const { version, childId: id, owner, runId, index, agent, cwd, state } = latest;
+		const bindings: SubagentChildRecord = {
+			version,
+			childId: id,
+			owner,
+			runId,
+			index,
+			agent,
+			cwd,
+			state,
+			heldToolResultCalls: bound,
+		};
+		observeSubagentChildRecord(bindings);
+		await appendObserved(pi, bindings);
 	});
 }
 
@@ -926,20 +1003,68 @@ export async function holdInterruptedStillRunningCalls(
 		return {
 			...latest,
 			// A result that arrived for the call meanwhile is kept over its interrupted one.
-			heldToolResults: withHeldToolResults(latest.heldToolResults, interrupted.map(resultOf)),
+			...withHeldToolResults(latest, interrupted.map(resultOf)),
 			stillRunning: tracked.filter((call) => call.ownerGeneration === generation),
 		};
 	});
 }
 
+/** The entry of the call `held`, a result held for `record`'s child, is for, once a wake bound it (#3274). */
+export function heldToolResultCall(
+	record: Pick<SubagentChildRecord, "heldToolResultCalls">,
+	held: SubagentChildHeldToolResult,
+): string | undefined {
+	return held.heldSeq === undefined ? undefined : record.heldToolResultCalls?.[String(held.heldSeq)];
+}
+
+/**
+ * Whether `record` already holds the result a call with id `toolCallId` gives: one held for that id and not bound to a
+ * call. One a wake bound is the result of the call it was given for; a later call a provider gave the same id (#3274)
+ * has a result of its own.
+ */
+export function holdsToolResultFor(
+	record: Pick<SubagentChildRecord, "heldToolResults" | "heldToolResultCalls">,
+	toolCallId: string,
+): boolean {
+	return (record.heldToolResults ?? []).some(
+		(held) => held.toolCallId === toolCallId && heldToolResultCall(record, held) === undefined,
+	);
+}
+
+/**
+ * Whether `other` is `held`, a result `record` holds: the same held result, by the number it was held under, or, for a
+ * result as it arrived, the one held for its call id that no wake bound yet.
+ */
+export function sameHeldResult(
+	record: Pick<SubagentChildRecord, "heldToolResultCalls">,
+	held: SubagentChildHeldToolResult,
+	other: SubagentChildHeldToolResult,
+): boolean {
+	if (held.toolCallId !== other.toolCallId) return false;
+	if (other.heldSeq !== undefined) return held.heldSeq === other.heldSeq;
+	return heldToolResultCall(record, held) === undefined;
+}
+
+/** `record`'s held results with `added` after them, each numbered; one it already holds is left out. */
 function withHeldToolResults(
-	held: readonly SubagentChildHeldToolResult[] | undefined,
-	added: readonly DetachedToolResult[],
-): SubagentChildHeldToolResult[] {
-	const kept = [...(held ?? [])];
-	for (const result of added)
-		if (!kept.some((existing) => existing.toolCallId === result.toolCallId)) kept.push(result);
-	return kept;
+	record: Pick<SubagentChildRecord, "heldToolResults" | "heldToolResultCalls" | "heldToolResultSeq">,
+	added: readonly SubagentChildHeldToolResult[],
+): Pick<SubagentChildRecord, "heldToolResults" | "heldToolResultSeq"> {
+	const kept = [...(record.heldToolResults ?? [])];
+	let seq = record.heldToolResultSeq ?? 0;
+	for (const result of added) {
+		if (result.heldSeq !== undefined && kept.some((held) => held.heldSeq === result.heldSeq)) continue;
+		if (
+			holdsToolResultFor(
+				{ heldToolResults: kept, heldToolResultCalls: record.heldToolResultCalls },
+				result.toolCallId,
+			)
+		)
+			continue;
+		seq += 1;
+		kept.push({ ...result, heldSeq: seq });
+	}
+	return { heldToolResults: kept, heldToolResultSeq: seq };
 }
 
 /** Record a reply before its broker acknowledges it; a duplicate or expired question is refused. */
@@ -965,13 +1090,10 @@ export async function recordSubagentChildReply(
 			latest.terminalStatus === SUBAGENT_CHILD_GONE_STATUS ||
 			call?.replyWait === undefined ||
 			arrivedAt >= call.replyWait.deadline ||
-			latest.heldToolResults?.some((item) => item.toolCallId === result.toolCallId)
+			holdsToolResultFor(latest, result.toolCallId)
 		)
 			return;
-		const record: SubagentChildRecord = {
-			...latest,
-			heldToolResults: withHeldToolResults(latest.heldToolResults, [result]),
-		};
+		const record: SubagentChildRecord = { ...latest, ...withHeldToolResults(latest, [result]) };
 		try {
 			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
 		} catch (error) {
@@ -1015,7 +1137,7 @@ export async function recordSubagentChildWakeFailure(
 		const reported = currentWakeFailure(latest)?.reported;
 		return {
 			...latest,
-			heldToolResults: withHeldToolResults(latest.heldToolResults, toolResults),
+			...withHeldToolResults(latest, toolResults),
 			wakeFailure: {
 				...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
 				code: failure.code,

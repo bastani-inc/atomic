@@ -887,11 +887,20 @@ export async function runAgentTask(input: {
 					);
 				const childId = subagentChildId(runId, index);
 				const wokenWith = input.options.wakeToolResultIds ?? [];
-				const clearDelivered = (toolCallIds: readonly string[]) => {
+				// A result held for one of these ids is let go only when it is bound to the call the wake gave it for: one that
+				// arrived since is a later call's, which a provider gave the same id (#3274).
+				const clearDelivered = (toolCallIds: readonly string[], late?: boolean) => {
 					const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
-					return delivered.length === 0
-						? Promise.resolve()
-						: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
+					if (delivered.length === 0) return Promise.resolve();
+					const calls = new Map<string, string[]>();
+					const given = [
+						...(late === false ? [] : [input.options.resumeLateToolResultCalls]),
+						...(late === true ? [] : [input.options.wakeToolResultCalls]),
+					];
+					for (const map of given)
+						for (const [toolCallId, call] of map ?? [])
+							calls.set(toolCallId, [...(calls.get(toolCallId) ?? []), call]);
+					return input.recordChild?.clearHeldToolResults?.(childId, delivered, calls) ?? Promise.resolve();
 				};
 				// From here until its first turn starts the child is starting, and says where (never merely "running").
 				const { dispatchedAt } = elapsedSpan;
@@ -1016,7 +1025,7 @@ export async function runAgentTask(input: {
 									recordChild("running");
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
-								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
+								toolResultsSaved: (toolCallIds, late) => void clearDelivered(toolCallIds, late),
 								noticesSaved: (completionIds) =>
 									void input.recordChild?.clearHeldNotices?.(childId, completionIds),
 								reportTurnPaused: (paused, leafId) => {

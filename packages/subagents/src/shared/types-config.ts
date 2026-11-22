@@ -176,6 +176,11 @@ export interface RunSyncOptions {
 	 */
 	resumePaused?: boolean;
 	wakeToolResultIds?: readonly string[];
+	/**
+	 * By id, the entry of the call each result a wake answers its pending calls with is bound to; with
+	 * `resumeLateToolResultCalls`, what lets the held results go once saved, and no result that arrived since (#3274).
+	 */
+	wakeToolResultCalls?: ReadonlyMap<string, string>;
 	/** The calls the child is told are still running, recorded with every record its run writes (#5014). */
 	stillRunning?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildStillRunningCall[];
 	redispatchDetachedCalls?: boolean;

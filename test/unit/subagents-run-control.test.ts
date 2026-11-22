@@ -156,6 +156,7 @@ import {
 	type TestSessionQueue,
 } from "../../packages/subagents/src/shared/types.js";
 import { collectGarbage } from "../helpers/collect-garbage.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 import { theme } from "./subagents-render-stability-helpers.js";
@@ -4882,9 +4883,9 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 		toolResult: late,
 	});
 	assert.equal(h.runs.length, runsWhilePaused, "a paused child is not woken");
-	assert.deepEqual(h.latest("release4b:0")?.heldToolResults, [late]);
+	assert.deepEqual(heldAsArrived(h.latest("release4b:0")?.heldToolResults), [late]);
 	assert.deepEqual(
-		subagentChildRecordOf(h.sessionManager.getSessionId(), "release4b:0")?.heldToolResults,
+		heldAsArrived(subagentChildRecordOf(h.sessionManager.getSessionId(), "release4b:0")?.heldToolResults),
 		[late],
 		"the child's index entry reads the record that holds the result",
 	);
@@ -5126,7 +5127,11 @@ test("a result held while its child still ran wakes the child once it is release
 		kind: "tool-result",
 		toolResult: green,
 	});
-	assert.deepEqual(h.latest("drain1:0")?.heldToolResults, [green], "a running child keeps the result for later");
+	assert.deepEqual(
+		heldAsArrived(h.latest("drain1:0")?.heldToolResults),
+		[green],
+		"a running child keeps the result for later",
+	);
 	assert.equal(h.latest("drain1:0")?.state, "running");
 
 	h.releaseOriginal = false;
@@ -5275,7 +5280,11 @@ test("results a woken child is given stay held in its record until its run saved
 				? [entry.data as SubagentChildRecord]
 				: [],
 		);
-	assert.deepEqual(ofResumedRun[0]?.heldToolResults, [green], "still held when its run starts, before it saved it");
+	assert.deepEqual(
+		heldAsArrived(ofResumedRun[0]?.heldToolResults),
+		[green],
+		"still held when its run starts, before it saved it",
+	);
 	assert.deepEqual(ofResumedRun.at(-1)?.heldToolResults, [], "let go once its run saved it");
 	assert.equal(h.runs.filter((run) => readsLate(run, green)).length, 1);
 });
@@ -5295,7 +5304,11 @@ test("a result that arrives while a resumed child runs is kept, and wakes it onc
 		kind: "tool-result",
 		toolResult: green,
 	});
-	assert.deepEqual(h.latest("during1:0")?.heldToolResults, [green], "a running child keeps the result for later");
+	assert.deepEqual(
+		heldAsArrived(h.latest("during1:0")?.heldToolResults),
+		[green],
+		"a running child keeps the result for later",
+	);
 	gate.resolve();
 	await settled(h, taskId);
 
@@ -5398,7 +5411,7 @@ test("a wake that cannot restore its child keeps what it carried in the child's 
 
 	const failed = await h.waitForLatest("wakefail1:0", (record) => record.wakeFailure?.reported === true);
 	assert.equal(failed.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
-	assert.deepEqual(failed.heldToolResults, [green], "the result the failed wake carried is kept");
+	assert.deepEqual(heldAsArrived(failed.heldToolResults), [green], "the result the failed wake carried is kept");
 	assert.deepEqual([failed.wakeFailure?.code, failed.wakeFailure?.taskId], ["child-unrestorable", failed.taskId]);
 	assert.match(failed.wakeFailure?.reason ?? "", /worker/);
 	assert.match(failed.wakeFailure?.hint ?? "", /"resume"/);
@@ -6921,7 +6934,7 @@ test("a wake saves the results it carries in the child's record before the child
 	const emit = h.deps.pi.events.emit.bind(h.deps.pi.events);
 	h.deps.pi.events.emit = (channel: string, data: object) => {
 		if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT)
-			heldWhenRestoreBegan.push(h.latest("save-first:0")?.heldToolResults);
+			heldWhenRestoreBegan.push(heldAsArrived(h.latest("save-first:0")?.heldToolResults));
 		emit(channel, data);
 	};
 	const gate = Promise.withResolvers<void>();
@@ -6950,7 +6963,11 @@ test("a wake saves the results it carries in the child's record before the child
 				: [],
 		);
 	const ofWokenRun = saved.filter((record) => record.taskId === done.taskId);
-	assert.deepEqual(ofWokenRun[0]?.heldToolResults, [green], "still held when its run starts, before it saved it");
+	assert.deepEqual(
+		heldAsArrived(ofWokenRun[0]?.heldToolResults),
+		[green],
+		"still held when its run starts, before it saved it",
+	);
 	assert.deepEqual(ofWokenRun.at(-1)?.heldToolResults, [], "let go once its run saved it");
 	assert.equal(h.runs.filter((run) => readsLate(run, green)).length, 1);
 });
@@ -7010,7 +7027,7 @@ for (const action of ["pause", "quit"] as const) {
 		const latest = h.latest(`${runId}:0`);
 		assert.equal(latest?.state, "terminal");
 		assert.equal(latest?.terminalStatus, status);
-		assert.deepEqual(latest?.heldToolResults, [green], "the wake's result is held for resume");
+		assert.deepEqual(heldAsArrived(latest?.heldToolResults), [green], "the wake's result is held for resume");
 		const reserved = h.holds.flatMap((hold) => ("reserve" in hold ? [hold.reserve] : []));
 		assert.ok(reserved.length > 0, "the restore held sends to the child");
 		for (const capability of reserved)
@@ -7046,7 +7063,7 @@ for (const action of ["pause", "quit"] as const) {
 		await h.call({ action, all: true });
 		assert.equal(h.runs.length, before, "a result arriving after the child's stop does not wake it");
 		assert.equal(h.latest(childId)?.terminalStatus, action === "pause" ? "paused" : "quit");
-		assert.deepEqual(h.latest(childId)?.heldToolResults, [green]);
+		assert.deepEqual(heldAsArrived(h.latest(childId)?.heldToolResults), [green]);
 	});
 }
 
@@ -7127,7 +7144,7 @@ test("quit with all: true keeps a result held for a paused child while a sibling
 	const latest = h.latest("held-meanwhile:0");
 	assert.equal(latest?.terminalStatus, "quit");
 	assert.deepEqual(
-		latest?.heldToolResults,
+		heldAsArrived(latest?.heldToolResults),
 		[green, deployed],
 		"quit keeps the result held while it stopped the sibling",
 	);
@@ -7207,7 +7224,7 @@ test("pause while a wake still saves the result it carries neither wakes the chi
 	assert.equal(h.runs.length, runsBefore, "the wake relaunched nothing");
 	assert.equal(acknowledged(), acknowledgedBefore, "the broker is not told the child wakes");
 	assert.equal(h.latest("saving:0")?.terminalStatus, "paused");
-	assert.deepEqual(h.latest("saving:0")?.heldToolResults, [green]);
+	assert.deepEqual(heldAsArrived(h.latest("saving:0")?.heldToolResults), [green]);
 });
 
 for (const action of ["pause", "quit"] as const) {
