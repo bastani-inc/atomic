@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type net from "node:net";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
@@ -12,6 +12,7 @@ import {
 	openIntercomBrokerState,
 } from "../../packages/intercom/broker/open-broker-state.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
+import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import {
 	type BrokerConnectedSession,
 	deliveryTargetIdentity,
@@ -19,6 +20,7 @@ import {
 	handleBrokerSend,
 	type SendClientMessage,
 } from "../../packages/intercom/broker/send-handler.js";
+import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
 import type { BrokerOutboundFrame } from "../../packages/intercom/broker/socket-writes.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
@@ -175,8 +177,63 @@ function outcomeOf(session: BrokerConnectedSession, messageId: string) {
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+	vi.useRealTimers();
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+
+async function withFakeClocks(fn: () => Promise<void>): Promise<void> {
+	vi.useFakeTimers({
+		toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"],
+	});
+	try {
+		await fn();
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+/** Flush microtasks and I/O turns without advancing fake timers. */
+async function flushImmediate(turns = 12): Promise<void> {
+	for (let index = 0; index < turns; index++) {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+}
+
+/** Poll via `setImmediate` (without advancing fake timers) up to a real-clock safety cap. */
+async function waitImmediate(check: () => void | Promise<void>, maxRealMs = WAIT_MS): Promise<void> {
+	const deadline = process.hrtime.bigint() + BigInt(maxRealMs) * 1_000_000n;
+	let lastError: unknown;
+	while (process.hrtime.bigint() < deadline) {
+		try {
+			await check();
+			return;
+		} catch (error) {
+			lastError = error;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+	}
+	throw lastError ?? new Error("waitImmediate timed out");
+}
+
+/** Advance fake timers in `stepMs` increments until `check` passes, bounded by a real-clock safety cap. */
+async function waitWithFakeStep(
+	check: () => void | Promise<void>,
+	stepMs = BUS_POLL_INTERVAL_MS,
+	maxRealMs = WAIT_MS,
+): Promise<void> {
+	const deadline = process.hrtime.bigint() + BigInt(maxRealMs) * 1_000_000n;
+	let lastError: unknown;
+	while (process.hrtime.bigint() < deadline) {
+		try {
+			await check();
+			return;
+		} catch (error) {
+			lastError = error;
+			await vi.advanceTimersByTimeAsync(stepMs);
+		}
+	}
+	throw lastError ?? new Error("waitWithFakeStep timed out");
+}
 
 async function cluster(count = 2): Promise<{ nodes: BrokerNode[]; shared: SqliteDatabase }> {
 	const directory = makeTempDirectory("intercom-multinode-order-");
@@ -194,186 +251,186 @@ async function cluster(count = 2): Promise<{ nodes: BrokerNode[]; shared: Sqlite
 }
 
 test("local sends from one sender to one target stay in send order when pooled outbox reads return out of order", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const target = await a.connect("target");
-	const m1 = makeMessage("first");
-	const m2 = makeMessage("second");
-	const m3 = makeMessage("third");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+		const m1 = makeMessage("first");
+		const m2 = makeMessage("second");
+		const m3 = makeMessage("third");
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const m1Gate = deferred();
-	const m1Started = deferred();
-	const m2Finished = deferred();
-	cleanups.push(async () => m1Gate.resolve());
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === m1.id) {
-				m1Started.resolve();
-				await m1Gate.promise;
-				return origRead(messageId);
-			}
-			const result = await origRead(messageId);
-			if (messageId === m2.id) m2Finished.resolve();
-			return result;
-		},
-	});
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const m1Gate = deferred();
+		const m1Started = deferred();
+		const m2Finished = deferred();
+		cleanups.push(async () => m1Gate.resolve());
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === m1.id) {
+					m1Started.resolve();
+					await m1Gate.promise;
+					return origRead(messageId);
+				}
+				const result = await origRead(messageId);
+				if (messageId === m2.id) m2Finished.resolve();
+				return result;
+			},
+		});
 
-	// Address the same target by name, exact id, and 8-hex prefix to verify canonical target identity keying.
-	a.send(sender, "target", m1);
-	await m1Started.promise;
-	a.send(sender, target.info.id, m2);
-	a.send(sender, target.info.id.slice(0, 8), m3);
-	await m2Finished.promise;
-	// Give m2/m3 a turn to overtake m1 if unserialized.
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.deepEqual(receivedTexts(target), [], "m2 and m3 must wait for earlier m1 to commit");
+		// Address the same target by name, exact id, and 8-hex prefix to verify canonical target identity keying.
+		a.send(sender, "target", m1);
+		await m1Started.promise;
+		a.send(sender, target.info.id, m2);
+		a.send(sender, target.info.id.slice(0, 8), m3);
+		await m2Finished.promise;
+		await flushImmediate();
+		assert.deepEqual(receivedTexts(target), [], "m2 and m3 must wait for earlier m1 to commit");
 
-	m1Gate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(target), ["first", "second", "third"]), {
-		timeout: WAIT_MS,
-		interval: 10,
+		m1Gate.resolve();
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["first", "second", "third"]));
 	});
 });
 
 test("a restored detached send and a reconnected live send from the same sender return address stay in send order", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const senderReturnAddress = randomUUID();
-	const liveSender = await a.connect("sender", { returnAddress: senderReturnAddress });
-	const target = await a.connect("target");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const senderReturnAddress = randomUUID();
+		const liveSender = await a.connect("sender", { returnAddress: senderReturnAddress });
+		const target = await a.connect("target");
 
-	// Restored detached sender has the pre-restart sessionId but the same registrationReturnAddress.
-	const restoredSender: BrokerConnectedSession = {
-		socket: fakeSocket(),
-		info: { ...liveSender.info, id: randomUUID() },
-		registrationGroup: liveSender.registrationGroup,
-		registrationName: liveSender.registrationName,
-		registrationReturnAddress: senderReturnAddress,
-		acknowledgesReceipt: true,
-	};
-	const kept = makeMessage("kept-before-restart");
-	const live = makeMessage("live-after-restart");
-	const keptClientMessage: SendClientMessage = { type: "send", to: "target", message: kept, attemptId: randomUUID() };
-	detachSend(keptClientMessage, restoredSender);
+		// Restored detached sender has the pre-restart sessionId but the same registrationReturnAddress.
+		const restoredSender: BrokerConnectedSession = {
+			socket: fakeSocket(),
+			info: { ...liveSender.info, id: randomUUID() },
+			registrationGroup: liveSender.registrationGroup,
+			registrationName: liveSender.registrationName,
+			registrationReturnAddress: senderReturnAddress,
+			acknowledgesReceipt: true,
+		};
+		const kept = makeMessage("kept-before-restart");
+		const live = makeMessage("live-after-restart");
+		const keptClientMessage: SendClientMessage = {
+			type: "send",
+			to: "target",
+			message: kept,
+			attemptId: randomUUID(),
+		};
+		detachSend(keptClientMessage, restoredSender);
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const keptGate = deferred();
-	const keptStarted = deferred();
-	cleanups.push(async () => keptGate.resolve());
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === kept.id) {
-				keptStarted.resolve();
-				await keptGate.promise;
-			}
-			return origRead(messageId);
-		},
-	});
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const keptGate = deferred();
+		const keptStarted = deferred();
+		cleanups.push(async () => keptGate.resolve());
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === kept.id) {
+					keptStarted.resolve();
+					await keptGate.promise;
+				}
+				return origRead(messageId);
+			},
+		});
 
-	a.dispatch(restoredSender.socket, keptClientMessage, restoredSender.info.id);
-	await keptStarted.promise;
-	a.send(liveSender, target.info.id, live);
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.deepEqual(receivedTexts(target), []);
+		a.dispatch(restoredSender.socket, keptClientMessage, restoredSender.info.id);
+		await keptStarted.promise;
+		a.send(liveSender, target.info.id, live);
+		await flushImmediate();
+		assert.deepEqual(receivedTexts(target), []);
 
-	keptGate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(target), ["kept-before-restart", "live-after-restart"]), {
-		timeout: WAIT_MS,
-		interval: 10,
+		keptGate.resolve();
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["kept-before-restart", "live-after-restart"]));
 	});
 });
 
 test("mixed reply and plain send from one sender to one local target stay in send order", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const asker = await a.connect("asker");
-	const replier = await a.connect("replier");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const asker = await a.connect("asker");
+		const replier = await a.connect("replier");
 
-	// Establish a real ask so replier can send a correlated reply.
-	const ask = makeMessage("question", { expectsReply: true });
-	a.send(asker, "replier", ask);
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(replier), ["question"]), { timeout: WAIT_MS, interval: 10 });
-	a.router.received(replier, ask.id);
+		// Establish a real ask so replier can send a correlated reply.
+		const ask = makeMessage("question", { expectsReply: true });
+		a.send(asker, "replier", ask);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(replier), ["question"]));
+		a.router.received(replier, ask.id);
 
-	const reply = makeMessage("answer", { replyTo: ask.id });
-	const followUp = makeMessage("after-answer");
+		const reply = makeMessage("answer", { replyTo: ask.id });
+		const followUp = makeMessage("after-answer");
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const replyGate = deferred();
-	const replyStarted = deferred();
-	cleanups.push(async () => replyGate.resolve());
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === reply.id) {
-				replyStarted.resolve();
-				await replyGate.promise;
-			}
-			return origRead(messageId);
-		},
-	});
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const replyGate = deferred();
+		const replyStarted = deferred();
+		cleanups.push(async () => replyGate.resolve());
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === reply.id) {
+					replyStarted.resolve();
+					await replyGate.promise;
+				}
+				return origRead(messageId);
+			},
+		});
 
-	a.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
-	await replyStarted.promise;
-	a.send(replier, "asker", followUp);
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.deepEqual(receivedTexts(asker), []);
+		a.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+		await replyStarted.promise;
+		a.send(replier, "asker", followUp);
+		await flushImmediate();
+		assert.deepEqual(receivedTexts(asker), []);
 
-	replyGate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(asker), ["answer", "after-answer"]), {
-		timeout: WAIT_MS,
-		interval: 10,
+		replyGate.resolve();
+		await waitImmediate(() => assert.deepEqual(receivedTexts(asker), ["answer", "after-answer"]));
 	});
 });
 
 test("cross-node sends from one sender to one remote target stay in send order when resolution finishes out of order", async () => {
-	const { nodes } = await cluster(2);
-	const [a, b] = [nodes[0]!, nodes[1]!];
-	const sender = await a.connect("sender");
-	const remote = await b.connect("remote");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(2);
+		const [a, b] = [nodes[0]!, nodes[1]!];
+		const sender = await a.connect("sender");
+		const remote = await b.connect("remote");
 
-	const m1 = makeMessage("remote-1");
-	const m2 = makeMessage("remote-2");
-	const m3 = makeMessage("remote-3");
+		const m1 = makeMessage("remote-1");
+		const m2 = makeMessage("remote-2");
+		const m3 = makeMessage("remote-3");
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const m1Gate = deferred();
-	const m1Started = deferred();
-	const m2ReadDone = deferred();
-	cleanups.push(async () => m1Gate.resolve());
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === m1.id) {
-				m1Started.resolve();
-				await m1Gate.promise;
-				return origRead(messageId);
-			}
-			const result = await origRead(messageId);
-			if (messageId === m2.id) m2ReadDone.resolve();
-			return result;
-		},
-	});
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const m1Gate = deferred();
+		const m1Started = deferred();
+		const m2ReadDone = deferred();
+		cleanups.push(async () => m1Gate.resolve());
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === m1.id) {
+					m1Started.resolve();
+					await m1Gate.promise;
+					return origRead(messageId);
+				}
+				const result = await origRead(messageId);
+				if (messageId === m2.id) m2ReadDone.resolve();
+				return result;
+			},
+		});
 
-	// Mix name, exact id, and 8-hex prefix across nodes.
-	a.send(sender, "remote", m1);
-	await m1Started.promise;
-	a.send(sender, remote.info.id, m2);
-	a.send(sender, remote.info.id.slice(0, 8), m3);
-	await m2ReadDone.promise;
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	// m2 and m3 must not have been enqueued ahead of m1!
-	assert.equal((await outbox.read(m2.id)).status, "missing");
-	assert.equal((await outbox.read(m3.id)).status, "missing");
+		// Mix name, exact id, and 8-hex prefix across nodes.
+		a.send(sender, "remote", m1);
+		await m1Started.promise;
+		a.send(sender, remote.info.id, m2);
+		a.send(sender, remote.info.id.slice(0, 8), m3);
+		await m2ReadDone.promise;
+		await flushImmediate();
+		// m2 and m3 must not have been enqueued ahead of m1!
+		assert.equal((await outbox.read(m2.id)).status, "missing");
+		assert.equal((await outbox.read(m3.id)).status, "missing");
 
-	m1Gate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(remote), ["remote-1", "remote-2", "remote-3"]), {
-		timeout: WAIT_MS,
-		interval: 15,
+		m1Gate.resolve();
+		await waitWithFakeStep(() => assert.deepEqual(receivedTexts(remote), ["remote-1", "remote-2", "remote-3"]));
 	});
 });
 
@@ -463,234 +520,225 @@ test("claimFor does not deliver a later row in a claimed batch ahead of an earli
 });
 
 test("an outbox message queued while target was offline is delivered before a later local send after reconnect", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const targetReturn = randomUUID();
-	const initial = await a.connect("target", { returnAddress: targetReturn });
-	const targetId = initial.info.id;
-	const targetIdentity = deliveryTargetIdentity(initial);
-	a.leave(initial);
-	await vi.waitFor(
-		async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const targetReturn = randomUUID();
+		const initial = await a.connect("target", { returnAddress: targetReturn });
+		const targetId = initial.info.id;
+		const targetIdentity = deliveryTargetIdentity(initial);
+		a.leave(initial);
+		await waitImmediate(async () => {
 			const lease = await a.opened.state.leases.read({ kind: "presence", targetIdentity });
 			assert.equal(lease.status, "missing");
-		},
-		{ timeout: WAIT_MS, interval: 15 },
-	);
+		});
 
-	// Send m1 while target is offline -> queued in shared outbox.
-	const m1 = makeMessage("from-outbox");
-	a.send(sender, targetId, m1);
-	await vi.waitFor(() => assert.equal(outcomeOf(sender, m1.id)?.type, "queued"), { timeout: WAIT_MS, interval: 15 });
+		// Send m1 while target is offline -> queued in shared outbox.
+		const m1 = makeMessage("from-outbox");
+		a.send(sender, targetId, m1);
+		await waitImmediate(() => assert.equal(outcomeOf(sender, m1.id)?.type, "queued"));
 
-	// Slow down claim slightly (50ms < 300ms bound) so a concurrent local send's outbox.read finishes first.
-	const outbox = a.opened.state.outbox;
-	const origClaim = outbox.claim.bind(outbox);
-	const claimStarted = deferred();
-	const releaseClaimGate = deferred();
-	cleanups.push(async () => releaseClaimGate.resolve());
-	Object.assign(outbox, {
-		claim: async (...args: Parameters<typeof origClaim>) => {
-			if (args[0].targetIdentity === targetIdentity) {
-				claimStarted.resolve();
-				await releaseClaimGate.promise;
-			}
-			return origClaim(...args);
-		},
-	});
+		// Hold claim while fake timers freeze LOCAL_RETRY_LOOKUP_BOUND_MS so load cannot expire the 300 ms bound early.
+		const outbox = a.opened.state.outbox;
+		const origClaim = outbox.claim.bind(outbox);
+		const claimStarted = deferred();
+		const releaseClaimGate = deferred();
+		cleanups.push(async () => releaseClaimGate.resolve());
+		Object.assign(outbox, {
+			claim: async (...args: Parameters<typeof origClaim>) => {
+				if (args[0].targetIdentity === targetIdentity) {
+					claimStarted.resolve();
+					await releaseClaimGate.promise;
+				}
+				return origClaim(...args);
+			},
+		});
 
-	const returned = await a.connect("target", { returnAddress: targetReturn, id: targetId });
-	await claimStarted.promise;
+		const returned = await a.connect("target", { returnAddress: targetReturn, id: targetId });
+		await claimStarted.promise;
 
-	// Immediately send m2 locally while m1's outbox claim is still in flight.
-	const m2 = makeMessage("local-after-return");
-	a.send(sender, targetId, m2);
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.deepEqual(receivedTexts(returned), [], "local m2 must not overtake in-flight outbox claim of m1");
+		// Immediately send m2 locally while m1's outbox claim is still in flight.
+		const m2 = makeMessage("local-after-return");
+		a.send(sender, targetId, m2);
+		await flushImmediate();
+		assert.deepEqual(receivedTexts(returned), [], "local m2 must not overtake in-flight outbox claim of m1");
 
-	releaseClaimGate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(returned), ["from-outbox", "local-after-return"]), {
-		timeout: WAIT_MS,
-		interval: 15,
+		releaseClaimGate.resolve();
+		await waitImmediate(() => assert.deepEqual(receivedTexts(returned), ["from-outbox", "local-after-return"]));
 	});
 });
 
 test("re-entrant local-to-remote fallback when target moves mid-lookup never deadlocks and keeps m1 before m2", async () => {
-	const { nodes } = await cluster(2);
-	const [a, b] = [nodes[0]!, nodes[1]!];
-	const sender = await a.connect("sender");
-	const targetReturn = randomUUID();
-	const targetOnA = await a.connect("target", { returnAddress: targetReturn });
-	const targetId = targetOnA.info.id;
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(2);
+		const [a, b] = [nodes[0]!, nodes[1]!];
+		const sender = await a.connect("sender");
+		const targetReturn = randomUUID();
+		const targetOnA = await a.connect("target", { returnAddress: targetReturn });
+		const targetId = targetOnA.info.id;
 
-	const m1 = makeMessage("moved-1");
-	const m2 = makeMessage("moved-2");
-	const aOutbox = a.opened.state.outbox;
-	const origRead = aOutbox.read.bind(aOutbox);
-	const m1Started = deferred();
-	const m1Gate = deferred();
-	cleanups.push(async () => m1Gate.resolve());
-	let m1ReadCount = 0;
-	Object.assign(aOutbox, {
-		read: async (messageId: string) => {
-			if (messageId === m1.id && m1ReadCount === 0) {
-				m1ReadCount++;
-				m1Started.resolve();
-				await m1Gate.promise;
-			}
-			return origRead(messageId);
-		},
-	});
+		const m1 = makeMessage("moved-1");
+		const m2 = makeMessage("moved-2");
+		const aOutbox = a.opened.state.outbox;
+		const origRead = aOutbox.read.bind(aOutbox);
+		const m1Started = deferred();
+		const m1Gate = deferred();
+		cleanups.push(async () => m1Gate.resolve());
+		let m1ReadCount = 0;
+		Object.assign(aOutbox, {
+			read: async (messageId: string) => {
+				if (messageId === m1.id && m1ReadCount === 0) {
+					m1ReadCount++;
+					m1Started.resolve();
+					await m1Gate.promise;
+				}
+				return origRead(messageId);
+			},
+		});
 
-	// m1 enters while target is local on A.
-	a.send(sender, targetId, m1);
-	await m1Started.promise;
+		// m1 enters while target is local on A; fake timers prevent 300ms expiry during b.connect under load.
+		a.send(sender, targetId, m1);
+		await m1Started.promise;
 
-	// Target moves from A to B while m1's local lookup is in flight.
-	a.leave(targetOnA);
-	const targetOnB = await b.connect("target", { returnAddress: targetReturn, id: targetId });
+		// Target moves from A to B while m1's local lookup is in flight.
+		const targetIdentity = deliveryTargetIdentity(targetOnA);
+		a.leave(targetOnA);
+		await waitImmediate(async () => {
+			const lease = await a.opened.state.leases.read({ kind: "presence", targetIdentity });
+			assert.equal(lease.status, "missing");
+		});
+		const targetOnB = await b.connect("target", { returnAddress: targetReturn, id: targetId });
 
-	// m2 enters after target moved (goes directly to remote route!).
-	a.send(sender, targetId, m2);
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.equal(
-		(await origRead(m2.id)).status,
-		"missing",
-		"m2 must wait behind m1's in-flight local-to-remote fallback",
-	);
+		// m2 enters after target moved (goes directly to remote route!).
+		a.send(sender, targetId, m2);
+		await flushImmediate();
+		assert.equal(
+			(await origRead(m2.id)).status,
+			"missing",
+			"m2 must wait behind m1's in-flight local-to-remote fallback",
+		);
 
-	m1Gate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(targetOnB), ["moved-1", "moved-2"]), {
-		timeout: WAIT_MS,
-		interval: 15,
+		m1Gate.resolve();
+		await waitWithFakeStep(() => assert.deepEqual(receivedTexts(targetOnB), ["moved-1", "moved-2"]));
 	});
 });
 
 test("pipelined local sends on a hung shared database all deliver within one LOCAL_RETRY_LOOKUP_BOUND_MS, in order", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const target = await a.connect("target");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const pendingReads: Array<() => void> = [];
-	Object.assign(outbox, {
-		read: () =>
-			new Promise<Awaited<ReturnType<typeof origRead>>>((resolve) => {
-				pendingReads.push(() => resolve({ status: "missing" }));
-			}),
-	});
-	cleanups.push(async () => {
-		Object.assign(outbox, { read: origRead });
-		for (const finish of pendingReads.splice(0)) finish();
-	});
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const pendingReads: Array<() => void> = [];
+		Object.assign(outbox, {
+			read: () =>
+				new Promise<Awaited<ReturnType<typeof origRead>>>((resolve) => {
+					pendingReads.push(() => resolve({ status: "missing" }));
+				}),
+		});
+		cleanups.push(async () => {
+			Object.assign(outbox, { read: origRead });
+			for (const finish of pendingReads.splice(0)) finish();
+		});
 
-	const count = 12;
-	const startedAt = performance.now();
-	const expected: string[] = [];
-	for (let i = 0; i < count; i++) {
-		const text = `burst-${i}`;
-		expected.push(text);
-		a.send(sender, "target", makeMessage(text));
-	}
+		const count = 12;
+		const expected: string[] = [];
+		for (let i = 0; i < count; i++) {
+			const text = `burst-${i}`;
+			expected.push(text);
+			a.send(sender, "target", makeMessage(text));
+		}
 
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(target), expected), {
-		timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_500,
-		interval: 15,
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS - 1);
+		assert.deepEqual(receivedTexts(target), []);
+
+		// All 12 pipelined local sends must complete at exact 1x LOCAL_RETRY_LOOKUP_BOUND_MS (never 12x).
+		await vi.advanceTimersByTimeAsync(1);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), expected));
 	});
-	const elapsedMs = performance.now() - startedAt;
-	// Naive full serialization would take 12 * 300ms = 3,600ms; pipelined takes ~1 * 300ms.
-	assert.ok(
-		elapsedMs < LOCAL_RETRY_LOOKUP_BOUND_MS * 3,
-		`expected pipelined burst within ~1 local bound, got ${elapsedMs.toFixed(1)} ms`,
-	);
 });
 
 test("a slow or hung send to one target does not block sends from the same sender to another target or from another sender", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender1 = await a.connect("sender-1");
-	const sender2 = await a.connect("sender-2");
-	const target1 = await a.connect("target-1");
-	const target2 = await a.connect("target-2");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender1 = await a.connect("sender-1");
+		const sender2 = await a.connect("sender-2");
+		const target1 = await a.connect("target-1");
+		const target2 = await a.connect("target-2");
 
-	const mSlow = makeMessage("slow-s1-t1");
-	const mOtherTarget = makeMessage("fast-s1-t2");
-	const mOtherSender = makeMessage("fast-s2-t1");
+		const mSlow = makeMessage("slow-s1-t1");
+		const mOtherTarget = makeMessage("fast-s1-t2");
+		const mOtherSender = makeMessage("fast-s2-t1");
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const slowGate = deferred();
-	const slowStarted = deferred();
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === mSlow.id) {
-				slowStarted.resolve();
-				await slowGate.promise;
-			}
-			return origRead(messageId);
-		},
-	});
-	cleanups.push(async () => slowGate.resolve());
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const slowGate = deferred();
+		const slowStarted = deferred();
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === mSlow.id) {
+					slowStarted.resolve();
+					await slowGate.promise;
+				}
+				return origRead(messageId);
+			},
+		});
+		cleanups.push(async () => slowGate.resolve());
 
-	a.send(sender1, "target-1", mSlow);
-	await slowStarted.promise;
+		a.send(sender1, "target-1", mSlow);
+		await slowStarted.promise;
 
-	const t0 = performance.now();
-	a.send(sender1, "target-2", mOtherTarget);
-	a.send(sender2, "target-1", mOtherSender);
+		// Independent sends deliver at simulated t=0 (without advancing the 300ms local timer at all!).
+		a.send(sender1, "target-2", mOtherTarget);
+		a.send(sender2, "target-1", mOtherSender);
 
-	await vi.waitFor(
-		() => {
+		await waitImmediate(() => {
 			assert.deepEqual(receivedTexts(target2), ["fast-s1-t2"]);
 			assert.deepEqual(receivedTexts(target1), ["fast-s2-t1"]);
-		},
-		{ timeout: WAIT_MS, interval: 10 },
-	);
-	assert.ok(performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS, "independent sends must not wait for hung target-1");
-	slowGate.resolve();
+		});
+		slowGate.resolve();
+	});
 });
 
 test("a hung remote send does not block a local send to an already-local target or hang router.close()", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const localTarget = await a.connect("local-target");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const localTarget = await a.connect("local-target");
 
-	// Stall listLive forever so a remote send to "missing-remote" hangs inside route().
-	const leases = a.opened.state.leases;
-	const origListLive = leases.listLive.bind(leases);
-	const listLiveStarted = deferred();
-	const releaseListLive = deferred();
-	Object.assign(leases, {
-		listLive: async (...args: Parameters<typeof origListLive>) => {
-			listLiveStarted.resolve();
-			await releaseListLive.promise;
-			return origListLive(...args);
-		},
+		// Stall listLive forever so a remote send to "missing-remote" hangs inside route().
+		const leases = a.opened.state.leases;
+		const origListLive = leases.listLive.bind(leases);
+		const listLiveStarted = deferred();
+		const releaseListLive = deferred();
+		Object.assign(leases, {
+			listLive: async (...args: Parameters<typeof origListLive>) => {
+				listLiveStarted.resolve();
+				await releaseListLive.promise;
+				return origListLive(...args);
+			},
+		});
+		cleanups.push(async () => {
+			Object.assign(leases, { listLive: origListLive });
+			releaseListLive.resolve();
+		});
+
+		a.send(sender, "missing-remote", makeMessage("hung-remote"));
+		await listLiveStarted.promise;
+
+		// Already-local target delivers at simulated t=0 (zero wait on 300ms bound).
+		a.send(sender, "local-target", makeMessage("fast-local"));
+		await waitImmediate(() => assert.deepEqual(receivedTexts(localTarget), ["fast-local"]));
+
+		// router.close() must return promptly even while the remote send is still hung in listLive().
+		await a.router.close();
 	});
-	cleanups.push(async () => {
-		Object.assign(leases, { listLive: origListLive });
-		releaseListLive.resolve();
-	});
-
-	a.send(sender, "missing-remote", makeMessage("hung-remote"));
-	await listLiveStarted.promise;
-
-	const t0 = performance.now();
-	a.send(sender, "local-target", makeMessage("fast-local"));
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(localTarget), ["fast-local"]), {
-		timeout: WAIT_MS,
-		interval: 10,
-	});
-	assert.ok(performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS, "already-local target must skip hung remote send");
-
-	// router.close() must return promptly even while the remote send is still hung in listLive().
-	const closeStart = performance.now();
-	await a.router.close();
-	assert.ok(performance.now() - closeStart < 2_000, "router.close() must not hang behind hung remote send");
 });
 
 test("re-entrant local-to-remote fallback for two correlated replies never deadlocks with reply serial lane and stays ordered", async () => {
@@ -750,116 +798,115 @@ test("re-entrant local-to-remote fallback for two correlated replies never deadl
 });
 
 test("database error on an earlier local send still delivers both messages in send order via deliverLocally", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const target = await a.connect("target");
-	const m1 = makeMessage("m1-ok-slow");
-	const m2 = makeMessage("m2-db-error-fast");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+		const m1 = makeMessage("m1-ok-slow");
+		const m2 = makeMessage("m2-db-error-fast");
 
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const m1Started = deferred();
-	const m1Gate = deferred();
-	cleanups.push(async () => m1Gate.resolve());
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === m1.id) {
-				m1Started.resolve();
-				await m1Gate.promise;
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const m1Started = deferred();
+		const m1Gate = deferred();
+		cleanups.push(async () => m1Gate.resolve());
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === m1.id) {
+					m1Started.resolve();
+					await m1Gate.promise;
+					return origRead(messageId);
+				}
+				if (messageId === m2.id) {
+					throw new Error("simulated transient pooled connection error");
+				}
 				return origRead(messageId);
-			}
-			if (messageId === m2.id) {
-				throw new Error("simulated transient pooled connection error");
-			}
-			return origRead(messageId);
-		},
-	});
+			},
+		});
 
-	a.send(sender, "target", m1);
-	await m1Started.promise;
-	a.send(sender, "target", m2);
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	// Even though m2's DB read threw immediately, deliverLocally waits for m1 before committing!
-	assert.deepEqual(receivedTexts(target), []);
+		a.send(sender, "target", m1);
+		await m1Started.promise;
+		a.send(sender, "target", m2);
+		await flushImmediate();
+		// Even though m2's DB read threw immediately, deliverLocally waits for m1 before committing!
+		assert.deepEqual(receivedTexts(target), []);
 
-	m1Gate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(target), ["m1-ok-slow", "m2-db-error-fast"]), {
-		timeout: WAIT_MS,
-		interval: 10,
+		m1Gate.resolve();
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["m1-ok-slow", "m2-db-error-fast"]));
 	});
 });
 
 test("a hung outbox claim during target reconnect still lets a local send deliver within LOCAL_RETRY_LOOKUP_BOUND_MS", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const targetReturn = randomUUID();
-	const initial = await a.connect("target", { returnAddress: targetReturn });
-	const targetId = initial.info.id;
-	const targetIdentity = deliveryTargetIdentity(initial);
-	a.leave(initial);
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const targetReturn = randomUUID();
+		const initial = await a.connect("target", { returnAddress: targetReturn });
+		const targetId = initial.info.id;
+		const targetIdentity = deliveryTargetIdentity(initial);
+		a.leave(initial);
+		await waitImmediate(async () => {
+			const lease = await a.opened.state.leases.read({ kind: "presence", targetIdentity });
+			assert.equal(lease.status, "missing");
+		});
 
-	const outbox = a.opened.state.outbox;
-	const origClaim = outbox.claim.bind(outbox);
-	const releaseHungClaim = deferred();
-	cleanups.push(async () => {
-		Object.assign(outbox, { claim: origClaim });
-		releaseHungClaim.resolve();
-	});
-	Object.assign(outbox, {
-		claim: async (...args: Parameters<typeof origClaim>) => {
-			if (args[0].targetIdentity === targetIdentity) {
-				await releaseHungClaim.promise;
-			}
-			return origClaim(...args);
-		},
-	});
+		const outbox = a.opened.state.outbox;
+		const origClaim = outbox.claim.bind(outbox);
+		const releaseHungClaim = deferred();
+		cleanups.push(async () => {
+			Object.assign(outbox, { claim: origClaim });
+			releaseHungClaim.resolve();
+		});
+		Object.assign(outbox, {
+			claim: async (...args: Parameters<typeof origClaim>) => {
+				if (args[0].targetIdentity === targetIdentity) {
+					await releaseHungClaim.promise;
+				}
+				return origClaim(...args);
+			},
+		});
 
-	const returned = await a.connect("target", { returnAddress: targetReturn, id: targetId });
-	const t0 = performance.now();
-	a.send(sender, targetId, makeMessage("bounded-local"));
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(returned), ["bounded-local"]), {
-		timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_500,
-		interval: 15,
+		const returned = await a.connect("target", { returnAddress: targetReturn, id: targetId });
+		a.send(sender, targetId, makeMessage("bounded-local"));
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(returned), ["bounded-local"]));
 	});
-	assert.ok(performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000);
 });
 
 test("a hung remote send followed by a local send to a newly joined target still delivers locally within LOCAL_RETRY_LOOKUP_BOUND_MS", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
 
-	const leases = a.opened.state.leases;
-	const origListLive = leases.listLive.bind(leases);
-	const listLiveStarted = deferred();
-	const releaseListLive = deferred();
-	cleanups.push(async () => {
-		Object.assign(leases, { listLive: origListLive });
-		releaseListLive.resolve();
-	});
-	Object.assign(leases, {
-		listLive: async (...args: Parameters<typeof origListLive>) => {
-			listLiveStarted.resolve();
-			await releaseListLive.promise;
-			return origListLive(...args);
-		},
-	});
+		const leases = a.opened.state.leases;
+		const origListLive = leases.listLive.bind(leases);
+		const listLiveStarted = deferred();
+		const releaseListLive = deferred();
+		cleanups.push(async () => {
+			Object.assign(leases, { listLive: origListLive });
+			releaseListLive.resolve();
+		});
+		Object.assign(leases, {
+			listLive: async (...args: Parameters<typeof origListLive>) => {
+				listLiveStarted.resolve();
+				await releaseListLive.promise;
+				return origListLive(...args);
+			},
+		});
 
-	// Remote send enters before target joins A, and hangs in listLive().
-	a.send(sender, "late-joiner", makeMessage("hung-remote"));
-	await listLiveStarted.promise;
+		// Remote send enters before target joins A, and hangs in listLive().
+		a.send(sender, "late-joiner", makeMessage("hung-remote"));
+		await listLiveStarted.promise;
 
-	// Target joins A AFTER the hung remote send arrived (so targetRegSeq > arrivedRegSeq).
-	const joined = await a.connect("late-joiner");
-	const t0 = performance.now();
-	a.send(sender, "late-joiner", makeMessage("local-bounded"));
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(joined), ["local-bounded"]), {
-		timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_500,
-		interval: 15,
+		// Target joins A AFTER the hung remote send arrived (so targetRegSeq > arrivedRegSeq).
+		const joined = await a.connect("late-joiner");
+		a.send(sender, "late-joiner", makeMessage("local-bounded"));
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(joined), ["local-bounded"]));
 	});
-	assert.ok(performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000);
 });
 
 test("healthy local multi-node sends add zero outbox rows and zero extra outbox reads", async () => {
@@ -941,323 +988,313 @@ test("SendOrderGate prunes idle senders and unblocks waiters immediately on clos
 });
 
 test("re-entrant local-to-remote fallback when target disconnects and reconnects mid-lookup keeps m1 ahead of m2", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const targetReturn = randomUUID();
-	const targetOld = await a.connect("target", { returnAddress: targetReturn });
-	const targetId = targetOld.info.id;
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const targetReturn = randomUUID();
+		const targetOld = await a.connect("target", { returnAddress: targetReturn });
+		const targetId = targetOld.info.id;
 
-	const m1 = makeMessage("m1-reentered");
-	const m2 = makeMessage("m2-after-reconnect");
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const m1Started = deferred();
-	const m2Started = deferred();
-	const m1Gate = deferred();
-	const m2Gate = deferred();
-	const m1RemoteGate = deferred();
-	cleanups.push(async () => {
+		const m1 = makeMessage("m1-reentered");
+		const m2 = makeMessage("m2-after-reconnect");
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const m1Started = deferred();
+		const m2Started = deferred();
+		const m1Gate = deferred();
+		const m2Gate = deferred();
+		const m1RemoteGate = deferred();
+		cleanups.push(async () => {
+			m1Gate.resolve();
+			m2Gate.resolve();
+			m1RemoteGate.resolve();
+		});
+
+		let m1Reads = 0;
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === m1.id && m1Reads === 0) {
+					m1Reads++;
+					m1Started.resolve();
+					await m1Gate.promise;
+				} else if (messageId === m2.id) {
+					m2Started.resolve();
+					await m2Gate.promise;
+				}
+				return origRead(messageId);
+			},
+		});
+
+		// Both m1 and m2 enter answerLocalRetry against targetOld.
+		a.send(sender, targetId, m1);
+		await m1Started.promise;
+		a.send(sender, targetId, m2);
+		await m2Started.promise;
+
+		// Hold m1's remote listLive once it falls back re-entrantly so targetNew can reconnect meanwhile.
+		const leases = a.opened.state.leases;
+		const origListLive = leases.listLive.bind(leases);
+		let heldRemote = false;
+		const m1ReenteredRemote = deferred();
+		Object.assign(leases, {
+			listLive: async (...args: Parameters<typeof origListLive>) => {
+				if (!heldRemote) {
+					heldRemote = true;
+					m1ReenteredRemote.resolve();
+					await m1RemoteGate.promise;
+				}
+				return origListLive(...args);
+			},
+		});
+		cleanups.push(async () => {
+			Object.assign(leases, { listLive: origListLive });
+		});
+
+		// targetOld disconnects -> release m1 so it re-enters remote routing.
+		const targetIdentity = deliveryTargetIdentity(targetOld);
+		a.leave(targetOld);
+		await waitImmediate(async () => {
+			const lease = await a.opened.state.leases.read({ kind: "presence", targetIdentity });
+			assert.equal(lease.status, "missing");
+		});
 		m1Gate.resolve();
+		await m1ReenteredRemote.promise;
+
+		// target reconnects as targetNew on A BEFORE m2 finishes its lookup!
+		const targetNew = await a.connect("target", { returnAddress: targetReturn, id: targetId });
 		m2Gate.resolve();
+		await flushImmediate();
+		// m2 must NOT skip m1's re-entered remote ticket (even though presence.get(targetOld) is undefined!).
+		assert.deepEqual(receivedTexts(targetNew), []);
+
 		m1RemoteGate.resolve();
-	});
-
-	let m1Reads = 0;
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === m1.id && m1Reads === 0) {
-				m1Reads++;
-				m1Started.resolve();
-				await m1Gate.promise;
-			} else if (messageId === m2.id) {
-				m2Started.resolve();
-				await m2Gate.promise;
-			}
-			return origRead(messageId);
-		},
-	});
-
-	// Both m1 and m2 enter answerLocalRetry against targetOld.
-	a.send(sender, targetId, m1);
-	await m1Started.promise;
-	a.send(sender, targetId, m2);
-	await m2Started.promise;
-
-	// Hold m1's remote listLive once it falls back re-entrantly so targetNew can reconnect meanwhile.
-	const leases = a.opened.state.leases;
-	const origListLive = leases.listLive.bind(leases);
-	let heldRemote = false;
-	const m1ReenteredRemote = deferred();
-	Object.assign(leases, {
-		listLive: async (...args: Parameters<typeof origListLive>) => {
-			if (!heldRemote) {
-				heldRemote = true;
-				m1ReenteredRemote.resolve();
-				await m1RemoteGate.promise;
-			}
-			return origListLive(...args);
-		},
-	});
-	cleanups.push(async () => {
-		Object.assign(leases, { listLive: origListLive });
-	});
-
-	// targetOld disconnects -> release m1 so it re-enters remote routing.
-	a.leave(targetOld);
-	m1Gate.resolve();
-	await m1ReenteredRemote.promise;
-
-	// target reconnects as targetNew on A BEFORE m2 finishes its lookup!
-	const targetNew = await a.connect("target", { returnAddress: targetReturn, id: targetId });
-	m2Gate.resolve();
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	// m2 must NOT skip m1's re-entered remote ticket (even though presence.get(targetOld) is undefined!).
-	assert.deepEqual(receivedTexts(targetNew), []);
-
-	m1RemoteGate.resolve();
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(targetNew), ["m1-reentered", "m2-after-reconnect"]), {
-		timeout: WAIT_MS,
-		interval: 15,
+		await waitImmediate(() => assert.deepEqual(receivedTexts(targetNew), ["m1-reentered", "m2-after-reconnect"]));
 	});
 });
 
 test("a slow presence write during registration does not delay healthy local sends with no unsettled outbox rows", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
 
-	const leases = a.opened.state.leases;
-	const origAcquire = leases.acquire.bind(leases);
-	const acquireGate = deferred();
-	const acquireStarted = deferred();
-	cleanups.push(async () => {
-		Object.assign(leases, { acquire: origAcquire });
+		const leases = a.opened.state.leases;
+		const origAcquire = leases.acquire.bind(leases);
+		const acquireGate = deferred();
+		const acquireStarted = deferred();
+		cleanups.push(async () => {
+			Object.assign(leases, { acquire: origAcquire });
+			acquireGate.resolve();
+		});
+		Object.assign(leases, {
+			acquire: async (...args: Parameters<typeof origAcquire>) => {
+				if (args[0].kind === "presence" && args[0].session.name === "slow-reg-target") {
+					acquireStarted.resolve();
+					await acquireGate.promise;
+				}
+				return origAcquire(...args);
+			},
+		});
+
+		const targetInfo: SessionInfo = {
+			id: randomUUID(),
+			name: "slow-reg-target",
+			cwd: "/work",
+			model: "test/model",
+			pid: 1,
+			startedAt: 1,
+			lastActivity: 1,
+			status: "idle",
+			group: "default",
+			groups: ["default"],
+		};
+		const target: BrokerConnectedSession = {
+			socket: fakeSocket(),
+			info: targetInfo,
+			registrationGroup: normalizeGroup("default"),
+			registrationName: "slow-reg-target",
+			registrationReturnAddress: randomUUID(),
+			acknowledgesReceipt: true,
+		};
+		a.sessions.set(targetInfo.id, target);
+		const regPromise = a.router.sessionRegistered(target);
+		await acquireStarted.promise;
+
+		// Sender has zero unsettled outbox rows for target -> local delivery completes at simulated t=0 (no 300ms wait!).
+		a.send(sender, "slow-reg-target", makeMessage("fast-during-slow-reg"));
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["fast-during-slow-reg"]));
 		acquireGate.resolve();
+		await regPromise;
 	});
-	Object.assign(leases, {
-		acquire: async (...args: Parameters<typeof origAcquire>) => {
-			if (args[0].kind === "presence" && args[0].session.name === "slow-reg-target") {
-				acquireStarted.resolve();
-				await acquireGate.promise;
-			}
-			return origAcquire(...args);
-		},
-	});
-
-	const targetInfo: SessionInfo = {
-		id: randomUUID(),
-		name: "slow-reg-target",
-		cwd: "/work",
-		model: "test/model",
-		pid: 1,
-		startedAt: 1,
-		lastActivity: 1,
-		status: "idle",
-		group: "default",
-		groups: ["default"],
-	};
-	const target: BrokerConnectedSession = {
-		socket: fakeSocket(),
-		info: targetInfo,
-		registrationGroup: normalizeGroup("default"),
-		registrationName: "slow-reg-target",
-		registrationReturnAddress: randomUUID(),
-		acknowledgesReceipt: true,
-	};
-	a.sessions.set(targetInfo.id, target);
-	const regPromise = a.router.sessionRegistered(target);
-	await acquireStarted.promise;
-
-	// Sender has zero unsettled outbox rows for target -> local delivery must NOT wait 300ms for registration!
-	const t0 = performance.now();
-	a.send(sender, "slow-reg-target", makeMessage("fast-during-slow-reg"));
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(target), ["fast-during-slow-reg"]), {
-		timeout: WAIT_MS,
-		interval: 5,
-	});
-	assert.ok(
-		performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS,
-		`expected fast local send without unsettled outbox, took ${(performance.now() - t0).toFixed(1)} ms`,
-	);
-	acquireGate.resolve();
-	await regPromise;
 });
 
 test("an unrelated remote sender's slow outbox claim does not stall a local sender to the same target", async () => {
-	const { nodes } = await cluster(2);
-	const [a, b] = [nodes[0]!, nodes[1]!];
-	const localSender = await a.connect("local-sender");
-	const remoteSender = await b.connect("remote-sender");
-	const target = await a.connect("target");
-	const targetIdentity = deliveryTargetIdentity(target);
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(2);
+		const [a, b] = [nodes[0]!, nodes[1]!];
+		const localSender = await a.connect("local-sender");
+		const remoteSender = await b.connect("remote-sender");
+		const target = await a.connect("target");
+		const targetIdentity = deliveryTargetIdentity(target);
 
-	const outbox = a.opened.state.outbox;
-	const origClaim = outbox.claim.bind(outbox);
-	const claimStarted = deferred();
-	const claimGate = deferred();
-	cleanups.push(async () => {
-		Object.assign(outbox, { claim: origClaim });
+		const outbox = a.opened.state.outbox;
+		const origClaim = outbox.claim.bind(outbox);
+		const claimStarted = deferred();
+		const claimGate = deferred();
+		cleanups.push(async () => {
+			Object.assign(outbox, { claim: origClaim });
+			claimGate.resolve();
+		});
+		Object.assign(outbox, {
+			claim: async (...args: Parameters<typeof origClaim>) => {
+				if (args[0].targetIdentity === targetIdentity) {
+					claimStarted.resolve();
+					await claimGate.promise;
+				}
+				return origClaim(...args);
+			},
+		});
+
+		// Remote sender on B triggers a slow claimFor(target) on A.
+		b.send(remoteSender, "target", makeMessage("from-remote-s2"));
+		let claimBegan = false;
+		void claimStarted.promise.then(() => {
+			claimBegan = true;
+		});
+		await waitWithFakeStep(() => assert.equal(claimBegan, true));
+
+		// Unrelated local sender on A has no unsettled outbox rows -> delivers immediately without advancing timers!
+		a.send(localSender, "target", makeMessage("from-local-s1"));
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["from-local-s1"]));
 		claimGate.resolve();
 	});
-	Object.assign(outbox, {
-		claim: async (...args: Parameters<typeof origClaim>) => {
-			if (args[0].targetIdentity === targetIdentity) {
-				claimStarted.resolve();
-				await claimGate.promise;
-			}
-			return origClaim(...args);
-		},
-	});
-
-	// Remote sender on B triggers a slow claimFor(target) on A.
-	b.send(remoteSender, "target", makeMessage("from-remote-s2"));
-	await claimStarted.promise;
-
-	// Unrelated local sender on A has no unsettled outbox rows for target -> must deliver immediately!
-	const t0 = performance.now();
-	a.send(localSender, "target", makeMessage("from-local-s1"));
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(target), ["from-local-s1"]), {
-		timeout: WAIT_MS,
-		interval: 5,
-	});
-	assert.ok(
-		performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS,
-		`unrelated local sender must not stall behind remote claim, took ${(performance.now() - t0).toFixed(1)} ms`,
-	);
-	claimGate.resolve();
 });
 
 test("a late database error during answerLocalRetry shares the remaining LOCAL_RETRY_LOOKUP_BOUND_MS budget in deliverLocally", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
 
-	// Hang an earlier remote send to a target that joins afterwards.
-	const leases = a.opened.state.leases;
-	const origListLive = leases.listLive.bind(leases);
-	const listLiveStarted = deferred();
-	const releaseListLive = deferred();
-	cleanups.push(async () => {
-		Object.assign(leases, { listLive: origListLive });
-		releaseListLive.resolve();
-	});
-	Object.assign(leases, {
-		listLive: async (...args: Parameters<typeof origListLive>) => {
-			listLiveStarted.resolve();
-			await releaseListLive.promise;
-			return origListLive(...args);
-		},
-	});
+		// Hang an earlier remote send to a target that joins afterwards.
+		const leases = a.opened.state.leases;
+		const origListLive = leases.listLive.bind(leases);
+		const listLiveStarted = deferred();
+		const releaseListLive = deferred();
+		cleanups.push(async () => {
+			Object.assign(leases, { listLive: origListLive });
+			releaseListLive.resolve();
+		});
+		Object.assign(leases, {
+			listLive: async (...args: Parameters<typeof origListLive>) => {
+				listLiveStarted.resolve();
+				await releaseListLive.promise;
+				return origListLive(...args);
+			},
+		});
 
-	a.send(sender, "late-target", makeMessage("hung-remote"));
-	await listLiveStarted.promise;
-	const joined = await a.connect("late-target");
+		a.send(sender, "late-target", makeMessage("hung-remote"));
+		await listLiveStarted.promise;
+		const joined = await a.connect("late-target");
 
-	// Inject a transient error on m2's outbox.read after 180 ms (within the 300 ms bound).
-	const m2 = makeMessage("late-error-local");
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === m2.id) {
-				await new Promise((resolve) => setTimeout(resolve, 180));
-				throw new Error("late pooled read failure");
-			}
-			return origRead(messageId);
-		},
-	});
-	cleanups.push(async () => {
-		Object.assign(outbox, { read: origRead });
-	});
+		// Inject a transient error on m2's outbox.read after 180 ms (within the 300 ms bound).
+		const m2 = makeMessage("late-error-local");
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === m2.id) {
+					await new Promise((resolve) => setTimeout(resolve, 180));
+					throw new Error("late pooled read failure");
+				}
+				return origRead(messageId);
+			},
+		});
+		cleanups.push(async () => {
+			Object.assign(outbox, { read: origRead });
+		});
 
-	const t0 = performance.now();
-	a.send(sender, "late-target", m2);
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(joined), ["late-error-local"]), {
-		timeout: WAIT_MS,
-		interval: 10,
+		a.send(sender, "late-target", m2);
+		// Must finish at exact remaining local bound (180ms + 120ms = 300ms), NOT 180ms + fresh 300ms = 480ms!
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(joined), ["late-error-local"]));
 	});
-	const elapsedMs = performance.now() - t0;
-	// Should finish around 300ms (180ms + 120ms remaining), NOT 480ms (180ms + fresh 300ms)!
-	assert.ok(
-		elapsedMs < LOCAL_RETRY_LOOKUP_BOUND_MS + 120,
-		`deliverLocally must use remaining local bound, took ${elapsedMs.toFixed(1)} ms`,
-	);
 });
 
 test("when m1 re-enters into a hung remote lookup after m2 already started waiting, local m2 still finishes within LOCAL_RETRY_LOOKUP_BOUND_MS", async () => {
-	const { nodes } = await cluster(1);
-	const a = nodes[0]!;
-	const sender = await a.connect("sender");
-	const targetReturn = randomUUID();
-	const targetOld = await a.connect("target", { returnAddress: targetReturn });
-	const targetId = targetOld.info.id;
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const targetReturn = randomUUID();
+		const targetOld = await a.connect("target", { returnAddress: targetReturn });
+		const targetId = targetOld.info.id;
 
-	const m1 = makeMessage("m1-reenters-hung-db");
-	const m2 = makeMessage("m2-bounded-local");
-	const outbox = a.opened.state.outbox;
-	const origRead = outbox.read.bind(outbox);
-	const m1Started = deferred();
-	const m1Gate = deferred();
-	const m2ReadDone = deferred();
-	const releaseHungRemote = deferred();
-	cleanups.push(async () => {
+		const m1 = makeMessage("m1-reenters-hung-db");
+		const m2 = makeMessage("m2-bounded-local");
+		const outbox = a.opened.state.outbox;
+		const origRead = outbox.read.bind(outbox);
+		const m1Started = deferred();
+		const m1Gate = deferred();
+		const m2ReadDone = deferred();
+		const releaseHungRemote = deferred();
+		cleanups.push(async () => {
+			m1Gate.resolve();
+			releaseHungRemote.resolve();
+		});
+
+		let m1Reads = 0;
+		Object.assign(outbox, {
+			read: async (messageId: string) => {
+				if (messageId === m1.id && m1Reads === 0) {
+					m1Reads++;
+					m1Started.resolve();
+					await m1Gate.promise;
+				}
+				const result = await origRead(messageId);
+				if (messageId === m2.id) m2ReadDone.resolve();
+				return result;
+			},
+		});
+
+		// Hang listLive when m1 falls back to remote routing.
+		const leases = a.opened.state.leases;
+		const origListLive = leases.listLive.bind(leases);
+		const m1HungInRemote = deferred();
+		Object.assign(leases, {
+			listLive: async (...args: Parameters<typeof origListLive>) => {
+				m1HungInRemote.resolve();
+				await releaseHungRemote.promise;
+				return origListLive(...args);
+			},
+		});
+		cleanups.push(async () => {
+			Object.assign(leases, { listLive: origListLive });
+		});
+
+		// m1 enters against targetOld, then m2 enters and immediately finishes its read and starts waiting on local m1!
+		a.send(sender, targetId, m1);
+		await m1Started.promise;
+		a.send(sender, targetId, m2);
+		await m2ReadDone.promise;
+		await flushImmediate();
+
+		// targetOld leaves -> m1 falls back into hung remote listLive -> target reconnects as targetNew on A!
+		const targetIdentity = deliveryTargetIdentity(targetOld);
+		a.leave(targetOld);
+		await waitImmediate(async () => {
+			const lease = await a.opened.state.leases.read({ kind: "presence", targetIdentity });
+			assert.equal(lease.status, "missing");
+		});
 		m1Gate.resolve();
-		releaseHungRemote.resolve();
-	});
+		await m1HungInRemote.promise;
+		const targetNew = await a.connect("target", { returnAddress: targetReturn, id: targetId });
 
-	let m1Reads = 0;
-	Object.assign(outbox, {
-		read: async (messageId: string) => {
-			if (messageId === m1.id && m1Reads === 0) {
-				m1Reads++;
-				m1Started.resolve();
-				await m1Gate.promise;
-			}
-			const result = await origRead(messageId);
-			if (messageId === m2.id) m2ReadDone.resolve();
-			return result;
-		},
+		// m2 must wake when m1 transitions local -> remote and deliver locally at exact LOCAL_RETRY_LOOKUP_BOUND_MS!
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(targetNew), ["m2-bounded-local"]));
 	});
-
-	// Hang listLive when m1 falls back to remote routing.
-	const leases = a.opened.state.leases;
-	const origListLive = leases.listLive.bind(leases);
-	const m1HungInRemote = deferred();
-	Object.assign(leases, {
-		listLive: async (...args: Parameters<typeof origListLive>) => {
-			m1HungInRemote.resolve();
-			await releaseHungRemote.promise;
-			return origListLive(...args);
-		},
-	});
-	cleanups.push(async () => {
-		Object.assign(leases, { listLive: origListLive });
-	});
-
-	// m1 enters against targetOld, then m2 enters and immediately finishes its read and starts waiting on local m1!
-	a.send(sender, targetId, m1);
-	await m1Started.promise;
-	const t0 = performance.now();
-	a.send(sender, targetId, m2);
-	await m2ReadDone.promise;
-	await new Promise((resolve) => setTimeout(resolve, 15));
-
-	// targetOld leaves -> m1 falls back into hung remote listLive -> target reconnects as targetNew on A!
-	a.leave(targetOld);
-	m1Gate.resolve();
-	await m1HungInRemote.promise;
-	const targetNew = await a.connect("target", { returnAddress: targetReturn, id: targetId });
-
-	// m2 must wake from its wait when m1 transitions local -> remote and deliver locally within 300ms!
-	await vi.waitFor(() => assert.deepEqual(receivedTexts(targetNew), ["m2-bounded-local"]), {
-		timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_500,
-		interval: 15,
-	});
-	assert.ok(
-		performance.now() - t0 < LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000,
-		`m2 must not hang when earlier m1 transitions to hung remote, took ${(performance.now() - t0).toFixed(1)} ms`,
-	);
 });
 
 test("a correlated reply still adopts its shared route when the local asker reconnects on the same broker mid-lookup", async () => {
@@ -1306,4 +1343,311 @@ test("a correlated reply still adopts its shared route when the local asker reco
 		interval: 15,
 	});
 	assert.equal(outcomeOf(replier, reply.id)?.type, "delivered");
+});
+
+test("a locally routed reply and following plain send do not stall behind a hung remote reply to another target", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const localTarget = await a.connect("local-target");
+		a.pendingQuestions.record(localTarget.info.id, sender.info.id, "ask-local-r1");
+
+		const leases = a.opened.state.leases;
+		const origListLive = leases.listLive.bind(leases);
+		const releaseListLive = deferred();
+		cleanups.push(async () => {
+			Object.assign(leases, { listLive: origListLive });
+			releaseListLive.resolve();
+		});
+		Object.assign(leases, {
+			listLive: async (...args: Parameters<typeof origListLive>) => {
+				await releaseListLive.promise;
+				return origListLive(...args);
+			},
+		});
+
+		// Remote reply r0 hangs in listLive; local reply r1 (routedHere) + plain m2 must still deliver immediately in order!
+		a.send(sender, "remote-r", makeMessage("r0-remote-reply", { replyTo: "ask-remote-r0" }));
+		a.send(sender, localTarget.info.id, makeMessage("r1-local-reply", { replyTo: "ask-local-r1" }));
+		a.send(sender, localTarget.info.id, makeMessage("m2-plain-local"));
+
+		await waitImmediate(() => assert.deepEqual(receivedTexts(localTarget), ["r1-local-reply", "m2-plain-local"]));
+	});
+});
+
+test("a plain local send behind a local requirePendingReply or soft reply on a hung DB still finishes within LOCAL_RETRY_LOOKUP_BOUND_MS", async () => {
+	for (const requirePendingReply of [true, false]) {
+		await withFakeClocks(async () => {
+			const { nodes } = await cluster(1);
+			const a = nodes[0]!;
+			const sender = await a.connect("sender");
+			const target = await a.connect("target");
+
+			const { outbox, pendingAsks, leases } = a.opened.state;
+			const origRead = outbox.read.bind(outbox);
+			const origMatches = pendingAsks.matchesReply.bind(pendingAsks);
+			const origListLive = leases.listLive.bind(leases);
+			const release = deferred();
+			cleanups.push(async () => {
+				Object.assign(outbox, { read: origRead });
+				Object.assign(pendingAsks, { matchesReply: origMatches });
+				Object.assign(leases, { listLive: origListLive });
+				release.resolve();
+			});
+			Object.assign(outbox, { read: () => release.promise.then(() => ({ status: "missing" as const })) });
+			Object.assign(pendingAsks, {
+				matchesReply: () => release.promise.then(() => ({ status: "miss" as const })),
+			});
+			Object.assign(leases, { listLive: () => release.promise.then(() => []) });
+
+			a.send(sender, target.info.id, makeMessage("r1-reply", { replyTo: "ask-crossnode" }), {
+				...(requirePendingReply ? { requirePendingReply: true } : {}),
+			});
+			a.send(sender, target.info.id, makeMessage("m2-plain"));
+
+			await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+			await waitImmediate(() => assert.ok(receivedTexts(target).includes("m2-plain")));
+		});
+	}
+});
+
+test("a plain local send behind an already-delivered local retry whose accept hangs still delivers immediately", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+
+		const m1 = makeMessage("m1-retry");
+		const sig = buildMessageSendSignature(target.info.id, m1, sender.registrationReturnAddress ?? sender.info.id);
+		const digest = createHash("sha256").update(sig).digest("hex");
+		const syntheticRow = {
+			messageId: m1.id,
+			sequence: 1,
+			targetIdentity: deliveryTargetIdentity(target),
+			originBrokerId: "broker-other",
+			digest,
+			state: "delivered" as const,
+			claimAttempts: 1,
+			frame: { type: "message" as const, from: sender.info, message: m1 },
+		};
+
+		const { outbox, sentMessages } = a.opened.state;
+		const origRead = outbox.read.bind(outbox);
+		const origAccept = sentMessages.accept.bind(sentMessages);
+		const releaseAccept = deferred();
+		cleanups.push(async () => {
+			Object.assign(outbox, { read: origRead });
+			Object.assign(sentMessages, { accept: origAccept });
+			releaseAccept.resolve();
+		});
+		Object.assign(outbox, {
+			read: async (id: string) => (id === m1.id ? { status: "found" as const, row: syntheticRow } : origRead(id)),
+		});
+		Object.assign(sentMessages, {
+			accept: async (...args: Parameters<typeof origAccept>) => {
+				await releaseAccept.promise;
+				return origAccept(...args);
+			},
+		});
+
+		a.send(sender, target.info.id, m1);
+		a.send(sender, target.info.id, makeMessage("m2-plain-local"));
+
+		// Delivered immediately at simulated t=0 (does NOT wait for hung sentMessages.accept or 300ms bound!).
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["m2-plain-local"]));
+	});
+});
+
+test("a plain local send already waiting on m1 wakes and stays bounded if m1 later enters a hung reply or outbox path", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+
+		const m1 = makeMessage("m1-soft-reply", { replyTo: "ask-slow" });
+		const m2 = makeMessage("m2-waiting-plain");
+		const { outbox, pendingAsks } = a.opened.state;
+		const origRead = outbox.read.bind(outbox);
+		const origMatches = pendingAsks.matchesReply.bind(pendingAsks);
+		const m1ReadGate = deferred();
+		const m2ReadDone = deferred();
+		const releaseMatches = deferred();
+		cleanups.push(async () => {
+			Object.assign(outbox, { read: origRead });
+			Object.assign(pendingAsks, { matchesReply: origMatches });
+			m1ReadGate.resolve();
+			releaseMatches.resolve();
+		});
+		Object.assign(outbox, {
+			read: async (id: string) => {
+				if (id === m1.id) {
+					await m1ReadGate.promise;
+					return origRead(id);
+				}
+				const res = await origRead(id);
+				if (id === m2.id) m2ReadDone.resolve();
+				return res;
+			},
+		});
+		Object.assign(pendingAsks, {
+			matchesReply: async (...args: Parameters<typeof origMatches>) => {
+				await releaseMatches.promise;
+				return origMatches(...args);
+			},
+		});
+
+		// m1 starts slow outbox.read; m2 finishes outbox.read first and enters waitLoop BEFORE m1 reaches adoptSharedRouteWithin.
+		a.send(sender, target.info.id, m1);
+		a.send(sender, target.info.id, m2);
+		await m2ReadDone.promise;
+		await flushImmediate();
+
+		// Now m1's outbox.read finishes at t=80ms and m1 enters hung adoptSharedRouteWithin!
+		await vi.advanceTimersByTimeAsync(80);
+		m1ReadGate.resolve();
+		await flushImmediate();
+
+		// Advancing the remaining 220ms (total = 300ms) must wake and deliver m2 within LOCAL_RETRY_LOOKUP_BOUND_MS!
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS - 80);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["m2-waiting-plain"]));
+	});
+});
+
+test("holdForRemoteReservation and routeReleasedReply (remote and local) are not blocked by a hung remote send to an unrelated target", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(2);
+		const [a, b] = [nodes[0]!, nodes[1]!];
+		const sender = await a.connect("sender");
+		const ownerB = await b.connect("ownerB");
+
+		// Broker B reserves restoring child-c and released-child-c.
+		await b.router.restoringReserved("cap-child-c", ownerB.info.id, "child-c", "default", [], false, { wake: false });
+		await b.router.restoringReserved(
+			releasedReservationKey("released-child-c"),
+			ownerB.info.id,
+			"released-child-c",
+			"default",
+			[],
+			false,
+			{ wake: true },
+		);
+
+		const remoteChildId = randomUUID();
+		const remoteAskId = randomUUID();
+		const wokenChild = await a.connect("released-child-c");
+		const localAskId = randomUUID();
+		await a.opened.state.releasedAsks.keep(
+			[
+				{
+					questionId: remoteAskId,
+					askerSessionId: remoteChildId,
+					replierSessionId: sender.info.id,
+					childName: "released-child-c",
+					ownerSessionId: ownerB.info.id,
+				},
+				{
+					questionId: localAskId,
+					askerSessionId: wokenChild.info.id,
+					replierSessionId: sender.info.id,
+					childName: "released-child-c",
+					ownerSessionId: ownerB.info.id,
+				},
+			],
+			60_000,
+		);
+
+		// Hang knownSessions.lookup ONLY for unrelated "target-1".
+		const ks = a.opened.state.knownSessions;
+		const origLookup = ks.lookup.bind(ks);
+		const releaseLookup = deferred();
+		cleanups.push(async () => {
+			Object.assign(ks, { lookup: origLookup });
+			releaseLookup.resolve();
+		});
+		Object.assign(ks, {
+			lookup: async (target: string, retentionMs: number) => {
+				if (target === "target-1") await releaseLookup.promise;
+				return origLookup(target, retentionMs);
+			},
+		});
+
+		// Unrelated hung remote send enters phase="resolving".
+		a.send(sender, "target-1", makeMessage("hung-unrelated"));
+		await flushImmediate();
+
+		// R3a: holdForRemoteReservation to child-c must hold immediately without waiting on target-1!
+		const holdMsg = makeMessage("to-child-c");
+		a.send(sender, "child-c", holdMsg, { awaitRestoringRecipient: true });
+		await waitImmediate(() =>
+			assert.ok(
+				(sender.socket as FakeSocket).frames.some(
+					(frame) => frame.type === "send_held" && frame.messageId === holdMsg.id,
+				),
+			),
+		);
+
+		// R3b + R3c: remote and local routeReleasedReply must enqueue immediately without waiting on target-1!
+		const rRemote = makeMessage("reply-remote-released", { replyTo: remoteAskId });
+		const rLocal = makeMessage("reply-local-released", { replyTo: localAskId });
+		a.send(sender, remoteChildId, rRemote, { requirePendingReply: true });
+		a.send(sender, wokenChild.info.id, rLocal, { requirePendingReply: true });
+		await waitWithFakeStep(() => {
+			const handoffs = (ownerB.socket as FakeSocket).frames.filter((frame) => frame.type === "released_child_reply");
+			assert.equal(
+				handoffs.length,
+				2,
+				`expected 2 handoffs, got ${handoffs.length}; senderFrames=${JSON.stringify((sender.socket as FakeSocket).frames)}`,
+			);
+		});
+
+		// sessionLeft(sender) must also finish promptly (serial("reply:sender") is not blocked on target-1)!
+		a.leave(sender);
+		await waitImmediate(async () => {
+			const lease = await a.opened.state.leases.read({
+				kind: "presence",
+				targetIdentity: deliveryTargetIdentity(sender),
+			});
+			assert.equal(lease.status, "missing");
+		});
+	});
+});
+
+test("sequential local sends to a newly registered target do not wait on a hung remote send to an unrelated target", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+
+		const ks = a.opened.state.knownSessions;
+		const origLookup = ks.lookup.bind(ks);
+		const releaseLookup = deferred();
+		cleanups.push(async () => {
+			Object.assign(ks, { lookup: origLookup });
+			releaseLookup.resolve();
+		});
+		Object.assign(ks, {
+			lookup: async (target: string, retentionMs: number) => {
+				if (target === "remote-bob") await releaseLookup.promise;
+				return origLookup(target, retentionMs);
+			},
+		});
+
+		// m1 to unrelated "remote-bob" hangs in knownSessions.lookup BEFORE local-alice registers.
+		a.send(sender, "remote-bob", makeMessage("hung-bob"));
+		await flushImmediate();
+
+		// local-alice registers AFTER m1 started (registeredSeq > m1.arrivedRegSeq).
+		const alice = await a.connect("local-alice");
+
+		// All 4 sequential local sends must deliver at simulated t=0 (zero 300ms stalls!).
+		for (let i = 0; i < 4; i++) {
+			const text = `alice-${i}`;
+			a.send(sender, alice.info.id, makeMessage(text));
+			await waitImmediate(() => assert.ok(receivedTexts(alice).includes(text)));
+		}
+		assert.deepEqual(receivedTexts(alice), ["alice-0", "alice-1", "alice-2", "alice-3"]);
+	});
 });

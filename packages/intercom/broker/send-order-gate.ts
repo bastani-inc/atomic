@@ -2,9 +2,8 @@
  * Pipelined per-(sender, target) send-order gate for multi-node routing.
  *
  * Read-only shared-store lookups and local lookup timers start immediately in parallel when sends arrive,
- * while observable commits (local socket handoff, shared outbox enqueue, remote-reservation hold, or reply
- * handoff) wait for strictly earlier in-flight sends from the same canonical sender to the same canonical
- * target.
+ * while observable commits (local socket handoff, shared outbox enqueue, or remote-reservation hold) wait
+ * for strictly earlier in-flight sends from the same canonical sender to the same canonical target.
  *
  * State machine per ticket:
  *   - `resolving`: remote send whose canonical target identity is not yet resolved.
@@ -36,6 +35,8 @@ export interface SendOrderTicket {
 	readonly rawTarget: string;
 	readonly arrivedRegSeq: number;
 	isLocal: boolean;
+	/** True when this ticket may exceed `LOCAL_RETRY_LOOKUP_BOUND_MS` (remote send, reply serial lane, or shared-DB wait). */
+	unbounded: boolean;
 	phase: SendOrderPhase;
 	targetIdentity: string | undefined;
 }
@@ -43,7 +44,7 @@ export interface SendOrderTicket {
 interface InternalTicket extends SendOrderTicket {
 	previousTargetIdentity?: string;
 	targetKnownWait?: DeferredWait;
-	reenteredWait?: DeferredWait;
+	unboundedWait?: DeferredWait;
 	finishedWait?: DeferredWait;
 }
 
@@ -62,6 +63,14 @@ export type BeginSendTicketOptions =
 			readonly isLocal: false;
 	  };
 
+/** Known identifiers of a resolved target, used to skip unrelated still-resolving remote sends. */
+export interface TargetMatchInfo {
+	readonly sessionId?: string;
+	readonly names?: readonly string[];
+	readonly atomicSessionId?: string;
+	readonly aliases?: readonly string[];
+}
+
 export interface WaitForEarlierOptions {
 	readonly targetIdentity: string;
 	/** Local target's registration epoch on this broker (enables O(1) skip of earlier remote sends). */
@@ -70,26 +79,27 @@ export interface WaitForEarlierOptions {
 	readonly awaitedId?: string;
 	/** Local target's held alias session ID, if any (checked when skipping earlier remote sends). */
 	readonly aliasId?: string;
-	/** Resolved remote target identifiers, used to skip unrelated still-resolving remote sends. */
-	readonly remoteTarget?: {
-		readonly sessionId: string;
-		readonly name?: string;
-		readonly atomicSessionId?: string;
-		readonly aliases?: readonly string[];
-	};
-	/** Local lookup deadline promise: bounds a local send's wait on earlier unbounded remote sends. */
+	/** Known identifiers for this target; earlier still-resolving sends that cannot match are skipped. */
+	readonly targetMatch?: TargetMatchInfo;
+	/** Local lookup deadline promise: bounds a local send's wait behind earlier remote or unbounded tickets. */
 	readonly localBound?: Promise<"expired">;
+	/** True when `localBound` has already expired synchronously before entering `waitForEarlier`. */
+	readonly localBoundExpired?: boolean;
 }
 
-function rawTargetCouldMatchRemote(
-	rawTarget: string,
-	remote: NonNullable<WaitForEarlierOptions["remoteTarget"]>,
-): boolean {
-	if (rawTarget === remote.sessionId) return true;
-	if (remote.atomicSessionId !== undefined && rawTarget === remote.atomicSessionId) return true;
-	if (remote.name !== undefined && rawTarget.toLowerCase() === remote.name.toLowerCase()) return true;
-	if (rawTarget.length === 8 && remote.sessionId.toLowerCase().startsWith(rawTarget.toLowerCase())) return true;
-	if (remote.aliases?.includes(rawTarget) === true) return true;
+function rawTargetCouldMatch(rawTarget: string, target: TargetMatchInfo): boolean {
+	if (target.sessionId !== undefined) {
+		if (rawTarget === target.sessionId) return true;
+		if (rawTarget.length === 8 && target.sessionId.toLowerCase().startsWith(rawTarget.toLowerCase())) return true;
+	}
+	if (target.atomicSessionId !== undefined && rawTarget === target.atomicSessionId) return true;
+	if (target.names !== undefined) {
+		const lower = rawTarget.toLowerCase();
+		for (const name of target.names) {
+			if (lower === name.toLowerCase()) return true;
+		}
+	}
+	if (target.aliases !== undefined && target.aliases.includes(rawTarget)) return true;
 	return false;
 }
 
@@ -115,6 +125,7 @@ export class SendOrderGate {
 			rawTarget: options.rawTarget,
 			arrivedRegSeq: options.arrivedRegSeq,
 			isLocal: options.isLocal,
+			unbounded: !options.isLocal,
 			phase: options.isLocal ? "resolved" : "resolving",
 			targetIdentity: options.isLocal ? options.targetIdentity : undefined,
 		};
@@ -131,7 +142,7 @@ export class SendOrderGate {
 		return ticket;
 	}
 
-	/** Record the resolved canonical target identity for a remote send, unblocking unrelated targets immediately. */
+	/** Record the resolved canonical target identity for a send, unblocking unrelated targets immediately. */
 	resolveTarget(ticket: SendOrderTicket, targetIdentity: string): void {
 		const internal = ticket as InternalTicket;
 		if (internal.phase === "done") return;
@@ -145,6 +156,20 @@ export class SendOrderGate {
 	}
 
 	/**
+	 * Mark an in-flight ticket as able to exceed `LOCAL_RETRY_LOOKUP_BOUND_MS` (for example because it is queued in
+	 * a reply lane behind remote replies, adopting a shared route, or writing to the shared store). Wakes any local
+	 * send already waiting on it so it enforces its own local deadline.
+	 */
+	markUnbounded(ticket: SendOrderTicket): void {
+		const internal = ticket as InternalTicket;
+		if (internal.phase === "done" || internal.unbounded) return;
+		internal.unbounded = true;
+		const wait = internal.unboundedWait;
+		internal.unboundedWait = undefined;
+		wait?.resolve();
+	}
+
+	/**
 	 * Transition a local send ticket in place to remote resolution when local handoff falls back re-entrantly
 	 * because the local target disconnected, was fenced, or lost an alias. Keeps the original arrival `seq`.
 	 */
@@ -153,12 +178,13 @@ export class SendOrderGate {
 		if (internal.phase === "done") return;
 		if (internal.targetIdentity !== undefined) internal.previousTargetIdentity = internal.targetIdentity;
 		internal.isLocal = false;
+		internal.unbounded = true;
 		internal.targetIdentity = undefined;
 		internal.phase = "resolving";
 		internal.targetKnownWait = undefined;
-		const reentered = internal.reenteredWait;
-		internal.reenteredWait = undefined;
-		reentered?.resolve();
+		const unbounded = internal.unboundedWait;
+		internal.unboundedWait = undefined;
+		unbounded?.resolve();
 	}
 
 	/**
@@ -184,9 +210,9 @@ export class SendOrderGate {
 		const targetWait = internal.targetKnownWait;
 		internal.targetKnownWait = undefined;
 		targetWait?.resolve();
-		const reenteredWait = internal.reenteredWait;
-		internal.reenteredWait = undefined;
-		reenteredWait?.resolve();
+		const unboundedWait = internal.unboundedWait;
+		internal.unboundedWait = undefined;
+		unboundedWait?.resolve();
 		const finishedWait = internal.finishedWait;
 		internal.finishedWait = undefined;
 		finishedWait?.resolve();
@@ -207,8 +233,8 @@ export class SendOrderGate {
 				ticket.phase = "done";
 				ticket.targetKnownWait?.resolve();
 				ticket.targetKnownWait = undefined;
-				ticket.reenteredWait?.resolve();
-				ticket.reenteredWait = undefined;
+				ticket.unboundedWait?.resolve();
+				ticket.unboundedWait = undefined;
 				ticket.finishedWait?.resolve();
 				ticket.finishedWait = undefined;
 			}
@@ -216,7 +242,11 @@ export class SendOrderGate {
 		this.bySender.clear();
 	}
 
-	private waitKind(earlier: InternalTicket, current: InternalTicket, options: WaitForEarlierOptions): "skip" | "target" | "finish" {
+	private waitKind(
+		earlier: InternalTicket,
+		current: InternalTicket,
+		options: WaitForEarlierOptions,
+	): "skip" | "target" | "finish" {
 		if (earlier.phase === "done") return "skip";
 		if (earlier.phase === "resolved") {
 			return earlier.targetIdentity === options.targetIdentity ? "finish" : "skip";
@@ -227,10 +257,14 @@ export class SendOrderGate {
 			const matchesAlias = earlier.rawTarget === options.awaitedId || earlier.rawTarget === options.aliasId;
 			if (!matchesAlias) return "skip";
 		}
-		if (!current.isLocal && options.remoteTarget !== undefined && !rawTargetCouldMatchRemote(earlier.rawTarget, options.remoteTarget)) {
+		if (options.targetMatch !== undefined && !rawTargetCouldMatch(earlier.rawTarget, options.targetMatch)) {
 			return "skip";
 		}
 		return "target";
+	}
+
+	private isBounded(current: InternalTicket, earlier: InternalTicket, hasBound: boolean): boolean {
+		return current.isLocal && (!earlier.isLocal || earlier.unbounded) && hasBound;
 	}
 
 	private hasBlockingEarlier(
@@ -238,9 +272,12 @@ export class SendOrderGate {
 		current: InternalTicket,
 		options: WaitForEarlierOptions,
 	): boolean {
+		const hasBound = options.localBound !== undefined || options.localBoundExpired === true;
 		for (const earlier of list) {
 			if (earlier.seq >= current.seq) break;
-			if (this.waitKind(earlier, current, options) !== "skip") return true;
+			if (this.waitKind(earlier, current, options) === "skip") continue;
+			if (options.localBoundExpired === true && this.isBounded(current, earlier, hasBound)) continue;
+			return true;
 		}
 		return false;
 	}
@@ -251,10 +288,10 @@ export class SendOrderGate {
 		return ticket.targetKnownWait.promise;
 	}
 
-	private awaitReentered(ticket: InternalTicket): Promise<void> {
-		if (!ticket.isLocal || ticket.phase === "done" || this.closed) return Promise.resolve();
-		ticket.reenteredWait ??= createDeferredWait();
-		return ticket.reenteredWait.promise;
+	private awaitUnbounded(ticket: InternalTicket): Promise<void> {
+		if (!ticket.isLocal || ticket.unbounded || ticket.phase === "done" || this.closed) return Promise.resolve();
+		ticket.unboundedWait ??= createDeferredWait();
+		return ticket.unboundedWait.promise;
 	}
 
 	private awaitFinished(ticket: InternalTicket): Promise<void> {
@@ -264,10 +301,13 @@ export class SendOrderGate {
 	}
 
 	private async waitLoop(current: InternalTicket, options: WaitForEarlierOptions): Promise<void> {
-		let localBoundExpired = false;
-		const boundPromise = options.localBound?.then(() => {
-			localBoundExpired = true;
-		});
+		let localBoundExpired = options.localBoundExpired === true;
+		const boundPromise = localBoundExpired
+			? undefined
+			: options.localBound?.then(() => {
+					localBoundExpired = true;
+				});
+		const hasBound = localBoundExpired || boundPromise !== undefined;
 		while (!this.closed && current.phase !== "done") {
 			const list = this.bySender.get(current.senderKey);
 			if (list === undefined) return;
@@ -276,12 +316,11 @@ export class SendOrderGate {
 				if (earlier.seq >= current.seq) break;
 				const kind = this.waitKind(earlier, current, options);
 				if (kind === "skip") continue;
-				const bounded = current.isLocal && !earlier.isLocal && boundPromise !== undefined;
+				const bounded = this.isBounded(current, earlier, hasBound);
 				if (bounded && localBoundExpired) continue;
 				const wait = kind === "target" ? this.awaitTargetKnown(earlier) : this.awaitFinished(earlier);
-				if (bounded) await Promise.race([wait, boundPromise]);
-				else if (current.isLocal && earlier.isLocal && boundPromise !== undefined)
-					await Promise.race([wait, this.awaitReentered(earlier)]);
+				if (bounded && boundPromise !== undefined) await Promise.race([wait, boundPromise]);
+				else if (current.isLocal && hasBound) await Promise.race([wait, this.awaitUnbounded(earlier)]);
 				else await wait;
 				waited = true;
 				break;

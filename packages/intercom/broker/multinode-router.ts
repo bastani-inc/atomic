@@ -84,7 +84,7 @@ import {
 	restoringRecipientRetryReason,
 	unrestoredReasonCode,
 } from "./restoring-recipients.js";
-import { SendOrderGate, type SendOrderTicket } from "./send-order-gate.js";
+import { SendOrderGate, type SendOrderTicket, type TargetMatchInfo } from "./send-order-gate.js";
 import {
 	answerAs,
 	type BrokerConnectedSession,
@@ -1042,6 +1042,8 @@ export class MultiNodeRouter {
 	/** Refcount of unsettled outbox waiters per `(senderKey, targetIdentity)` pair, maintained by `setWaiter`/`dropWaiter`. */
 	private readonly unsettledOutboxPairs = new Map<string, number>();
 	private readonly sendOrder = new SendOrderGate();
+	/** Locally routed in-flight replies per sender, awaited by `sessionLeft` (#4992) without stalling behind remote replies. */
+	private readonly localReplies = new Map<string, Set<Promise<void>>>();
 	private activeLocalCommit:
 		| { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest }
 		| undefined;
@@ -2868,6 +2870,8 @@ export class MultiNodeRouter {
 			// #4386: asks to a released subagent are parked instead; registering again on any node takes its presence over
 			// first, so its rebinding always finds them.
 			await this.serials.get(`reply:${sessionId}`);
+			const pendingLocalReplies = this.localReplies.get(sessionId);
+			if (pendingLocalReplies !== undefined) await Promise.all([...pendingLocalReplies]);
 			// #4997: its kept asks that move to the shared state get there first, so they end there, once.
 			if (!away && !terminal) await this.moveAsksTo(session).catch((error: Error) => this.report(error));
 			const ending = (async () => ({
@@ -3413,9 +3417,30 @@ export class MultiNodeRouter {
 		);
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
 		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
-		if (isReleasedReplyCandidate(request))
+		// A local reply already authorized by a local route on this broker can never be a released-child reply, so
+		// it runs outside the cross-node reply queue (still awaited by `sessionLeft`) and never stalls behind a hung
+		// remote reply to another target.
+		const isReply = isReleasedReplyCandidate(request);
+		const localRoutedReply =
+			isReply && request.localTarget !== undefined && this.routedHere(request, request.localTarget);
+		if (isReply && !localRoutedReply) {
+			if (request.localTarget !== undefined) this.sendOrder.markUnbounded(ticket);
 			this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request, ticket, true));
-		else void this.routeSendSafely(request, ticket, true);
+		} else if (localRoutedReply) {
+			const senderId = request.from.info.id;
+			let pending = this.localReplies.get(senderId);
+			if (pending === undefined) {
+				pending = new Set();
+				this.localReplies.set(senderId, pending);
+			}
+			const task = this.routeSendSafely(request, ticket, true).finally(() => {
+				pending.delete(task);
+				if (pending.size === 0 && this.localReplies.get(senderId) === pending) this.localReplies.delete(senderId);
+			});
+			pending.add(task);
+		} else {
+			void this.routeSendSafely(request, ticket, true);
+		}
 	}
 
 	private async routeSendSafely(request: RemoteSendRequest, ticket: SendOrderTicket, ownsTicket: boolean): Promise<void> {
@@ -3446,14 +3471,32 @@ export class MultiNodeRouter {
 		ticket: SendOrderTicket,
 		target: BrokerConnectedSession,
 		localBound?: Promise<"expired">,
+		localBoundExpired?: boolean,
 	): Promise<void> {
 		const entry = this.presence.get(target);
+		const names: string[] = [];
+		if (target.info.name !== undefined) names.push(target.info.name);
+		if (target.registrationName !== undefined && target.registrationName !== target.info.name)
+			names.push(target.registrationName);
+		const aliases: string[] = [];
+		if (entry?.awaits !== undefined) aliases.push(entry.awaits.id);
+		if (entry?.alias !== undefined) aliases.push(entry.alias.intercomSessionId);
+		const targetMatch: TargetMatchInfo = {
+			sessionId: target.info.id,
+			...(names.length === 0 ? {} : { names }),
+			...(target.registrationReturnAddress === undefined
+				? {}
+				: { atomicSessionId: target.registrationReturnAddress }),
+			...(aliases.length === 0 ? {} : { aliases }),
+		};
 		const wait = this.sendOrder.waitForEarlier(ticket, {
 			targetIdentity: deliveryTargetIdentity(target),
 			...(entry === undefined ? {} : { targetRegSeq: entry.registeredSeq }),
 			...(entry?.awaits === undefined ? {} : { awaitedId: entry.awaits.id }),
 			...(entry?.alias === undefined ? {} : { aliasId: entry.alias.intercomSessionId }),
+			targetMatch,
 			...(localBound === undefined ? {} : { localBound }),
+			...(localBoundExpired === true ? { localBoundExpired: true } : {}),
 		});
 		if (wait !== undefined) await wait;
 	}
@@ -3511,15 +3554,19 @@ export class MultiNodeRouter {
 		remainingBoundMs: number,
 	): Promise<void> {
 		let bound: ReturnType<typeof setTimeout> | undefined;
+		let boundExpired = remainingBoundMs <= 0;
 		const expired =
-			remainingBoundMs <= 0
+			boundExpired
 				? Promise.resolve("expired" as const)
 				: new Promise<"expired">((resolve) => {
-						bound = setTimeout(() => resolve("expired"), remainingBoundMs);
+						bound = setTimeout(() => {
+							boundExpired = true;
+							resolve("expired");
+						}, remainingBoundMs);
 						bound.unref?.();
 					});
 		try {
-			await this.waitForEarlierLocal(ticket, target, expired);
+			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 		} finally {
 			clearTimeout(bound);
 		}
@@ -3655,7 +3702,7 @@ export class MultiNodeRouter {
 				ticket,
 				{
 					sessionId: subject.session.id,
-					...(subject.session.name === undefined ? {} : { name: subject.session.name }),
+					...(subject.session.name === undefined ? {} : { names: [subject.session.name] }),
 					...(returnAddressOf(subject.targetIdentity) === undefined
 						? {}
 						: { atomicSessionId: returnAddressOf(subject.targetIdentity) }),
@@ -3683,7 +3730,7 @@ export class MultiNodeRouter {
 				ticket,
 				{
 					sessionId: known.intercomSessionId,
-					...(known.name === undefined ? {} : { name: known.name }),
+					...(known.name === undefined ? {} : { names: [known.name] }),
 					...(known.atomicSessionId === undefined ? {} : { atomicSessionId: known.atomicSessionId }),
 					...(known.aliasSessionId === undefined ? {} : { aliases: [known.aliasSessionId] }),
 				},
@@ -3706,11 +3753,12 @@ export class MultiNodeRouter {
 				this.failReleasedReply(request, decision.error);
 				return true;
 			case "deliver": {
+				// Released-child replies are already strictly ordered per sender by `serial("reply:...")` (#4386),
+				// and non-reply sends never commit to a `released-reply:*` target: resolve the ticket target so
+				// unrelated later sends do not wait, and never stall behind unrelated still-resolving plain sends.
 				if (ticket !== undefined) {
-					const wait = this.sendOrder.waitForEarlier(ticket, {
-						targetIdentity: `released-reply:${decision.owner.identity}`,
-					});
-					if (wait !== undefined) await wait;
+					this.sendOrder.markUnbounded(ticket);
+					this.sendOrder.resolveTarget(ticket, `released-reply:${decision.owner.identity}`);
 					if (this.closed) return true;
 				}
 				await this.sendReleasedReply(request, decision);
@@ -4139,8 +4187,12 @@ export class MultiNodeRouter {
 			return undefined;
 		});
 		let bound: ReturnType<typeof setTimeout> | undefined;
+		let boundExpired = false;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
+			bound = setTimeout(() => {
+				boundExpired = true;
+				resolve("expired");
+			}, LOCAL_RETRY_LOOKUP_BOUND_MS);
 			bound.unref?.();
 		});
 		try {
@@ -4153,7 +4205,7 @@ export class MultiNodeRouter {
 					// A sender disconnected here has nothing to be answered; a recipient disconnected here, or an alias it
 					// no longer holds, is looked for wherever that id lives now.
 					if (found.sender !== "lost") {
-						await this.waitForEarlierLocal(ticket, target, expired);
+						await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 						await this.commitLocalNotFound(request, ticket);
 					}
 					return;
@@ -4162,13 +4214,18 @@ export class MultiNodeRouter {
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
-				const decisionStartedAt = performance.now();
-				const sending = await this.adoptSharedRouteWithin(request, target);
-				if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
-				// the local path's final refusal just because the outbox lookup was slow.
-				if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
-				await this.waitForEarlierLocal(ticket, target, expired);
+				let sending = request;
+				if (request.message.replyTo !== undefined) {
+					if (!this.routedHere(request, target)) this.sendOrder.markUnbounded(ticket);
+					const decisionStartedAt = performance.now();
+					const adopted = await this.adoptSharedRouteWithin(request, target);
+					if (adopted === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+					// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
+					// the local path's final refusal just because the outbox lookup was slow.
+					if (await this.routeUnreachable(adopted, target, decisionStartedAt)) return;
+					sending = adopted;
+				}
+				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 				await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
 				await this.commitLocalNotFound(sending, ticket);
 				return;
@@ -4176,25 +4233,37 @@ export class MultiNodeRouter {
 			if (existing.status === "found") {
 				const digest = crossNodeDigest(request.signature);
 				const recipient = await this.rowRecipient(existing.row, target, expired);
-				await this.waitForEarlierLocal(ticket, target, expired);
+				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 				if (this.closed) return;
+				if (existing.row.state === "delivered" || existing.row.state === "failed") {
+					// Already settled earlier: this retry writes no frame to target.socket, so release its order ticket
+					// before post-settlement store writes (`sentMessages.accept`) so later local sends never wait on them.
+					this.sendOrder.finish(ticket);
+					await this.answerExistingRow(request, recipient, digest, existing.row);
+					return;
+				}
+				this.sendOrder.markUnbounded(ticket);
 				await this.answerExistingRow(request, recipient, digest, existing.row);
-				if (
-					existing.row.state !== "delivered" &&
-					existing.row.state !== "failed" &&
-					recipient.hostBrokerId === this.brokerId
-				) {
+				if (recipient.hostBrokerId === this.brokerId) {
 					await Promise.race([this.scanIdentity(recipient.identity), expired]);
 				}
 				return;
 			}
 			const moved = await Promise.race([released, expired]);
-			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved, ticket))) return;
-			const decisionStartedAt = performance.now();
-			const sending = await this.adoptSharedRouteWithin(request, target);
-			if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-			if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
-			await this.waitForEarlierLocal(ticket, target, expired);
+			if (moved !== "expired" && moved !== undefined) {
+				this.sendOrder.markUnbounded(ticket);
+				if (await this.routeReleasedReply(request, moved, ticket)) return;
+			}
+			let sending = request;
+			if (request.message.replyTo !== undefined) {
+				if (!this.routedHere(request, target)) this.sendOrder.markUnbounded(ticket);
+				const decisionStartedAt = performance.now();
+				const adopted = await this.adoptSharedRouteWithin(request, target);
+				if (adopted === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+				if (await this.routeUnreachable(adopted, target, decisionStartedAt)) return;
+				sending = adopted;
+			}
+			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 			await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
 			await this.commitLocalNotFound(sending, ticket);
 		} finally {
@@ -4262,7 +4331,7 @@ export class MultiNodeRouter {
 			(await this.holdsSessionId(request.target, byAlias.atomicSessionId)) &&
 			(await this.aliasStillAnswers(byAlias, request.target))
 		)
-			return { ...byAlias, intercomSessionId: request.target };
+			return { ...byAlias, intercomSessionId: request.target, aliasSessionId: byAlias.intercomSessionId };
 		const replyAuthorized = await this.replyAuthorizedTargets(
 			request,
 			sessions.map((session) => session.intercomSessionId),
@@ -4312,12 +4381,7 @@ export class MultiNodeRouter {
 		request: RemoteSendRequest,
 		target: RemoteTarget,
 		ticket: SendOrderTicket,
-		remoteTarget?: {
-			readonly sessionId: string;
-			readonly name?: string;
-			readonly atomicSessionId?: string;
-			readonly aliases?: readonly string[];
-		},
+		targetMatch?: TargetMatchInfo,
 	): Promise<void> {
 		this.sendOrder.resolveTarget(ticket, target.identity);
 		const { message } = request;
@@ -4334,7 +4398,7 @@ export class MultiNodeRouter {
 		if (existing.status === "found") {
 			const wait = this.sendOrder.waitForEarlier(ticket, {
 				targetIdentity: target.identity,
-				...(remoteTarget === undefined ? {} : { remoteTarget }),
+				...(targetMatch === undefined ? {} : { targetMatch }),
 			});
 			if (wait !== undefined) await wait;
 			if (this.closed) return;
@@ -4346,7 +4410,7 @@ export class MultiNodeRouter {
 		if (answering === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
 		const wait = this.sendOrder.waitForEarlier(ticket, {
 			targetIdentity: target.identity,
-			...(remoteTarget === undefined ? {} : { remoteTarget }),
+			...(targetMatch === undefined ? {} : { targetMatch }),
 		});
 		if (wait !== undefined) await wait;
 		if (this.closed) return;
@@ -4703,7 +4767,11 @@ export class MultiNodeRouter {
 			return true;
 		}
 		const reservationTarget = `reservation:${reservation.reservationKey}`;
-		const wait = this.sendOrder.waitForEarlier(ticket, { targetIdentity: reservationTarget });
+		const reservationNames = [reservation.childName, ...reservation.targets];
+		const wait = this.sendOrder.waitForEarlier(ticket, {
+			targetIdentity: reservationTarget,
+			targetMatch: { names: reservationNames },
+		});
 		if (wait !== undefined) await wait;
 		if (this.closed) return true;
 		const listed = await this.state.heldSends.list(reservation.reservationKey);
@@ -5544,6 +5612,7 @@ export class MultiNodeRouter {
 		if (this.closed) return;
 		this.closed = true;
 		this.sendOrder.close();
+		this.localReplies.clear();
 		for (const initial of this.initialScans.values()) initial.resolve();
 		this.initialScans.clear();
 		for (const timer of this.timers) clearInterval(timer);
