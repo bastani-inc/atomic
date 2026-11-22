@@ -17,7 +17,7 @@ import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-
 import { ensureNamedWorktree } from "../../packages/subagents/src/runs/shared/named-worktree.js";
 import * as namedWorktreeGit from "../../packages/subagents/src/runs/shared/named-worktree-git.js";
 import * as worktreeGit from "../../packages/subagents/src/runs/shared/worktree.js";
-import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir, sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -207,6 +207,33 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+/** Longer than the add's wait for a sibling worktree's registration (one second), as its own Git commands take on a loaded machine. */
+const LOADED_GIT_COMMAND_MS = 1_200;
+
+test("an add retries another worktree's missing commondir however long its own Git commands take on a loaded machine (#5202)", async () => {
+	const repo = makeRepo();
+	const realAdd = namedWorktreeGit.addNamedWorktree;
+	const realRunGit = worktreeGit.runGit;
+	let attempts = 0;
+	vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation((cwd, args, env, signal) => {
+		if (++attempts === 1)
+			return Promise.resolve({
+				status: 128,
+				stdout: "",
+				stderr: "fatal: failed to read .git/worktrees/another-target/commondir: No error\n",
+			});
+		return realAdd(cwd, args, env, signal);
+	});
+	vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, env) => {
+		// The listing the retry makes first answers as late as a loaded machine's Git does.
+		if (attempts === 1 && args[0] === "worktree" && args[1] === "list") await sleep(LOADED_GIT_COMMAND_MS);
+		return realRunGit(cwd, args, env);
+	});
+	const created = await ensureNamedWorktree(repo, { branch: "feat/commondir-slow-git" });
+	assert.equal(attempts, 2);
+	assert.equal(git(created.path, "branch", "--show-current"), "feat/commondir-slow-git");
+});
 
 test("a persistent sibling commondir error stops within five adds and never retries a populated target (#5202)", async () => {
 	const repo = makeRepo();
