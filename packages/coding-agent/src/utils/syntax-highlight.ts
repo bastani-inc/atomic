@@ -217,7 +217,10 @@ async function runChunkedHighlightLoad(): Promise<void> {
 			while (registeredIndexCursor < batchEnd && hasLiveHighlightWaiter()) {
 				const { name, filePath } = entries[registeredIndexCursor]!;
 				registeredIndexCursor += 1;
-				if (core.getLanguage(name) === undefined) {
+				// Check registered primary language names rather than getLanguage(), so pre-registered
+				// overrides stay intact while aliases added by earlier chunks (e.g. handlebars -> htmlbars)
+				// do not suppress later built-in language modules.
+				if (!core.listLanguages().includes(name)) {
 					const mod = req(filePath) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
 					const factory = mod.default ?? mod;
 					core.registerLanguage(name, factory);

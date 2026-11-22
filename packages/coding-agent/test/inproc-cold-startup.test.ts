@@ -331,6 +331,8 @@ describe("in-process cold startup highlight scheduling and API prewarm", () => {
 			`fullDone = true;`,
 			`assert.ok(fullTurns >= 3, "expected chunked loadAllHighlightLanguages to yield across turns, got " + fullTurns);`,
 			`assert.equal(supportsLanguage("ada"), true, "ada must be registered after full load");`,
+			`assert.equal(supportsLanguage("htmlbars"), true, "htmlbars must be registered after full load");`,
+			`assert.equal(hljs.listLanguages().includes("htmlbars"), true, "htmlbars must not be skipped due to handlebars alias");`,
 			`assert.equal(supportsLanguage("zephir"), true, "zephir must be registered after full load");`,
 			`assert.ok(countAfterAbort < hljs.listLanguages().length, "abort must stop before loading every remaining language: " + countAfterAbort + " vs " + hljs.listLanguages().length);`,
 			`const pyHtml = highlight("custompyonly", { language: "python", theme: { keyword: (t) => "[kw:" + t + "]" } });`,
