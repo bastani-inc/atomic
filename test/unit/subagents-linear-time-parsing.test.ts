@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { describe, test } from "vitest";
 import { unwrapSubagentPrompt } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { isMutatingBashCommand } from "../../packages/subagents/src/runs/shared/long-running-guard.js";
+import { injectSingleOutputInstruction } from "../../packages/subagents/src/runs/shared/single-output.js";
+import {
+	buildTaskInstructions,
+	injectSingleProgressInstruction,
+} from "../../packages/subagents/src/shared/settings.js";
 import { extractOutputTarget } from "../../packages/subagents/src/tui/render-status-progress.js";
 
 const PATHOLOGICAL_REPETITIONS = 50_000;
@@ -139,9 +145,8 @@ describe("extractOutputTarget linear-time parsing", () => {
 				"[Write to: \r\n  out/report.md\r\n]",
 				undefined,
 			],
-			["nested brackets stop at first closing bracket", "[Write to: dir/[v1]/report.md]", "dir/[v1"],
-			["leading nested bracket inside target", "[Write to: [draft] out.md]", "[draft"],
 			["unmatched opening bracket before closing bracket", "[Write to: [draft/report.md]", "[draft/report.md"],
+			["trailing bracketed note does not bleed into target", "[Write to: out/report.md] [urgent]", "out/report.md"],
 			["earlier bracketed tag ignored", "Check [urgent] issue [Write to: notes/out.md]", "notes/out.md"],
 			["case variants on Write to", "[wRiTe To:\n  Mixed/Case.MD]", "Mixed/Case.MD"],
 			["uppercase Write to", "[WRITE TO: UPPER.MD]", "UPPER.MD"],
@@ -206,6 +211,67 @@ describe("extractOutputTarget linear-time parsing", () => {
 			assert.equal(extractOutputTarget(task), expected, `new mismatch: ${description}`);
 		}
 	});
+
+	test("round-trips real subagent output and progress producers including spaces, Windows paths, Unicode, and nested brackets", () => {
+		const paths = [
+			"out/report.md",
+			"/tmp/findings.md",
+			"/Users/Jane Doe/My Project/report.md",
+			"C:\\Users\\Jane Doe\\My Project\\report.md",
+			"app/users/[id]/report.md",
+			"C:\\work\\[v1]\\out.md",
+			"/tmp/r\u00e9sum\u00e9/\u65e5\u672c\u8a9e report.md",
+		];
+		const baseTasks = [
+			"Audit auth module.",
+			"Inspect \u0130stanbul parser.\nLine 2.",
+			"Check [urgent] ticket\r\nLine 2",
+		];
+		for (const baseTask of baseTasks) {
+			for (const outputPath of paths) {
+				const withOutput = injectSingleOutputInstruction(baseTask, outputPath);
+				assert.equal(extractOutputTarget(withOutput), outputPath, `single output extract: ${outputPath}`);
+				assert.equal(unwrapSubagentPrompt(withOutput), baseTask.trim(), `single output unwrap: ${outputPath}`);
+
+				const withProgressAndOutput = injectSingleOutputInstruction(
+					injectSingleProgressInstruction(baseTask, "/tmp/progress dir"),
+					outputPath,
+				);
+				assert.equal(
+					extractOutputTarget(withProgressAndOutput),
+					outputPath,
+					`stacked progress+output extract: ${outputPath}`,
+				);
+				assert.equal(
+					unwrapSubagentPrompt(withProgressAndOutput),
+					baseTask.trim(),
+					`stacked progress+output unwrap: ${outputPath}`,
+				);
+
+				const cwd = "/workspace/my repo";
+				const built = buildTaskInstructions(
+					{ output: outputPath, outputMode: "inline", reads: false, progress: true, skills: false },
+					cwd,
+					true,
+				);
+				const expectedBuiltPath = path.isAbsolute(outputPath) ? outputPath : path.join(cwd, outputPath);
+				assert.equal(
+					extractOutputTarget(`${built.prefix}${baseTask}${built.suffix}`),
+					expectedBuiltPath,
+					`buildTaskInstructions extract: ${outputPath}`,
+				);
+			}
+		}
+
+		// Balanced bracket paths inside [Write to: ...] extract intact without eating later bracketed tags
+		assert.equal(extractOutputTarget("[Write to: dir/[v1]/report.md] [note]"), "dir/[v1]/report.md");
+		assert.equal(extractOutputTarget("[Write to: [draft] out.md]"), "[draft] out.md");
+		assert.equal(unwrapSubagentPrompt("Inspect.\n\n[Write to: app/users/[id]/report.md]"), "Inspect.");
+		assert.equal(
+			unwrapSubagentPrompt("Inspect.\n\n[Write to: out.md] [keep]"),
+			"Inspect.\n\n[Write to: out.md] [keep]",
+		);
+	});
 });
 
 describe("unwrapSubagentPrompt linear-time parsing", () => {
@@ -260,9 +326,9 @@ describe("unwrapSubagentPrompt linear-time parsing", () => {
 			["Write to trailer uppercase with trailing whitespace", "Inspect.\n\n[WRITE TO: report.md]\n  ", "Inspect."],
 			["Write to trailer multi-line blank lines", "Inspect.\n\n[Write to:\n \nreport.md]", "Inspect."],
 			[
-				"Write to trailer with nested closing bracket kept",
-				"Inspect.\n\n[Write to: [a] b]",
-				"Inspect.\n\n[Write to: [a] b]",
+				"Write to trailer with unbalanced closing bracket kept",
+				"Inspect.\n\n[Write to: a] b]",
+				"Inspect.\n\n[Write to: a] b]",
 			],
 			["chained Write to trailers strip leftmost match", "Inspect.\n\n[Write to:\n\n[Write to: b]", "Inspect."],
 			[
@@ -309,10 +375,8 @@ describe("isMutatingBashCommand linear-time parsing", () => {
 
 	test("matches legacy classification across sed, perl, tee, and open edge cases", () => {
 		const table: readonly [command: string, expected: boolean][] = [
-			["sed -i", false],
 			["sed  -i", true],
 			["sed -e s/a/b/ -i f", true],
-			["sed\n-i", false],
 			["sed\n -i", true],
 			["sed \n-i", true],
 			["sed\n\n-i", true],
@@ -330,7 +394,6 @@ describe("isMutatingBashCommand linear-time parsing", () => {
 			["perl -e 1 -pi f", true],
 			["perl \n\n  -pi f", true],
 			["perl -e 1", false],
-			["perl -pi", false],
 			["perl  -pi", true],
 			["perl foo perl \n-pi", true],
 			["echo hi | tee out.txt", true],
@@ -351,6 +414,30 @@ describe("isMutatingBashCommand linear-time parsing", () => {
 		for (const [command, expected] of table) {
 			assert.equal(legacyIsMutatingBashCommand(command), expected, `oracle mismatch: ${JSON.stringify(command)}`);
 			assert.equal(isMutatingBashCommand(command), expected, `new mismatch: ${JSON.stringify(command)}`);
+		}
+	});
+
+	test("flags real single-space in-place sed/perl edits and Python open write modes", () => {
+		for (const command of [
+			"sed -i 's/foo/bar/g' file.txt",
+			"sed -i '' 's/foo/bar/' file.txt",
+			"sed -i.bak 's/foo/bar/' file.txt",
+			"sed\n-i 's/foo/bar/' file.txt",
+			"perl -pi -e 's/foo/bar/' file.txt",
+			"perl -pi.bak -e 's/foo/bar/' file.txt",
+			"python3 -c \"open('out.txt', mode='w').write('x')\"",
+			'python3 -c \'open("out.txt", mode = "a")\'',
+			"python3 -c \"open(os.path.join(d, 'f'), 'w')\"",
+		]) {
+			assert.equal(isMutatingBashCommand(command), true, command);
+		}
+		for (const command of [
+			"sed -info file.txt",
+			"perl -pipe -e 1",
+			"python3 -c \"open('out.txt', mode='r')\"",
+			"python3 -c \"open(os.path.join(d, 'f'), 'r')\"",
+		]) {
+			assert.equal(isMutatingBashCommand(command), false, command);
 		}
 	});
 });

@@ -4,6 +4,7 @@ const PROGRESS_TRAILER_LABELS = [
 	"Create and maintain progress at:",
 	"Update progress at:",
 	"Write your findings to:",
+	"**Output:** Write your findings to:",
 ] as const;
 const WRITE_TO_PREFIX_LOWER = "[write to:";
 
@@ -101,7 +102,7 @@ function matchProgressTrailerLabel(text: string, lineStart: number, lineEnd: num
 	return -1;
 }
 
-function stripTrailingProgressTrailer(text: string): string {
+function stripSingleTrailingProgressTrailer(text: string): string {
 	if (text.length === 0 || text.charCodeAt(text.length - 1) === 0x0a) return text;
 	const prefixLen = PROGRESS_TRAILER_PREFIX.length;
 	const lastNl = text.lastIndexOf("\n");
@@ -133,6 +134,28 @@ function stripTrailingProgressTrailer(text: string): string {
 	return text;
 }
 
+function stripTrailingProgressTrailer(text: string): string {
+	let current = text;
+	while (true) {
+		const next = stripSingleTrailingProgressTrailer(current);
+		if (next.length === current.length) return current;
+		current = next;
+	}
+}
+
+function hasBalancedInnerBrackets(text: string, start: number, closeIdx: number): boolean {
+	let depth = 1;
+	for (let i = start; i < closeIdx; i++) {
+		const code = text.charCodeAt(i);
+		if (code === 0x5b) depth++;
+		else if (code === 0x5d) {
+			depth--;
+			if (depth <= 0) return false;
+		}
+	}
+	return depth === 1;
+}
+
 function stripTrailingWriteToTrailer(text: string): string {
 	let end = text.length;
 	while (end > 0 && isJsWhitespace(text.charCodeAt(end - 1))) {
@@ -141,10 +164,11 @@ function stripTrailingWriteToTrailer(text: string): string {
 	if (end === 0 || text.charCodeAt(end - 1) !== 0x5d) return text;
 	const closeIdx = end - 1;
 	let k = closeIdx - 1;
+	let sawInnerClose = false;
 	while (k >= 0) {
 		const code = text.charCodeAt(k);
 		if (code === 0x0a) break;
-		if (code === 0x5d) return text;
+		if (code === 0x5d) sawInnerClose = true;
 		k--;
 	}
 	const prevNl = k;
@@ -152,24 +176,26 @@ function stripTrailingWriteToTrailer(text: string): string {
 	if (lineStart === closeIdx) return text;
 
 	// Check an earlier `\n\n[Write to:` separated by blank lines first so the leftmost match wins.
-	let lineEnd = prevNl;
-	while (lineEnd >= 0) {
-		const earlierNl = lineEnd > 0 ? text.lastIndexOf("\n", lineEnd - 1) : -1;
-		const earlierStart = earlierNl + 1;
-		if (isAllHorizontalWhitespace(text, earlierStart, lineEnd)) {
-			lineEnd = earlierNl;
-			continue;
+	if (!sawInnerClose || hasBalancedInnerBrackets(text, lineStart, closeIdx)) {
+		let lineEnd = prevNl;
+		while (lineEnd >= 0) {
+			const earlierNl = lineEnd > 0 ? text.lastIndexOf("\n", lineEnd - 1) : -1;
+			const earlierStart = earlierNl + 1;
+			if (isAllHorizontalWhitespace(text, earlierStart, lineEnd)) {
+				lineEnd = earlierNl;
+				continue;
+			}
+			if (
+				earlierStart >= 2 &&
+				text.charCodeAt(earlierStart - 2) === 0x0a &&
+				text.charCodeAt(earlierStart - 1) === 0x0a &&
+				matchesAsciiCaseInsensitiveAt(text, WRITE_TO_PREFIX_LOWER, earlierStart) &&
+				isAllHorizontalWhitespace(text, earlierStart + WRITE_TO_PREFIX_LOWER.length, lineEnd)
+			) {
+				return text.slice(0, earlierStart - 2);
+			}
+			break;
 		}
-		if (
-			earlierStart >= 2 &&
-			text.charCodeAt(earlierStart - 2) === 0x0a &&
-			text.charCodeAt(earlierStart - 1) === 0x0a &&
-			matchesAsciiCaseInsensitiveAt(text, WRITE_TO_PREFIX_LOWER, earlierStart) &&
-			isAllHorizontalWhitespace(text, earlierStart + WRITE_TO_PREFIX_LOWER.length, lineEnd)
-		) {
-			return text.slice(0, earlierStart - 2);
-		}
-		break;
 	}
 
 	if (
@@ -177,7 +203,8 @@ function stripTrailingWriteToTrailer(text: string): string {
 		text.charCodeAt(lineStart - 2) === 0x0a &&
 		text.charCodeAt(lineStart - 1) === 0x0a &&
 		matchesAsciiCaseInsensitiveAt(text, WRITE_TO_PREFIX_LOWER, lineStart) &&
-		lineStart + WRITE_TO_PREFIX_LOWER.length < closeIdx
+		lineStart + WRITE_TO_PREFIX_LOWER.length < closeIdx &&
+		(!sawInnerClose || hasBalancedInnerBrackets(text, lineStart + WRITE_TO_PREFIX_LOWER.length, closeIdx))
 	) {
 		return text.slice(0, lineStart - 2);
 	}

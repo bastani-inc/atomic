@@ -74,7 +74,7 @@ function hasInPlaceCommandFlag(command: string, cmd: string, flag: string): bool
 		}
 		const afterWs = afterCmd + 1;
 		const i = skipHorizontalWhitespaceLines(command, afterWs);
-		if (i > afterWs && matchesFlagWordAt(command, flag, i)) {
+		if (matchesFlagWordAt(command, flag, i)) {
 			return true;
 		}
 		if (i >= command.length) return false;
@@ -147,13 +147,32 @@ function hasOpenWriteMode(command: string): boolean {
 			continue;
 		}
 		let j = paren + 1;
+		let depth = 1;
 		while (j < command.length) {
 			const code = command.charCodeAt(j);
-			if (code === 0x29) break;
-			if (code === 0x2c) {
+			if (code === 0x28) {
+				depth++;
+			} else if (code === 0x29) {
+				depth--;
+				if (depth === 0) break;
+			} else if (code === 0x2c) {
 				let ws = j + 1;
 				while (ws < command.length && isJsWhitespace(command.charCodeAt(ws))) {
 					ws++;
+				}
+				if (command.startsWith("mode", ws)) {
+					let eq = ws + 4;
+					while (eq < command.length && isJsWhitespace(command.charCodeAt(eq))) {
+						eq++;
+					}
+					if (eq < command.length && command.charCodeAt(eq) === 0x3d) {
+						ws = eq + 1;
+						while (ws < command.length && isJsWhitespace(command.charCodeAt(ws))) {
+							ws++;
+						}
+					} else {
+						ws = eq;
+					}
 				}
 				if (ws + 1 < command.length) {
 					const quote = command.charCodeAt(ws);

@@ -14,6 +14,7 @@ import { getTermWidth, type Theme } from "./render-layout.js";
 
 const WRITE_TO_PREFIX = "[write to:";
 const WRITE_FINDINGS_PREFIX = "write your findings to:";
+const SINGLE_OUTPUT_TRAILER_PREFIX = "\n\n---\n**Output:** ";
 const OUTPUT_LABEL_PREFIX = "output";
 
 function matchWriteToTarget(task: string): string | undefined {
@@ -29,17 +30,31 @@ function matchWriteToTarget(task: string): string | undefined {
 			continue;
 		}
 		let k = i;
+		let depth = 1;
+		let firstClose = -1;
+		let balancedClose = -1;
 		while (k < task.length) {
 			const code = task.charCodeAt(k);
-			if (code === 0x5d || code === 0x0a) break;
+			if (code === 0x0a) break;
+			if (code === 0x5b) {
+				depth++;
+			} else if (code === 0x5d) {
+				if (firstClose === -1) firstClose = k;
+				depth--;
+				if (depth === 0) {
+					balancedClose = k;
+					break;
+				}
+			}
 			k++;
 		}
-		if (k < task.length && task.charCodeAt(k) === 0x5d) {
-			if (k > i) {
-				const trimmed = task.slice(i, k).trim();
+		const closeIdx = balancedClose !== -1 ? balancedClose : firstClose;
+		if (closeIdx !== -1) {
+			if (closeIdx > i) {
+				const trimmed = task.slice(i, closeIdx).trim();
 				return trimmed || undefined;
 			}
-			searchFrom = k + 1;
+			searchFrom = closeIdx + 1;
 		} else {
 			checkedEnd = k;
 			searchFrom = i;
@@ -64,7 +79,18 @@ function scanNonWhitespaceToken(text: string, start: number): string | undefined
 function matchWriteFindingsTarget(task: string): string | undefined {
 	const pos = findAsciiCaseInsensitive(task, WRITE_FINDINGS_PREFIX, 0);
 	if (pos === -1) return undefined;
-	return scanNonWhitespaceToken(task, pos + WRITE_FINDINGS_PREFIX.length);
+	const afterPrefix = pos + WRITE_FINDINGS_PREFIX.length;
+	// The single-output producer appends `\n\n---\n**Output:** Write your findings to: <path>` on its own line;
+	// keep the full line so paths with spaces (such as Windows drive paths) are not truncated at the first space.
+	if (
+		pos >= SINGLE_OUTPUT_TRAILER_PREFIX.length &&
+		task.startsWith(SINGLE_OUTPUT_TRAILER_PREFIX, pos - SINGLE_OUTPUT_TRAILER_PREFIX.length)
+	) {
+		const nlIdx = task.indexOf("\n", afterPrefix);
+		const lineTarget = task.slice(afterPrefix, nlIdx === -1 ? task.length : nlIdx).trim();
+		if (lineTarget) return lineTarget;
+	}
+	return scanNonWhitespaceToken(task, afterPrefix);
 }
 
 function matchOutputLabelTarget(task: string): string | undefined {
