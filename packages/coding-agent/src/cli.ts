@@ -14,6 +14,7 @@ import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecy
 import { engineHeapRuntimeArgsForHost } from "./modes/interactive-engine/engine-heap.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import {
+	COMPILE_CACHE_ENGINE_MATCH_HOST_ENV,
 	COMPILE_CACHE_ENGINE_WARMUP_ENV,
 	compileCacheDeferral,
 	enablePersistentCompileCache,
@@ -37,21 +38,22 @@ markLifecycleTiming("process-entry");
 const args = process.argv.slice(2);
 // A prewarmed engine child loads the application now and learns its arguments from its host afterwards.
 const prewarmedEngine = args[0] === INTERACTIVE_ENGINE_PREWARM_FLAG;
+const engineChild = prewarmedEngine || hasInteractiveEngineBootstrapArg(args);
 const terminal = { stdinIsTTY: process.stdin.isTTY === true, stdoutIsTTY: process.stdout.isTTY === true };
 
 const engineCacheWarmedByHost = process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV] === "1";
 delete process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV];
+const engineMatchHostCache = process.env[COMPILE_CACHE_ENGINE_MATCH_HOST_ENV] === "1";
+delete process.env[COMPILE_CACHE_ENGINE_MATCH_HOST_ENV];
 // An interactive session, and the engine of one that warms the engine's cache, leave a cold compile cache to a helper
-// instead of writing it when they exit.
+// instead of writing it when they exit. An auto-sized engine also aligns its Node 22 cache tag with the untouched host.
 enablePersistentCompileCache({
-	interactive:
-		prewarmedEngine || hasInteractiveEngineBootstrapArg(args)
-			? engineCacheWarmedByHost
-			: isPlainInteractiveSessionInvocation(args, terminal),
+	interactive: engineChild ? engineCacheWarmedByHost : isPlainInteractiveSessionInvocation(args, terminal),
 	build: VERSION,
+	matchHostTag: engineChild && engineMatchHostCache,
 });
 // A session that ends before it starts its compile-cache helpers starts them as it exits; they outlive it.
-if (compileCacheDeferral() && !prewarmedEngine && !hasInteractiveEngineBootstrapArg(args)) {
+if (compileCacheDeferral() && !engineChild) {
 	process.once("exit", () => warmCompileCache(engineHeapRuntimeArgsForHost(true)));
 }
 
@@ -129,10 +131,15 @@ if (heapArgs.length > 0) {
 			// A prewarmed child asked to write its compile cache does it once loaded, while it waits for its host, and not
 			// once its host has taken it over: then it starts its session at once and writes the cache as it exits.
 			if (prewarmedEngine)
-				void Promise.all([loaded, prewarm!]).then(([, module]) => {
+				void Promise.all([loaded, prewarm!]).then(([[, mainModule], module]) => {
 					const flag = (module as { INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG?: string })
 						.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
 					if (!adopted && flag !== undefined && args.includes(flag)) flushPersistentCompileCache();
+					if (!adopted) {
+						const prewarmApi = (mainModule as { prewarmDefaultModelApi?: () => Promise<void> })
+							.prewarmDefaultModelApi;
+						if (typeof prewarmApi === "function") void prewarmApi().catch(() => {});
+					}
 				});
 			return Promise.all([loaded, mainArgs]);
 		})

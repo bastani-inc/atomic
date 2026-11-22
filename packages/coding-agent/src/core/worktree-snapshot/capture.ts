@@ -349,12 +349,19 @@ async function indexSeedOf(userIndexPath: string): Promise<IndexSeed | null> {
  * What is recorded next to a private index: the seed it was built from and the hash of its bytes. The record is written
  * after the index, by whichever capture renamed it, so it vouches only for the exact index it names: a crash between
  * the two writes, or captures in two processes renaming over each other, leave a record whose hash the index file no
- * longer has, and the next capture reseeds.
+ * longer has, and the next capture reseeds. Releases before `pristine` kept the files a capture added in the index, and
+ * read HEAD's tree into it again in every capture; they ignore the two fields, and their records have neither.
  */
 interface IndexRecord {
 	readonly version: number;
 	readonly seed: IndexSeed | null;
 	readonly index: string;
+	/** The commit whose tree the index holds, with no file a capture added: a capture of that HEAD reads it as is. */
+	readonly pristine?: string;
+	/** The tree `write-tree` gives for that index, once a capture learned it. */
+	readonly tree?: string;
+	/** Whether that index holds a submodule, once a capture read it. */
+	readonly submodules?: boolean;
 }
 
 /** The record next to `index`, when it is of this version; anything else reads as none. */
@@ -415,11 +422,12 @@ async function captureIndexOf(checkout: Checkout, storeDir: string, signal?: Abo
 }
 
 /**
- * {@link writeWorkingTree} for a capture, through the private index `capture.index` kept between captures. Its entries
- * keep the file times of the last capture's refresh, so unchanged files are not read again; it is reseeded from the
- * user's index whenever that changed. Any failure with it, such as a corrupt or truncated file, removes it and
- * captures as {@link writeWorkingTree} does: the tree is always computed from the working files. Runs in the index's
- * turn ({@link inTurn}).
+ * {@link writeWorkingTree} for a capture, through the private index `capture.index` kept between captures as the tree
+ * of HEAD alone ({@link writeScannedTree}). Its entries keep the file times of the last capture's refresh, so unchanged
+ * files are not read again; it is reseeded from the user's index whenever that changed, and reads HEAD's tree again
+ * when HEAD moved. Any failure with it, such as a corrupt or truncated file, removes it and captures as
+ * {@link writeWorkingTree} does: the tree is always computed from the working files. Runs in the index's turn
+ * ({@link inTurn}).
  */
 async function writeCapturedTree(
 	checkout: Checkout,
@@ -435,6 +443,8 @@ async function writeCapturedTree(
 	if (!(await usableOutside(root, index))) return writeWorkingTree(checkout, settings, policy, scratch, options);
 	const working = `${index}.${process.pid}.tmp`;
 	try {
+		// A lock a killed Git left on the working copy fails Git's writes to it: capture without it, which removes it.
+		if (await pathExists(`${working}.lock`)) throw new Error(`${working} is locked`);
 		const seed = await indexSeedOf(userIndexPath);
 		await mkdir(dirname(index), { recursive: true });
 		const record = await recordOf(index);
@@ -444,14 +454,25 @@ async function writeCapturedTree(
 			await rm(working, { force: true });
 			await seedFromUserIndex(userIndexPath, working);
 		}
-		const state = await writeTreeThrough(working, checkout, settings, policy, options, {
-			refresh: true,
-			forceAdded: () => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
-		});
+		// The copy has the recorded bytes: it is HEAD's tree alone when the record says so for this HEAD.
+		const pristine = !reseed && record?.pristine === checkout.head;
+		const { state, headTree, submodules } = await writeScannedTree(
+			working,
+			checkout,
+			settings,
+			policy,
+			scratch,
+			{ pristine, tree: pristine ? record?.tree : undefined, submodules: pristine ? record?.submodules : undefined },
+			() => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
+			signal,
+		);
 		const written: IndexRecord = {
 			version: CAPTURE_INDEX_VERSION,
 			seed,
 			index: sha256Hex(await readFile(working)),
+			pristine: checkout.head,
+			...(headTree === undefined ? {} : { tree: headTree }),
+			...(submodules === undefined ? {} : { submodules }),
 		};
 		await renameWithRetry(working, index, { signal });
 		await writeAtomically(`${index}.json`, JSON.stringify(written));
@@ -612,14 +633,61 @@ async function ignoredStagedOutsideSeed(
 }
 
 /**
- * The files staged as additions to HEAD in each user's index this process listed, by index path: the hash of the
- * index's bytes and the HEAD they were listed against, the listing, which follows from those two alone, and whether it
- * holds a submodule.
+ * The files staged as additions to HEAD in the user's indexes this process listed last, by index path: the index's
+ * bytes ({@link stagedAdditionsKey}) and the HEAD they were listed against, the listing, which follows from those two
+ * alone, and whether it holds a submodule. At most {@link STAGED_ADDITIONS_INDEXES} indexes, the one listed or used
+ * longest ago dropped first, and only listings of at most {@link STAGED_ADDITIONS_KEPT} files.
  */
 const stagedAdditions = new Map<
 	string,
 	{ readonly key: string; readonly added: readonly string[]; readonly submodules: boolean }
 >();
+
+/** The most user indexes whose staged additions a process keeps. */
+const STAGED_ADDITIONS_INDEXES = 16;
+/** The most staged additions a process keeps for one index: a longer listing is made again by each capture. */
+const STAGED_ADDITIONS_KEPT = 4096;
+
+/**
+ * What a listing of the staged additions of the index with these `size` and last `oidBytes` bytes (`trailer`), or all
+ * of whose `bytes` were read, is kept for, against HEAD `head`. Git ends an index with the hash of all the bytes before
+ * it, so its size and that hash change with any of them; an index without one (`index.skipHash` writes zeros) is
+ * known by the hash of all its bytes instead, and undefined says those must be read.
+ */
+function stagedAdditionsKey(
+	head: string,
+	index: { readonly size: number; readonly trailer: Buffer } | { readonly bytes: Buffer } | null,
+): string | undefined {
+	if (index === null) return `none\0${head}`;
+	const trailer = "bytes" in index ? index.bytes.subarray(-objectIdBytes(head)) : index.trailer;
+	const size = "bytes" in index ? index.bytes.byteLength : index.size;
+	if (size > trailer.byteLength && trailer.some((byte) => byte !== 0)) {
+		return `${size}\0${trailer.toString("hex")}\0${head}`;
+	}
+	return "bytes" in index ? `${sha256Hex(index.bytes)}\0${head}` : undefined;
+}
+
+/** The size and last `length` bytes of the file at `path`, read through one handle; null when there is none. */
+async function fileTrailer(
+	path: string,
+	length: number,
+): Promise<{ readonly size: number; readonly trailer: Buffer } | null> {
+	let file: FileHandle;
+	try {
+		file = await open(path, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw unreadablePathError(path, error);
+	}
+	try {
+		const { size } = await file.stat();
+		const trailer = Buffer.alloc(Math.min(size, length));
+		await file.read(trailer, 0, trailer.byteLength, size - trailer.byteLength);
+		return { size, trailer };
+	} finally {
+		await file.close();
+	}
+}
 
 /** The command that lists the files staged in an index as additions to `head`. */
 function stagedAdditionsCommand(head: string, raw: boolean): string[] {
@@ -637,9 +705,10 @@ function stagedAdditionsCommand(head: string, raw: boolean): string[] {
 /**
  * Files staged in the user's index at `userIndexPath` as additions to HEAD that an ignore rule matches (`git add -f`):
  * the staged additions, then the ignore rules on those paths alone. The additions are listed again only when the
- * index's bytes or HEAD changed since the last listing, and then from a copy, in `scratch`, of exactly the bytes the
- * listing is kept for: the user's index can change meanwhile. Whether Git lists a staged submodule follows its
- * `ignore` setting, which the index does not hold, so while the index stages one the additions are listed every time.
+ * index's bytes or HEAD changed since the last listing ({@link stagedAdditionsKey}: the index's last bytes, read
+ * alone, tell), and then from a copy, in `scratch`, of exactly the bytes the listing is kept for: the user's index can
+ * change meanwhile. Whether Git lists a staged submodule follows its `ignore` setting, which the index does not hold,
+ * so while the index stages one the additions are listed every time.
  */
 async function ignoredAdditionsToHead(
 	checkout: Checkout,
@@ -648,16 +717,29 @@ async function ignoredAdditionsToHead(
 	signal?: AbortSignal,
 ): Promise<string[]> {
 	const { root, head } = checkout;
-	let bytes: Buffer | null;
-	try {
-		bytes = await readFile(userIndexPath);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
-		bytes = null;
+	const readBytes = async (): Promise<Buffer | null> => {
+		try {
+			return await readFile(userIndexPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+			return null;
+		}
+	};
+	let bytes: Buffer | null | undefined;
+	let key = stagedAdditionsKey(head, await fileTrailer(userIndexPath, objectIdBytes(head)));
+	if (key === undefined) {
+		bytes = await readBytes();
+		key = stagedAdditionsKey(head, bytes === null ? null : { bytes });
 	}
-	const key = `${bytes === null ? "none" : sha256Hex(bytes)}\0${head}`;
 	let listed = stagedAdditions.get(userIndexPath);
-	if (listed?.key !== key) {
+	if (listed !== undefined && listed.key === key) {
+		// Used now: the index listed or used longest ago is the one dropped.
+		stagedAdditions.delete(userIndexPath);
+		stagedAdditions.set(userIndexPath, listed);
+	} else {
+		// The listing is kept for the bytes it is made from, which can be newer than the last bytes read above.
+		if (bytes === undefined) bytes = await readBytes();
+		const listedKey = stagedAdditionsKey(head, bytes === null ? null : { bytes })!;
 		// A checkout without an index lists from an absent copy, as Git lists from its absent index: nothing.
 		const copy = join(scratch, "user-index");
 		if (bytes !== null) await writeFile(copy, bytes);
@@ -672,8 +754,15 @@ async function ignoredAdditionsToHead(
 			if (fields[index]!.slice(1).split(" ")[1] === "160000") submodules = true;
 			added.push(fields[index + 1]!);
 		}
-		listed = { key, added, submodules };
-		stagedAdditions.set(userIndexPath, listed);
+		listed = { key: listedKey, added, submodules };
+		stagedAdditions.delete(userIndexPath);
+		if (added.length <= STAGED_ADDITIONS_KEPT) {
+			stagedAdditions.set(userIndexPath, listed);
+			for (const kept of stagedAdditions.keys()) {
+				if (stagedAdditions.size <= STAGED_ADDITIONS_INDEXES) break;
+				stagedAdditions.delete(kept);
+			}
+		}
 	}
 	const added = listed.submodules
 		? nulFields((await runGit(stagedAdditionsCommand(head, false), { cwd: root, signal })).stdout)
@@ -717,7 +806,35 @@ async function writeTreeThrough(
 		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout),
 		...forceAdded,
 	];
-	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
+	const { admitted, omitted } = await admittedFiles(root, changed, untracked, settings, policy);
+	if (options.seedTree !== undefined && omitted.length > 0) {
+		await runGit(["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", checkout.head], {
+			...git,
+			env: { ...git.env, GIT_LITERAL_PATHSPECS: "1" },
+			input: `${omitted.map((omission) => omission.path).join("\0")}\0`,
+		});
+	}
+	if (admitted.length > 0) {
+		await runGit([...config, "update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
+			...git,
+			input: `${admitted.join("\0")}\0`,
+		});
+	}
+	return { tree: await gitText(["write-tree"], git), omitted };
+}
+
+/**
+ * Which of the files that differ from HEAD (`changed`) and the untracked ones (`untracked`) a snapshot records
+ * (`admitted`), in path order, and which it leaves out and why: the policy, the settings, then the size caps.
+ */
+async function admittedFiles(
+	root: string,
+	changed: readonly string[],
+	untracked: readonly string[],
+	settings: WorktreeSnapshotSettings,
+	policy: SnapshotPathPolicy,
+): Promise<{ readonly admitted: string[]; readonly omitted: PathOmission[] }> {
+	const omitted: PathOmission[] = [];
 	const admitted: string[] = [];
 	let total = 0;
 	const candidates = [
@@ -750,20 +867,165 @@ async function writeTreeThrough(
 		total += bytes;
 		admitted.push(path);
 	}
-	if (options.seedTree !== undefined && omitted.length > 0) {
-		await runGit(["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", checkout.head], {
-			...git,
-			env: { ...git.env, GIT_LITERAL_PATHSPECS: "1" },
-			input: `${omitted.map((omission) => omission.path).join("\0")}\0`,
-		});
+	return { admitted, omitted };
+}
+
+/**
+ * The settings and arguments of the `status` that lists, through a private index holding HEAD's tree, the files that
+ * differ from it and the untracked ones, as `update-index --refresh`, `diff-files` and `ls-files --others
+ * --exclude-standard` list them, apart from submodules: the untracked cache, which `ls-files` does not read, is not
+ * used, and submodules are not looked into at all, so `status` starts no Git process in a submodule's repository, where
+ * its settings and optional locks would reach (`diff-files` lists submodules: {@link writeScannedTree}).
+ */
+const SCAN_COMMAND = [
+	"-c",
+	"core.untrackedCache=false",
+	"status",
+	"--porcelain=v2",
+	"-z",
+	"--untracked-files=all",
+	"--no-renames",
+	"--ignore-submodules=all",
+];
+
+/**
+ * The files that differ from the private index `git` names, which holds HEAD's tree, and the untracked ones, from one
+ * `status` that also refreshes the index's file times. `askDiffFiles`: it listed an entry other than a changed or an
+ * untracked file, such as an unmerged one, so `diff-files` lists the changed files.
+ */
+async function scanWorkingFiles(
+	git: GitRunOptions,
+): Promise<{ readonly changed: string[]; readonly untracked: string[]; readonly askDiffFiles: boolean }> {
+	// The refreshed times are written back, as `update-index --refresh` writes them, even where optional locks are off.
+	const { stdout } = await runGit(SCAN_COMMAND, { ...git, env: { ...git.env, GIT_OPTIONAL_LOCKS: "1" } });
+	const fields = nulFields(stdout);
+	const changed: string[] = [];
+	const untracked: string[] = [];
+	let askDiffFiles = false;
+	for (let index = 0; index < fields.length; index++) {
+		const field = fields[index]!;
+		if (field.startsWith("? ")) {
+			untracked.push(field.slice(2));
+		} else if (field.startsWith("1 ")) {
+			// `1 XY sub mH mI mW hH hI path`: Y is the file against the index.
+			if (field[3] !== ".") changed.push(field.split(" ").slice(8).join(" "));
+		} else {
+			// A rename (with its original path next), an unmerged path or anything else: not one of HEAD's files alone.
+			askDiffFiles = true;
+			if (field.startsWith("2 ")) index++;
+		}
 	}
-	if (admitted.length > 0) {
-		await runGit([...config, "update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
-			...git,
-			input: `${admitted.join("\0")}\0`,
-		});
+	return { changed, untracked, askDiffFiles };
+}
+
+/** The number of bytes of an object id of the repository whose HEAD commit is `head`, as Git writes it in an index. */
+function objectIdBytes(head: string): number {
+	return head.length / 2;
+}
+
+/**
+ * Whether the Git index `bytes`, with object ids of `oidBytes` bytes, holds a submodule (an entry of mode 160000), read
+ * from its entries in index versions 2 to 4. Undefined when its bytes cannot be read that way, such as an index split
+ * into a shared file that holds most of its entries.
+ */
+function indexHoldsSubmodule(bytes: Uint8Array, oidBytes: number): boolean | undefined {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	// The entries and extensions end where the checksum of the whole file starts.
+	const end = bytes.byteLength - oidBytes;
+	if (end < 12 || view.getUint32(0) !== 0x44495243) return undefined;
+	const version = view.getUint32(4);
+	if (version < 2 || version > 4) return undefined;
+	let submodule = false;
+	let offset = 12;
+	for (let entry = view.getUint32(8); entry > 0; entry--) {
+		// Ten 32-bit fields (times, device, inode, mode, owner, size), the object id, then 16-bit flags.
+		const flags = offset + 40 + oidBytes;
+		if (flags + 2 > end) return undefined;
+		if ((view.getUint32(offset + 24) & 0o170000) === 0o160000) submodule = true;
+		const extended = (view.getUint16(flags) & 0x4000) !== 0;
+		if (extended && version < 3) return undefined;
+		let name = flags + 2 + (extended ? 2 : 0);
+		if (version === 4) {
+			// How much of the previous entry's name this one keeps, as a variable-length number, then the rest of it.
+			do {
+				if (name >= end) return undefined;
+			} while ((bytes[name++]! & 0x80) !== 0);
+		}
+		const nul = bytes.indexOf(0, name);
+		if (nul < 0 || nul >= end) return undefined;
+		// Versions 2 and 3 pad each entry with NULs to a multiple of 8 bytes; version 4 does not pad.
+		offset = version === 4 ? nul + 1 : offset + ((nul - offset + 8) & ~7);
 	}
-	return { tree: await gitText(["write-tree"], git), omitted };
+	while (offset + 8 <= end) {
+		// A split index (`link`) keeps the rest of its entries in a shared index.
+		if (String.fromCharCode(...bytes.subarray(offset, offset + 4)) === "link") return undefined;
+		offset += 8 + view.getUint32(offset + 4);
+	}
+	return offset === end ? submodule : undefined;
+}
+
+/**
+ * The tree of a capture's working files through the private index `index`, kept between captures as HEAD's tree alone,
+ * refreshed: `pristine` says it already is HEAD's tree, so it is not read again, `tree` is the tree it gives when
+ * known, and `submodules` whether it holds one, when known. One `status` lists the files that differ from it and the
+ * untracked ones ({@link scanWorkingFiles}); where the index holds a submodule, or may, `update-index --refresh` and
+ * `diff-files` list the changed files, submodules included, as before. The files the snapshot records go into a copy,
+ * in `scratch`, so `index` stays HEAD's tree. Records exactly the tree and omissions {@link writeTreeThrough} records
+ * with a refresh and the files staged despite an ignore rule. Resolves the tree `index` gives and whether it holds a
+ * submodule, when this capture learned them.
+ */
+async function writeScannedTree(
+	index: string,
+	checkout: Checkout,
+	settings: WorktreeSnapshotSettings,
+	policy: SnapshotPathPolicy,
+	scratch: string,
+	known: { readonly pristine: boolean; readonly tree: string | undefined; readonly submodules: boolean | undefined },
+	forceAdded: () => Promise<string[]>,
+	signal?: AbortSignal,
+): Promise<{
+	readonly state: WorkingTreeState;
+	readonly headTree: string | undefined;
+	readonly submodules: boolean | undefined;
+}> {
+	const { root } = checkout;
+	const git: GitRunOptions = { cwd: root, env: { GIT_INDEX_FILE: index }, signal };
+	if (!known.pristine) await runGit(["read-tree", "--reset", checkout.head], git);
+	// The index holds HEAD's tree now: whether it holds a submodule follows from its entries.
+	const submodules =
+		(known.pristine ? known.submodules : undefined) ??
+		indexHoldsSubmodule(await readFile(index), objectIdBytes(checkout.head));
+	const scan = await scanWorkingFiles(git);
+	let { changed } = scan;
+	if (scan.askDiffFiles || submodules !== false) {
+		await runGit(["update-index", "-q", "--refresh"], { ...git, allowExitCodes: [1] });
+		changed = nulFields((await runGit(["diff-files", "-z", "--name-only", "--no-renames"], git)).stdout);
+	}
+	const untracked = [...scan.untracked, ...(await forceAdded())];
+	const { admitted, omitted } = await admittedFiles(root, changed, untracked, settings, policy);
+	const headTree = known.pristine ? known.tree : undefined;
+	if (admitted.length === 0) {
+		const tree = headTree ?? (await gitText(["write-tree"], git));
+		return { state: { tree, omitted }, headTree: tree, submodules };
+	}
+	const recorded = join(scratch, "capture-index");
+	await copyWithTimes(index, recorded);
+	const files: GitRunOptions = { ...git, env: { GIT_INDEX_FILE: recorded } };
+	await runGit(["update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
+		...files,
+		input: `${admitted.join("\0")}\0`,
+	});
+	return { state: { tree: await gitText(["write-tree"], files), omitted }, headTree, submodules };
+}
+
+/**
+ * Copies `from` to `to` with `from`'s times: Git trusts an index entry's file times only when they are older than the
+ * index file's, so a copy must not look newer than the index it copies.
+ */
+async function copyWithTimes(from: string, to: string): Promise<void> {
+	await copyFile(from, to);
+	const { atime, mtimeMs } = await stat(from);
+	await utimes(to, atime, new Date(mtimeMs));
 }
 
 /**
@@ -911,14 +1173,30 @@ interface RepositoryConfig {
 	readonly remotes: string[];
 	readonly autocrlf: string | null;
 	readonly eol: string | null;
+	/**
+	 * The settings Git packs a bundle with, as a hash: `pack.*` (such as `pack.compression` or `pack.window`),
+	 * `core.compression` and `core.bigFileThreshold`. They change a bundle's size without changing the packs.
+	 */
+	readonly packing: string;
+}
+
+/** Whether the setting `key`, as `git config` names it, is one Git packs a bundle with. */
+function isPackingSetting(key: string): boolean {
+	return key.startsWith("pack.") || key === "core.compression" || key === "core.bigfilethreshold";
 }
 
 export async function readRepositoryConfig(root: string, signal?: AbortSignal): Promise<RepositoryConfig> {
 	const { stdout } = await runGit(
-		["config", "-z", "--get-regexp", "^(remote\\..+\\.url|core\\.autocrlf|core\\.eol)$"],
+		[
+			"config",
+			"-z",
+			"--get-regexp",
+			"^(remote\\..+\\.url|core\\.(autocrlf|eol|compression|bigfilethreshold)|pack\\..+)$",
+		],
 		{ cwd: root, signal, allowExitCodes: [1] },
 	);
 	const remotes: string[] = [];
+	const packing: string[] = [];
 	let autocrlf: string | null = null;
 	let eol: string | null = null;
 	for (const field of nulFields(stdout)) {
@@ -927,9 +1205,10 @@ export async function readRepositoryConfig(root: string, signal?: AbortSignal): 
 		const value = newline < 0 ? "" : field.slice(newline + 1);
 		if (key === "core.autocrlf") autocrlf = value;
 		else if (key === "core.eol") eol = value;
+		else if (isPackingSetting(key)) packing.push(field);
 		else remotes.push(redactUrlCredentials(value));
 	}
-	return { remotes, autocrlf, eol };
+	return { remotes, autocrlf, eol, packing: sha256Hex(packing.join("\0")) };
 }
 
 const FILTER_ATTRIBUTE = /^(?!\s*#).*?(?:^|\s)filter=(\S+)/gm;
@@ -972,10 +1251,11 @@ type HistoryOmission = Extract<
 
 /**
  * The unpushed commits a capture of each checkout in this process last left out, by checkout root: the hash of their
- * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs when
- * the commits were bundled ({@link packsOf}). Which of those commits add or modify a deny-listed path follows from the
- * list alone, and the size of their bundle from the list and the packs, so a later capture of the same list records the
- * same omission without checking and bundling the commits again, which takes seconds for a long history no remote has.
+ * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs and
+ * packing settings the commits were bundled with ({@link packingOf}). Which of those commits add or modify a
+ * deny-listed path follows from the list alone, and the size of their bundle from the list, the packs and the settings,
+ * so a later capture of the same list records the same omission without checking and bundling the commits again, which
+ * takes seconds for a long history no remote has.
  */
 const leftOutHistory = new Map<
 	string,
@@ -1039,9 +1319,30 @@ async function packsOf(gitDir: string): Promise<string | undefined> {
 }
 
 /**
+ * The repository's packs ({@link packsOf}) and its packing settings `packing` ({@link RepositoryConfig.packing}) as
+ * one hash; undefined when the packs cannot be read.
+ */
+async function packingOf(gitDir: string, packing: string): Promise<string | undefined> {
+	const packs = await packsOf(gitDir);
+	return packs === undefined ? undefined : sha256Hex(`${packs}\n${packing}`);
+}
+
+/** The repository's packing settings as they are now ({@link RepositoryConfig.packing}); undefined when unreadable. */
+async function packingSettingsNow(root: string, signal?: AbortSignal): Promise<string | undefined> {
+	try {
+		return (await readRepositoryConfig(root, signal)).packing;
+	} catch (error) {
+		signal?.throwIfAborted();
+		if (isWorkspaceSnapshotError(error) || isGitUnavailableError(error)) throw error;
+		return undefined;
+	}
+}
+
+/**
  * Whether `omission`, recorded for the same unpushed commits, still leaves them out under `settings`: a denied commit
- * always does; a bundle over the cap does while the repository's packs are those it was bundled from (`packs`, as
- * {@link packsOf} gives them now: `current`) and its size exceeds the cap by more than {@link OVER_CAP_REUSE_MARGIN}.
+ * always does; a bundle over the cap does while the repository's packs and packing settings are those it was bundled
+ * with (`packs`, as {@link packingOf} gives them for this capture: `current`) and its size exceeds the cap by more than
+ * {@link OVER_CAP_REUSE_MARGIN}.
  */
 async function stillLeftOut(
 	omission: HistoryOmission,
@@ -1102,8 +1403,10 @@ async function bundlePinned(
 	const ref = `refs/atomic/capture/${randomUUID()}`;
 	await runGit(["update-ref", "--no-deref", ref, head, ""], { cwd: root, signal });
 	try {
-		const input = `${[ref, ...boundary.map((commit) => `^${commit}`)].join("\n")}\n`;
-		await runGit(["bundle", "create", "-q", file, "--stdin"], { cwd: root, signal, input });
+		// The ref goes on the command line: Git before 2.31 bundles no ref it reads from standard input. The commits
+		// the bundle starts from can be many, so they are read from there.
+		const input = boundary.map((commit) => `^${commit}\n`).join("");
+		await runGit(["bundle", "create", "-q", file, ref, "--stdin"], { cwd: root, signal, input });
 	} finally {
 		await runGit(["update-ref", "--no-deref", "-d", ref, head], { cwd: root });
 	}
@@ -1189,10 +1492,15 @@ function isHistoryOmission(omission: WorktreeSnapshotOmission): omission is Hist
 	return omission.reason === "unpushed-history-denied" || omission.reason === "bundle-over-cap";
 }
 
+/**
+ * The unpushed history of `checkout` for a capture whose repository config, read at its start, has the packing
+ * settings `packing` ({@link RepositoryConfig.packing}).
+ */
 async function captureHistory(
 	checkout: Checkout,
 	gitDir: string,
 	settings: WorktreeSnapshotSettings,
+	packing: string,
 	previous: WorktreeSnapshot | undefined,
 	scratch: string,
 	signal?: AbortSignal,
@@ -1208,7 +1516,7 @@ async function captureHistory(
 	const remembered = leftOutHistory.get(root);
 	if (
 		remembered?.fingerprint === fingerprint &&
-		(await stillLeftOut(remembered.omission, remembered.packs, () => packsOf(gitDir), settings))
+		(await stillLeftOut(remembered.omission, remembered.packs, () => packingOf(gitDir, packing), settings))
 	) {
 		return { bundle: null, omitted: [remembered.omission] };
 	}
@@ -1218,15 +1526,16 @@ async function captureHistory(
 	};
 	const denied = await deniedHistory(root, unpushed, signal);
 	if (denied.commits.length > 0) return leaveOut({ reason: "unpushed-history-denied", ...denied });
-	const packs = await packsOf(gitDir);
+	const packs = await packingOf(gitDir, packing);
 	const file = join(scratch, "history.bundle");
 	await bundlePinned(root, head, boundary, file, signal);
 	const data = await verifiedBundle(root, head, unpushed, file, signal);
 	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
-		// The size is kept for the packs only when they were the same before and after bundling.
-		const bundledFrom = packs === (await packsOf(gitDir)) ? packs : undefined;
+		// The size is kept for the packs and settings only when they are the same after bundling as before it.
+		const now = await packingSettingsNow(root, signal);
+		const bundledFrom = now !== undefined && packs === (await packingOf(gitDir, now)) ? packs : undefined;
 		return leaveOut({ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }, bundledFrom);
 	}
 	const blob = snapshotBlob(data);
@@ -1430,7 +1739,16 @@ async function captureCheckout(
 			bytes: patch?.data.byteLength ?? 0,
 		};
 		const chain = incremental ? [...previous.chain, link] : [link];
-		const history = await captureHistory(checkout, capture.gitDir, settings, previous, scratch, signal, listed);
+		const history = await captureHistory(
+			checkout,
+			capture.gitDir,
+			settings,
+			config.packing,
+			previous,
+			scratch,
+			signal,
+			listed,
+		);
 		if (history.blob) blobs.push(history.blob);
 		const fields = {
 			root,

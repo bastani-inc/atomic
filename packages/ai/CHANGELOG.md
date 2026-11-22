@@ -4,6 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Changed
+
+- Bundled `openai`, `@anthropic-ai/sdk` (with `standardwebhooks`, `@stablelib/base64`, and `fast-sha256`), and `partial-json` into `@bastani/atomic-ai`'s shared files so first OpenAI and Anthropic requests load one lazy bundle instead of ~125–200 separate SDK files. Bundlers resolving the `module` or `browser` exports conditions continue to receive individual compiled modules under `dist/_modules/`.
+- Built-in lazy API providers expose a non-enumerable pre-warm hook so runtimes can load the selected model's API implementation before the first request without changing lazy error handling.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added

@@ -907,6 +907,7 @@ export class InteractiveModeBase {
 	 * repaint the final frame while the process is exiting.
 	 */
 	isShuttingDown = false;
+	postStartupTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 	writeExitOutputInSlices = false;
 	exitOutputWritten: Promise<void> | undefined;
 	installChangeWarningShown = false;

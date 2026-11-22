@@ -1,11 +1,19 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteTransactionOptions,
+	SqliteValue,
+} from "../database.js";
 import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
-import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
+import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
+import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
 import { bindChatEpoch, type SessionChatRecords } from "./chat-records.js";
 import {
@@ -440,6 +448,23 @@ async function entryByteLengthOf(database: SqliteDatabase): Promise<(expression:
 	}
 }
 
+/**
+ * The most bytes of statements a session write sends as one batch: an ordinary message's are far fewer. A larger
+ * write, an import or a fork's whole window, runs its statements one at a time as they are made.
+ */
+const STATEMENT_BATCH_BYTES = 1024 * 1024;
+
+/** About how many bytes `statement` carries: its text and its parameters. */
+function statementBytes(statement: SqliteStatement): number {
+	let bytes = statement.sql.length;
+	for (const value of statement.params) {
+		if (typeof value === "string") bytes += value.length;
+		else if (value instanceof Uint8Array) bytes += value.byteLength;
+		else bytes += 8;
+	}
+	return bytes;
+}
+
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly dialect: StorageDialect;
@@ -558,15 +583,15 @@ export class SqlSessionStore implements SessionStore {
 			const { int, text, blob } = dialect.types;
 			const strict = dialect.tableOptions;
 			const json = (column: string) => dialect.jsonValid(column);
-			const columnExists = async (table: string, column: string) => {
+			const columnExists = (table: string, column: string) => {
 				const probe = dialect.columnExists(table, column);
-				return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+				return async () => (await tx.get(probe.sql, ...probe.params)) !== undefined;
 			};
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version ${int} NOT NULL)${strict}`);
-			const versions = await tx.all(`SELECT schema_version FROM ${tables.meta}`);
-			if (versions.length === 0) {
-				await tx.run(`INSERT INTO ${tables.meta} VALUES (?)`, SESSION_SCHEMA_VERSION_UNCHUNKED);
-			}
+			const [versions] = await statementBatch(
+				tx,
+				[`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version ${int} NOT NULL)${strict}`],
+				[() => tx.all(`SELECT schema_version FROM ${tables.meta}`)],
+			);
 			for (const version of versions) {
 				assertStorageSchemaVersion(
 					"sessions",
@@ -576,7 +601,7 @@ export class SqlSessionStore implements SessionStore {
 				);
 			}
 			// The sessions table is ordered by insertion to notice changes, and entries for the snapshot reference index.
-			await tx.exec(`
+			const tablesScript = `
 				CREATE TABLE IF NOT EXISTS ${tables.sessions} (
 					id ${text} PRIMARY KEY, cwd ${text} NOT NULL, created_at ${text} NOT NULL,
 					header_json ${text} NOT NULL CHECK(${json("header_json")}), internal ${int} NOT NULL,
@@ -602,15 +627,31 @@ export class SqlSessionStore implements SessionStore {
 					session_id ${text} NOT NULL, hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
 					PRIMARY KEY(session_id, hash, idx)
 				)${strict};
-			`);
-			// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
-			if (!(await columnExists(tables.sessions, "revision"))) {
-				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision ${text} NOT NULL DEFAULT ''`);
-			}
-			legacyBlobData = await columnExists(tables.blobs, "data");
-			if (legacyBlobData && !(await columnExists(tables.blobs, "chunks"))) {
-				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`);
-			}
+			`;
+			const [revision, data] = await statementBatch(
+				tx,
+				[
+					versions.length === 0 && {
+						sql: `INSERT INTO ${tables.meta} VALUES (?)`,
+						params: [SESSION_SCHEMA_VERSION_UNCHUNKED],
+					},
+					tablesScript,
+				],
+				[columnExists(tables.sessions, "revision"), columnExists(tables.blobs, "data")],
+			);
+			legacyBlobData = data;
+			const [chunks] = legacyBlobData
+				? await statementBatch(tx, [], [columnExists(tables.blobs, "chunks")])
+				: [true];
+			await statementBatch(
+				tx,
+				[
+					// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
+					!revision && `ALTER TABLE ${tables.sessions} ADD COLUMN revision ${text} NOT NULL DEFAULT ''`,
+					!chunks && `ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`,
+				],
+				[],
+			);
 		};
 		const orphanedEntryKeys = `SELECT k.session_id, k.seq
 			FROM (SELECT DISTINCT session_id, seq FROM ${tables.entryChunks}) AS k
@@ -618,8 +659,9 @@ export class SqlSessionStore implements SessionStore {
 				SELECT 1 FROM ${tables.entries} AS e
 				WHERE e.session_id = k.session_id AND e.seq = k.seq AND e.chunks > 0
 			)`;
-		const removeOrphanedEntryChunks = async (tx: SqliteExecutor): Promise<void> => {
-			await tx.run(`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (${orphanedEntryKeys})`);
+		const removeOrphanedEntryChunks = {
+			sql: `DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (${orphanedEntryKeys})`,
+			params: [],
 		};
 		/**
 		 * Long entries in chunks (#4954): the entry chunks table and the entries table's `chunks` column, 0 for an entry
@@ -629,17 +671,27 @@ export class SqlSessionStore implements SessionStore {
 		 */
 		const addEntryChunks = async (tx: SqliteExecutor, dialect: StorageDialect) => {
 			const { int, text, blob } = dialect.types;
-			await tx.exec(`
+			const probe = dialect.columnExists(tables.entries, "chunks");
+			const [chunks] = await statementBatch(
+				tx,
+				[
+					`
 				CREATE TABLE IF NOT EXISTS ${tables.entryChunks} (
 					session_id ${text} NOT NULL, seq ${int} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
 					PRIMARY KEY(session_id, seq, idx)
 				)${dialect.tableOptions};
-			`);
-			const probe = dialect.columnExists(tables.entries, "chunks");
-			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
-				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
-			}
-			if (database.readOnly !== true) await removeOrphanedEntryChunks(tx);
+			`,
+				],
+				[() => tx.get(probe.sql, ...probe.params)],
+			);
+			await statementBatch(
+				tx,
+				[
+					chunks === undefined && `ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`,
+					database.readOnly !== true && removeOrphanedEntryChunks,
+				],
+				[],
+			);
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open. A
@@ -648,13 +700,15 @@ export class SqlSessionStore implements SessionStore {
 		// an older process left behind, which it removes in one transaction that checks the schema version first (#5065).
 		// The removal is housekeeping, since no read reaches those rows and a chunked write first deletes its key's rows,
 		// so a connection that refuses writes still opens; a newer schema is still refused.
-		const current = await SqlSessionStore.currentSchema(database, tables, presence.open);
+		const current = await SqlSessionStore.currentSchema(
+			database,
+			tables,
+			presence.open,
+			database.readOnly === true ? undefined : orphanedEntryKeys,
+		);
 		if (current !== undefined) {
 			legacyBlobData = current.legacyBlobData;
-			if (
-				database.readOnly !== true &&
-				(await database.get(`SELECT 1 FROM (${orphanedEntryKeys}) AS orphaned LIMIT 1`)) !== undefined
-			)
+			if (current.orphaned)
 				await database
 					.transaction(async (tx) => {
 						await assertStoredSchemaVersion(
@@ -665,33 +719,36 @@ export class SqlSessionStore implements SessionStore {
 							"schema_version",
 							SESSION_SCHEMA_VERSION_UNCHUNKED,
 						);
-						await removeOrphanedEntryChunks(tx);
+						await tx.run(removeOrphanedEntryChunks.sql);
 					})
 					.catch((error: Error) => {
 						if (error instanceof StorageSchemaVersionError) throw error;
 					});
 		} else {
-			await applyStorageMigrations(
-				database,
-				SESSION_DOMAIN,
-				[
-					{ version: 1, up: createTables },
-					{ version: 2, up: addEntryChunks },
-				],
-				{ table: storageMigrationTable(options.prefix) },
-			);
-			// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
-			// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
-			// (#5065).
-			await applyStorageMigrations(
-				database,
-				SESSION_PRESENCE_DOMAIN,
-				[
-					{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
-					{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
-				],
-				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
-			);
+			await applyStorageMigrationsTogether(database, [
+				{
+					domain: SESSION_DOMAIN,
+					steps: [
+						{ version: 1, up: createTables },
+						{ version: 2, up: addEntryChunks },
+					],
+					options: { table: storageMigrationTable(options.prefix) },
+				},
+				// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
+				// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
+				// (#5065).
+				{
+					domain: SESSION_PRESENCE_DOMAIN,
+					steps: [
+						{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
+						{
+							version: 2,
+							up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open),
+						},
+					],
+					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
+				},
+			]);
 		}
 		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
@@ -703,8 +760,16 @@ export class SqlSessionStore implements SessionStore {
 						(row) => row !== undefined,
 						() => false,
 					);
-		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
+		// Neither the snapshot tables nor the search index depend on the other. Where the sessions schema was current,
+		// theirs most likely is too and opening them only reads, so those reads go together. Otherwise the snapshot
+		// tables are set up first, in a transaction of their own as before: set up together, the two transactions would
+		// share one group commit and pay a savepoint each.
+		const opening = current === undefined ? await SqlSnapshotBlobStore.open(database, options.prefix) : undefined;
+		const [blobs, searchIndex, entryByteLength] = await Promise.all([
+			opening ?? SqlSnapshotBlobStore.open(database, options.prefix),
+			SqlSessionSearchIndex.open(database, tables, options.prefix),
+			entryByteLengthOf(database),
+		]);
 		const store = new SqlSessionStore(
 			database,
 			tables,
@@ -713,7 +778,7 @@ export class SqlSessionStore implements SessionStore {
 			blobs,
 			legacyBlobData,
 			searchIndex,
-			await entryByteLengthOf(database),
+			entryByteLength,
 		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		if (await staged) await store.cleanupForkStaging();
@@ -734,13 +799,16 @@ export class SqlSessionStore implements SessionStore {
 	 * What the open's setup would find, read without the write lock, when its schema steps would change nothing: every
 	 * table and column of both domains exists and the sessions meta holds only versions this build supports. Undefined
 	 * otherwise, and always on a database with versioned migrations, whose ledger the setup checks. Leftover entry
-	 * chunks are not part of the schema: the open removes them separately.
+	 * chunks are not part of the schema: `orphaned` tells whether the query `orphans` finds any, for the open to remove
+	 * them separately, and is false when it is not asked. The probes are read together, then the versions with that
+	 * query, so a current schema waits for two answers.
 	 */
 	private static async currentSchema(
 		database: SqliteDatabase,
 		tables: Tables,
 		open: string,
-	): Promise<{ readonly legacyBlobData: boolean } | undefined> {
+		orphans: string | undefined,
+	): Promise<{ readonly legacyBlobData: boolean; readonly orphaned: boolean } | undefined> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return undefined;
 		const probes = [
@@ -750,8 +818,15 @@ export class SqlSessionStore implements SessionStore {
 			dialect.columnExists(tables.blobs, "chunks"),
 			dialect.columnExists(open, "schema_version"),
 		];
-		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		const legacy = dialect.columnExists(tables.blobs, "data");
+		const [legacyFound, ...found] = await Promise.all(
+			[legacy, ...probes].map((probe) => database.get(probe.sql, ...probe.params)),
+		);
 		if (!found.every((row) => row !== undefined)) return undefined;
+		// Asked beside the versions; its answer, or its failure, counts only for a schema this build supports.
+		const orphaned =
+			orphans === undefined ? undefined : database.get(`SELECT 1 FROM (${orphans}) AS orphaned LIMIT 1`);
+		orphaned?.catch(() => {});
 		const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
 		if (
 			versions.length === 0 ||
@@ -761,8 +836,7 @@ export class SqlSessionStore implements SessionStore {
 			)
 		)
 			return undefined;
-		const legacy = dialect.columnExists(tables.blobs, "data");
-		return { legacyBlobData: (await database.get(legacy.sql, ...legacy.params)) !== undefined };
+		return { legacyBlobData: legacyFound !== undefined, orphaned: (await orphaned) !== undefined };
 	}
 
 	/**
@@ -773,6 +847,34 @@ export class SqlSessionStore implements SessionStore {
 		return this.database.transaction(async (tx) => {
 			await this.assertReadableSchema(tx);
 			return body(tx);
+		}, options);
+	}
+
+	/**
+	 * `transaction` for a body that only reads and writes the database. The version check is sent first, as there, but on
+	 * a connection thread the body's first reads go behind it without waiting for its answer: one wait for the thread
+	 * fewer. The body awaits `checked` before its first write, so nothing is written unless the version is one this build
+	 * reads (its answer came before the reads', so that costs no wait); a version this build does not support is the
+	 * failure reported, whatever the body met.
+	 */
+	private transactionCheckedAlongside<T>(
+		body: (tx: SqliteExecutor, checked: Promise<void>) => Promise<T>,
+		options: SqliteTransactionOptions,
+	): Promise<T> {
+		return this.database.transaction(async (tx) => {
+			if (sequenceRunner(tx) === undefined) {
+				await this.assertReadableSchema(tx);
+				return body(tx, Promise.resolve());
+			}
+			const checked = this.assertReadableSchema(tx);
+			checked.catch(() => {});
+			const outcome = await body(tx, checked).then(
+				(value) => ({ value }),
+				(failure: unknown) => ({ failure }),
+			);
+			await checked;
+			if ("failure" in outcome) throw outcome.failure;
+			return outcome.value;
 		}, options);
 	}
 
@@ -795,13 +897,14 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
-		return this.transaction(async (tx) => {
+		return this.transactionCheckedAlongside(async (tx, checked) => {
 			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
 				throw new SessionExistsError(header.id);
 			}
-			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, header.id, entries, 0, texts);
-			return { lastSeq: entries.length, epoch };
+			const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
+			await checked;
+			await this.writeEntries(tx, summary.statement, this.entryWrites(header.id, entries, 0, summary.texts));
+			return { lastSeq: entries.length, epoch: summary.epoch };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -1236,7 +1339,7 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transaction(async (tx) => {
+		return this.transactionCheckedAlongside(async (tx, checked) => {
 			const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
 			// A new snapshot record is written only while every blob it references is still stored (#5077).
@@ -1247,8 +1350,7 @@ export class SqlSessionStore implements SessionStore {
 				),
 			);
 			const lastSeq = previous.last_seq + entries.length;
-			const { texts } = await this.saveSummary(
-				tx,
+			const summary = this.summaryWrite(
 				sessionId,
 				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
 				summaryState,
@@ -1260,7 +1362,9 @@ export class SqlSessionStore implements SessionStore {
 					entries,
 				),
 			);
-			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
+			const written = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts);
+			await checked;
+			await this.writeEntries(tx, summary.statement, written);
 			return { lastSeq };
 		}, SESSION_TRANSACTION);
 	}
@@ -2154,9 +2258,22 @@ export class SqlSessionStore implements SessionStore {
 					),
 				],
 				["op", op],
-				["owner", j("data", "owner")],
-				["tasks", j("data", "tasks")],
-				["groups", j("data", "groups")],
+				// Atomic's own owner object and lists, read only as the JSON types Atomic writes them in: any other value
+				// under these names, an extension's text that looks like JSON included, reads as an empty string and is
+				// never parsed, as a JSONL store keeps it, a value the fold takes for none of them.
+				...(
+					[
+						["owner", "object"],
+						["tasks", "array"],
+						["groups", "array"],
+					] as const
+				).map(
+					([key, type]) =>
+						[
+							key,
+							`CASE WHEN ${jsonType("data", key)} = '${type}' THEN ${j("data", key)} WHEN ${jsonType("data", key)} IS NULL OR ${jsonType("data", key)} = 'null' THEN NULL ELSE '' END`,
+						] as const,
+				),
 				// Intercom's records of several asks at once: closed asks, and answered asks. They are parsed back from
 				// JSON text, which an extension's own text under the same name can look like: read them only as lists.
 				...["messageIds", "askIds"].map(
@@ -3650,6 +3767,22 @@ export class SqlSessionStore implements SessionStore {
 		previous?: SessionSummaryState,
 		appendedResume?: SessionResumeIndex,
 	): Promise<{ readonly texts: readonly SessionSummaryText[]; readonly epoch: string }> {
+		const { statement, texts, epoch } = this.summaryWrite(sessionId, snapshot, previous, appendedResume);
+		await tx.run(statement.sql, ...statement.params);
+		return { texts, epoch };
+	}
+
+	/** The statement that saves the session's row as `saveSummary` saves it, with what `saveSummary` returns. */
+	private summaryWrite(
+		sessionId: string,
+		snapshot: SessionSnapshot,
+		previous?: SessionSummaryState,
+		appendedResume?: SessionResumeIndex,
+	): {
+		readonly statement: SqliteStatement;
+		readonly texts: readonly SessionSummaryText[];
+		readonly epoch: string;
+	} {
 		const { header, lastSeq } = snapshot;
 		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
 		const resume = previous === undefined ? foldSessionResume(undefined, snapshot.entries) : appendedResume;
@@ -3660,8 +3793,7 @@ export class SqlSessionStore implements SessionStore {
 			epoch,
 		};
 		const summary = materializeSessionSummaryMetadata(header, state);
-		await tx.run(
-			`INSERT INTO ${this.tables.sessions}
+		const sql = `INSERT INTO ${this.tables.sessions}
 				(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
 				 first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3671,7 +3803,8 @@ export class SqlSessionStore implements SessionStore {
 				message_count = excluded.message_count, first_message = excluded.first_message, name = excluded.name,
 				has_name = excluded.has_name, summary = excluded.summary,
 				summarized_through_id = excluded.summarized_through_id,
-				summary_state = excluded.summary_state, revision = excluded.revision`,
+				summary_state = excluded.summary_state, revision = excluded.revision`;
+		const params = [
 			sessionId,
 			header.cwd,
 			header.createdAt,
@@ -3687,8 +3820,8 @@ export class SqlSessionStore implements SessionStore {
 			summary.summarizedThroughId ?? null,
 			this.encode(state),
 			newRevision(),
-		);
-		return { texts, epoch };
+		];
+		return { statement: { sql, params }, texts, epoch };
 	}
 
 	private async insertEntries(
@@ -3698,49 +3831,82 @@ export class SqlSessionStore implements SessionStore {
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
 	): Promise<void> {
+		for (const { sql, params } of this.entryWrites(sessionId, entries, lastSeq, texts)) await tx.run(sql, ...params);
+	}
+
+	/**
+	 * The statements that store `entries` after `lastSeq`, in order, each entry encoded only when its statements are
+	 * taken: each entry's row and its chunks, the version step a first chunked entry takes, then the entries' search
+	 * texts.
+	 */
+	private *entryWrites(
+		sessionId: string,
+		entries: readonly SessionEntry[],
+		lastSeq: number,
+		texts: readonly SessionSummaryText[],
+	): Generator<SqliteStatement> {
 		let chunked = false;
 		for (const [index, entry] of entries.entries()) {
 			const seq = lastSeq + index + 1;
 			const stored = storedEntry(entry, this.encode(entry));
 			chunked ||= stored.chunks.length > 0;
-			await tx.run(
-				`INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) VALUES (?, ?, ?, ?, ?)`,
-				sessionId,
-				seq,
-				entry.id,
-				stored.json,
-				stored.chunks.length,
-			);
+			yield {
+				sql: `INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) VALUES (?, ?, ?, ?, ?)`,
+				params: [sessionId, seq, entry.id, stored.json, stored.chunks.length],
+			};
 			if (stored.chunks.length > 0) {
-				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ?`, sessionId, seq);
+				yield {
+					sql: `DELETE FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ?`,
+					params: [sessionId, seq],
+				};
 			}
 			for (const [chunk, data] of stored.chunks.entries()) {
-				await tx.run(
-					`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
-					sessionId,
-					seq,
-					chunk,
-					data,
-				);
+				yield {
+					sql: `INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
+					params: [sessionId, seq, chunk, data],
+				};
 			}
 		}
 		// One way, in the transaction that writes the first chunked entry: a build that knows only version 1 refuses the
 		// database when next opened instead of reading the entry as a stub.
 		if (chunked) {
-			await tx.run(
-				`UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ?`,
-				SESSION_SCHEMA_VERSION,
-				SESSION_SCHEMA_VERSION_UNCHUNKED,
-			);
+			yield {
+				sql: `UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ?`,
+				params: [SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED],
+			};
 		}
 		for (const { index, text } of texts) {
-			await tx.run(
-				`INSERT INTO ${this.tables.searchTexts} (session_id, seq, text_json) VALUES (?, ?, ?)`,
-				sessionId,
-				lastSeq + index + 1,
-				this.encode(text),
-			);
+			yield {
+				sql: `INSERT INTO ${this.tables.searchTexts} (session_id, seq, text_json) VALUES (?, ?, ?)`,
+				params: [sessionId, lastSeq + index + 1, this.encode(text)],
+			};
 		}
+	}
+
+	/**
+	 * Runs the session row's statement, then `entries`' statements, in order. A write of up to
+	 * {@link STATEMENT_BATCH_BYTES}, as an ordinary message is, goes to a connection thread as one batch that waits for
+	 * it once. A larger one runs its statements one at a time as they are made, as before, so it never holds more than
+	 * about that much of them, or sends it, at once.
+	 */
+	private async writeEntries(
+		tx: SqliteExecutor,
+		summary: SqliteStatement,
+		entries: Iterable<SqliteStatement>,
+	): Promise<void> {
+		const batch: SqliteStatement[] = [summary];
+		let bytes = statementBytes(summary);
+		const pending = entries[Symbol.iterator]();
+		for (let next = pending.next(); next.done !== true; next = pending.next()) {
+			batch.push(next.value);
+			bytes += statementBytes(next.value);
+			if (bytes <= STATEMENT_BATCH_BYTES) continue;
+			for (const { sql, params } of batch) await tx.run(sql, ...params);
+			for (let rest = pending.next(); rest.done !== true; rest = pending.next())
+				await tx.run(rest.value.sql, ...rest.value.params);
+			return;
+		}
+		await statementBatch(tx, batch, []);
 	}
 
 	private encode(value: SessionRecordHeader | SessionEntry | StoredSummaryState | string): string {

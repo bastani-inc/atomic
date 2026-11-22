@@ -24,6 +24,7 @@ npm install -g @bastani/atomic
 - Atomic does not require package install scripts; pass `--ignore-scripts` if you disable lifecycle scripts.
 - Package managers select the right platform runtime automatically. Keep a standalone archive's complete directory (`node_modules`, libraries, licenses) intact.
 - Atomic's native module ships as one optional package per platform (`@bastani/atomic-natives-<platform>`), and the package manager installs the one that matches. Do not omit optional dependencies (`npm install --omit=optional`, `pnpm install --no-optional`, `bun install --omit=optional`): without that package Atomic stops at startup with an error that names the package. Reinstall Atomic without those options to fix it. A global npm install is unaffected, because npm installs the platform package from Atomic's shrinkwrap even with `--omit=optional`.
+- Atomic also stops when its native module is from another release. If you updated Atomic while it was running, the message says so: restart it. Otherwise the installation is broken, and the message names both releases: reinstall Atomic.
 - Sessions are stored locally in `~/.atomic/workflows/journal.sqlite` with no database server needed. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 - On Node 22, `AsyncLocalStorage` runs on promise hooks, which make every `await` in an Atomic process cost more. Node 24 and Bun have no such cost, so run Atomic on Node 24 or later to avoid it. Do not set `NODE_OPTIONS=--experimental-async-context-frame` for this: Node 24 and later refuse to start with that option, and commands Atomic runs for you inherit `NODE_OPTIONS`.
 
@@ -108,7 +109,7 @@ Package-manager installs run on Node.js; standalone release archives run on Bun.
 
 ### Git
 
-Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if it reports 2.30.0+. Otherwise, Atomic downloads a verified portable Git ([desktop/dugite-native](https://github.com/desktop/dugite-native)) just like `fd` and `rg`:
+Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if it reports 2.30.0+. Otherwise, Atomic downloads a verified portable Git ([desktop/dugite-native](https://github.com/desktop/dugite-native)) just like `fd` and `rg`. A few things differ with an older Git: SDK workspace bindings need Git 2.33+; before Git 2.33, a named subagent worktree whose creation was cut off (for example by a killed Atomic) is reported as busy after a 30-second wait rather than at once; and before Git 2.36, a worktree snapshot restore stops with an error when a worktree of its store has a path with a line break.
 
 - **Location:** `~/.atomic/agent/bin/git/` (or under `ATOMIC_CODING_AGENT_DIR`).
 - **When:** Downloaded at interactive startup or on the first git package install/update. Run `/tools` to check which Git Atomic uses and why.

@@ -58,6 +58,8 @@ export interface BuiltinToolBlockInput {
 	readonly canManageTask?: (taskId: string) => boolean;
 	/** What the chat showing the block offers for a task its call left running; given, it decides instead of `canManageTask`. */
 	readonly keptTaskAction?: (taskId: string) => KeptTaskAction | undefined;
+	/** Where a click on the chat's own `/tasks` hint runs it; see `ToolExecutionOptions.keptTaskRoute`. */
+	readonly keptTaskRoute?: string;
 }
 
 export interface BuiltinToolBlockPresentation {
@@ -1093,7 +1095,7 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 					: input.canManageTask?.(taskId) === true
 						? "tasks"
 						: undefined;
-		const hint = keptTaskHint(action);
+		const hint = keptTaskHint(action, input.keptTaskRoute);
 		const bgLine = `${theme.fg("text", "Running in background")}${hint ? theme.fg("dim", ` · ${hint}`) : ""}`;
 		const hasOutput = classified.output !== "" && classified.output !== EMPTY_OUTPUT_TEXT;
 		const outputLines = hasOutput

@@ -246,6 +246,29 @@ export function getCachedChangelog(changelogPath: string): ChangelogEntry[] {
 }
 
 /**
+ * Whether startup can possibly show a "What's New" changelog notice and
+ * therefore needs `CHANGELOG.md` preloaded from disk.
+ *
+ * Returns false for resumed sessions, fresh installs (no prior version), and
+ * launches where the last shown version equals the current version (where
+ * `getNewEntries` is guaranteed empty). Any mismatch — including upgrades and
+ * migrations from higher-numbered legacy versions — still preloads.
+ */
+export function needsChangelogPreload(
+	hasMessages: boolean,
+	lastVersion: string | undefined,
+	currentVersion: string,
+): boolean {
+	if (hasMessages || !lastVersion) return false;
+	const parsedLast = parseVersion(lastVersion);
+	const parsedCurrent = parseVersion(currentVersion);
+	if (parsedLast && parsedCurrent && compareVersions(parsedLast, parsedCurrent) === 0) {
+		return false;
+	}
+	return true;
+}
+
+/**
  * Compare versions. Returns: -1 if v1 < v2, 0 if v1 === v2, 1 if v1 > v2
  */
 export function compareVersions(v1: VersionParts, v2: VersionParts): number {

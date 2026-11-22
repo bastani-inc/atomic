@@ -14,7 +14,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
-import { assertNativeModuleAvailable } from "../utils/native-module.ts";
+import { nativeModuleProblem, nativeModuleUnavailable } from "../utils/native-module.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { AgentSession } from "./agent-session.js";
@@ -60,6 +60,7 @@ import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
 	isMandatoryResourceLoader,
 	isolateMandatoryResourceLoader,
+	mandatoryLoaderCoversBuiltins,
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
 import {
@@ -68,6 +69,7 @@ import {
 	repairOrphanToolResults,
 	withImagesBlocked,
 } from "./messages.ts";
+import { prewarmModelApi } from "./model-api-prewarm.ts";
 import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
@@ -229,7 +231,8 @@ function createScopedSession(
 	let releaseWhenIdle: ReleaseWhenIdleOptions | undefined;
 	try {
 		// A session cannot run without Atomic's native module: say why it cannot load before anything opens.
-		assertNativeModuleAvailable();
+		const nativeProblem = nativeModuleProblem();
+		if (nativeProblem !== undefined) return nativeModuleUnavailable(nativeProblem);
 		releaseWhenIdle = parseReleaseWhenIdle(options.releaseWhenIdle);
 		if (options.intercom !== undefined) validateIntercomSessionOptions(options.intercom);
 	} catch (error) {
@@ -392,25 +395,29 @@ async function constructAgentSession(
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	const modelRuntime =
+		options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath, refreshOnCreate: false }));
 	const restore = { allowNetwork: false };
 	const observing =
 		recoverMissingModel && ModelRuntime[sessionAccountCheckpoint](modelRuntime)
 			? sessionLifecycleCreation.getStore()
 			: undefined;
 	let missingCatalog = false;
-	if (observing) {
-		observing.catalogRuntime = modelRuntime;
-		observing.catalogRestore = restore;
-	}
-	try {
-		await modelRuntime.refresh(restore);
-		missingCatalog = observing?.copilotObservation === "confirmed";
-	} finally {
+	const skipRedundantRestore = !observing && ModelRuntime.consumeStartupCatalogRestored(modelRuntime);
+	if (!skipRedundantRestore) {
 		if (observing) {
-			observing.catalogRuntime = undefined;
-			observing.catalogRestore = undefined;
-			observing.copilotObservation = undefined;
+			observing.catalogRuntime = modelRuntime;
+			observing.catalogRestore = restore;
+		}
+		try {
+			await modelRuntime.refresh(restore);
+			missingCatalog = observing?.copilotObservation === "confirmed";
+		} finally {
+			if (observing) {
+				observing.catalogRuntime = undefined;
+				observing.catalogRestore = undefined;
+				observing.copilotObservation = undefined;
+			}
 		}
 	}
 
@@ -449,7 +456,8 @@ async function constructAgentSession(
 	}
 	if (
 		(options.resourceLoader || options.builtins) &&
-		(!isMandatoryResourceLoader(resourceLoader) || options.builtins)
+		(!isMandatoryResourceLoader(resourceLoader) ||
+			(options.builtins !== undefined && !mandatoryLoaderCoversBuiltins(resourceLoader, options.builtins)))
 	) {
 		resourceLoader = await withBuiltinResourceLoader(resourceLoader, cwd, agentDir, options.builtins);
 	}
@@ -581,6 +589,10 @@ async function constructAgentSession(
 		thinkingLevel = "off";
 	} else {
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
+	}
+
+	if (!deferStart && model) {
+		void prewarmModelApi(model);
 	}
 
 	// `defaultTools` narrows only the initial BUILT-IN selection. It must not

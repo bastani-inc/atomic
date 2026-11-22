@@ -2,14 +2,16 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { createJiti } from "jiti";
-import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
+import { APP_NAME, getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.js";
 import { pathExists } from "../../utils/path-exists.ts";
 import { pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
+import { updatedInstallError } from "../../utils/updated-install.ts";
+import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.ts";
 import {
 	FORKED_PACKAGE_WORKSPACE_DIRS,
 	type ForkedPackageManifest,
@@ -19,6 +21,7 @@ import {
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { normalizeJitiAliases } from "./jiti-aliases.js";
+import { hasLazyBuiltinSpec } from "./lazy-builtin.js";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath, isSourceBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import {
@@ -496,10 +499,98 @@ let extensionCacheAgentDir: string | undefined;
 let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
 
-// Installed builtin bundles are immutable within a running binary. Keep their
+// Installed builtin bundles are immutable within a running process. Keep their
 // evaluated factories outside the generation-scoped editable-extension cache.
 const nativeBuiltinFactories = new Map<string, ExtensionFactory>();
 const nativeBuiltinLoads = new Map<string, Promise<ExtensionFactory | undefined>>();
+const nativeBuiltinRootChecks = new Map<string, Promise<boolean>>();
+
+/**
+ * Host packages whose module identity an installed builtin bundle imported natively must share with the host.
+ * Kept in sync with `test/ci/native-builtin-bundle-imports.test.ts`.
+ */
+const NATIVE_BUILTIN_HOST_PACKAGES = [
+	"@bastani/atomic-ai",
+	"@bastani/atomic-tui",
+	"@bastani/atomic-agent-core",
+	"proper-lockfile",
+] as const;
+const OPTIONAL_NATIVE_BUILTIN_HOST_PACKAGES = ["@bastani/atomic-natives"] as const;
+
+function hostRunsCompiledDist(): boolean {
+	try {
+		return fileURLToPath(import.meta.url).endsWith(".js");
+	} catch {
+		return false;
+	}
+}
+
+async function resolveOptionalPackageRoot(packageName: string, searchPaths?: string[]): Promise<string | undefined> {
+	try {
+		return await realpathJs(await findPackageRoot(packageName, searchPaths));
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Verifies that natively importing `extensionPath` resolves `@bastani/atomic` and every shared host package to the
+ * exact same canonical package roots as this compiled host, guaranteeing single module instances without `jiti` or
+ * `virtualModules`. Returns `false` for source-checkout TS runs or copies outside this installation.
+ */
+async function sharesHostPackageRoots(extensionPath: string): Promise<boolean> {
+	if (!hostRunsCompiledDist()) return false;
+	const dir = path.dirname(extensionPath);
+	let pending = nativeBuiltinRootChecks.get(dir);
+	if (pending === undefined) {
+		pending = (async () => {
+			try {
+				const hostPackageRoot = path.resolve(currentModuleDir(), "../../..");
+				if (!(await pathExists(path.join(hostPackageRoot, "dist", "index.js")))) return false;
+				const hostAtomicReal = await realpathJs(hostPackageRoot);
+				const requireFromExt = createRequire(extensionPath);
+				const extAtomicReal = await resolveOptionalPackageRoot(
+					"@bastani/atomic",
+					requireFromExt.resolve.paths("@bastani/atomic") ?? [],
+				);
+				if (extAtomicReal === undefined || !pathsEqual(extAtomicReal, hostAtomicReal)) return false;
+
+				const requiredMatches = await Promise.all(
+					NATIVE_BUILTIN_HOST_PACKAGES.map(async (pkg) => {
+						const [hostRoot, extRoot] = await Promise.all([
+							resolveOptionalPackageRoot(pkg),
+							resolveOptionalPackageRoot(pkg, requireFromExt.resolve.paths(pkg) ?? []),
+						]);
+						return hostRoot !== undefined && extRoot !== undefined && pathsEqual(hostRoot, extRoot);
+					}),
+				);
+				if (requiredMatches.some((matched) => !matched)) return false;
+
+				const optionalMatches = await Promise.all(
+					OPTIONAL_NATIVE_BUILTIN_HOST_PACKAGES.map(async (pkg) => {
+						const [hostRoot, extRoot] = await Promise.all([
+							resolveOptionalPackageRoot(pkg),
+							resolveOptionalPackageRoot(pkg, requireFromExt.resolve.paths(pkg) ?? []),
+						]);
+						if (hostRoot === undefined && extRoot === undefined) return true;
+						return hostRoot !== undefined && extRoot !== undefined && pathsEqual(hostRoot, extRoot);
+					}),
+				);
+				return optionalMatches.every(Boolean);
+			} catch {
+				return false;
+			}
+		})();
+		nativeBuiltinRootChecks.set(dir, pending);
+	}
+	return pending;
+}
+
+async function canLoadNativeBuiltinExtension(extensionPath: string, isSingleFileBuild: boolean): Promise<boolean> {
+	if (!(await isNativeBuiltinExtensionPath(extensionPath))) return false;
+	if (isSingleFileBuild) return true;
+	return sharesHostPackageRoots(extensionPath);
+}
 
 async function loadNativeBuiltinExtensionModule(
 	extensionPath: string,
@@ -510,8 +601,16 @@ async function loadNativeBuiltinExtensionModule(
 		let pending = nativeBuiltinLoads.get(extensionPath);
 		if (!pending) {
 			pending = (async () => {
-				await installHostModuleBridge();
-				const module = (await import(pathToFileURL(extensionPath).href)) as { default?: unknown };
+				if (isBunBinary || isBundledBuild) await installHostModuleBridge();
+				let module: { default?: unknown };
+				try {
+					module = (await import(pathToFileURL(extensionPath).href)) as { default?: unknown };
+				} catch (error) {
+					const label = getBuiltinExtensionEntryLabel(extensionPath);
+					const updated = await updatedInstallError(error, label ? `the ${label} extension` : APP_NAME);
+					if (updated) throw updated;
+					throw error;
+				}
 				if (typeof module.default !== "function") return undefined;
 				const loadedFactory = module.default as ExtensionFactory;
 				nativeBuiltinFactories.set(extensionPath, loadedFactory);
@@ -972,7 +1071,11 @@ export async function prepareExtensionEntries(
 ): Promise<void> {
 	if (isBunBinary || isBundledBuild) return;
 	const resident = isCurrentCacheToken(cacheToken) ? extensionCache : undefined;
-	const entries = extensionPaths.filter((entry) => !resident?.has(entry) && isSourceBuiltinExtensionPath(entry));
+	const entries = extensionPaths.filter((entry) => {
+		if (resident?.has(entry) || !isSourceBuiltinExtensionPath(entry)) return false;
+		const label = getBuiltinExtensionEntryLabel(entry);
+		return label === undefined || !hasLazyBuiltinSpec(label);
+	});
 	if (entries.length === 0) return;
 	const cacheDir = await resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (cacheDir === undefined) return;
@@ -1001,7 +1104,7 @@ export async function loadExtensionModule(
 	agentDir?: string,
 ): Promise<ExtensionFactory | undefined> {
 	const isSingleFileBuild = isBunBinary || isBundledBuild;
-	if (isSingleFileBuild && (await isNativeBuiltinExtensionPath(extensionPath))) {
+	if (await canLoadNativeBuiltinExtension(extensionPath, isSingleFileBuild)) {
 		return loadNativeBuiltinExtensionModule(extensionPath, cacheToken);
 	}
 
