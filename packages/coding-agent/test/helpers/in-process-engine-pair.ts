@@ -11,6 +11,7 @@ import {
 } from "../../src/core/queued-message-delivery.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
 import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
+import { userMessageOrigin } from "../../src/core/user-message-origin.js";
 import { EngineCustomUiService } from "../../src/modes/interactive-engine/engine-custom-ui.ts";
 import type {
 	InteractiveEngineGenerationEnded,
@@ -404,6 +405,11 @@ export async function createEngineHostPair(
 		 * Default true; false is an engine of an earlier version, or a host that did not ask.
 		 */
 		queuedDeliveries?: boolean;
+		/**
+		 * Whether the engine relays host prompt origin send ids on user `message_start` events.
+		 * Default true; false simulates an older engine (0.10.3/0.10.4) for mixed-version fallback testing.
+		 */
+		echoOrigin?: boolean;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
@@ -484,10 +490,17 @@ export async function createEngineHostPair(
 			event.message.role === "user"
 				? queuedMessageReceiptId(event.message)
 				: undefined;
+		const originSendId =
+			relay !== undefined &&
+			options.echoOrigin !== false &&
+			event.type === "message_start" &&
+			event.message.role === "user"
+				? userMessageOrigin(event.message)
+				: undefined;
 		client.engineOutput(
 			withQueuedDeliveryChange(
 				toJsonEvent(event),
-				relay?.note(engine.session, event, queuedMessageId),
+				relay?.note(engine.session, event, queuedMessageId, originSendId),
 			) as JsonAgentSessionEvent,
 		);
 	});

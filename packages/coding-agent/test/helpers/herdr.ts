@@ -15,6 +15,12 @@ import type { HerdrEnvironment } from "../../src/extensions/herdr/environment.js
 export const FAKE_HERDR_CHILD_TIMEOUT_MS = 15_000;
 /** How long a test waits for a fake Herdr call: past the kill budget of the slowest one. */
 export const FAKE_HERDR_WAIT_MS = FAKE_HERDR_CHILD_TIMEOUT_MS + 5_000;
+/**
+ * Safety kill budget for tests that expire a hanging fake Herdr call via `expireInFlight()` once
+ * the child has started: strictly above {@link FAKE_HERDR_WAIT_MS} so the hang cannot expire
+ * before `waitForStarted()` observes it.
+ */
+export const FAKE_HERDR_EXPLICIT_TIMEOUT_MS = FAKE_HERDR_WAIT_MS + 10_000;
 
 export interface HerdrCall {
 	phase: "start" | "end";
@@ -22,24 +28,61 @@ export interface HerdrCall {
 	socket: string;
 }
 
-const scripts = new Map<string, string>();
+interface ActiveFakeChild {
+	child: childProcess.ChildProcess;
+	timeoutMs: number;
+	killSignal: NodeJS.Signals | number;
+	closed: boolean;
+}
+
+interface RegisteredFixture {
+	script: string;
+	active?: ActiveFakeChild;
+}
+
+const fixtures = new Map<string, RegisteredFixture>();
 const realExecFile = childProcess.execFile;
 let launcher: ReturnType<typeof vi.spyOn> | undefined;
 
-function registerScript(bin: string, script: string) {
-	scripts.set(bin, script);
-	if (launcher) return;
+function extractExecFileOptions(args: Parameters<typeof realExecFile>): childProcess.ExecFileOptions | undefined {
+	if (args[1] && !Array.isArray(args[1]) && typeof args[1] === "object") return args[1];
+	if (args[2] && typeof args[2] === "object") return args[2];
+	return undefined;
+}
+
+function registerScript(bin: string, script: string): RegisteredFixture {
+	const fixture: RegisteredFixture = { script };
+	fixtures.set(bin, fixture);
+	if (launcher) return fixture;
 	// Only registered fixtures are redirected. Keep real children, argv arrays, and
 	// transport options; missing/invalid executables still reach the real execFile.
 	launcher = vi.spyOn(childProcess, "execFile").mockImplementation((...args: Parameters<typeof realExecFile>) => {
-		const target = scripts.get(args[0]);
-		if (target) {
+		const registered = fixtures.get(args[0]);
+		const options = registered ? extractExecFileOptions(args) : undefined;
+		if (registered) {
 			args[0] = process.execPath;
-			args[1] = [target, ...(args[1] ?? [])];
+			args[1] = [registered.script, ...(args[1] ?? [])];
 		}
-		return realExecFile(...args);
+		const child = realExecFile(...args);
+		if (registered) {
+			const entry: ActiveFakeChild = {
+				child,
+				timeoutMs: typeof options?.timeout === "number" ? options.timeout : 0,
+				killSignal: options?.killSignal ?? "SIGTERM",
+				closed: false,
+			};
+			registered.active = entry;
+			const clear = () => {
+				entry.closed = true;
+				if (registered.active === entry) registered.active = undefined;
+			};
+			child.once("close", clear);
+			child.once("error", clear);
+		}
+		return child;
 	});
 	syncBuiltinESMExports();
+	return fixture;
 }
 
 // A disposable executable records its own lifetime, not just spawn requests.
@@ -60,7 +103,7 @@ record("start");
 ${body}
 `,
 	);
-	registerScript(bin, script);
+	const fixture = registerScript(bin, script);
 	const environment: HerdrEnvironment = { bin, paneId: dir, socketPath: " socket path " };
 	const env = { HERDR_ENV: "1", HERDR_BIN_PATH: bin, HERDR_PANE_ID: dir, HERDR_SOCKET_PATH: environment.socketPath };
 	async function calls(): Promise<HerdrCall[]> {
@@ -99,9 +142,26 @@ ${body}
 		async waitForStarted(count: number) {
 			return waitForPhase("start", count, "started");
 		},
+		/**
+		 * Expire the currently in-flight fake Herdr child the same way Node's `execFile`
+		 * timeout kills it, after checking that the transport armed a positive timeout
+		 * (matching `expectedTimeoutMs` when supplied). Lets tests trigger a timeout
+		 * deterministically after `waitForStarted()` instead of racing child startup.
+		 */
+		expireInFlight(expectedTimeoutMs?: number) {
+			const active = fixture.active;
+			assert.ok(active && !active.closed, "Expected an in-flight fake Herdr child to expire");
+			assert.ok(active.timeoutMs > 0, `Expected a positive execFile timeout, got ${active.timeoutMs}`);
+			if (expectedTimeoutMs !== undefined) {
+				assert.equal(active.timeoutMs, expectedTimeoutMs);
+			}
+			active.child.stdout?.destroy();
+			active.child.stderr?.destroy();
+			assert.equal(active.child.kill(active.killSignal), true, "Expected in-flight fake Herdr child to be killed");
+		},
 		async dispose() {
-			scripts.delete(bin);
-			if (scripts.size === 0) {
+			fixtures.delete(bin);
+			if (fixtures.size === 0) {
 				launcher?.mockRestore();
 				syncBuiltinESMExports();
 				launcher = undefined;

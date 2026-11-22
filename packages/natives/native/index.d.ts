@@ -334,6 +334,13 @@ export type CommandTerminal =
 
 export declare function containProcessTree(pid: number): ProcessTreeContainment | null
 
+/**
+ * Like `containProcessTree`, but sets `JOB_OBJECT_LIMIT_BREAKAWAY_OK` so descendants that
+ * explicitly ask to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) can start and outlive it, while
+ * every non-breakaway descendant remains contained and ends on `terminate()`.
+ */
+export declare function containProcessTreeAllowingBreakaway(pid: number): ProcessTreeContainment | null
+
 /** A context line (before or after a match). */
 export interface ContextLine {
   /** 1-indexed line number in the source file. */
