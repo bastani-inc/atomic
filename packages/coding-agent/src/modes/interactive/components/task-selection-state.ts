@@ -1,6 +1,6 @@
-import { childOfAttempt } from "../../../core/tasks/completion.js";
+import { childOfAttempt, latestSubagentAttempt } from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import type { AgentViewBridge } from "../agent-view/agent-view-bridge.ts";
+import type { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 
 /** One selectable list row: its current row `id` and its stable identity `key` across resumes/wakes. */
 export interface ListEntry {
@@ -111,90 +111,111 @@ export function keepRowInView(scroll: number, selIndex: number, room: number, to
 	return keepSpanInView(scroll, selIndex, selIndex, selIndex, room, total);
 }
 
-/** Per-owner `/tasks` return anchor across inspector disposal (subagent view or external extension view). */
-interface TasksReturnSlot {
-	saved?: ListSelectionAnchor;
-	unwatch?: () => void;
+/** Per-owner `/tasks` return anchor across inspector disposal (plain data only; zero bridge listeners). */
+export interface TasksReturnRecord {
+	/** Settled return anchor (restored when returning to `/tasks` from a viewed subagent or external item). */
+	readonly anchor?: ListSelectionAnchor;
+	/** Task id currently associated with the settled `anchor`, so settlement matches even after eviction. */
+	readonly anchorTaskId?: TaskId;
+	/**
+	 * In-flight subagent open requested from `/tasks`, awaiting synchronous view settlement (`AgentViewSwitcher`
+	 * or `handleSetViewedAgent`): promotes to `anchor` when the target lands, and is discarded (preserving any
+	 * prior settled `anchor`) when the open fails or another view takes over.
+	 */
+	readonly pending?: {
+		readonly targetId: TaskId;
+		readonly anchor: ListSelectionAnchor;
+	};
 }
 
-const tasksReturnSlots = new WeakMap<object, TasksReturnSlot>();
+const tasksReturnRecords = new WeakMap<object, TasksReturnRecord>();
 
-function returnSlot(owner: object): TasksReturnSlot {
-	let slot = tasksReturnSlots.get(owner);
-	if (slot === undefined) {
-		slot = {};
-		tasksReturnSlots.set(owner, slot);
+export function saveTasksReturnAnchor(owner: object, anchor: ListSelectionAnchor, anchorTaskId?: TaskId): void {
+	tasksReturnRecords.set(owner, {
+		anchor,
+		...(anchorTaskId === undefined ? {} : { anchorTaskId }),
+	});
+}
+
+export function stagePendingTasksReturn(
+	owner: object,
+	targetId: TaskId,
+	anchor: ListSelectionAnchor,
+	fallbackAnchor?: ListSelectionAnchor,
+	fallbackTaskId?: TaskId,
+): void {
+	tasksReturnRecords.set(owner, {
+		...(fallbackAnchor === undefined ? {} : { anchor: fallbackAnchor }),
+		...(fallbackAnchor !== undefined && fallbackTaskId !== undefined ? { anchorTaskId: fallbackTaskId } : {}),
+		pending: { targetId, anchor },
+	});
+}
+
+export function resolveStoreTaskKey(store: OwnerTaskStore, taskId: TaskId): string {
+	const task = latestSubagentAttempt(store.backgroundTasks, taskId) ?? store.taskRecord?.(taskId);
+	return task === undefined ? taskId : taskStableKey(task);
+}
+
+/**
+ * Settle any pending `/tasks` subagent open (and clear stale anchors on external switches to another subagent)
+ * without registering any listener on `AgentViewBridge`.
+ */
+export function settleTasksReturnAnchor(
+	owner: object,
+	viewedTaskId: TaskId | undefined,
+	resolveKey: (taskId: TaskId) => string,
+): void {
+	const record = tasksReturnRecords.get(owner);
+	if (record === undefined) return;
+	if (viewedTaskId === undefined) {
+		if (record.anchor === undefined) {
+			tasksReturnRecords.delete(owner);
+		} else if (record.pending !== undefined) {
+			tasksReturnRecords.set(owner, {
+				anchor: record.anchor,
+				...(record.anchorTaskId === undefined ? {} : { anchorTaskId: record.anchorTaskId }),
+			});
+		}
+		return;
 	}
-	return slot;
+	let resolvedKey: string | undefined;
+	const viewedKey = (): string => {
+		resolvedKey ??= resolveKey(viewedTaskId);
+		return resolvedKey;
+	};
+	if (
+		record.pending !== undefined &&
+		(viewedTaskId === record.pending.targetId || viewedKey() === record.pending.anchor.selectedKey)
+	) {
+		tasksReturnRecords.set(owner, { anchor: record.pending.anchor, anchorTaskId: viewedTaskId });
+		return;
+	}
+	if (
+		record.anchor !== undefined &&
+		(viewedTaskId === record.anchorTaskId || viewedKey() === record.anchor.selectedKey)
+	) {
+		if (record.pending !== undefined || record.anchorTaskId !== viewedTaskId) {
+			tasksReturnRecords.set(owner, { anchor: record.anchor, anchorTaskId: viewedTaskId });
+		}
+		return;
+	}
+	tasksReturnRecords.delete(owner);
 }
 
-function stopReturnWatch(slot: TasksReturnSlot): void {
-	slot.unwatch?.();
-	slot.unwatch = undefined;
+export function settleStoreTasksReturn(store: OwnerTaskStore | undefined, viewedTaskId: TaskId | undefined): void {
+	if (store === undefined || !tasksReturnRecords.has(store)) return;
+	settleTasksReturnAnchor(store, viewedTaskId, (id) => resolveStoreTaskKey(store, id));
 }
 
-export function saveTasksReturnAnchor(owner: object, anchor: ListSelectionAnchor): void {
-	const slot = returnSlot(owner);
-	stopReturnWatch(slot);
-	slot.saved = anchor;
+export function tasksReturnRecord(owner: object): TasksReturnRecord | undefined {
+	return tasksReturnRecords.get(owner);
 }
 
 export function tasksReturnAnchor(owner: object): ListSelectionAnchor | undefined {
-	return tasksReturnSlots.get(owner)?.saved;
+	const record = tasksReturnRecords.get(owner);
+	return record?.pending?.anchor ?? record?.anchor;
 }
 
-/**
- * Consume the saved return anchor on dismissal (`Esc`/`←`/`Ctrl+C`) on `main`.
- * If `keepPendingWatch` is true (first dismissal of a restored anchor while an async view request may still
- * be in flight), keep any active `bridge.subscribe` watcher alive so the anchor promotes if the requested
- * subagent finishes opening; otherwise cancel any watcher too.
- */
-export function clearTasksReturnAnchor(owner: object, options: { readonly keepPendingWatch?: boolean } = {}): void {
-	const slot = tasksReturnSlots.get(owner);
-	if (slot === undefined) return;
-	slot.saved = undefined;
-	if (!options.keepPendingWatch) {
-		stopReturnWatch(slot);
-		tasksReturnSlots.delete(owner);
-	}
-}
-
-/**
- * Watch `bridge` after `/tasks` requested a subagent view (without adding an `opening` state to `AgentViewBridge`):
- * - If `Esc` consumed `saved` before an isolated engine's `set_viewed_agent(target)` arrived, seeing the
- *   requested subagent appear restores `saved` (and stops watching).
- * - If the user was already viewing `fromViewed` and switching to `requested` failed (so the screen stayed on
- *   `fromViewed` and later returned to `main` without ever showing `requested`), rolls `saved` back to `rollback`.
- */
-export function watchPendingAgentReturn(
-	owner: object,
-	bridge: AgentViewBridge,
-	params: {
-		readonly anchor: ListSelectionAnchor;
-		readonly requestedId: TaskId;
-		readonly resolveKey: (taskId: TaskId) => string;
-		readonly fromViewed?: TaskId;
-		readonly rollback?: ListSelectionAnchor;
-	},
-): void {
-	const slot = returnSlot(owner);
-	stopReturnWatch(slot);
-	slot.saved = params.anchor;
-	const currentViewed = bridge.viewedTaskId();
-	if (currentViewed !== undefined && params.resolveKey(currentViewed) === params.anchor.selectedKey) {
-		return;
-	}
-	const unwatch = bridge.subscribe(() => {
-		const viewed = bridge.viewedTaskId();
-		if (viewed !== undefined && params.resolveKey(viewed) === params.anchor.selectedKey) {
-			slot.saved = params.anchor;
-			stopReturnWatch(slot);
-			return;
-		}
-		if (viewed === undefined && params.fromViewed !== undefined) {
-			slot.saved = params.rollback;
-			stopReturnWatch(slot);
-		}
-	});
-	slot.unwatch = unwatch;
+export function clearTasksReturnAnchor(owner: object): void {
+	tasksReturnRecords.delete(owner);
 }

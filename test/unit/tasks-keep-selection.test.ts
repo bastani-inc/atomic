@@ -21,6 +21,8 @@ import {
 	type AgentViewBridge,
 	setAgentViewBridge,
 } from "../../packages/coding-agent/src/modes/interactive/agent-view/agent-view-bridge.js";
+import { AgentViewSwitcher } from "../../packages/coding-agent/src/modes/interactive/agent-view/agent-view-switcher.js";
+import type { AgentViewPort } from "../../packages/coding-agent/src/modes/interactive/agent-view/contracts.js";
 import {
 	AgentPanelFocus,
 	type AgentPanelRow,
@@ -1122,30 +1124,294 @@ test("V3: re-entering /tasks after an opened subagent resumed and its resumed at
 	assert.match(reentered, /first alpha/, "evicted resumed attempt falls back to departure neighbour a1, not top a3");
 });
 
-test("V4: isolated engine Esc on /tasks before set_viewed_agent arrives keeps the return anchor alive across the pending view", async () => {
-	const session = { extensionRunner: {} } as never as AgentSession;
-	const store = new FakeOwnerTaskStore([
-		agent("a1", "first alpha", 1),
-		agent("a2", "second beta", 2),
-		agent("a3", "third gamma", 3),
-	]);
-	bindOwnerTaskStore(session, store);
-	const sent: InteractiveEngineMessage[] = [];
-	const context = { session, send: (message: InteractiveEngineMessage) => sent.push(message) } as never;
-	disposers.push(installEngineAgentViewBridge(context));
+function fakePort(taskId: string, agentKey = `key:${taskId}`): AgentViewPort {
+	return {
+		agentKey,
+		retain: () => () => {},
+		subscribe: () => () => {},
+		status: () => ({ taskId: taskId as TaskId, gone: false }) as ReturnType<AgentViewPort["status"]>,
+	} as unknown as AgentViewPort;
+}
 
-	// Open /tasks, select a2, press Enter -> engine sends engine_view_agent(a2) (pending, not acked yet).
+test("R3-1/R3-2/R3-3/R3-4/N4 (AgentViewSwitcher): zero listeners outlive /tasks, failed opens/switches stay clean, external switch clears stale anchor", async () => {
+	const a1 = agent("a1", "first alpha", 1, "op-1");
+	const a2 = agent("a2", "second beta", 2, "op-2");
+	const a3 = agent("a3", "third gamma", 3, "op-3");
+	const session = { extensionRunner: {} };
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
+	bindOwnerTaskStore(session, store);
+
+	const failing = new Set<string>(["a2"]);
+	const switcher = new AgentViewSwitcher(
+		async (taskId) => {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			return failing.has(taskId) ? undefined : fakePort(taskId);
+		},
+		() => {},
+	);
+	let activeSubscriptions = 0;
+	const origSubscribe = switcher.subscribe.bind(switcher);
+	switcher.subscribe = (listener) => {
+		activeSubscriptions++;
+		const unsub = origSubscribe(listener);
+		return () => {
+			activeSubscriptions--;
+			unsub();
+		};
+	};
+	setAgentViewBridge(session, switcher);
+
+	// R3-1: 5 consecutive failed opens from /tasks leave 0 bridge subscriptions (zero store retention).
+	for (let attempt = 0; attempt < 5; attempt++) {
+		await openTasks(
+			session,
+			store,
+			mountUi((component, rows) => {
+				if (!selectedLine(rows()).includes("second beta")) component.handleInput(DOWN);
+				component.handleInput(ENTER);
+			}).ui,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 15));
+	}
+	switcher.reset("session-replaced");
+	assert.equal(activeSubscriptions, 0, "no bridge listener outlives /tasks after failed opens + session-replaced");
+
+	// R3-2: Failed open of a2 on main -> Esc -> later switcher.view(a2) -> switcher.view(undefined) -> fresh /tasks starts at top a3.
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /second beta/);
+			component.handleInput(ESC);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	failing.delete("a2");
+	await switcher.view("a2" as TaskId);
+	await switcher.view(undefined);
+	let freshAfterDismiss = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			freshAfterDismiss = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(freshAfterDismiss, /third gamma/, "Esc dismissal is never resurrected by a later switcher.view");
+
+	// R3-3 + N4 + double failed switch: enter a1 -> fail a2 -> fail a3 ->
+	// (a) return from a1 to main restores a1 (N4), and (b) evicting a1 while viewing a1 selects neighbour a2 (R3-3)!
+	failing.add("a2");
+	failing.add("a3");
 	await openTasks(
 		session,
 		store,
 		mountUi((component) => {
 			component.handleInput(DOWN);
+			component.handleInput(DOWN); // a1
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	assert.equal(switcher.viewedTaskId(), "a1");
+
+	// First failed switch: a1 -> a2 (fails, stays on a1).
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(UP); // a2 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	assert.equal(switcher.viewedTaskId(), "a1");
+
+	// Second failed switch: a1 -> a3 (fails, stays on a1).
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /first alpha/, "still anchored on a1 after first failed switch");
+			component.handleInput(HOME); // a3 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	assert.equal(switcher.viewedTaskId(), "a1");
+
+	// N4: Return from a1 to main -> /tasks must restore a1 (NOT failed a3 or a2!).
+	await switcher.view(undefined);
+	let afterBackToMain = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterBackToMain = selectedLine(rows());
+			component.handleInput(ENTER); // re-enter a1 for the R3-3/R3-4 checks below
+		}).ui,
+	);
+	assert.match(afterBackToMain, /first alpha/, "N4: failed switch from a1 keeps a1's anchor on return to main");
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	assert.equal(switcher.viewedTaskId(), "a1");
+
+	// R3-4: Viewing a1 -> failed /tasks Enter a2 -> external switcher.view(a3) -> switcher.view(undefined) -> fresh /tasks at top (never stale a1!).
+	failing.delete("a3");
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(UP); // a2 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	await switcher.view("a3" as TaskId);
+	assert.equal(activeSubscriptions, 0, "switching externally to a third agent leaves 0 listeners");
+	await switcher.view(undefined);
+	let afterExternalSwitch = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterExternalSwitch = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(
+		afterExternalSwitch,
+		/third gamma/,
+		"R3-4: external switch to a3 clears a1's anchor so returning to main never reverts to stale a1",
+	);
+
+	// R3-3 (eviction while still on a1 after failed switch to a3):
+	failing.add("a3");
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(DOWN); // a1
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(HOME); // a3 (fails!)
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	store.set([a2, a3]);
+	let afterEvictOnA1 = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterEvictOnA1 = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterEvictOnA1, /second beta/, "R3-3: evicted a1 after failed switch falls back to neighbour a2");
+	switcher.dispose();
+});
+
+test("isolated engine: W5 evicted-before-ack, R3-3/N4 failed switch, R3-4 external switch, and V4 Esc-before-ack limit", async () => {
+	const a1 = agent("a1", "first alpha", 1, "op-1");
+	const a2 = agent("a2", "second beta", 2, "op-2");
+	const a3 = agent("a3", "third gamma", 3, "op-3");
+	const session = { extensionRunner: {} } as never as AgentSession;
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
+	bindOwnerTaskStore(session, store);
+	const sent: InteractiveEngineMessage[] = [];
+	const context = { session, send: (message: InteractiveEngineMessage) => sent.push(message) } as never;
+	disposers.push(installEngineAgentViewBridge(context));
+
+	// W5: /tasks Enter a2 -> a2 evicted BEFORE set_viewed_agent(a2) arrives -> ack -> back to main -> neighbour a1!
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2
 			component.handleInput(ENTER);
 		}).ui,
 	);
 	assert.equal(sent.at(-1)?.type, "engine_view_agent");
+	store.set([a1, a3]); // evict a2 before set_viewed_agent(a2) arrives!
+	await handleSetViewedAgent({ id: "w5-1", type: "set_viewed_agent", taskId: "a2" }, context);
+	await handleSetViewedAgent({ id: "w5-2", type: "set_viewed_agent" }, context);
+	let afterW5 = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterW5 = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterW5, /first alpha/, "W5: evicted-before-ack promotes anchor by targetId and selects neighbour a1");
 
-	// Re-open /tasks BEFORE set_viewed_agent(a2) arrives, then press Esc.
+	// Restore all 3 tasks for R3-3 / N4 on isolated engine:
+	store.set([a1, a2, a3]);
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(DOWN); // a1
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await handleSetViewedAgent({ id: "r3-1", type: "set_viewed_agent", taskId: "a1" }, context);
+	// Request switch to a3, host fails and sends correction set_viewed_agent("a1") (same viewed id!).
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(HOME); // a3
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	await handleSetViewedAgent({ id: "r3-2", type: "set_viewed_agent", taskId: "a1" }, context);
+	// N4 on isolated engine: return to main -> /tasks restores a1 (not failed a3!).
+	await handleSetViewedAgent({ id: "r3-3", type: "set_viewed_agent" }, context);
+	let afterIsolatedFail = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterIsolatedFail = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(
+		afterIsolatedFail,
+		/first alpha/,
+		"isolated engine failed switch preserves a1's anchor on return to main",
+	);
+
+	// V4 documented limit: Esc on /tasks before set_viewed_agent(a2) arrives clears anchor cleanly (no stale promotion),
+	// while opening /tasks while viewing a2 still selects a2.
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN); // a2
+			component.handleInput(ENTER);
+		}).ui,
+	);
 	let beforeAck = "";
 	await openTasks(
 		session,
@@ -1156,64 +1422,28 @@ test("V4: isolated engine Esc on /tasks before set_viewed_agent arrives keeps th
 		}).ui,
 	);
 	assert.match(beforeAck, /second beta/);
-
-	// Now host delivers set_viewed_agent(a2), then user goes back to main (set_viewed_agent(undefined)).
-	await handleSetViewedAgent({ id: "v1", type: "set_viewed_agent", taskId: "a2" }, context);
-	await handleSetViewedAgent({ id: "v2", type: "set_viewed_agent" }, context);
-
-	// Re-open /tasks on main: must STILL restore a2 (anchor survived the in-flight Esc!).
-	let afterReturn = "";
+	await handleSetViewedAgent({ id: "v4-1", type: "set_viewed_agent", taskId: "a2" }, context);
+	let whileViewing = "";
 	await openTasks(
 		session,
 		store,
 		mountUi((component, rows) => {
-			afterReturn = selectedLine(rows());
+			whileViewing = selectedLine(rows());
 			component.handleInput(ESC);
 		}).ui,
 	);
-	assert.match(afterReturn, /second beta/, "return anchor survived Esc during in-flight view request");
-
-	// And dismissing /tasks on settled main (no pending view) still clears the anchor for the next fresh /tasks.
-	let freshOnMain = "";
+	assert.match(whileViewing, /second beta/, "opening /tasks while viewing a2 still selects a2");
+	await handleSetViewedAgent({ id: "v4-2", type: "set_viewed_agent" }, context);
+	let afterV4Back = "";
 	await openTasks(
 		session,
 		store,
 		mountUi((component, rows) => {
-			freshOnMain = selectedLine(rows());
+			afterV4Back = selectedLine(rows());
 			component.handleInput(ESC);
 		}).ui,
 	);
-	assert.match(freshOnMain, /third gamma/, "Esc on settled main clears anchor so fresh /tasks starts at top");
-
-	// Also verify failed open recovery: Enter a2 (pending) -> host fails and sends set_viewed_agent(undefined) ->
-	// bridge settles back to main, so a subsequent /tasks -> Esc clears the anchor cleanly.
-	await openTasks(
-		session,
-		store,
-		mountUi((component) => {
-			component.handleInput(DOWN);
-			component.handleInput(ENTER);
-		}).ui,
-	);
-	await handleSetViewedAgent({ id: "v3", type: "set_viewed_agent" }, context);
-	await openTasks(
-		session,
-		store,
-		mountUi((component, rows) => {
-			assert.match(selectedLine(rows()), /second beta/);
-			component.handleInput(ESC);
-		}).ui,
-	);
-	let freshAfterFailedOpen = "";
-	await openTasks(
-		session,
-		store,
-		mountUi((component, rows) => {
-			freshAfterFailedOpen = selectedLine(rows());
-			component.handleInput(ESC);
-		}).ui,
-	);
-	assert.match(freshAfterFailedOpen, /third gamma/, "failed open settled to main so Esc cleared the anchor");
+	assert.match(afterV4Back, /third gamma/, "no stale promotion after Esc before ack");
 });
 
 test("clicking a nested shell on the 4th row of a >4-row idle agent panel returns to the next full-panel neighbour when it finishes", async () => {
@@ -1364,8 +1594,9 @@ test("returning from fullscreen shell output to a scrolled /tasks picker preserv
 				await tick();
 				rows(); // paint fullscreen shell output page
 				component.handleInput(LEFT);
-				// Simulate isolated engine repainting the closing fullscreen mount at full terminal height (26 rows) before unmount!
-				component.render(120);
+				// Simulate isolated engine or non-hiding overlay stack repainting the closing fullscreen mount!
+				// Must return [] (neither clobbering scroll at full terminal height nor painting stale fullscreen lines).
+				assert.deepEqual(component.render(120), [], "closing fullscreen mount renders empty []");
 			} else {
 				afterRows = rows();
 				component.handleInput(ESC);
@@ -1463,14 +1694,13 @@ test("N1/N2: focused agent panel scrolling and idle-panel subagent clicks do zer
 	assert.ok(taskRecordReads <= 4, `panel repaint after click stays O(visible rows), got ${taskRecordReads}`);
 });
 
-test("N3/N4/N5: failed subagent switch rolls back to prior viewed subagent, and engine bridge never sticks on already-shown or main requests", async () => {
-	// N4: Viewing a1 -> open /tasks -> Enter a2 -> openPort(a2) fails (screen stays on a1) -> <- from a1 to main -> /tasks restores a1 (not stale a2).
+test("R3-3/N3/N5: failed switch while viewing a1 preserves a1's anchor (even across eviction and repeated failed switches) with zero listeners", async () => {
+	// Viewing a1 ([a3, a2, a1]) -> /tasks Enter a2 fails -> /tasks Enter a3 fails -> a1 evicted -> /tasks selects a1's neighbour a2 (not failed a3!).
 	const session = { extensionRunner: {} };
-	const store = new FakeOwnerTaskStore([
-		agent("a1", "first alpha", 1, "op-1"),
-		agent("a2", "second beta", 2, "op-2"),
-		agent("a3", "third gamma", 3, "op-3"),
-	]);
+	const a1 = agent("a1", "first alpha", 1, "op-1");
+	const a2 = agent("a2", "second beta", 2, "op-2");
+	const a3 = agent("a3", "third gamma", 3, "op-3");
+	const store = new FakeOwnerTaskStore([a1, a2, a3]);
 	bindOwnerTaskStore(session, store);
 	const bridge = fakeBridge();
 	setAgentViewBridge(session, bridge);
@@ -1487,13 +1717,14 @@ test("N3/N4/N5: failed subagent switch rolls back to prior viewed subagent, and 
 	);
 	assert.equal(bridge.viewedTaskId(), "a1");
 
-	// Now make switching to a2 fail (bridge stays on a1 instead of changing to a2).
+	// Make switching to a2 and a3 fail (bridge stays on a1).
 	const origRequest = bridge.requestView.bind(bridge);
 	bridge.requestView = (taskId, options) => {
-		if (taskId === "a2") return; // simulate failed openPort(a2): viewedTaskId stays a1!
+		if (taskId === "a2" || taskId === "a3") return;
 		origRequest(taskId, options);
 	};
 
+	// First failed switch: a1 -> a2 (fails, stays on a1).
 	await openTasks(
 		session,
 		store,
@@ -1502,9 +1733,34 @@ test("N3/N4/N5: failed subagent switch rolls back to prior viewed subagent, and 
 			component.handleInput(ENTER);
 		}).ui,
 	);
-	assert.equal(bridge.viewedTaskId(), "a1", "failed open kept screen on a1");
+	assert.equal(bridge.viewedTaskId(), "a1");
 
-	// Return from a1 to main -> open /tasks: must restore a1, NOT stale failed a2!
+	// Second failed switch: a1 -> a3 (fails, stays on a1).
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			assert.match(selectedLine(rows()), /first alpha/, "still anchored on a1 after first failed switch");
+			component.handleInput(HOME); // a3
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	assert.equal(bridge.viewedTaskId(), "a1");
+
+	// Now evict a1 while still viewing a1 -> /tasks must fall back to a1's neighbour a2 (NOT failed a3!).
+	store.set([a2, a3]);
+	let afterEvict = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterEvict = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterEvict, /second beta/, "evicted a1 falls back to a1's neighbour a2, not failed a3");
+
+	// Also verify returning from a1 to main restores a1's neighbour a2 (N4 on synchronous bridge).
 	bridge.show(undefined);
 	let afterBackToMain = "";
 	await openTasks(
@@ -1515,9 +1771,9 @@ test("N3/N4/N5: failed subagent switch rolls back to prior viewed subagent, and 
 			component.handleInput(ESC);
 		}).ui,
 	);
-	assert.match(afterBackToMain, /first alpha/, "failed switch from a1 to a2 rolls back anchor to a1");
+	assert.match(afterBackToMain, /second beta/, "after a1 evicted and returning to main, restores neighbour a2");
 
-	// N3 & N5: Engine bridge has no stuck `opening` state after already-shown resumed reopen or requestView(undefined).
+	// N3 & N5: Engine bridge has no `opening` state to stick on already-shown or main requests.
 	const engineSession = { extensionRunner: {} } as never as AgentSession;
 	const engineStore = new FakeOwnerTaskStore([
 		agent("a1", "first alpha", 1, "op-1"),

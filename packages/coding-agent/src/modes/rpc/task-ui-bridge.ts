@@ -17,22 +17,26 @@ import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { launchedTaskViewSource, ownerTaskViewSource, type TaskViewSource } from "../../core/tasks/task-view-source.js";
 import { agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
+import { AgentViewSwitcher } from "../interactive/agent-view/agent-view-switcher.ts";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
 import { taskDisplayText } from "../interactive/components/task-row.js";
 import {
 	clearTasksReturnAnchor,
 	type ListSelectionAnchor,
+	resolveStoreTaskKey,
 	saveTasksReturnAnchor,
+	stagePendingTasksReturn,
 	taskStableKey,
 	tasksReturnAnchor,
-	watchPendingAgentReturn,
+	tasksReturnRecord,
 } from "../interactive/components/task-selection-state.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
 import { hideAgentPanelFor } from "./agent-panel-bridge.ts";
+import { engineAgentViewSettlementSeq } from "./agent-view-rpc-panel.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
@@ -145,16 +149,18 @@ export async function showTaskInspector(
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
 	let requestedAgentId: TaskId | undefined;
+	let engineSeqAtRequest: number | undefined;
 	const trackReturn = !options.chat && options.source === undefined;
 	const session = options.board ? boardSessions.get(options.board) : undefined;
 	const bridge = session === undefined ? undefined : agentViewBridge(session);
 	const panelTarget = session ?? store;
-	const priorSaved = trackReturn ? tasksReturnAnchor(store) : undefined;
+	const priorRecord = trackReturn ? tasksReturnRecord(store) : undefined;
 	const priorViewedId = bridge?.viewedTaskId();
-	const resolveTaskKey = (id: TaskId): string => {
-		const task = latestSubagentAttempt(store.backgroundTasks, id) ?? store.taskRecord?.(id);
-		return task === undefined ? id : taskStableKey(task);
-	};
+	const priorSaved = trackReturn
+		? priorViewedId !== undefined && priorRecord?.anchor !== undefined
+			? priorRecord.anchor
+			: tasksReturnAnchor(store)
+		: undefined;
 	/** The agent panel this view takes the place of: hidden once the view is mounted, back in the step it closes. */
 	const panel = hideAgentPanelFor(panelTarget);
 	const inspector = new TaskInspector(
@@ -176,6 +182,7 @@ export async function showTaskInspector(
 		if (bridge !== undefined)
 			inspector.setAgentView((id) => {
 				requestedAgentId = id;
+				engineSeqAtRequest = engineAgentViewSettlementSeq(bridge);
 				bridge.requestView(id, { keepScreen: true });
 			});
 
@@ -255,7 +262,6 @@ export async function showTaskInspector(
 					}
 					// Elapsed times and the stop notice's window advance while the view is shown.
 					const mountFullscreen = fullscreen;
-					let lastFullscreenFrame: string[] | undefined;
 					const tick = setInterval(() => tui.requestRender(), 1000);
 					tick.unref?.();
 					return {
@@ -264,31 +270,22 @@ export async function showTaskInspector(
 						render: (width: number) => {
 							const height = Math.max(1, tui.terminal.rows);
 							if (!mountFullscreen) return inspector.renderPicker(width, height);
-							// A closing fullscreen mount that repaints before unmount (after `←` switched
-							// `inspector.fullscreen` back to false) must not render the picker board at full
-							// terminal height, which would clamp `selectionPhase.scroll` down to 0.
-							if (!inspector.fullscreen) {
-								if (lastFullscreenFrame !== undefined) {
-									return Array.from({ length: height }, (_, row) => {
-										const line = truncateToWidth(lastFullscreenFrame![row] ?? "", width);
-										return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
-									});
-								}
-								return inspector.renderPicker(width, height);
-							}
+							// A closing fullscreen mount (after `←` returned to the inline picker) must not
+							// repaint: rendering the board at full terminal height would clamp scroll to 0, and
+							// painting a stale fullscreen frame would bleed beneath the inline picker.
+							if (!inspector.fullscreen) return [];
 							const lines = inspector.renderViewport(width, height);
 							// Fullscreen detail pages cover all parent chat and prompt cells.
-							lastFullscreenFrame = Array.from({ length: height }, (_, row) => {
+							return Array.from({ length: height }, (_, row) => {
 								const line = truncateToWidth(lines[row] ?? "", width);
 								return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 							});
-							return lastFullscreenFrame;
 						},
 						// A full-screen page draws from the top row, so the click's row is the page's.
 						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
-							fullscreen ? inspector.handleMouse(event) : undefined,
+							mountFullscreen && inspector.fullscreen ? inspector.handleMouse(event) : undefined,
 						paintedRowKey: (row: number): string | undefined =>
-							fullscreen ? inspector.paintedRowKey(row) : undefined,
+							mountFullscreen && inspector.fullscreen ? inspector.paintedRowKey(row) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							// Ctrl+C closes the view: what it shows here (lists, details, a shell's output) has no prompt.
@@ -324,32 +321,45 @@ export async function showTaskInspector(
 	} finally {
 		if (trackReturn) {
 			if (inspector.closeReason === "navigated-agent" && inspector.returnAnchor !== undefined) {
-				if (bridge !== undefined && requestedAgentId !== undefined) {
-					const rollback =
-						priorSaved ??
-						(priorViewedId === undefined
-							? undefined
-							: {
-									selectedKey: resolveTaskKey(priorViewedId),
-									orderKeys: inspector.returnAnchor.orderKeys,
-									scroll: inspector.returnAnchor.scroll,
-								});
-					watchPendingAgentReturn(store, bridge, {
-						anchor: inspector.returnAnchor,
-						requestedId: requestedAgentId,
-						resolveKey: resolveTaskKey,
-						...(priorViewedId === undefined ? {} : { fromViewed: priorViewedId }),
-						...(rollback === undefined ? {} : { rollback }),
-					});
+				const anchor = inspector.returnAnchor;
+				const currentViewed = bridge?.viewedTaskId();
+				if (
+					bridge === undefined ||
+					requestedAgentId === undefined ||
+					(currentViewed !== undefined &&
+						(currentViewed === requestedAgentId ||
+							resolveStoreTaskKey(store, currentViewed) === anchor.selectedKey))
+				) {
+					saveTasksReturnAnchor(store, anchor, currentViewed ?? requestedAgentId);
 				} else {
-					saveTasksReturnAnchor(store, inspector.returnAnchor);
+					const priorViewedKey =
+						priorViewedId === undefined ? undefined : resolveStoreTaskKey(store, priorViewedId);
+					const priorFallbackAnchor =
+						priorViewedId !== undefined && priorViewedKey !== undefined && anchor.selectedKey !== priorViewedKey
+							? priorSaved !== undefined && priorSaved.selectedKey === priorViewedKey
+								? priorSaved
+								: {
+										selectedKey: priorViewedKey,
+										orderKeys: anchor.orderKeys,
+										scroll: anchor.scroll,
+									}
+							: undefined;
+					const awaitingAsyncSettlement =
+						(bridge instanceof AgentViewSwitcher && bridge.pendingTaskId !== undefined) ||
+						(engineSeqAtRequest !== undefined && engineAgentViewSettlementSeq(bridge) === engineSeqAtRequest);
+					if (awaitingAsyncSettlement) {
+						stagePendingTasksReturn(store, requestedAgentId, anchor, priorFallbackAnchor, priorViewedId);
+					} else if (priorViewedId !== undefined && currentViewed === priorViewedId) {
+						if (priorFallbackAnchor !== undefined)
+							saveTasksReturnAnchor(store, priorFallbackAnchor, priorViewedId);
+					} else {
+						clearTasksReturnAnchor(store);
+					}
 				}
 			} else if (inspector.closeReason === "navigated-item" && inspector.returnAnchor !== undefined) {
 				saveTasksReturnAnchor(store, inspector.returnAnchor);
 			} else if (bridge?.viewedTaskId() === undefined) {
-				// Consume the saved return anchor on `main`; if this dismissal consumed a restored anchor while an
-				// earlier view request may still be in flight, keep the watcher so an incoming ack promotes it.
-				clearTasksReturnAnchor(store, { keepPendingWatch: priorSaved !== undefined });
+				clearTasksReturnAnchor(store);
 			}
 		}
 		inspector?.dispose();

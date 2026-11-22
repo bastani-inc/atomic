@@ -1,5 +1,6 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import type { AgentViewBridge, AgentViewRequestOptions } from "./agent-view-bridge.ts";
+import { settleStoreTasksReturn } from "../components/task-selection-state.js";
+import { type AgentViewBridge, type AgentViewRequestOptions, ownerTaskStoreForBridge } from "./agent-view-bridge.ts";
 import { type AgentViewChange, type AgentViewPort, VIEWING_MAIN, type ViewedTarget } from "./contracts.ts";
 
 /** How a pending request ended: its subagent was shown, could not be, or another request replaced it. */
@@ -178,6 +179,9 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		const releaseScreen = this.releaseScreen;
 		this.releaseScreen = undefined;
 		const settled = previous === undefined ? undefined : { taskId: previous, outcome };
+		if (taskId === undefined && settled !== undefined) {
+			settleStoreTasksReturn(ownerTaskStoreForBridge(this), this.viewedTaskId());
+		}
 		for (const listener of [...this.pendingListeners]) {
 			try {
 				listener(taskId, settled);
@@ -205,6 +209,7 @@ export class AgentViewSwitcher implements AgentViewBridge {
 		this.unwatchCurrent = undefined;
 		this.releaseCurrent = undefined;
 		this.current = to;
+		settleStoreTasksReturn(ownerTaskStoreForBridge(this), this.viewedTaskId());
 		if (to.kind === "agent") {
 			this.releaseCurrent = to.port.retain();
 			this.unwatchCurrent = to.port.subscribe(() => {
