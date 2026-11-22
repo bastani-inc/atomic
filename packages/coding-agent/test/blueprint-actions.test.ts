@@ -2298,52 +2298,91 @@ describe("the budget of a step", () => {
 		},
 	});
 
-	/** Return a real shell lookup at the specified wall millisecond. Neither clock nor the command timer is patched. */
+	/**
+	 * Run a real action with a real shell lookup and real command timer, landing `remainingMs()` at the exact `setupMs`
+	 * boundary without relying on wall-clock scheduling alignment.
+	 *
+	 * Clocks are pinned only across the two synchronous sampling windows (`createContext` at entry and `remainingMs()`
+	 * after shell lookup returns). Async setup I/O (including Windows directory-rename retries and the real shell lookup)
+	 * and child execution (spawn retries, the unpatched command timer, and tree settlement) observe advancing real clocks
+	 * because the pinned origin sits `setupMs` before the real clock at entry.
+	 */
 	async function runAtSetupBoundary(timeoutMs: number, setupMs: number) {
 		const log = await openStepLog(join(fixture.logs, "fractional.log"));
 		const lookup = shell.getShellConfigAsync;
-		let readyAt = 0;
-		let returnedAt = 0;
+		const realDateNow = Date.now.bind(Date);
+		const realPerfNow = performance.now.bind(performance);
+		const boundaryWall = realDateNow();
+		const boundaryMono = Math.floor(realPerfNow());
+		const startedWall = boundaryWall - setupMs;
+		const startedMono = boundaryMono - setupMs;
+
+		let pinned: { readonly wall: number; readonly mono: number } | undefined = {
+			wall: startedWall,
+			mono: startedMono,
+		};
+		let entryWallReads = 0;
+		let entryMonoReads = 0;
+		let lookupReturned = false;
+
+		const wallSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+			if (pinned === undefined) return realDateNow();
+			if (!lookupReturned) entryWallReads++;
+			return pinned.wall;
+		});
+		const monoSpy = vi.spyOn(performance, "now").mockImplementation(() => {
+			if (pinned === undefined) return realPerfNow();
+			if (!lookupReturned) entryMonoReads++;
+			return pinned.mono;
+		});
 		const lookupSpy = vi.spyOn(shell, "getShellConfigAsync").mockImplementation(async () => {
 			const config = await lookup();
-			const sleepMs = readyAt - Date.now() - 20;
-			if (sleepMs > 0) await delay(sleepMs);
-			while (Date.now() < readyAt) {
-				/* finish in the target millisecond */
-			}
-			returnedAt = Date.now();
+			lookupReturned = true;
+			pinned = { wall: boundaryWall, mono: boundaryMono };
 			return config;
 		});
 		try {
-			for (let attempt = 0; attempt < 8; attempt++) {
-				const pids: number[] = [];
-				const options = {
-					step: { uses: "github.com/acme/fractional@v1", inputs: {} },
-					location: LOCATION,
-					cwd: fixture.workspace,
-					env: process.env,
-					envrcPath: fixture.envrcPath,
-					cacheDir: fixture.cacheDir,
-					log,
-					timeoutMs,
-					fetchAction,
-				};
-				const before = Date.now();
-				const result = stepProcessWatcher.run(
-					(pid, live) => {
-						if (live) pids.push(pid);
-					},
-					() => runAction(options),
-				);
-				const after = Date.now();
-				readyAt = after + setupMs;
-				const exit = await result;
-				// If setup began across a tick or lookup overslept, this wasn't the boundary under test.
-				if (before === after && returnedAt === readyAt) return { pids, exit };
-			}
-			throw new Error(`Shell lookup never returned at setup millisecond ${setupMs}`);
+			const pids: number[] = [];
+			const options = {
+				step: { uses: "github.com/acme/fractional@v1", inputs: {} },
+				location: LOCATION,
+				cwd: fixture.workspace,
+				env: process.env,
+				envrcPath: fixture.envrcPath,
+				cacheDir: fixture.cacheDir,
+				log,
+				timeoutMs,
+				fetchAction,
+			};
+			const result = stepProcessWatcher.run(
+				(pid, live) => {
+					if (live) pids.push(pid);
+				},
+				() =>
+					stepStartingWatcher.run(
+						() => {
+							// `runLoggedProcess` already read `context.remainingMs()` and initialized its own
+							// `startElapsedMs()` at `(boundaryWall, boundaryMono)`; unpin before `spawn()` so
+							// retries, the real command timer, and tree settlement observe advancing real clocks.
+							if (lookupReturned) pinned = undefined;
+						},
+						() => {
+							const pending = runAction(options);
+							// `createContext` synchronously captures `wallStart` and `monoStart` before its first
+							// `await`; unpin immediately so setup I/O and the real shell lookup run unpinned.
+							pinned = undefined;
+							return pending;
+						},
+					),
+			);
+			const exit = await result;
+			assert.ok(entryWallReads > 0 && entryMonoReads > 0, "runAction captured its start clocks at entry");
+			return { pids, exit };
 		} finally {
+			pinned = undefined;
 			lookupSpy.mockRestore();
+			monoSpy.mockRestore();
+			wallSpy.mockRestore();
 			await log.close();
 		}
 	}
@@ -2352,6 +2391,7 @@ describe("the budget of a step", () => {
 		const { exit, pids } = await runAtSetupBoundary(1000 * (0.1 + 0.2), 300);
 		assert.deepEqual(pids, []);
 		assert.equal(exit.timedOut, true);
+		assert.equal(exit.elapsedMs, 300);
 		assert.equal(existsSync(join(fixture.workspace, "marker")), false);
 	});
 

@@ -23,6 +23,7 @@ import {
 	BlueprintUsesUnsupportedError,
 } from "../src/core/resume/blueprint/errors.ts";
 import {
+	BLUEPRINT_STEP_TIMEOUT_MS,
 	bashProcess,
 	powerShellProcess,
 	runSection,
@@ -137,6 +138,64 @@ async function waitFor(done: () => boolean, what: string): Promise<void> {
 	}
 }
 
+/**
+ * Makes the step budget timer armed for {@link BLUEPRINT_STEP_TIMEOUT_MS} expire once `started()` is true, rather than
+ * after three hours or before a slow shell on a loaded machine writes its start marker. Records every intercepted delay
+ * so the test still verifies that {@link runSection} forwarded the step budget to the process timer.
+ *
+ * The poll is always scheduled on a later timer turn (never synchronously inside `setTimeout`) so the process runner
+ * finishes wiring its timer handle and exit listeners before the callback runs. Real wall-clock expiry and `elapsedMs`
+ * reporting remain covered by the unpatched-timer timeout test in `step timings (#4748)`.
+ */
+function expireStepBudgetOnceStarted(started: () => boolean): {
+	readonly armedDelays: number[];
+	restore(): void;
+} {
+	const realSetTimeout = globalThis.setTimeout;
+	const realClearTimeout = globalThis.clearTimeout;
+	const armedDelays: number[] = [];
+	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
+	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
+		if (typeof timeout !== "number" || timeout <= BLUEPRINT_STEP_TIMEOUT_MS / 2) {
+			return realSetTimeout(handler, timeout, ...args);
+		}
+		armedDelays.push(timeout);
+		const budget: (typeof budgets)[number] = {
+			standIn: realSetTimeout(() => undefined, 2 ** 31 - 1),
+			cleared: false,
+		};
+		budget.standIn.unref();
+		budgets.push(budget);
+		const look = () => {
+			if (budget.cleared) return;
+			if (started()) handler(...args);
+			else budget.watch = realSetTimeout(look, 20);
+		};
+		budget.watch = realSetTimeout(look, 20);
+		return budget.standIn;
+	}) as typeof setTimeout;
+	globalThis.clearTimeout = ((timer?: NodeJS.Timeout | string | number) => {
+		const budget = budgets.find((entry) => entry.standIn === timer);
+		if (budget !== undefined) {
+			budget.cleared = true;
+			realClearTimeout(budget.watch);
+		}
+		realClearTimeout(timer);
+	}) as typeof clearTimeout;
+	return {
+		armedDelays,
+		restore() {
+			globalThis.setTimeout = realSetTimeout;
+			globalThis.clearTimeout = realClearTimeout;
+			for (const budget of budgets) {
+				budget.cleared = true;
+				realClearTimeout(budget.watch);
+				realClearTimeout(budget.standIn);
+			}
+		},
+	};
+}
+
 function lowestFreeDescriptor(): number {
 	const descriptor = openSync(path("probe"), "w");
 	closeSync(descriptor);
@@ -249,11 +308,23 @@ describe("a section's steps and their logs (#4588)", () => {
 	});
 
 	test("a step that outlives the timeout is stopped and reported as timed out in its section (#4588)", async () => {
-		const result = await runSection(
-			"post-build",
-			[run(`echo started >> "$MARKERS"\nsleep 30\necho finished >> "$MARKERS"`, "Hang")],
-			context({ timeoutMs: 400 }),
-		);
+		const budget = expireStepBudgetOnceStarted(() => {
+			try {
+				return lines(markers()).includes("started");
+			} catch {
+				return false;
+			}
+		});
+		let result: SectionResult;
+		try {
+			result = await runSection(
+				"post-build",
+				[run(`echo started >> "$MARKERS"\nsleep 30\necho finished >> "$MARKERS"`, "Hang")],
+				context({ timeoutMs: BLUEPRINT_STEP_TIMEOUT_MS }),
+			);
+		} finally {
+			budget.restore();
+		}
 		const failure = failureOf(result);
 		assert.ok(failure.error instanceof BlueprintStepTimedOutError);
 		const { elapsedMs, ...fields } = failure.error.fields;
@@ -264,11 +335,16 @@ describe("a section's steps and their logs (#4588)", () => {
 			index: 0,
 			step: "Hang",
 			logPath: logPathOf("post-build", 1),
-			timeoutMs: 400,
+			timeoutMs: BLUEPRINT_STEP_TIMEOUT_MS,
 			phase: "post-build",
 		});
-		assert.ok(typeof elapsedMs === "number" && elapsedMs >= 300, `elapsed ${String(elapsedMs)} ms`);
-		assertLogEnd(failure.outputTail, "# timed out after 400 ms and was stopped");
+		assert.equal(budget.armedDelays.length, 1);
+		assert.ok(
+			budget.armedDelays[0]! <= BLUEPRINT_STEP_TIMEOUT_MS && budget.armedDelays[0]! > BLUEPRINT_STEP_TIMEOUT_MS / 2,
+			`armed delay ${String(budget.armedDelays[0])} ms`,
+		);
+		assert.ok(typeof elapsedMs === "number" && elapsedMs >= 0, `elapsed ${String(elapsedMs)} ms`);
+		assertLogEnd(failure.outputTail, `# timed out after ${BLUEPRINT_STEP_TIMEOUT_MS} ms and was stopped`);
 		assert.deepEqual(lines(markers()), ["started"]);
 	});
 
@@ -387,9 +463,10 @@ describe("step timings (#4748)", () => {
 	test("each step reports its section, name, duration and how it ended to the resume it runs in (#4748)", async () => {
 		const recorder = new ResumeTimingsRecorder();
 		const started = performance.now();
+		let timedOutResult!: SectionResult;
 		await recorder.run(async () => {
 			await runSection("initialize", [run("echo ok", "Fine"), run("exit 3", "Broken")], context());
-			await runSection("post-build", [run("sleep 30", "Hang")], context({ timeoutMs: 400 }));
+			timedOutResult = await runSection("post-build", [run("sleep 30", "Hang")], context({ timeoutMs: 400 }));
 		});
 		const wallMs = performance.now() - started;
 		const steps = recorder.finish().blueprint;
@@ -403,6 +480,14 @@ describe("step timings (#4748)", () => {
 		);
 		assert.ok(steps[2]!.ms >= 300, `the timed-out step ran ${steps[2]!.ms} ms`);
 		assert.ok(steps.reduce((sum, step) => sum + step.ms, 0) <= wallMs);
+		const failure = failureOf(timedOutResult);
+		assert.ok(failure.error instanceof BlueprintStepTimedOutError);
+		assert.equal(failure.error.fields.timeoutMs, 400);
+		assert.ok(
+			typeof failure.error.fields.elapsedMs === "number" && failure.error.fields.elapsedMs >= 300,
+			`elapsed ${String(failure.error.fields.elapsedMs)} ms`,
+		);
+		assertLogEnd(failure.outputTail, "# timed out after 400 ms and was stopped");
 	});
 });
 
