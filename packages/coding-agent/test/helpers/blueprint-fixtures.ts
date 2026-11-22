@@ -42,7 +42,12 @@ export function expireStepBudgetOnceStarted(started: () => boolean): {
 	const armedDelays: number[] = [];
 	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
 	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
-		if (typeof timeout !== "number" || timeout <= BLUEPRINT_STEP_TIMEOUT_MS / 2) {
+		if (
+			typeof timeout !== "number" ||
+			!Number.isFinite(timeout) ||
+			timeout <= BLUEPRINT_STEP_TIMEOUT_MS / 2 ||
+			timeout > BLUEPRINT_STEP_TIMEOUT_MS
+		) {
 			return realSetTimeout(handler, timeout, ...args);
 		}
 		armedDelays.push(timeout);

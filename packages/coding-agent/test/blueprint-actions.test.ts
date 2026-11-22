@@ -1268,6 +1268,10 @@ describe("how an action ends", () => {
 		assert.equal(exit.timedOut, true);
 		assert.notEqual(exit.exitStatus, 0);
 		assert.equal(budget.armedDelays.length, 1);
+		assert.ok(
+			budget.armedDelays[0]! <= BLUEPRINT_STEP_TIMEOUT_MS && budget.armedDelays[0]! > BLUEPRINT_STEP_TIMEOUT_MS / 2,
+			`armed delay ${String(budget.armedDelays[0])} ms`,
+		);
 		assert.ok(existsSync(pidFile), "the action started before its budget ran out");
 		assert.equal(isSameProcessAlive(readRecordedPid(pidFile), identity), false);
 	});
@@ -2291,8 +2295,9 @@ describe("the budget of a step", () => {
 	 *
 	 * Clocks are pinned only across the two synchronous sampling windows (`createContext` at entry and `remainingMs()`
 	 * after shell lookup returns). Async setup I/O (including Windows directory-rename retries and the real shell lookup)
-	 * and child execution (spawn retries, the unpatched command timer, and tree settlement) observe advancing real clocks
-	 * because the pinned origin sits `setupMs` before the real clock at entry.
+	 * and child execution (`startElapsedMs()`, spawn retries, the unpatched command timer, and tree settlement) observe
+	 * advancing real clocks. `startedMono` is kept at or below 0 so epoch-precision rounding is exercised exclusively on
+	 * the wall clock and a wrong-clock monotonic deadline cannot accidentally mask fractional-ms residue.
 	 */
 	async function runAtSetupBoundary(timeoutMs: number, setupMs: number) {
 		const log = await openStepLog(join(fixture.logs, "fractional.log"));
@@ -2300,7 +2305,7 @@ describe("the budget of a step", () => {
 		const realDateNow = Date.now.bind(Date);
 		const realPerfNow = performance.now.bind(performance);
 		const boundaryWall = realDateNow();
-		const boundaryMono = Math.floor(realPerfNow());
+		const boundaryMono = Math.min(setupMs, Math.floor(realPerfNow()));
 		const startedWall = boundaryWall - setupMs;
 		const startedMono = boundaryMono - setupMs;
 
@@ -2311,6 +2316,7 @@ describe("the budget of a step", () => {
 		let entryWallReads = 0;
 		let entryMonoReads = 0;
 		let lookupReturned = false;
+		let unpinTimer: NodeJS.Immediate | undefined;
 
 		const wallSpy = vi.spyOn(Date, "now").mockImplementation(() => {
 			if (pinned === undefined) return realDateNow();
@@ -2326,6 +2332,11 @@ describe("the budget of a step", () => {
 			const config = await lookup();
 			lookupReturned = true;
 			pinned = { wall: boundaryWall, mono: boundaryMono };
+			// `remainingMs()` runs in the microtask right after this resolves; unpin before async `createFileCommands`
+			// and `runLoggedProcess`'s `startElapsedMs()` so setup time never leaks into the child's spawn-retry clock.
+			unpinTimer = setImmediate(() => {
+				if (lookupReturned) pinned = undefined;
+			});
 			return config;
 		});
 		try {
@@ -2348,9 +2359,6 @@ describe("the budget of a step", () => {
 				() =>
 					stepStartingWatcher.run(
 						() => {
-							// `runLoggedProcess` already read `context.remainingMs()` and initialized its own
-							// `startElapsedMs()` at `(boundaryWall, boundaryMono)`; unpin before `spawn()` so
-							// retries, the real command timer, and tree settlement observe advancing real clocks.
 							if (lookupReturned) pinned = undefined;
 						},
 						() => {
@@ -2366,6 +2374,7 @@ describe("the budget of a step", () => {
 			assert.ok(entryWallReads > 0 && entryMonoReads > 0, "runAction captured its start clocks at entry");
 			return { pids, exit };
 		} finally {
+			if (unpinTimer !== undefined) clearImmediate(unpinTimer);
 			pinned = undefined;
 			lookupSpy.mockRestore();
 			monoSpy.mockRestore();
