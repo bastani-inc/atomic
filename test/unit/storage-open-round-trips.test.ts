@@ -215,7 +215,9 @@ test("a schema set up in batches on the connection's thread is the one set up a 
 		const connection = new DatabaseSync(join(directory, `${start}-caller.sqlite`));
 		const oneAtATime = wrapNodeSqliteDatabase(connection);
 		cleanups.push(async () => {
+			// A wrapped connection stays the caller's to close; Windows removes no file that is still open.
 			await oneAtATime.close();
+			connection.close();
 			removeTempDirectory(directory);
 		});
 		if (start === "older") {
