@@ -5,63 +5,80 @@ description: "Continue a session on another machine that shares your storage: wh
 
 # Resume on any machine
 
-When several machines share one storage database, a session started on one machine can continue on any of them. Atomic finds the session in the shared storage, rebuilds the repository state it was working against, and continues the conversation where it stopped.
+When several machines share one storage database, you can start a session on one machine and continue it on any other. Atomic reads the session from shared storage, rebuilds the repository state it was working against, and continues the conversation where it stopped.
 
 ## Join each machine
 
-Every machine must use the same shared storage. Install the libSQL adapter and join the database on each one:
+Every machine must use the same shared database, either PostgreSQL or libSQL / Turso.
+
+**PostgreSQL:**
+
+```bash
+atomic install npm:@bastani/atomic-storage-postgres
+atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+```
+
+See [PostgreSQL](/storage#postgresql) for database roles, TLS, and cloud identities.
+
+**libSQL / Turso:**
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
-atomic storage join <url> --token-file <path>
+atomic storage join libsql://<db>.turso.io --token-file ~/turso-token
 ```
 
-`atomic storage join` keeps sessions in the shared database, so they resume on any joined machine. `atomic team join` shares Intercom but keeps sessions on each machine; to share sessions on a machine joined that way, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
+`atomic storage join` stores sessions in the shared database so they resume on any joined machine. By contrast, `atomic team join` shares Intercom while keeping sessions local. To share sessions on a machine joined with `atomic team join`, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens, and `atomic storage status`.
 
-Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else. Work inside submodules and in untracked repositories nested in the checkout is not recorded. A resume names each such path in a warning (`nested-repository`, `submodule-changes`, `unpushed-submodule-commit`); commit and push that work to bring it along. See [What is left out](/worktree-snapshots#what-is-left-out).
+Keep worktree snapshots enabled (`snapshots.enabled`, on by default). At the end of each turn that modifies files, Atomic saves uncommitted edits, untracked files, and unpushed commits in the shared database. Work inside submodules and untracked nested repositories is not recorded, and resume warns with `nested-repository`, `submodule-changes`, or `unpushed-submodule-commit` so you can commit and push those changes first. See [What is left out](/worktree-snapshots#what-is-left-out).
 
 ## Resume a session
 
-Resume as usual, with `atomic --session <id>`, `atomic --resume` or `/resume`. When the session's checkout is missing or changed on this machine:
+Resume as usual with `atomic --session <id>`, `atomic --resume`, or `/resume`.
 
-- If you start Atomic inside a checkout of the same repository and its files match what the session recorded, the session continues there.
-- Otherwise Atomic restores the recorded state into a worktree under `~/.atomic/agent/worktree-snapshots` and continues there. It never writes into your checkouts. When an idle worktree of the same repository that Atomic restored earlier holds nothing a snapshot did not record, Atomic resets it to the recorded state and keeps its dependencies and build output, so setup is faster; otherwise it restores into a new worktree. One line names the new worktree. The session holds that worktree while it is open; resuming it again on this machine continues there, unless another session took the worktree meanwhile, in which case it gets a fresh one. See [Restored worktrees](/worktree-snapshots#restored-worktrees).
-- If the recorded state cannot be rebuilt exactly, for example because unpushed commits touch files that are never recorded (`.env`, keys), a remote is unreachable, or a snapshot blob is missing, the session still opens with its whole conversation. Atomic restores the best state it can reach: the recorded commit with the uncommitted changes that apply, else the closest commit it can fetch (the last pushed commit, an earlier snapshot's commit, or the branch tip), else nothing, and then the session continues in its recorded directory, or in the directory you started from when that is not on this machine. One notice says what was restored, what is missing and what to do, for example push the missing commits from the original machine and `/resume` again. `/session snapshot` shows the same. See [Resuming](/worktree-snapshots#resuming).
-- To see where a slow resume spent its time, run `/session snapshot`: its **Last resume** block lists each restore phase (fetch, materialize, LFS, verify, …) and each blueprint step with its duration. `ATOMIC_TIMING=1 atomic --session <id>` prints the same lines to stderr. See [Inspecting snapshots](/worktree-snapshots#inspecting-snapshots).
-- If you start `atomic` inside a checkout of the same repository that differs from the recording and has uncommitted or untracked changes, Atomic asks whether to restore a fresh worktree (the default), continue in your checkout as it is, or cancel. `/resume` and non-interactive modes such as `-p` do not ask; they restore a fresh worktree. A clean checkout that differs, such as a fresh clone at another commit, is left alone without asking, and a fresh worktree is restored. A checkout where the recorded edits were committed counts as matching.
-- A session that worked in several checkouts gets each of them back where it can, also when it worked from a directory outside all of them: the checkout you started in is used for its repository, and every other recorded checkout that is missing here is restored. Only the checkout the session works in has to be restorable. Any other checkout that is missing or changed never stops the resume: one the session worked in on this machine (a sibling worktree, for example) and that changed since continues as it is, and one that cannot be restored is left out. Each checkout that is left out or kept as it is gets a warning that names its path and why, for example `Continuing without restoring /tmp/probe (snapshot 3f2a9c1d7b04): it does not exist on this node, and Git is unavailable here (not-installed), which restoring it needs`. If you choose to continue in a checkout that differs, the other checkouts are not restored, and a warning names those that are missing here.
+- **Matching local checkout.** If you start Atomic inside a checkout of the same repository whose files match the snapshot (or where the recorded edits were committed), the session continues there directly.
+- **Restored worktree.** Otherwise, Atomic restores the recorded state into a worktree under `~/.atomic/agent/worktree-snapshots` without modifying your local checkouts, and prints the restored path. Atomic reuses a clean idle worktree of the same repository when available so existing dependencies and build output stay intact. See [Restored worktrees](/worktree-snapshots#restored-worktrees).
+- **Changed local checkout.** If you start `atomic` interactively in a checkout of the same repository that differs and has uncommitted or untracked changes, Atomic asks whether to restore a fresh worktree (the default), continue in your checkout as-is, or cancel. `/resume`, non-interactive modes such as `-p`, and clean differing checkouts restore a fresh worktree automatically.
+- **Partial (degraded) restore.** If the exact tree cannot be rebuilt (for example, an unreachable remote, a missing blob, or unpushed commits touching denied secret files), the session still opens with its full conversation. Atomic restores the closest reachable state and prints a notice naming what is missing and how to recover. See [Resuming](/worktree-snapshots#resuming).
+- **Multiple checkouts.** A session that modified several checkouts restores each one that is missing on this machine. Only the checkout the session works in must be restorable; any other checkout that cannot be restored or changed locally produces a warning without blocking the resume.
+- **Timing diagnostics.** Run `/session snapshot` to inspect the **Last resume** timing breakdown (fetch, materialize, LFS, verify, and each blueprint step), or run `ATOMIC_TIMING=1 atomic --session <id>` to print timings to stderr. See [Inspecting snapshots](/worktree-snapshots#inspecting-snapshots).
 
-Absolute paths from the earlier machine keep working: a tool call that names a file under the old checkout opens the same file in the restored worktree. Shell commands are run as written, so a command that names an old absolute path needs the new one.
+Absolute paths from the earlier machine keep working in built-in file tools because Atomic maps paths under the old checkout to the restored worktree. Shell commands run as written, so commands containing old absolute paths need the new worktree path.
 
-A `--session` id whose recorded directory does not exist on this machine, or that a restore moved to the current directory, opens directly instead of offering to fork the session into the current directory.
+Passing `--session <id>` for a session whose recorded directory does not exist on this machine opens directly instead of offering to fork the session. SDK callers using `createAgentSession({ sessionManager })` get the same restore behavior unless they pass `cwd` or `workspace`, even when the recorded path exists on this machine with different files (such as runners built from the same container image).
 
-An SDK `createAgentSession({ sessionManager })` call prepares a supplied session the same way before it starts, unless you pass `cwd` or `workspace`. That includes a session whose recorded directory exists on this machine but holds a different tree, for example a runner built from the same image: the session continues in a restored worktree, not in that directory.
-
-When the shared storage does not answer, `atomic --session`, `--resume`, `--continue` and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError` instead of waiting for the network to give up. Nothing was changed; resume again once `atomic storage status` reaches the database.
+If shared storage does not answer, `atomic --session`, `--resume`, `--continue`, and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError`. Nothing is modified; resume again once `atomic storage status` connects.
 
 ### When the session is already open
 
-A session runs in one process at a time. `atomic --session`, `--resume` and `--continue` claim the session they open before they write to it or restore its checkouts. When another process on this machine still has the session open, the resume changes nothing and exits with code `75`:
+A session runs in one process at a time. `atomic --session`, `--resume`, and `--continue` claim the session before writing to it or restoring checkouts. If another live process on this machine already holds the session, resume makes no changes and exits with code `75`:
 
 ```text
 Error: Session <id> is already open in process <pid> on <host>. Nothing was changed. Close it there or wait for that process to exit, then resume again.
 ```
 
-Interactive mode prints the same message before it starts. When several resumes of one session start at once, exactly one runs and the others exit this way. A claim left by a process that no longer runs, for example one killed with `SIGKILL`, is taken over by the next resume. The process is matched by its pid and, on Linux, by when it started, so a later process given the same pid does not count as the holder. Claims are files under `~/.atomic/agent/session-claims`, so they are seen by the processes that share that agent directory. If a process with another agent directory writes to the same session store at the same time, the run whose write conflicts stops with `Another process wrote to session <id> …` and exit code `1`; resume the session again to continue from what was saved.
+Interactive mode prints the same message before starting. If several resumes start simultaneously, one succeeds and the others exit with code `75`.
+
+Claims live under `~/.atomic/agent/session-claims` and apply to processes sharing that agent directory. A claim left by a dead process (such as after `SIGKILL`) is taken over automatically. Atomic matches holders by PID and, on Linux and Windows, by process start time so a later process reusing the same PID does not block resume.
+
+If a process using a different agent directory writes to the same session in shared storage at the same time, the conflicting write stops with `Another process wrote to session <id> ...` and exit code `1`. Resume the session again to continue from saved state.
 
 ## Wake a released subagent
 
-A background subagent that was released while it waited keeps its session in the shared storage when it was launched with `context: "fork"`, so it can be woken on another machine. The wake maps its recorded directory through the restores of the session that owns it. The subagent's own session is then prepared as a woken session is: each checkout it worked in on this machine stays as it is, and every other checkout is restored from its snapshots into a worktree on this machine, with its blueprints built. Its tools resolve the earlier machine's absolute paths there, and follow the restores of the session it was launched in. A subagent started without `context: "fork"` keeps a session file on the machine that launched it, which another machine cannot reopen; it is reported as unrestorable.
+Both fresh and forked (`context: "fork"`) subagents store their sessions in the launching parent's shared database and can wake, resume, and export on another machine.
+
+When a released subagent wakes on another machine, Atomic maps its recorded directory through the parent session's restored checkouts, then prepares the subagent's own checkouts from its snapshots and builds their blueprints. Its file tools resolve old absolute paths into the restored worktrees.
+
+Only subagents launched with an explicit `sessionDir`, subagents whose parent uses JSONL session files, or file-backed subagents created by releases before 0.10.4 stay tied to the machine that launched them and report as unrestorable elsewhere.
 
 ## Set the environment up with a blueprint
 
-A restored worktree contains the repository's files but not installed dependencies, tools or build output. A *blueprint* tells Atomic how to set that up again. It is Devin's [blueprint](https://docs.devin.ai/onboard-devin/environment/blueprints) format, with one change: the repository file is `.atomic/blueprint.yaml` where Devin reads `.devin/blueprint.yaml`. Atomic reads no `.devin/` path.
+A restored worktree contains repository files, not installed dependencies, runtimes, or build output. A *blueprint* defines how Atomic sets up the environment again. Atomic uses the [blueprint](https://docs.devin.ai/onboard-devin/environment/blueprints) YAML format, except repository blueprints live at `.atomic/blueprint.yaml` instead of `.devin/blueprint.yaml`. Atomic never reads `.devin/` paths.
 
-| Blueprint | File | Runs in |
-|---|---|---|
-| Global | `~/.atomic/agent/blueprint.yaml` | your home directory |
-| Repository | `.atomic/blueprint.yaml` at the repository root | the repository root |
-| Workspace | `<dir>/.atomic/blueprint.yaml`, named by `includes` in the repository blueprint | the workspace directory |
+| Blueprint | File | Working directory |
+| --- | --- | --- |
+| Global | `~/.atomic/agent/blueprint.yaml` | Your home directory |
+| Repository | `.atomic/blueprint.yaml` at repository root | Repository root |
+| Workspace | `<dir>/.atomic/blueprint.yaml`, listed in `includes` of the repository blueprint | Workspace directory |
 
 ```yaml
 includes:
@@ -83,72 +100,90 @@ knowledge:
 ```
 
 | Section | Purpose | When it runs |
-|---|---|---|
-| `initialize` | Install tools, runtimes and system packages. | In a build. |
-| `maintenance` | Install or update project dependencies. Make it self-contained, fast and incremental (`npm install`, not `npm ci`). | In a build. At session start it is shown to the agent, never run automatically. |
-| `knowledge` | A list of `{ name, contents }` items, by convention `lint`, `test` and `build`. | Never run. The agent reads it. |
-| `post-build` | Check the assembled environment. Global blueprint only. | In a build, after every repository. |
+| --- | --- | --- |
+| `initialize` | Install tools, runtimes, and system packages | During a build |
+| `maintenance` | Install or update project dependencies. Keep it fast and incremental (for example `npm install` rather than `npm ci`) | During a build. Shown to the agent at session start, never run automatically at prompt time |
+| `knowledge` | List of `{ name, contents }` items (by convention `lint`, `test`, and `build`) | Never executed. Provided to the agent as context |
+| `post-build` | Verify the assembled environment (global blueprint only) | During a build, after all repositories |
 
-A section is either a string, which is one `run` step, or a list of steps. A list entry may be a bare string. A step is `{ name?, run, env? }` or `{ name?, uses, with?, env? }`, never both `run` and `uses`. `with` is valid only on `uses`, and its values are strings. `uses` takes a `github.com/<owner>/<repo>[/<subpath>]@<ref>` GitHub Action, in `initialize` and `post-build` but not in `maintenance`, where it is rejected with `'uses' steps are not supported in maintenance sections`. Node.js and composite actions run; Docker actions, actions Atomic cannot fetch or read, and composite actions that use `hashFiles`, `secrets` or `matrix` expressions fail the step. Fetched actions are cached per ref under `~/.atomic/agent/blueprint-actions`; set `ATOMIC_BLUEPRINT_GITHUB_BASE_URL` to fetch them from another host than `https://github.com`.
+Each section accepts a single string (one `run` step) or a list of steps. A step is a bare string, `{ name?, run, env? }`, or `{ name?, uses, with?, env? }`, never both `run` and `uses`. `with` applies only to `uses` and takes string values.
 
-- **Shell.** `run` steps run in bash (Git Bash on Windows) and stop at the first failing command. `shell: powershell` runs them in PowerShell on Windows. Commands must not wait for input.
-- **Environment.** `env` applies to its own step. A line written to `$ENVRC`, such as `echo "API_URL=http://localhost:3000" >> $ENVRC` or an `export PATH=...` line, is exported to later steps and to the resumed session's bash tool. In PowerShell, the file path is `$env:ENVRC`; append UTF-8 bash assignments with LF line endings and no byte-order mark, since later bash steps source the same file. `PATH` entries written by bash reach PowerShell and Node.js actions in native Windows path-list format. `$ENVRC` starts empty in every build, so `maintenance` must not rely on what `initialize` wrote to it in an earlier build.
-- **Timeout.** A step that runs for 3 hours is stopped and counts as failed.
-- **Platforms.** `runs-on` is a string or a list, default `default`. `default` and `linux` are the same platform; `macos` and `windows` are always explicit. A file can hold several `---` documents, each a mapping, and two documents cannot resolve to the same platform. A machine uses only the document for its own platform; when none matches, nothing runs and nothing is shown.
-- **Includes.** The repository blueprint may list workspace directories in `includes`. An entry is a directory, or the full path of its blueprint file (`<dir>/.atomic/blueprint.yaml`; no other file name is read), without `..`, and each workspace appears once. Includes are not allowed in a workspace blueprint. A missing workspace blueprint, or a missing workspace directory, means that workspace is removed. `includes` is ignored in the global blueprint, and `post-build` is allowed only there.
-- **Clone.** `clone` is accepted and ignored, with a warning: a restore recreates the recorded tree instead of cloning.
-- **Other keys.** Keys the format does not define are ignored. A `cache:` key earns a one-line warning: list extra cache paths in the `resume.cache` setting instead (see [Caches for runners](#caches-for-runners)).
+`uses` accepts `github.com/<owner>/<repo>[/<subpath>]@<ref>` in `initialize` and `post-build` (never in `maintenance`, where Atomic rejects it with `'uses' steps are not supported in maintenance sections`). Node.js and composite GitHub Actions are supported; Docker actions and composite actions using `hashFiles`, `secrets`, or `matrix` expressions fail the step. Actions cache under `~/.atomic/agent/blueprint-actions`. Set `ATOMIC_BLUEPRINT_GITHUB_BASE_URL` to fetch actions from a host other than `https://github.com`.
+
+Key blueprint rules:
+
+- **Shell.** `run` steps execute in bash (Git Bash on Windows) and stop at the first failing command. Set `shell: powershell` to run in PowerShell on Windows. Commands must be non-interactive.
+- **Environment.** Step `env` applies to that step only. Append exports to `$ENVRC` (for example `echo "API_URL=http://localhost:3000" >> $ENVRC` or `export PATH=...`) to pass variables to later steps and the resumed session's bash tool. In PowerShell, append UTF-8 bash assignments with LF line endings and no BOM to `$env:ENVRC`. `$ENVRC` starts empty on every build, so `maintenance` should not depend on values `initialize` wrote during an earlier build.
+- **Timeout.** Any step running longer than 3 hours is stopped and marked failed.
+- **Platforms.** `runs-on` accepts a string or list (`default` and `linux` are aliases; `macos` and `windows` are explicit). A file can contain multiple `---`-separated YAML documents, as long as no two documents target the same platform. A machine runs only the document matching its OS.
+- **Includes.** The repository blueprint can list workspace directories (or `<dir>/.atomic/blueprint.yaml` paths) in `includes`, without `..` or duplicates. Workspace blueprints cannot declare `includes`, global blueprints ignore `includes`, and only global blueprints allow `post-build`.
+- **Ignored keys.** `clone` is ignored with a warning because resume restores the recorded tree. `cache` triggers a warning pointing to `resume.cache`. Other unknown keys are ignored silently.
 
 ### Builds
 
-When a resume restores a worktree, Atomic builds it, in this order: the global blueprint's `initialize` and `maintenance`, then each repository's `initialize` and `maintenance` (its included workspaces follow it), then the global `post-build`. Builds run only for restored worktrees: a checkout the session continues in as it is is never built. A build runs only for a trusted project (`--approve` or `"defaultProjectTrust": "always"`); an untrusted worktree is skipped, silently, and the global blueprint runs only when at least one restored worktree is trusted.
+When resume restores a worktree, Atomic builds in order: global `initialize` and `maintenance`, then each repository's `initialize` and `maintenance` (followed by its included workspaces), then global `post-build`. Existing local checkouts that resume directly are never built.
 
-Like Devin's differential builds, a build compares each workspace's blueprint with the last successful build of that workspace on this machine. An unchanged workspace is inherited: its `initialize` is skipped and its `maintenance` runs on top of the existing state. A changed, new or previously failed workspace is rebuilt: `initialize` and `maintenance` both run. A workspace that is no longer configured is removed from the record. A full build, where every workspace is rebuilt and the global `initialize` runs, replaces a differential one when the global blueprint changed or the last full build is older than 7 days. Editing a blueprint is all it takes to retry it.
+Builds run project code, so they execute only for trusted projects (saved trust, `--approve`, or `"defaultProjectTrust": "always"`). Untrusted worktrees are skipped silently, and the global blueprint runs only when at least one restored worktree is trusted.
 
-A step fails when its command exits non-zero, a PowerShell error is raised, it times out, or its program cannot be started; a program the system refuses for a moment (`EPERM` or `EBUSY` on Windows, `ETXTBSY` on Linux, as while an antivirus scan or the installer that just wrote it still holds the file) is tried again for up to two seconds first, at first every 50 ms and then less often, so a program that stays refused fails its step at most two seconds later. A refused program is not started after the step’s timeout, even if the system clock moves backward. Time spent asleep counts toward the retry deadline and the budget for launching a fetched action. Reported step durations include that time. As in GitHub Actions, the rest of that step stops at once, and as in Devin, "only the setup steps of the failing blueprints did not run": the remaining `initialize` steps and the `maintenance` of that blueprint are skipped, while the other repositories and workspaces keep building. Setup never blocks a resume:
+Builds are differential. Atomic compares each workspace blueprint against the last successful build on this machine:
 
-| What happened | Outcome | What you see |
-|---|---|---|
-| A repository or workspace blueprint failed | Partial. The worktree is complete and usable. | A warning naming the blueprint and the failing step. |
-| The global blueprint or its `post-build` failed | Failed. Repositories are not built after a global failure. | A prominent warning. The session resumes anyway. |
-| No blueprint, an untrusted worktree, or a platform with no document | Nothing ran. | Nothing. |
+- Unchanged workspaces skip `initialize` and run only `maintenance`.
+- New, edited, or previously failed workspaces run both `initialize` and `maintenance`.
+- A full rebuild runs across all workspaces (including global `initialize`) whenever the global blueprint changes or the last full build is older than 7 days.
 
-On Windows, if you stop a step after its command has exited and Windows could not put the command in a Job object, Atomic warns that descendants may still be running. Check for processes the step started before retrying it. Atomic does not reuse the exited command’s PID to stop them.
+A step fails if its command exits non-zero, raises a PowerShell error, times out after 3 hours, or cannot start (Atomic briefly retries temporarily busy executables for up to 2 seconds before failing). When a step fails, the remaining steps of that blueprint are skipped while other repositories and workspaces continue building. A blueprint failure never blocks resuming the session:
 
-Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs` with the step's name, command, start and finish times, duration, exit status or timeout and output; the warning gives the path. The fix is to read the log, fix the environment and the blueprint, and resume: a worktree whose last build failed or never finished is built again on its next resume, and an edited blueprint is rebuilt. Builds that run at the same time, for example several sessions restoring on one machine, take turns writing the build record.
+| Outcome | Result | What you see |
+| --- | --- | --- |
+| Repository or workspace blueprint failed | Partial. Worktree files are intact and usable. | Warning naming the blueprint, failing step, and log path |
+| Global blueprint or `post-build` failed | Failed. Repository blueprints do not run. | Prominent warning. The session still resumes |
+| No blueprint, untrusted worktree, or no matching platform | Nothing ran | Nothing |
+
+On Windows, if a stopped step could not be placed in a Job object after its root command exited, Atomic warns that child processes may still be running. Check for leftover processes before retrying.
+
+Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs` containing command, timestamps, duration, exit status, and output. To recover from a failed build, read the log, fix the environment or blueprint, and resume again.
 
 ### Start the first turn while the build runs
 
-`resume.waitForBlueprint` decides what waits for the build. In the interactive TUI it defaults to `"prompt"`: the session opens once the build has finished. Without a UI (`atomic -p`, `--mode json`, `--mode rpc`, and sessions created with the SDK) it defaults to `"tools"`: the session opens once the worktrees are restored, and the first request goes out while the build still runs.
+`resume.waitForBlueprint` controls whether Atomic waits for blueprint builds before opening the session:
 
-With `"tools"`, the agent is told that the environment is still being built. Every tool call and shell command in the restored worktree waits until the build ends, also those of a new session, fork or switch that works there, so nothing runs in a half-built environment. The first tool call that waited then shows the agent how the build went before its own output. You see the build's warnings once, as a resume that waits shows them: `atomic -p` prints them to stderr, and `--mode json` and `--mode rpc` emit a `blueprint_build_finished` event. A failed build releases the tools as a finished one does; it never blocks the session. Interrupting the turn stops the wait, not the build. `atomic -p` and `--mode json` print their answer and then exit once the build has ended. If Atomic is stopped before the build ends (Ctrl-C or another signal, or RPC's stdin closing), the build's processes stop with it and the next resume builds the worktree again. If it was killed outright, as with `SIGKILL`, that build is cancelled and never continued: the next resume first stops the processes the build recorded, when it can confirm they are that build's processes, then sets the worktree aside and restores and builds a fresh worktree in its place. A step Atomic had started but not yet recorded when it was killed cannot be identified, so it is never stopped; it may keep running, but only in the set-aside worktree, never beside the new build. The resume says so in one warning that names the set-aside worktree and where the cancelled build's step logs are, under `~/.atomic/agent/worktree-snapshots/blueprint-logs/`. A set-aside worktree is never given to a session again, and nothing is built in it: if the fresh worktree cannot be restored either, the session continues in the directory you resumed from, with a warning that names the checkout. Atomic removes a set-aside worktree once no process of yours works in it (see [Restored worktrees](/worktree-snapshots#restored-worktrees)). Only worktrees the resumed session still owns are checked: a worktree another session has taken over, and its build, are left alone, and the session never continues there; if its own checkout cannot be restored elsewhere, it continues in the directory you resumed from. Atomic recognises a killed build by its build lock, which it writes before it starts the build's first step. If that lock cannot be written, the build goes on and warns that a kill during it would go unnoticed, so the next resume would build the same worktree again. If the worktree cannot be marked as set aside, the warning says so: that resume still builds a fresh worktree and keeps the cancelled build's lock, so the next resume recognises the cancelled build again, but meanwhile another Atomic process may use the old worktree. On Windows each step's processes end with the Atomic process that started them, so the next resume builds the same worktree again. A resume waits at most five minutes for another Atomic process that is still building the same worktree, and says so as soon as it starts waiting (a line on stderr with `-p`, a `blueprint_build_waiting` event with `--mode json` and `--mode rpc`); after that it stops the processes it can confirm are that build's and builds the worktree anyway with a warning. One build runs per worktree: switching back to a session whose build still runs joins that build.
+- `"prompt"` (default in the interactive TUI) opens the session after the build finishes.
+- `"tools"` (default in `-p`, `--mode json`, `--mode rpc`, and SDK sessions) opens the session immediately after restoring files so the first model request starts while the build runs in the background.
 
-A setting always wins. To wait for the build without a UI too, as before, set:
+In `"tools"` mode, Atomic tells the agent that the environment is still building and holds every tool call and shell command in the restored worktree (including forks or switches into that worktree) until the build settles. The first waiting tool call receives the build result ahead of its own output. Warnings are reported once via stderr (`-p`) or a `blueprint_build_finished` event (`--mode json` and `--mode rpc`).
+
+Interrupting a turn cancels the tool wait without stopping the build. `atomic -p` and `--mode json` print their answer and exit once the build finishes.
+
+Stopping and concurrent builds:
+
+- **Graceful stop (Ctrl-C, signals, or RPC stdin closing).** Atomic stops running build processes and rebuilds the worktree on the next resume.
+- **Abrupt kill (`SIGKILL`).** On Unix, the next resume cancels the interrupted build, terminates confirmed recorded build processes, sets that worktree aside so no session reuses it, and restores and builds a fresh worktree with a warning naming the set-aside path and logs. Atomic cleans up set-aside worktrees once no process uses them ([Restored worktrees](/worktree-snapshots#restored-worktrees)). On Windows, step processes exit with Atomic, so the next resume rebuilds the same worktree.
+- **Concurrent resumes on one worktree.** Only one build runs per worktree. Switching back to a session whose build is still running joins it. Another Atomic process waits up to 5 minutes (printing a stderr line or emitting `blueprint_build_waiting`) before rebuilding with a warning.
+
+To override the mode default, set `resume.waitForBlueprint` in settings:
 
 ```json
 { "resume": { "waitForBlueprint": "prompt" } }
 ```
 
-To start the first turn early in the TUI as well, set it to `"tools"`.
-
-A resume in a folder whose saved trust a user or global extension's `project_trust` handler can still decline (see [Project trust](/security#project-trust)) always works like `"tools"`: the session opens once the worktrees are restored, and their blueprints build after the session has decided the folder's trust. A restored worktree that decision does not cover stays unbuilt, and the agent is told it was not trusted.
+When a user or global extension registers a `project_trust` handler that can decline saved trust ([Project trust](/security#project-trust)), resume always defers the build like `"tools"` until trust is decided. Worktrees not covered by trust stay unbuilt.
 
 ### What the agent sees
 
-The first turn of a resumed session carries each applicable blueprint's `maintenance` steps and `knowledge` items, labelled with what happened: ran in this build, not yet run on this machine (skipped or untrusted), or not run or partial with the failing step and its log. The agent re-runs `maintenance` itself when it finds that dependencies changed. Atomic's default system prompt also asks the agent to keep `.atomic/blueprint.yaml` current as part of normal work: to write one when a repository has none, to update it in the same change that adds a dependency, tool or workspace, to record hard-won commands in `knowledge`, to leave secrets out, and to fix it after a Partial build. It edits `~/.atomic/agent/blueprint.yaml` only when you ask.
+The first turn of a resumed session includes each applicable blueprint's `maintenance` steps and `knowledge` items, tagged with their build status (ran in this build, not yet run, or partial with the failing step and log path). The agent reruns `maintenance` itself if dependencies change. Atomic's default system prompt also guides the agent to maintain `.atomic/blueprint.yaml` as project setup evolves, leaving `~/.atomic/agent/blueprint.yaml` alone unless asked.
 
 ### Caches for runners
 
-On an ephemeral runner, such as a GitHub-hosted one, every resume starts with an empty home directory: dependencies download again, the repository is fetched in full, and Atomic transpiles your extensions again. `atomic blueprint cache-key` prints a key, a restore prefix and the paths of each cache entry worth keeping, for a cache action such as `actions/cache`. Atomic never uploads or downloads caches itself.
+Ephemeral runners start with an empty home directory on every job. Run `atomic blueprint cache-key` to generate cache keys, restore prefixes, and paths for CI cache actions such as `actions/cache`. Atomic does not upload or download caches itself.
 
 ```sh
 atomic blueprint cache-key [dir] [--format text|json|github-output]
 ```
 
-Like `actions/setup-node` and `actions/setup-python`, it finds package stores from the lockfiles at the repository root, so most repositories need no configuration:
+Atomic detects package stores automatically from lockfiles at the repository root:
 
-| Files at the root | Stores (Linux default) |
-|---|---|
+| Root files | Detected stores (Linux default) |
+| --- | --- |
 | `package-lock.json`, `npm-shrinkwrap.json` | `~/.npm` (`npm_config_cache`) |
 | `pnpm-lock.yaml` | `~/.local/share/pnpm/store` (`npm_config_store_dir`, `PNPM_HOME`, `XDG_DATA_HOME`) |
 | `yarn.lock` | `~/.cache/yarn` (`YARN_CACHE_FOLDER`); with `.yarnrc.yml`, `~/.yarn/berry/cache` (`YARN_GLOBAL_FOLDER`) |
@@ -158,12 +193,12 @@ Like `actions/setup-node` and `actions/setup-python`, it finds package stores fr
 | `requirements.txt`, `Pipfile.lock` | `~/.cache/pip` (`PIP_CACHE_DIR`) |
 | `poetry.lock` | `~/.cache/pypoetry` (`POETRY_CACHE_DIR`) |
 | `go.sum` | `~/go/pkg/mod`, `~/.cache/go-build` (`GOMODCACHE`, `GOPATH`, `GOCACHE`) |
-| `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradle.lockfile`, the Gradle wrapper | `~/.gradle/caches`, `~/.gradle/wrapper` (`GRADLE_USER_HOME`) |
+| `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradle.lockfile`, Gradle wrapper | `~/.gradle/caches`, `~/.gradle/wrapper` (`GRADLE_USER_HOME`) |
 | `pom.xml` | `~/.m2/repository` |
 
-The variables in parentheses move a store, as they do for the tool; `XDG_CACHE_HOME` moves the Linux `~/.cache` locations. macOS uses `~/Library/Caches` (pnpm `~/Library/pnpm/store`; npm, uv, Bun, Cargo, Go modules, Gradle and Maven as on Linux), and Windows uses `%LOCALAPPDATA%` (for example `npm-cache`, `pnpm\store`, `Yarn\Cache`, `uv\cache`, `pip\Cache`). Lockfiles below the root, as in a monorepo's packages, are not searched.
+Environment variables in parentheses move each store, and `XDG_CACHE_HOME` moves Linux `~/.cache` paths. macOS uses `~/Library/Caches` (and `~/Library/pnpm/store` for pnpm; npm, uv, Bun, Cargo, Go modules, Gradle, and Maven match Linux). Windows uses `%LOCALAPPDATA%` (such as `npm-cache`, `pnpm\store`, `Yarn\Cache`, `uv\cache`, and `pip\Cache`). Subdirectory lockfiles in monorepos are not auto-detected.
 
-To cache more, such as a store in another location or build output, add `resume.cache` to the project's `.atomic/settings.json` (or your global settings; a project's list replaces the global one). The blueprint keeps Devin's format and declares no caches.
+Declare additional stores or build outputs under `resume.cache` in `.atomic/settings.json` (a project list replaces the global list). Blueprints themselves do not declare caches:
 
 ```json
 {
@@ -176,68 +211,85 @@ To cache more, such as a store in another location or build output, add `resume.
 }
 ```
 
-Each entry lists `paths`, an optional `kind`, and optional `keyFiles`. A `"store"` path (the default) is absolute or starts with `~/`, and lies outside the worktree; it joins the detected stores. A `"build"` path is relative to the repository root; it names build output that a trusted job parks under `~/.atomic/agent/worktree-snapshots/seeds/` for a later restore. `keyFiles` lists root-relative files whose content keys the paths; without it, they are keyed by the files that decide a snapshot's environment (lockfiles and toolchain files). Paths are plain paths: one with glob characters (`*`, `?`, `[`, `]`, `{`, `}`) or a leading `!` is ignored, since a cache action would read it as a pattern. An invalid entry is left out with a warning.
+Each entry takes `paths`, an optional `kind`, and optional `keyFiles`:
+
+- `"kind": "store"` (default) paths must be absolute or start with `~/` outside the worktree and join the `stores` entry.
+- `"kind": "build"` paths must be repository-relative and name build outputs parked by `atomic blueprint prebuild --park` under `~/.atomic/agent/worktree-snapshots/seeds/`.
+- `keyFiles` lists root-relative files hashed into the key (defaulting to detected lockfiles and toolchain files).
+- Paths must be literal paths without glob characters (`*`, `?`, `[`, `]`, `{`, `}`) or a leading `!`. Invalid entries are skipped with a warning.
 
 | Entry | Paths | Key changes when |
-|---|---|---|
-| `stores` | the detected stores, then the `"store"` paths of `resume.cache` | the detected lockfiles, the key files, `resume.cache`, the repository blueprint, the OS or the architecture change |
-| `build` | the parked `"build"` paths | the same inputs |
-| `git` | Atomic's Git object store of the repository | the checkout's HEAD changes; restore the newest entry by its prefix |
-| `atomic` | Atomic's extension transpile cache | the Atomic version, the OS or the architecture change |
+| --- | --- | --- |
+| `stores` | Detected package stores plus `"store"` paths in `resume.cache` | Lockfiles, `keyFiles`, `resume.cache`, repository blueprint, OS, or architecture change |
+| `build` | Parked `"build"` paths and seed manifest | Same inputs as `stores` |
+| `git` | Atomic's Git object store for the repository | Checkout `HEAD` changes (restore newest via restore prefix) |
+| `atomic` | Atomic's extension transpile cache | Atomic version, OS, or architecture change |
 
-An entry with no paths is left out. The `git` and `build` entries need a Git remote, since the object store is named after the checkout's remote URLs. Atomic compares HTTPS remotes, and SSH remotes as the `git` user that hosting services use, by host and repository path, so `git@github.com:acme/app.git`, `ssh://git@github.com/acme/app` and `https://github.com/acme/app` name the same repository: a runner's HTTPS checkout gets the entries of a session recorded over SSH. SSH remotes of other users, such as `alice@server:repo.git`, stay distinct. The `build` entry also lists the seed manifest that `atomic blueprint prebuild --park` writes. Paths that could hold credentials (`~/.ssh`, `~/.cargo` with its `credentials.toml`, `~/.config/gh`, `.npmrc`, `.env*` and the [snapshot deny list](/worktree-snapshots#what-is-left-out)), store paths inside the worktree, whether detected or declared, and invalid entries are left out with a warning on stderr. The credential checks ignore letter case and follow symbolic links, so `~/.SSH` and a link to `~/.ssh` are refused too. They look at the paths, not at the files inside them, which may not exist yet when the keys are printed: declare only directories that hold packages and build output, never one where a tool keeps tokens or keys. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines to append to `$GITHUB_OUTPUT`; see [Caching between runs](/guides/team-setup#caching-between-runs) for a workflow.
+Entries with no paths are omitted. The `git` and `build` entries require a Git remote. Atomic normalizes HTTPS remotes and `git@` SSH remotes by host and repository path so HTTPS runner checkouts reuse caches built from SSH checkouts (other SSH usernames stay distinct).
+
+To protect secrets, `cache-key` omits store paths inside the worktree and paths that can hold credentials (such as `~/.ssh`, `~/.cargo`, `~/.config/gh`, `.npmrc`, `.env*`, and the [snapshot deny list](/worktree-snapshots#what-is-left-out)), checking case-insensitively and across symlinks, with a warning on stderr.
+
+Use `--format github-output` to emit `<name>-key`, `<name>-restore-prefix`, and `<name>-paths` lines for `$GITHUB_OUTPUT`. See [Caching between runs](/guides/team-setup#caching-between-runs) for a full GitHub Actions workflow.
 
 ### Prebuilt worktrees
 
-`atomic blueprint prebuild` builds a repository ahead of time, so a later resume starts in a worktree whose dependencies and build output are already there:
+`atomic blueprint prebuild` prepares a repository ahead of time so a later resume starts with dependencies and build artifacts already built:
 
 ```sh
 atomic blueprint prebuild [dir] [--park] [--approve]
 ```
 
-It restores the committed `HEAD` of the checkout at `dir` (default: the current directory) into a new restored worktree, runs the blueprints' `initialize` and `maintenance` there as a resume would, and leaves the worktree idle. The next resume of a session of the same repository on this machine claims it, resets its tracked files to the session's snapshot and keeps the ignored folders the build filled. Only committed files are restored: ignored and untracked files of the checkout, such as `.env`, never reach the worktree. The checkout needs a Git remote and no uncommitted changes to tracked files. A prebuild runs project code, so it runs only for a trusted project: one you trusted before, any project with `"defaultProjectTrust": "always"`, or this run with `--approve`. When a blueprint step fails, the command exits `1`, removes the new worktree and keeps earlier ones and their seeds. It prints the restore and each blueprint step with its duration on stderr.
+Prebuild restores the committed `HEAD` at `dir` (defaulting to the current directory) into a new worktree, runs `initialize` and `maintenance`, and leaves the worktree idle for the next resume to claim. Only committed files are restored, so untracked or ignored files such as `.env` never enter the worktree.
 
-With `--park`, the build output that [`resume.cache`](#caches-for-runners) declares with `"kind": "build"` moves out of the new worktree into `~/.atomic/agent/worktree-snapshots/seeds/`, the paths of the `build` cache entry, with a manifest naming the commit it was built for. Save them from a trusted job (see [Caching between runs](/guides/team-setup#caching-between-runs)). On another machine that restores them, a resume that has no idle worktree to claim restores that commit into a new worktree at the same path the prebuild used, moves the parked output into place, and then claims that worktree for the session's snapshot. Only files Git does not track are parked: when a build path holds committed files, such as a checked-in `dist/`, those stay in the worktree, the output beside them is parked and later moved back beside them, and `atomic blueprint cache-key` warns about the path. Parked output never replaces files that are already there, and output parked for another repository is ignored. When anything about the seed fails, the resume restores a fresh worktree as before. `/session snapshot` shows such a resume as `(seeded)`, with the time spent moving the output as `seed`.
+The checkout must have a Git remote and no uncommitted changes to tracked files. Because prebuild runs project code, it requires a trusted project (saved trust, `"defaultProjectTrust": "always"`, or `--approve`). If a blueprint step fails, prebuild exits `1`, deletes the new worktree, and preserves earlier worktrees and seeds. Timings print to stderr.
 
-If parking cannot acquire the seed lock, the command reports the failure and leaves the completed build output in its idle worktree for a local resume to reuse. Existing seeds stay unchanged. On Windows, a temporary `EPERM` is retried for up to 10 seconds; a persistent refusal still fails. Check the snapshot directory's permissions and whether security software is blocking writes before retrying.
+With `--park`, Atomic moves untracked build output declared with `"kind": "build"` in [`resume.cache`](#caches-for-runners) into `~/.atomic/agent/worktree-snapshots/seeds/` along with a manifest naming the built commit. When another machine restores that cache and has no idle worktree, resume creates a worktree at the same path used during prebuild, moves the parked output into place (without overwriting tracked or existing files), and checks out the session snapshot. `/session snapshot` labels such restores `(seeded)` with a `seed` timing line.
+
+If parking cannot acquire the seed lock (including after a 10-second `EPERM` retry on Windows), prebuild reports the error, leaves existing seeds intact, and keeps the completed build in its idle worktree for local reuse.
 
 ### `resume.setupCommand` and `.atomic/setup`
 
-`.atomic/setup` is no longer read. `resume.setupCommand` is deprecated and stays for one release as an alias for one maintenance step of the global blueprint, run in the root of each restored worktree. A resume that builds a worktree prints a deprecation warning while it is set; move the command into the `maintenance` of `.atomic/blueprint.yaml`.
+`.atomic/setup` is no longer read. `resume.setupCommand` is deprecated, acts temporarily as an alias for a single global maintenance step in each restored worktree, and prints a deprecation warning when set. Move setup commands into the `maintenance` section of `.atomic/blueprint.yaml`.
 
 ## What can stop a resume
 
-Missing setup is checked in one pass before anything is restored: the storage adapter and its token (for a session resumed with `atomic`) and Git. A machine without Git gets a portable Git automatically, as it does for other Git work; only when that is impossible, for example in offline mode or when the download fails, does `git-unavailable` stop the resume. Every missing piece is reported together, with the command that fixes it. For a session, Git being unavailable never stops the resume: the session continues without restoring its checkouts, in its recorded directory or the directory you started from, with one notice per checkout that names its path and why. A session resume stops only when the session cannot be read, when a snapshot record fails the security checks (`invalid-snapshot`, for example a remote with credentials or a Git remote helper), or when a restore would write into a directory that holds other files (`unsafe-target`). A blueprint is never one of them: it is built after the restore and cannot stop the resume.
+Atomic checks required setup in one pass before restoring anything: the storage adapter, its credentials, and Git. When Git is absent, Atomic provisions a portable Git automatically unless offline or download fails.
+
+For session resumes, missing Git never blocks opening the session. Instead, the session opens in its recorded or current directory with a notice for each unrestored checkout. A session resume fails only when the session cannot be read, a snapshot fails security checks (`invalid-snapshot`), or a target directory contains unexpected files (`unsafe-target`). Blueprint failures never stop a resume.
 
 | Error | Code | When it happens | What to do |
-|---|---|---|---|
-| `ResumeNotFoundError` | `not-found` | The session id matches nothing this machine can read. With reason `local-storage-not-joined`, this machine uses local storage only. | Join the machine's sessions with `atomic storage join <url> --token-file <path>`. `atomic team join` keeps sessions on each machine: on a machine joined that way, run `atomic team leave` first. With reason `shared-miss`, check the id and that every machine uses the same storage and prefix. |
-| `ResumePreconditionError` | `preconditions-unmet` | Setup the resume needs is missing. Every missing piece is listed in `problems`: `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`; a piece that belongs to one checkout names it in `checkout`. With `git-unavailable`, its `cause` is the `GitUnavailableError` that says why. | Run each listed fix, for example `atomic install npm:@bastani/atomic-storage-libsql`, write the token file, or unset offline mode or install Git. |
-| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | A checkout must be verified or restored and no Git can be started or provisioned. A session continues without its checkouts instead, with a notice that carries this error. | Do what its hint says, for example unset `ATOMIC_OFFLINE` or install Git with the command it names. |
-| `ResumeCatalogUnavailableError` | `catalog-unavailable` | The shared storage could not be reached while looking the session up, for example because the connection was refused or broke. Retryable. Any other storage failure, such as a missing token file, is reported as that storage error itself. | Check connectivity with `atomic storage status` and resume again. |
-| `ResumeCatalogTimeoutError` | `catalog-timeout` | The shared storage did not answer the lookup within 15 seconds, for example during a network partition. `subject` names what was being looked up. Retryable. A partition that starts later in the resume is reported when the connection gives up. | Check connectivity with `atomic storage status` and resume again. |
-| `WorkspaceDriftError` | `tree-drift` | A checkout's recorded state cannot be rebuilt exactly, for example because unpushed commits touch files that are never recorded (`.env`, keys), a snapshot blob is missing, or the disk is full. The message names what the restore could not do (the commits, blob, remote or full volume) and the fix. A session resume does not stop for these; it restores what it can, with a notice. | Do what the message says; for unpushed commits, push them from the original machine, or continue there. |
-| `WorkspaceRestoreError` | `path-too-long` | On Windows, a worktree root or its Git directory under the agent directory would be longer than Git for Windows accepts. Nothing is written. | Set `ATOMIC_CODING_AGENT_DIR` to a shorter directory. See [Long paths on Windows](#long-paths-on-windows). |
-| `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot record names a remote with credentials, a Git remote helper (`ext::`), another scheme than `https`, `http`, `ssh`, `git` or `file`, or holds a value Atomic never writes. Nothing is fetched or run. | Resume only sessions from storage you trust, or export the session again on the machine that recorded it. |
+| --- | --- | --- | --- |
+| `ResumeNotFoundError` | `not-found` | Session ID matches nothing this machine can read. `reason: "local-storage-not-joined"` means this machine uses local storage only. | Join shared storage with `atomic storage join` (if joined with `atomic team join`, run `atomic team leave` first). For `shared-miss`, check the ID, storage URL, and prefix. |
+| `ResumePreconditionError` | `preconditions-unmet` | Required setup is missing. `problems` lists `adapter-not-installed`, `credential-missing`, `credential-unreadable`, or `git-unavailable` (with optional `checkout` and `GitUnavailableError` `cause`). | Run each fix listed in the error, such as installing the storage adapter, creating the token or password file, or unsetting offline mode. |
+| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | Git could not be started or provisioned for verification or restore. Session resumes continue without restoring checkouts and attach this error to the notice. | Follow the hint, such as unsetting `ATOMIC_OFFLINE` or installing Git. |
+| `ResumeCatalogUnavailableError` | `catalog-unavailable` | Shared storage could not be reached during session lookup. Retryable. | Check connectivity with `atomic storage status` and resume again. |
+| `ResumeCatalogTimeoutError` | `catalog-timeout` | Shared storage did not answer lookup within 15 seconds. Retryable. | Check connectivity with `atomic storage status` and resume again. |
+| `WorkspaceDriftError` | `tree-drift` | A checkout cannot be rebuilt exactly (for example, unpushed commits touching secret files, a missing blob, or a full disk). Session resumes continue with the closest state and a notice. | Follow the message (for unpushed commits, push from the original machine and resume again). |
+| `WorkspaceRestoreError` | `path-too-long` | On Windows, a restored worktree path or Git directory under the agent directory exceeds Git for Windows limits. Nothing is written. | Set `ATOMIC_CODING_AGENT_DIR` to a shorter path. See [Long paths on Windows](#long-paths-on-windows). |
+| `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot contains credentials in a remote URL, a Git remote helper (`ext::`), an unsupported scheme, or malformed data. Nothing is fetched or run. | Resume only sessions from trusted storage, or re-export from the source machine. |
 
-Secret values never appear in these messages; they name the environment variable or file instead. The classes, their codes and the `isResume…Error` guards are exported from `@bastani/atomic`.
+Secret values never appear in error messages; errors name only the file or environment variable. Error classes, codes, and `isResume*Error` guards are exported from `@bastani/atomic`.
 
 ## Windows
 
-Sessions resume on Windows as they do elsewhere.
+Sessions resume on Windows as they do on Linux and macOS.
 
 ### Long paths on Windows
 
-Atomic restores worktrees under the agent directory, `%USERPROFILE%\.atomic\agent` unless `ATOMIC_CODING_AGENT_DIR` names another one. Windows limits most paths to 260 characters (`MAX_PATH`), and Git for Windows refuses, even with `core.longpaths`, an object store (`worktree-snapshots\repositories\<id>.git`) longer than 220 characters, a worktree whose root is longer than 212, and a worktree whose own Git directory, under the store's `worktrees`, is longer than 247. Atomic keeps its own names short, opens its SQLite files, such as a worktree's writer lease, through the `\\?\` long-path form, and turns on `core.longpaths` in the Git object stores it creates, so files deep inside a restored worktree check out. With these, an agent directory of up to about 155 characters works.
+Atomic restores worktrees under `%USERPROFILE%\.atomic\agent` unless `ATOMIC_CODING_AGENT_DIR` overrides it. Even with `core.longpaths`, Git for Windows enforces path limits on administrative paths:
 
-A deeper agent directory fails the restore before anything is written, with `WorkspaceRestoreError` code `path-too-long`. The message names the path that would be too long, the limit, and the agent directory. Move the agent directory to a shorter path, for example:
+- Object store (`worktree-snapshots\repositories\<id>.git`): 220 characters
+- Worktree root: 212 characters
+- Worktree Git directory under `<store>\worktrees`: 247 characters
+
+Atomic keeps internal directory names short, opens local SQLite files with the `\\?\` long-path prefix, and enables `core.longpaths` inside restored object stores. With these defaults, an agent directory path up to about 155 characters works.
+
+If a longer agent directory would exceed those limits, restore fails before writing anything with `WorkspaceRestoreError` (`code: "path-too-long"`). Move the agent directory to a shorter path:
 
 ```powershell
 $env:ATOMIC_CODING_AGENT_DIR = "C:\atomic\agent"
 ```
 
-Earlier versions failed these restores with `unable to open database file (SQLite code 14)`. Worktrees they restored keep working; their staging directories, named `.staging-<id>`, are still recognized and cleaned up.
-
 ## Trust
 
-A restored worktree is a new directory, so project trust starts unset there, exactly as for a fresh clone. Until you trust it, project instructions and resources are not loaded and its blueprints are not built; the agent still gets their `maintenance` and `knowledge`, marked as not yet run.
+A restored worktree is a new directory, so project trust starts unset just like a fresh clone. Until you trust it, project instructions and resources do not load and project blueprints do not run, though the agent still receives `maintenance` and `knowledge` marked as not yet run.

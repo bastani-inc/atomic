@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Aligned the lightweight Web Access tool, command, and shortcut descriptions with the loaded extension (`web_search` `queries` examples, `/websearch` and `/curator` descriptions, and shortcut labels).
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Fixed

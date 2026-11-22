@@ -1,8 +1,13 @@
-# Shell Aliases
+---
+title: "Shell aliases"
+description: "Enable Bash and Zsh shell aliases for Atomic commands using shellCommandPrefix."
+---
 
-Atomic runs bash in non-interactive mode (`bash -c`), which doesn't expand aliases by default.
+# Shell aliases
 
-To enable your shell aliases, add to `~/.atomic/agent/settings.json` (legacy `~/.pi/agent/settings.json` is also read):
+Atomic runs Bash in non-interactive mode (`bash -c`), which does not expand shell aliases by default.
+
+To enable your aliases, add `shellCommandPrefix` to `~/.atomic/agent/settings.json` (legacy `~/.pi/agent/settings.json` is also read):
 
 ```json
 {
@@ -10,4 +15,6 @@ To enable your shell aliases, add to `~/.atomic/agent/settings.json` (legacy `~/
 }
 ```
 
-Adjust the path (`~/.zshrc`, `~/.bashrc`, etc.) to match your shell config.
+Adjust the path (`~/.zshrc`, `~/.bashrc`, or another rc file) to match your shell config.
+
+On native Windows, `!` and `!!` commands run in PowerShell rather than Bash, so `shellCommandPrefix` must use PowerShell syntax there. See [Settings: Shell](/settings#shell) and [Windows](/windows) for details.

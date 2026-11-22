@@ -687,15 +687,48 @@ describe("emitCredential", () => {
 });
 
 describe("auth command parsing", () => {
-	it("treats bare auth and its help flags as help", () => {
-		for (const argv of [["auth"], ["auth", "help"], ["auth", "--help"], ["auth", "-h"]]) {
-			expect(isAuthCommandHelp(argv)).toBe(true);
+	it("treats bare auth and standalone help flags on every auth subcommand as help", () => {
+		for (const argv of [
+			["auth"],
+			["auth", "help"],
+			["auth", "--help"],
+			["auth", "-h"],
+			["auth", "login", "--help"],
+			["auth", "login", "-h"],
+			["auth", "login", "--api-key", "--help"],
+			["auth", "login", "openai", "--help"],
+			["auth", "logout", "--help"],
+			["auth", "logout", "-h"],
+			["auth", "logout", "openai", "--help"],
+			["auth", "print-api-key", "--help"],
+			["auth", "print-api-key", "-h"],
+			["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"],
+			["auth", "print-bearer-token", "--help"],
+			["auth", "print-bearer-token", "-h"],
+			["auth", "print-bearer-token", "--model", "claude-sonnet-4-5", "--min-expiry", "30m", "-h"],
+			["auth", "check", "--help"],
+			["auth", "check", "-h"],
+			["auth", "check", "--provider", "anthropic", "--help"],
+		]) {
+			expect(isAuthCommandHelp(argv), `expected help for ${JSON.stringify(argv)}`).toBe(true);
 		}
-		expect(isAuthCommandHelp(["auth", "check", "--help"])).toBe(true);
-		expect(isAuthCommandHelp(["auth", "check", "--", "--help"])).toBe(false);
-		expect(isAuthCommandHelp(["auth", "print-api-key"])).toBe(false);
-		expect(isAuthCommandHelp(["auth", "print-api-key", "--help"])).toBe(false);
-		expect(isAuthCommandHelp(["config"])).toBe(false);
+		for (const argv of [
+			["auth", "login", "--", "--help"],
+			["auth", "logout", "--", "-h"],
+			["auth", "check", "--", "--help"],
+			["auth", "print-api-key"],
+			["auth", "print-api-key", "--", "--help"],
+			["auth", "print-api-key", "--model", "--help"],
+			["auth", "print-api-key", "--provider", "-h"],
+			["auth", "print-bearer-token", "--min-expiry", "--help"],
+			["auth", "print-bearer-token", "--model", "-h"],
+			["auth", "check", "--provider", "--help"],
+			["auth", "check", "--model", "-h"],
+			["auth", "unknown", "--help"],
+			["config"],
+		]) {
+			expect(isAuthCommandHelp(argv), `expected non-help for ${JSON.stringify(argv)}`).toBe(false);
+		}
 	});
 
 	it("ignores argv it does not own", () => {
@@ -1616,8 +1649,21 @@ describe("atomic auth on the wire", () => {
 			]);
 			expect(minExpiryOnApiKey.code).toBe(1);
 
-			const helpFlag = await run(["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"]);
-			expect(helpFlag.code).toBe(1);
+			const disallowedFlag = await run(["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--print"]);
+			expect(disallowedFlag.code).toBe(1);
+
+			const helpAfterTerminator = await run([
+				"auth",
+				"print-api-key",
+				"--model",
+				"claude-sonnet-4-5",
+				"--",
+				"--help",
+			]);
+			expect(helpAfterTerminator.code).toBe(1);
+
+			const helpAsModelValue = await run(["auth", "print-api-key", "--model", "--help"]);
+			expect(helpAsModelValue.code).toBe(2);
 
 			const noCredential = await run(["auth", "print-api-key", "--model", "not-a-real-model"]);
 			expect(noCredential.code).toBe(2);
@@ -1632,7 +1678,16 @@ describe("atomic auth on the wire", () => {
 			]);
 			expect(wrongKind.code).toBe(4);
 
-			for (const result of [unknownSubcommand, missingModel, minExpiryOnApiKey, helpFlag, noCredential, wrongKind]) {
+			for (const result of [
+				unknownSubcommand,
+				missingModel,
+				minExpiryOnApiKey,
+				disallowedFlag,
+				helpAfterTerminator,
+				helpAsModelValue,
+				noCredential,
+				wrongKind,
+			]) {
 				expect(result.stdout).toBe("");
 				expect(result.stderr).not.toContain("sk-ant-print-me");
 			}
@@ -1665,20 +1720,39 @@ describe("atomic auth on the wire", () => {
 	);
 
 	it(
-		"renders help under the atomic name and keeps it off the credential stream",
+		"renders help under the atomic name on every auth subcommand and keeps it off the credential stream",
 		async () => {
-			const agentDir = agentDirWith({});
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
 
-			for (const argv of [["auth"], ["auth", "--help"], ["auth", "check", "--help"]]) {
+			for (const argv of [
+				["auth"],
+				["auth", "help"],
+				["auth", "--help"],
+				["auth", "-h"],
+				["auth", "login", "--help"],
+				["auth", "login", "-h"],
+				["auth", "logout", "--help"],
+				["auth", "logout", "-h"],
+				["auth", "print-api-key", "--help"],
+				["auth", "print-api-key", "-h"],
+				["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"],
+				["auth", "print-bearer-token", "--help"],
+				["auth", "print-bearer-token", "-h"],
+				["auth", "check", "--help"],
+				["auth", "check", "-h"],
+			]) {
 				const result = await runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
 
-				expect(result.code).toBe(0);
+				expect(result.code, `expected exit 0 for ${argv.join(" ")}`).toBe(0);
+				expect(result.stderr).toContain("atomic auth login");
+				expect(result.stderr).toContain("atomic auth logout");
 				expect(result.stderr).toContain("atomic auth print-api-key");
 				expect(result.stderr).toContain("atomic auth print-bearer-token");
 				expect(result.stderr).toContain("atomic auth check");
 				expect(result.stderr).toContain("Auth checks require");
 				expect(result.stderr).toContain("--credentials");
 				expect(result.stderr).not.toContain("pi auth");
+				expect(result.stderr).not.toContain("sk-ant-print-me");
 				// stdout for this command family is a credential or nothing.
 				expect(result.stdout).toBe("");
 			}

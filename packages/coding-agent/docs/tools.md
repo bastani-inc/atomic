@@ -11,17 +11,18 @@ By default, Atomic enables `read`, `write`, `edit`, `bash`, `kill`, `find`, `sea
 - [Find paths and search contents](#find-and-search)
 - [Edit existing files](#edit) or [write files](#write)
 - [Run shell commands](#bash) or [stop background shells](#kill)
+- [Track file-based tasks with `todo`](#todo)
 - [Compose tool calls with codemode](#codemode)
 
 Bundled integrations also add [public repository search](#code_search), [web access](/web-access), and [MCP servers](/mcp-servers).
 
-**Inspecting active tools:** Run `/tools` to see active tools, why inactive tools are off, and any unregistered names in `defaultTools`. Its **Git** section reports which `git` binary Atomic uses (`system`, `provisioned`, or `unavailable` with the fix command, plus any failed portable-Git update). See [Git](/getting-started/installation#git). SDK and RPC clients get the same report from [`session.getToolStatus()`](/sdk/reference#checking-tool-status) and [`get_tools`](/rpc/protocol#get_tools). If portable Git cannot be selected, ordinary shell commands still run without its overrides while Git-dependent operations report the error.
+**Inspecting active tools.** Run `/tools` to see active tools, why inactive tools are off, and any unregistered names in `defaultTools`. Its **Git** section reports which `git` binary Atomic uses (`system`, `provisioned`, or `unavailable` with the fix command, plus any failed portable-Git update). See [Git](/getting-started/installation#git). SDK and RPC clients get the same report from [`session.getToolStatus()`](/sdk/reference#checking-tool-status) and [`get_tools`](/rpc/protocol#get_tools). If portable Git cannot be selected, ordinary shell commands still run while Git-dependent operations report the error.
 
-**Malformed tool arguments:** If a model produces invalid or truncated JSON tool arguments, Atomic rejects the call instead of executing a partial request and returns the original arguments so the model can retry.
+**Malformed tool arguments.** If a model produces invalid or truncated JSON tool arguments, Atomic rejects the call instead of executing a partial request and returns the original arguments so the model can retry.
 
 ## `codemode`
 
-`codemode` lets the model compose permitted tool calls in JavaScript and return only the filtered result. It is enabled by default.
+`codemode` lets the model run JavaScript in a sandboxed QuickJS worker (256 MiB memory cap) to compose permitted tool calls and return only filtered output. It is enabled by default.
 
 Disable it in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
@@ -29,7 +30,7 @@ Disable it in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 { "defaultTools": ["-codemode"] }
 ```
 
-Disable it for one run with `atomic --tools -codemode`. Explicit allowlists must name every desired tool (for example `atomic --tools read,search,find,codemode`). MCP servers configured for codemode exposure can activate `codemode` if `defaultTools` merely omits it, but not after an explicit `-codemode`.
+Disable it for one run with `atomic --tools -codemode`. Explicit allowlists must name every desired tool (for example `atomic --tools read,search,find,codemode`). MCP servers configured for codemode exposure activate `codemode` if `defaultTools` merely omits it, but not after an explicit `-codemode`.
 
 Example call (`codemode({ code: "..." })` supports top-level `await` and `return`):
 
@@ -42,15 +43,11 @@ const files = await Promise.all([
 return files.map((text) => text.slice(0, 1000));
 ```
 
-- **Provider support:** Works with every provider. On models supporting OpenAI grammar tools, input is constrained to JavaScript; other models see a regular tool. Confirm status with `/tools`.
-- **Sandbox & side effects:** Runs in a fresh QuickJS worker (256 MiB memory cap) with no Node, filesystem, network, module, timer, or credential globals. Tool calls run with the session's permissions and side effects are **not** rolled back on script failure.
-- **Subagents & Intercom:** Scripts can [launch and manage subagents](/subagents#from-codemode-scripts) and [send to exact Intercom targets](/intercom/reference#from-codemode-scripts). User questions, supervisor requests, and agent definition edits remain direct top-level calls. Allowlists, exclusions, and deactivated direct MCP tools still apply.
-- **Output & deadlines:** Return output via `return`, `text(value)`, `image(dataUrlOrImageContent)`, or `console.log(...)`; call `exit()` to end early. No default timeout. Default output limit is 10,000 estimated tokens (overflow keeps start/end and saves full text to a temp file). Failed scripts retain partial output; unawaited calls are cancelled when the script exits.
-- **Images:** `image()` accepts base64 PNG, JPEG, GIF, or WebP data URLs and MCP image blocks. MIME types are detected from content; invalid base64, unsupported formats, and remote HTTP URLs are rejected.
-- **Return shapes:** Tools with `outputSchema` return `structuredContent` (including structured errors); other tools return text and throw on error. Completed `bash` calls return structured output (see [SDK reference](/sdk/reference#bash-tool-behavior)).
-- **Settings & MCP:** Configure `codemode.inlineBudget` (default `3000` estimated tokens) and `codemode.mode` in [tool settings](/settings#tools). The budget bounds the inline declarations in codemode's description only; the one-line `tools.<name>(args)` note on each direct tool that scripts can call, and codemode's tool line and guideline in the system prompt, are not counted against it. Atomic's [MCP host](/mcp-servers) remains the sole MCP connection owner.
+- **Provider support.** Works with every provider. Models supporting OpenAI grammar tools receive JavaScript-constrained input; other models see a regular tool. Confirm status with `/tools`.
+- **Sandbox and permissions.** Runs with no Node, filesystem, network, timer, or credential globals. Tool calls run with the session's permissions, and side effects are not rolled back if a script fails.
+- **Settings and MCP.** Configure `codemode.inlineBudget` (default `3000` estimated tokens) and `codemode.mode` in [tool settings](/settings#tools). Atomic's [MCP host](/mcp-servers) remains the sole MCP connection owner.
 
-See the [Codemode reference](/codemode) for `ALL_TOOLS`, `searchTools()`, `describeTool()`, `describeNamespace()`, `store()`/`load()`, `models.classify()`, and `models.generateImages()`.
+See the [Codemode reference](/codemode) for globals, return shapes, `store()`/`load()`, `models.classify()`, `models.generateImages()`, subagent and Intercom access, and limits.
 
 ## `tool_search`
 
@@ -60,14 +57,14 @@ Deferred tools and namespaces are omitted from codemode's inline catalog. Script
 
 ## `code_search`
 
-Provided by the bundled web-access extension, `code_search` answers code, architecture, and API questions about public GitHub repositories via DeepWiki MCP (`https://mcp.deepwiki.com/mcp`) with no API key or MCP setup:
+Provided by the bundled [web access](/web-access#code_search) integration, `code_search` answers code, architecture, and API questions about public GitHub repositories via DeepWiki MCP (`https://mcp.deepwiki.com/mcp`) with no API key or MCP setup:
 
 ```typescript
 code_search({ repoName: "facebook/react", query: "How does useEffect cleanup work?" })
 ```
 
-- **Parameters:** `repoName` (`owner/repo`, single repository, not a URL) and non-empty `query` (sent verbatim to DeepWiki's `ask_question`) are both required. Optional `maxTokens` defaults to `5000` (range `1000`–`50000`, best-effort output cap of ~4 chars/token plus truncation notice).
-- **Limits & fallback:** 60-second deadline with cancellation support. Results depend on DeepWiki indexing; errors and empty responses do not fall back to Exa. Use `web_search` for broader discovery or unindexed repositories.
+- **Parameters.** `repoName` (`owner/repo`, single repository, not a URL) and non-empty `query` (sent verbatim to DeepWiki's `ask_question`) are required. Optional `maxTokens` defaults to `5000` (range `1000` to `50000`, best-effort output cap of about 4 chars per token plus truncation notice).
+- **Limits and fallback.** Uses a 60-second deadline with cancellation support. Results depend on DeepWiki indexing; errors and empty responses do not fall back to Exa. Use `web_search` for broader discovery or unindexed repositories.
 
 ## `edit`
 
@@ -145,7 +142,7 @@ Foreground results include `timeoutSeconds`, `requestedTimeoutSeconds`, `wallTim
 - Avoid combining URL expansion with custom command prefixes or SDK `spawnHook` wrappers that leave quotes, substitutions, or heredocs open; pass paths in structured `cwd`/`env` instead.
 
 **PowerShell (`powershell` tool):**
-- Uses PowerShell single-quoted literals for resolved paths (doubling ASCII apostrophes and U+2018–U+201B smart single quotes). Bash always uses POSIX quoting, even on Windows. SDK `createBashToolDefinition` adapters using PowerShell can set `shellDialect: "powershell"`.
+- Uses PowerShell single-quoted literals for resolved paths (doubling ASCII apostrophes and U+2018 to U+201B smart single quotes). Bash always uses POSIX quoting, even on Windows. SDK `createBashToolDefinition` adapters using PowerShell can set `shellDialect: "powershell"`.
 - On Windows, prefers PowerShell 7 and falls back to Windows PowerShell 5.1. Redirected stderr on a successful native command (such as `git push 2>&1 | Select-Object -Last 3`) still reports success; failed final statements report failure, and scripts can use explicit `exit <code>`.
 
 ## `kill`
@@ -188,39 +185,47 @@ Reading a directory returns a depth-2 tree sorted by most-recent mtime (with siz
 - **Line selectors:** `file.ts:5-16`, `file.ts:5+3`, `file.ts:5-16,960-973`, `https://example.test/page:5-8`. Bounded reads add 1 leading and 3 trailing context lines, prefix each slice with `[Lines 9-14 of 40]`, and end limited reads with the continuation selector. Append `:raw` for exact bytes, CRLF, or raw notebook JSON without labels. Out-of-range selectors report beyond EOF.
 - **Archives (`read`, `search`, `write`):** zip, jar, tar, tgz, and gzip members (no Python required). Member names may contain `raw`, `conflicts`, `1`, `L1`, or `raw:notes.txt`. Archive writes reject directory targets ending in `/`; tar writes preserve all other members and file modes and refuse to overwrite links, directories, duplicate members, or damaged headers.
 - **SQLite (`read`, `search`, `write`):** Table and row selectors with `limit`, `offset`, `where`, `order`, `schema`, and `sampleRows`. Non-SQLite `.db`/`.sqlite` files stay plain files.
-- **Internal URLs:**
-  - `local://` (`read`, `search`, `write`, `find`) — source-backed local resources (results report underlying filesystem paths).
-  - `skill://` (`read`, `search`, `find`) — read-only skill content (edit skills by filesystem path).
-  - `artifact://<id>` (`read`, `search`, `find`) — read-only saved tool output.
-  - `conflict://` (`read`, `search`, `write`) — merge conflicts under the working directory.
-  - `history://` (`read`, `search`) — read-only past sessions for this project ([Recalling earlier work](/sessions#recalling-earlier-work)).
+- **Internal URLs.**
+  - `local://` (`read`, `search`, `write`, `find`) accesses source-backed local resources and reports underlying filesystem paths.
+  - `skill://` (`read`, `search`, `find`) reads skill content (edit skills by filesystem path).
+  - `artifact://<id>` (`read`, `search`, `find`) reads saved tool output.
+  - `conflict://` (`read`, `search`, `write`) inspects and resolves merge conflicts under the working directory.
+  - `history://` (`read`, `search`) reads past sessions for this project ([Recalling earlier work](/sessions#recalling-earlier-work)).
 
-These are the only internal schemes shared by `read`, `search`, `write`, `find`, and `bash`; any other `scheme://` is rejected by `read`/`search`/`write` and left literal by `bash`. Workspace-scoped selectors block lexical and symlink escapes outside the workspace or skill root. Cancelling `read` or `find` throws `FileToolAbortedError` (see [Edit and write errors](#edit-and-write-errors)).
+These are the only internal schemes shared by `read`, `search`, `write`, `find`, and `bash`; any other `scheme://` is rejected by `read`, `search`, and `write`, and left literal by `bash`. Workspace-scoped selectors block lexical and symlink escapes outside the workspace or skill root. Cancelling `read` or `find` throws `FileToolAbortedError` (see [Edit and write errors](#edit-and-write-errors)).
 
 ### SQLite limits and writes
 
-- **Read limits:** Table reads return schema + 5 sample rows by default; query reads default to 20 rows (max 500); raw `?q=` accepts single-statement `SELECT` only (max 1,000 rows, blocking `sqlite_%`, `pragma_*`, and `ATTACH`). Table listings cap at 500 (excluding `sqlite_%`); row counts probe up to 50,001 rows.
-- **Writes:** Table writes accept `{}` (`INSERT DEFAULT VALUES`). Row writes accept non-empty JSON5 objects (unquoted keys, single quotes, comments, trailing commas, `+`/hex numbers) and validate columns/scalars. Empty row writes delete only when a row ID is specified.
-- **Row addressing:** Target a row by primary key (`data.sqlite:users:42`), `rowid` (tables without a PK), or a full JSON array for composite keys (`data.sqlite:members:["acme",2]`; partial keys are rejected). Row IDs are never misread as line ranges (`data.sqlite:events:2024-01-05`), untyped key columns match numeric IDs numerically, and any update/delete affecting >1 row is aborted.
+- **Read limits.** Table reads return schema plus 5 sample rows by default; query reads default to 20 rows (max 500); raw `?q=` accepts single-statement `SELECT` only (max 1,000 rows, blocking `sqlite_%`, `pragma_*`, and `ATTACH`). Table listings cap at 500 (excluding `sqlite_%`); row counts probe up to 50,001 rows.
+- **Writes.** Table writes accept `{}` (`INSERT DEFAULT VALUES`). Row writes accept non-empty JSON5 objects (unquoted keys, single quotes, comments, trailing commas, `+` and hex numbers) and validate columns and scalars. Empty row writes delete only when a row ID is specified.
+- **Row addressing.** Target a row by primary key (`data.sqlite:users:42`), `rowid` (tables without a PK), or a full JSON array for composite keys (`data.sqlite:members:["acme",2]`; partial keys are rejected). Row IDs are never misread as line ranges (`data.sqlite:events:2024-01-05`), untyped key columns match numeric IDs numerically, and any update or delete affecting more than 1 row is aborted.
 
 ### Conflict resolution and file writes
 
-- **Reading:** `conflict://*` lists up to 100 conflict regions under `cwd` (skipping `.git`, `node_modules`, and `.gitignore`/`.ignore` paths; files previously read with `:conflicts` appear first in read order). `conflict://<id>` shows `ours`, `theirs`, and `base`; `conflict://<id>/ours` (or `theirs`/`base`) returns one read-only side.
-- **Matching:** Matches exact Git 7-character markers (`<<<<<<<`, `|||||||`, `=======`, `>>>>>>>`, alone or followed by a space and label) in order; longer runs like markdown `==========` stay untouched, and malformed regions are skipped.
-- **Writing:** Write to `conflict://<id>` or `conflict://*` using literal text or `@ours`, `@theirs`, and `@base` (which preserve that side's exact bytes). Other text writes as UTF-8 using the region's line endings while keeping the rest of the file byte-identical. Stale conflicts (changed on disk since reading) are refused.
+- **Reading.** `conflict://*` lists up to 100 conflict regions under `cwd` (skipping `.git`, `node_modules`, and `.gitignore`/`.ignore` paths; files previously read with `:conflicts` appear first in read order). `conflict://<id>` shows `ours`, `theirs`, and `base`; `conflict://<id>/ours` (or `theirs` or `base`) returns one read-only side.
+- **Matching.** Matches exact Git 7-character markers (`<<<<<<<`, `|||||||`, `=======`, `>>>>>>>`, alone or followed by a space and label) in order; longer runs like markdown `==========` stay untouched, and malformed regions are skipped.
+- **Writing.** Write to `conflict://<id>` or `conflict://*` using literal text or `@ours`, `@theirs`, and `@base` (preserving that side's exact bytes). Other text writes as UTF-8 using the region's line endings while keeping the rest of the file byte-identical. Stale conflicts changed on disk since reading are refused.
 
 ### Documents and URLs
 
-- **Formats:** Extracts readable text from HTML URLs, Jupyter notebooks (0-based `cell:N` IDs, preserving unknown fields), and PDF / `.doc` / `.docx` / `.ppt` / `.pptx` / `.xls` / `.xlsx` / `.rtf` / `.epub` documents via `markit-ai` (including extensionless downloads identified by `Content-Type`).
-- **Output caps:** Local text reads cap at 3,000 lines or 50 KiB; unselected URL reads cap at 300 rendered lines or 50 KiB (truncated with metadata rather than blocked); search lines cap at 512 chars. Successful reads populate `details.meta.source`, `sourcePath`, `truncation`, and `limits`.
-- **Network safety:** Blocks private, localhost, cloud-metadata, multicast, and reserved IP targets (including alternate numeric IPv4/IPv6 forms and redirects). Use public URLs.
+- **Formats.** Extracts readable text from HTML URLs, Jupyter notebooks (0-based `cell:N` IDs, preserving unknown fields), and PDF, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`, `.rtf`, and `.epub` documents via `markit-ai` (bundled directly into Atomic, including extensionless downloads identified by `Content-Type`).
+- **Output caps.** Local text reads cap at 3,000 lines or 50 KiB; unselected URL reads cap at 300 rendered lines or 50 KiB (truncated with metadata rather than blocked); search lines cap at 512 chars. Successful reads populate `details.meta.source`, `sourcePath`, `truncation`, and `limits`.
+- **Network safety.** Blocks private, localhost, cloud-metadata, multicast, and reserved IP targets (including alternate numeric IPv4 and IPv6 forms and redirects). Use public URLs.
+
+## `todo`
+
+`todo` manages file-based task lists stored in `.atomic/todos` (override the directory with `ATOMIC_TODO_PATH` or legacy `PI_TODO_PATH`). Each task is a standalone `<hex>.md` file starting with a JSON frontmatter object (`id`, `title`, `tags`, `status`, `created_at`, and optional `assigned_to_session`) followed by optional markdown notes. While a session edits a task, Atomic uses a `<hex>.lock` file to prevent conflicting writes.
+
+- **IDs.** Tasks are displayed as `TODO-<hex>`, and the `id` parameter accepts either `TODO-<hex>` or the raw hex filename.
+- **Actions.** `list` (open tasks), `list-all` (all tasks including closed ones), `get`, `create`, `update` (replaces `body` and updates fields), `append` (appends to `body`), `delete`, `claim` (assigns a task to the current session; pass `force: true` to override another session's assignment), and `release`.
+- **Parameters.** `action` (required), plus optional `id`, `title`, `body`, `status`, `tags`, and `force`.
 
 ## `ask_user_question`
 
-When `ask_user_question` (or an equivalent question tool) is active, route every user question—clarifications, preferences, confirmations, and approvals—through it rather than asking in plain text (do not end turns with prose like "Proceed?").
+When `ask_user_question` is enabled, the agent uses it to display interactive multiple-choice and free-text prompts in the TUI for clarifications, preferences, and explicit confirmations instead of asking in plain chat text.
 
-- Ask only when a decision is needed; never re-ask for already-authorized work.
-- Group up to 4 related questions per call, with 2–4 options each. State the concrete action and scope with explicit proceed/decline choices:
+- Each call can group up to 4 related questions with 2 to 4 options per question, plus a custom free-text option and per-option notes (see [Keybindings](/keybindings#tui-fullscreen-viewport) for dialog controls).
+- For scoped approvals, the question states the concrete action and scope and offers explicit proceed and decline choices. In a real confirmation, the prompt or surrounding context should identify the target PRs or resources explicitly:
 
 ```json
 {
@@ -235,21 +240,19 @@ When `ask_user_question` (or an equivalent question tool) is active, route every
 }
 ```
 
-In a real confirmation, identify the target PRs in the question or immediately preceding context. This example explains question routing; it does not authorize merging any PRs.
-
-A cancelled or unanswered question is not approval. If no question tool is active, proceed using stated evidence-backed assumptions while respecting safety and approval gates.
+A cancelled or unanswered question is not approval. When no interactive question tool is available (for example in non-interactive runs or when excluded with `--exclude-tools ask_user_question`), the agent continues autonomously while respecting safety and approval gates.
 
 ## Persisted tool output
 
 Tool results that exceed inline limits are saved automatically and referenced as `Full output: <path>` (for `bash`) or `Full output saved to: <path>`.
 
-- **Session-directory sessions:** Saved under `<sessionDir>/tool-results/`, content-addressed by SHA-256 (`Content: sha256:<hex>`).
-- **Released subagents on SQLite/libSQL/in-memory stores:** Stored as session blobs addressed by `tool-output://<sha256>` (readable via `read` with line ranges like `tool-output://<sha256>:1-200`, or `search`). Shared across hosts and forks/branches, exported with the session, and deleted when the session is deleted. Custom stores without `putBlob`/`getBlob` fall back to the temp tree below.
-- **Bash overflow, spill files, and non-directory sessions:** Stored in an owner- and session-scoped temp tree (POSIX `0700` dirs / `0600` files; unsafe shared or symlinked temp paths are refused; Windows uses an account-specific name instead of `<uid>`):
+- **Session-directory sessions.** Saved under `<sessionDir>/tool-results/`, content-addressed by SHA-256 (`Content: sha256:<hex>`).
+- **Released subagents on SQLite, libSQL, or in-memory stores.** Stored as session blobs addressed by `tool-output://<sha256>` (readable via `read` with line ranges such as `tool-output://<sha256>:1-200`, or `search`). Blobs share across hosts and branches, export with the session, and delete when the session is deleted. Custom stores without `putBlob` and `getBlob` fall back to the temp tree below.
+- **Bash overflow, spill files, and non-directory sessions.** Stored in an owner- and session-scoped temp tree (POSIX `0700` dirs and `0600` files; unsafe shared or symlinked temp paths are refused; Windows uses an account-specific name instead of `<uid>`):
 
 ```text
 <tmpdir>/atomic-<uid>/<session-id>/
 ```
 
-- **Size cap:** 64 MiB per persisted file; excess bytes are replaced with `[Output truncated: persisted-output cap of 67108864 bytes reached]` without splitting UTF-8 characters.
-- **Retention & cleanup:** Temp trees and `tool-results/` directories (including custom `--session-dir` / `ATOMIC_CODING_AGENT_SESSION_DIR` / `sessionDir` roots) are deleted once their newest file is over 30 days old. Active in-process sessions are protected, session `.jsonl` transcripts are never deleted, and symlinks are never followed. Copy output you need long-term elsewhere.
+- **Size cap.** 64 MiB per persisted file; excess bytes are replaced with `[Output truncated: persisted-output cap of 67108864 bytes reached]` without splitting UTF-8 characters.
+- **Retention and cleanup.** Temp trees and `tool-results/` directories (including custom `--session-dir` and `ATOMIC_CODING_AGENT_SESSION_DIR` roots) are deleted once their newest file is over 30 days old. Active in-process sessions are protected, session `.jsonl` transcripts are never deleted, and symlinks are never followed. Copy output you need long-term elsewhere.

@@ -26,7 +26,7 @@ At startup, Atomic loads context files in this order:
 1. **Global:** `~/.atomic/agent/AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` (legacy `~/.pi/agent/` also works).
 2. **Project hierarchy:** `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` from parent directories down to the current directory.
 
-Inside any single directory, `AGENTS.override.md` replaces `AGENTS.md` and `CLAUDE.md`. Files from different directories are concatenated. Run `/reload` (or restart Atomic) after editing context files.
+Inside any single directory, `AGENTS.override.md` replaces `AGENTS.md` and `CLAUDE.md`. Atomic concatenates files loaded from different directories. Run `/reload` or restart Atomic after editing context files.
 
 ## Verify Atomic loaded them
 

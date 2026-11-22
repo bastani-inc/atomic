@@ -317,7 +317,7 @@ export default function webAccess(pi: ExtensionAPI) {
 	for (const [shortcut, name] of [[shortcuts.curate, "curate"], [shortcuts.activity, "activity"]] as const) {
 		// A key from the user's web-search config, as configured: the host matches it like any other key id.
 		pi.registerShortcut(shortcut as KeyId, {
-			description: name === "curate" ? "Open web search curator" : "Show web search activity",
+			description: name === "curate" ? "Review search results" : "Toggle web search activity",
 			handler: async (ctx) => {
 				const handle = await loadHeavy();
 				handle.assertCurrent();
@@ -336,7 +336,7 @@ export default function webAccess(pi: ExtensionAPI) {
 		promptSnippet: "Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
-			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage." })),
+			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
 			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content (async)" })),
 			recencyFilter: Type.Optional(Type.String({ enum: ["day", "week", "month", "year"], description: "Filter by recency" })),
@@ -428,8 +428,8 @@ export default function webAccess(pi: ExtensionAPI) {
 	});
 
 	for (const [name, description] of [
-		["websearch", "Configure web search"],
-		["curator", "Configure web search curator"],
+		["websearch", "Open web search curator"],
+		["curator", "Toggle or configure the search curator workflow"],
 		["google-account", "Show the active Google account for Gemini Web"],
 		["search", "Browse stored web search results"],
 	] as const) {
