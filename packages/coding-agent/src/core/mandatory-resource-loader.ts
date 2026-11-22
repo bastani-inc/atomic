@@ -3,12 +3,14 @@ import { getExtensionRuntimeEventBus, instantiateExtensions, loadExtensions } fr
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import { canCloneDefaultResourceDiscovery } from "./resource-loader.ts";
+import type { DeferredStartupSettingsSnapshot } from "./resource-loader-internals.ts";
 import type {
 	ResourceExtensionPaths,
 	ResourceLoader,
 	ResourceLoaderReloadOptions,
 	ResourceLoaderReloadTransaction,
 } from "./resource-loader-types.ts";
+import type { AtomicBuiltin } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalog } from "./skill-catalog.ts";
@@ -162,6 +164,92 @@ class MandatoryResourceLoader implements ResourceLoader {
 		if (this.toolOnly) this.removeLocalInteractionSurfaces();
 	}
 
+	coversBuiltinSelection(builtins: Partial<Record<AtomicBuiltin, boolean>> | undefined): boolean {
+		return canCloneDefaultResourceDiscovery(this.delegate) && this.delegate.coversBuiltinSelection(builtins);
+	}
+
+	canPrepareDeferredStartupCompletion(): boolean {
+		return (
+			!this.toolOnly && canCloneDefaultResourceDiscovery(this.delegate) && this.delegate.canCompleteDeferredStartup()
+		);
+	}
+
+	getDeferredInitialSettingsSnapshot(): DeferredStartupSettingsSnapshot | undefined {
+		return canCloneDefaultResourceDiscovery(this.delegate)
+			? this.delegate.getDeferredInitialSettingsSnapshot()
+			: undefined;
+	}
+
+	async prepareDeferredStartupCompletion(
+		settingsManager: SettingsManager,
+	): Promise<
+		ResourceLoaderReloadTransaction & { rollback(): void; readonly unregisteredProviders: ReadonlySet<string> }
+	> {
+		if (!canCloneDefaultResourceDiscovery(this.delegate)) {
+			throw new Error("Resource loader does not support deferred startup completion");
+		}
+		const delegateTransaction = await this.delegate.prepareDeferredStartupCompletion(
+			settingsManager,
+			this.extensionsResult,
+		);
+		const delegateExtensions = delegateTransaction.loader.getExtensions();
+		let extensionsResult: LoadExtensionsResult;
+		if (delegateExtensions.extensions.some(hasTrustedIntercom)) {
+			extensionsResult = delegateExtensions;
+		} else {
+			const existingIntercom = this.extensionsResult.extensions.find(hasTrustedIntercom);
+			if (existingIntercom) {
+				extensionsResult = {
+					...delegateExtensions,
+					extensions: [...delegateExtensions.extensions, existingIntercom],
+				};
+			} else {
+				try {
+					extensionsResult = await restoreMandatoryExtensions(delegateExtensions, this.cwd, this.agentDir);
+				} catch (error) {
+					delegateTransaction.rollback();
+					throw error;
+				}
+			}
+		}
+		const candidate = new MandatoryResourceLoader(
+			delegateTransaction.loader,
+			this.cwd,
+			extensionsResult,
+			this.agentDir,
+		);
+		const prepareCommit = delegateTransaction.prepareCommit
+			? () => {
+					const delegateCommit = delegateTransaction.prepareCommit!();
+					let settled = false;
+					return {
+						commit: () => {
+							if (settled) return;
+							settled = true;
+							delegateCommit.commit();
+							this.extensionsResult = candidate.extensionsResult;
+						},
+						rollback: () => {
+							if (settled) return;
+							settled = true;
+							delegateCommit.rollback();
+						},
+					};
+				}
+			: undefined;
+		return {
+			loader: candidate,
+			activate: (liveSettingsManager) => delegateTransaction.activate(liveSettingsManager),
+			...(prepareCommit ? { prepareCommit } : {}),
+			commit: () => {
+				delegateTransaction.commit();
+				this.extensionsResult = candidate.extensionsResult;
+			},
+			rollback: () => delegateTransaction.rollback(),
+			unregisteredProviders: delegateTransaction.unregisteredProviders,
+		};
+	}
+
 	supportsTransactionalReload(): boolean {
 		return this.delegate.prepareReload !== undefined && this.delegate.supportsTransactionalReload?.() !== false;
 	}
@@ -239,6 +327,39 @@ export function limitMandatoryIntercomToTool(loader: ResourceLoader): void {
 /** Services have already selected their resources, including deferred CLI startup. */
 export function isMandatoryResourceLoader(loader: ResourceLoader): boolean {
 	return loader instanceof MandatoryResourceLoader;
+}
+
+/** Whether a mandatory resource loader wraps a default loader whose builtin selection already satisfies `builtins`. */
+export function mandatoryLoaderCoversBuiltins(
+	loader: ResourceLoader,
+	builtins: Partial<Record<AtomicBuiltin, boolean>> | undefined,
+): boolean {
+	return loader instanceof MandatoryResourceLoader && loader.coversBuiltinSelection(builtins);
+}
+
+/** Whether `loader` can complete an initial deferred startup load in place without reloading preloaded mandatory extensions. */
+export function canPrepareDeferredStartupCompletion(loader: ResourceLoader): boolean {
+	return loader instanceof MandatoryResourceLoader && loader.canPrepareDeferredStartupCompletion();
+}
+
+/** Settings and trust snapshot captured at the initial deferred load, if `loader` supports in-place completion. */
+export function getDeferredInitialSettingsSnapshot(
+	loader: ResourceLoader,
+): DeferredStartupSettingsSnapshot | undefined {
+	return loader instanceof MandatoryResourceLoader ? loader.getDeferredInitialSettingsSnapshot() : undefined;
+}
+
+/** Prepare an in-place deferred startup completion for a mandatory loader wrapping a deferred default loader. */
+export function prepareDeferredStartupCompletion(
+	loader: ResourceLoader,
+	settingsManager: SettingsManager,
+): Promise<
+	ResourceLoaderReloadTransaction & { rollback(): void; readonly unregisteredProviders: ReadonlySet<string> }
+> {
+	if (!(loader instanceof MandatoryResourceLoader)) {
+		throw new Error("Resource loader does not support deferred startup completion");
+	}
+	return loader.prepareDeferredStartupCompletion(settingsManager);
 }
 
 /** Service discovery is borrowed too, including deferred CLI generations. */
