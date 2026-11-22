@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
 import {
@@ -89,6 +89,58 @@ async function presenceReleased(returnAddress: string): Promise<void> {
 }
 
 /**
+ * What the shared database holds for a session that returns with id `id` from `returnAddress`, for a failure to name: the
+ * binding of the id (the claim that last bound it, its owner, and when that owner last renewed it), the presence leases
+ * of the return address, the session's known-session rows and the brokers' membership leases, with the database's clock.
+ * The claim of the id, the reclaim of an unanswered claim and the departure of the session's earlier registration each
+ * decide from these rows (#5607).
+ */
+async function sharedRowsFor(id: string, returnAddress: string): Promise<string> {
+	sharedDatabase ??= await harness.openSharedStorage("b");
+	const database = sharedDatabase;
+	const { nowMs } = dialectOf(database);
+	const identities = `${JSON.stringify(["return", returnAddress]).slice(0, -1)},`;
+	const [clock, bindings, presence, known, brokers] = await Promise.all([
+		database.get(`SELECT ${nowMs} AS now`),
+		database.all(
+			`SELECT * FROM ${TWO_BROKER_STORAGE_PREFIX}intercom_session_bindings WHERE intercom_session_id = ?`,
+			id,
+		),
+		database.all(
+			`SELECT key, holder_id, fencing_token, renewed_at FROM "${SHARED_LEASES_TABLE}"
+			 WHERE kind = 'presence' AND substr(key, 1, length(?)) = ?`,
+			identities,
+			identities,
+		),
+		database.all(
+			`SELECT * FROM ${TWO_BROKER_STORAGE_PREFIX}intercom_known_sessions WHERE intercom_session_id = ? OR atomic_session_id = ?`,
+			id,
+			returnAddress,
+		),
+		database.all(`SELECT key, holder_id, renewed_at FROM "${SHARED_LEASES_TABLE}" WHERE kind = 'broker'`),
+	]);
+	return JSON.stringify({ clock, bindings, presence, known, brokers }, (_key, value: unknown) =>
+		typeof value === "bigint" ? Number(value) : value,
+	);
+}
+
+/**
+ * Runs `region`, the return of the session with id `id` from `returnAddress`: one that fails says how long it ran and what
+ * the shared database held for the session then, so a failure on a loaded runner can be told apart from a lost id.
+ */
+async function explained(id: string, returnAddress: string, region: () => Promise<void>): Promise<void> {
+	const started = performance.now();
+	try {
+		await region();
+	} catch (error) {
+		const elapsedMs = Math.round(performance.now() - started);
+		const rows = await sharedRowsFor(id, returnAddress).catch((read: Error) => `(unreadable: ${read.message})`);
+		if (error instanceof Error) error.message = `${error.message}\nafter ${elapsedMs} ms; shared rows: ${rows}`;
+		throw error;
+	}
+}
+
+/**
  * `original` leaves as a session that will return, and this resolves once its broker has finished its departure (its
  * presence is gone from `observer`'s list and from the shared database), so the registration that brings it back does
  * not queue behind that work.
@@ -118,14 +170,20 @@ test(
 		harness.stallIdClaim(original.returnAddress, BROKER_STALL_MS);
 
 		// The client waits as long as a real session's does.
-		const back = await harness.connect("a", original.name, {
-			returnAddress: original.returnAddress,
-			preferredSessionId: id,
-			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-		});
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
 
-		assert.equal(harness.idClaimStalled(original.returnAddress), true, "the broker stalled while it claimed the id");
-		assert.equal(back.sessionId, id, "the database wrote the id for this registration");
+			assert.equal(
+				harness.idClaimStalled(original.returnAddress),
+				true,
+				"the broker stalled while it claimed the id",
+			);
+			assert.equal(back.sessionId, id, "the database wrote the id for this registration");
+		});
 	},
 	TEST_TIMEOUT_MS,
 );
@@ -140,14 +198,20 @@ test(
 		// The database binds the id at once; its answer is read only after the broker runs again, past the deadline.
 		harness.stallIdClaim(original.returnAddress, 3_500, undefined, undefined, "serial bindings");
 
-		const back = await harness.connect("a", original.name, {
-			returnAddress: original.returnAddress,
-			preferredSessionId: id,
-			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-		});
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
 
-		assert.equal(harness.idClaimStalled(original.returnAddress), true, "the broker stalled while it claimed the id");
-		assert.equal(back.sessionId, id);
+			assert.equal(
+				harness.idClaimStalled(original.returnAddress),
+				true,
+				"the broker stalled while it claimed the id",
+			);
+			assert.equal(back.sessionId, id);
+		});
 	},
 	TEST_TIMEOUT_MS,
 );
@@ -163,14 +227,20 @@ test(
 		// The binding is still being written when the broker stops; the database holds it, then refuses it.
 		harness.stallIdClaim(original.returnAddress, 2_800, undefined, 6_000, "uncommitted");
 
-		const back = await harness.connect("a", original.name, {
-			returnAddress: original.returnAddress,
-			preferredSessionId: id,
-			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-		});
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
 
-		assert.equal(harness.idClaimStalled(original.returnAddress), true, "the broker stalled while it claimed the id");
-		assert.notEqual(back.sessionId, id, "an id the database never bound for it is not granted");
+			assert.equal(
+				harness.idClaimStalled(original.returnAddress),
+				true,
+				"the broker stalled while it claimed the id",
+			);
+			assert.notEqual(back.sessionId, id, "an id the database never bound for it is not granted");
+		});
 	},
 	TEST_TIMEOUT_MS,
 );
@@ -194,18 +264,20 @@ for (const group of [undefined, "other"] as const) {
 			assert.equal(live.sessionId, id);
 			harness.stallIdClaim(original.returnAddress, 3_500, undefined, undefined, "serial bindings");
 
-			const back = await harness.connect("a", original.name, {
-				returnAddress: original.returnAddress,
-				preferredSessionId: id,
-				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-			});
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
 
-			assert.equal(
-				harness.idClaimStalled(original.returnAddress),
-				true,
-				"the broker stalled while it claimed the id",
-			);
-			assert.notEqual(back.sessionId, id, "a live session on another broker presents the id");
+				assert.equal(
+					harness.idClaimStalled(original.returnAddress),
+					true,
+					"the broker stalled while it claimed the id",
+				);
+				assert.notEqual(back.sessionId, id, "a live session on another broker presents the id");
+			});
 		},
 		TEST_TIMEOUT_MS,
 	);
@@ -222,14 +294,16 @@ test(
 		harness.stallIdClaim(original.returnAddress, 2_800, 3_200);
 		harness.holdRegistration(original.name);
 		try {
-			const back = await harness.connect("a", original.name, {
-				returnAddress: original.returnAddress,
-				preferredSessionId: id,
-				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
+				assert.ok(harness.idClaimStalled(original.returnAddress));
+				await harness.registrationParked(original.name);
+				assert.equal(back.sessionId, id, "the database wrote the id for this registration");
 			});
-			assert.ok(harness.idClaimStalled(original.returnAddress));
-			await harness.registrationParked(original.name);
-			assert.equal(back.sessionId, id, "the database wrote the id for this registration");
 		} finally {
 			harness.releaseRegistration();
 		}
@@ -257,15 +331,19 @@ async function reconnectWithSlowWrite(slowWrite: SlowWrite, socketPath?: string)
 	if (slowWrite === "serial bindings")
 		harness.stallIdClaim(original.returnAddress, 3_500, undefined, 3_050, slowWrite);
 	else harness.stallIdClaim(original.returnAddress, 2_800, 3_200, 3_050, slowWrite);
-	const back = await harness.connect("a", original.name, {
-		returnAddress: original.returnAddress,
-		preferredSessionId,
-		connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
-		socketPath,
+	let back: TwoBrokerClient | undefined;
+	await explained(preferredSessionId, original.returnAddress, async () => {
+		back = await harness.connect("a", original.name, {
+			returnAddress: original.returnAddress,
+			preferredSessionId,
+			connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			socketPath,
+		});
+		assert.ok(harness.idClaimStalled(original.returnAddress));
+		// The database wrote the id for this registration before the broker stalled, whichever write is slow after it.
+		assert.equal(back.sessionId, preferredSessionId);
 	});
-	assert.ok(harness.idClaimStalled(original.returnAddress));
-	// The database wrote the id for this registration before the broker stalled, whichever write is slow after it.
-	assert.equal(back.sessionId, preferredSessionId);
+	assert.ok(back !== undefined);
 	return { back, preferredSessionId };
 }
 
@@ -335,14 +413,16 @@ test(
 			await vi.waitFor(() => assert.ok(harness.idClaimStalled(other)), { timeout: 15_000, interval: 10 });
 			harness.stallIdClaim(original.returnAddress, PAST_CLAIM_BOUND_STALL_MS);
 			harness.holdRegistration(original.name);
-			const back = await harness.connect("a", original.name, {
-				returnAddress: original.returnAddress,
-				preferredSessionId: id,
-				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
+				assert.ok(harness.idClaimStalled(original.returnAddress));
+				await harness.registrationParked(original.name);
+				assert.equal(back.sessionId, id, "the database wrote the id for this registration");
 			});
-			assert.ok(harness.idClaimStalled(original.returnAddress));
-			await harness.registrationParked(original.name);
-			assert.equal(back.sessionId, id, "the database wrote the id for this registration");
 		} finally {
 			harness.releaseRegistration();
 			await busy;
