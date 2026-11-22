@@ -1,4 +1,5 @@
 import { RETURN_PATH_MESSAGE_LIMIT, RETURN_PATH_WINDOW_MS } from "../group.js";
+import type { SessionInfo } from "../types.js";
 
 export { RETURN_PATH_MESSAGE_LIMIT, RETURN_PATH_TOOL_NOTE, RETURN_PATH_WINDOW_MS, returnPathClosedReason } from "../group.js";
 
@@ -37,10 +38,22 @@ interface ReturnPath {
 	/** When the opening message reached the responder, on the broker's monotonic clock. */
 	openedAt: number;
 	/**
-	 * Answers counted against this opening, with when each was counted: distinct message ids, so a retried answer counts
-	 * once.
+	 * Answers counted against this opening, with the arrival sequence when each was counted: distinct message ids, so a
+	 * retried answer counts once.
 	 */
 	used: Map<string, number>;
+}
+
+/** An inbound cross-group delivery handed over to a responder whose confirmation has not settled yet. */
+export interface PendingReturnPathOpeningInfo {
+	readonly senderIdentity: string;
+	readonly senderInfo: Pick<SessionInfo, "id" | "name">;
+}
+
+interface PendingReturnPathOpening extends PendingReturnPathOpeningInfo {
+	readonly responderIdentity: string;
+	readonly handedOverAt: number;
+	readonly waiters: Set<() => void>;
 }
 
 /**
@@ -66,6 +79,14 @@ export class ReturnPaths {
 	private ends = 0;
 	/** The latest end dropped from `ended` to stay within bounds: an opening older than it may be that identity's. */
 	private endsForgotten = 0;
+	/**
+	 * Strictly monotonic sequence shared by inbound hand-overs and outbound answer arrivals, so answers that reached the
+	 * broker before a newer message in the same clock tick never count toward that newer message.
+	 */
+	private handoverSeq = 0;
+	/** In-flight deliveries whose return-path opening settles on confirmation, by pair and by responder. */
+	private readonly pendingByPair = new Map<string, Set<PendingReturnPathOpening>>();
+	private readonly pendingByResponder = new Map<string, Set<PendingReturnPathOpening>>();
 
 	constructor(
 		private readonly now: () => number = () => performance.now(),
@@ -129,10 +150,113 @@ export class ReturnPaths {
 	}
 
 	/** Counts `messageId` as an answer to `sender`; false when no open return path allows it. */
-	use(responder: ReturnPathParty, sender: ReturnPathParty, messageId: string): boolean {
+	use(responder: ReturnPathParty, sender: ReturnPathParty, messageId: string, countedAt?: number): boolean {
 		const path = this.path(responder, sender);
 		if (path === undefined || !this.allowsOn(path, messageId)) return false;
-		if (!path.used.has(messageId)) path.used.set(messageId, this.now());
+		if (!path.used.has(messageId)) path.used.set(messageId, countedAt ?? ++this.handoverSeq);
+		return true;
+	}
+
+	/**
+	 * Records an in-flight delivery from `sender` to `responder` handed over at `handedOverAt` whose return path opens
+	 * once its write or settle completes. Calling the returned function (idempotent) ends the hold and wakes any waiting
+	 * answers so they are decided again.
+	 */
+	beginOpening(
+		responder: ReturnPathParty,
+		sender: ReturnPathParty,
+		senderInfo: Pick<SessionInfo, "id" | "name">,
+		handedOverAt: number,
+	): (() => void) | undefined {
+		if (responder.identity === undefined || sender.identity === undefined) return undefined;
+		if (responder.identity === sender.identity) return undefined;
+		const key = pathKey(responder.identity, sender.identity);
+		const opening: PendingReturnPathOpening = {
+			responderIdentity: responder.identity,
+			senderIdentity: sender.identity,
+			senderInfo,
+			handedOverAt,
+			waiters: new Set(),
+		};
+		let pair = this.pendingByPair.get(key);
+		if (pair === undefined) {
+			pair = new Set();
+			this.pendingByPair.set(key, pair);
+		}
+		pair.add(opening);
+		let byResponder = this.pendingByResponder.get(responder.identity);
+		if (byResponder === undefined) {
+			byResponder = new Set();
+			this.pendingByResponder.set(responder.identity, byResponder);
+		}
+		byResponder.add(opening);
+		let done = false;
+		return () => {
+			if (done) return;
+			done = true;
+			const currentPair = this.pendingByPair.get(key);
+			currentPair?.delete(opening);
+			if (currentPair?.size === 0) this.pendingByPair.delete(key);
+			const currentResponder = this.pendingByResponder.get(opening.responderIdentity);
+			currentResponder?.delete(opening);
+			if (currentResponder?.size === 0) this.pendingByResponder.delete(opening.responderIdentity);
+			const waiters = [...opening.waiters];
+			opening.waiters.clear();
+			for (const wake of waiters) wake();
+		};
+	}
+
+	/**
+	 * When an in-flight delivery from `sender` to `responder` handed over before `beforeSeq` has not settled yet, runs
+	 * `decideAgain` once one of those deliveries settles and returns true; otherwise returns false.
+	 */
+	whenOpening(
+		responder: ReturnPathParty,
+		sender: ReturnPathParty,
+		beforeSeq: number,
+		decideAgain: () => void,
+	): boolean {
+		if (responder.identity === undefined || sender.identity === undefined) return false;
+		const openings = this.pendingByPair.get(pathKey(responder.identity, sender.identity));
+		if (openings === undefined || openings.size === 0) return false;
+		return this.waitOnEligible(openings, beforeSeq, undefined, decideAgain);
+	}
+
+	/**
+	 * When an in-flight delivery to `responder` handed over before `beforeSeq` matches `matches`, runs `decideAgain` once
+	 * one of those matching deliveries settles and returns true; otherwise returns false.
+	 */
+	whenOpeningForResponder(
+		responder: ReturnPathParty,
+		beforeSeq: number,
+		matches: (opening: PendingReturnPathOpeningInfo) => boolean,
+		decideAgain: () => void,
+	): boolean {
+		if (responder.identity === undefined) return false;
+		const openings = this.pendingByResponder.get(responder.identity);
+		if (openings === undefined || openings.size === 0) return false;
+		return this.waitOnEligible(openings, beforeSeq, matches, decideAgain);
+	}
+
+	private waitOnEligible(
+		openings: ReadonlySet<PendingReturnPathOpening>,
+		beforeSeq: number,
+		matches: ((opening: PendingReturnPathOpeningInfo) => boolean) | undefined,
+		decideAgain: () => void,
+	): boolean {
+		const eligible: PendingReturnPathOpening[] = [];
+		for (const opening of openings) {
+			if (opening.handedOverAt < beforeSeq && (matches === undefined || matches(opening))) eligible.push(opening);
+		}
+		if (eligible.length === 0) return false;
+		let woken = false;
+		const wake = (): void => {
+			if (woken) return;
+			woken = true;
+			for (const opening of eligible) opening.waiters.delete(wake);
+			decideAgain();
+		};
+		for (const opening of eligible) opening.waiters.add(wake);
 		return true;
 	}
 
@@ -175,9 +299,9 @@ export class ReturnPaths {
 		return this.ends;
 	}
 
-	/** The time for {@link open} of a message handed over now: answers counted from then on count toward its opening. */
+	/** The sequence mark for {@link open} of a message handed over now: answers arriving from then on count toward its opening. */
 	handOverTime(): number {
-		return this.now();
+		return ++this.handoverSeq;
 	}
 
 	private endedSince(identity: string, mark: number): boolean {

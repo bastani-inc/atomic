@@ -481,6 +481,8 @@ interface Inflight {
 	readonly released?: ReleasedReplyHandoff;
 	/** When the frame was handed to the recipient: its answers from then on count toward the return path it opens. */
 	readonly handedOverAt?: number;
+	/** Ends the pending return-path opening hold when this delivery settles or is abandoned. */
+	readonly finishOpening?: () => void;
 }
 
 interface ReleasedReplyHandoff {
@@ -2876,7 +2878,10 @@ export class MultiNodeRouter {
 		const unbound = entry.unbound === true;
 		const identity = deliveryTargetIdentity(session);
 		const claims = [...this.inflight.values()].filter((inflight) => inflight.session === session);
-		for (const inflight of claims) this.inflight.delete(inflight.row.messageId);
+		for (const inflight of claims) {
+			this.inflight.delete(inflight.row.messageId);
+			inflight.finishOpening?.();
+		}
 		for (const waiter of [...this.waiters.values()]) {
 			// #4642: a hosted session shares its host's socket; only its own sends end with it.
 			const sentBySession =
@@ -3502,8 +3507,37 @@ export class MultiNodeRouter {
 		return false;
 	}
 
+	private awaitReturnPathOpeningForTarget(
+		from: BrokerConnectedSession,
+		target: string,
+		beforeSeq: number | undefined,
+	): Promise<boolean> {
+		if (beforeSeq === undefined || this.host.returnPaths === undefined) return Promise.resolve(false);
+		return new Promise<boolean>((resolve) => {
+			const waited = this.host.returnPaths!.whenOpeningForTarget(from, target, beforeSeq, () => resolve(true));
+			if (!waited) resolve(false);
+		});
+	}
+
+	private awaitReturnPathOpening(
+		from: BrokerConnectedSession,
+		target: ReturnPathParty,
+		beforeSeq: number | undefined,
+	): Promise<boolean> {
+		if (beforeSeq === undefined || this.host.returnPaths === undefined) return Promise.resolve(false);
+		return new Promise<boolean>((resolve) => {
+			const waited = this.host.returnPaths!.whenOpening(from, target, beforeSeq, () => resolve(true));
+			if (!waited) resolve(false);
+		});
+	}
+
 	private async route(request: RemoteSendRequest): Promise<void> {
 		if (request.message.replyTo !== undefined) await Promise.all([...this.settling]);
+		if (mayUseReturnPath(request.message, request.supervisorSend, request.from)) {
+			while (await this.awaitReturnPathOpeningForTarget(request.from, request.target, request.returnPathArrivalSeq)) {
+				// Each iteration finishes at least one matching opening handed over before this send arrived.
+			}
+		}
 		if (await this.routeReleasedReply(request)) return;
 		const from = request.from;
 		const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
@@ -4235,7 +4269,18 @@ export class MultiNodeRouter {
 			crossesGroups && mayUseReturnPath(message, request.supervisorSend, from)
 				? { sessionId: target.sessionId, identity: stableIdentity(target.identity) }
 				: undefined;
-		const returnPath = answered !== undefined && this.host.returnPaths?.use(from, answered, message.id) === true;
+		let returnPath =
+			answered !== undefined &&
+			this.host.returnPaths?.use(from, answered, message.id, request.returnPathArrivalSeq) === true;
+		while (
+			crossesGroups &&
+			!returnPath &&
+			answered !== undefined &&
+			(await this.awaitReturnPathOpening(from, answered, request.returnPathArrivalSeq))
+		) {
+			returnPath =
+				this.host.returnPaths?.use(from, answered, message.id, request.returnPathArrivalSeq) === true;
+		}
 		if (crossesGroups && !returnPath) {
 			this.fail(
 				request,
@@ -4746,19 +4791,33 @@ export class MultiNodeRouter {
 				continue;
 			}
 			const handedOverAt = this.firstHandedOverAt.get(row.messageId) ?? this.host.returnPaths?.handOverTime();
+			const finishOpening =
+				session.acknowledgesReceipt === true || handedOverAt === undefined
+					? undefined
+					: this.host.returnPaths?.beginOpening(
+							session,
+							{ sessionId: frame.from.id, identity: frame.senderIdentity },
+							frame.from,
+							handedOverAt,
+						);
 			const inflight: Inflight = {
 				claim,
 				row,
 				session,
 				identity,
 				...(handedOverAt === undefined ? {} : { handedOverAt }),
+				...(finishOpening === undefined ? {} : { finishOpening }),
 			};
 			this.inflight.set(row.messageId, inflight);
 			const delivery = messageFrameFor(session, frame.from, frame.message, frame.channel);
 			this.host.writeConfirmed(session.socket, delivery, (written) => {
-				if (this.inflight.get(row.messageId) !== inflight) return;
+				if (this.inflight.get(row.messageId) !== inflight) {
+					inflight.finishOpening?.();
+					return;
+				}
 				if (!written) {
 					this.inflight.delete(row.messageId);
+					inflight.finishOpening?.();
 					void this.state.outbox.releaseClaim(claim).catch((error: Error) => this.report(error));
 					return;
 				}
@@ -4820,46 +4879,61 @@ export class MultiNodeRouter {
 	private settleDelivered(inflight: Inflight, recipient: BrokerConnectedSession, frame: IntercomDeliveryFrame): void {
 		const { messageId } = inflight.row;
 		this.inflight.delete(messageId);
+		const finishOpening =
+			inflight.finishOpening ??
+			(inflight.handedOverAt === undefined
+				? undefined
+				: this.host.returnPaths?.beginOpening(
+						recipient,
+						{ sessionId: frame.from.id, identity: frame.senderIdentity },
+						frame.from,
+						inflight.handedOverAt,
+					));
 		let marked = false;
 		const settling = (async () => {
-			// Route first (spec §5.4): a settled row is never claimed again, so a route written after `markDelivered`
-			// would be lost if this broker stopped between the writes. Redelivery repeats the route write safely.
-			if (frame.message.expectsReply === true) {
-				const asker = this.host.sessions.get(frame.from.id);
-				// The asker is here too: the reply takes the local path, which answers only local routes.
-				if (asker !== undefined) this.host.pendingQuestions.record(frame.from.id, recipient.info.id, frame.message.id);
-				else {
-					await this.state.pendingAsks.record({
-						senderSessionId: frame.from.id,
-						targetSessionId: recipient.info.id,
-						messageId: frame.message.id,
+			try {
+				// Route first (spec §5.4): a settled row is never claimed again, so a route written after `markDelivered`
+				// would be lost if this broker stopped between the writes. Redelivery repeats the route write safely.
+				if (frame.message.expectsReply === true) {
+					const asker = this.host.sessions.get(frame.from.id);
+					// The asker is here too: the reply takes the local path, which answers only local routes.
+					if (asker !== undefined) this.host.pendingQuestions.record(frame.from.id, recipient.info.id, frame.message.id);
+					else {
+						await this.state.pendingAsks.record({
+							senderSessionId: frame.from.id,
+							targetSessionId: recipient.info.id,
+							messageId: frame.message.id,
+						});
+					}
+				}
+				const delivered = await this.state.outbox.markDelivered(inflight.claim);
+				marked = true;
+				this.firstHandedOverAt.delete(messageId);
+				if (delivered.status !== "delivered") return;
+				if (frame.message.replyTo !== undefined) {
+					await this.state.pendingAsks.clearReply({
+						replySenderSessionId: frame.from.id,
+						replyTargetSessionId: recipient.info.id,
+						replyTo: frame.message.replyTo,
 					});
 				}
+				if (frame.channel === "supervisor") {
+					this.host.supervisorCache.record(frame.message.id, frame.from.id, recipient.info.id);
+				}
+				// The sender's identity is the one its origin broker wrote; a frame from an older broker carries none.
+				this.host.returnPaths?.delivered(
+					recipient,
+					{ sessionId: frame.from.id, identity: frame.senderIdentity },
+					frame.from,
+					frame.message.id,
+					undefined,
+					inflight.handedOverAt,
+				);
+				finishOpening?.();
+				await this.wakeOrigin(inflight.row);
+			} finally {
+				finishOpening?.();
 			}
-			const delivered = await this.state.outbox.markDelivered(inflight.claim);
-			marked = true;
-			this.firstHandedOverAt.delete(messageId);
-			if (delivered.status !== "delivered") return;
-			if (frame.message.replyTo !== undefined) {
-				await this.state.pendingAsks.clearReply({
-					replySenderSessionId: frame.from.id,
-					replyTargetSessionId: recipient.info.id,
-					replyTo: frame.message.replyTo,
-				});
-			}
-			if (frame.channel === "supervisor") {
-				this.host.supervisorCache.record(frame.message.id, frame.from.id, recipient.info.id);
-			}
-			// The sender's identity is the one its origin broker wrote; a frame from an older broker carries none.
-			this.host.returnPaths?.delivered(
-				recipient,
-				{ sessionId: frame.from.id, identity: frame.senderIdentity },
-				frame.from,
-				frame.message.id,
-				undefined,
-				inflight.handedOverAt,
-			);
-			await this.wakeOrigin(inflight.row);
 		})().catch((error: Error) => {
 			this.report(error);
 			// Not settled: hand the row back so it is delivered again (the recipient deduplicates) and settled then, with
@@ -5195,6 +5269,7 @@ export class MultiNodeRouter {
 			const renewed = await this.state.outbox.renewClaim(inflight.claim);
 			if (renewed.status !== "renewed" && this.inflight.get(inflight.row.messageId) === inflight) {
 				this.inflight.delete(inflight.row.messageId);
+				inflight.finishOpening?.();
 			}
 		}
 		for (const [key, mirror] of this.mirrored) {
@@ -5365,6 +5440,7 @@ export class MultiNodeRouter {
 		} catch (error) {
 			this.report(error);
 		}
+		for (const inflight of this.inflight.values()) inflight.finishOpening?.();
 		this.inflight.clear();
 		this.presence.clear();
 		await this.subscription?.close();

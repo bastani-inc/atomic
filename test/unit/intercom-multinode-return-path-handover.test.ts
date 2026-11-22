@@ -43,6 +43,9 @@ class Node {
 	readonly pendingQuestions = new PendingQuestionIndex();
 	readonly deliveredMessages = new DeliveredMessageCache();
 	readonly returnPaths: ReturnPathAuthority = createReturnPathAuthority(new ReturnPaths(), this.sessions);
+	writeConfirmedHook:
+		| ((socket: net.Socket, frame: BrokerOutboundFrame, onSettled: (written: boolean) => void) => void)
+		| undefined;
 	router!: MultiNodeRouter;
 	opened!: OpenedBrokerState;
 
@@ -58,7 +61,10 @@ class Node {
 			host: {
 				sessions: node.sessions,
 				write: (socket, frame) => node.write(socket, frame),
-				writeConfirmed: (socket, frame, onSettled) => onSettled(node.write(socket, frame)),
+				writeConfirmed: (socket, frame, onSettled) =>
+					node.writeConfirmedHook !== undefined
+						? node.writeConfirmedHook(socket, frame, onSettled)
+						: onSettled(node.write(socket, frame)),
 				supervisorCache: node.supervisorCache,
 				returnPaths: node.returnPaths,
 				pendingQuestions: node.pendingQuestions,
@@ -243,4 +249,130 @@ test("an answer read before a newer message's failed settle counts toward that m
 		"delivery_failed",
 		returnPathClosedReason("launcher"),
 	]);
+});
+
+test("answers sent on another node while a confirmed message's settle is in flight wait for it without blocking same-group sends", async () => {
+	const [a, b] = await cluster();
+	const launcher = await a.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
+	const remotePeer = await a.connect("remote-peer", "stages", false);
+	const stage = await b.connect("stage", "stages", true);
+
+	a.send(launcher, "stage", "first-note");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "first-note"));
+
+	// Hold Node B's outbox.markDelivered while stage confirms receipt and immediately answers launcher.
+	const outbox = b.opened.state.outbox;
+	const realMarkDelivered = outbox.markDelivered.bind(outbox);
+	const gate = Promise.withResolvers<void>();
+	const entered = Promise.withResolvers<void>();
+	outbox.markDelivered = async (claim) => {
+		entered.resolve();
+		await gate.promise;
+		return realMarkDelivered(claim);
+	};
+
+	assert.equal(b.router.received(stage, "first-note"), true);
+	await entered.promise;
+
+	// Stage immediately answers launcher by name AND by id while markDelivered is still in flight.
+	b.send(stage, "launcher", "ans-by-name");
+	b.send(stage, launcher.info.id, "ans-by-id");
+
+	// A same-group remote peer send MUST NOT wait on the pending return-path settle.
+	b.send(stage, "remote-peer", "same-group-note");
+	assert.equal((await waitFor(() => outcomeOf(stage, "same-group-note"))).type, "delivered");
+	assert.equal(
+		(
+			await waitFor(() =>
+				framesOf(remotePeer).find((frame) => frame.type === "message" && frame.message.id === "same-group-note"),
+			)
+		).type,
+		"message",
+	);
+
+	// Unrelated unknown target also fails without waiting on the held settle.
+	b.send(stage, "nonexistent-peer", "unrelated-note");
+	assert.equal((await waitFor(() => outcomeOf(stage, "unrelated-note"))).type, "delivery_failed");
+
+	// Neither answer to launcher failed while markDelivered was still running.
+	assert.equal(outcomeOf(stage, "ans-by-name"), undefined);
+	assert.equal(outcomeOf(stage, "ans-by-id"), undefined);
+
+	// Once markDelivered completes, both answers succeed.
+	outbox.markDelivered = realMarkDelivered;
+	gate.resolve();
+	assert.equal((await waitFor(() => outcomeOf(stage, "ans-by-name"))).type, "delivered");
+	assert.equal((await waitFor(() => outcomeOf(stage, "ans-by-id"))).type, "delivered");
+	assert.equal((await waitFor(() => outcomeOf(launcher, "first-note"))).type, "delivered");
+
+	// Exhausting the remaining slot closes the path; a follow-up whose settle is held reopens it for immediate answers.
+	b.send(stage, "launcher", "ans-3");
+	assert.equal((await waitFor(() => outcomeOf(stage, "ans-3"))).type, "delivered");
+	b.send(stage, "launcher", "ans-over");
+	const closed = await waitFor(() => outcomeOf(stage, "ans-over"));
+	assert.deepEqual(closed.type === "delivery_failed" ? [closed.type, closed.reason] : [closed.type], [
+		"delivery_failed",
+		returnPathClosedReason("launcher"),
+	]);
+
+	a.send(launcher, "stage", "second-note");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "second-note"));
+	const gate2 = Promise.withResolvers<void>();
+	const entered2 = Promise.withResolvers<void>();
+	outbox.markDelivered = async (claim) => {
+		entered2.resolve();
+		await gate2.promise;
+		return realMarkDelivered(claim);
+	};
+	assert.equal(b.router.received(stage, "second-note"), true);
+	await entered2.promise;
+	b.send(stage, "launcher", "reopened-answer");
+	// Still waiting, not refused with closed reason.
+	b.send(stage, "remote-peer", "same-group-2");
+	assert.equal((await waitFor(() => outcomeOf(stage, "same-group-2"))).type, "delivered");
+	assert.equal(outcomeOf(stage, "reopened-answer"), undefined);
+
+	outbox.markDelivered = realMarkDelivered;
+	gate2.resolve();
+	assert.equal((await waitFor(() => outcomeOf(stage, "reopened-answer"))).type, "delivered");
+});
+
+test("answers sent on another node before a non-receipt delivery write completes wait for it and succeed", async () => {
+	const [a, b] = await cluster();
+	const launcher = await a.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
+	const remotePeer = await a.connect("remote-peer", "stages", false);
+	const stage = await b.connect("stage", "stages", false);
+
+	// Hold Node B's socket write callback to stage so stage can read the frame and answer before writeConfirmed settles.
+	const heldWrites: Array<(written: boolean) => void> = [];
+	b.writeConfirmedHook = (socket, frame, onSettled) => {
+		if (socket === stage.socket) {
+			b.write(socket, frame);
+			heldWrites.push(onSettled);
+			return;
+		}
+		onSettled(b.write(socket, frame));
+	};
+
+	a.send(launcher, "stage", "first-note");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "first-note"));
+	assert.equal(heldWrites.length, 1);
+
+	b.send(stage, "launcher", "immediate-answer");
+	// An unrelated same-group send settles immediately while immediate-answer waits on the held write.
+	b.send(stage, "remote-peer", "same-group-probe");
+	assert.equal((await waitFor(() => outcomeOf(stage, "same-group-probe"))).type, "delivered");
+	assert.equal(
+		(
+			await waitFor(() =>
+				framesOf(remotePeer).find((frame) => frame.type === "message" && frame.message.id === "same-group-probe"),
+			)
+		).type,
+		"message",
+	);
+	assert.equal(outcomeOf(stage, "immediate-answer"), undefined);
+
+	for (const settle of heldWrites.splice(0)) settle(true);
+	assert.equal((await waitFor(() => outcomeOf(stage, "immediate-answer"))).type, "delivered");
+	assert.equal((await waitFor(() => outcomeOf(launcher, "first-note"))).type, "delivered");
 });

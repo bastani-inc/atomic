@@ -128,7 +128,7 @@ export interface ReturnPathAuthority {
 	 */
 	answerable(sender: BrokerConnectedSession): BrokerConnectedSession[];
 	/** Counts `messageId` as an answer to `target`; false when no open return path allows it. */
-	use(sender: BrokerConnectedSession, target: ReturnPathParty, messageId: string): boolean;
+	use(sender: BrokerConnectedSession, target: ReturnPathParty, messageId: string, countedAt?: number): boolean;
 	/** Whether `sender` holds a return path to `target` that has closed. */
 	closed(sender: BrokerConnectedSession, target: ReturnPathParty): boolean;
 	/**
@@ -145,9 +145,41 @@ export interface ReturnPathAuthority {
 		since?: number,
 		handedOverAt?: number,
 	): void;
+	/**
+	 * Records an in-flight delivery from `from` to `recipient` that will open a return path once it settles. Calling
+	 * the returned function ends the hold and wakes any waiting answers to be decided again.
+	 */
+	beginOpening(
+		recipient: BrokerConnectedSession,
+		from: ReturnPathParty,
+		fromInfo: SessionInfo,
+		handedOverAt: number,
+	): (() => void) | undefined;
+	/**
+	 * When an in-flight delivery from `target` to `sender` handed over before `beforeSeq` has not settled yet, runs
+	 * `decideAgain` once one settles and returns true; otherwise returns false.
+	 */
+	whenOpening(
+		sender: BrokerConnectedSession,
+		target: ReturnPathParty,
+		beforeSeq: number,
+		decideAgain: () => void,
+	): boolean;
+	/**
+	 * When an in-flight delivery to `sender` handed over before `beforeSeq` came from a party matching `target`, runs
+	 * `decideAgain` once one settles and returns true; otherwise returns false. With `localOnly`, matches only senders
+	 * currently connected on this broker.
+	 */
+	whenOpeningForTarget(
+		sender: BrokerConnectedSession,
+		target: string,
+		beforeSeq: number,
+		decideAgain: () => void,
+		options?: { readonly localOnly?: boolean },
+	): boolean;
 	/** A mark to pass to {@link delivered} for a message handed over now. */
 	mark(): number;
-	/** The time to pass to {@link delivered} for a message handed over now. */
+	/** The sequence mark to pass to {@link delivered} or {@link use} for a message handed over or received now. */
 	handOverTime(): number;
 }
 
@@ -156,6 +188,15 @@ export function createReturnPathAuthority(
 	paths: ReturnPaths,
 	sessions: ReadonlyMap<string, BrokerConnectedSession>,
 ): ReturnPathAuthority {
+	const liveLocalMatchesTarget = (senderIdentity: string, target: string): boolean => {
+		const address = returnAddressOf(senderIdentity);
+		for (const session of sessions.values()) {
+			if (session.registrationReturnAddress === undefined || session.registrationReturnAddress !== address) continue;
+			if (!isAgentRecipient(session.info) || returnPathParty(session).identity !== senderIdentity) continue;
+			if (resolveSessionTarget([session.info], target).kind !== "not_found") return true;
+		}
+		return false;
+	};
 	return {
 		holds: (sender, target) => paths.holds(returnPathParty(sender), target),
 		answerable: (sender) => {
@@ -173,13 +214,31 @@ export function createReturnPathAuthority(
 			}
 			return live;
 		},
-		use: (sender, target, messageId) => paths.use(returnPathParty(sender), target, messageId),
+		use: (sender, target, messageId, countedAt) => paths.use(returnPathParty(sender), target, messageId, countedAt),
 		closed: (sender, target) => paths.closed(returnPathParty(sender), target),
 		delivered: (recipient, from, fromInfo, operationId, since, handedOverAt) => {
 			// A recipient that can already reach the sender needs no path; one with a reach policy never uses one.
 			if (recipient.reach === undefined && !reachesSession(recipient, fromInfo))
 				paths.open(returnPathParty(recipient), from, operationId, since, handedOverAt);
 		},
+		beginOpening: (recipient, from, fromInfo, handedOverAt) =>
+			recipient.reach === undefined && !reachesSession(recipient, fromInfo)
+				? paths.beginOpening(returnPathParty(recipient), from, fromInfo, handedOverAt)
+				: undefined,
+		whenOpening: (sender, target, beforeSeq, decideAgain) =>
+			paths.whenOpening(returnPathParty(sender), target, beforeSeq, decideAgain),
+		whenOpeningForTarget: (sender, target, beforeSeq, decideAgain, options) =>
+			paths.whenOpeningForResponder(
+				returnPathParty(sender),
+				beforeSeq,
+				(opening) => {
+					if (options?.localOnly === true) return liveLocalMatchesTarget(opening.senderIdentity, target);
+					if (resolveSessionTarget([opening.senderInfo], target).kind !== "not_found") return true;
+					if (returnAddressOf(opening.senderIdentity) === target) return true;
+					return liveLocalMatchesTarget(opening.senderIdentity, target);
+				},
+				decideAgain,
+			),
 		mark: () => paths.mark(),
 		handOverTime: () => paths.handOverTime(),
 	};
@@ -229,6 +288,8 @@ export interface RemoteSendRequest {
   readonly expectedRecipientId?: string;
   readonly resolveReplyTarget: boolean;
   readonly awaitRestoringRecipient: boolean;
+  /** Arrival sequence stamped when this send first reached the broker, for return-path ordering. */
+  readonly returnPathArrivalSeq?: number;
   /**
    * Set when the target resolved to a session on this broker: the router answers a same-id retry of a send that
    * already went through the shared outbox from that row, and calls `notFound` to deliver anything else locally.
@@ -258,6 +319,8 @@ export function resolveSessionAliasesWith(
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
 const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
+/** Arrival sequence stamped on a send's first entry, preserved if it waits on a pending return-path opening. */
+const returnPathArrivalSeqs = new WeakMap<SendClientMessage, number>();
 /**
  * #5999: sends already answered `queued` for a subagent being resumed. They are delivered as their sender was when the
  * broker took them, even once that sender's connection is gone: nobody waits on them any more.
@@ -430,6 +493,11 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
   }
+	let arrivalSeq = returnPathArrivalSeqs.get(clientMessage);
+	if (arrivalSeq === undefined && returnPaths !== undefined && mayUseReturnPath(message, supervisorSend, fromSession)) {
+		arrivalSeq = returnPaths.handOverTime();
+		returnPathArrivalSeqs.set(clientMessage, arrivalSeq);
+	}
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
 	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;
 	const messageSignature = buildMessageSendSignature(logicalTarget, message, senderIdentity);
@@ -625,11 +693,50 @@ export function handleBrokerSend(
     });
     return;
   }
+  const nonAgentVisible = visibleCandidates.some(
+    (info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase(),
+  );
+  // A sender outside this session's groups may have just written to it while its write callback has not run yet: wait
+  // for that matching opening instead of refusing by name before its return path opens.
+  if (
+    retargetedSessionId === undefined &&
+    resolution.kind === "not_found" &&
+    !nonAgentVisible &&
+    returnPaths !== undefined &&
+    arrivalSeq !== undefined &&
+    mayUseReturnPath(message, supervisorSend, fromSession) &&
+    returnPaths.whenOpeningForTarget(
+      fromSession,
+      trimmedTo,
+      arrivalSeq,
+      () =>
+        handleBrokerSend(
+          socket,
+          clientMessage,
+          currentId,
+          sessions,
+          deliveredMessages,
+          write,
+          supervisorCache,
+          pendingQuestions,
+          writeConfirmed,
+          holdForRestoringRecipient,
+          receipts,
+          routeRemote,
+          canPeekGroup,
+          routeReleasedAskerReply,
+          returnPaths,
+        ),
+      routeRemote === undefined ? undefined : { localOnly: true },
+    )
+  ) {
+    return;
+  }
   if (
     retargetedSessionId === undefined &&
     routeRemote !== undefined &&
     resolution.kind === "not_found" &&
-    !visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())
+    !nonAgentVisible
   ) {
     const send = clientMessage as SendClientMessage & { readonly to: string };
     if (
@@ -660,6 +767,7 @@ export function handleBrokerSend(
       ...(expectedRecipientId === undefined ? {} : { expectedRecipientId }),
       resolveReplyTarget: clientMessage.resolveReplyTarget === true,
       awaitRestoringRecipient: clientMessage.awaitRestoringRecipient === true,
+      ...(arrivalSeq === undefined ? {} : { returnPathArrivalSeq: arrivalSeq }),
       // Nothing on any node: answer exactly as a single-node broker does.
       notFound: () =>
         handleBrokerSend(
@@ -724,6 +832,7 @@ export function handleBrokerSend(
 			...(expectedRecipientId === undefined ? {} : { expectedRecipientId }),
 			resolveReplyTarget: clientMessage.resolveReplyTarget === true,
 			awaitRestoringRecipient: clientMessage.awaitRestoringRecipient === true,
+			...(arrivalSeq === undefined ? {} : { returnPathArrivalSeq: arrivalSeq }),
 			localTarget: target,
 			notFound: () => {
 				checkedAgainstSharedOutbox.add(clientMessage);
@@ -857,7 +966,32 @@ export function handleBrokerSend(
 	const crossesGroups = !bypass && !reachesSession(fromSession, target.info);
 	// A recipient answers a sender outside its reach that wrote to it, within the return path's bounds.
 	const returnPath = crossesGroups && mayUseReturnPath(message, supervisorSend, fromSession) ? returnPathParty(target) : undefined;
-	if (crossesGroups && (returnPath === undefined || returnPaths?.use(fromSession, returnPath, message.id) !== true)) {
+	if (crossesGroups && (returnPath === undefined || returnPaths?.use(fromSession, returnPath, message.id, arrivalSeq) !== true)) {
+      if (
+        returnPath !== undefined &&
+        arrivalSeq !== undefined &&
+        returnPaths?.whenOpening(fromSession, returnPath, arrivalSeq, () =>
+          handleBrokerSend(
+            socket,
+            clientMessage,
+            currentId,
+            sessions,
+            deliveredMessages,
+            write,
+            supervisorCache,
+            pendingQuestions,
+            writeConfirmed,
+            holdForRestoringRecipient,
+            receipts,
+            routeRemote,
+            canPeekGroup,
+            routeReleasedAskerReply,
+            returnPaths,
+          ),
+        ) === true
+      ) {
+        return;
+      }
       write(socket, {
         type: "delivery_failed",
         messageId: message.id,
@@ -1096,10 +1230,18 @@ export function handleBrokerSend(
     if (writeConfirmed !== undefined) {
       const askWritten =
         message.expectsReply === true ? pendingQuestions.beginAskWrite(fromSession.info.id, target.info.id, message.id) : undefined;
+      const returnPathOpening =
+        handedOverAt === undefined
+          ? undefined
+          : returnPaths?.beginOpening(target, returnPathParty(fromSession), fromSession.info, handedOverAt);
       writeConfirmed(target.socket, outbound, (written) => {
-        if (written) finishDelivery(target, senderWaiting);
-        else failDelivery();
-        askWritten?.();
+        try {
+          if (written) finishDelivery(target, senderWaiting);
+          else failDelivery();
+        } finally {
+          askWritten?.();
+          returnPathOpening?.();
+        }
       });
       return;
     }
