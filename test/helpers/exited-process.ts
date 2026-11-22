@@ -10,15 +10,13 @@ const PROCESS_START_TOKEN_MODULE = fileURLToPath(
 );
 const PAST_ITS_START_TICK_MS = 50;
 
+const EXITED_PROCESS_SCRIPT =
+	"const { processStartToken } = await import(process.argv[1]); process.stdout.write(JSON.stringify({ pid: process.pid, started: processStartToken(process.pid) })); await new Promise((resolve) => setTimeout(resolve, Number(process.argv[2])));";
+
 export function exitedProcess(): { readonly pid: number; readonly started?: string } {
 	const exited = spawnSync(
 		bunExecutable(),
-		[
-			"--eval",
-			`const { processStartToken } = await import(${JSON.stringify(PROCESS_START_TOKEN_MODULE)});
-			process.stdout.write(JSON.stringify({ pid: process.pid, started: processStartToken(process.pid) }));
-			await new Promise((resolve) => setTimeout(resolve, ${PAST_ITS_START_TICK_MS}));`,
-		],
+		["--eval", EXITED_PROCESS_SCRIPT, "--", PROCESS_START_TOKEN_MODULE, String(PAST_ITS_START_TICK_MS)],
 		{ encoding: "utf8" },
 	);
 	assert.equal(exited.status, 0, exited.stderr);
