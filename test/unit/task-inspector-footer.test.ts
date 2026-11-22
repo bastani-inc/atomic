@@ -125,9 +125,9 @@ test("shell transcript retains the note and exact footer at the bottom of its vi
 		await enter(h.inspector);
 		const lines = h.lines(110, 30);
 		assert.equal(lines.length, 30);
-		assert.equal(lines.at(-2), "Earlier output omitted · showing retained 8 KiB tail");
-		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ? keys");
-		assert.ok(lines.slice(3, -2).some((line) => line === ""));
+		assert.ok(lines.includes("  Earlier output omitted · showing retained 8 KiB tail"), lines.join("\n"));
+		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · x stop · ? keys");
+		assert.ok(lines.slice(3, -1).some((line) => line === ""));
 	} finally {
 		await h.dispose();
 	}
@@ -186,7 +186,10 @@ test("transcript shows both a retained-output note and a late input failure (#45
 		await enter(h.inspector);
 		written.resolve({ ok: false, error: { message: "input failed" } });
 		await flush();
-		assert.equal(h.lines().at(-2), "Earlier output omitted · showing retained 8 KiB tail · input failed");
+		assert.ok(
+			h.lines().includes("  Earlier output omitted · showing retained 8 KiB tail · input failed"),
+			h.lines().join("\n"),
+		);
 	} finally {
 		written.resolve({ ok: false, error: { message: "input failed" } });
 		await h.dispose();

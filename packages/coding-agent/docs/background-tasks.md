@@ -101,7 +101,7 @@ Run `/tasks` to inspect work without stopping it:
 - Enter or Right on a subagent row closes `/tasks` and shows that subagent on the chat screen. On a shell row, it opens the shell's output page (or its detail page when no output is available).
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it. Up or Down selects a row and keeps the filter.
 - A shell's completion notice and output page take the last 8 KiB of retained output. If that window starts partway through a UTF-8 character, the excerpt starts at the next character. If the completion notice must shorten the output further, it keeps whole graphemes and shows an omission label only if the entire label fits.
-- Detail and shell output pages use the full screen. A shell's input stays in the sheet, under `Input to <command>`, with `enter send · ← back to list`.
+- Detail and shell output pages use the full screen. A shell output page shows the command, status, live runtime, and retained output in a scrollable rounded box with `pgup/pgdn` scroll, two-press `x` to stop a running shell, `?` for its keys, and `←` to go back. A shell's input stays in the sheet, under `Input to <command>`, with `enter send · ← back to list`.
 - Escape returns to the picker with your selection preserved, then to chat.
 - Completed background work remains available, including after a later wait for it. A shell command its tool call still waits on is excluded.
 - Updates never open or close the inspector automatically. Closing it does not stop tasks.
