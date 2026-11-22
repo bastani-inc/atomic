@@ -339,17 +339,26 @@ interface CheckoutCapture {
 	readonly result: Promise<WorktreeSnapshotCapture>;
 }
 
-/**
- * The captures running now in this process into each blob table, by checkout, settings and the snapshot each starts
- * from; one ends, it is forgotten.
- */
-const runningCaptures = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCapture>>();
+/** A capture queued behind the active one for turns that ended after it started. */
+interface QueuedCheckoutCapture {
+	readonly start: () => CheckoutCapture;
+	readonly promise: Promise<WorktreeSnapshotCapture>;
+	readonly resolve: (value: WorktreeSnapshotCapture) => void;
+	readonly reject: (reason: unknown) => void;
+	readonly timer: ReturnType<typeof setTimeout>;
+}
 
 /**
- * The capture queued behind the running one of each key, for the turns that ended while it ran; it is forgotten once it
- * starts.
+ * Per-key state of shared captures for one checkout, blob table, settings, and previous snapshot. Absent from the map
+ * means idle; settling or superseding the active capture transitions directly to idle or to `running` for the promoted
+ * follower, leaving no idle gap between them.
  */
-const queuedCaptures = new WeakMap<SnapshotBlobStore, Map<string, Promise<WorktreeSnapshotCapture>>>();
+type CheckoutCaptureSlot =
+	| { readonly kind: "running"; readonly active: CheckoutCapture }
+	| { readonly kind: "running_with_queued"; readonly active: CheckoutCapture; readonly queued: QueuedCheckoutCapture };
+
+/** Active capture slots in this process for each blob table, keyed by checkout, settings, and previous snapshot. */
+const captureSlots = new WeakMap<SnapshotBlobStore, Map<string, CheckoutCaptureSlot>>();
 
 /**
  * How long a queued capture waits for the capture ahead of it at most: at least this long, and otherwise four times
@@ -359,7 +368,7 @@ const queuedCaptures = new WeakMap<SnapshotBlobStore, Map<string, Promise<Worktr
 export const QUEUED_CAPTURE_MIN_WAIT_MS = 10_000;
 const QUEUED_CAPTURE_WAIT_PER_CAPTURE = 4;
 
-/** How long the last capture this process finished took. */
+/** How long the last non-superseded capture this process finished took. */
 let lastCaptureMs = 0;
 
 function queuedCaptureWaitMs(): number {
@@ -386,6 +395,82 @@ async function captureCheckoutAgain(
 	return captureLocatedCheckout(checkout, options, wroteBy);
 }
 
+function beginCapture(
+	slots: Map<string, CheckoutCaptureSlot>,
+	key: string,
+	capture: (startedAt: number, lookUpAgain: boolean) => Promise<WorktreeSnapshotCapture>,
+	lookUpAgain: boolean,
+): CheckoutCapture {
+	const startedAt = nextCaptureTick();
+	const startedMs = performance.now();
+	let result: Promise<WorktreeSnapshotCapture>;
+	try {
+		result = capture(startedAt, lookUpAgain);
+	} catch (error) {
+		result = Promise.reject(error);
+	}
+	const active: CheckoutCapture = { startedAt, startedMs, result };
+	slots.set(key, { kind: "running", active });
+	result.then(
+		(outcome) => settleActiveCapture(slots, key, active, outcome),
+		() => settleActiveCapture(slots, key, active, undefined),
+	);
+	return active;
+}
+
+function promoteQueuedCapture(queued: QueuedCheckoutCapture): void {
+	clearTimeout(queued.timer);
+	const next = queued.start();
+	next.result.then(queued.resolve, queued.reject);
+}
+
+function settleActiveCapture(
+	slots: Map<string, CheckoutCaptureSlot>,
+	key: string,
+	finished: CheckoutCapture,
+	outcome: WorktreeSnapshotCapture | undefined,
+): void {
+	const slot = slots.get(key);
+	if (slot === undefined || slot.active !== finished) return;
+	if (outcome?.status === "captured" || outcome?.status === "unchanged") {
+		lastCaptureMs = Math.max(0, performance.now() - finished.startedMs);
+	}
+	if (slot.kind === "running") {
+		slots.delete(key);
+		return;
+	}
+	promoteQueuedCapture(slot.queued);
+}
+
+function expireActiveCaptureWait(slots: Map<string, CheckoutCaptureSlot>, key: string, stuck: CheckoutCapture): void {
+	const slot = slots.get(key);
+	if (slot === undefined || slot.kind !== "running_with_queued" || slot.active !== stuck) return;
+	promoteQueuedCapture(slot.queued);
+}
+
+function enqueueBehindActiveCapture(
+	slots: Map<string, CheckoutCaptureSlot>,
+	key: string,
+	active: CheckoutCapture,
+	capture: (startedAt: number, lookUpAgain: boolean) => Promise<WorktreeSnapshotCapture>,
+): Promise<WorktreeSnapshotCapture> {
+	const { promise, resolve: resolveNext, reject: rejectNext } = Promise.withResolvers<WorktreeSnapshotCapture>();
+	const timer = setTimeout(
+		() => expireActiveCaptureWait(slots, key, active),
+		Math.max(0, active.startedMs + queuedCaptureWaitMs() - performance.now()),
+	);
+	timer.unref?.();
+	const queued: QueuedCheckoutCapture = {
+		start: () => beginCapture(slots, key, capture, true),
+		promise,
+		resolve: resolveNext,
+		reject: rejectNext,
+		timer,
+	};
+	slots.set(key, { kind: "running_with_queued", active, queued });
+	return promise;
+}
+
 /**
  * Captures the checkout at `root` from the session's own earlier snapshot of it, `previous`, for a turn whose writes
  * ended at `wroteBy`, sharing the work with every session of this process that captures it into the same blob table
@@ -405,51 +490,25 @@ async function sharedCheckoutCapture(
 	previous: WorktreeSnapshot | undefined,
 	capture: (startedAt: number, lookUpAgain: boolean) => Promise<WorktreeSnapshotCapture>,
 ): Promise<WorktreeSnapshotCapture> {
-	const running = capturesOf(runningCaptures, blobs);
-	const queued = capturesOf(queuedCaptures, blobs);
+	const slots = capturesOf(captureSlots, blobs);
 	const key = JSON.stringify([resolve(root), settings, previous?.id ?? null]);
-	const start = (lookUpAgain: boolean): CheckoutCapture => {
-		const startedAt = nextCaptureTick();
-		const startedMs = performance.now();
-		const current: CheckoutCapture = { startedAt, startedMs, result: capture(startedAt, lookUpAgain) };
-		running.set(key, current);
-		const forget = () => {
-			if (running.get(key) === current) running.delete(key);
-		};
-		current.result.then(() => {
-			lastCaptureMs = performance.now() - startedMs;
-			forget();
-		}, forget);
-		return current;
-	};
-	// The next capture, queued behind `ahead`: it starts when `ahead` ends, or once `ahead` ran past the wait.
-	const queue = (ahead: CheckoutCapture): Promise<WorktreeSnapshotCapture> => {
-		const next = new Promise<WorktreeSnapshotCapture>((resolveNext, rejectNext) => {
-			let started = false;
-			const begin = () => {
-				if (started) return;
-				started = true;
-				clearTimeout(wait);
-				if (queued.get(key) === next) queued.delete(key);
-				start(true).result.then(resolveNext, rejectNext);
-			};
-			const wait = setTimeout(begin, Math.max(0, ahead.startedMs + queuedCaptureWaitMs() - performance.now()));
-			wait.unref?.();
-			ahead.result.then(begin, begin);
-		});
-		queued.set(key, next);
-		return next;
-	};
 	let failed: Promise<WorktreeSnapshotCapture> | undefined;
 	for (;;) {
-		const flight = running.get(key);
-		if (flight === undefined || flight.result === failed) return await start(false).result;
+		const slot = slots.get(key);
+		if (slot === undefined || slot.active.result === failed) {
+			return await beginCapture(slots, key, capture, false).result;
+		}
 		// A capture that started after the turn's writes serves it; one that started before does not, and the turn
 		// waits for the next one.
-		const shared = flight.startedAt < wroteBy ? (queued.get(key) ?? queue(flight)) : flight.result;
+		const shared =
+			slot.active.startedAt < wroteBy
+				? slot.kind === "running_with_queued"
+					? slot.queued.promise
+					: enqueueBehindActiveCapture(slots, key, slot.active, capture)
+				: slot.active.result;
 		const result = await shared.catch(() => undefined);
 		if (result?.status === "captured" || result?.status === "unchanged") return result;
-		// A capture that ended is forgotten before the turns waiting on it read its result; one still listed is not joined.
+		// A capture that ended is forgotten or handed off before waiters read its result; one still listed is not joined.
 		failed = shared;
 	}
 }
