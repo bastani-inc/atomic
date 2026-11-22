@@ -51,11 +51,11 @@ class ObservedGracePromise<T> extends Promise<T> {
 		return Promise;
 	}
 
-	#onObserve: (() => boolean) | undefined;
+	#onObserve: (() => void) | undefined;
 
 	constructor(
 		executor: (resolve: (value: T | PromiseLike<T>) => void, reject: (reason?: unknown) => void) => void,
-		onObserve: () => boolean,
+		onObserve: (() => void) | undefined,
 	) {
 		super(executor);
 		this.#onObserve = onObserve;
@@ -66,24 +66,31 @@ class ObservedGracePromise<T> extends Promise<T> {
 		onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
 		onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
 	): Promise<TResult1 | TResult2> {
-		if (this.#onObserve?.()) {
+		const observe = this.#onObserve;
+		const next = super.then(onfulfilled, onrejected);
+		if (typeof onfulfilled === "function") {
 			this.#onObserve = undefined;
+			observe?.();
+			return next;
 		}
-		return super.then(onfulfilled, onrejected);
+		// A rejection-only handler such as `void p.catch(() => {})` does not await settlement; propagate observation to
+		// the derived promise so `await p.catch(() => {})` still holds keep-alive while `void p.catch(() => {})` does not.
+		if (observe === undefined) return next;
+		return new ObservedGracePromise<TResult1 | TResult2>((resolve, reject) => {
+			next.then(resolve, reject);
+		}, observe);
 	}
 }
 
 /**
- * Wrap `promise` so that the first observation (`await`, `.then`, `.catch`, `.finally`) — when `shouldHold` permits —
- * keeps active abort-grace timers for `owner` ref'd until `promise` settles. An unobserved call (such as `void
+ * Wrap `promise` so that observing its settlement (`await`, `.then(fn)`, `.finally(fn)`, `Promise.all`/`Promise.race`,
+ * or `await p.catch(...)`) keeps active and subsequently armed abort-grace timers for `owner` ref'd until `promise`
+ * settles. An unobserved call (such as `void session.prompt()`, `void session.prompt().catch(() => {})`, or `void
  * session.abort()`) leaves those timers unref'd so the process can exit immediately.
  */
-export function holdToolAbortGraceWhenObserved<T>(
-	owner: object,
-	promise: Promise<T>,
-	shouldHold?: () => boolean,
-): Promise<T> {
+export function holdToolAbortGraceWhenObserved<T>(owner: object, promise: Promise<T>): Promise<T> {
 	let settled = false;
+	let observed = false;
 	let release: (() => void) | undefined;
 	const done = (): void => {
 		settled = true;
@@ -91,26 +98,23 @@ export function holdToolAbortGraceWhenObserved<T>(
 		release = undefined;
 		releaseNow?.();
 	};
-	return new ObservedGracePromise<T>(
-		(resolve, reject) => {
-			promise.then(
-				(value) => {
-					done();
-					resolve(value);
-				},
-				(error: unknown) => {
-					done();
-					reject(error);
-				},
-			);
-		},
-		() => {
-			if (settled) return true;
-			if (shouldHold !== undefined && !shouldHold()) return false;
-			release = acquireGraceKeepAlive(owner);
-			return true;
-		},
-	);
+	const observe = (): void => {
+		if (observed || settled) return;
+		observed = true;
+		release = acquireGraceKeepAlive(owner);
+	};
+	return new ObservedGracePromise<T>((resolve, reject) => {
+		promise.then(
+			(value) => {
+				done();
+				resolve(value);
+			},
+			(error: unknown) => {
+				done();
+				reject(error);
+			},
+		);
+	}, observe);
 }
 
 /**
