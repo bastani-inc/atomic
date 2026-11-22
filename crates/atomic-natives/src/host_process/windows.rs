@@ -53,23 +53,33 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 const READ_CHUNK_BYTES: usize = 64 * 1024;
-/// Output events the host has been sent and has not handled yet. A reader waits while there are this many, so a program
-/// that writes faster than the host handles its output waits on its pipe, as it does under `child_process`, instead of
-/// queueing all of it in memory and exiting before the host saw its output; and each read then takes what gathered in
-/// the pipe meanwhile.
-const UNHANDLED_OUTPUT_EVENTS: usize = 8;
-/// A waiting reader wakes once no more than this many output events are unhandled, and then sends several in a row
-/// instead of waking each time the host handles one.
-const RESUMED_OUTPUT_EVENTS: usize = UNHANDLED_OUTPUT_EVENTS / 2;
-
-/// Output events sent to the host and not handled there yet, and the readers waiting for that number to drop.
-#[derive(Default)]
-struct OutputBacklog {
-	unhandled: usize,
-	waiting: usize,
-}
 /// The longest current directory `CreateProcessW` takes; libuv shortens a longer one.
 const MAX_PATH: usize = 260;
+/// How much of a stream's output may wait for the host beyond the event it is handling: the reader waits while this much
+/// does, so a program that writes faster than the host handles its output waits on its pipe, as under `child_process`,
+/// instead of having all of it queued in memory and exiting before the host saw it.
+const PENDING_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// One output stream's way to the host. At most one of its events is unhandled there at a time; what the stream reads
+/// meanwhile gathers and goes as one event once the host handled that one, as `child_process` takes everything a pipe
+/// holds in one read.
+#[derive(Default)]
+struct StreamOutput {
+	pending: Vec<u8>,
+	in_flight: bool,
+	/// The stream reached its end, whose event follows its last bytes.
+	ended: bool,
+	end_sent: bool,
+}
+
+/// The data and end events of stream `index` (0 standard output, 1 standard error).
+fn stream_kinds(index: usize) -> (HostProcessEventKind, HostProcessEventKind) {
+	if index == 0 {
+		(HostProcessEventKind::Stdout, HostProcessEventKind::StdoutEnd)
+	} else {
+		(HostProcessEventKind::Stderr, HostProcessEventKind::StderrEnd)
+	}
+}
 
 fn raw(handle: &impl AsRawHandle) -> HANDLE {
 	handle.as_raw_handle()
@@ -163,9 +173,9 @@ pub(super) struct Shared {
 	input: Mutex<Input>,
 	input_changed: Condvar,
 	callback: Mutex<Option<EventCallback>>,
-	/// Output events sent to the host and not yet handled there (see [`UNHANDLED_OUTPUT_EVENTS`]).
-	unhandled_output: Mutex<OutputBacklog>,
-	output_handled: Condvar,
+	/// Standard output's and standard error's way to the host.
+	outputs: Mutex<[StreamOutput; 2]>,
+	outputs_changed: Condvar,
 	/// A manual-reset event set by the host's release.
 	stop: OwnedHandle,
 	stopping: AtomicBool,
@@ -260,7 +270,7 @@ impl Shared {
 			SetEvent(raw(&self.stop));
 		}
 		self.input_changed.notify_all();
-		self.output_handled.notify_all();
+		self.outputs_changed.notify_all();
 	}
 
 	fn emit(&self, event: HostProcessEvent) {
@@ -269,47 +279,96 @@ impl Shared {
 		}
 	}
 
-	/// Sends output to the host once fewer than [`UNHANDLED_OUTPUT_EVENTS`] it was sent are unhandled, waiting until
-	/// then. False when the host released the process meanwhile: the output is not sent.
-	fn emit_output(self: &Arc<Self>, event: HostProcessEvent) -> bool {
-		let mut backlog = locked(&self.unhandled_output);
-		while backlog.unhandled >= UNHANDLED_OUTPUT_EVENTS {
-			if self.stopping.load(Ordering::Acquire) {
-				return false;
-			}
-			backlog.waiting += 1;
-			backlog = self.output_handled.wait(backlog).unwrap_or_else(PoisonError::into_inner);
-			backlog.waiting -= 1;
+	/// Takes `bytes` that stream `index` read toward the host: sends them at once when none of its events is unhandled
+	/// there, and otherwise adds them to what goes next. Waits while [`PENDING_OUTPUT_BYTES`] wait. False once the host
+	/// released the process.
+	fn send_output(self: &Arc<Self>, index: usize, bytes: &[u8]) -> bool {
+		let mut outputs = locked(&self.outputs);
+		while outputs[index].pending.len() >= PENDING_OUTPUT_BYTES
+			&& !self.stopping.load(Ordering::Acquire)
+		{
+			outputs = self.outputs_changed.wait(outputs).unwrap_or_else(PoisonError::into_inner);
 		}
 		if self.stopping.load(Ordering::Acquire) {
 			return false;
 		}
-		backlog.unhandled += 1;
-		drop(backlog);
-		let handled = self.clone();
+		let output = &mut outputs[index];
+		output.pending.extend_from_slice(bytes);
+		if output.in_flight {
+			return true;
+		}
+		output.in_flight = true;
+		let data = std::mem::take(&mut output.pending);
+		drop(outputs);
+		self.send_data(index, data);
+		true
+	}
+
+	/// Sends `data` of stream `index`; once the host handled it, what gathered meanwhile follows, or the stream's end.
+	fn send_data(self: &Arc<Self>, index: usize, data: Vec<u8>) {
+		let event = HostProcessEvent {
+			data: Some(Buffer::from(data)),
+			..HostProcessEvent::of(stream_kinds(index).0)
+		};
+		let next = self.clone();
 		let sent = locked(&self.callback).as_ref().is_some_and(|callback| {
 			callback.call_with_return_value(
 				event,
 				ThreadsafeFunctionCallMode::NonBlocking,
 				move |_, _| {
-					handled.output_was_handled();
+					next.output_handled(index);
 					Ok(())
 				},
 			) == Status::Ok
 		});
 		if !sent {
-			self.output_was_handled();
+			self.output_handled(index);
 		}
-		true
 	}
 
-	fn output_was_handled(&self) {
-		let mut backlog = locked(&self.unhandled_output);
-		backlog.unhandled -= 1;
-		let resume = backlog.waiting > 0 && backlog.unhandled <= RESUMED_OUTPUT_EVENTS;
-		drop(backlog);
-		if resume {
-			self.output_handled.notify_all();
+	/// The host handled stream `index`'s event (on its thread), or it could not be sent.
+	fn output_handled(self: &Arc<Self>, index: usize) {
+		let mut outputs = locked(&self.outputs);
+		let stopping = self.stopping.load(Ordering::Acquire);
+		let output = &mut outputs[index];
+		if !output.pending.is_empty() && !stopping {
+			let data = std::mem::take(&mut output.pending);
+			drop(outputs);
+			self.outputs_changed.notify_all();
+			self.send_data(index, data);
+			return;
+		}
+		output.in_flight = false;
+		let end = output.ended && !output.end_sent && !stopping;
+		output.end_sent |= end;
+		drop(outputs);
+		self.outputs_changed.notify_all();
+		if end {
+			self.emit(HostProcessEvent::of(stream_kinds(index).1));
+		}
+	}
+
+	/// Stream `index` reached its end: its end event goes now, or once the host handled its last bytes.
+	fn end_output(&self, index: usize) {
+		let mut outputs = locked(&self.outputs);
+		let output = &mut outputs[index];
+		output.ended = true;
+		let end = !output.in_flight && !output.end_sent;
+		output.end_sent |= end;
+		drop(outputs);
+		self.outputs_changed.notify_all();
+		if end {
+			self.emit(HostProcessEvent::of(stream_kinds(index).1));
+		}
+	}
+
+	/// Waits until every stream that ended has sent its end event, or the host released the process.
+	fn wait_for_ends(&self) {
+		let mut outputs = locked(&self.outputs);
+		while !self.stopping.load(Ordering::Acquire)
+			&& outputs.iter().any(|output| output.ended && !output.end_sent)
+		{
+			outputs = self.outputs_changed.wait(outputs).unwrap_or_else(PoisonError::into_inner);
 		}
 	}
 }
@@ -553,26 +612,16 @@ fn cancel_until_finished(thread: &JoinHandle<()>) {
 	}
 }
 
-fn read_output(shared: &Arc<Shared>, mut file: File, stderr: bool) {
-	let (data, end) = if stderr {
-		(HostProcessEventKind::Stderr, HostProcessEventKind::StderrEnd)
-	} else {
-		(HostProcessEventKind::Stdout, HostProcessEventKind::StdoutEnd)
-	};
+fn read_output(shared: &Arc<Shared>, mut file: File, index: usize) {
 	let mut buffer = vec![0u8; READ_CHUNK_BYTES];
 	loop {
 		if shared.stopping.load(Ordering::Acquire) {
 			return;
 		}
-		// A read of a pipe returns everything it holds, up to the buffer: what gathered while the reader waited.
 		match file.read(&mut buffer) {
 			Ok(0) => break,
 			Ok(count) => {
-				let event = HostProcessEvent {
-					data: Some(Buffer::from(buffer[..count].to_vec())),
-					..HostProcessEvent::of(data)
-				};
-				if !shared.emit_output(event) {
+				if !shared.send_output(index, &buffer[..count]) {
 					return;
 				}
 			},
@@ -582,7 +631,7 @@ fn read_output(shared: &Arc<Shared>, mut file: File, stderr: bool) {
 			Err(_) => break,
 		}
 	}
-	shared.emit(HostProcessEvent::of(end));
+	shared.end_output(index);
 }
 
 fn write_input(shared: &Shared, mut file: File) {
@@ -659,6 +708,7 @@ fn supervise(shared: &Shared, readers: Vec<JoinHandle<()>>, writer: Option<JoinH
 				break;
 			}
 		}
+		shared.wait_for_ends();
 	}
 	shared.stopping.store(true, Ordering::Release);
 	shared.close_input();
@@ -808,21 +858,21 @@ pub(super) fn start(
 		input: Mutex::new(Input { chunks: VecDeque::new(), ended: false, closed: stdin.is_none() }),
 		input_changed: Condvar::new(),
 		callback: Mutex::new(Some(on_event)),
-		unhandled_output: Mutex::new(OutputBacklog::default()),
-		output_handled: Condvar::new(),
+		outputs: Mutex::new(Default::default()),
+		outputs_changed: Condvar::new(),
 		stop: unsafe { OwnedHandle::from_raw_handle(stop) },
 		stopping: AtomicBool::new(false),
 		killed_with: AtomicI32::new(0),
 	});
 	let threads = (|| -> io::Result<()> {
 		let mut readers = Vec::with_capacity(2);
-		for (output, stderr) in [(stdout, false), (stderr, true)] {
+		for (index, output) in [stdout, stderr].into_iter().enumerate() {
 			if let Some(file) = output {
 				let worker = shared.clone();
 				readers.push(
 					std::thread::Builder::new()
 						.name("host-process-output".into())
-						.spawn(move || read_output(&worker, file, stderr))?,
+						.spawn(move || read_output(&worker, file, index))?,
 				);
 			}
 		}
