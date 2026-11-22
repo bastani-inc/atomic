@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `/tasks` on the isolated host so cancelling or failing a subagent open with `Esc` never leaves a speculative agent-panel preview painted or lands the next `/tasks` on the cancelled subagent, while staying compatible with older hosts and engines across in-place updates.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

@@ -1,6 +1,12 @@
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
-import { hideWidgetFramesUntilFresh } from "../../interactive-engine/remote-component.ts";
+import {
+	cancelWidgetPreview,
+	clearPromotedWidgetPreview,
+	commitWidgetPreview,
+	resetWidgetPreview,
+	stageWidgetPreview,
+} from "../../interactive-engine/remote-component.ts";
 import { AGENT_PANEL_WIDGET_KEY } from "../../rpc/agent-panel-bridge.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { setAgentViewBridge } from "./agent-view-bridge.ts";
@@ -9,6 +15,7 @@ import { openAgentViewPort } from "./open-port.ts";
 import { installPromptRetarget } from "./prompt-retarget.ts";
 import { FIRST_FRAME_TIMEOUT_MS, PANEL_FIRST_FRAME_TIMEOUT_MS } from "./remote-port.ts";
 import { holdTranscriptDock, installTranscriptSlot } from "./transcript-slot.ts";
+import { type HostEngineViewSyncState, initialHostEngineViewSyncState } from "./view-preview-protocol.js";
 import { installViewedCommandGates } from "./viewed-commands.ts";
 
 const switchers = new WeakMap<InteractiveModeBase, AgentViewSwitcher>();
@@ -68,7 +75,7 @@ export function tellEngineViewed(
  */
 export function showForEngine(
 	switcher: Pick<AgentViewSwitcher, "requestView">,
-	message: { taskId: string | null; keepScreen?: true; panel?: true; panelOnView?: true },
+	message: { taskId: string | null; requestId?: number; keepScreen?: true; panel?: true; panelOnView?: true },
 	tell: (taskId: TaskId | undefined) => void,
 ): TaskId | undefined {
 	const taskId = message.taskId === null ? undefined : (message.taskId as TaskId);
@@ -88,25 +95,197 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 	];
 	const runtime = mode.runtimeHost;
 	if (runtime instanceof IsolatedInteractiveRuntime) {
-		let toldFirst: TaskId | undefined;
-		const tellViewed = (taskId: TaskId | undefined) => {
+		let sync: HostEngineViewSyncState = initialHostEngineViewSyncState();
+		let resettingGeneration = false;
+		let replacingWithPreview = false;
+		let supersededSettledForPreview: number | undefined;
+		let syncEngineRequestId: number | undefined;
+
+		const advanceSettled = (candidate: number | undefined): number => {
+			if (candidate !== undefined && candidate > sync.settledRequestId) {
+				sync = { ...sync, settledRequestId: candidate };
+			}
+			return sync.settledRequestId;
+		};
+
+		const allocateViewSeq = (): number => {
+			const viewSeq = sync.viewSeq + 1;
+			sync = { ...sync, viewSeq };
+			return viewSeq;
+		};
+
+		const sendSetViewed = (payload: {
+			readonly taskId?: TaskId;
+			readonly preview?: true;
+			readonly viewSeq?: number;
+			readonly requestId?: number;
+			readonly settledRequestId?: number;
+		}): number => {
+			const viewSeq = payload.viewSeq ?? allocateViewSeq();
+			const settled = payload.settledRequestId;
+			if (settled !== undefined && settled > sync.lastSentSettledRequestId) {
+				sync = { ...sync, lastSentSettledRequestId: settled };
+			}
+			if (resettingGeneration) return viewSeq;
 			void runtime
-				.requestAgentView({ type: "set_viewed_agent", ...(taskId === undefined ? {} : { taskId }) })
+				.requestAgentView({
+					type: "set_viewed_agent",
+					...(payload.taskId === undefined ? {} : { taskId: payload.taskId }),
+					...(payload.preview === true ? { preview: true as const } : {}),
+					viewSeq,
+					...(payload.requestId === undefined ? {} : { requestId: payload.requestId }),
+					...(settled === undefined ? {} : { settledRequestId: settled }),
+				})
 				.catch(() => {
 					// A lost engine forgets what was shown; its replacement starts on main.
 				});
+			return viewSeq;
 		};
+
+		const resetGenerationSync = () => {
+			sync = initialHostEngineViewSyncState();
+			supersededSettledForPreview = undefined;
+			syncEngineRequestId = undefined;
+			resetWidgetPreview(runtime, AGENT_PANEL_WIDGET_KEY);
+		};
+
 		undo.push(
 			runtime.onEngineMessage((message) => {
-				if (message.type === "engine_view_agent") toldFirst = showForEngine(switcher, message, tellViewed);
+				if (message.type === "engine_ready") {
+					resetGenerationSync();
+					return;
+				}
+				if (message.type !== "engine_view_agent") return;
+				const taskId = message.taskId === null ? undefined : (message.taskId as TaskId);
+				const keepScreen = message.keepScreen === true;
+				const panelOnView = keepScreen && taskId !== undefined && message.panelOnView === true;
+				const engineRequestId = message.requestId;
+				const tagged = engineRequestId !== undefined;
+				const willOpenAsyncWithPreview = panelOnView && switcher.viewedTaskId() !== taskId;
+
+				replacingWithPreview = willOpenAsyncWithPreview;
+				supersededSettledForPreview = undefined;
+				syncEngineRequestId = taskId === undefined ? engineRequestId : undefined;
+				try {
+					switcher.requestView(taskId, { keepScreen, panel: message.panel === true || panelOnView });
+				} finally {
+					replacingWithPreview = false;
+					syncEngineRequestId = undefined;
+				}
+
+				const pendingHostId = switcher.pendingRequestId;
+				if (pendingHostId !== undefined && taskId !== undefined) {
+					if (panelOnView) {
+						const previewSeq = allocateViewSeq();
+						sync = {
+							...sync,
+							pendingEngine: { hostRequestId: pendingHostId, engineRequestId, previewSeq, tagged },
+						};
+						stageWidgetPreview(runtime, AGENT_PANEL_WIDGET_KEY, previewSeq, tagged);
+						sendSetViewed({
+							taskId,
+							preview: true,
+							viewSeq: previewSeq,
+							...(engineRequestId === undefined ? {} : { requestId: engineRequestId }),
+							...(supersededSettledForPreview === undefined
+								? {}
+								: { settledRequestId: supersededSettledForPreview }),
+						});
+					} else {
+						sync = {
+							...sync,
+							pendingEngine: { hostRequestId: pendingHostId, engineRequestId, tagged },
+						};
+					}
+					supersededSettledForPreview = undefined;
+					return;
+				}
+
+				// Request settled synchronously (already on main or already viewing the requested subagent).
+				supersededSettledForPreview = undefined;
+				const settled = advanceSettled(engineRequestId);
+				if (engineRequestId !== undefined && sync.lastSentSettledRequestId < engineRequestId) {
+					sendSetViewed({
+						...(switcher.viewedTaskId() === undefined ? {} : { taskId: switcher.viewedTaskId() }),
+						settledRequestId: settled,
+					});
+				}
 			}),
-			runtime.onGenerationEnded(() => switcher.reset("generation-lost")),
-			tellEngineViewed(switcher, tellViewed, (taskId) => {
-				if (taskId !== toldFirst) return;
-				toldFirst = undefined;
-				// The engine's panel lists the subagent it was told about until it reads the correction: what it draws
-				// until then stays off screen, as main's panel listed nothing.
-				hideWidgetFramesUntilFresh(runtime, AGENT_PANEL_WIDGET_KEY, PANEL_FIRST_FRAME_TIMEOUT_MS);
+			runtime.onGenerationEnded(() => {
+				resetGenerationSync();
+				resettingGeneration = true;
+				try {
+					switcher.reset("generation-lost");
+				} finally {
+					resettingGeneration = false;
+				}
+			}),
+			switcher.onChange(({ to }) => {
+				if (resettingGeneration) return;
+				const toTaskId = to.kind === "agent" ? to.port.status().taskId : undefined;
+				const pending = sync.pendingEngine;
+				if (pending !== undefined && switcher.pendingRequestId === pending.hostRequestId && to.kind === "agent") {
+					sync = { ...sync, pendingEngine: undefined };
+					const settled = advanceSettled(pending.engineRequestId);
+					if (pending.previewSeq !== undefined) {
+						commitWidgetPreview(runtime, AGENT_PANEL_WIDGET_KEY, pending.previewSeq);
+					} else {
+						clearPromotedWidgetPreview(runtime, AGENT_PANEL_WIDGET_KEY);
+					}
+					sendSetViewed({
+						taskId: toTaskId,
+						settledRequestId: settled,
+					});
+					return;
+				}
+				clearPromotedWidgetPreview(runtime, AGENT_PANEL_WIDGET_KEY);
+				const settled = advanceSettled(syncEngineRequestId);
+				sendSetViewed({
+					...(toTaskId === undefined ? {} : { taskId: toTaskId }),
+					settledRequestId: settled,
+				});
+			}),
+			switcher.onPending((pendingTask, settled) => {
+				if (resettingGeneration || settled === undefined) return;
+				const active = sync.pendingEngine;
+				if (active !== undefined && settled.requestId === active.hostRequestId) {
+					sync = { ...sync, pendingEngine: undefined };
+					const settledReq = advanceSettled(active.engineRequestId);
+					if (settled.outcome === "shown") {
+						if (active.previewSeq !== undefined) {
+							commitWidgetPreview(runtime, AGENT_PANEL_WIDGET_KEY, active.previewSeq);
+						}
+						if (active.engineRequestId !== undefined && sync.lastSentSettledRequestId < active.engineRequestId) {
+							sendSetViewed({
+								...(switcher.viewedTaskId() === undefined ? {} : { taskId: switcher.viewedTaskId() }),
+								settledRequestId: settledReq,
+							});
+						}
+						return;
+					}
+					if (replacingWithPreview) {
+						if (active.engineRequestId !== undefined) supersededSettledForPreview = settledReq;
+						return;
+					}
+					if (active.previewSeq !== undefined) {
+						cancelWidgetPreview(
+							runtime,
+							AGENT_PANEL_WIDGET_KEY,
+							active.tagged ? undefined : PANEL_FIRST_FRAME_TIMEOUT_MS,
+						);
+					}
+					sendSetViewed({
+						...(switcher.viewedTaskId() === undefined ? {} : { taskId: switcher.viewedTaskId() }),
+						settledRequestId: settledReq,
+					});
+					return;
+				}
+				if (pendingTask === undefined && settled.outcome !== "shown") {
+					sendSetViewed({
+						...(switcher.viewedTaskId() === undefined ? {} : { taskId: switcher.viewedTaskId() }),
+						settledRequestId: sync.settledRequestId,
+					});
+				}
 			}),
 		);
 	}
