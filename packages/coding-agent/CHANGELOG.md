@@ -15,6 +15,7 @@
 
 - On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
 - A `/` command or `@` file typed before Atomic's screen appears, as when it starts with a command-line argument such as `-c`, now opens its completion menu once completions are ready, instead of no menu until the next key. A click in the prompt before completions are ready drops such a completion, as a key does, so clicking away and back no longer opens a menu ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+- A builtin extension (subagents, MCP, web access, Intercom) that `/reload` loads in a session an update caught, and that needs a part of Atomic the running session's older copy does not have, now fails to load with `atomic was updated to <version> while this session was running; restart it to keep using the <name> extension.`, followed by the runtime's own wording for each missing part, instead of loading and failing later wherever it uses that part. `/reload` loads the updated builtin extensions on Windows and under Bun; elsewhere it keeps the ones the session loaded. This applies to the builtin extensions of this release and later, whichever release the session started on.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
