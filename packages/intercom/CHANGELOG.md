@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- With multi-node routing, a session that reconnects to the same broker while that broker is still recording the departure of its earlier connection keeps its Intercom ID. Before, when the shared database also answered the ID claim late, the broker waited for that departure to finish before it checked the claim, and the session could get a fresh ID instead.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added
