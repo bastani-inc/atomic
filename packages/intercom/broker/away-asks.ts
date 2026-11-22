@@ -19,6 +19,12 @@ export const AWAY_ASKS_PER_RECIPIENT_MAX = 1_000;
 export function awayQueueFullReason(recipientName: string): string {
 	return `Session "${recipientName}" went away and its queue of asks waiting for its return is full (limit ${AWAY_ASKS_PER_RECIPIENT_MAX}); this ask was not kept`;
 }
+/**
+ * How long a write waits for another broker's connection to the same file, as while one broker replaces another,
+ * before it fails. Short: the wait holds the broker's event loop.
+ */
+const AWAY_ASKS_BUSY_TIMEOUT_MS = 200;
+
 /** An away session that has not come back within this long is treated as gone for good: what waits for it is dropped. */
 export const AWAY_ASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -60,6 +66,7 @@ export class AwayAsks {
 		}
 		this.database = new DatabaseSync(path ?? ":memory:");
 		if (path !== undefined && process.platform !== "win32" && existsSync(path)) chmodSync(path, 0o600);
+		if (path !== undefined) this.database.exec(`PRAGMA busy_timeout = ${AWAY_ASKS_BUSY_TIMEOUT_MS}`);
 		this.database.exec(`
 			CREATE TABLE IF NOT EXISTS away_questions (
 				message_id TEXT NOT NULL,
