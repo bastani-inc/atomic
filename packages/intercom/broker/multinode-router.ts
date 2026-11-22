@@ -3905,6 +3905,18 @@ export class MultiNodeRouter {
 		}
 	}
 
+	/** Latest monotonic store-progress timestamp for `earlier` or its upstream blocker chain, if any. */
+	private blockerProgressAt(earlier: SendOrderTicket): number | undefined {
+		const own = this.ticketProgress.get(earlier);
+		if (own === undefined) return undefined;
+		let latest = own.hadProgress ? own.lastProgressAt : undefined;
+		const upstream = this.resolveBlockerProgress(own, earlier);
+		if (upstream !== undefined && upstream.hadProgress) {
+			latest = latest === undefined ? upstream.lastProgressAt : Math.max(latest, upstream.lastProgressAt);
+		}
+		return latest;
+	}
+
 	/** Wait for strictly earlier sends from the same sender to `target` before performing a local commit. */
 	private async waitForEarlierLocal(
 		ticket: SendOrderTicket,
@@ -3928,6 +3940,8 @@ export class MultiNodeRouter {
 				: { atomicSessionId: target.registrationReturnAddress }),
 			...(aliases.length === 0 ? {} : { aliases }),
 		};
+		const hasBound = localBound !== undefined || localBoundExpired === true;
+		const ownProgress = hasBound ? this.ticketProgress.get(ticket) : undefined;
 		const wait = this.sendOrder.waitForEarlier(ticket, {
 			targetIdentity: deliveryTargetIdentity(target),
 			...(entry === undefined ? {} : { targetRegSeq: entry.registeredSeq }),
@@ -3936,6 +3950,13 @@ export class MultiNodeRouter {
 			targetMatch,
 			...(localBound === undefined ? {} : { localBound }),
 			...(localBoundExpired === true ? { localBoundExpired: true } : {}),
+			...(hasBound
+				? {
+						blockerProgressAt: (earlier) => this.blockerProgressAt(earlier),
+						progressSilenceMs: LOCAL_RETRY_LOOKUP_BOUND_MS,
+						maxLocalWaitUntil: (ownProgress?.startedAt ?? performance.now()) + PRESENCE_REGISTRATION_BOUND_MS,
+					}
+				: {}),
 		});
 		if (wait !== undefined) await wait;
 	}
@@ -4146,7 +4167,14 @@ export class MultiNodeRouter {
 	}
 
 	private async route(request: RemoteSendRequest, ticket: SendOrderTicket, openingDeadlineAt: number): Promise<void> {
-		if (request.message.replyTo !== undefined) await Promise.all([...this.settling]);
+		if (request.message.replyTo !== undefined) {
+			const settling = [...this.settling];
+			if (settling.length > 0) {
+				const answeredBefore = this.storeAnsweredAt;
+				await Promise.all(settling);
+				if (this.storeAnsweredAt > answeredBefore) this.markRoutingProgress(request);
+			}
+		}
 		if (this.closed) return;
 		if (await this.routeReleasedReply(request, undefined, ticket)) return;
 		if (this.closed) return;
@@ -4470,13 +4498,20 @@ export class MultiNodeRouter {
 		if (here !== undefined && alias !== undefined && here === alias.id) await this.confirmAlias(request, alias);
 		if (here !== undefined) return answering(here);
 		// An ask whose route is still moving there from this broker is in the shared state once that move is done.
-		await Promise.all([...this.settling]);
+		const settling = [...this.settling];
+		if (settling.length > 0) {
+			const answeredBefore = this.storeAnsweredAt;
+			await Promise.all(settling);
+			if (this.storeAnsweredAt > answeredBefore) this.markRoutingProgress(request);
+		}
 		const moved = routedHere();
 		if (moved !== undefined && alias !== undefined && moved === alias.id) await this.confirmAlias(request, alias);
 		if (moved !== undefined) return answering(moved);
 		for (const replySenderSessionId of repliers) {
 			const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
-			if ((await this.state.pendingAsks.matchesReply(route)).status !== "match") continue;
+			const matched = await this.state.pendingAsks.matchesReply(route);
+			this.markRoutingProgress(request);
+			if (matched.status !== "match") continue;
 			if (alias !== undefined && replySenderSessionId === alias.id) await this.confirmAlias(request, alias);
 			if (late.abandoned || !this.sameLocalTarget(target)) return request;
 			const sending = answering(replySenderSessionId);
@@ -4489,6 +4524,7 @@ export class MultiNodeRouter {
 				targetSessionId: replySenderSessionId,
 				messageId: replyTo,
 			});
+			this.markRoutingProgress(request);
 			return sending;
 		}
 		return request;
@@ -4583,6 +4619,7 @@ export class MultiNodeRouter {
 						messageId: question.messageId,
 					};
 					const recorded = await this.state.pendingAsks.record(ask);
+					this.storeAnswered();
 					if (recorded.status === "invalid") continue;
 					// #4997: answered or failed on another broker while this one kept its copy: the copy goes.
 					if (recorded.status === "settled") {
@@ -4633,7 +4670,9 @@ export class MultiNodeRouter {
 				replyTargetSessionId: question.senderSessionId,
 				replyTo: question.messageId,
 			})
-			.then(() => undefined)
+			.then(() => {
+				this.storeAnswered();
+			})
 			.catch((error: Error) => this.report(error));
 		this.settling.add(settling);
 		void settling.finally(() => this.settling.delete(settling));
@@ -4837,6 +4876,7 @@ export class MultiNodeRouter {
 				await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 				return;
 			}
+			this.markRoutingProgress(request);
 			if (existing.status === "found") {
 				const digest = crossNodeDigest(request.signature);
 				const recipient = await this.rowRecipient(existing.row, target, expired);
@@ -4857,6 +4897,9 @@ export class MultiNodeRouter {
 				return;
 			}
 			const moved = await Promise.race([released, expired]);
+			if (moved !== "expired" && isReleasedReplyCandidate(request) && !this.routedHere(request, target)) {
+				this.markRoutingProgress(request);
+			}
 			if (moved !== "expired" && moved !== undefined) {
 				this.sendOrder.markUnbounded(ticket);
 				if (await this.routeReleasedReply(request, moved, ticket)) return;
@@ -5822,6 +5865,7 @@ export class MultiNodeRouter {
 					}
 				}
 				const delivered = await this.state.outbox.markDelivered(inflight.claim);
+				this.storeAnswered();
 				marked = true;
 				this.firstHandedOverAt.delete(messageId);
 				if (delivered.status !== "delivered") return;

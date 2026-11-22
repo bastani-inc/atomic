@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
-import { LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter } from "../../packages/intercom/broker/multinode-router.js";
+import {
+	crossNodeDigest,
+	LOCAL_RETRY_LOOKUP_BOUND_MS,
+	MultiNodeRouter,
+	PRESENCE_REGISTRATION_BOUND_MS,
+} from "../../packages/intercom/broker/multinode-router.js";
 import {
 	borrowedDatabase,
 	type OpenedBrokerState,
@@ -224,6 +229,7 @@ async function waitWithFakeStep(
 	const deadline = process.hrtime.bigint() + BigInt(maxRealMs) * 1_000_000n;
 	let lastError: unknown;
 	while (process.hrtime.bigint() < deadline) {
+		await flushImmediate(3);
 		try {
 			await check();
 			return;
@@ -1480,6 +1486,7 @@ test("a plain local send already waiting on m1 wakes and stays bounded if m1 lat
 		const origMatches = pendingAsks.matchesReply.bind(pendingAsks);
 		const m1ReadGate = deferred();
 		const m2ReadDone = deferred();
+		const matchesEntered = deferred();
 		const releaseMatches = deferred();
 		cleanups.push(async () => {
 			Object.assign(outbox, { read: origRead });
@@ -1490,8 +1497,9 @@ test("a plain local send already waiting on m1 wakes and stays bounded if m1 lat
 		Object.assign(outbox, {
 			read: async (id: string) => {
 				if (id === m1.id) {
+					const res = await origRead(id);
 					await m1ReadGate.promise;
-					return origRead(id);
+					return res;
 				}
 				const res = await origRead(id);
 				if (id === m2.id) m2ReadDone.resolve();
@@ -1500,25 +1508,87 @@ test("a plain local send already waiting on m1 wakes and stays bounded if m1 lat
 		});
 		Object.assign(pendingAsks, {
 			matchesReply: async (...args: Parameters<typeof origMatches>) => {
+				matchesEntered.resolve();
 				await releaseMatches.promise;
 				return origMatches(...args);
 			},
 		});
 
 		// m1 starts slow outbox.read; m2 finishes outbox.read first and enters waitLoop BEFORE m1 reaches adoptSharedRouteWithin.
+		// Case 1: soft reply starts bounded, finishes outbox.read at 80ms, then hangs in adoptSharedRouteWithin (soft bound 300ms):
+		// m2 waits through m1's silence window (80 + 300 = 380ms) and both deliver in FIFO order without stalling 5s.
 		a.send(sender, target.info.id, m1);
 		a.send(sender, target.info.id, m2);
 		await m2ReadDone.promise;
 		await flushImmediate();
 
-		// Now m1's outbox.read finishes at t=80ms and m1 enters hung adoptSharedRouteWithin!
+		// Now m1's outbox.read finishes at t=80ms (recording store progress) and m1 enters hung adoptSharedRouteWithin!
 		await vi.advanceTimersByTimeAsync(80);
 		m1ReadGate.resolve();
+		await matchesEntered.promise;
 		await flushImmediate();
 
-		// Advancing the remaining 220ms (total = 300ms) must wake and deliver m2 within LOCAL_RETRY_LOOKUP_BOUND_MS!
-		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS - 80);
-		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["m2-waiting-plain"]));
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["m1-soft-reply", "m2-waiting-plain"]));
+
+		// Case 2: m3 starts as a plain local send (unbounded=false) while m4 waits on it via awaitUnbounded, then m3's
+		// outbox.read returns an unsettled row at t+80ms and hangs in answerExistingRow (5s/30s wait): m4 must wake via
+		// awaitUnbounded and deliver after one silence window (80 + 300 = 380ms) while m3 remains hung!
+		const m3 = makeMessage("m3-unsettled-retry");
+		const m4 = makeMessage("m4-waiting-plain");
+		const m3ReadGate = deferred();
+		const m4ReadDone = deferred();
+		const publishEntered = deferred();
+		const busPublishHang = deferred();
+		const origPublish = a.opened.bus.publish.bind(a.opened.bus);
+		cleanups.push(async () => {
+			Object.assign(a.opened.bus, { publish: origPublish });
+			m3ReadGate.resolve();
+			busPublishHang.resolve();
+		});
+		Object.assign(a.opened.bus, {
+			publish: async () => {
+				publishEntered.resolve();
+				await busPublishHang.promise;
+			},
+		});
+		const m3Sig = buildMessageSendSignature(target.info.id, m3, sender.registrationReturnAddress ?? sender.info.id);
+		const m3Row = {
+			messageId: m3.id,
+			sequence: 1,
+			targetIdentity: deliveryTargetIdentity(target),
+			originBrokerId: "broker-other",
+			digest: crossNodeDigest(m3Sig),
+			state: "queued" as const,
+			claimAttempts: 0,
+			frame: { type: "message" as const, from: sender.info, message: m3 },
+		};
+		Object.assign(outbox, {
+			read: async (id: string) => {
+				if (id === m3.id) {
+					await m3ReadGate.promise;
+					return { status: "found" as const, row: m3Row };
+				}
+				const res = await origRead(id);
+				if (id === m4.id) m4ReadDone.resolve();
+				return res;
+			},
+		});
+
+		a.send(sender, target.info.id, m3);
+		a.send(sender, target.info.id, m4);
+		await m4ReadDone.promise;
+		await flushImmediate();
+
+		await vi.advanceTimersByTimeAsync(80);
+		m3ReadGate.resolve();
+		await publishEntered.promise;
+		await flushImmediate();
+
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() =>
+			assert.deepEqual(receivedTexts(target), ["m1-soft-reply", "m2-waiting-plain", "m4-waiting-plain"]),
+		);
 	});
 });
 
@@ -1656,5 +1726,198 @@ test("sequential local sends to a newly registered target do not wait on a hung 
 			await waitImmediate(() => assert.ok(receivedTexts(alice).includes(text)));
 		}
 		assert.deepEqual(receivedTexts(alice), ["alice-0", "alice-1", "alice-2", "alice-3"]);
+	});
+});
+
+test("mixed burst with two serialized shared-route local replies preserves FIFO when cumulative reply steps exceed LOCAL_RETRY_LOOKUP_BOUND_MS", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+
+		const ask1 = randomUUID();
+		const ask2 = randomUUID();
+		await a.opened.state.pendingAsks.record({
+			senderSessionId: target.info.id,
+			targetSessionId: sender.info.id,
+			messageId: ask1,
+		});
+		await a.opened.state.pendingAsks.record({
+			senderSessionId: target.info.id,
+			targetSessionId: sender.info.id,
+			messageId: ask2,
+		});
+
+		// Inject healthy 90ms per shared-DB reply step (< 300ms per step, but 5 serialized steps including clearReply = 450ms > 300ms).
+		const pendingAsks = a.opened.state.pendingAsks;
+		const origMatches = pendingAsks.matchesReply.bind(pendingAsks);
+		const origRelease = pendingAsks.releaseRoute.bind(pendingAsks);
+		const origClearReply = pendingAsks.clearReply.bind(pendingAsks);
+		const stepMs = 90;
+		const stepsStarted = [deferred(), deferred(), deferred(), deferred(), deferred()];
+		let stepIndex = 0;
+		const runStep = async <T>(op: () => Promise<T>): Promise<T> => {
+			const res = await op();
+			const gate = stepsStarted[stepIndex++];
+			gate?.resolve();
+			await new Promise((resolve) => setTimeout(resolve, stepMs));
+			return res;
+		};
+		Object.assign(pendingAsks, {
+			matchesReply: (...args: Parameters<typeof origMatches>) => runStep(() => origMatches(...args)),
+			releaseRoute: (...args: Parameters<typeof origRelease>) => runStep(() => origRelease(...args)),
+			clearReply: (...args: Parameters<typeof origClearReply>) => runStep(() => origClearReply(...args)),
+		});
+		cleanups.push(async () => {
+			Object.assign(pendingAsks, {
+				matchesReply: origMatches,
+				releaseRoute: origRelease,
+				clearReply: origClearReply,
+			});
+		});
+
+		const expected: string[] = [];
+		for (let i = 0; i < 16; i++) {
+			const text = `local-seq-${i}`;
+			expected.push(text);
+			if (i === 0) {
+				a.send(sender, target.info.id, makeMessage(text, { replyTo: ask1 }), {
+					requirePendingReply: true,
+					expectedRecipientId: target.info.id,
+				});
+			} else if (i === 5) {
+				a.send(sender, target.info.id, makeMessage(text, { replyTo: ask2 }), {
+					requirePendingReply: true,
+					expectedRecipientId: target.info.id,
+				});
+			} else {
+				a.send(sender, target.info.id, makeMessage(text));
+			}
+		}
+
+		// Step deterministically through all 5 serialized DB steps so fake timers never outrun SQLite I/O under load:
+		// Step 1 (seq-0 matchesReply, 90ms), Step 2 (seq-0 releaseRoute, 180ms -> seq-0..4 deliver + clearReply starts),
+		// Step 3 (seq-0 clearReply awaited by seq-5 settling, 270ms), Step 4 (seq-5 matchesReply, 360ms > 300ms bound!),
+		// Step 5 (seq-5 releaseRoute, 450ms -> seq-5..15 deliver in strict FIFO!).
+		for (let step = 0; step < 5; step++) {
+			await stepsStarted[step]!.promise;
+			await vi.advanceTimersByTimeAsync(stepMs);
+		}
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), expected));
+	});
+});
+
+test("a single shared-route local reply spanning multiple healthy 120ms store steps stays ahead of a following plain local send", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+
+		const askId = randomUUID();
+		await a.opened.state.pendingAsks.record({
+			senderSessionId: target.info.id,
+			targetSessionId: sender.info.id,
+			messageId: askId,
+		});
+
+		const replyMsg = makeMessage("slow-healthy-reply", { replyTo: askId });
+		const plainMsg = makeMessage("plain-after-reply");
+		const { outbox, pendingAsks } = a.opened.state;
+		const origRead = outbox.read.bind(outbox);
+		const origMatches = pendingAsks.matchesReply.bind(pendingAsks);
+		const origRelease = pendingAsks.releaseRoute.bind(pendingAsks);
+		const rttMs = 120;
+		const readStarted = deferred();
+		const matchesStarted = deferred();
+		const releaseStarted = deferred();
+		Object.assign(outbox, {
+			read: async (id: string) => {
+				const res = await origRead(id);
+				if (id === replyMsg.id) {
+					readStarted.resolve();
+					await new Promise((resolve) => setTimeout(resolve, rttMs));
+				}
+				return res;
+			},
+		});
+		Object.assign(pendingAsks, {
+			matchesReply: async (...args: Parameters<typeof origMatches>) => {
+				const res = await origMatches(...args);
+				matchesStarted.resolve();
+				await new Promise((resolve) => setTimeout(resolve, rttMs));
+				return res;
+			},
+			releaseRoute: async (...args: Parameters<typeof origRelease>) => {
+				const res = await origRelease(...args);
+				releaseStarted.resolve();
+				await new Promise((resolve) => setTimeout(resolve, rttMs));
+				return res;
+			},
+		});
+		cleanups.push(async () => {
+			Object.assign(outbox, { read: origRead });
+			Object.assign(pendingAsks, { matchesReply: origMatches, releaseRoute: origRelease });
+		});
+
+		// Reply takes 3 * 120ms = 360ms (> 300ms), while plain's outbox.read finishes immediately!
+		a.send(sender, target.info.id, replyMsg, { requirePendingReply: true, expectedRecipientId: target.info.id });
+		a.send(sender, target.info.id, plainMsg);
+
+		await readStarted.promise;
+		await vi.advanceTimersByTimeAsync(rttMs); // t = 120ms
+		await matchesStarted.promise;
+		await vi.advanceTimersByTimeAsync(rttMs); // t = 240ms
+		await releaseStarted.promise;
+		// Cross plainMsg's initial 300ms bound while reply's releaseRoute is still in flight (last progress at 240ms).
+		await vi.advanceTimersByTimeAsync(60); // t = 300ms
+		await flushImmediate();
+		assert.deepEqual(receivedTexts(target), [], "plain send must not skip progressing reply at 300ms");
+
+		await vi.advanceTimersByTimeAsync(60); // t = 360ms
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), ["slow-healthy-reply", "plain-after-reply"]));
+	});
+});
+
+test("progress-extended local gate waits are still hard-capped at PRESENCE_REGISTRATION_BOUND_MS", async () => {
+	await withFakeClocks(async () => {
+		const { SendOrderGate } = await import("../../packages/intercom/broker/send-order-gate.js");
+		const gate = new SendOrderGate();
+		const t1 = gate.begin({ senderKey: "s", rawTarget: "t", arrivedRegSeq: 1, isLocal: true, targetIdentity: "T" });
+		gate.markUnbounded(t1);
+		const t2 = gate.begin({ senderKey: "s", rawTarget: "t", arrivedRegSeq: 1, isLocal: true, targetIdentity: "T" });
+
+		const startedAt = performance.now();
+		let boundExpired = false;
+		const localBound = new Promise<"expired">((resolve) => {
+			setTimeout(() => {
+				boundExpired = true;
+				resolve("expired");
+			}, LOCAL_RETRY_LOOKUP_BOUND_MS);
+		});
+		let settled = false;
+		const wait = gate.waitForEarlier(t2, {
+			targetIdentity: "T",
+			localBound,
+			localBoundExpired: boundExpired,
+			// Blocker reports continuous fresh progress at every check; hard cap must still release t2!
+			blockerProgressAt: () => performance.now(),
+			progressSilenceMs: LOCAL_RETRY_LOOKUP_BOUND_MS,
+			maxLocalWaitUntil: startedAt + PRESENCE_REGISTRATION_BOUND_MS,
+		});
+		assert.ok(wait !== undefined);
+		void wait.then(() => {
+			settled = true;
+		});
+
+		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS - 1);
+		await flushImmediate(3);
+		assert.equal(settled, false);
+
+		await vi.advanceTimersByTimeAsync(1);
+		await waitImmediate(() => assert.equal(settled, true));
+		gate.finish(t2);
+		gate.finish(t1);
 	});
 });
