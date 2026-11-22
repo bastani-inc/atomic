@@ -100,7 +100,7 @@ function startTaker(body: string, pauseAt?: PauseAt): Taker {
 	`,
 	);
 	const script = `
-		import { readFileSync, writeFileSync } from "node:fs";
+		import { readFileSync, renameSync, writeFileSync } from "node:fs";
 		Bun.plugin({
 			setup(build) {
 				build.onLoad({ filter: /[\\\\/]src[\\\\/]core[\\\\/][^\\\\/]+\\.ts$/ }, (args) => ({
@@ -115,7 +115,9 @@ function startTaker(body: string, pauseAt?: PauseAt): Taker {
 		} catch (error) {
 			outcome = { held: false, pid: process.pid, error: error?.name === "Error" ? String(error.code ?? error.message) : error?.name };
 		}
-		writeFileSync(${JSON.stringify(`${base}.json`)}, JSON.stringify(outcome));
+		// Whole or not at all: a report read while it is being written would read as empty or partial JSON.
+		writeFileSync(${JSON.stringify(`${base}.json.tmp`)}, JSON.stringify(outcome));
+		renameSync(${JSON.stringify(`${base}.json.tmp`)}, ${JSON.stringify(`${base}.json`)});
 		if (outcome.held) setInterval(() => {}, 1000);
 	`;
 	children.push(spawn("bun", ["--eval", script], { stdio: "ignore" }));

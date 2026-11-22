@@ -57,21 +57,34 @@ function exited(child: ChildProcess): Promise<{ code: number | null; signal: Nod
  * An engine that starts a process in its own group and records it, then waits on its input: once released, it writes a
  * marker from an exit handler and exits as an engine signalled by its host does.
  */
-function engineScript(memberFile: string, markerFile: string): string {
-	return `
-		import { spawn } from "node:child_process";
-		import { writeFileSync } from "node:fs";
-		import { endProcessGroupAtExit } from ${JSON.stringify(QUIT_INTENT_URL)};
-		const member = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-		member.unref();
-		writeFileSync(${JSON.stringify(memberFile)}, String(member.pid));
-		process.stdin.once("data", () => {
-			process.on("exit", () => writeFileSync(${JSON.stringify(markerFile)}, "records written"));
-			endProcessGroupAtExit();
-			process.exit(0);
-		});
-	`;
-}
+const ENGINE_SCRIPT = `
+	import { spawn } from "node:child_process";
+	import { renameSync, writeFileSync } from "node:fs";
+	const [quitIntentUrl, memberFile, markerFile] = process.argv.slice(1);
+	const { endProcessGroupAtExit } = await import(quitIntentUrl);
+	const member = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	member.unref();
+	writeFileSync(memberFile + ".tmp", String(member.pid));
+	renameSync(memberFile + ".tmp", memberFile);
+	process.stdin.once("data", () => {
+		process.on("exit", () => writeFileSync(markerFile, "records written"));
+		endProcessGroupAtExit();
+		process.exit(0);
+	});
+`;
+
+const LEADER_SCRIPT = `
+	import { spawn } from "node:child_process";
+	import { renameSync, writeFileSync } from "node:fs";
+	const [resolveHookUrl, engineScript, quitIntentUrl, memberFile, markerFile, statusFile] = process.argv.slice(1);
+	const args = ["--import", resolveHookUrl, "--input-type=module", "--eval", engineScript, "--", quitIntentUrl, memberFile, markerFile];
+	const engine = spawn(process.execPath, args, { stdio: ["inherit", "ignore", "ignore"] });
+	engine.once("exit", (code, signal) => {
+		writeFileSync(statusFile + ".tmp", JSON.stringify({ code, signal }));
+		renameSync(statusFile + ".tmp", statusFile);
+	});
+	setInterval(() => {}, 1000);
+`;
 
 /** The member the engine started, recorded while it certainly runs: the engine holds until it is released. */
 async function recordMember(memberFile: string): Promise<RecordedProcess> {
@@ -93,7 +106,17 @@ describe.skipIf(process.platform === "win32")("an engine ending its process grou
 			// Started as the host starts its engine: in a group of its own.
 			const engine = spawn(
 				process.execPath,
-				["--import", RESOLVE_TS_SOURCES_URL, "--input-type=module", "--eval", engineScript(memberFile, markerFile)],
+				[
+					"--import",
+					RESOLVE_TS_SOURCES_URL,
+					"--input-type=module",
+					"--eval",
+					ENGINE_SCRIPT,
+					"--",
+					QUIT_INTENT_URL,
+					memberFile,
+					markerFile,
+				],
 				{ detached: true, stdio: ["pipe", "ignore", "ignore"] },
 			);
 			children.push(engine);
@@ -124,14 +147,14 @@ describe.skipIf(process.platform === "win32")("an engine ending its process grou
 				[
 					"--input-type=module",
 					"--eval",
-					`
-					import { spawn } from "node:child_process";
-					import { writeFileSync } from "node:fs";
-					const args = ["--import", ${JSON.stringify(RESOLVE_TS_SOURCES_URL)}, "--input-type=module", "--eval", ${JSON.stringify(engineScript(memberFile, markerFile))}];
-					const engine = spawn(process.execPath, args, { stdio: ["inherit", "ignore", "ignore"] });
-					engine.once("exit", (code, signal) => writeFileSync(${JSON.stringify(statusFile)}, JSON.stringify({ code, signal })));
-					setInterval(() => {}, 1000);
-					`,
+					LEADER_SCRIPT,
+					"--",
+					RESOLVE_TS_SOURCES_URL,
+					ENGINE_SCRIPT,
+					QUIT_INTENT_URL,
+					memberFile,
+					markerFile,
+					statusFile,
 				],
 				{ detached: true, stdio: ["pipe", "ignore", "ignore"] },
 			);

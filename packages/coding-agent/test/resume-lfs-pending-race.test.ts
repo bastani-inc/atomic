@@ -123,7 +123,7 @@ function finisher(
 	`,
 	);
 	const script = `
-		import { readFileSync, writeFileSync } from "node:fs";
+		import { readFileSync, renameSync, writeFileSync } from "node:fs";
 		Bun.plugin({
 			setup(build) {
 				build.onLoad({ filter: /[\\\\/](worktree-snapshot[\\\\/]restore|rename-retry)\\.ts$/ }, (args) => ({
@@ -140,7 +140,9 @@ function finisher(
 		} catch (error) {
 			outcome = String(error?.message ?? error);
 		}
-		writeFileSync(${JSON.stringify(`${base}.json`)}, outcome);
+		// Whole or not at all: a report read while it is being written would read as empty or partial text.
+		writeFileSync(${JSON.stringify(`${base}.json.tmp`)}, outcome);
+		renameSync(${JSON.stringify(`${base}.json.tmp`)}, ${JSON.stringify(`${base}.json`)});
 	`;
 	children.push(
 		spawn("bun", ["--eval", script], { stdio: "ignore", env: { ...process.env, ...sandbox.executable.env } }),
