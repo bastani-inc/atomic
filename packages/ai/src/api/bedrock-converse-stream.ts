@@ -286,7 +286,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
-			addTransportFailureMiddleware(client, connection);
+			addTransportFailureMiddleware(client, connection, streamDeadline.signal);
 			let observedRawResponse = false;
 			if (options.onResponse) {
 				addResponseHeadersMiddleware(client, options.onResponse, model, () => {
@@ -476,7 +476,9 @@ const BEDROCK_DATA_RETENTION_DOCS_URL = "https://docs.aws.amazon.com/bedrock/lat
  * detection) can distinguish error categories via simple string matching.
  */
 function formatBedrockError(error: unknown, connection: ConnectionFailure): string {
-	const norm = normalizeProviderError(error);
+	const normalizedError =
+		error === connection.failure && connection.sourceFailure !== undefined ? connection.sourceFailure : error;
+	const norm = normalizeProviderError(normalizedError);
 	// Surface the raw HTTP body (with status) when the SDK did not fold it into
 	// the message; otherwise fall back to the message. This is what stops a
 	// gateway 403 from collapsing to `Unknown: UnknownError`.
@@ -525,6 +527,8 @@ function isModeledBedrockException(error: unknown): boolean {
  */
 interface ConnectionFailure {
 	failure?: object;
+	/** Original transport error before normalizing a closed socket for SDK retries, so formatting reads its own cause chain. */
+	sourceFailure?: object;
 	response?: object;
 }
 
@@ -771,13 +775,63 @@ class ProxyHopHttpAgent extends HttpProxyAgent<string> {
 	}
 }
 
+const MAX_RESPONSE_METADATA_DEPTH = 5;
+
+/**
+ * Whether `error` (or a `.cause` link in it) carries HTTP response metadata, meaning response headers arrived before
+ * the failure. Such errors are never normalized as pre-response socket closes.
+ */
+function hasResponseMetadata(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < MAX_RESPONSE_METADATA_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const fields = current as {
+			status?: unknown;
+			statusCode?: unknown;
+			headers?: unknown;
+			$metadata?: { httpStatusCode?: unknown };
+			$response?: unknown;
+			diagnosticDetails?: { status?: unknown };
+			cause?: unknown;
+		};
+		if (
+			typeof fields.status === "number" ||
+			typeof fields.statusCode === "number" ||
+			(typeof fields.headers === "object" && fields.headers !== null) ||
+			typeof fields.$metadata?.httpStatusCode === "number" ||
+			(typeof fields.$response === "object" && fields.$response !== null) ||
+			typeof fields.diagnosticDetails?.status === "number"
+		) {
+			return true;
+		}
+		current = fields.cause;
+	}
+	return false;
+}
+
+/**
+ * Normalizes a pre-response transport `ERR_SOCKET_CLOSED` (which Bun emits when a peer or proxy closes a TLS socket
+ * before its handshake finishes) into a fresh `ECONNRESET` wrapper carrying the original error as `cause`, without
+ * mutating the original object, so the AWS SDK's retry middleware treats it as a transient connection reset.
+ */
+function normalizeClosedSocketFailure(error: unknown, signal: AbortSignal | undefined): unknown {
+	if (signal?.aborted || !(error instanceof Error) || error.name === "AbortError") return error;
+	if ((error as { code?: unknown }).code !== "ERR_SOCKET_CLOSED" || hasResponseMetadata(error)) return error;
+	return Object.assign(new Error(error.message, { cause: error }), { code: "ECONNRESET" });
+}
+
 /**
  * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
- * host, so only a refused certificate on that connection is read as one (#6114).
+ * host, so only a refused certificate on that connection is read as one (#6114), and normalizes a pre-response
+ * `ERR_SOCKET_CLOSED` into a fresh `ECONNRESET` wrapper below the SDK's retry middleware.
  */
-function addTransportFailureMiddleware(client: BedrockRuntimeClient, connection: ConnectionFailure): void {
+function addTransportFailureMiddleware(
+	client: BedrockRuntimeClient,
+	connection: ConnectionFailure,
+	signal: AbortSignal | undefined,
+): void {
 	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
 		connection.failure = undefined;
+		connection.sourceFailure = undefined;
 		connection.response = undefined;
 		try {
 			const result = await next(args);
@@ -786,13 +840,19 @@ function addTransportFailureMiddleware(client: BedrockRuntimeClient, connection:
 			return result;
 		} catch (error) {
 			const request = args.request as Partial<{ protocol: string; hostname: string; port: number }> | undefined;
-			const failure = request?.hostname
+			const transport = request?.hostname
 				? transportFailure(
 						error,
 						`${request.protocol ?? "https:"}//${request.hostname}${request.port ? `:${request.port}` : ""}`,
 					)
 				: error;
-			if (typeof failure === "object" && failure !== null) connection.failure = failure;
+			const failure = normalizeClosedSocketFailure(transport, signal);
+			if (typeof failure === "object" && failure !== null && !hasResponseMetadata(failure)) {
+				connection.failure = failure;
+				if (failure !== transport && typeof transport === "object" && transport !== null) {
+					connection.sourceFailure = transport;
+				}
+			}
 			throw failure;
 		}
 	};
