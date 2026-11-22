@@ -94,9 +94,9 @@ builtTest(
 );
 
 builtTest(
-	"highlightCode lazily loads highlight.js synchronously on first call, shares external hljs registrations, and preserves pre-registered overrides",
+	"highlightCode lazily loads highlight.js synchronously on first call, shares external hljs registrations, preserves pre-registered overrides with built-in aliases, and never overwrites pre-claimed aliases",
 	() => {
-		const { extra } = auditDistImport(
+		const { extra: overrideRes } = auditDistImport(
 			["index.js"],
 			`const { highlightCode, initTheme } = mods[0];
 			initTheme("dark");
@@ -106,13 +106,63 @@ builtTest(
 			const tsLines = highlightCode("const x = 1;", "typescript");
 			const customLines = highlightCode("magicword", "w9-custom-lang");
 			const overrideLines = highlightCode("overrideword", "python");
+			const overrideAliasLines = highlightCode("overrideword", "py");
 			return {
 				tsColored: tsLines.join("\\n").includes("\\x1b["),
 				customColored: customLines.join("\\n").includes("\\x1b["),
 				overrideColored: overrideLines.join("\\n").includes("\\x1b["),
+				overrideAliasColored: overrideAliasLines.join("\\n").includes("\\x1b["),
 			};`,
 		);
-		assert.deepEqual(extra, { tsColored: true, customColored: true, overrideColored: true });
+		assert.deepEqual(overrideRes, {
+			tsColored: true,
+			customColored: true,
+			overrideColored: true,
+			overrideAliasColored: true,
+		});
+
+		const { extra: collideRes } = auditDistImport(
+			["index.js"],
+			`const { highlightCode, initTheme } = mods[0];
+			initTheme("dark");
+			const hljs = (await import("highlight.js/lib/core.js")).default;
+			hljs.registerLanguage("my-py", () => ({ aliases: ["py"], keywords: "custompytoken" }));
+			const aliasLines = highlightCode("custompytoken", "py");
+			const builtinPyLines = highlightCode("def f(): pass", "python");
+			return {
+				aliasUsesCustom: aliasLines.join("\\n").includes("\\x1b["),
+				builtinPyStillWorks: builtinPyLines.join("\\n").includes("\\x1b["),
+			};`,
+		);
+		assert.deepEqual(collideRes, { aliasUsesCustom: true, builtinPyStillWorks: true });
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+builtTest(
+	"bundled undici preserves caller frames in failed fetch error stacks on Node",
+	() => {
+		const { extra } = auditDistImport(
+			["core/http-dispatcher.js"],
+			`const net = await import("node:net");
+			const server = net.createServer();
+			await new Promise((r) => server.listen(0, "127.0.0.1", r));
+			const port = server.address().port;
+			await new Promise((r) => server.close(r));
+			mods[0].configureHttpDispatcher();
+			async function callerFunctionForStackCheck() {
+				return await globalThis.fetch("http://127.0.0.1:" + port + "/");
+			}
+			try {
+				await callerFunctionForStackCheck();
+				return { threw: false, stack: "" };
+			} catch (err) {
+				return { threw: true, stack: String(err?.stack ?? "") };
+			}`,
+		);
+		const res = extra as { threw: boolean; stack: string };
+		assert.equal(res.threw, true);
+		assert.match(res.stack, /callerFunctionForStackCheck/, `expected caller frame in stack:\n${res.stack}`);
 	},
 	CHILD_TIMEOUT_MS,
 );

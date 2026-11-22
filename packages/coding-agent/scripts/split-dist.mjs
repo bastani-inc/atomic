@@ -469,6 +469,16 @@ const result = await build({
 					return !existsSync(file) && existsSync(join(COMPILED_ENTRIES, target)) ? { path: file } : undefined;
 				});
 				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
+					if (/[\\/]node_modules[\\/]undici[\\/]index\.js$/.test(path)) {
+						// undici/index.js checks `typeof __filename !== "undefined"` to decide whether to append
+						// caller frames to failed fetch errors via `appendFetchStackTrace`; in an ESM chunk
+						// `__filename` is undefined unless defined here, which otherwise strips all caller frames.
+						return {
+							contents: `'use strict';\nconst __filename = "node_modules/undici/index.js";\n${readFileSync(path, "utf8")}`,
+							loader: "js",
+							resolveDir: dirname(path),
+						};
+					}
 					if (!path.startsWith(dist + sep)) return undefined;
 					const saved = join(COMPILED_ENTRIES, relative(dist, path));
 					const entry =

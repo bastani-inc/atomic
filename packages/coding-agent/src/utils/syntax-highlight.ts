@@ -42,11 +42,24 @@ function getHighlightCore(): HighlightCore {
 	const req = createModuleRequire(import.meta.url);
 	const loaded = req("highlight.js/lib/core.js") as HighlightCore & { default?: HighlightCore };
 	const core = loaded.default ?? loaded;
+	// Match eager-registration semantics: grammars and aliases registered by an app or extension
+	// after importing @bastani/atomic (and before the first highlightCode call) always win over
+	// built-in eager grammars, while pre-registered overrides of an eager language name keep that
+	// language's unclaimed built-in aliases (e.g. overriding "python" keeps "py").
 	for (const [name, specifier] of EAGER_LANGUAGE_SPECIFIERS) {
-		if (!core.getLanguage(name)) {
-			const mod = req(specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
-			core.registerLanguage(name, mod.default ?? mod);
+		const mod = req(specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
+		const factory = mod.default ?? mod;
+		const built = factory(core);
+		const freeAliases = (built.aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
+		if (core.getLanguage(name) !== undefined) {
+			if (freeAliases.length > 0) {
+				core.registerAliases(freeAliases, { languageName: name });
+			}
+			continue;
 		}
+		const registerFactory: HighlightLanguageFactory =
+			freeAliases.length === (built.aliases?.length ?? 0) ? () => built : () => ({ ...built, aliases: freeAliases });
+		core.registerLanguage(name, registerFactory);
 	}
 	hljsCore = core;
 	return core;
