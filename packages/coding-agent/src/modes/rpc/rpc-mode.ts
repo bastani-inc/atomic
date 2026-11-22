@@ -27,8 +27,10 @@ import { interactiveEngineStartupEnv, isInteractiveEngineChild } from "../../uti
 import { exitWithStatus } from "../../utils/process-exit-status.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { CONSOLE_CLOSED_EXIT_CODE, CONSOLE_CLOSED_SHUTDOWN_MS } from "../../utils/windows-console-close.js";
+import { markHintRoutesAsEngine } from "../interactive/components/hint-routes.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import { handleEngineHintRouteLine } from "../interactive-engine/engine-hint-route.ts";
 import { endCommandsWhenHostIsGone } from "../interactive-engine/engine-host-loss.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineProjectTrustService } from "../interactive-engine/engine-project-trust.js";
@@ -75,6 +77,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	takeOverStdout({ nonBlockingPipe: true });
 
 	const interactiveEngineChild = isInteractiveEngineChild();
+	// The hints its chats draw are clicked in its host, which hands their routes back to it.
+	if (interactiveEngineChild) markHintRoutesAsEngine();
 	const deferInteractiveEngineResources = interactiveEngineChild && options.deferInteractiveEngineResources === true;
 	const resourceReadiness = new RpcResourceReadiness();
 	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
@@ -359,7 +363,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 						renderService?.handleLine(line) === true ||
 						sessionPicker?.handleLine(line) === true ||
 						inputForm?.handleLine(line) === true ||
-						projectTrust?.handleLine(line) === true
+						projectTrust?.handleLine(line) === true ||
+						(interactiveEngineChild && handleEngineHintRouteLine(line))
 				: undefined,
 	});
 

@@ -9,6 +9,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - `TuiAltScreen.onViewportChange(listener)` calls the listener after each input, late single click and painted frame, so a caller can wait for `isPointerIdle()` without polling ([#6183](https://github.com/bastani-inc/atomic/pull/6183))
 - `Editor.setAutocompleteProvider(provider, { preserveSelection: true, refreshMenu: true })` shows the new provider's rows in an open menu in which nothing was chosen, whether it lists commands, arguments or files ([#6183](https://github.com/bastani-inc/atomic/pull/6183), [#6213](https://github.com/bastani-inc/atomic/pull/6213))
 - `EditorComponent.setAutocompleteProvider` takes the same optional second argument, so an editor built on `Editor` keeps its menu when its host replaces the provider ([#6213](https://github.com/bastani-inc/atomic/pull/6213))
+- `slashCommandHint(text, route)` and `commandHintAction(command, route)` take an optional route: a click on the hint hands the command to the `setHintCommandHandler` handler with that route as its second argument, so the handler can run it where the hint was drawn. A renderer from an earlier version draws a routed hint as text.
 
 ### Changed
 
