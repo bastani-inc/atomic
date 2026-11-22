@@ -113,3 +113,35 @@ describe("a user agent in ~/.atomic/agent/agents wins over legacy user locations
 		assert.equal(await describeAgent(project, "user", "helper"), "Atomic helper");
 	});
 });
+
+describe("a project agent in .atomic/agents wins over the project's other agent locations", () => {
+	test("over the same name in .agents and legacy .pi/agents", async () => {
+		const { project } = makeHome();
+		writeAgent(join(project, ".atomic", "agents"), "helper", "Atomic helper");
+		writeAgent(join(project, ".pi", "agents"), "helper", "Pi helper");
+		writeAgent(join(project, ".agents"), "helper", "Shared helper");
+
+		assert.equal(await describeAgent(project, "project", "helper"), "Atomic helper");
+		assert.equal(await describeAgent(project, "both", "helper"), "Atomic helper");
+	});
+
+	test("over the same name in legacy .pi/agents alone, and over .agents alone", async () => {
+		const { project } = makeHome();
+		writeAgent(join(project, ".atomic", "agents"), "from-pi", "Atomic agent");
+		writeAgent(join(project, ".pi", "agents"), "from-pi", "Pi agent");
+		writeAgent(join(project, ".atomic", "agents"), "from-shared", "Atomic agent");
+		writeAgent(join(project, ".agents"), "from-shared", "Shared agent");
+
+		assert.equal(await describeAgent(project, "project", "from-pi"), "Atomic agent");
+		assert.equal(await describeAgent(project, "project", "from-shared"), "Atomic agent");
+	});
+
+	test("a name only a legacy location defines is still found there", async () => {
+		const { project } = makeHome();
+		writeAgent(join(project, ".pi", "agents"), "legacy-only", "Pi agent");
+		writeAgent(join(project, ".agents"), "shared-only", "Shared agent");
+
+		assert.equal(await describeAgent(project, "project", "legacy-only"), "Pi agent");
+		assert.equal(await describeAgent(project, "project", "shared-only"), "Shared agent");
+	});
+});
