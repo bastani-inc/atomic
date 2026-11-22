@@ -1,6 +1,7 @@
 import type { CustomEntry, ExtensionContext, SessionEntry } from "@bastani/atomic";
 import { type ArchivedChildCatalogEntry, readSessionChildCatalog } from "@bastani/atomic/storage";
 import { pathExists } from "../../shared/path-exists.js";
+import { unwrapSubagentPrompt } from "../../shared/prompt-text.js";
 import { ReleasedChildError } from "./released-child-errors.js";
 import { visibleWorktreeRecord } from "./run-worktrees.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
@@ -1035,21 +1036,6 @@ export function watchSubagentChildCard(
 	})().catch(() => undefined);
 }
 
-function unwrapPrompt(task: string): string {
-	let text = task;
-	const forkMarker = "\n\nTask:\n";
-	const forkIndex = text.indexOf(forkMarker);
-	if (forkIndex >= 0 && text.startsWith("You are continuing from")) {
-		text = text.slice(forkIndex + forkMarker.length);
-	}
-	text = text.replace(
-		/\n\n---\n(?:Create and maintain progress at:|Update progress at:|Write your findings to:)(?:[^\S\n]*\n)*[^\n]+$/g,
-		"",
-	);
-	text = text.replace(/\n\n\[Write to:(?:[^\S\n]*\n)*[^\]\n]+\]\s*$/i, "");
-	return text.trim();
-}
-
 async function readCard(
 	from: SessionStoreSource,
 	entry: SubagentChildIndexEntry,
@@ -1085,7 +1071,7 @@ async function readCard(
 				? unavailable("no session was recorded for it")
 				: await readExpandedChildDetails(owner, entry.childSessionId, await launch(), { signal });
 		if ("prompt" in details && details.prompt !== undefined)
-			return { ...details, prompt: unwrapPrompt(details.prompt) };
+			return { ...details, prompt: unwrapSubagentPrompt(details.prompt) };
 		return details;
 	} catch (error) {
 		if (error instanceof Error && error.name === "SessionNotFoundError")

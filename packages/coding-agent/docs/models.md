@@ -3,64 +3,62 @@ title: "Custom models"
 description: "Add model entries for a supported provider API with minimal and full examples."
 ---
 
-# Custom Models
+# Custom models
 
-Add custom providers and models such as Ollama, vLLM, LM Studio, and proxies through `models.json`. Atomic reads one file from the active agent directory, normally `~/.atomic/agent/models.json`. Set `ATOMIC_CODING_AGENT_DIR`/`PI_CODING_AGENT_DIR` to use another directory.
+Add custom providers and models (such as Ollama, vLLM, LM Studio, and API proxies) through `models.json`. Atomic reads a single file from the active agent directory, normally `~/.atomic/agent/models.json`. Set `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR`) to use another directory.
 
-Atomic does not read project-scoped `.atomic/models.json`, fall back to `~/.pi/agent/models.json`, or merge `.pi` and `.atomic` model configuration files. The legacy `.pi` fallback applies only to configuration that explicitly uses layered paths, such as `auth.json`.
+Atomic does not read project-scoped `.atomic/models.json`, fall back to `~/.pi/agent/models.json`, or merge `.pi` and `.atomic` model files. Legacy `.pi` fallback applies only to layered files such as `auth.json`.
 
-The interactive `/model` selector and `/scoped-models` show the current authenticated snapshot immediately. They refresh network-backed catalogs in the background for up to 15 seconds. A direct `/model <model_name>` first checks for an exact cached match. Only a miss waits for the bounded refresh, then falls back to the cache if refresh stalls or fails. Closing either selector cancels its refresh.
+`/model` and `/scoped-models` show the cached authenticated catalog immediately while refreshing network-backed catalogs in the background for up to 15 seconds. A direct `/model <model_name>` checks the cache first and waits for refresh only on a miss. Closing either selector cancels the refresh.
 
-If refresh times out or fails, the selector reports that it is using cached models. You do not need to reset `auth.json` or `~/.atomic` for a slow catalog. Login and logout remain effective even if an older refresh finishes later.
+If a refresh times out or fails, the selector reports that it is using cached models; you do not need to reset `auth.json` or `~/.atomic`. Login and logout changes stay in effect even if an earlier refresh finishes afterward.
 
-A complete `defaultProvider`/`defaultModel` pair in `settings.json` is resolved after built-in, configured, and extension providers register. If the provider remains unsupported, interactive mode reports a generic saved-configuration warning and leaves model selection open instead of routing the session to a different provider. Print and JSON modes write that diagnostic to stderr and exit nonzero before prompting, keeping JSON stdout JSONL-clean. RPC rejects `prompt` with the same correlated diagnostic until an explicit successful `set_model` selects an available model or an explicit model cycle returns a different available model. A null or unchanged cycle result does not clear the condition. If the provider is supported but the model is unknown or lacks authentication, normal automatic selection of an available authenticated model continues. Valid custom- and extension-provider defaults resolve once their provider registration is available. See [Settings](/settings#model-&-thinking).
+A `defaultProvider`/`defaultModel` pair in `settings.json` resolves after built-in, `models.json`, and extension providers register. If the provider is still unsupported:
 
-For editor completion and validation of providers, models, and `compat` fields, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` to `models.json`.
+- **Interactive mode** warns about the saved configuration and leaves model selection open instead of silently switching providers.
+- **Print and JSON modes** write the error to stderr and exit nonzero before prompting, keeping JSON stdout valid JSONL.
+- **RPC mode** rejects `prompt` with the same error until `set_model` selects an available model or model cycling returns a different available model.
+
+If the provider is supported but the model is unknown or lacks credentials, automatic selection picks an available authenticated model. See [Settings](/settings#model-&-thinking).
+
+Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` to `models.json` for editor completion and validation.
 
 ## Where to go next
 
-This page shows minimal and full `models.json` examples you can copy. [Models Configuration](/models-configuration) lists every provider, model, override, and compatibility field directly from the schema. For extended examples, derived variants, and API behavior, see the [Model configuration guide](/models/reference).
+This page gives minimal and full `models.json` examples. [Models Configuration](/models-configuration) lists every provider, model, override, and compatibility field generated from the schema. For API compatibility behavior, cost tiers, and derived fast variants, see the [Model configuration reference](/models/reference).
 
 ## Use classifier models
 
-Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. In [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
+Classifier models answer typed questions about JSON state instead of chatting and do not appear in `/model`. In [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")` and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
 
-GitHub Copilot offers the text-only `github-copilot/microsoft-decision-1` classifier through its System One endpoint. It uses GitHub Copilot OAuth or `COPILOT_GITHUB_TOKEN`, with a 32,768-token context window.
+Built-in classifiers:
 
-OpenAI's GPT-6 Luna Decisions classifier is `openai-decisions/gpt-6-luna`. It uses the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), which needs an OpenAI API key. It has no `/login` entry of its own and reuses the first key it finds, in this order: a key saved for `openai-api`, a key saved for `openai`, then `OPENAI_API_KEY`. ChatGPT sign-in on `openai` does not work with it and is skipped, so with only a ChatGPT sign-in the classifier stays unavailable until you save an API key with `/login openai-api` or set `OPENAI_API_KEY`. `openai/gpt-6-luna` always means the chat model.
+- **GitHub Copilot:** `github-copilot/microsoft-decision-1` (text only, 32,768-token context) through Copilot's System One endpoint, authenticated with Copilot OAuth or `COPILOT_GITHUB_TOKEN`.
+- **OpenAI Decisions:** `openai-decisions/gpt-6-luna` via OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions). It has no `/login` entry and reuses the first OpenAI API key found (`openai-api`, `openai` API key, then `OPENAI_API_KEY`), skipping ChatGPT sign-in. It accepts up to 128 images and up to 922K tokens; requests above roughly 600K tokens may hit a gateway 504 timeout that is not retried. (`openai/gpt-6-luna` always selects the chat model.)
+- **TypeSafe Jev and Cloudflare Clef:** Direct TypeSafe (`typesafe/jev-latest`, `typesafe/jev-1.14.0`, up to 262K tokens with PNG/JPEG images; see [TypeSafe Jev](/providers#typesafe-jev)); Cloudflare Workers AI (`typesafe/jev`, `typesafe/jev-1.14.0` with PNG/JPEG images; Clef, Clef Flash, and Clef Omni with up to four PNG/JPEG/WebP images); OpenRouter (`~typesafe/jev-latest`, `typesafe/jev-1.13`, `typesafe/jev-1.14`, and Clef models with image input where listed); Vercel AI Gateway and OpenCode Zen (text-only Jev).
+- **Local llama.cpp:** Native decision models and a next-token-probability fallback for chat models; see [Local classification](/llama-cpp#classification).
 
-GPT-6 Luna accepts up to 128 image blocks through `images`, alongside the JSON state. Other classifiers reject images unless their catalog input and API support them. Refused answers produce an error result. The endpoint rejects inputs above 922K tokens; very large inputs, currently above roughly 600K tokens, can hit its gateway time limit. These 504 responses are not retried, so reduce the input before trying again.
-
-TypeSafe Jev and Cloudflare Clef classifiers are also available through their providers. The direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, accept up to 262K tokens and PNG or JPEG images through `images`; see [TypeSafe Jev](/providers#typesafe-jev). On Workers AI, Jev (`typesafe/jev`, `typesafe/jev-1.14.0`) takes PNG and JPEG images, and Clef, Clef Flash, and Clef Omni take PNG, JPEG, and WebP images, at most four per request. OpenRouter's Jev and Clef models accept images when their catalog entry lists image input. Jev from `vercel-ai-gateway` and `opencode` takes text only. [Local llama.cpp models](/llama-cpp#classification) support native decision models and a next-token-probability fallback for chat models.
-
-Each System One service takes images in its own request format, which the model's `compat.imageInput` selects. Built-in models set it, so overriding a provider's `baseUrl` keeps it. A custom provider that proxies another service's classifiers sets `imageInput` and `sendImageOptInHeader` in its provider-level `compat` in `models.json`; see [System One compatibility](/models-configuration#typesafe-system-one). OpenRouter in particular answers requests in TypeSafe's format without an error but drops the images, so a proxy that reaches OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false`.
+System One services expect different image request formats, controlled by `compat.imageInput`. Built-in models configure it automatically, so overriding `baseUrl` preserves it. For a custom proxy that reaches another classifier service, set `imageInput` and `sendImageOptInHeader` in provider-level `compat`; see [System One compatibility](/models-configuration#typesafe-system-one). A proxy in front of OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false` so OpenRouter does not silently drop images.
 
 ## Fallbacks and credentials
 
-A model chain is a pinned model followed by `fallbackModels` in a session or subagent; `model: "auto"` starts the chain with your default model:
+A model chain starts with a pinned model followed by `fallbackModels` in a session or subagent; `model: "auto"` starts with your configured default model:
 
-- Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents). `auto` never stands for a default model whose provider has no credentials.
-- A provider that rejects credentials (HTTP 401, an invalid, expired, leaked, disabled, or restricted API key, an invalid request signature, an expired or invalid security token, an invalidated token, or a suspended API consumer) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
-- A chain with no usable model fails at once naming each model and missing provider. A single pinned model with no fallbacks is never replaced.
+- Candidates whose providers lack credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents). `auto` never selects an unauthenticated default model.
+- A provider that rejects credentials (HTTP 401 or an invalid, expired, revoked, or restricted key/token) is skipped for the rest of that walk. A model-scoped HTTP 403 skips only that model.
+- A chain with no usable candidate fails immediately and names each skipped model and provider. A single pinned model with no fallbacks is never replaced.
 
-## Table of Contents
+## Contents
 
-- [Minimal Example](/models#minimal-example)
-- [Full Example](/models#full-example)
-- [Supported APIs](/models/reference#supported-apis)
-- [Provider Configuration](/models/reference#provider-configuration)
-- [Model Configuration](/models/reference#model-configuration)
-- [OpenAI Built-in Models](/models/reference#openai-built-in-models)
-- [Request-wide Cost Tiers](/models/reference#request-wide-cost-tiers)
-- [Overriding Built-in Providers](/models/reference#overriding-built-in-providers)
-- [Per-model Overrides](/models/reference#per-model-overrides)
-- [Derived Fast Model Variants](/models/reference#derived-fast-model-variants)
-- [Anthropic Messages Compatibility](/models/reference#anthropic-messages-compatibility)
-- [OpenAI Compatibility](/models/reference#openai-compatibility)
+- [Minimal example](#minimal-example)
+- [Full example](#full-example)
+- [Google AI Studio example](#google-ai-studio-example)
+- [Model configuration fields](/models-configuration)
+- [Model configuration reference](/models/reference)
 
-## Minimal Example
+## Minimal example
 
-For local models (Ollama, LM Studio, vLLM), only `id` is required per model:
+For local servers (Ollama, LM Studio, vLLM), only `id` is required per model:
 
 ```json
 {
@@ -78,9 +76,9 @@ For local models (Ollama, LM Studio, vLLM), only `id` is required per model:
 }
 ```
 
-The `apiKey` is required but Ollama ignores it, so any value works.
+`apiKey` is required by the schema, though Ollama ignores its value.
 
-To route a built-in provider through a proxy, set only its `baseUrl`. Its models and authentication stay unchanged:
+To route a built-in provider through a proxy while keeping its models and authentication, set only `baseUrl`:
 
 ```json
 {
@@ -90,9 +88,7 @@ To route a built-in provider through a proxy, set only its `baseUrl`. Its models
 }
 ```
 
-Some OpenAI-compatible servers do not understand the `developer` role used for reasoning-capable models. For those providers, set `compat.supportsDeveloperRole` to `false` so Atomic sends the system prompt as a `system` message instead. If the server also does not support `reasoning_effort`, set `compat.supportsReasoningEffort` to `false` too.
-
-You can set `compat` at the provider level to apply to all models, or at the model level to override a specific model. This commonly applies to Ollama, vLLM, SGLang, and similar OpenAI-compatible servers.
+Some OpenAI-compatible servers (such as Ollama, vLLM, or SGLang) do not accept the `developer` role or `reasoning_effort`. Set `compat.supportsDeveloperRole` or `compat.supportsReasoningEffort` to `false` at the provider level (applies to all models) or model level (overrides provider defaults):
 
 ```json
 {
@@ -116,9 +112,9 @@ You can set `compat` at the provider level to apply to all models, or at the mod
 }
 ```
 
-## Full Example
+## Full example
 
-Override defaults when you need specific values:
+Override defaults when you need explicit limits, modalities, or pricing:
 
 ```json
 {
@@ -143,11 +139,11 @@ Override defaults when you need specific values:
 }
 ```
 
-Open `/model` after editing the active agent directory's `models.json` to apply changes without restarting. Invalid edits report an error.
+Open `/model` after saving `models.json` to reload changes without restarting. Invalid files report a schema error.
 
-## Google AI Studio Example
+## Google AI Studio example
 
-Use `google-generative-ai` with a `baseUrl` to add models from Google AI Studio, including custom Gemma 4 entries:
+Use `google-generative-ai` with a `baseUrl` to add Google AI Studio models such as Gemma 4:
 
 ```json
 {
@@ -170,84 +166,35 @@ Use `google-generative-ai` with a `baseUrl` to add models from Google AI Studio,
 }
 ```
 
-The `baseUrl` is required when adding custom models to the `google-generative-ai` API type.
+`baseUrl` is required when defining custom models for `google-generative-ai`.
 
-## Supported APIs
+## Moved sections
 
-Moved to [Model configuration reference](/models/reference#supported-apis).
+<a id="supported-apis" />
+<a id="provider-configuration" />
+<a id="value-resolution" />
+<a id="custom-headers" />
+<a id="model-configuration" />
+<a id="sampling-parameters" />
+<a id="sampling-by-thinking-level" />
+<a id="request-wide-cost-tiers" />
+<a id="thinking-level-map" />
+<a id="context-window" />
+<a id="overriding-built-in-providers" />
+<a id="per-model-overrides" />
+<a id="derived-fast-model-variants" />
+<a id="anthropic-messages-compatibility" />
+<a id="forced-tool-use-on-claude-fable-5-1" />
+<a id="preserved-thinking-and-model-switches" />
+<a id="openai-compatibility" />
+<a id="constrained-tool-sampling" />
+<a id="catalog-freshness-and-precedence" />
+<a id="openai-built-in-models" />
 
-## Provider Configuration
+Detailed reference sections moved to [Model configuration reference](/models/reference) and [Models Configuration](/models-configuration):
 
-Moved to [Model configuration reference](/models/reference#provider-configuration).
-
-### Value Resolution
-
-Moved to [Model configuration reference](/models/reference#value-resolution).
-
-### Custom Headers
-
-Moved to [Model configuration reference](/models/reference#custom-headers).
-
-## Model Configuration
-
-Moved to [Model configuration reference](/models/reference#model-configuration).
-
-### Sampling Parameters
-
-Moved to [Model configuration reference](/models/reference#sampling-parameters).
-
-### Sampling by Thinking Level
-
-Moved to [Model configuration reference](/models/reference#sampling-by-thinking-level).
-
-### Request-wide Cost Tiers
-
-Moved to [Model configuration reference](/models/reference#request-wide-cost-tiers).
-
-### Thinking Level Map
-
-Moved to [Model configuration reference](/models/reference#thinking-level-map).
-
-### Context Window
-
-Moved to [Model configuration reference](/models/reference#context-window).
-
-## Overriding Built-in Providers
-
-Moved to [Model configuration reference](/models/reference#overriding-built-in-providers).
-
-## Per-model Overrides
-
-Moved to [Model configuration reference](/models/reference#per-model-overrides).
-
-## Derived Fast Model Variants
-
-Moved to [Model configuration reference](/models/reference#derived-fast-model-variants).
-
-## Anthropic Messages Compatibility
-
-Moved to [Model configuration reference](/models/reference#anthropic-messages-compatibility).
-
-### Forced tool use on Claude Fable 5.1
-
-Moved to [Model configuration reference](/models/reference#forced-tool-use-on-claude-fable-5-1).
-
-### Preserved thinking and model switches
-
-Moved to [Model configuration reference](/models/reference#preserved-thinking-and-model-switches).
-
-## OpenAI Compatibility
-
-Moved to [Model configuration reference](/models/reference#openai-compatibility).
-
-### Constrained tool sampling
-
-Moved to [Model configuration reference](/models/reference#constrained-tool-sampling).
-
-### Catalog freshness and precedence
-
-Moved to [Model configuration reference](/models/reference#catalog-freshness-and-precedence).
-
-## OpenAI Built-in Models
-
-Moved to [Model configuration reference](/models/reference#openai-built-in-models).
+- [Supported APIs](/models/reference#supported-apis), [Provider configuration](/models/reference#provider-configuration), [Value resolution](/models/reference#value-resolution), and [Custom headers](/models/reference#custom-headers)
+- [Model configuration](/models/reference#model-configuration), [OpenAI built-in models](/models/reference#openai-built-in-models), [Sampling parameters](/models/reference#sampling-parameters), [Sampling by thinking level](/models/reference#sampling-by-thinking-level), [Request-wide cost tiers](/models/reference#request-wide-cost-tiers), [Thinking level map](/models/reference#thinking-level-map), and [Context window](/models/reference#context-window)
+- [Overriding built-in providers](/models/reference#overriding-built-in-providers), [Per-model overrides](/models/reference#per-model-overrides), and [Derived fast model variants](/models/reference#derived-fast-model-variants)
+- [Anthropic messages compatibility](/models/reference#anthropic-messages-compatibility), [Forced tool use on Claude Fable 5.1](/models/reference#forced-tool-use-on-claude-fable-5-1), and [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches)
+- [OpenAI compatibility](/models/reference#openai-compatibility), [Constrained tool sampling](/models/reference#constrained-tool-sampling), and [Catalog freshness and precedence](/models/reference#catalog-freshness-and-precedence)

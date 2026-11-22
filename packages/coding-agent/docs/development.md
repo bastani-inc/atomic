@@ -1,101 +1,90 @@
-# Development
+---
+title: "Development"
+description: "Debug mode, event-loop stall profiling, PDF diagnostics, and troubleshooting information for Atomic."
+---
 
-For extensions and SDK integrations, start with [Build with Atomic](/build).
+# Development and diagnostics
 
-## Setup
-
-To install the released CLI, follow [Installation](/getting-started/installation).
+For building extensions, custom providers, or SDK integrations, start with [Build with Atomic](/build). To install the CLI, see [Installation](/getting-started/installation).
 
 <a id="forking--rebranding"></a>
 
-## Path Resolution
+## Path resolution
 
-Atomic supports package-manager installs and standalone archives. Keep an archive's complete payload together.
+Atomic supports both package-manager installs and self-contained release archives. Keep an archive's complete directory structure intact so Atomic can resolve its bundled assets and native module.
 
 ## Debugging
 
-Turn on debug mode with **Debug mode** in `/settings` (the [`debug` setting](/settings#debug-mode)), with `--debug`, or with `ATOMIC_DEBUG=1`. The footer shows a `debug` badge while it is on.
+Enable debug mode from **Debug mode** in `/settings` (the [`debug` setting](/settings#debug-mode)), by passing `--debug`, or by setting `ATOMIC_DEBUG=1`. The footer displays a `debug` badge while debug mode is active.
 
-In debug mode, every area below appends one JSON line per event to `~/.atomic/agent/atomic-debug.log`, the file `/debug` shows: `{"at", "pid", "area", "event", "data"}`.
+When debug mode is on, each diagnostic area appends one JSON line per event to `~/.atomic/agent/atomic-debug.log` in the form `{"at", "pid", "area", "event", "data"}`:
 
-| Area | What it shows |
-|------|---------------|
-| `decision` | A [classifier decision](/settings#decisionmodel) that failed and fell back to the current chat model |
-| `engine` | Interactive engine recovery and detached tool calls dropped because the conversation moved past them (`stale-detached-call`) |
-| `storage` | Each [writers' queue degradation](/storage) of a SQLite database, once per reason: its code, reason, adapter, database path and error code, never the error message |
+| Area | What it records |
+| --- | --- |
+| `decision` | A [classifier decision](/settings#decisionmodel) that failed and fell back to the current chat model. |
+| `engine` | Interactive engine recovery and detached tool calls dropped after the conversation moved past them (`stale-detached-call`). |
+| `storage` | Each [writers' queue degradation](/storage) of a SQLite database, once per reason: its code, reason, adapter, database path, and error code (never the error message). |
 
-Debug output holds only what each area already reports, such as ids, names, counts and error messages. It never includes prompts or message text. Credentials in common forms are replaced with `[redacted]`: bearer tokens, JWTs, GitHub tokens, private key blocks, `sk-…` style API keys, and `key: value` or `key=value` pairs whose name is a key, token, secret or password. Other credential formats can pass through, so review the log before sharing it. Long text is cut to 2,000 characters.
+Debug logs record IDs, names, counts, and status details, never prompts or conversation text. Common credential formats are replaced with `[redacted]`: bearer tokens, JWTs, GitHub tokens, private key blocks, `sk-...` API keys, and `key: value` or `key=value` pairs whose name is a key, token, secret, or password. Other formats can pass through, so review the log before sharing it. Long fields truncate at 2,000 characters.
 
-The Intercom broker and other child processes started while debug mode is on inherit it, and subagents follow it at once. Processes that are already running keep the state they started with until their next start. If the debug log cannot be written, Atomic shows one warning and keeps running.
+The Intercom broker and other child processes started while debug mode is on inherit it, and subagents follow it immediately. Processes already running keep the setting they started with until their next start. If the debug log cannot be written, Atomic prints one warning and keeps running.
 
-Extensions and SDK code can check and write debug output with the [debug output API](/sdk/reference#debug-output).
+Extensions and SDK programs can read debug state and append records with the [debug output API](/sdk/reference#debug-output).
 
 ### Debug command
 
-`/debug` (hidden) appends a snapshot to the same `~/.atomic/agent/atomic-debug.log`:
-- Rendered TUI lines with ANSI codes
-- Last messages sent to the LLM
+`/debug` (a hidden slash command) appends a snapshot to `~/.atomic/agent/atomic-debug.log` containing:
 
-Unlike debug mode, each snapshot includes conversation content, and every `/debug` adds another one. Atomic never trims or rotates the file, so it keeps every earlier snapshot and debug line until you delete it. Delete the file before reproducing a problem you want to share, and review it before sharing.
+- Rendered TUI lines with ANSI codes
+- The last messages sent to the model
+
+Unlike debug mode logs, `/debug` snapshots include conversation content, and every call appends to the same file. Atomic never trims or rotates `atomic-debug.log`. Delete the file before reproducing an issue, and review its contents before sharing.
 
 ### Finding what freezes the UI
 
-If the interactive UI stalls, with keystrokes or streamed text showing up late, set `ATOMIC_EVENT_LOOP_BLOCK_MS` to the shortest stall you want to catch, reproduce the problem, and quit:
+If the interactive UI stalls and keystrokes or streamed output appear late, set `ATOMIC_EVENT_LOOP_BLOCK_MS` to the shortest stall duration (in milliseconds) you want to capture, reproduce the stall, and quit:
 
 ```bash
 ATOMIC_EVENT_LOOP_BLOCK_MS=100 atomic
 ```
 
-The process that draws the UI (`host`) and the engine that runs the agent and extensions (`engine`) each append JSON lines to `~/.atomic/agent/event-loop-blocks.jsonl`, or to the file `ATOMIC_EVENT_LOOP_BLOCK_LOG` names. Without an isolated engine, everything runs in the `host`.
+The UI process (`host`) and the interactive engine process (`engine`) each append JSON lines to `~/.atomic/agent/event-loop-blocks.jsonl`, or to the file path in `ATOMIC_EVENT_LOOP_BLOCK_LOG`. When running without an isolated engine, all records are written by `host`.
 
 | `type` | Written | Fields |
-|--------|---------|--------|
-| `start` | When the process starts watching | `role`, `pid`, `runtime`, `thresholdMs`, and how stacks are taken |
-| `block` | After each stall of at least the threshold | `at` (when the UI was due to respond), `durationMs`, the number of stack `samples`, `hotFrames` (the functions most samples were in, most specific first) and the most common full `stacks` |
-| `delay` | Once the process is ready for input (the `host` as it draws its first frame, the `engine` once it has loaded its session and extensions), once it starts to quit, and as it exits | `phase` (`startup`, `session` or `shutdown`), and how late the process responded: `p50Ms`, `p99Ms`, `maxMs` over `ticks` checks. A stall counts in the phase it started in |
+| --- | --- | --- |
+| `start` | When monitoring starts | `role`, `pid`, `runtime`, `thresholdMs`, and stack-collection mode |
+| `block` | After each stall at or above the threshold | `at` (when the UI was due to respond), `durationMs`, `samples`, `hotFrames` (most specific first), and the most common `stacks` |
+| `delay` | When ready for input (`startup`), when starting to quit (`session`), and on exit (`shutdown`) | `phase` (`startup`, `session`, or `shutdown`), `p50Ms`, `p99Ms`, `maxMs`, and `ticks` |
 
-Quit, close the terminal or console window, or sign out of Windows, to get the engine's `shutdown` record.
+Quit Atomic, close the terminal or console window, or sign out of Windows to record the engine's `shutdown` summary.
 
-Records hold function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a problem.
+Block records contain function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a new issue.
 
-Stack collection is enabled by default for this diagnostic. Both the npm package and standalone binary use a sampling CPU profile, not debugger pauses. A `debugger;` statement does not stop the application just because the diagnostic is on, and an attached debugger keeps control of its own breakpoints. Profiles rotate every five seconds while the event loop runs. Completed profile data stays available until every overlapping stall window has been read, including a stall discovered just after a startup/session boundary, and is then discarded. Functions sharing a name are listed separately by their definition's source location. Sampling adds some CPU overhead, so use delay-only mode for latency comparisons.
+Stack collection is enabled by default using a sampling CPU profiler rather than debugger pauses. A `debugger;` statement does not pause Atomic just because monitoring is enabled, and an attached debugger keeps control of its own breakpoints.
 
-For delay measurements without sampling overhead, disable stack collection:
+Profiles rotate every 5 seconds while the event loop runs, and completed profile windows stay available until overlapping stalls are recorded. Functions sharing a name are tracked separately by their source location. Because sampling adds some CPU overhead, disable stack collection when measuring raw latency:
 
 ```bash
 ATOMIC_EVENT_LOOP_BLOCK_MS=100 ATOMIC_EVENT_LOOP_BLOCK_STACKS=0 atomic
 ```
 
-This still records every delay summary and each stall over the configured threshold. The `start` record reports `stacks: "disabled"`; block records have zero samples and empty stack details. Use delay-only mode for latency comparisons, and collect stacks separately when you need to locate the code behind a stall.
-
-Neither mode runs unless `ATOMIC_EVENT_LOOP_BLOCK_MS` is a positive whole number. With that variable unset, no stack sampler is initialized and no monitoring runs.
+In delay-only mode, `start` records report `stacks: "disabled"` and `block` records have zero samples, while every stall duration and delay summary is still written. Monitoring runs only when `ATOMIC_EVENT_LOOP_BLOCK_MS` is a positive integer; when unset, no sampler or monitor starts.
 
 ## PDF and engine diagnostics
 
-PDF conversion and engine diagnostics appear as status messages in interactive sessions
-and console output otherwise. Conversion failures also include diagnostic details in
-their error result. Long or noisy diagnostics may be truncated. Interactive sessions keep
-only recent diagnostics; older diagnostics are discarded without removing normal chat.
+PDF conversion and engine diagnostics appear as status messages in interactive sessions and on stderr or console output in other modes. Conversion failures also include diagnostic details in the tool error result. Long or noisy diagnostics may truncate, and interactive sessions keep only recent diagnostics.
 
-Diagnostics are displayed as text, not terminal commands. RPC clients receive diagnostics
-separately from JSON responses. No `atomic-engine-stderr.log` file is written; include the
-displayed diagnostic and conversion error when reporting a PDF problem.
+Diagnostics render as plain text, not terminal control sequences, and RPC clients receive them separately from JSON responses. Atomic does not write an `atomic-engine-stderr.log` file; include the shown diagnostic text and conversion error when reporting a PDF issue.
 
-## Startup timing probes
+## Reporting startup problems
 
-For a startup problem, report your OS, terminal, installation method, and Atomic version.
+When reporting a startup issue, include your OS, terminal emulator, installation method, and `atomic --version` output.
 
 <a id="testing"></a>
 <a id="installed-package-smoke-test"></a>
 
-## Dependency versions
+## Dependency versions and official releases
 
-Each package Atomic publishes pins its own dependencies to exact versions. Atomic publishes no shrinkwrap, so npm, pnpm and Bun resolve the dependencies of those packages when you install, and an install can get newer releases of them than the release was tested with. The [release archive](/getting-started/installation#release-archive) is built from the exact dependency tree the release was tested with.
-
-## Release security boundary
-
-Download official releases through the [installation instructions](/getting-started/installation). Maintainers should follow the [release pipeline](https://github.com/bastani-inc/atomic/blob/main/docs/ci.md#direct-release-trigger-and-recovery).
+For how Atomic pins dependencies in package-manager installs versus self-contained release archives, and how to download official releases, see [Installation](/getting-started/installation#package-managers).
 
 <a id="project-structure"></a>
-
-For source setup and repository checks, see [DEV_SETUP.md](https://github.com/bastani-inc/atomic/blob/main/DEV_SETUP.md).

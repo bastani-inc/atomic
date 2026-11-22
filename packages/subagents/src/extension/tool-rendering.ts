@@ -47,6 +47,7 @@ import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-ty
 import { subagentTaskResultLabel } from "../runs/foreground/task-execution.js";
 import { retainedTaskOutput } from "../runs/foreground/task-output-retention.js";
 import { formatDuration, formatModelThinking } from "../shared/formatters.js";
+import { unwrapSubagentPrompt } from "../shared/prompt-text.js";
 import type { AgentProgress, Details, SingleResult, ToolCallSummary } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
 import { renderLiveSubagentResult } from "../tui/render.js";
@@ -201,20 +202,7 @@ const displayText = (text: string) =>
 
 const firstDisplayLine = (text: string) => displayText(firstOutputLine(text)).trim();
 
-export function unwrapSubagentPrompt(task: string): string {
-	let text = task;
-	const forkMarker = "\n\nTask:\n";
-	const forkIndex = text.indexOf(forkMarker);
-	if (forkIndex >= 0 && text.startsWith("You are continuing from")) {
-		text = text.slice(forkIndex + forkMarker.length);
-	}
-	text = text.replace(
-		/\n\n---\n(?:Create and maintain progress at:|Update progress at:|Write your findings to:)(?:[^\S\n]*\n)*[^\n]+$/g,
-		"",
-	);
-	text = text.replace(/\n\n\[Write to:(?:[^\S\n]*\n)*[^\]\n]+\]\s*$/i, "");
-	return text.trim();
-}
+export { unwrapSubagentPrompt };
 
 export function shortSubagentTaskTitle(title: string): string {
 	const unwrapped = unwrapSubagentPrompt(title);
