@@ -1284,8 +1284,6 @@ async function relaunchChild(
 		);
 		return fresh ? startedFresh(outcome) : outcome;
 	}
-	const childFailed = new AbortController();
-	const peerWaitSignal = sessionSignal ? AbortSignal.any([sessionSignal, childFailed.signal]) : childFailed.signal;
 	const response = await runAgentTask({
 		host,
 		cwd: ctx.cwd,
@@ -1308,7 +1306,6 @@ async function relaunchChild(
 		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
 		onTerminal: (child) => {
-			if (child.status === "error" || child.interrupted) childFailed.abort();
 			release();
 			// Normally the child consumed the hold when it registered; one that never did must not keep it, and tells the
 			// senders still held why when its start failed.
@@ -1316,10 +1313,7 @@ async function relaunchChild(
 		},
 		// However it ends, also failed or stopped before it started: the restoration is over. A stopped one keeps its hold,
 		// so what is sent to it meanwhile waits for it to start.
-		onEnded: () => {
-			childFailed.abort();
-			release();
-		},
+		onEnded: release,
 	});
 	const outcome = await relaunched(
 		deps,
@@ -1330,7 +1324,6 @@ async function relaunchChild(
 		supervisorAuthorization,
 		intercomGroup,
 		sessionSignal,
-		peerWaitSignal,
 	);
 	return fresh ? startedFresh(outcome) : outcome;
 }
@@ -1377,22 +1370,16 @@ async function startQueuedChild(
 	if (!supervisorAuthorization) await hold?.release();
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const intercomGroup = launchIntercomGroup(record, ctx);
-	const childFailed = new AbortController();
-	const peerWaitSignal = sessionSignal ? AbortSignal.any([sessionSignal, childFailed.signal]) : childFailed.signal;
 	const response = await queued.start({
 		host,
 		recordChild,
 		...(resume?.message ? { message: resume.message } : {}),
 		...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		onTerminal: () => {
-			childFailed.abort();
 			release();
 			void hold?.release();
 		},
-		onEnded: () => {
-			childFailed.abort();
-			release();
-		},
+		onEnded: release,
 	});
 	return relaunched(
 		deps,
@@ -1403,7 +1390,6 @@ async function startQueuedChild(
 		supervisorAuthorization,
 		intercomGroup,
 		sessionSignal,
-		peerWaitSignal,
 	);
 }
 
@@ -1422,8 +1408,6 @@ async function ownerlessRelaunched(
 	intercomGroup: string | undefined,
 	sessionSignal?: AbortSignal,
 ): Promise<SubagentChildRestoreOutcome> {
-	const childEnded = new AbortController();
-	const peerWaitSignal = sessionSignal ? AbortSignal.any([sessionSignal, childEnded.signal]) : childEnded.signal;
 	void launched.result
 		.then(
 			(child) => {
@@ -1453,10 +1437,7 @@ async function ownerlessRelaunched(
 			(child) => (child.detached ? launched.ended : undefined),
 			() => undefined,
 		),
-	]).then(() => {
-		childEnded.abort();
-		release();
-	});
+	]).then(release);
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await raceWithSignal(recordChild.flushed?.() ?? Promise.resolve(), sessionSignal, () => undefined);
 	if (sessionSignal?.aborted) {
@@ -1465,7 +1446,7 @@ async function ownerlessRelaunched(
 	}
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
-			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup, peerWaitSignal)
+			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup, sessionSignal)
 			: undefined;
 	if (sessionSignal?.aborted) {
 		release();
@@ -1483,7 +1464,6 @@ async function relaunched(
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
 	intercomGroup: string | undefined,
 	sessionSignal?: AbortSignal,
-	peerWaitSignal?: AbortSignal,
 ): Promise<SubagentChildRestoreOutcome> {
 	if (sessionSignal?.aborted) {
 		release();
@@ -1506,12 +1486,7 @@ async function relaunched(
 	}
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
-			? await awaitIntercomPeer(
-					deps.pi.events,
-					record.intercomTarget,
-					intercomGroup,
-					peerWaitSignal ?? sessionSignal,
-				)
+			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup, sessionSignal)
 			: undefined;
 	if (sessionSignal?.aborted) {
 		release();
