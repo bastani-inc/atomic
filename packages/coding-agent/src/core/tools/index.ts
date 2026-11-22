@@ -138,6 +138,12 @@ import {
 	createLoadedAskUserQuestionToolDefinition,
 } from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
+import {
+	allToolNames,
+	DEFAULT_BUILTIN_SELECTION_EXTRA_TOOLS,
+	defaultToolNamesFor,
+	type ToolName,
+} from "./builtin-tool-names.js";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createKillTool, createKillToolDefinition, type KillToolOptions } from "./kill.ts";
@@ -153,59 +159,8 @@ import { withWriteSelectors } from "./write-selectors.ts";
 
 export type Tool = AgentTool<TSchema, unknown>;
 export type ToolDef = ToolDefinition<TSchema, unknown>;
-export type ToolName =
-	| "read"
-	| "bash"
-	| "powershell"
-	| "kill"
-	| "edit"
-	| "write"
-	| "find"
-	| "search"
-	| "ls"
-	| "ask_user_question"
-	| "todo";
+export { allToolNames, defaultToolNamesFor, type ToolName };
 export type BuiltinToolMap<T> = Omit<Record<ToolName, T>, "powershell"> & { powershell?: T };
-// The universe of built-in tool names, matching the `ToolName` union exactly.
-// Availability is decided per platform in `getDefaultToolNames()` and
-// `createAllToolDefinitions()`; this set stays static so a name is never
-// "unknown" merely because the host cannot run it.
-export const allToolNames: Set<ToolName> = new Set([
-	"read",
-	"bash",
-	"powershell",
-	"kill",
-	"edit",
-	"write",
-	"find",
-	"search",
-	"ls",
-	"ask_user_question",
-	"todo",
-]);
-
-/**
- * Built-in tools enabled at startup.
- *
- * `powershell` is conditional: it is Windows-only and additionally needs a
- * resolvable `pwsh.exe`/`powershell.exe`. That probe reads PATH, so it runs per
- * call rather than at module load, and callers can decide it explicitly through
- * `powerShellAvailable` instead of depending on the host running the process.
- */
-export function defaultToolNamesFor(powerShellAvailable: boolean): readonly ToolName[] {
-	return [
-		"read",
-		"bash",
-		...(powerShellAvailable ? (["powershell"] as const satisfies readonly ToolName[]) : []),
-		"kill",
-		"edit",
-		"write",
-		"find",
-		"search",
-		"ask_user_question",
-		"todo",
-	];
-}
 
 /** Codemode is an inline extension, but follows the built-in selection (lists, modifiers and suppression),
  * not the auto-activation policy for other extension tools. A loader that disables it selects nothing missing. */
@@ -214,12 +169,14 @@ export function defaultToolSelectionFor(
 	loader?: Pick<import("../resource-loader.ts").ResourceLoader, "getExtensions">,
 ): readonly string[] {
 	const names = defaultToolNamesFor(powerShellAvailable);
-	const hasCodemode =
-		!loader ||
-		loader
-			.getExtensions()
-			.extensions.some((extension) => extension.path === "builtin:codemode" && extension.tools.has("codemode"));
-	return hasCodemode ? [...names, "codemode"] : names;
+	const extras = DEFAULT_BUILTIN_SELECTION_EXTRA_TOOLS.filter(
+		(toolName) =>
+			!loader ||
+			loader
+				.getExtensions()
+				.extensions.some((extension) => extension.path === `builtin:${toolName}` && extension.tools.has(toolName)),
+	);
+	return extras.length > 0 ? [...names, ...extras] : names;
 }
 
 export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {

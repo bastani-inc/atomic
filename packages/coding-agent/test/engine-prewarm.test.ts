@@ -41,9 +41,13 @@ function writeEngineScript(): string {
 	const jsonl = new URL("../src/modes/rpc/jsonl.ts", import.meta.url).href;
 	writeFileSync(
 		path,
-		`import { writeFileSync } from "node:fs";\n` +
-			`writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));\n` +
-			`writeFileSync(${JSON.stringify(join(dir, "prewarm-argv"))}, JSON.stringify(process.argv.slice(2)));\n` +
+		`import { renameSync, writeFileSync } from "node:fs";\n` +
+			`import { dirname, join } from "node:path";\n` +
+			`import { fileURLToPath } from "node:url";\n` +
+			`const dir = dirname(fileURLToPath(import.meta.url));\n` +
+			`const publish = (name, text) => { const target = join(dir, name); writeFileSync(target + ".tmp", text); renameSync(target + ".tmp", target); };\n` +
+			`publish("prewarm-argv", JSON.stringify(process.argv.slice(2)));\n` +
+			`publish("pid", String(process.pid));\n` +
 			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
 			"const args = await readPrewarmedEngineArgs();\n" +
@@ -158,7 +162,13 @@ describe("adopting a prewarmed engine child", () => {
 		const script = join(dir, "engine.mjs");
 		writeFileSync(
 			script,
-			`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(join(dir, "argv"))}, JSON.stringify(process.argv.slice(2)));\nprocess.stdin.resume();\n`,
+			`import { renameSync, writeFileSync } from "node:fs";\n` +
+				`import { dirname, join } from "node:path";\n` +
+				`import { fileURLToPath } from "node:url";\n` +
+				`const target = join(dirname(fileURLToPath(import.meta.url)), "argv");\n` +
+				`writeFileSync(target + ".tmp", JSON.stringify(process.argv.slice(2)));\n` +
+				`renameSync(target + ".tmp", target);\n` +
+				`process.stdin.resume();\n`,
 		);
 		const argvFile = join(dir, "argv");
 		const startedArgv = async (hostArgs: string[], basis?: PrewarmLaunchBasis): Promise<string[]> => {
