@@ -8,10 +8,17 @@ import type { McpServerContribution } from "./mcp-servers.ts";
 import type { DefaultPackageManager, PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot, PackageAgentFile } from "./resource-loader-types.ts";
-import type { PackageSource, SettingsManager } from "./settings-manager.ts";
+import type { PackageSource, Settings, SettingsManager } from "./settings-manager.ts";
 import type { SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
+
+export interface DeferredStartupSettingsSnapshot {
+	readonly projectTrusted: boolean;
+	readonly globalSettings: Settings;
+	readonly projectSettings: Settings;
+	readonly settings: Settings;
+}
 
 export interface ResourceLoaderInternals {
 	cwd: string;
@@ -80,6 +87,8 @@ export interface ResourceLoaderInternals {
 	lastPromptPaths: string[];
 	lastThemePaths: string[];
 	loaded: boolean;
+	deferredInitialLoad: boolean;
+	deferredInitialSettings?: DeferredStartupSettingsSnapshot;
 	getInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot;
 }
 

@@ -495,6 +495,16 @@ interface PresenceEntry {
 	pendingAlias?: { readonly alias: string; readonly aliasToken?: string; readonly recovery?: string; taking?: boolean };
 	/** #5607: it is being moved back to the id it awaited: its own id stays owned, by the same token, for its next registration. */
 	handsOver?: true;
+	/**
+	 * #5607: the value a lapsed hand-over gave the claim this registration presented, kept from the moment it registers:
+	 * it may take that hand-over's alias back once its writes answer, however long they take.
+	 */
+	presented?: string;
+	/**
+	 * #4386: a released subagent registering again, from the moment it registers: the asks parked for it are moved to this
+	 * registration once its store steps run, however long they take.
+	 */
+	releasedChild?: true;
 }
 
 /**
@@ -851,6 +861,7 @@ export class MultiNodeRouter {
 		if (replyTo === undefined) return false;
 		const route = { replySenderSessionId: request.from.info.id, replyTargetSessionId: askerSessionId, replyTo };
 		if (await this.state.pendingAsks.isSettled(route)) return false;
+		if (await this.askedOfAliasItCannotTake(request, askerSessionId, replyTo)) return false;
 		const holderOf = async (targetIdentity: string) => {
 			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
 			return read.status === "found" ? read.lease.holderId : undefined;
@@ -861,6 +872,45 @@ export class MultiNodeRouter {
 		]);
 		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) return true;
 		return this.routeHolderDown();
+	}
+
+	/**
+	 * #5607: whether the ask `replyTo` went to the id that its replier's session had before it moved back to its own, which
+	 * only the registration presenting that move's lapsed hand-over takes back (`lapsedHandoffs`), and this registration
+	 * cannot: it holds no such alias, has none pending, does not await its id with that hand-over, presented no hand-over
+	 * as it registered, and is not a released subagent whose parked asks are moved to it (writes that may still be on
+	 * their way). The ask's route
+	 * is to that id, so no route a stopped broker may keep authorizes this registration's reply either.
+	 */
+	private async askedOfAliasItCannotTake(
+		request: RemoteSendRequest,
+		askerSessionId: string,
+		replyTo: string,
+	): Promise<boolean> {
+		const session = this.host.sessions.get(request.from.info.id);
+		if (session === undefined) return false;
+		const identity = deliveryTargetIdentity(session);
+		const lapsed = this.lapsedHandoffs.get(identity);
+		const alias = lapsed?.alias;
+		if (lapsed === undefined || alias === undefined || alias === session.info.id) return false;
+		const entry = this.presence.get(session);
+		if (
+			entry?.alias?.intercomSessionId === alias ||
+			entry?.pendingAlias?.alias === alias ||
+			entry?.awaits?.recovery === lapsed.recovery ||
+			entry?.presented !== undefined ||
+			entry?.releasedChild === true ||
+			entry?.handsOver === true ||
+			this.reservedIds.has(identity)
+		)
+			return false;
+		if (this.host.pendingQuestions.matchesReply(alias, askerSessionId, replyTo)) return true;
+		const asked = await this.state.pendingAsks.matchesReply({
+			replySenderSessionId: alias,
+			replyTargetSessionId: askerSessionId,
+			replyTo,
+		});
+		return asked.status === "match";
 	}
 
 	private async refuseUnauthorizedReply(
@@ -1925,6 +1975,10 @@ export class MultiNodeRouter {
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
+		const presented = grant?.recovery ?? reclaim?.recovery ?? recovery;
+		if (presented !== undefined) entry.presented = presented;
+		// The registration of a released subagent its owner authorized has the asks parked for it moved to it (`rebindParked`).
+		if (consumed?.childName !== undefined && consumed.authorizedBy !== undefined) entry.releasedChild = true;
 		// An unanswered claim's registration awaits the id only once its binding write did not keep it (below).
 		if (
 			awaits !== undefined &&

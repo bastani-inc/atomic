@@ -10,6 +10,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
+import { type BatchWrite, statementBatch } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -1013,6 +1014,32 @@ const chunkMoveTables = (t: SnapshotIndexTables) =>
 	({ next: `${t.blobChunks}_next`, retired: `${t.blobChunks}_retired` }) as const;
 
 /**
+ * What {@link blobChunkWrites} reads once the chunk table exists: whether the blob table has its `chunks` column, and
+ * whether the trigger that deletes a blob's chunks with it is there.
+ */
+function blobChunkProbes(transaction: SqliteExecutor, t: SnapshotIndexTables, dialect: StorageDialect) {
+	const column = dialect.columnExists(t.blobs, "chunks");
+	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]);
+	return [
+		async () => (await transaction.get(column.sql, ...column.params)) !== undefined,
+		async () => (await transaction.get(trigger.sql, ...trigger.params)) !== undefined,
+	] as const;
+}
+
+/** The blob table's `chunks` column and the chunks' delete trigger, those of them that {@link blobChunkProbes} missed. */
+function blobChunkWrites(
+	t: SnapshotIndexTables,
+	dialect: StorageDialect,
+	[column, trigger]: readonly [boolean, boolean],
+): BatchWrite[] {
+	return [
+		!column && `ALTER TABLE ${t.blobs} ADD COLUMN chunks ${dialect.types.int} NOT NULL DEFAULT 0`,
+		!trigger && dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs, true),
+		!trigger && dialect.renderTrigger(chunksDeleteTrigger(t)),
+	];
+}
+
+/**
  * Chunked blobs (#4954): the chunk table, the blob table's `chunks` column, 0 for a blob whose bytes are in its own row,
  * as every blob written before it was, and the trigger that deletes a blob's chunks with it. Idempotent.
  */
@@ -1021,18 +1048,18 @@ async function addBlobChunks(
 	t: SnapshotIndexTables,
 	dialect: StorageDialect,
 ): Promise<void> {
-	await transaction.exec(chunkTableDefinition(t.blobChunks, dialect));
-	const column = dialect.columnExists(t.blobs, "chunks");
-	if (!(await transaction.get(column.sql, ...column.params))) {
-		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${dialect.types.int} NOT NULL DEFAULT 0`);
-	}
-	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]);
-	if (await transaction.get(trigger.sql, ...trigger.params)) return;
-	await transaction.exec(dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs, true));
-	await transaction.exec(dialect.renderTrigger(chunksDeleteTrigger(t)));
+	const found = await statementBatch(
+		transaction,
+		[chunkTableDefinition(t.blobChunks, dialect)],
+		blobChunkProbes(transaction, t, dialect),
+	);
+	await statementBatch(transaction, blobChunkWrites(t, dialect, found), []);
 }
 
-/** Creates the blob table and the tables of its reference index that are missing. */
+/**
+ * Creates the blob table and the tables of its reference index that are missing, reading what each step needs
+ * together, so on a SQLite file connection the setup waits for the connection's thread three times.
+ */
 async function createSnapshotIndexTables(
 	transaction: SqliteExecutor,
 	t: SnapshotIndexTables,
@@ -1042,16 +1069,20 @@ async function createSnapshotIndexTables(
 	const { int, text, blob } = dialect.types;
 	const strict = dialect.tableOptions;
 	const keyed = dialect.withoutRowidTableOptions;
-	await transaction.exec(
-		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash ${text} PRIMARY KEY, bytes ${int} NOT NULL, data ${blob} NOT NULL, created_at ${int} NOT NULL DEFAULT (${dialect.nowSeconds}))${strict}`,
-	);
 	const ageColumn = dialect.columnExists(t.blobs, "created_at");
-	const age = await transaction.get<SqliteRow & { default_value: SqliteValue }>(ageColumn.sql, ...ageColumn.params);
-	if (!age) {
-		// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
-		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at ${int} NOT NULL DEFAULT 0`);
-	}
-	await transaction.exec(`
+	const [age] = await statementBatch(
+		transaction,
+		[
+			`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash ${text} PRIMARY KEY, bytes ${int} NOT NULL, data ${blob} NOT NULL, created_at ${int} NOT NULL DEFAULT (${dialect.nowSeconds}))${strict}`,
+		],
+		[() => transaction.get<SqliteRow & { default_value: SqliteValue }>(ageColumn.sql, ...ageColumn.params)],
+	);
+	const [column, trigger, ...refColumns] = await statementBatch(
+		transaction,
+		[
+			// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
+			!age && `ALTER TABLE ${t.blobs} ADD COLUMN created_at ${int} NOT NULL DEFAULT 0`,
+			`
 		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
 		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id ${text} PRIMARY KEY, retained ${int} NOT NULL, seq ${int} NOT NULL)${keyed};
@@ -1067,32 +1098,56 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.collection} (id ${int} PRIMARY KEY CHECK (id = 1), claimed_at ${int}, holder ${text}, finished_at ${int}, deleted ${int}, error_code ${text})${strict};
 		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
-	`);
-	await addBlobChunks(transaction, t, dialect);
-	if (age && String(age.default_value) !== "0") await addBlobMaintenanceIndexes(transaction, t);
-	await addSessionRefColumns(transaction, t, prefix, dialect);
+	`,
+			chunkTableDefinition(t.blobChunks, dialect),
+		],
+		[...blobChunkProbes(transaction, t, dialect), ...sessionRefColumnProbes(transaction, t, dialect)],
+	);
+	await statementBatch(
+		transaction,
+		[
+			...blobChunkWrites(t, dialect, [column, trigger]),
+			...(age && String(age.default_value) !== "0" ? blobMaintenanceIndexes(t) : []),
+			...sessionRefColumnWrites(t, prefix, dialect, refColumns),
+		],
+		[],
+	);
+}
+
+/** The indexes collection and the chunk-layout move look blobs up by. */
+function blobMaintenanceIndexes(t: SnapshotIndexTables): string[] {
+	return [
+		`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`,
+		`CREATE INDEX IF NOT EXISTS ${t.blobs}_inline_size ON ${t.blobs} (chunks, hash) WHERE chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`,
+	];
 }
 
 async function addBlobMaintenanceIndexes(transaction: SqliteExecutor, t: SnapshotIndexTables): Promise<void> {
-	await transaction.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`);
-	await transaction.exec(
-		`CREATE INDEX IF NOT EXISTS ${t.blobs}_inline_size ON ${t.blobs} (chunks, hash) WHERE chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`,
-	);
+	await statementBatch(transaction, blobMaintenanceIndexes(t), []);
 }
 
 /** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
 const SESSION_REF_COLUMNS = ["prev_seq", "restore_from", "restore_to", "degraded_from", "degraded_since"] as const;
 
+/** Whether the session references have each of {@link SESSION_REF_COLUMNS}, in its order. */
+function sessionRefColumnProbes(transaction: SqliteExecutor, t: SnapshotIndexTables, dialect: StorageDialect) {
+	return SESSION_REF_COLUMNS.map((name) => {
+		const column = dialect.columnExists(t.sessionRefs, name);
+		return async () => (await transaction.get(column.sql, ...column.params)) !== undefined;
+	});
+}
+
 /**
- * Adds the columns of the session references that an index written by an earlier build lacks. Adding any drops the
- * session entries' triggers and marks their index for a rebuild, which collection runs before it deletes anything.
+ * Adds the columns of the session references that an index written by an earlier build lacks, as
+ * {@link sessionRefColumnProbes} found them. Adding any drops the session entries' triggers and marks their index for
+ * a rebuild, which collection runs before it deletes anything.
  */
-async function addSessionRefColumns(
-	transaction: SqliteExecutor,
+function sessionRefColumnWrites(
 	t: SnapshotIndexTables,
 	prefix: string,
 	dialect: StorageDialect,
-): Promise<void> {
+	found: readonly boolean[],
+): BatchWrite[] {
 	const { int, text } = dialect.types;
 	const types: Record<(typeof SESSION_REF_COLUMNS)[number], string> = {
 		prev_seq: int,
@@ -1101,23 +1156,29 @@ async function addSessionRefColumns(
 		degraded_from: text,
 		degraded_since: int,
 	};
-	let migrated = false;
-	for (const name of SESSION_REF_COLUMNS) {
-		const type = types[name];
-		const column = dialect.columnExists(t.sessionRefs, name);
-		if (await transaction.get(column.sql, ...column.params)) continue;
-		await transaction.exec(`ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${type}`);
-		migrated = true;
-	}
-	if (migrated) {
-		// Mark the tree-aware rebuild durably, but leave its old rows untouched until completeIndex runs.
-		const source = indexSources(prefix, t, dialect).find((source) => source.name === "session-entries")!;
-		for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
-		await transaction.run(
-			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1) ${REPLACE_PROGRESS}`,
-			source.name,
-		);
-	}
+	const missing = SESSION_REF_COLUMNS.filter((_, index) => found[index] !== true);
+	if (missing.length === 0) return [];
+	// Mark the tree-aware rebuild durably, but leave its old rows untouched until completeIndex runs.
+	const source = indexSources(prefix, t, dialect).find((source) => source.name === "session-entries")!;
+	return [
+		...missing.map((name) => `ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${types[name]}`),
+		...source.triggers.map((trigger) => dialect.dropTrigger(trigger.name, trigger.table)),
+		{
+			sql: `INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1) ${REPLACE_PROGRESS}`,
+			params: [source.name],
+		},
+	];
+}
+
+/** Adds the columns of the session references that an index written by an earlier build lacks; see above. */
+async function addSessionRefColumns(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	prefix: string,
+	dialect: StorageDialect,
+): Promise<void> {
+	const found = await statementBatch(transaction, [], sessionRefColumnProbes(transaction, t, dialect));
+	await statementBatch(transaction, sessionRefColumnWrites(t, prefix, dialect, found), []);
 }
 
 /** Replaces a source's progress row: `sources` has no triggers or references, so this upsert is what a REPLACE did. */
@@ -1139,35 +1200,50 @@ async function installSource(
 			t,
 			source.triggers.map((trigger) => trigger.name),
 		));
-	if (!detached) {
-		for (const sql of source.reset ?? []) await transaction.run(sql);
-		// Triggers of these names that an older build installed are replaced, not kept (#5065).
-		for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
-	}
-	await transaction.exec(source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"));
-	await transaction.run(
-		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
-		source.name,
+	const withholds = withholdsVersion(dialect, source);
+	const [installed] = await statementBatch(
+		transaction,
+		[
+			...(detached
+				? []
+				: [
+						...(source.reset ?? []).map((sql) => ({ sql, params: [] })),
+						// Triggers of these names that an older build installed are replaced, not kept (#5065).
+						...source.triggers.map((trigger) => dialect.dropTrigger(trigger.name, trigger.table)),
+					]),
+			source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"),
+			{
+				sql: `INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
+				params: [source.name],
+			},
+			source.own !== undefined && {
+				sql: `INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, watermark, 0 FROM ${t.sources} WHERE source = ? ${REPLACE_PROGRESS}`,
+				params: [source.own, source.name],
+			},
+			{ sql: `DELETE FROM ${t.sources} WHERE source = ?`, params: [rebuildRow(source)] },
+			source.version !== undefined && !withholds && publishVersion(t, source),
+		],
+		// A table with no row yet is backfilled as it is installed; any other is published once its backfill is done.
+		source.version !== undefined && withholds
+			? [
+					() =>
+						transaction.get<SqliteRow & { watermark: number }>(
+							`SELECT watermark FROM ${t.sources} WHERE source = ?`,
+							source.name,
+						),
+				]
+			: [],
 	);
-	if (source.own !== undefined)
-		await transaction.run(
-			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, watermark, 0 FROM ${t.sources} WHERE source = ? ${REPLACE_PROGRESS}`,
-			source.own,
-			source.name,
-		);
-	await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, rebuildRow(source));
-	if (source.version === undefined) return;
-	if (!withholdsVersion(dialect, source)) {
-		await publishVersion(transaction, t, source);
-		return;
-	}
-	// A table with no row yet is backfilled as it is installed; any other is published once its backfill is done.
-	const installed = await transaction.get<SqliteRow & { watermark: number }>(
-		`SELECT watermark FROM ${t.sources} WHERE source = ?`,
-		source.name,
+	if (source.version === undefined || !withholds) return;
+	await statementBatch(
+		transaction,
+		[
+			Number(installed?.watermark) === 0
+				? publishVersion(t, source)
+				: { sql: `DELETE FROM ${t.sources} WHERE source = ?`, params: [source.version] },
+		],
+		[],
 	);
-	if (Number(installed?.watermark) === 0) await publishVersion(transaction, t, source);
-	else await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, source.version);
 }
 
 /**
@@ -1178,14 +1254,12 @@ function withholdsVersion(dialect: StorageDialect, source: IndexSource): boolean
 	return dialect.name === "sqlite" && source.version !== undefined && source.own !== undefined;
 }
 
-/** Writes `source`'s version row as this build's, its own backfill of the source being done (#5558). */
-async function publishVersion(transaction: SqliteExecutor, t: SnapshotIndexTables, source: IndexSource): Promise<void> {
-	await transaction.run(
-		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
-		source.version!,
-		PUBLISHED_VERSION,
-		PUBLISHED_VERSION,
-	);
+/** The statement that writes `source`'s version row as this build's, its own backfill of the source being done (#5558). */
+function publishVersion(t: SnapshotIndexTables, source: IndexSource): SqliteStatement {
+	return {
+		sql: `INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
+		params: [source.version!, PUBLISHED_VERSION, PUBLISHED_VERSION],
+	};
 }
 
 /**
@@ -1238,9 +1312,21 @@ async function readSourceStates(
 					sql: `SELECT name, ${holds(signatures)} AS signed, ${holds(markers)} AS marked FROM sqlite_schema WHERE name IN (${names.map(() => "?").join(", ")})`,
 					params: [...signatures, ...markers].flatMap((check) => [check.trigger, check.text]).concat(names),
 				};
-	const objectRows = await executor.all<SqliteRow & { name: string; signed?: number | null; marked?: number | null }>(
-		objects.sql,
-		...objects.params,
+	// Read together: the progress rows do not depend on the objects.
+	const [objectRows, progressRows] = await statementBatch(
+		executor,
+		[],
+		[
+			() =>
+				executor.all<SqliteRow & { name: string; signed?: number | null; marked?: number | null }>(
+					objects.sql,
+					...objects.params,
+				),
+			() =>
+				executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
+					`SELECT source, watermark, backfilled_through FROM ${t.sources}`,
+				),
+		],
 	);
 	const present = new Set(objectRows.map((row) => row.name));
 	// Whether each checked trigger's SQL holds this build's text; every other object reads null.
@@ -1254,11 +1340,7 @@ async function readSourceStates(
 	const marked = checked("marked");
 	let retired: string[] | undefined;
 	const progress = new Map(
-		(
-			await executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
-				`SELECT source, watermark, backfilled_through FROM ${t.sources}`,
-			)
-		).map((row) => {
+		progressRows.map((row) => {
 			if (
 				listRetired &&
 				sqlite &&
@@ -1773,7 +1855,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			// before 0.9.88 would install again its way under it (#5558).
 			const publish = withholds && state.installed;
 			if (from >= progress.watermark) {
-				if (publish) await publishVersion(transaction, t, source);
+				if (publish) await statementBatch(transaction, [publishVersion(t, source)], []);
 				return true;
 			}
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
@@ -1813,7 +1895,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
 			const done = upper >= progress.watermark;
 			// Both progress rows reach the watermark: builds 0.9.88 and 0.9.89 may trust the index now (#5558).
-			if (done && publish) await publishVersion(transaction, t, source);
+			if (done && publish) await statementBatch(transaction, [publishVersion(t, source)], []);
 			return done;
 		});
 	}
