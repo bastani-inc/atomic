@@ -2,7 +2,7 @@ import { inspect, types } from "node:util";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { graphemeAt, sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
-import { waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
+import { childOfAttempt, waitingReleasedTools, withoutSupersededAttempts } from "./completion.js";
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.js";
 import {
@@ -419,6 +419,25 @@ export function taskPanelRole(task: Pick<TaskRecord, "kind">): "agent" | "shell"
 	}
 }
 
+const panelItemStableKeys = new WeakMap<object, string>();
+
+/** Stable identity of a panel row across resumed/woken subagent attempts (`child:<op>` for subagents, else `row.id`). */
+export function panelItemStableKey(row: Pick<AgentPanelItem, "id">): string {
+	return panelItemStableKeys.get(row) ?? row.id;
+}
+
+/** Preserve a row's stable identity when cloning it for elapsed-time updates. */
+export function copyPanelItemStableKey(from: object, to: object): void {
+	const key = panelItemStableKeys.get(from);
+	if (key !== undefined) panelItemStableKeys.set(to, key);
+}
+
+function tagTaskPanelItemStableKey(task: TaskRecord, item: AgentPanelItem): void {
+	if (task.kind === "agent" && typeof task.launchOperationId === "string") {
+		panelItemStableKeys.set(item, `child:${childOfAttempt(task)}`);
+	}
+}
+
 export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
 	const clocks = sourceClocks ?? taskClockOf(task);
 	const cached = cachedTaskItems.get(task);
@@ -471,6 +490,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	};
 	if (interrupted) markInterruptedPanelTask(item);
 	if (clocks !== undefined) bindTaskClock(item, clocks);
+	tagTaskPanelItemStableKey(task, item);
 	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, interrupted, thinking: task.thinking, item });
 	return item;
 }
@@ -511,6 +531,7 @@ export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedCl
 		},
 	};
 	if (interrupted) markInterruptedPanelTask(item);
+	tagTaskPanelItemStableKey(task, item);
 	lazyTaskItems.set(task, { state, clocks: sourceClocks, interrupted, runGeneration, item });
 	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
 	return item;
