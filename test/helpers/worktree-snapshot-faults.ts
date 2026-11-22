@@ -97,11 +97,15 @@ export function gitCommand(args: readonly string[]): string[] {
 	return rest;
 }
 
+const FAILING_COMMAND_SCRIPT = "process.stderr.write(process.argv[1]); process.exitCode = Number(process.argv[2]);";
+const RUNNING_COMMAND_SCRIPT =
+	'const fs = require("node:fs"); const pidFile = process.argv[1]; fs.writeFileSync(pidFile + ".tmp", String(process.pid)); fs.renameSync(pidFile + ".tmp", pidFile); setTimeout(() => {}, 30_000);';
+
 /** A command that writes `stderr` and exits with `exitCode`, run by the Node binary that runs the tests. */
 export function failingCommand(exitCode: number, stderr = ""): { command: string; args: string[] } {
 	return {
 		command: process.execPath,
-		args: ["-e", `process.stderr.write(${JSON.stringify(stderr)}); process.exitCode = ${exitCode};`],
+		args: ["-e", FAILING_COMMAND_SCRIPT, "--", stderr, String(exitCode)],
 	};
 }
 
@@ -112,11 +116,7 @@ export function failingCommand(exitCode: number, stderr = ""): { command: string
 export function runningCommand(pidFile: string): { command: string; args: string[] } {
 	return {
 		command: process.execPath,
-		args: [
-			"-e",
-			'const fs = require("node:fs"); const pidFile = process.argv[1]; fs.writeFileSync(pidFile + ".tmp", String(process.pid)); fs.renameSync(pidFile + ".tmp", pidFile); setTimeout(() => {}, 30_000);',
-			pidFile,
-		],
+		args: ["-e", RUNNING_COMMAND_SCRIPT, "--", pidFile],
 	};
 }
 

@@ -362,7 +362,7 @@ test(
 		inspector.handleInput(ALT_W);
 		await settle();
 		const shellPage = screen(100);
-		assert.match(shellPage, /^Transcript · bash/, `alt+w opens the shell the child waits on: ${shellPage}`);
+		assert.match(shellPage, /^▔+\n {2}.+\n {2}shell\b/, `alt+w opens the shell the child waits on: ${shellPage}`);
 		assert.match(shellPage, /Retained shell output/, "alt+w opens the shell's output");
 		assert.match(shellPage, /← builder/, "back leads to the waiting child");
 		inspector.handleInput("\x1b[D");
@@ -377,7 +377,11 @@ test(
 		inspector.handleInput(ALT_W);
 		await settle();
 		const shellFromRow = screen(100);
-		assert.match(shellFromRow, /^Transcript · bash/, `alt+w on the Waiting row opens its shell: ${shellFromRow}`);
+		assert.match(
+			shellFromRow,
+			/^▔+\n {2}.+\n {2}shell\b/,
+			`alt+w on the Waiting row opens its shell: ${shellFromRow}`,
+		);
 		assert.match(shellFromRow, /Retained shell output/);
 		assert.match(shellFromRow, /← tasks/);
 		assert.equal(env.faux.getPendingResponseCount(), 1, "opening its shell did not wake the child");
