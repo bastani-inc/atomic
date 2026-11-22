@@ -142,7 +142,8 @@ impl HostProcess {
 		self.shared.release_by_host();
 	}
 
-	/// Ends the process and every process in its job (Windows). False once the job was released, and elsewhere.
+	/// Ends the process and, while it runs, the processes below it, then every process in its job (Windows). False once
+	/// the job was released, and elsewhere.
 	#[napi(js_name = "endTree")]
 	pub fn end_tree(&self) -> bool {
 		#[cfg(windows)]

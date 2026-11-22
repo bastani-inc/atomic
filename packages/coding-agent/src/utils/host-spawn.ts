@@ -146,7 +146,10 @@ export function spawnHostProcess(
 
 /** A process {@link spawnContainedProcess} started: it and every process it starts are in a job of its own. */
 export interface ContainedChildProcess extends HostChildProcess {
-	/** Ends the process and every process still in its job. False once {@link releaseTree} let them go. */
+	/**
+	 * Ends the process and, while it runs, the processes below it, and then every process still in its job. False once
+	 * {@link releaseTree} let them go.
+	 */
 	endTree(): boolean;
 	/** Lets the processes still in its job run on: neither {@link endTree} nor this process's exit ends them then. */
 	releaseTree(): void;
@@ -162,10 +165,10 @@ function hasNul(text: string): boolean {
 /**
  * On Windows, starts `file` (a full path) with `args` as `child_process.spawn(file, args, { ...options,
  * windowsHide: true })` would, with the same command line and environment, but suspended and in a job of its own,
- * which holds it before its first instruction and every process it starts after: {@link ContainedChildProcess.endTree}
- * ends them through the job, by no process ID, also once `file` exited. A program that asks to leave the job cannot
- * start. While the job is held, this process's exit ends them too; {@link ContainedChildProcess.releaseTree} lets them
- * run on. Undefined elsewhere, with {@link HOST_SPAWN_ENV} set to `child-process`, without a native module that can
+ * which holds it before its first instruction and every process it starts after, unless one asks to leave it:
+ * {@link ContainedChildProcess.endTree} ends, while `file` runs, it and the processes below it through handles, and
+ * then those in the job, by no process ID, also once `file` exited. While the job is held, this process's exit ends
+ * those in it too; {@link ContainedChildProcess.releaseTree} lets them run on. Undefined elsewhere, with {@link HOST_SPAWN_ENV} set to `child-process`, without a native module that can
  * contain it, for a `file` that is not a full path, and for a NUL in the input, which `child_process` refuses itself:
  * the caller then starts it through `child_process`.
  */

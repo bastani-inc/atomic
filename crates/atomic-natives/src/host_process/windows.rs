@@ -1,13 +1,17 @@
 //! The Windows start of a host process: suspended, in a kill-on-close job of its own, then resumed, so the process
-//! and every process it starts are in that job from their first instruction. Node's `child_process` puts a child in
-//! libuv's own job instead, whose children leave it silently; putting such a child in a second job afterwards makes
-//! the second job a member of libuv's, so what the command leaves running would end when this process exits.
+//! and every process it starts are in that job from their first instruction, unless it asks to leave it
+//! (`CREATE_BREAKAWAY_FROM_JOB`), which the job allows. Node's `child_process` puts a child in libuv's own job
+//! instead, whose children leave it silently; putting such a child in a second job afterwards makes the second job a
+//! member of libuv's, so what the command leaves running would end when this process exits.
+//!
+//! Ending the tree ends, while the process runs, it and the processes below it through handles (see
+//! `crate::process_tree`), which reaches those that left the job and are still below it, as Git Bash's are: Cygwin
+//! starts every process with `CREATE_BREAKAWAY_FROM_JOB` when its job allows it. Then it ends what stayed in the job.
 //!
 //! The command line and environment block are built as libuv builds them for `child_process.spawn`, so the program
 //! sees what it saw before. One thread per output pipe reads it, one writes standard input, and one waits for the
 //! exit; the host's release (after its `close`) stops them and closes this process's ends of the pipes.
 use super::*;
-use crate::task_supervisor::{ContainmentJob, windows_pipe};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use std::cmp::Ordering as Order;
 use std::collections::VecDeque;
@@ -27,11 +31,18 @@ use windows_sys::Win32::Foundation::{
 	HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Globalization::{CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
 	FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, GetShortPathNameW, INVALID_FILE_ATTRIBUTES,
 };
 use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
+use windows_sys::Win32::System::JobObjects::{
+	AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+	JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+	JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+};
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
 	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
 	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
@@ -49,6 +60,73 @@ fn raw(handle: &impl AsRawHandle) -> HANDLE {
 	handle.as_raw_handle()
 }
 
+/// The job a process starts in: it ends its processes when it is closed, until it is released, and lets a process
+/// leave it that asks to, as libuv's own job lets one.
+struct Job(OwnedHandle);
+
+impl Job {
+	fn create() -> io::Result<Self> {
+		let job = unsafe { CreateJobObjectW(null(), null()) };
+		if job.is_null() {
+			return Err(io::Error::last_os_error());
+		}
+		let job = Self(unsafe { OwnedHandle::from_raw_handle(job) });
+		job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK)?;
+		Ok(job)
+	}
+
+	fn limit(&self, flags: JOB_OBJECT_LIMIT) -> io::Result<()> {
+		let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+		limits.BasicLimitInformation.LimitFlags = flags;
+		if unsafe {
+			SetInformationJobObject(
+				raw(&self.0),
+				JobObjectExtendedLimitInformation,
+				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+				std::mem::size_of_val(&limits) as u32,
+			)
+		} == 0
+		{
+			return Err(io::Error::last_os_error());
+		}
+		Ok(())
+	}
+
+	fn assign(&self, process: HANDLE) -> io::Result<()> {
+		if unsafe { AssignProcessToJobObject(raw(&self.0), process) } == 0 {
+			Err(io::Error::last_os_error())
+		} else {
+			Ok(())
+		}
+	}
+
+	fn terminate(&self) -> bool {
+		unsafe { TerminateJobObject(raw(&self.0), 1) != 0 }
+	}
+
+	/// Closes the job without ending its processes. One that cannot be told so stays open until this process exits.
+	fn release(self) {
+		if self.limit(JOB_OBJECT_LIMIT_BREAKAWAY_OK).is_err() {
+			std::mem::forget(self);
+		}
+	}
+}
+
+/// An anonymous pipe: its read end and its write end, neither inheritable.
+fn pipe() -> io::Result<(File, File)> {
+	let mut read = null_mut();
+	let mut write = null_mut();
+	let attributes = SECURITY_ATTRIBUTES {
+		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+		lpSecurityDescriptor: null_mut(),
+		bInheritHandle: 0,
+	};
+	if unsafe { CreatePipe(&mut read, &mut write, &attributes, 65536) } == 0 {
+		return Err(io::Error::last_os_error());
+	}
+	Ok(unsafe { (File::from_raw_handle(read), File::from_raw_handle(write)) })
+}
+
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 	mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -62,9 +140,11 @@ struct Input {
 
 /// What the host and the process's threads share.
 pub(super) struct Shared {
+	pid: u32,
+	/// Held until this is dropped, so `pid` names the process all along.
 	process: OwnedHandle,
 	/// The job, until the host released the processes in it.
-	job: Mutex<Option<ContainmentJob>>,
+	job: Mutex<Option<Job>>,
 	input: Mutex<Input>,
 	input_changed: Condvar,
 	callback: Mutex<Option<EventCallback>>,
@@ -123,15 +203,23 @@ impl Shared {
 		}
 	}
 
-	/// Ends every process in the job; false once the job was released.
+	/// Ends, while the process runs, it and the processes below it, through handles, and then every process in the
+	/// job; false once the job was released.
 	pub(super) fn end_tree(&self) -> bool {
-		locked(&self.job).as_ref().is_some_and(|job| job.terminate().is_ok())
+		let job = locked(&self.job);
+		let Some(job) = job.as_ref() else { return false };
+		if !self.exited()
+			&& let Some(mut below) = crate::process_tree::hold_process_descendants(self.pid)
+		{
+			below.end_all();
+		}
+		job.terminate()
 	}
 
 	/// Lets the processes in the job run on: the job no longer ends them when it closes, and it is closed.
 	pub(super) fn release_tree(&self) {
 		if let Some(job) = locked(&self.job).take() {
-			let _ = job.release();
+			job.release();
 		}
 	}
 
@@ -526,7 +614,7 @@ fn stream(piped: bool, child_writes: bool) -> io::Result<Stream> {
 	if !piped {
 		return Ok((null_device(child_writes)?, None));
 	}
-	let (read, write) = windows_pipe()?;
+	let (read, write) = pipe()?;
 	Ok(if child_writes { (write, Some(read)) } else { (read, Some(write)) })
 }
 
@@ -555,7 +643,7 @@ pub(super) fn start(
 	let Some(application) = program_path(&file) else {
 		return Err(code_error("ENOENT", format!("spawn {} ENOENT", options.file)));
 	};
-	let job = ContainmentJob::create().map_err(unsupported)?;
+	let job = Job::create().map_err(unsupported)?;
 	let (stdin_child, stdin) = stream(options.pipe_stdin, false).map_err(os_error)?;
 	let (stdout_child, stdout) = stream(options.pipe_stdout, true).map_err(os_error)?;
 	let (stderr_child, stderr) = stream(options.pipe_stderr, true).map_err(os_error)?;
@@ -639,17 +727,18 @@ pub(super) fn start(
 	}
 	if unsafe { ResumeThread(raw(&thread)) } == u32::MAX {
 		let error = io::Error::last_os_error();
-		let _ = job.terminate();
+		job.terminate();
 		return Err(os_error(error));
 	}
 	drop(thread);
 	let stop = unsafe { CreateEventW(null(), 1, 0, null()) };
 	if stop.is_null() {
 		let error = io::Error::last_os_error();
-		let _ = job.terminate();
+		job.terminate();
 		return Err(os_error(error));
 	}
 	let shared = Arc::new(Shared {
+		pid: info.dwProcessId,
 		process,
 		job: Mutex::new(Some(job)),
 		input: Mutex::new(Input { chunks: VecDeque::new(), ended: false, closed: stdin.is_none() }),

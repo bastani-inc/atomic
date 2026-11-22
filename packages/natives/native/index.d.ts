@@ -59,7 +59,10 @@ export declare class HostProcess {
    * read: this process's ends of its pipes close.
    */
   release(): void
-  /** Ends the process and every process in its job (Windows). False once the job was released, and elsewhere. */
+  /**
+   * Ends the process and, while it runs, the processes below it, then every process in its job (Windows). False once
+   * the job was released, and elsewhere.
+   */
   endTree(): boolean
   /** Lets the processes in its job run on (Windows): neither the job nor this process's exit ends them afterwards. */
   releaseTree(): void

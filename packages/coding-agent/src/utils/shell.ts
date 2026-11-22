@@ -449,12 +449,13 @@ export interface ShellProcess {
 
 /**
  * Starts `shell` with `args` for the bash or PowerShell tool run without a task owner, with output piped and input
- * `stdin`. On Windows, with the native module and a full shell path, the shell starts suspended in a job of its own,
- * as a task owner's commands do: {@link ShellProcess.stop} ends every process in the job, also those left running
- * after the shell exited and those whose starter exited, never one by a process ID another process may have been given;
- * a program that asks to leave the job cannot start; {@link ShellProcess.finish} lets go of the job, so what the
- * command left running outlives Atomic. Otherwise it is `child_process.spawn` (detached on POSIX), stopped with
- * {@link killProcessTree}.
+ * `stdin`. On Windows, with the native module and a full shell path, the shell starts suspended in a job of its own:
+ * {@link ShellProcess.stop} ends, while the shell runs, it and the processes below it, and then every process in the
+ * job, also those left running after the shell exited and those whose starter exited, never one by a process ID
+ * another process may have been given. A program that asks to leave the job (as Git Bash's do) leaves it, and a stop
+ * ends it only while it is below the running shell, as `taskkill /T` did. {@link ShellProcess.finish} lets go of the
+ * job, so what the command left running outlives Atomic. Otherwise it is `child_process.spawn` (detached on POSIX),
+ * stopped with {@link killProcessTree}.
  */
 export function spawnShellProcess(
 	shell: string,
