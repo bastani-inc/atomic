@@ -1714,7 +1714,7 @@ describe("interrupted worktree additions (#3109)", () => {
 	);
 
 	test.skipIf(process.platform === "win32")(
-		"a git that added the worktree before it was stopped for an adder that cannot be recorded leaves nothing added (#3109)",
+		"a bind whose adder cannot be recorded fails before git adds anything, however fast that git is (#3109)",
 		async () => {
 			const repo = createRepository(dirs.root, "unrecordable-late");
 			writeFileSync(join(realpathSync(join(repo, ".git")), "atomic-worktree-adders"), "in the way\n");
@@ -1725,7 +1725,7 @@ describe("interrupted worktree additions (#3109)", () => {
 			assert.ok(isWorkspaceBindingError(error));
 			assert.equal(error.code, "filesystem-failed");
 			assert.equal(error.fields.operation, "record the git adding");
-			assert.equal(existsSync(path), false, "the worktree git added is removed");
+			assert.equal(existsSync(path), false, "git added nothing");
 			assert.doesNotMatch(git(repo, "worktree", "list", "--porcelain"), /unrecorded-late/);
 		},
 	);
