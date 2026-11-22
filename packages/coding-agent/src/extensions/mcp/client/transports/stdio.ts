@@ -10,6 +10,10 @@ import {
 	helperLaunchAsync,
 	missingHelperOptions,
 } from "../../../../utils/helper-command.ts";
+import {
+	DEFAULT_WINDOWS_CWD_TIMEOUT_MS,
+	resolveSafeWindowsWorkingDirectoryAsync,
+} from "../../../../utils/windows-cwd.js";
 import { collectSecretsForMasking, redactOAuthErrorText, scrubUnknownErrorData } from "../oauth/redact.js";
 import { isJsonRpcResponse, type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
@@ -26,6 +30,59 @@ const USE_PROCESS_GROUPS = process.platform !== "win32";
 const liveProcessGroups = new Set<number>();
 let exitHookInstalled = false;
 
+interface PendingWindowsKillCwd {
+	readonly done: boolean;
+	readonly value: string | undefined;
+	readonly pending: Promise<string | undefined> | undefined;
+}
+
+function spawnWindowsTaskkill(
+	child: ChildProcess,
+	pid: number,
+	signal: NodeJS.Signals,
+	cwd: string | undefined,
+	onSettled?: () => void,
+): Promise<void> | undefined {
+	if (child.exitCode !== null || child.signalCode !== null) {
+		onSettled?.();
+		return undefined;
+	}
+	// Windows has no graceful signals, and cross-spawn runs `.cmd` shims through cmd.exe; killing only
+	// that would leave the server running. The kill command runs in a verified safe directory outside
+	// Atomic's working directory and the project folder, so it never keeps them in use.
+	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+	try {
+		const kill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
+			...(cwd === undefined ? {} : { cwd }),
+			stdio: "ignore",
+			windowsHide: true,
+		});
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = (fallback: boolean) => {
+				if (settled) return;
+				settled = true;
+				onSettled?.();
+				if (fallback && child.exitCode === null && child.signalCode === null) {
+					try {
+						child.kill(signal);
+					} catch {}
+				}
+				resolve();
+			};
+			kill.once("error", () => finish(true));
+			kill.once("exit", (code) => finish(code !== 0));
+		});
+	} catch {
+		// Starting taskkill failed synchronously; fall through to killing the direct child handle.
+	}
+	onSettled?.();
+	try {
+		child.kill(signal);
+	} catch {}
+	return undefined;
+}
+
 /**
  * Ends `child` and the processes it started. On Windows, returns a promise that resolves once the kill command has
  * finished or failed to start; `undefined` when no kill command was started (elsewhere, already exited, or when
@@ -35,39 +92,15 @@ function killProcessTree(
 	child: ChildProcess,
 	signal: NodeJS.Signals,
 	onSettled?: () => void,
+	windowsKillCwd?: PendingWindowsKillCwd,
 ): Promise<void> | undefined {
 	const pid = child.pid;
 	if (process.platform === "win32" && pid !== undefined) {
 		if (child.exitCode !== null || child.signalCode !== null) return undefined;
-		// Windows has no graceful signals, and cross-spawn runs `.cmd` shims through cmd.exe; killing only
-		// that would leave the server running. The kill command runs in the system directory, so it never keeps the
-		// folder Atomic runs in, the project's, in use.
-		const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
-		try {
-			const kill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
-				cwd: systemRoot,
-				stdio: "ignore",
-				windowsHide: true,
-			});
-			return new Promise((resolve) => {
-				let settled = false;
-				const finish = (fallback: boolean) => {
-					if (settled) return;
-					settled = true;
-					onSettled?.();
-					if (fallback && child.exitCode === null && child.signalCode === null) {
-						try {
-							child.kill(signal);
-						} catch {}
-					}
-					resolve();
-				};
-				kill.once("error", () => finish(true));
-				kill.once("exit", (code) => finish(code !== 0));
-			});
-		} catch {
-			// Starting taskkill failed synchronously; fall through to killing the direct child handle.
+		if (windowsKillCwd !== undefined && !windowsKillCwd.done && windowsKillCwd.pending !== undefined) {
+			return windowsKillCwd.pending.then((safeCwd) => spawnWindowsTaskkill(child, pid, signal, safeCwd, onSettled));
 		}
+		return spawnWindowsTaskkill(child, pid, signal, windowsKillCwd?.value, onSettled);
 	}
 	if (USE_PROCESS_GROUPS && pid !== undefined) {
 		try {
@@ -291,6 +324,10 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 	/** Ends a lookup of the server's program that `close()` cuts short. */
 	private readonly lookup = new AbortController();
 
+	private killCwdOptions(): { readonly protectedDirs: readonly (string | undefined)[] } {
+		return { protectedDirs: [this.options.projectCwd, this.options.cwd] };
+	}
+
 	constructor(options: StdioTransportOptions) {
 		super();
 		this.options = Object.freeze({ ...options, args: options.args ? [...options.args] : undefined });
@@ -463,17 +500,61 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
 		/** The kill commands this close started that are still running, waited for once the server has closed. */
 		const kills = new Set<Promise<void>>();
+		const closeAbort = new AbortController();
+		const windowsKillCwd: {
+			done: boolean;
+			value: string | undefined;
+			pending: Promise<string | undefined> | undefined;
+		} = {
+			done: true,
+			value: undefined,
+			pending: undefined,
+		};
+		const startWindowsKillCwd = () => {
+			if (process.platform !== "win32") return;
+			const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+			const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+			const budgetMs = Math.min(DEFAULT_WINDOWS_CWD_TIMEOUT_MS, Math.max(20, closeTimeoutMs));
+			windowsKillCwd.done = false;
+			windowsKillCwd.pending = resolveSafeWindowsWorkingDirectoryAsync({
+				...this.killCwdOptions(),
+				commandPath: taskkillPath,
+				preferCommandDir: true,
+				timeoutMs: budgetMs,
+				signal: closeAbort.signal,
+			}).then(
+				(safeCwd) => {
+					windowsKillCwd.done = true;
+					windowsKillCwd.value = safeCwd;
+					return safeCwd;
+				},
+				() => {
+					windowsKillCwd.done = true;
+					windowsKillCwd.value = undefined;
+					return undefined;
+				},
+			);
+		};
 		const kill = (signal: NodeJS.Signals) => {
 			let settled = false;
-			const pending = killProcessTree(child, signal, () => {
-				settled = true;
-				if (pending !== undefined) kills.delete(pending);
-			});
+			let pending: Promise<void> | undefined;
+			pending = killProcessTree(
+				child,
+				signal,
+				() => {
+					settled = true;
+					if (pending !== undefined) kills.delete(pending);
+				},
+				windowsKillCwd,
+			);
 			if (pending !== undefined && !settled) kills.add(pending);
 		};
 		await new Promise<void>((resolve) => {
 			const timers: ReturnType<typeof setTimeout>[] = [];
+			let childClosed = false;
 			child.once("close", () => {
+				childClosed = true;
+				closeAbort.abort();
 				for (const timer of timers) clearTimeout(timer);
 				// Children of the server that ignored stdin closing would otherwise outlive it.
 				kill("SIGTERM");
@@ -504,6 +585,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 				),
 			);
 			child.stdin?.end();
+			if (!childClosed) startWindowsKillCwd();
 		});
 	}
 }

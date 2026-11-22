@@ -40,6 +40,7 @@ import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-s
 import { launchedTaskViewSource, ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import { withAgentPanelReturn } from "../interactive/agent-panel-return.js";
 import { type AgentViewBridge, agentViewBridge } from "../interactive/agent-view/agent-view-bridge.ts";
+import { bridgePanelPreview } from "../interactive/agent-view/view-preview-protocol.js";
 import {
 	AGENT_PANEL_FOCUSED_ROWS,
 	AGENT_PANEL_IDLE_ROWS,
@@ -89,8 +90,10 @@ type PanelRankCache = PanelRanking & {
 	readonly generation: number;
 	readonly dismissed: ReadonlySet<string>;
 	readonly bridge: AgentViewBridge | undefined;
-	/** What the bridge said the screen shows when this was ranked. */
+	/** What the bridge said the screen shows (or speculatively previews) when this was ranked. */
 	readonly requested: TaskId | undefined;
+	/** Preview sequence number active when this was ranked, or undefined for committed state. */
+	readonly previewSeq: number | undefined;
 };
 
 interface PanelRanking {
@@ -99,6 +102,8 @@ interface PanelRanking {
 	readonly main: boolean;
 	/** The row of the subagent the screen shows; undefined while it shows main. */
 	readonly viewed?: string;
+	/** Preview sequence number that produced these rows, or undefined when rendered from committed state. */
+	readonly previewSeq?: number;
 }
 
 function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): PanelRanking {
@@ -107,6 +112,7 @@ function rankingOf(cache: PanelRankCache, rows: AgentPanelRow[] = cache.rows): P
 		counts: cache.counts,
 		main: cache.main,
 		...(cache.viewed === undefined ? {} : { viewed: cache.viewed }),
+		...(cache.previewSeq === undefined ? {} : { previewSeq: cache.previewSeq }),
 	};
 }
 
@@ -258,7 +264,9 @@ function rankPanelSession(
 	const limit = Math.max(0, options.limit ?? Number.POSITIVE_INFINITY);
 	const materialize = (row: AgentPanelRow): AgentPanelRow => currentPanelItem(store, row);
 	const bridge = agentViewBridge(session);
-	const requested = bridge?.viewedTaskId();
+	const preview = bridgePanelPreview(bridge);
+	const requested = preview?.taskId ?? bridge?.viewedTaskId();
+	const previewSeq = preview?.previewSeq;
 	const cached =
 		state.rankCaches?.get(cap) ??
 		(limit === 0
@@ -273,6 +281,7 @@ function rankPanelSession(
 		cached.generation === generation &&
 		cached.bridge === bridge &&
 		cached.requested === requested &&
+		cached.previewSeq === previewSeq &&
 		sameIds(cached.dismissed, dismissed)
 	) {
 		const end = Math.min(cached.rows.length, start + limit);
@@ -458,12 +467,19 @@ function rankPanelSession(
 		dismissed: new Set(dismissed),
 		bridge,
 		requested,
+		previewSeq,
 		rows,
 		counts: panelCounts,
 		main,
 		...(viewed === undefined ? {} : { viewed }),
 	});
-	return { rows, counts: panelCounts, main, ...(viewed === undefined ? {} : { viewed }) };
+	return {
+		rows,
+		counts: panelCounts,
+		main,
+		...(viewed === undefined ? {} : { viewed }),
+		...(previewSeq === undefined ? {} : { previewSeq }),
+	};
 }
 
 /** `ranked` with each subagent's own running shells right after its row. */
@@ -579,9 +595,12 @@ export function bindAgentPanel(
 	let visible = state.hideCount === 0;
 	let disposed = false;
 	let dirty = false;
+	/** View or preview state changed on the bridge: bypasses background refresh throttling so stale preview rows never paint. */
+	let viewDirty = false;
 	let currentHiddenBelow = 0;
 	let currentMain = false;
 	let currentViewed: string | undefined;
+	let currentPreviewSeq: number | undefined;
 	let lastCounts: AgentPanelCounts | undefined;
 	let scheduled = false;
 	let windowStart = Number.NEGATIVE_INFINITY;
@@ -595,8 +614,9 @@ export function bindAgentPanel(
 	let cachedHiddenBelow = -1;
 	let cachedMain = false;
 	let cachedViewed: string | undefined;
-	/** The rows the widget last drew, which a click is resolved against. */
-	let painted: { rows: readonly AgentPanelRow[]; hiddenBelow: number; main: boolean } | undefined;
+	let cachedPreviewSeq: number | undefined;
+	/** The rows the widget last drew (plus their preview provenance), which clicks and frame tags resolve against. */
+	let painted: { rows: readonly AgentPanelRow[]; hiddenBelow: number; main: boolean; previewSeq?: number } | undefined;
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 	/** The panel's model column, measured afresh each time the panel is mounted. */
@@ -634,8 +654,11 @@ export function bindAgentPanel(
 		currentHiddenBelow = 0;
 		currentMain = false;
 		currentViewed = undefined;
+		currentPreviewSeq = undefined;
 		cachedRows = undefined;
 		cachedHiddenBelow = -1;
+		cachedPreviewSeq = undefined;
+		painted = undefined;
 		cachedLines = [];
 		const wasMounted = mounted;
 		mounted = false;
@@ -650,6 +673,7 @@ export function bindAgentPanel(
 	};
 	const update = () => {
 		dirty = false;
+		viewDirty = false;
 		const began = performance.now();
 		if (began - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS) {
 			windowStart = began;
@@ -675,7 +699,7 @@ export function bindAgentPanel(
 			return;
 		}
 		syncBridge();
-		const { rows, counts, main, viewed } = idleRows();
+		const { rows, counts, main, viewed, previewSeq } = idleRows();
 		// The prompt's hints still update when there are no rows to mount.
 		const changed = publishCounts(counts);
 		if (rows.length === 0) {
@@ -686,6 +710,7 @@ export function bindAgentPanel(
 		currentHiddenBelow = Math.max(0, counts.total - rows.length);
 		currentMain = main;
 		currentViewed = viewed;
+		currentPreviewSeq = previewSeq;
 		if (!mounted || !sameUnfocusedRows(currentRows, rows, state.model)) {
 			currentRows = rows;
 		}
@@ -697,7 +722,12 @@ export function bindAgentPanel(
 					invalidate() {
 						cachedRows = undefined;
 						cachedHiddenBelow = -1;
+						cachedPreviewSeq = undefined;
 						cachedLines = [];
+					},
+					/** Preview sequence number that produced the rows painted in the last `render()` call. */
+					previewSeq(): number | undefined {
+						return painted?.previewSeq;
 					},
 					/** The id of the row last drawn on `row`, so a click on a row whose item changed is not taken. */
 					paintedRowKey(row: number): string | undefined {
@@ -719,9 +749,13 @@ export function bindAgentPanel(
 						);
 						if (id === undefined) return undefined;
 						if (id === AGENT_PANEL_MAIN_ID) {
-							// The main row is the chat the reader is in, unless the screen shows a subagent: then it shows main.
+							// The main row is the chat the reader is in, unless the screen shows or previews a subagent.
 							const bridge = agentViewBridge(session);
-							if (bridge?.viewedTaskId() !== undefined) bridge.requestView(undefined);
+							if (
+								bridge !== undefined &&
+								(bridge.viewedTaskId() !== undefined || bridgePanelPreview(bridge) !== undefined)
+							)
+								bridge.requestView(undefined);
 							return { handled: true };
 						}
 						const row = painted.rows.find((candidate) => candidate.id === id);
@@ -750,24 +784,34 @@ export function bindAgentPanel(
 						if (!visible) return [];
 						try {
 							const w = +width;
-							if (dirty && deferred === undefined) {
+							if (viewDirty || (dirty && deferred === undefined)) {
+								const urgent = viewDirty;
 								const now = performance.now();
 								if (now - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS) {
 									windowStart = now;
 									spent = 0;
 									refreshes = 0;
 								}
-								if (withinRefreshBudget(refreshes, spent)) {
+								if (urgent || withinRefreshBudget(refreshes, spent)) {
 									dirty = false;
+									viewDirty = false;
+									if (urgent) clearDeferred();
 									refreshes++;
 									try {
-										const { rows, counts, main, viewed } = idleRows();
+										const { rows, counts, main, viewed, previewSeq } = idleRows();
 										publishCounts(counts);
 										currentHiddenBelow = Math.max(0, counts.total - rows.length);
 										currentMain = main;
 										currentViewed = viewed;
+										currentPreviewSeq = previewSeq;
 										if (!sameUnfocusedRows(currentRows, rows, state.model)) {
 											currentRows = rows;
+										}
+										if (rows.length === 0) {
+											// Leave dirty and ensure a microtask runs update() -> unmount(false) so a 0-row panel
+											// does not stay mounted and stall a subsequent panelOnView open.
+											dirty = true;
+											if (!scheduled) scheduleViewUpdate();
 										}
 										if (rowsChangeWithTime(currentRows)) {
 											timer ??= setInterval(update, TICK_MS);
@@ -778,7 +822,12 @@ export function bindAgentPanel(
 									}
 								}
 							}
-							painted = { rows: currentRows, hiddenBelow: currentHiddenBelow, main: currentMain };
+							painted = {
+								rows: currentRows,
+								hiddenBelow: currentHiddenBelow,
+								main: currentMain,
+								...(currentPreviewSeq === undefined ? {} : { previewSeq: currentPreviewSeq }),
+							};
 							if (!Number.isFinite(w)) {
 								return renderAgentPanelRows(currentRows, w, THEMED_STYLE, {
 									faded,
@@ -795,7 +844,8 @@ export function bindAgentPanel(
 								cachedFaded === fadedMask &&
 								cachedHiddenBelow === currentHiddenBelow &&
 								cachedMain === currentMain &&
-								cachedViewed === currentViewed
+								cachedViewed === currentViewed &&
+								cachedPreviewSeq === currentPreviewSeq
 							) {
 								return cachedLines;
 							}
@@ -814,6 +864,7 @@ export function bindAgentPanel(
 							cachedHiddenBelow = currentHiddenBelow;
 							cachedMain = currentMain;
 							cachedViewed = currentViewed;
+							cachedPreviewSeq = currentPreviewSeq;
 							cachedLines = lines;
 							return lines;
 						} catch (error) {
@@ -840,12 +891,26 @@ export function bindAgentPanel(
 	/** What the screen shows changes the mark and keeps its row: the panel follows the session's bridge. */
 	let watchedBridge: AgentViewBridge | undefined;
 	let unwatchBridge = () => {};
+	const scheduleViewUpdate = () => {
+		if (disposed) return;
+		dirty = true;
+		viewDirty = true;
+		clearDeferred();
+		if (scheduled) return;
+		scheduled = true;
+		queueMicrotask(() => {
+			scheduled = false;
+			if (disposed || (!dirty && !viewDirty)) return;
+			refreshes++;
+			update();
+		});
+	};
 	const syncBridge = () => {
 		const bridge = agentViewBridge(session);
 		if (bridge === watchedBridge) return;
 		unwatchBridge();
 		watchedBridge = bridge;
-		unwatchBridge = bridge?.subscribe(scheduleUpdate) ?? (() => {});
+		unwatchBridge = bridge?.subscribe(scheduleViewUpdate) ?? (() => {});
 	};
 	const scheduleUpdate = () => {
 		if (disposed) return;
@@ -861,7 +926,7 @@ export function bindAgentPanel(
 				spent = 0;
 				refreshes = 0;
 			}
-			if (withinRefreshBudget(refreshes, spent)) {
+			if (viewDirty || withinRefreshBudget(refreshes, spent)) {
 				refreshes++;
 				update();
 				return;
@@ -1034,9 +1099,12 @@ export async function showAgentPanel(
 						finish();
 					},
 					openMain() {
-						// While a subagent is shown, the main row shows main again; otherwise it returns to the prompt.
+						// While a subagent is shown or speculatively previewed, the main row shows main again; otherwise it returns to the prompt.
 						const bridge = agentViewBridge(session);
-						if (bridge?.viewedTaskId() !== undefined)
+						if (
+							bridge !== undefined &&
+							(bridge.viewedTaskId() !== undefined || bridgePanelPreview(bridge) !== undefined)
+						)
 							next = async () => {
 								bridge.requestView(undefined);
 							};
