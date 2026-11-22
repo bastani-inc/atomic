@@ -743,6 +743,14 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			?? [...activeLifecycle.activeTools.values()].at(-1)?.ctx
 			?? activeLifecycle.modelSelect?.ctx;
 	}
+	pi.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
+		const request = payload as IntercomStartupJoinRequest | null;
+		if (!request || typeof request !== "object" || request.completion) return;
+		const ctx = latestLifecycleContext();
+		if (!ctx || activeLease.retired) return;
+		cancelStartupJoin();
+		request.completion = joinAtStartup(ctx);
+	});
 	pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
 		const request = payload as SupervisorAuthorizationRequest;
