@@ -48,24 +48,18 @@ fn creation_time(_pid: u32) -> Option<u64> {
 /// Ends running process `pid` if it was created at `created`, as `processCreationTime` reads it, and with
 /// `descendants` every process it started, directly or through others, that still runs. Each is ended through a handle
 /// opened and checked before anything is ended, so a later process given one of their ids is never ended: the process
-/// `pid` names must have been created at `created`, and a descendant after the process that started it and before the
-/// processes were listed. Returns how many were ended, or `null` where `pid` does not name that process (it is gone, is
-/// another process, or this process may not end it), and off Windows.
+/// `pid` names must have been created at `created`, and a descendant must still be the child of the process that
+/// started it, by its own parent id, and have started after it, by the kernel's order of process starts rather than by
+/// a clock. Returns how many were ended, or `null` where `pid` does not name that process (it is gone, is another
+/// process, or this process may not end it), and off Windows.
 #[napi(js_name = "terminateProcessCreatedAt")]
 pub fn terminate_process_created_at(pid: u32, created: String, descendants: bool) -> Option<u32> {
 	terminate(pid, created.parse().ok()?, descendants)
 }
 
-#[cfg(windows)]
-struct Held {
-	pid: u32,
-	created: u64,
-	handle: std::os::windows::io::OwnedHandle,
-}
-
 /// A handle to running process `pid` that can end it, with when it was created.
 #[cfg(windows)]
-fn hold(pid: u32) -> Option<Held> {
+fn hold(pid: u32) -> Option<(std::os::windows::io::OwnedHandle, u64)> {
 	use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 	use windows_sys::Win32::{
 		Foundation::{FILETIME, STILL_ACTIVE},
@@ -92,75 +86,25 @@ fn hold(pid: u32) -> Option<Held> {
 	let running = unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut code) } != 0
 		&& code == STILL_ACTIVE as u32;
 	let created = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
-	(read && running && created != 0).then_some(Held { pid, created, handle })
-}
-
-/// Every process and the id of the process that started it, as Windows lists them, with the time the list was taken:
-/// a process created after it is not in it. Read to the 100 ns of a creation time: the system clock read otherwise
-/// moves only at each tick (about 15.6 ms), so a process created since the last tick would look created after it.
-#[cfg(windows)]
-fn processes() -> Option<(Vec<(u32, u32)>, u64)> {
-	use windows_sys::Win32::{
-		Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE},
-		System::{
-			Diagnostics::ToolHelp::{
-				CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-				TH32CS_SNAPPROCESS,
-			},
-			SystemInformation::GetSystemTimePreciseAsFileTime,
-		},
-	};
-	let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-	if snapshot == INVALID_HANDLE_VALUE {
-		return None;
-	}
-	let mut taken = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-	unsafe { GetSystemTimePreciseAsFileTime(&mut taken) };
-	// SAFETY: PROCESSENTRY32W is plain data; all zeroes is a valid value once its size is set.
-	let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-	entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-	let mut listed = Vec::new();
-	let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
-	while more {
-		listed.push((entry.th32ProcessID, entry.th32ParentProcessID));
-		more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-	}
-	unsafe { CloseHandle(snapshot) };
-	Some((listed, (u64::from(taken.dwHighDateTime) << 32) | u64::from(taken.dwLowDateTime)))
+	(read && running && created != 0).then_some((handle, created))
 }
 
 #[cfg(windows)]
 fn terminate(pid: u32, created: u64, descendants: bool) -> Option<u32> {
 	use std::os::windows::io::AsRawHandle;
 	use windows_sys::Win32::System::Threading::TerminateProcess;
-	let root = hold(pid)?;
-	if root.created != created {
+	let (root, root_created) = hold(pid)?;
+	if root_created != created {
 		return None;
 	}
-	let mut held = vec![root];
-	if descendants && let Some((listed, taken)) = processes() {
-		let mut next = 0;
-		while next < held.len() {
-			let (parent, parent_created) = (held[next].pid, held[next].created);
-			next += 1;
-			for &(child, started_by) in &listed {
-				if started_by != parent || held.iter().any(|known| known.pid == child) {
-					continue;
-				}
-				// A process that lists `parent` as its starter is its child only if it was created after it; one
-				// created after the list was taken was given a listed id later.
-				if let Some(found) = hold(child)
-					&& found.created >= parent_created
-					&& found.created <= taken
-				{
-					held.push(found);
-				}
-			}
-		}
-	}
-	let ended = held
-		.iter()
-		.filter(|process| unsafe { TerminateProcess(process.handle.as_raw_handle(), 1) } != 0)
+	let below = if descendants {
+		crate::process_tree::hold_below(pid, &root).unwrap_or_default()
+	} else {
+		Vec::new()
+	};
+	let ended = std::iter::once(&root)
+		.chain(below.iter())
+		.filter(|process| unsafe { TerminateProcess(process.as_raw_handle(), 1) } != 0)
 		.count();
 	Some(ended as u32)
 }
@@ -198,7 +142,7 @@ mod tests {
 			// Polled without a pause, so the stop follows the child's start by far less than a tick.
 			let deadline = std::time::Instant::now() + Duration::from_secs(10);
 			let child = loop {
-				let listed = super::processes().map(|(listed, _)| listed).unwrap_or_default();
+				let listed = crate::process_tree::process_table();
 				if let Some(&(id, _)) = listed.iter().find(|&&(_, started_by)| started_by == pid) {
 					break id;
 				}
@@ -222,6 +166,39 @@ mod tests {
 		}
 	}
 
+	#[cfg(windows)]
+	#[test]
+	fn ends_only_the_process_itself_without_its_descendants() {
+		use std::{process::Command, thread::sleep, time::Duration};
+		// cmd starts ping, which keeps both running for at most 30 seconds.
+		let mut parent =
+			Command::new("cmd").args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"]).spawn().unwrap();
+		let pid = parent.id();
+		let created = process_creation_time(pid).expect("the child's creation time");
+		let mut child = None;
+		for _ in 0..500 {
+			child = crate::process_tree::process_table()
+				.into_iter()
+				.find(|&(_, started_by)| started_by == pid)
+				.map(|(id, _)| id)
+				.and_then(|id| process_creation_time(id).map(|started| (id, started)));
+			if child.is_some() {
+				break;
+			}
+			sleep(Duration::from_millis(10));
+		}
+		let (child, child_created) = child.expect("the ping cmd started");
+
+		let ended = terminate_process_created_at(pid, created, false);
+		parent.wait().unwrap();
+		// Still the same process: the one created when it was, not a later one given its id.
+		let still_runs = process_creation_time(child).as_deref() == Some(child_created.as_str());
+		terminate_process_created_at(child, child_created, false);
+
+		assert_eq!(ended, Some(1), "ended more than the process itself");
+		assert!(still_runs, "the process it started was ended without descendants asked for");
+	}
+
 	#[cfg(not(windows))]
 	#[test]
 	fn reads_nothing_off_windows() {
@@ -240,8 +217,9 @@ mod tests {
 		let created = process_creation_time(pid).expect("the child's creation time");
 		let mut child = None;
 		for _ in 0..200 {
-			child = super::processes()
-				.and_then(|(listed, _)| listed.into_iter().find(|&(_, started_by)| started_by == pid))
+			child = crate::process_tree::process_table()
+				.into_iter()
+				.find(|&(_, started_by)| started_by == pid)
 				.map(|(id, _)| id);
 			if child.is_some() {
 				break;

@@ -31,6 +31,7 @@ import { viewedAgentBackKeyList } from "./agent-view/viewed-keys.ts";
 import { escapeViewedAgent, submitToViewedAgent } from "./agent-view/viewed-submit.ts";
 import type { AgentsFocusInput } from "./components/custom-editor.ts";
 import { isChatSessionWorking } from "./components/footer.ts";
+import { isEngineHintRoute, runHintRoute } from "./components/hint-routes.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { bindMainComposerAgentRows, MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
 import { holdPromptSlot } from "./components/prompt-slot.ts";
@@ -823,7 +824,8 @@ async function submitToMainChat(
 
 /**
  * A click on a hint that names a slash command, such as `/tasks to manage`, runs it as if it were typed into an empty
- * prompt. The prompt keeps what it held.
+ * prompt. The prompt keeps what it held. A hint that names a route runs its command only where the route leads, such as
+ * the subagent chat that drew it, in this process or in the interactive engine; never here.
  */
 function registerHintCommandHandler(mode: InteractiveModeBase): void {
 	const remoteCommand = (name: string) =>
@@ -834,7 +836,13 @@ function registerHintCommandHandler(mode: InteractiveModeBase): void {
 		const remote = remoteCommand(name);
 		return remote?.source === "extension" && remote.sourceInfo.configurationOrigin === "bundled";
 	});
-	mode.ui.setHintCommandHandler?.((command) => {
+	mode.ui.setHintCommandHandler?.((command, route) => {
+		if (route !== undefined) {
+			if (runHintRoute(route, command)) return;
+			if (isEngineHintRoute(route) && mode.runtimeHost instanceof IsolatedInteractiveRuntime)
+				mode.runtimeHost.sendEngineCommand({ type: "engine_hint_route", componentId: route, command });
+			return;
+		}
 		const submit = mode.defaultEditor.onSubmit;
 		if (!submit) return;
 		const { name } = parseSlashCommand(command);
