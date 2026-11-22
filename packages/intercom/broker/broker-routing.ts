@@ -7,6 +7,7 @@ import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 import { getBrokerSocketPathAsync } from "./paths.js";
 import { type BrokerProtocolRange, protocolRangeOf } from "./protocol-version.js";
+import { isUnansweredCloseFromRetiringBroker, snapshotBrokerPidBeforeRequest } from "./retiring-broker-check.js";
 
 export interface BrokerRouting {
 	readonly acrossMachines: boolean;
@@ -17,8 +18,12 @@ export interface BrokerRouting {
 
 export async function queryBrokerRouting(agentDir: string): Promise<BrokerRouting> {
 	const startedAt = Date.now();
+	const [socketPath, pidBefore] = await Promise.all([
+		getBrokerSocketPathAsync(process.platform, agentDir),
+		snapshotBrokerPidBeforeRequest(agentDir),
+	]);
 	const answer = await controlRequest(
-		await getBrokerSocketPathAsync(process.platform, agentDir),
+		socketPath,
 		"broker_status",
 		"broker_status",
 		BROKER_CONTROL_TIMEOUT_MS,
@@ -32,7 +37,12 @@ export async function queryBrokerRouting(agentDir: string): Promise<BrokerRoutin
 		});
 	}
 	const reply = answer.reply;
-	if (reply === undefined) throw new IntercomRoutingUnavailableError("unsupported", "broker_status");
+	if (reply === undefined) {
+		if (await isUnansweredCloseFromRetiringBroker(socketPath, agentDir, pidBefore)) {
+			throw new IntercomBrokerRetiringError();
+		}
+		throw new IntercomRoutingUnavailableError("unsupported", "broker_status");
+	}
 	if (typeof reply !== "object" || reply === null || Array.isArray(reply) || !isBrokerStatusReport(reply.report)) {
 		throw new IntercomRoutingUnavailableError("malformed", "broker_status");
 	}
