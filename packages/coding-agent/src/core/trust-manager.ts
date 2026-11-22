@@ -522,43 +522,61 @@ export async function hasTrustRequiringProjectResourcesAsync(cwd: string): Promi
 	}
 }
 
-export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> {
-	let currentDir = await canonicalizePathAsync(resolvePath(cwd));
-	if (
-		(await hasTrustRequiringConfigResourcesAsync(currentDir)) ||
-		(await hasNearestProjectRootAgentResourcesAsync(currentDir))
-	) {
-		return true;
-	}
-	const userGlobalSkillsDir = await canonicalizePathAsync(resolvePath(join(getHomeDir(), ".agents", "skills")));
-	const contextFileNames = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
-
+function collectAncestorDirs(startDir: string): string[] {
+	const dirs: string[] = [];
+	let currentDir = startDir;
 	while (true) {
-		for (const contextFileName of contextFileNames) {
-			if (await pathExists(join(currentDir, contextFileName))) {
-				return true;
-			}
-		}
-
-		const skillsDir = await canonicalizePathAsync(resolvePath(join(currentDir, ".agents", "skills")));
-		if (!pathsEqual(skillsDir, userGlobalSkillsDir) && (await pathExists(skillsDir))) {
-			return true;
-		}
-
+		dirs.push(currentDir);
 		const parentDir = dirname(currentDir);
-		if (parentDir === currentDir) {
-			return false;
-		}
+		if (parentDir === currentDir) return dirs;
 		currentDir = parentDir;
 	}
 }
 
+export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> {
+	const [canonicalCwd, homeDir, userGlobalSkillsDir] = await Promise.all([
+		canonicalizePathAsync(resolvePath(cwd)),
+		canonicalizePathAsync(resolvePath(getHomeDir())),
+		canonicalizePathAsync(resolvePath(join(getHomeDir(), ".agents", "skills"))),
+	]);
+	const ancestors = collectAncestorDirs(canonicalCwd);
+	const contextFileNames = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+
+	const [hasConfigResources, hasRootAgentResources, ancestorContextAndSkills] = await Promise.all([
+		hasTrustRequiringConfigResourcesCanonicalAsync(canonicalCwd),
+		hasNearestProjectRootAgentResourcesCanonicalAsync(ancestors, homeDir),
+		Promise.all(
+			ancestors.map(async (dir) => {
+				const contextChecks = contextFileNames.map((name) => pathExists(join(dir, name)));
+				const rawSkillsDir = join(dir, ".agents", "skills");
+				const skillsCheck = (async () => {
+					const skillsDir = await canonicalizePathAsync(resolvePath(rawSkillsDir));
+					return !pathsEqual(skillsDir, userGlobalSkillsDir) && (await pathExists(skillsDir));
+				})();
+				const results = await Promise.all([...contextChecks, skillsCheck]);
+				return results.some(Boolean);
+			}),
+		),
+	]);
+	return hasConfigResources || hasRootAgentResources || ancestorContextAndSkills.some(Boolean);
+}
+
+async function hasTrustRequiringConfigResourcesCanonicalAsync(projectCwd: string): Promise<boolean> {
+	const results = await Promise.all(
+		CONFIG_DIR_NAMES.map(async (configDirName) => {
+			const configDir = join(projectCwd, configDirName);
+			if (!(await isDirectoryAsync(configDir))) return false;
+			const checks = await Promise.all(
+				TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.map((entry) => pathExists(join(configDir, entry))),
+			);
+			return checks.some(Boolean);
+		}),
+	);
+	return results.some(Boolean);
+}
+
 async function hasTrustRequiringConfigResourcesAsync(cwd: string): Promise<boolean> {
-	const projectCwd = await canonicalizePathAsync(resolvePath(cwd));
-	return someAsync(CONFIG_DIR_NAMES, (configDirName) => {
-		const configDir = join(projectCwd, configDirName);
-		return someAsync(TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES, (entry) => pathExists(join(configDir, entry)));
-	});
+	return hasTrustRequiringConfigResourcesCanonicalAsync(await canonicalizePathAsync(resolvePath(cwd)));
 }
 
 async function isDirectoryAsync(path: string): Promise<boolean> {
@@ -569,27 +587,44 @@ async function isDirectoryAsync(path: string): Promise<boolean> {
 	}
 }
 
+async function hasNearestProjectRootAgentResourcesCanonicalAsync(
+	ancestors: readonly string[],
+	homeDir: string,
+): Promise<boolean> {
+	const ancestorMarkers = await Promise.all(
+		ancestors.map(async (dir) => {
+			const configDirs = CONFIG_DIR_NAMES.map((configDirName) => join(dir, configDirName));
+			const legacyAgentsDir = join(dir, ".agents");
+			const [configDirExists, hasLegacyAgentsDir] = await Promise.all([
+				Promise.all(configDirs.map(isDirectoryAsync)),
+				isDirectoryAsync(legacyAgentsDir),
+			]);
+			return { dir, configDirs, configDirExists, hasLegacyAgentsDir };
+		}),
+	);
+	const nearest = ancestorMarkers.find((entry) => entry.hasLegacyAgentsDir || entry.configDirExists.some(Boolean));
+	if (!nearest || pathsEqual(nearest.dir, homeDir)) return false;
+	if (nearest.hasLegacyAgentsDir) return true;
+	const checks = await Promise.all(
+		nearest.configDirs
+			.filter((_, index) => nearest.configDirExists[index])
+			.map(async (configDir) => {
+				const [hasAgents, hasSettings] = await Promise.all([
+					pathExists(join(configDir, "agents")),
+					pathExists(join(configDir, "settings.json")),
+				]);
+				return hasAgents || hasSettings;
+			}),
+	);
+	return checks.some(Boolean);
+}
+
 async function hasNearestProjectRootAgentResourcesAsync(cwd: string): Promise<boolean> {
-	const homeDir = await canonicalizePathAsync(resolvePath(getHomeDir()));
-	let currentDir = await canonicalizePathAsync(resolvePath(cwd));
-	while (true) {
-		const configDirs = CONFIG_DIR_NAMES.map((configDirName) => join(currentDir, configDirName));
-		const legacyAgentsDir = join(currentDir, ".agents");
-		if ((await someAsync(configDirs, isDirectoryAsync)) || (await isDirectoryAsync(legacyAgentsDir))) {
-			if (pathsEqual(currentDir, homeDir)) return false;
-			return (
-				(await isDirectoryAsync(legacyAgentsDir)) ||
-				(await someAsync(
-					configDirs,
-					async (configDir) =>
-						(await pathExists(join(configDir, "agents"))) || (await pathExists(join(configDir, "settings.json"))),
-				))
-			);
-		}
-		const parentDir = dirname(currentDir);
-		if (parentDir === currentDir) return false;
-		currentDir = parentDir;
-	}
+	const [canonicalCwd, homeDir] = await Promise.all([
+		canonicalizePathAsync(resolvePath(cwd)),
+		canonicalizePathAsync(resolvePath(getHomeDir())),
+	]);
+	return hasNearestProjectRootAgentResourcesCanonicalAsync(collectAncestorDirs(canonicalCwd), homeDir);
 }
 
 async function someAsync<T>(items: readonly T[], test: (item: T) => Promise<boolean>): Promise<boolean> {
