@@ -70,11 +70,6 @@ export function getBrokerAwayAsksPath(agentDir: string = getAgentDir()): string 
   return join(getIntercomDirPath(agentDir), "away-asks.sqlite");
 }
 
-/** #5607: the id hand-overs a broker gave, kept across its restarts; owner-only. */
-export function getBrokerHandoffsPath(agentDir: string = getAgentDir()): string {
-  return join(getIntercomDirPath(agentDir), "handoffs.json");
-}
-
 /** #5999: messages queued for subagents that ended, kept across broker restarts; owner-only. */
 export function getBrokerEndedChildQueuePath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "ended-child-queue.sqlite");

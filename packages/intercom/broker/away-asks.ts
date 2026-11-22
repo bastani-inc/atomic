@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import type { Message, SessionInfo } from "../types.js";
+import type { SavedHandoff } from "./multinode-router.js";
 import type { PendingQuestion } from "./pending-question-index.js";
 
 /**
@@ -101,6 +102,19 @@ export class AwayAsks {
 				owner_session_id TEXT NOT NULL,
 				child_name TEXT NOT NULL,
 				kept_at INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS id_handoffs (
+				identity TEXT PRIMARY KEY,
+				handoff TEXT NOT NULL,
+				session_id TEXT NOT NULL,
+				alias TEXT NOT NULL,
+				alias_token TEXT NOT NULL,
+				recovery TEXT NOT NULL,
+				at INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS id_handoff_holder (
+				only INTEGER PRIMARY KEY CHECK (only = 1),
+				holder TEXT NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS held_messages (
 				message_id TEXT PRIMARY KEY,
@@ -244,6 +258,52 @@ export class AwayAsks {
 			this.instance,
 			this.now(),
 		);
+	}
+
+	/**
+	 * #5607: the id hand-overs a multi-node broker of this directory gave (`SavedHandoff`), those older than `keepMs`
+	 * dropped, taken over by `holder`: from now on only its writes change them, so a broker it replaced writes nothing
+	 * over them.
+	 */
+	takeIdHandoffs(holder: string, keepMs: number): SavedHandoff[] {
+		return this.batch(() => {
+			this.statement("INSERT OR REPLACE INTO id_handoff_holder (only, holder) VALUES (1, ?)").run(holder);
+			this.statement("DELETE FROM id_handoffs WHERE at <= ?").run(this.now() - keepMs);
+			return this.statement("SELECT * FROM id_handoffs")
+				.all()
+				.map((row) => ({
+					identity: String(row.identity),
+					handoff: String(row.handoff),
+					id: String(row.session_id),
+					alias: String(row.alias),
+					...(row.alias_token === "" ? {} : { aliasToken: String(row.alias_token) }),
+					recovery: String(row.recovery),
+					at: Number(row.at),
+				}));
+		});
+	}
+
+	/** #5607: keep each identity's id hand-over, or drop it (`undefined`), while `holder` still holds them. */
+	putIdHandoffs(holder: string, changes: ReadonlyArray<readonly [string, SavedHandoff | undefined]>): void {
+		const holds = "EXISTS (SELECT 1 FROM id_handoff_holder WHERE holder = ?)";
+		this.batch(() => {
+			for (const [identity, handoff] of changes)
+				if (handoff === undefined)
+					this.statement(`DELETE FROM id_handoffs WHERE identity = ? AND ${holds}`).run(identity, holder);
+				else
+					this.statement(
+						`INSERT INTO id_handoffs (identity, handoff, session_id, alias, alias_token, recovery, at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${holds} ON CONFLICT (identity) DO UPDATE SET handoff = excluded.handoff, session_id = excluded.session_id, alias = excluded.alias, alias_token = excluded.alias_token, recovery = excluded.recovery, at = excluded.at`,
+					).run(
+						identity,
+						handoff.handoff,
+						handoff.id,
+						handoff.alias,
+						handoff.aliasToken ?? "",
+						handoff.recovery,
+						handoff.at,
+						holder,
+					);
+		});
 	}
 
 	/** The released subagent took its held failed-ask message from this broker. */

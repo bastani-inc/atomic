@@ -36,7 +36,6 @@ import {
 	getBrokerAwayAsksPath,
 	getBrokerDeliveredMessagesPath,
 	getBrokerEndedChildQueuePath,
-	getBrokerHandoffsPath,
 	getBrokerPidPath,
 	getBrokerWatchdogLogPath,
 	chooseBrokerSocketPath,
@@ -92,7 +91,6 @@ import {
   type UnansweredSessionIdClaim,
 } from "./multinode-router.js";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
-import { fileHandoffStore } from "./saved-handoffs.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
 import {
@@ -383,13 +381,18 @@ class IntercomBroker {
    * send, so a broker that idles out having served no session leaves no durable state in the agent directory. A broker
    * that does serve one reads what its predecessors recorded, so a retried send is still deduplicated across restarts.
    */
+  /** #5607: the store of asks for away sessions, once opened: it keeps the multi-node id hand-overs too. */
+  private awayAsks: AwayAsks | undefined;
+
   private openDeliveredMessages(): DeliveredMessageCache {
     // #4751: what waits for away sessions is kept with the same lifetime as the delivered-message authority.
     if (this.deliveredMessageCache === undefined) {
       try {
         // #4829: live asks are written to it too, with their peers' return addresses, so they outlive this broker.
+        const awayAsks = new AwayAsks(getBrokerAwayAsksPath());
+        this.awayAsks = awayAsks;
         this.pendingQuestions.useAwayStore(
-          new AwayAsks(getBrokerAwayAsksPath()),
+          awayAsks,
           (sessionId) =>
             this.sessions.get(sessionId)?.registrationReturnAddress ?? this.sessionIdReclaim.retiredReturnAddress(sessionId),
         );
@@ -2134,8 +2137,17 @@ class IntercomBroker {
               home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
               // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
               instanceKey: SOCKET_PATH,
-              // #5607: a hand-over presented after this broker restarted still takes back what it was given for.
-              handoffs: fileHandoffStore(getBrokerHandoffsPath()),
+              // #5607: a hand-over presented after this broker restarted still takes back what it was given for. Kept
+              // with the asks for away sessions, which the first registration opens, before any hand-over.
+              handoffs: () => {
+                const awayAsks = this.awayAsks;
+                return awayAsks === undefined
+                  ? undefined
+                  : {
+                      take: (holder, keepMs) => awayAsks.takeIdHandoffs(holder, keepMs),
+                      put: (holder, changes) => awayAsks.putIdHandoffs(holder, changes),
+                    };
+              },
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,

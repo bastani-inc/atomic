@@ -4,6 +4,7 @@ import type net from "node:net";
 import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { AwayAsks } from "../../packages/intercom/broker/away-asks.js";
 import { UNAUTHORIZED_REPLY_REASON } from "../../packages/intercom/broker/delivery-failure-reason.js";
 import {
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -2643,7 +2644,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 	 * registered again on `here` under a fresh id while it awaits the one it asked for.
 	 */
 	/** `homes`: each broker keeps its durable state under a home of its own, as installed brokers do (#4997). */
-	async function awaitingWhileStopped(homes = false, handoffs?: SavedHandoffStore) {
+	async function awaitingWhileStopped(homes = false, handoffs?: () => SavedHandoffStore) {
 		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
 		const shared = await cluster();
 		const [stopped, here] = [
@@ -3399,18 +3400,33 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal(outcome.routeUnavailable, true, JSON.stringify(outcome));
 	});
 
-	/** A store of saved hand-overs that keeps what its broker saved last, as the file a restarted broker reads. */
-	function savedHandoffs(
-		initial: readonly SavedHandoff[] = [],
-	): SavedHandoffStore & { saved: readonly SavedHandoff[] } {
-		const store = {
-			saved: initial,
-			load: () => store.saved,
-			save: (handoffs: readonly SavedHandoff[]) => {
-				store.saved = [...handoffs];
-			},
+	/** The away-ask store of one broker directory, which every broker of it keeps its hand-overs in. */
+	function directoryStore(away = new AwayAsks()): {
+		readonly away: AwayAsks;
+		readonly handoffs: () => SavedHandoffStore;
+	} {
+		return {
+			away,
+			handoffs: () => ({
+				take: (holder, keepMs) => away.takeIdHandoffs(holder, keepMs),
+				put: (holder, changes) => away.putIdHandoffs(holder, changes),
+			}),
 		};
-		return store;
+	}
+
+	/** A hand-over an earlier broker kept in `store` for `live`'s session, `at` the given time. */
+	function keptBefore(store: ReturnType<typeof directoryStore>, live: BrokerConnectedSession, at: number) {
+		const kept = {
+			identity: deliveryTargetIdentity(live),
+			handoff: randomUUID(),
+			id: live.info.id,
+			alias: randomUUID(),
+			recovery: randomUUID(),
+			at,
+		};
+		store.away.takeIdHandoffs("earlier-broker", KNOWN_SESSION_RETENTION_MS);
+		store.away.putIdHandoffs("earlier-broker", [[kept.identity, kept]]);
+		return kept;
 	}
 
 	test.each([
@@ -3419,8 +3435,9 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 	])(
 		"a hand-over presented after its broker restarted %s takes the fresh id back as an alias, as it does without the restart (#5607)",
 		async (_when, wait) => {
-			const handoffs = savedHandoffs();
-			const { shared, here, live, fresh } = await awaitingWhileStopped(false, handoffs);
+			vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+			const store = directoryStore();
+			const { shared, here, live, fresh } = await awaitingWhileStopped(false, store.handoffs);
 			await untilMovedBack(here, fresh);
 			const handoff = here.handoffs[0]!.handoff;
 			await vi.advanceTimersByTimeAsync(wait);
@@ -3428,7 +3445,7 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			// The broker restarts before the session presents its hand-over: what it kept in memory went with it, and it gave
 			// its ids up as it closed.
 			await here.router.close();
-			const restarted = await startNode(shared, { process: { handoffs } });
+			const restarted = await startNode(shared, { process: { handoffs: store.handoffs } });
 			const claim = await restarted.router.claimSessionId(
 				live.info.id,
 				fresh.registrationReturnAddress!,
@@ -3442,59 +3459,106 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		},
 	);
 
-	test("a saved hand-over older than a lapsed hand-over is kept gives nothing back after a restart (#5607)", async () => {
+	test("a session's hand-over is written once its broker gives it, and never dropped while its hold lapses (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+		const store = directoryStore();
+		const written: (readonly [string, SavedHandoff | undefined])[] = [];
+		const recording = (): SavedHandoffStore => {
+			const inner = store.handoffs();
+			return {
+				take: (holder, keepMs) => inner.take(holder, keepMs),
+				put: (holder, changes) => {
+					written.push(...changes);
+					inner.put(holder, changes);
+				},
+			};
+		};
+		const { here, fresh } = await awaitingWhileStopped(false, recording);
+		await untilMovedBack(here, fresh);
+		const identity = deliveryTargetIdentity(fresh);
+		assert.equal(written.at(-1)?.[0], identity);
+		assert.equal(written.at(-1)?.[1]?.handoff, here.handoffs[0]!.handoff, "written as it is given");
+
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		const forIdentity = written.filter(([key]) => key === identity);
+		assert.ok(forIdentity.length >= 2, "written again as it lapsed");
+		assert.ok(
+			forIdentity.every(([, kept]) => kept?.handoff === here.handoffs[0]!.handoff),
+			"never written without it",
+		);
+	});
+
+	test("a hand-over a broker that stopped while a registration presenting it was taking the held id kept is still honoured by the next broker (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+		const store = directoryStore();
+		const { shared, here, live, fresh } = await awaitingWhileStopped(false, store.handoffs);
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+
+		// The broker stops while the shared database has not answered the registration's claim of the held id.
+		vi.spyOn(here.state.knownSessions, "bind").mockReturnValue(new Promise(() => {}));
+		void here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		await here.router.close();
+		const restarted = await startNode(shared, { process: { handoffs: store.handoffs } });
+		const claim = await restarted.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.alias, fresh.info.id);
+	});
+
+	test("a kept hand-over older than a lapsed hand-over is kept gives nothing back after a restart (#5607)", async () => {
 		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
 		const shared = await cluster();
 		const live = session("live");
-		const identity = deliveryTargetIdentity(live);
-		const handoff = randomUUID();
-		const alias = randomUUID();
-		const handoffs = savedHandoffs([
-			{
-				identity,
-				handoff,
-				id: live.info.id,
-				alias,
-				recovery: randomUUID(),
-				at: Date.now() - KNOWN_SESSION_RETENTION_MS - 1,
-			},
-		]);
-		const restarted = await startNode(shared, { process: { handoffs } });
+		const store = directoryStore();
+		const kept = keptBefore(store, live, Date.now() - KNOWN_SESSION_RETENTION_MS - 1);
+		const restarted = await startNode(shared, { process: { handoffs: store.handoffs } });
 
 		const claim = await restarted.router.claimSessionId(
 			live.info.id,
 			live.registrationReturnAddress!,
-			identity,
-			handoff,
+			kept.identity,
+			kept.handoff,
 		);
 
 		assert.ok(claim.status === "granted", JSON.stringify(claim));
 		assert.equal(claim.grant.alias, undefined);
 	});
 
-	test("of a session's saved hand-overs, the latest is the one a restarted broker honours (#5607)", async () => {
+	test("a kept hand-over whose time is ahead of the clock ages from when a broker took it, across restarts (#5607)", async () => {
 		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
 		const shared = await cluster();
 		const live = session("live");
-		const identity = deliveryTargetIdentity(live);
-		const [latest, earlier] = [randomUUID(), randomUUID()];
-		const alias = randomUUID();
-		const saved = { identity, id: live.info.id, alias, recovery: randomUUID() };
-		const handoffs = savedHandoffs([
-			{ ...saved, handoff: latest, at: Date.now() - 1_000 },
-			{ ...saved, handoff: earlier, at: Date.now() - 60_000 },
-		]);
-		const restarted = await startNode(shared, { process: { handoffs } });
+		const store = directoryStore();
+		const kept = keptBefore(store, live, Date.now() + 2 * KNOWN_SESSION_RETENTION_MS);
+		// A broker takes it over, and stops.
+		const first = await startNode(shared, { process: { handoffs: store.handoffs } });
+		await first.router.claimSessionId(randomUUID(), "another-session", "another-identity", randomUUID());
+		await first.router.close();
+		vi.setSystemTime(Date.now() + KNOWN_SESSION_RETENTION_MS + 1);
 
-		const claim = await restarted.router.claimSessionId(
+		const next = await startNode(shared, { process: { handoffs: store.handoffs } });
+		const claim = await next.router.claimSessionId(
 			live.info.id,
 			live.registrationReturnAddress!,
-			identity,
-			latest,
+			kept.identity,
+			kept.handoff,
 		);
 
 		assert.ok(claim.status === "granted", JSON.stringify(claim));
-		assert.equal(claim.grant.alias, alias);
+		assert.equal(claim.grant.alias, undefined, "kept no longer than a lapsed hand-over is");
 	});
 
 	test("a hand-over presented after its hold lapsed whose claim goes unanswered and is not kept leaves the session awaiting its id, and the move back keeps the fresh id (#5607)", async () => {
