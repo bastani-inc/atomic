@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the `pi-intercom` extension will be documented in this file.
+All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are documented in this file.
 
 ## [Unreleased]
 
