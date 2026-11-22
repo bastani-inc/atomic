@@ -411,7 +411,7 @@ export interface ExtensionAPI {
 	 * the initial load phase.
 	 *
 	 * @example
-	 * await pi.unregisterProvider("my-proxy");
+	 * await atomic.unregisterProvider("my-proxy");
 	 */
 	unregisterProvider(name: string): Promise<void>;
 

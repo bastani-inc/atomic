@@ -15,7 +15,7 @@ for (const name of [undefined, null, 42, ""]) {
 				createExtensionRuntime(),
 				"<inline:invalid-command>",
 			),
-			/non-empty string name/,
+			/non-empty string name\. Use atomic\.registerCommand\(/,
 		);
 	});
 }
