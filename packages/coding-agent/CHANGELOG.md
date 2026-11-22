@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Interactive startup reaches its first prompt sooner by loading bundled extensions once instead of tearing down and reloading them during deferred startup completion. With `--no-mcp`, optional builtins are no longer loaded twice before and after binding (and `--no-extensions --no-mcp` no longer loads optional builtins); when settings or project trust change before deferred startup finishes, a full reload still runs as before.
+
 ### Fixed
 
 - On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
