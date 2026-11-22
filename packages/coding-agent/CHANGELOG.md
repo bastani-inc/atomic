@@ -17,6 +17,7 @@
 - The first prompt reaches the model sooner: Atomic now warms the selected model's provider API module off the first-prompt critical path, moves loading non-core syntax-highlighting grammars to post-startup idle, skips reading `CHANGELOG.md` when no What's New banner can display (and overlaps reading it with startup on upgrades), and reuses the startup terminal-color query during deferred startup instead of running a second probe.
 - A worktree snapshot capture no longer reads all of your Git index on each turn to learn whether the files staged despite an ignore rule changed: the checksum Git writes at its end tells (an index written without one, `index.skipHash`, is still read in full). A long-running Atomic keeps those listings for at most 16 indexes, and none of more than 4,096 files.
 - Installed builtin extensions (`intercom`, `subagents`, `mcp`, `web-access`) now load natively under Node and Bun without loading `jiti`, resolving extension aliases, or eagerly importing unused host virtual modules (`@bastani/atomic-telemetry`, `@bastani/atomic-ai/oauth`, `@bastani/atomic-ai/models`), reducing startup module-loading overhead on both the interactive host and isolated engine.
+- Startup refreshes the model catalog once instead of three times and checks each provider's auth configuration once per availability pass instead of twice, cutting model-registry startup overhead on both the host and engine processes while preserving externally supplied runtimes, credential mutations, and missing-catalog recovery.
 
 ### Fixed
 
