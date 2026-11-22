@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `@bastani/atomic` no longer declares or installs 13 third-party packages whose code is already bundled into Atomic's own files: `brace-expansion`, `cross-spawn`, `diff`, `fast-sha256`, `hosted-git-info`, `ignore`, `lovely-mermaid`, `lru-cache`, `minimatch`, `semver`, `stream-json`, `turndown`, and `yaml`. Any SDK application or extension that imports one of these packages directly must add it to its own `package.json` `dependencies`. A session running on an earlier Atomic release while an in-place update replaces the installation may need to restart for features whose older code loads one of those removed packages on demand. Removing these dependencies cuts a global npm install by about 1,940 files and 10.8 MiB (17 fewer installed packages).
+
 ### Changed
 
 - `SessionResume` now carries optional per-axis `retainedSettings` provenance (`"held"`, `"none"`, or `"not-held"`) for the active branch's latest model and thinking-level changes, allowing partial-history sessions to distinguish confirmed absence from unretained pre-window settings without additional store reads (while keeping `SessionManager.getLatestBranchSettings` and custom stores omitting `retainedSettings` compatible with 0.10.4).
