@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { registerBunOAuthFlows } from "@bastani/atomic-ai/bun-oauth";
+import "../utils/highlight-eager-languages.ts";
 
 // Register before the application graph loads so Bun's standalone compiler embeds every login adapter.
 registerBunOAuthFlows();
