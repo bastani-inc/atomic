@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-codemode`. Its history up t
 
 ## [Unreleased]
 
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Changed
 
 - The package no longer includes declaration maps (`.d.ts.map`). They pointed at TypeScript sources that the package does not include, so editors could not follow them. The declarations themselves are unchanged.

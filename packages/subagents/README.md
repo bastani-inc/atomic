@@ -211,7 +211,7 @@ Discovery precedence, from lowest to highest:
 
 Installed Atomic packages can also contribute read-only agents declared under `agents` in `package.json`, registered as `<namespace>.<name>`. Package agents never replace builtin, user, or project agents with the same full name.
 
-Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, with `.atomic/agents/` winning project-scope name conflicts. User discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, with `~/.atomic/agent/agents/` winning user-scope name conflicts. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
+Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, with `.atomic/agents/` winning project-scope name conflicts. User discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, with `~/.atomic/agent/agents/` (or the `agents` folder of the directory `ATOMIC_CODING_AGENT_DIR` or `PI_CODING_AGENT_DIR` names) winning user-scope name conflicts. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
 
 ### Builtin overrides
 
