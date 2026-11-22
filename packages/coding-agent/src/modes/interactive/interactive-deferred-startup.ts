@@ -6,6 +6,7 @@ import { prewarmModelApi } from "../../core/model-api-prewarm.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
 import { recordStartupThinkingLevel } from "../../core/startup-thinking-level.ts";
+import { flushDeferredHostCompileCache } from "../../utils/deferred-compile-cache-flush.ts";
 import { runsInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -175,6 +176,25 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 	await reportUnavailableTools(this);
 	// Interrupted work is recovered whatever extension loading did: what could not load only means less to restore.
 	this.startSessionRecovery("startup");
+	// A host that adopted a prewarmed engine with derived startup environment deferred its compile-cache flush off
+	// handover. Flush once idle here (or shortly after if the user has an unsubmitted draft); an active early prompt
+	// flushes after the prompt is handed to the engine.
+	if (!this.isShuttingDown && !this.promptTurnWorkingLoaderActive) {
+		if (this.editor.getText().length === 0) {
+			setImmediate(() => {
+				if (!this.isShuttingDown && !this.promptTurnWorkingLoaderActive && this.editor.getText().length === 0) {
+					flushDeferredHostCompileCache();
+				}
+			});
+		} else {
+			const fallbackTimer = setTimeout(() => {
+				if (!this.isShuttingDown && !this.promptTurnWorkingLoaderActive) {
+					flushDeferredHostCompileCache();
+				}
+			}, 500);
+			fallbackTimer.unref?.();
+		}
+	}
 };
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {

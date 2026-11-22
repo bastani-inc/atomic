@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Interactive starts with a cold `NODE_COMPILE_CACHE` and `--offline`, `--debug`, or global `debug`/`httpProxy` settings no longer block the host at engine handover while writing its compile cache, avoiding a startup and first-prompt stall (especially on Windows) while still flushing the cache once startup settles so quitting remains fast.
+- Editing the `debug` or `httpProxy` global setting in `settings.json` while Atomic is starting no longer discards the prewarmed interactive engine and starts a second one: the updated setting values are reconciled over the engine adoption handshake before the engine configures HTTP or starts its session.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

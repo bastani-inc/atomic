@@ -54,7 +54,7 @@ function writeEngineScript(): string {
 			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
 			"const args = await readPrewarmedEngineArgs();\n" +
-			'process.stdout.write(JSON.stringify({ args, argv: process.argv.slice(2) }) + "\\n");\n' +
+			'process.stdout.write(JSON.stringify({ args, argv: process.argv.slice(2), env: { ATOMIC_DEBUG_SETTING: process.env.ATOMIC_DEBUG_SETTING ?? null, HTTP_PROXY: process.env.HTTP_PROXY ?? null, HTTPS_PROXY: process.env.HTTPS_PROXY ?? null, OTHER_TEST_VAR: process.env.OTHER_TEST_VAR ?? null } }) + "\\n");\n' +
 			'attachJsonlLineReader(process.stdin, (line) => process.stdout.write(JSON.stringify({ line }) + "\\n"));\n',
 	);
 	return path;
@@ -92,11 +92,15 @@ describe("a prewarmed engine child", () => {
 		child.stdin!.write(`${JSON.stringify({ args: ["--mode", "rpc", "--session", "é"] })}\n{"id":"1"}\n{"id`);
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		child.stdin!.write('":"2"}\n');
-		assert.deepEqual(await output, [
-			{ args: ["--mode", "rpc", "--session", "é"], argv: ["--mode", "rpc", "--session", "é"] },
-			{ line: '{"id":"1"}' },
-			{ line: '{"id":"2"}' },
-		]);
+		const lines = await output;
+		assert.deepEqual(
+			lines.map((entry) => ("args" in entry ? { args: entry.args, argv: entry.argv } : entry)),
+			[
+				{ args: ["--mode", "rpc", "--session", "é"], argv: ["--mode", "rpc", "--session", "é"] },
+				{ line: '{"id":"1"}' },
+				{ line: '{"id":"2"}' },
+			],
+		);
 	});
 
 	test("reads a handshake split anywhere, even inside a character", async () => {
@@ -107,10 +111,36 @@ describe("a prewarmed engine child", () => {
 		child.stdin!.write(bytes.subarray(0, cut));
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		child.stdin!.write(bytes.subarray(cut));
-		assert.deepEqual(await output, [
-			{ args: ["--session", "日本"], argv: ["--session", "日本"] },
-			{ line: '{"id":"3"}' },
-		]);
+		const lines = await output;
+		assert.deepEqual(
+			lines.map((entry) => ("args" in entry ? { args: entry.args, argv: entry.argv } : entry)),
+			[{ args: ["--session", "日本"], argv: ["--session", "日本"] }, { line: '{"id":"3"}' }],
+		);
+	});
+
+	test("reconciles only settings-derived environment keys from the handshake and ignores other keys", async () => {
+		const child = startEngine(writeEngineScript());
+		const output = readLines(child, 2);
+		child.stdin!.write(
+			`${JSON.stringify({
+				args: ["--mode", "rpc"],
+				env: {
+					ATOMIC_DEBUG_SETTING: "1",
+					HTTP_PROXY: "http://127.0.0.1:8888",
+					HTTPS_PROXY: null,
+					OTHER_TEST_VAR: "injected",
+				},
+			})}\n{"id":"4"}\n`,
+		);
+		const [first, second] = await output;
+		assert.deepEqual(first?.args, ["--mode", "rpc"]);
+		assert.deepEqual(first?.env, {
+			ATOMIC_DEBUG_SETTING: "1",
+			HTTP_PROXY: "http://127.0.0.1:8888",
+			HTTPS_PROXY: null,
+			OTHER_TEST_VAR: null,
+		});
+		assert.deepEqual(second, { line: '{"id":"4"}' });
 	});
 
 	test("exits quietly when its host closes stdin without adopting it", async () => {
@@ -238,7 +268,48 @@ describe("adopting a prewarmed engine child", () => {
 		assert.equal(child.pid, pid);
 		const output = readLines(child, 2);
 		child.stdin!.write('{"id":"1"}\n');
-		assert.deepEqual(await output, [{ args: ["--mode", "rpc"], argv: ["--mode", "rpc"] }, { line: '{"id":"1"}' }]);
+		const lines = await output;
+		assert.deepEqual(
+			lines.map((entry) => ("args" in entry ? { args: entry.args, argv: entry.argv } : entry)),
+			[{ args: ["--mode", "rpc"], argv: ["--mode", "rpc"] }, { line: '{"id":"1"}' }],
+		);
+	});
+
+	test("adopts the prewarmed child across a settings-derived environment edit and reconciles its env on handshake", async () => {
+		const script = writeEngineScript();
+		const baseEnv = { ...standIn(script).env };
+		delete baseEnv.HTTP_PROXY;
+		delete baseEnv.HTTPS_PROXY;
+		const prewarmed: EngineLaunch = {
+			...standIn(script),
+			env: {
+				...baseEnv,
+				ATOMIC_DEBUG_SETTING: "0",
+				HTTP_PROXY: "http://127.0.0.1:9",
+				HTTPS_PROXY: "http://127.0.0.1:9",
+			},
+		};
+		const pid = await prewarm(script, prewarmed, "unchanged");
+		const settledEnv = { ...baseEnv, ATOMIC_DEBUG_SETTING: "1", HTTPS_PROXY: "http://127.0.0.1:10" };
+		const bases: PrewarmLaunchBasis[] = [];
+		const child = adoptPrewarmedEngine({ ...prewarmed, env: settledEnv }, ["--mode", "rpc"], (basis) =>
+			bases.push(basis),
+		);
+		assert.ok(child, "the prewarmed child is adopted despite settings-env changes");
+		children.push(child);
+		assert.equal(child.pid, pid);
+		assert.deepEqual(bases, ["derived"]);
+		const output = readLines(child, 2);
+		child.stdin!.write('{"id":"1"}\n');
+		const [first, second] = await output;
+		assert.deepEqual(first?.args, ["--mode", "rpc"]);
+		assert.deepEqual(first?.env, {
+			ATOMIC_DEBUG_SETTING: "1",
+			HTTP_PROXY: null,
+			HTTPS_PROXY: "http://127.0.0.1:10",
+			OTHER_TEST_VAR: null,
+		});
+		assert.deepEqual(second, { line: '{"id":"1"}' });
 	});
 
 	test("tells its host that the prewarm carried environment the arguments or settings add", async () => {
@@ -271,7 +342,9 @@ describe("adopting a prewarmed engine child", () => {
 		const script = writeEngineScript();
 		const prewarmed = standIn(script);
 		const pid = await prewarm(script, prewarmed);
-		const [name] = Object.keys(prewarmed.env);
+		const name = Object.keys(prewarmed.env).find(
+			(key) => key !== "ATOMIC_DEBUG_SETTING" && key !== "HTTP_PROXY" && key !== "HTTPS_PROXY",
+		);
 		assert.ok(name);
 		const settled = { ...prewarmed, env: { ...prewarmed.env, [name]: `${prewarmed.env[name]}-changed` } };
 		assert.equal(adoptPrewarmedEngine(settled, ["--mode", "rpc"]), undefined);

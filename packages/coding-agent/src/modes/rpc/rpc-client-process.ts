@@ -7,6 +7,7 @@ import type { SessionTrustDecisions, StartupExtensionCheck } from "../../core/pr
 import { ENGINE_SESSION_STORAGE_FLAG } from "../../core/session-storage.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
+import { armDeferredHostCompileCacheFlush } from "../../utils/deferred-compile-cache-flush.ts";
 import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
 	type InteractiveEngineBootstrapHandle,
@@ -93,12 +94,13 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 					adoption.basis = adopted;
 				})
 			: undefined;
-		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. So does
-		// a host running an engine prewarmed with environment its arguments or settings add: without that environment it
-		// would have written the cache here and started a fresh engine, and otherwise the write waits for its quit, where
-		// a cold cache takes seconds on Windows.
-		const writesCache = !prewarmed || adoption.basis === "derived";
-		if (options.interactiveEngine && writesCache) flushPersistentCompileCache();
+		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. When an
+		// engine prewarmed with derived startup environment is adopted, it has already compiled its own graph; defer the
+		// host's cache write off handover so it does not stall early typing, engine binding, or first-prompt dispatch.
+		if (options.interactiveEngine) {
+			if (!prewarmed) flushPersistentCompileCache();
+			else if (adoption.basis === "derived") armDeferredHostCompileCacheFlush();
+		}
 		child =
 			prewarmed ??
 			spawn(launch.command, [...launch.args, ...cliArgs], {

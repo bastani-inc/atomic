@@ -283,8 +283,62 @@ export function discardPrewarmedEngine(): void {
 }
 
 /**
- * The prewarmed child started as `launch` would start, now running with `engineArgs`; or undefined, after discarding
- * any prewarmed child, when there is none or it would differ from a fresh one. `onBasis` learns the adopted child's
+ * Settings-derived environment variables that `main()` can update from global `settings.json` between the early prewarm
+ * read and engine adoption. When only these keys differ, the host adopts the prewarmed child and sends their final
+ * values (`string` to set, `null` to unset) in the stdin handshake instead of discarding the child and starting a second
+ * engine. Written as literals here so this module imports no new names from startup modules cached across updates.
+ */
+const PREWARM_HANDOFF_ENV_KEYS: ReadonlySet<string> = new Set(["ATOMIC_DEBUG_SETTING", "HTTP_PROXY", "HTTPS_PROXY"]);
+
+function prewarmHandoffEnvDelta(
+	prewarmed: EngineLaunch,
+	settled: EngineLaunch,
+): Record<string, string | null> | undefined {
+	if (
+		prewarmed.command !== settled.command ||
+		prewarmed.cwd !== settled.cwd ||
+		prewarmed.detached !== settled.detached
+	) {
+		return undefined;
+	}
+	if (
+		prewarmed.args.length !== settled.args.length ||
+		prewarmed.args.some((arg, index) => arg !== settled.args[index])
+	) {
+		return undefined;
+	}
+	const delta: Record<string, string | null> = {};
+	for (const key of Object.keys(prewarmed.env)) {
+		if (Object.hasOwn(settled.env, key)) {
+			if (prewarmed.env[key] === settled.env[key]) continue;
+			if (!PREWARM_HANDOFF_ENV_KEYS.has(key)) return undefined;
+			delta[key] = settled.env[key]!;
+		} else {
+			if (!PREWARM_HANDOFF_ENV_KEYS.has(key)) return undefined;
+			delta[key] = null;
+		}
+	}
+	for (const key of Object.keys(settled.env)) {
+		if (Object.hasOwn(prewarmed.env, key)) continue;
+		if (!PREWARM_HANDOFF_ENV_KEYS.has(key)) return undefined;
+		delta[key] = settled.env[key]!;
+	}
+	return delta;
+}
+
+function applyPrewarmedEngineEnv(env: Readonly<Record<string, string | null>> | undefined): void {
+	if (!env || typeof env !== "object") return;
+	for (const [key, value] of Object.entries(env)) {
+		if (!PREWARM_HANDOFF_ENV_KEYS.has(key)) continue;
+		if (value === null) delete process.env[key];
+		else if (typeof value === "string") process.env[key] = value;
+	}
+}
+
+/**
+ * The prewarmed child started as `launch` would start (or differing only in settings-derived environment keys, which
+ * travel in the stdin handshake), now running with `engineArgs`; or undefined, after discarding any prewarmed child,
+ * when there is none or it would differ from a fresh one. `onBasis` learns the adopted child's
  * {@link PrewarmLaunchBasis}. A callback, rather than another return value or export, so that a host whose module of an
  * earlier version is still loaded beside a later one keeps working either way: an earlier version ignores it.
  */
@@ -297,20 +351,24 @@ export function adoptPrewarmedEngine(
 	if (!prewarm) return undefined;
 	const { child } = prewarm;
 	const alive = child.pid !== undefined && child.exitCode === null && child.signalCode === null && !child.killed;
-	if (!alive || !sameEngineLaunch(prewarm.launch, launch)) {
+	const envDelta = alive ? prewarmHandoffEnvDelta(prewarm.launch, launch) : undefined;
+	if (!alive || envDelta === undefined) {
 		discardPrewarmedEngine();
 		return undefined;
 	}
 	prewarmState[PREWARM_KEY] = undefined;
 	process.off("exit", discardPrewarmedEngine);
 	setReferenced(child, true);
-	child.stdin?.write(`${JSON.stringify({ args: engineArgs })}\n`);
-	onBasis?.(prewarm.basis ?? "unchanged");
+	const hasEnvDelta = Object.keys(envDelta).length > 0;
+	const handshake = hasEnvDelta ? { args: engineArgs, env: envDelta } : { args: engineArgs };
+	child.stdin?.write(`${JSON.stringify(handshake)}\n`);
+	onBasis?.(prewarm.basis === "derived" || hasEnvDelta ? "derived" : "unchanged");
 	return child;
 }
 
 /**
- * In a prewarmed child: the engine arguments its host sends as the first stdin line. Everything after that line stays
+ * In a prewarmed child: the engine arguments its host sends as the first stdin line, plus any settings-derived
+ * environment updates reconciled before the engine configures HTTP or starts `main()`. Everything after that line stays
  * on stdin for the engine. Exits quietly when the host closes stdin without adopting this child.
  */
 export function readPrewarmedEngineArgs(): Promise<string[]> {
@@ -328,7 +386,11 @@ export function readPrewarmedEngineArgs(): Promise<string[]> {
 				stdin.off("readable", onReadable);
 				stdin.off("end", onEnd);
 				if (newline + 1 < buffered.length) stdin.unshift(buffered.subarray(newline + 1));
-				const { args } = JSON.parse(buffered.subarray(0, newline).toString("utf8")) as { args: string[] };
+				const { args, env } = JSON.parse(buffered.subarray(0, newline).toString("utf8")) as {
+					args: string[];
+					env?: Record<string, string | null>;
+				};
+				applyPrewarmedEngineEnv(env);
 				process.argv.splice(2, process.argv.length - 2, ...args);
 				resolve(args);
 				return;

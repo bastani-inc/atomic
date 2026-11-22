@@ -8,6 +8,7 @@ import { keepDroppedQueuedMessages } from "../../core/queued-message-delivery.ts
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { carryRowSource, noteRowSource, noteSavedSeq } from "../../core/tasks/transcript-origin.js";
+import { flushDeferredHostCompileCache } from "../../utils/deferred-compile-cache-flush.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -656,6 +657,11 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			await this.checkShutdownRequested();
 
 			this.ui.requestRender();
+			if (!this.isShuttingDown) {
+				setImmediate(() => {
+					if (!this.isShuttingDown) flushDeferredHostCompileCache();
+				});
+			}
 			break;
 		}
 
