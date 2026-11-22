@@ -135,6 +135,8 @@ const KEPT_FOR_IN_PLACE_UPDATE = new Set([
 	"lovely-mermaid",
 	"lru-cache",
 	"semver",
+	// Atomic's own code bundles it; markit-ai, which loaded it by name, is bundled now too.
+	"turndown",
 	"yaml",
 ]);
 
