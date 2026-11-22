@@ -53,7 +53,13 @@ const COMPILED_PUBLIC_ENTRIES = ["core/storage/index", "core/storage/testing"];
  * Modules the compile-cache helper (`utils/compile-cache-warmup.ts`) loads by path besides `main` and `index`: entries
  * at their own paths, so the helper compiles the files a session loads.
  */
-const PATH_LOADED_ENTRIES = ["core/http-dispatcher", "cli/settings-startup", "modes/interactive-engine/engine-prewarm"];
+const PATH_LOADED_ENTRIES = [
+	"core/http-dispatcher",
+	"cli/settings-startup",
+	"modes/interactive-engine/engine-prewarm",
+	"modes/interactive/interactive-mode",
+	"modes/rpc/rpc-mode",
+];
 /**
  * Modules that run from their compiled files in a thread or process of their own, each with the siblings it imports
  * by a computed path: the extension source transform worker, the image resize worker and the compile-cache helper.
@@ -71,9 +77,8 @@ export const SHARED_DIRECTORY = "_shared";
  * code imports by name (the extension loader hands none of them to extensions, and Atomic's other packages do not import
  * them), with no state another copy would need to share, that read no file beside their own. The build checks that what
  * each one's bundled code imports is bundled too, or is one of `INLINED_PACKAGE_EXTERNALS`. Kept out: `highlight.js`
- * (code that registers a language or plugin in the installed package changes what the SDK's `highlightCode` does),
- * `undici` (its fetch tells its own frames in error stacks by its file name) and `chalk` (it reads the terminal's color
- * support when it loads).
+ * (code that registers a language or plugin in the installed package changes what the SDK's `highlightCode` does) and
+ * `chalk` (it reads the terminal's color support when it loads).
  */
 export const INLINED_PACKAGES = [
 	"@borewit/text-codec",
@@ -137,6 +142,7 @@ export const INLINED_PACKAGES = [
 	"turndown-plugin-gfm",
 	"uint8array-extras",
 	"underscore",
+	"undici",
 	"util-deprecate",
 	"which",
 	"win-guid",
@@ -593,6 +599,15 @@ const bundle = await rolldown({
 					};
 				}
 				const id = normalizeId(rawId);
+				if (/[\\/]node_modules[\\/]undici[\\/]index\.js$/.test(id)) {
+					// undici/index.js checks `typeof __filename !== "undefined"` to decide whether to append
+					// caller frames to failed fetch errors via `appendFetchStackTrace`; in an ESM chunk
+					// `__filename` is undefined unless defined here, which otherwise strips all caller frames.
+					return {
+						code: `'use strict';\nconst __filename = "node_modules/undici/index.js";\n${readFileSync(id, "utf8")}`,
+						map: null,
+					};
+				}
 				if (!isInDist(id) || !id.endsWith(".js")) return null;
 				const entry = compiledEntries.get(id);
 				let code;

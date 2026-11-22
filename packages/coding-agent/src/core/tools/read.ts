@@ -25,7 +25,6 @@ import {
 	type DirectoryTreeEntry,
 	type DirectoryTreeResult,
 } from "./directory-tree.ts";
-import { isReadableUrlPath } from "./fetch-url.ts";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import { resolveReadPathAsync, resolveToCwdAsync, resolveToCwdIfUnambiguous } from "./path-utils.ts";
@@ -45,7 +44,7 @@ import {
 	selectReadRanges,
 	splitReadLineSelector,
 } from "./read-selectors.ts";
-import { readUrlBranch } from "./read-url.ts";
+import { isReadableUrlPath } from "./readable-url-path.ts";
 import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.ts";
 import {
 	type InternalResourceContext,
@@ -449,6 +448,7 @@ export function createReadToolDefinition(
 							const archive = parseArchiveSelector(effectivePath);
 							const sqlite = await sqliteSelectorForPath(effectivePath, executionCwd);
 							if (isReadableUrlPath(effectivePath)) {
+								const { readUrlBranch } = await import("./read-url.js");
 								resolve(
 									await readUrlBranch({
 										effectivePath,

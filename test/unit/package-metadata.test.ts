@@ -11,6 +11,7 @@ import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json"
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
 import webAccessPackageJson from "../../packages/web-access/package.json" with { type: "json" };
+import { codingAgentDependencyClosure } from "../helpers/coding-agent-dependency-closure.js";
 import { readJson, readText } from "../helpers/runtime.js";
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
@@ -229,7 +230,6 @@ describe("package metadata", () => {
 			"examples",
 			"schemas",
 			"CHANGELOG.md",
-			"npm-shrinkwrap.json",
 		]);
 		assert.equal(Object.hasOwn(atomicPackageJson, "contentPolicy"), false);
 
@@ -249,6 +249,51 @@ describe("package metadata", () => {
 			"index.bundle.mjs",
 			"index.bundle.mjs",
 		]);
+	});
+
+	// npm 11.6.2 and later do not check os, cpu or libc for the packages a dependency's
+	// npm-shrinkwrap.json lists, so a published shrinkwrap made every npm install of Atomic
+	// write the native module package of all eight platforms.
+	test("@bastani/atomic publishes no npm-shrinkwrap.json, so npm picks the native module package by platform", () => {
+		assert.equal(atomicPackageJson.files.includes("npm-shrinkwrap.json"), false);
+		assert.equal(existsSync(join(ATOMIC_PACKAGE_DIR, "npm-shrinkwrap.json")), false);
+		const scripts = atomicPackageJson.scripts as Record<string, string>;
+		assert.deepEqual(
+			Object.entries(scripts).filter(([, command]) => /shrinkwrap/i.test(command)),
+			[],
+			"no package script writes a shrinkwrap before a publish",
+		);
+	});
+
+	// Without a shrinkwrap, a user's install resolves each published dependency range itself;
+	// an exact version keeps every direct dependency at the release that was tested.
+	test("every published package pins its dependencies to exact versions", async () => {
+		const ranges: string[] = [];
+		for (const { packageJson } of await workspacePackages()) {
+			if (!PUBLISHABLE_WORKSPACE_PACKAGES.has(packageJson.name)) continue;
+			for (const section of ["dependencies", "optionalDependencies"] as const) {
+				for (const [name, range] of Object.entries(packageJson[section] ?? {})) {
+					if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(range)) {
+						ranges.push(`${packageJson.name} ${section}.${name}: ${range}`);
+					}
+				}
+			}
+		}
+		assert.deepEqual(ranges, []);
+	});
+
+	// Review a dependency's install script before it reaches users' installs; npm runs them
+	// unless the user passes --ignore-scripts.
+	test("every package an install of Atomic runs install scripts for has been reviewed", () => {
+		const reviewed = new Map([
+			["@google/genai@2.32.0", "preinstall is a no-op in the published package"],
+			["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
+		]);
+		const withScripts = codingAgentDependencyClosure()
+			.filter(({ entry }) => entry.hasInstallScript)
+			.map(({ name, entry }) => `${name}@${entry.version}`)
+			.sort();
+		assert.deepEqual(withScripts, [...reviewed.keys()].sort());
 	});
 
 	test("npm and binary packages ship bundled integration guides under docs/", async () => {

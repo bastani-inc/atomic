@@ -3,14 +3,19 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
-import { createScriptSandbox, python, type ScriptSandbox, skillCreatorDir } from "../helpers/skill-creator-scripts.js";
+import {
+	createScriptSandbox,
+	python,
+	pyyaml,
+	pyyamlRequired,
+	type ScriptSandbox,
+	skillCreatorDir,
+} from "../helpers/skill-creator-scripts.js";
 
 // Python writes to a pipe or a file in the locale's encoding, which on Windows is the ANSI code page: cp1252 here.
 const ANSI_PIPE = { PYTHONIOENCODING: "cp1252" };
 // Outside Windows' ANSI code page.
 const WIDE = "\u2713 \u65e5\u672c";
-// package_skill and quick_validate read SKILL.md's frontmatter with PyYAML.
-const pyyaml = python !== undefined && spawnSyncCollect([python, "-c", "import yaml"]).exitCode === 0;
 
 const sandboxes: ScriptSandbox[] = [];
 afterEach(() => {
@@ -62,6 +67,11 @@ function loopOutput(box: ScriptSandbox): string {
 	);
 	return path;
 }
+
+test.runIf(pyyamlRequired)("Python and PyYAML are installed for the tests that need them, as CI provides them", () => {
+	assert.ok(python, "no Python 3.10 or later on PATH");
+	assert.ok(pyyaml, `${python} cannot import PyYAML with the scripts' environment`);
+});
 
 describe.skipIf(python === undefined)("skill-creator scripts' output", () => {
 	test("aggregate_benchmark writes its output as UTF-8 to a pipe in Windows' ANSI code page", () => {

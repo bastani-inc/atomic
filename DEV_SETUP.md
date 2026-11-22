@@ -154,7 +154,7 @@ Run these from the workspace root:
 | `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
 | `npm run build`             | Compile the forked `@bastani/atomic-*` pi packages (refreshing `@bastani/atomic-ai`'s model catalog), build the native N-API module, and build `@bastani/atomic` with bundled assets (requires cargo and network); skips unchanged steps, `-- --force` rebuilds everything |
 | `npm run build --workspace=@bastani/atomic-natives` | Build only the native N-API module              |
-| `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
+| `npm run check`             | Biome, the typecheck and the interactive event-loop check        |
 | `npm run typecheck`         | Type-check the workspace                                         |
 | `npm run test:unit`         | Run unit tests                                                   |
 | `npm run test:integration`  | Run integration tests                                            |
@@ -169,8 +169,7 @@ Run these from the workspace root:
 `check` runs `biome check --error-on-warnings`, then `bun check` on the root tsconfig, then the
 coding-agent package's own typecheck (`tsconfig.build.json` — a second pass under a stricter
 config, including `erasableSyntaxOnly`, because the root tsconfig excludes
-`packages/coding-agent` — plus its type tests), then verifies
-`packages/coding-agent/npm-shrinkwrap.json` is still derivable from `package-lock.json`; `lint`
+`packages/coding-agent` — plus its type tests), then the interactive event-loop check; `lint`
 is an alias for `check`, and `npm run format` applies Biome's formatter. Biome is configured in
 [`biome.json`](./biome.json) with upstream pi's rule set.
 Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-config.yaml`.
