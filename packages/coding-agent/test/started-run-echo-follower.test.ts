@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";
+import { noteUserMessageOrigin } from "../src/core/user-message-origin.js";
 import type { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { followStartedRunEcho } from "../src/modes/interactive/interactive-render-chat.ts";
 
@@ -149,5 +150,28 @@ test("a sent message whose answer comes after an earlier send's whole run keeps 
 	assert.deepEqual(host.discarded, [], "the first run was not the second send's");
 	host.emit({ type: "agent_start" }, { type: "message_start", message: { role: "user", content: "second text" } });
 	assert.deepEqual(host.discarded, [], "the second run's message takes the second echo's place");
+	assert.equal(host.listening(), 0);
+});
+
+test("a follower with an origin send id ignores a user message tagged with another send's origin", () => {
+	const host = chat({ earlierRunGoing: false, echoes: ["second text"] });
+	const follower = followStartedRunEcho(host.mode, "second text", {
+		sendShowsWorkingRow: true,
+		originSendId: "send-2",
+	});
+	// An earlier send (with no follower of its own) emits a user message whose origin is send-1, even with matching text.
+	const foreignMessage = { role: "user", content: "second text" };
+	noteUserMessageOrigin(foreignMessage, "send-1");
+	host.emit(
+		{ type: "agent_start" },
+		{ type: "message_start", message: foreignMessage },
+		{ type: "agent_end", messages: [] },
+		{ type: "agent_settled" },
+	);
+	follower.answer(true);
+	assert.deepEqual(host.discarded, [], "the earlier send's run does not settle send-2");
+	// Now send-2's own run skips its user message (#5135): the follower must still drop send-2's echo.
+	host.emit({ type: "agent_start" }, { type: "message_start", message: { role: "assistant", content: [] } });
+	assert.deepEqual(host.discarded, ["second text"], "send-2's echo is dropped because send-1's message was not taken");
 	assert.equal(host.listening(), 0);
 });

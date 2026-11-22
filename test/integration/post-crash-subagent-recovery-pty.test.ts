@@ -29,9 +29,39 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const cfg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixture.json"), "utf8"));
 export default (atomic) => {
-	atomic.on("session_start", (_event, ctx) => {
-		if (ctx.subagentPolicy !== undefined || ctx.isPresentationOnly === true) return;
+	atomic.on("session_start", async (_event, ctx) => {
+		if (ctx.subagentPolicy !== undefined) {
+			if (cfg.delayRestoredChildStartMs) {
+				let pids = [];
+				try {
+					pids = readFileSync(cfg.pidFile, "utf8").split(/\\r?\\n/u).filter(Boolean);
+				} catch {}
+				if (pids.length >= 2) {
+					await new Promise((resolve) => {
+						const t = setTimeout(resolve, cfg.delayRestoredChildStartMs);
+						ctx.sessionSignal?.addEventListener("abort", () => {
+							clearTimeout(t);
+							resolve();
+						}, { once: true });
+					});
+				}
+			}
+			return;
+		}
+		if (ctx.isPresentationOnly === true) return;
 		appendFileSync(cfg.pidFile, JSON.stringify({ pid: process.pid }) + "\\n");
+	});
+	atomic.events.on("subagent:await-intercom-peer", () => {
+		if (!cfg.restoreFile) return;
+		appendFileSync(cfg.restoreFile, JSON.stringify({ pid: process.pid }) + "\\n");
+	});
+	atomic.on("session_shutdown", (_event, ctx) => {
+		if (ctx.subagentPolicy !== undefined || ctx.isPresentationOnly === true || !cfg.shutdownFile) return;
+		const gone = ctx.sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "custom" && entry.customType === "subagent-child-record" && entry.data?.terminalStatus === "gone")
+			.length;
+		appendFileSync(cfg.shutdownFile, JSON.stringify({ pid: process.pid, gone }) + "\\n");
 	});
 };`;
 
@@ -185,8 +215,10 @@ describe("post-crash subagent recovery in a real PTY", () => {
 			let engine1Proc: RecordedProcess | undefined;
 			try {
 				prepareAgentDir(agentDir, `http://127.0.0.1:${port}/v1`);
-				// Configure resumeInFlight: "ask" to prove automatic engine crash restart never pops a user resume prompt.
-				writeFileSync(join(agentDir, "subagents.json"), JSON.stringify({ resumeInFlight: "ask" }));
+				// Configure resumeInFlight: "ask" at the real subagents config path to prove automatic engine crash restart never pops a user resume prompt.
+				const subagentConfigDir = join(agentDir, "extensions", "subagent");
+				mkdirSync(subagentConfigDir, { recursive: true });
+				writeFileSync(join(subagentConfigDir, "config.json"), JSON.stringify({ resumeInFlight: "ask" }));
 				prepareInstalledPackage(PACKAGE, installed);
 				mkdirSync(project, { recursive: true });
 				mkdirSync(sessionsDir, { recursive: true });
@@ -515,6 +547,187 @@ describe("post-crash subagent recovery in a real PTY", () => {
 				assert.equal(exit.timedOut, false);
 			} finally {
 				releaseChildGen3.resolve();
+				for (const res of [...openResponses]) res.destroy();
+				program?.kill();
+				server.closeAllConnections?.();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+				await removeTempRootReleasingBroker(root, agentDir);
+			}
+		},
+		POST_CRASH_PTY_TIMEOUT_MS,
+	);
+
+	test(
+		"/quit during post-crash subagent recovery exits promptly with session_shutdown executed instead of hanging on awaitIntercomPeer",
+		async () => {
+			const root = makeTempDirectory("atomic-post-crash-quit-");
+			const agentDir = join(root, "agent");
+			const project = join(root, "project");
+			const sessionsDir = join(root, "sessions");
+			const installed = join(root, "installed");
+			const pidFile = join(root, "engine-pids.jsonl");
+			const restoreFile = join(root, "engine-restore.jsonl");
+			const shutdownFile = join(root, "engine-shutdown.jsonl");
+			const extension = join(root, "record-pid.ts");
+
+			const childGen1Started = Promise.withResolvers<void>();
+			const openResponses = new Set<ServerResponse>();
+
+			const server = createServer((request, response) => {
+				openResponses.add(response);
+				response.once("close", () => openResponses.delete(response));
+				void (async () => {
+					const parsed = JSON.parse(await readBody(request)) as ChatRequest;
+					const last = parsed.messages.at(-1);
+					const allText = parsed.messages.map((message) => messageText(message)).join("\n");
+					const lastUser = [...parsed.messages].reverse().find((message) => message.role === "user");
+					const lastUserText = messageText(lastUser);
+					const isChild = !allText.includes("LAUNCH_WORKER") && allText.includes("HOLD_WORKER_TASK");
+					response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+					response.write(sseChunk({ role: "assistant", content: "" }));
+
+					if (isChild) {
+						response.write(sseChunk({ content: "working" }));
+						childGen1Started.resolve();
+						await new Promise<void>((resolve) => response.once("close", resolve));
+						return;
+					}
+
+					if (last?.role === "tool" && allText.includes("LAUNCH_WORKER")) {
+						response.write(sseChunk({ content: "WORKER_LAUNCHED_OK" }));
+						sseEnd(response, "stop");
+						return;
+					}
+
+					if (last?.role === "user" && lastUserText.includes("LAUNCH_WORKER")) {
+						response.write(sseChunk({ content: "Launching worker." }));
+						response.write(
+							sseChunk({
+								tool_calls: [
+									{
+										index: 0,
+										id: "call_launch_worker_quit",
+										type: "function",
+										function: {
+											name: "subagent",
+											arguments: JSON.stringify({
+												context: "fresh",
+												agent: "worker",
+												model: `${PROVIDER}/${MODEL}`,
+												task: "HOLD_WORKER_TASK",
+											}),
+										},
+									},
+								],
+							}),
+						);
+						sseEnd(response, "tool_calls");
+						return;
+					}
+
+					response.write(sseChunk({ content: "ok" }));
+					sseEnd(response, "stop");
+				})().catch(() => {
+					if (!response.headersSent) response.writeHead(500);
+					response.end();
+				});
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const { port } = server.address() as AddressInfo;
+
+			let program: PtyProgram | undefined;
+			try {
+				prepareAgentDir(agentDir, `http://127.0.0.1:${port}/v1`);
+				prepareInstalledPackage(PACKAGE, installed);
+				mkdirSync(project, { recursive: true });
+				mkdirSync(sessionsDir, { recursive: true });
+				writeFileSync(
+					join(root, "fixture.json"),
+					JSON.stringify({ pidFile, restoreFile, shutdownFile, delayRestoredChildStartMs: 10_000 }),
+				);
+				writeFileSync(extension, PID_EXTENSION);
+
+				program = startPtyProgram({
+					executable: process.execPath,
+					args: [
+						join(PACKAGE, "dist/cli.js"),
+						"--offline",
+						"--no-mcp",
+						"--approve",
+						"--session-dir",
+						sessionsDir,
+						"-e",
+						extension,
+					],
+					cwd: project,
+					env: {
+						...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+						HOME: root,
+						USERPROFILE: root,
+						ATOMIC_CODING_AGENT_DIR: agentDir,
+						ATOMIC_PACKAGE_DIR: installed,
+						ATOMIC_SKIP_VERSION_CHECK: "1",
+						ATOMIC_TELEMETRY: "0",
+						CI: "0",
+						NODE_ENV: "",
+						VITEST: "",
+						PATH: process.env.PATH ?? "",
+					},
+					timeoutMs: POST_CRASH_PTY_TIMEOUT_MS,
+					cols: 120,
+					rows: 40,
+				});
+
+				const engine1Pid = await waitFor(() => readPids(pidFile)[0], STEP_TIMEOUT_MS, "engine #1 pid");
+				const engine1Proc = await recordProcess(engine1Pid);
+
+				await program.waitForScreen((screen) => screen.includes("guard-model"), STEP_TIMEOUT_MS, "initial prompt");
+				program.write("LAUNCH_WORKER\r");
+				await Promise.race([
+					childGen1Started.promise,
+					sleep(STEP_TIMEOUT_MS).then(() => {
+						throw new Error(`Child never started in engine #1. Screen:\n${program?.screen()}`);
+					}),
+				]);
+				await program.waitForScreen(
+					(screen) => screen.includes("WORKER_LAUNCHED_OK"),
+					STEP_TIMEOUT_MS,
+					"main launch reply",
+				);
+
+				// Kill engine #1; wait until engine #2 enters session_recovery_restore, then immediately send /quit.
+				assert.equal(await signalRecordedProcess(engine1Proc, "SIGKILL"), true);
+				await waitUntilGone(engine1Proc, 10_000);
+
+				const engine2Pid = await waitFor(
+					() => readPids(restoreFile).find((pid) => pid !== engine1Pid),
+					STEP_TIMEOUT_MS,
+					"engine #2 entering awaitIntercomPeer during post-crash restore",
+				);
+				const quitSentAt = Date.now();
+				program.write("/quit\r");
+				const exit = await program.exited;
+				const quitElapsedMs = Date.now() - quitSentAt;
+				assert.equal(exit.timedOut, false);
+				assert.ok(
+					quitElapsedMs < 4_000,
+					`expected /quit during post-crash recovery to exit cleanly (<4000ms, not hit ENGINE_SHUTDOWN_GRACE_MS), took ${quitElapsedMs}ms`,
+				);
+				const shutdownRecords = readTextSync(shutdownFile, "utf8")
+					.split(/\r?\n/u)
+					.filter(Boolean)
+					.map((line) => JSON.parse(line) as { pid: number; gone: number });
+				const engine2Shutdown = shutdownRecords.find((record) => record.pid === engine2Pid);
+				assert.ok(
+					engine2Shutdown !== undefined,
+					`expected session_shutdown to run in replacement engine ${engine2Pid}, saw ${JSON.stringify(shutdownRecords)}`,
+				);
+				assert.equal(
+					engine2Shutdown.gone,
+					0,
+					"aborting post-crash restore on /quit must never mark a healthy child gone",
+				);
+			} finally {
 				for (const res of [...openResponses]) res.destroy();
 				program?.kill();
 				server.closeAllConnections?.();

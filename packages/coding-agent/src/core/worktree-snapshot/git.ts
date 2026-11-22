@@ -11,7 +11,8 @@ import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.
 import { pathExists } from "../../utils/path-exists.ts";
 import { asyncScope } from "../async-scope.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
-import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
+import type { ProcessTreeContainment } from "../process-tree-containment.ts";
+import * as processTreeContainment from "../process-tree-containment.ts";
 import {
 	GitUnavailableError,
 	gitInstallCommand,
@@ -237,6 +238,14 @@ function taskkillTree(pid: number, deadline: number): Promise<number[]> {
 	});
 }
 
+function holdDescendantsStatus(pid: number): processTreeContainment.ProcessDescendantsHold {
+	if (processTreeContainment.holdProcessDescendantsResult !== undefined) {
+		return processTreeContainment.holdProcessDescendantsResult(pid);
+	}
+	const held = processTreeContainment.holdProcessDescendants?.(pid);
+	return held === undefined ? { kind: "unavailable" } : { kind: "held", held };
+}
+
 async function stopCommand(
 	child: HostChildProcess,
 	detached: boolean,
@@ -250,9 +259,32 @@ async function stopCommand(
 	child.once("close", close);
 	child.once("error", close);
 	let killed: number[] = [];
-	if (tree?.terminate() !== true) {
-		if (process.platform === "win32" && child.pid !== undefined) killed = await taskkillTree(child.pid, deadline);
-		else killChild(child, detached);
+	let hold: processTreeContainment.ProcessDescendantsHold = { kind: "unavailable" };
+	let holdEnded = false;
+	if (
+		process.platform === "win32" &&
+		child.pid !== undefined &&
+		child.exitCode === null &&
+		child.signalCode === null
+	) {
+		// End the live root and any descendants started before the Job object attached, through open handles.
+		hold = holdDescendantsStatus(child.pid);
+		holdEnded = hold.kind === "held" && hold.held.endAll();
+	}
+	const treeEnded = tree?.terminate() === true;
+	if (!treeEnded) {
+		if (process.platform === "win32") {
+			if (!holdEnded && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+				if (hold.kind === "unavailable") {
+					killed = await taskkillTree(child.pid, deadline);
+					if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+				} else {
+					child.kill("SIGKILL");
+				}
+			}
+		} else {
+			killChild(child, detached);
+		}
 	}
 	while (Date.now() < deadline && !(closed && !treeRunning(tree) && !killed.some(running))) {
 		await sleep(PROCESS_TREE_POLL_MS);
@@ -368,7 +400,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			void spawnFailure(error as NodeJS.ErrnoException).then(reject, reject);
 			return;
 		}
-		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
+		const tree = child.pid === undefined ? undefined : processTreeContainment.containProcessTree(child.pid);
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
 		let settled = false;

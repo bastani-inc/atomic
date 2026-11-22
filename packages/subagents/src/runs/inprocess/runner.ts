@@ -478,6 +478,13 @@ function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<vo
 
 /** The model and thinking level a child's session records last on its branch. */
 function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
+	if (typeof sessionManager.getLatestBranchSettingsWithProvenance === "function") {
+		const { model, thinkingLevel } = sessionManager.getLatestBranchSettingsWithProvenance();
+		return {
+			...(model.status === "found" ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+			...(thinkingLevel.status === "found" ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+		};
+	}
 	if (typeof sessionManager.getLatestBranchSettings === "function") {
 		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
 		return {
@@ -2579,30 +2586,33 @@ export class SubagentControlRuntime {
 			"opening-session",
 			admitted.spec.onStartProgress,
 		);
-		// What a start that ran out of its budget still holds: work that settles late, and the session it brings up.
+		// What a start that ran out of its budget or was aborted before its session came up still holds.
 		const abandoned: Promise<unknown>[] = [];
 		const released = Promise.withResolvers<void>();
-		/** Settle with `work`, or fail once the start budget runs out; a result that arrives later is `abandon`ed. */
+		const startStopSignal = AbortSignal.any([startBudget.signal, signals.abort, signals.interrupt]);
+		/** Settle with `work`, or fail once the start budget runs out or the attempt is aborted; late results are abandoned. */
 		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => unknown): Promise<T> =>
 			new Promise<T>((resolve, reject) => {
 				const expire = () => {
+					if (signals.abort.aborted) termination ??= "abort";
+					else if (signals.interrupt.aborted) termination ??= "interrupt";
 					abandoned.push(
 						work.then(
 							(late) => abandon?.(late),
 							() => undefined,
 						),
 					);
-					reject(startBudget.signal.reason);
+					reject(startStopSignal.reason ?? new DOMException("Aborted", "AbortError"));
 				};
-				if (startBudget.signal.aborted) return expire();
-				startBudget.signal.addEventListener("abort", expire, { once: true });
+				if (startStopSignal.aborted) return expire();
+				startStopSignal.addEventListener("abort", expire, { once: true });
 				work.then(
 					(value) => {
-						startBudget.signal.removeEventListener("abort", expire);
+						startStopSignal.removeEventListener("abort", expire);
 						resolve(value);
 					},
 					(error: unknown) => {
-						startBudget.signal.removeEventListener("abort", expire);
+						startStopSignal.removeEventListener("abort", expire);
 						reject(error);
 					},
 				);
@@ -2793,7 +2803,7 @@ export class SubagentControlRuntime {
 							turnPaused: () => restoringPaused || session?.turnPaused === true,
 							// Intercom registers the child before its first turn, inside this start's budget.
 							startup: {
-								signal: startBudget.signal,
+								signal: startStopSignal,
 								enterStep: (step) => startBudget.enter(step),
 								firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
 							},
@@ -3000,7 +3010,7 @@ export class SubagentControlRuntime {
 						? 0
 						: typeof sessionManager.getEntrySeq === "function"
 							? sessionManager.getEntrySeq(currentLeafId)
-							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startBudget.signal)),
+							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startStopSignal)),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);

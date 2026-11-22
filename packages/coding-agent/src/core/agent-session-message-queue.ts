@@ -71,6 +71,7 @@ import {
 import { checkedCustomMessage } from "./session-manager-entries.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 import { parseSlashCommand } from "./slash-commands.js";
+import { noteUserMessageOrigin } from "./user-message-origin.js";
 
 const interruptMutationQueues = new WeakMap<AgentSession, Promise<void>>();
 
@@ -172,6 +173,7 @@ function queueUserText(
 	typed: string | undefined,
 	rawText: string | undefined,
 	receiptId: string = randomUUID(),
+	originSendId?: string,
 ): void {
 	assertSessionOpen(session);
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -184,6 +186,7 @@ function queueUserText(
 		...(rawText !== undefined && rawText !== text ? { rawText } : {}),
 		timestamp: Date.now(),
 	};
+	if (originSendId !== undefined) noteUserMessageOrigin(message, originSendId);
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
 	(lane === "steer" ? session._steeringMessages : session._followUpMessages).push(text);
@@ -263,8 +266,9 @@ export async function _queueSteer(
 	typed?: string,
 	rawText?: string,
 	receiptId?: string,
+	originSendId?: string,
 ): Promise<void> {
-	queueUserText(this, "steer", text, images, typed, rawText, receiptId);
+	queueUserText(this, "steer", text, images, typed, rawText, receiptId, originSendId);
 }
 
 /**
@@ -277,8 +281,9 @@ export async function _queueFollowUp(
 	typed?: string,
 	rawText?: string,
 	receiptId?: string,
+	originSendId?: string,
 ): Promise<void> {
-	queueUserText(this, "followUp", text, images, typed, rawText, receiptId);
+	queueUserText(this, "followUp", text, images, typed, rawText, receiptId, originSendId);
 }
 
 /** A run takes the queued `message` now: it leaves the list and is under way until its `message_start`. */
