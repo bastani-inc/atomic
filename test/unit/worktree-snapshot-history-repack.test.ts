@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -102,6 +103,30 @@ test("history whose packing setting changed while it was bundled is bundled agai
 	// Back at the setting the capture started with, the commits' bundle fits under the cap.
 	await sandbox.git(clone, "config", "core.compression", "9");
 	sandbox.write(join(clone, "edit.txt"), "edit\n");
+	const second = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.deepEqual(second.snapshot.omitted, []);
+	assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+});
+
+test("history whose attributes turned delta compression off while it was bundled is bundled again once they are back", async () => {
+	const data = `${randomBytes(48 * 1024)
+		.toString("base64")
+		.replace(/.{76}/g, "$&\n")}\n`;
+	const { clone } = await sandbox.remoteWithClone("repo", { "sub/data.txt": data });
+	sandbox.write(join(clone, "sub", "data.txt"), `edited ${data}`);
+	const commit = await sandbox.commitAll(clone, "edit data");
+	const attributes = join(clone, ".git", "info", "attributes");
+	// Delta compression is turned off for the file just before the commit is bundled: its bundle is over the cap.
+	hooks.beforeBundle = () => sandbox.write(attributes, "sub/data.txt -delta\n");
+	const settings = { maxSnapshotBytes: 16 * 1024 };
+	sandbox.write(join(clone, "edit.txt"), "one\n");
+	const first = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.equal(hooks.beforeBundle, undefined, "the commit was bundled");
+	assert.equal(first.snapshot.omitted[0]?.reason, "bundle-over-cap");
+
+	// Back to the attributes the capture started with, the commit's bundle fits under the cap.
+	rmSync(attributes);
+	sandbox.write(join(clone, "edit.txt"), "two\n");
 	const second = captured(await captureWorktreeSnapshot(clone, { settings }));
 	assert.deepEqual(second.snapshot.omitted, []);
 	assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
