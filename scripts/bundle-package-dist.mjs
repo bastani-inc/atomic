@@ -667,11 +667,12 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		entryFileNames: "[name].js",
 		// With `strictExecutionOrder: true`, shared files are named by group and first module.
 		// With `strictExecutionOrder: false`, shared files are content-hashed from their output bytes under a distinct
-		// `.e-<8hex>` suffix so changed output never shares a path with an earlier deferred-init release's cached chunk.
+		// `-e<7hex>` suffix so changed output never shares a path with an earlier deferred-init release's cached chunk
+		// while keeping `_main-*` / `_lazy-*` prefixes.
 		hashCharacters: "hex",
 		chunkFileNames: (chunk) => {
 			const { label, legacyName } = chunkLegacyName(chunk);
-			return strictExecutionOrder ? legacyName : `_${label}.e-[hash:8].js`;
+			return strictExecutionOrder ? legacyName : `_${label}-e[hash:7].js`;
 		},
 		strictExecutionOrder,
 		minifyInternalExports: false,

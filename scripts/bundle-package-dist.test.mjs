@@ -487,13 +487,13 @@ test("strictExecutionOrder: false uses content-hashed chunks, isolates side effe
 	const eagerShared = shared.filter((name) => name !== legacyLazy);
 	assert.ok(eagerShared.length > 0);
 	for (const name of eagerShared) {
-		assert.match(name, /^_[a-zA-Z0-9.-]+\.e-[0-9a-f]{8}\.js$/, `${name} must use content-hashed .e-<8hex> name`);
+		assert.match(name, /^_[a-zA-Z0-9.-]+-e[0-9a-f]{7}\.js$/, `${name} must use content-hashed -e<7hex> name`);
 		assert.equal(legacyShared.includes(name), false, `${name} must not collide with any legacy chunk path`);
 		const code = readFileSync(join(pkg, "dist", name), "utf8");
 		assert.equal(code.includes("__esmMin"), false, `${name} should not contain __esmMin wrappers`);
 		assert.equal(code.includes(legacyLazy), false, `${name} must never import legacy compat shim ${legacyLazy}`);
 	}
-	const mainChunks = eagerShared.filter((name) => name.startsWith("_main.e-"));
+	const mainChunks = eagerShared.filter((name) => name.startsWith("_main-e"));
 	assert.ok(
 		mainChunks.some((name) => readFileSync(join(pkg, "dist", name), "utf8").includes('import("./heavy-user.js")')),
 		"dynamic import must stay targeted at the public entry path ./heavy-user.js",
@@ -506,7 +506,7 @@ test("strictExecutionOrder: false uses content-hashed chunks, isolates side effe
 	// Compat shim exists at legacyLazy, re-exports from the new chunk, and provides callable no-op init_legacy_compat.
 	const shimCode = readFileSync(join(pkg, "dist", legacyLazy), "utf8");
 	assert.match(shimCode, /export function init_legacy_compat\(\)/);
-	assert.match(shimCode, /from "\.\/_lazy\.e-[0-9a-f]{8}\.js"/);
+	assert.match(shimCode, /from "\.\/_lazy-e[0-9a-f]{7}\.js"/);
 	const compatCall = inChild(
 		join(pkg, "dist", legacyLazy),
 		`process.stdout.write(JSON.stringify({ type: typeof m.init_legacy_compat, ret: m.init_legacy_compat() === undefined }));`,
@@ -554,7 +554,7 @@ test("strictExecutionOrder: false uses content-hashed chunks, isolates side effe
 		compatNoopExports: { [legacyLazy]: ["init_legacy_compat"] },
 		log: () => {},
 	});
-	const nextMainChunks = sharedFiles(pkg).filter((name) => name.startsWith("_main.e-"));
+	const nextMainChunks = sharedFiles(pkg).filter((name) => name.startsWith("_main-e"));
 	assert.notDeepEqual(
 		nextMainChunks,
 		mainChunks,

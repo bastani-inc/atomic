@@ -227,7 +227,7 @@ test("importing a deferred-init shared chunk from an earlier release without cal
 		"checkDeferredChunkDisjointness must flag importing any old deferred-init shared chunk",
 	);
 
-	// Good update: uses a brand-new content-hashed chunk path _lazy.e-12345678.js.
+	// Good update: uses a brand-new content-hashed chunk path _lazy-e1234567.js.
 	const goodDep = writePackage(
 		t,
 		{
@@ -236,10 +236,10 @@ test("importing a deferred-init shared chunk from an earlier release without cal
 			exports: { ".": "./dist/index.js", "./api/*": "./dist/api/*.js" },
 		},
 		{
-			"dist/_lazy.e-12345678.js": "export const stream = () => 'b';\n",
+			"dist/_lazy-e1234567.js": "export const stream = () => 'b';\n",
 			"dist/index.js": 'export const model = () => import("./api/b.js");\n',
-			"dist/api/a.js": 'export { stream } from "../_lazy.e-12345678.js";\n',
-			"dist/api/b.js": 'export { stream } from "../_lazy.e-12345678.js";\n',
+			"dist/api/a.js": 'export { stream } from "../_lazy-e1234567.js";\n',
+			"dist/api/b.js": 'export { stream } from "../_lazy-e1234567.js";\n',
 		},
 	);
 	assert.deepEqual(checkRelease(record, [app, goodDep]), []);

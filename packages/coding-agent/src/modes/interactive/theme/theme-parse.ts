@@ -16,21 +16,17 @@ const REQUIRED_COLOR_TOKENS = Object.entries(THEME_TOKEN_MAP)
 	.filter(([, descriptor]) => descriptor.fallback === undefined)
 	.map(([name]) => name);
 
-let cachedValidator: ThemeValidator | undefined;
-let registeredValidatorLoader: (() => ThemeValidator) | undefined;
+const TYPEBOX_THEME_DEPS_SYMBOL = Symbol.for("atomic.typeboxThemeDeps.v1");
 
-/**
- * Registers a lazy validator loader for bundled runtimes (such as the standalone Bun binary) where
- * bare package specifiers cannot be resolved dynamically from disk via `createModuleRequire`.
- */
-export function registerThemeValidatorLoader(loader: () => ThemeValidator): void {
-	registeredValidatorLoader = loader;
-}
+let cachedValidator: ThemeValidator | undefined;
 
 function getThemeValidator(): ThemeValidator {
 	if (cachedValidator !== undefined) return cachedValidator;
-	if (registeredValidatorLoader !== undefined) {
-		cachedValidator = registeredValidatorLoader();
+	const bundledDeps = (globalThis as Record<symbol, unknown>)[TYPEBOX_THEME_DEPS_SYMBOL] as
+		| { Type: typeof TypeBoxType; Compile: typeof TypeBoxCompile }
+		| undefined;
+	if (bundledDeps !== undefined) {
+		cachedValidator = bundledDeps.Compile(createThemeJsonSchema(bundledDeps.Type));
 		return cachedValidator;
 	}
 	const req = createModuleRequire(import.meta.url);
