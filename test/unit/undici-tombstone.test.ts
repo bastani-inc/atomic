@@ -71,7 +71,7 @@ test("appends only the 8 pure-ESM undici restart-notice files to a packed tarbal
 
 	const unpacked = join(dir, "unpacked");
 	mkdirSync(unpacked, { recursive: true });
-	const untar = spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", unpacked], { cwd: dirname(tarball) });
+	const untar = spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", "unpacked"], { cwd: dirname(tarball) });
 	assert.equal(untar.exitCode, 0, untar.stderr.toString());
 
 	const unpackedManifest = JSON.parse(readFileSync(join(unpacked, "package", "package.json"), "utf8")) as {
@@ -89,7 +89,7 @@ test("every unpacked undici shim throws the version-aware restart message via re
 
 	const unpacked = join(dir, "unpacked");
 	mkdirSync(unpacked, { recursive: true });
-	const untar = spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", unpacked], { cwd: dirname(tarball) });
+	const untar = spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", "unpacked"], { cwd: dirname(tarball) });
 	assert.equal(untar.exitCode, 0, untar.stderr.toString());
 
 	const pkgRoot = join(unpacked, "package");
@@ -129,7 +129,7 @@ test("every unpacked undici shim throws the version-aware restart message via re
 	const unpacked2 = join(dir, "unpacked-0109");
 	mkdirSync(unpacked2, { recursive: true });
 	assert.equal(
-		spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", unpacked2], { cwd: dirname(tarball) }).exitCode,
+		spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", "unpacked-0109"], { cwd: dirname(tarball) }).exitCode,
 		0,
 	);
 	const manifestPath2 = join(unpacked2, "package", "package.json");
@@ -148,7 +148,9 @@ test("every unpacked undici shim throws the version-aware restart message via re
 	const unpacked3 = join(dir, "unpacked-missing-manifest");
 	mkdirSync(unpacked3, { recursive: true });
 	assert.equal(
-		spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", unpacked3], { cwd: dirname(tarball) }).exitCode,
+		spawnSyncCollect(["tar", "-xzf", basename(tarball), "-C", "unpacked-missing-manifest"], {
+			cwd: dirname(tarball),
+		}).exitCode,
 		0,
 	);
 	const manifestPath3 = join(unpacked3, "package", "package.json");
