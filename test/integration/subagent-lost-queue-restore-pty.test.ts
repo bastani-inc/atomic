@@ -391,4 +391,245 @@ describe("restoring a lost subagent chat's unsaved queued messages in a real PTY
 		},
 		SUBAGENT_QUEUE_PTY_TIMEOUT_MS,
 	);
+
+	test(
+		"listed-only crash (no taken messages, no receipts) restores queued messages into the child's own composer on reopen",
+		async () => {
+			const root = makeTempDirectory("atomic-subagent-listed-pty-");
+			const agentDir = join(root, "agent");
+			const extensionsDir = join(agentDir, "extensions");
+			const project = join(root, "project");
+			const sessionsDir = join(root, "sessions");
+			const installed = join(root, "installed");
+			const pidFile = join(root, "engine-pids.jsonl");
+			const takenFile = join(root, "child-taken.txt");
+
+			const childGen1Started = Promise.withResolvers<void>();
+			const childGen2Started = Promise.withResolvers<void>();
+			const releaseChildGen2 = Promise.withResolvers<void>();
+			const openResponses = new Set<ServerResponse>();
+			let childRequests = 0;
+
+			const server = createServer((request, response) => {
+				openResponses.add(response);
+				response.once("close", () => openResponses.delete(response));
+				void (async () => {
+					const parsed = JSON.parse(await readBody(request)) as ChatRequest;
+					const last = parsed.messages.at(-1);
+					const allText = parsed.messages.map((message) => messageText(message)).join("\n");
+					const lastUser = [...parsed.messages].reverse().find((message) => message.role === "user");
+					const lastUserText = messageText(lastUser);
+					const isChild = !allText.includes("LAUNCH_WORKER") && allText.includes("HOLD_QUEUE_TASK");
+					response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+					response.write(sseChunk({ role: "assistant", content: "" }));
+
+					if (isChild) {
+						childRequests++;
+						if (childRequests === 1) {
+							response.write(sseChunk({ content: "worker busy gen1" }));
+							childGen1Started.resolve();
+							await new Promise<void>((resolve) => response.once("close", resolve));
+							return;
+						}
+						response.write(sseChunk({ content: "worker restored gen2" }));
+						childGen2Started.resolve();
+						await Promise.race([
+							releaseChildGen2.promise,
+							new Promise<void>((resolve) => response.once("close", resolve)),
+						]);
+						if (!response.destroyed) sseEnd(response, "stop");
+						return;
+					}
+
+					if (last?.role === "tool" && allText.includes("LAUNCH_WORKER")) {
+						response.write(sseChunk({ content: "WORKER_LAUNCHED_OK" }));
+						sseEnd(response, "stop");
+						return;
+					}
+
+					if (last?.role === "user" && lastUserText.includes("LAUNCH_WORKER")) {
+						response.write(sseChunk({ content: "Launching worker." }));
+						response.write(
+							sseChunk({
+								tool_calls: [
+									{
+										index: 0,
+										id: "call_launch_worker_listed",
+										type: "function",
+										function: {
+											name: "subagent",
+											arguments: JSON.stringify({
+												context: "fresh",
+												agent: "worker",
+												model: `${PROVIDER}/${MODEL}`,
+												task: "HOLD_QUEUE_TASK",
+											}),
+										},
+									},
+								],
+							}),
+						);
+						sseEnd(response, "tool_calls");
+						return;
+					}
+
+					response.write(sseChunk({ content: "ok" }));
+					sseEnd(response, "stop");
+				})().catch(() => {
+					if (!response.headersSent) response.writeHead(500);
+					response.end();
+				});
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const { port } = server.address() as AddressInfo;
+
+			let program: PtyProgram | undefined;
+			try {
+				prepareAgentDir(agentDir, `http://127.0.0.1:${port}/v1`);
+				mkdirSync(extensionsDir, { recursive: true });
+				writeFileSync(join(extensionsDir, "fixture.json"), JSON.stringify({ pidFile, takenFile }));
+				writeFileSync(join(extensionsDir, "queue-pty-fixture.ts"), TEST_EXTENSION);
+				prepareInstalledPackage(PACKAGE, installed);
+				mkdirSync(project, { recursive: true });
+				mkdirSync(sessionsDir, { recursive: true });
+
+				program = startPtyProgram({
+					executable: process.execPath,
+					args: [join(PACKAGE, "dist/cli.js"), "--offline", "--no-mcp", "--approve", "--session-dir", sessionsDir],
+					cwd: project,
+					env: {
+						...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+						HOME: root,
+						USERPROFILE: root,
+						ATOMIC_CODING_AGENT_DIR: agentDir,
+						ATOMIC_PACKAGE_DIR: installed,
+						ATOMIC_SKIP_VERSION_CHECK: "1",
+						ATOMIC_TELEMETRY: "0",
+						CI: "0",
+						NODE_ENV: "",
+						VITEST: "",
+						PATH: process.env.PATH ?? "",
+					},
+					timeoutMs: SUBAGENT_QUEUE_PTY_TIMEOUT_MS,
+					cols: 120,
+					rows: 40,
+				});
+
+				const engine1Pid = await waitFor(() => readPids(pidFile)[0], STEP_TIMEOUT_MS, "engine #1 pid");
+				const engine1Proc = await recordProcess(engine1Pid);
+
+				await program.waitForScreen((screen) => screen.includes("guard-model"), STEP_TIMEOUT_MS, "initial prompt");
+				program.write("LAUNCH_WORKER\r");
+				await Promise.race([
+					childGen1Started.promise,
+					sleep(STEP_TIMEOUT_MS).then(() => {
+						throw new Error(`Child never started. Screen:\n${program?.screen()}`);
+					}),
+				]);
+				await program.waitForScreen(
+					(screen) => screen.includes("WORKER_LAUNCHED_OK"),
+					STEP_TIMEOUT_MS,
+					"main launch reply",
+				);
+
+				program.write("/tasks\r");
+				await program.waitForScreen(
+					(screen) =>
+						screen.includes("enter/→ open") && screen.includes("worker") && screen.includes("HOLD_QUEUE_TASK"),
+					STEP_TIMEOUT_MS,
+					"worker listed in /tasks",
+				);
+				program.write("\r");
+				await program.waitForScreen(
+					(screen) => screen.includes("Message @worker"),
+					STEP_TIMEOUT_MS,
+					"worker chat view opened",
+				);
+
+				// Queue two messages while worker stays busy on turn 1 (neither taken -> listed-only crash).
+				program.write("LISTED_ONLY_A\r");
+				await program.waitForScreen(
+					(screen) => screen.includes("Steering: LISTED_ONLY_A"),
+					STEP_TIMEOUT_MS,
+					"first listed message queued",
+				);
+				program.write("LISTED_ONLY_B\r");
+				await program.waitForScreen(
+					(screen) => screen.includes("Steering: LISTED_ONLY_B"),
+					STEP_TIMEOUT_MS,
+					"second listed message queued",
+				);
+
+				assert.equal(await signalRecordedProcess(engine1Proc, "SIGKILL"), true);
+				await waitUntilGone(engine1Proc, 10_000);
+
+				await waitFor(
+					() => readPids(pidFile).find((pid) => pid !== engine1Pid),
+					STEP_TIMEOUT_MS,
+					"replacement engine #2 pid",
+				);
+				await program.waitForScreen(
+					(screen) =>
+						/2 queued messages to worker weren't sent;\s*they're back in its editor when you open it/i.test(
+							screen,
+						),
+					STEP_TIMEOUT_MS,
+					"main pending restore notice for listed-only crash",
+				);
+				assert.doesNotMatch(program.screen(), /❯[^\n]*LISTED_ONLY_A/);
+				assert.doesNotMatch(program.screen(), /❯[^\n]*LISTED_ONLY_B/);
+
+				await Promise.race([
+					childGen2Started.promise,
+					sleep(STEP_TIMEOUT_MS).then(() => {
+						throw new Error(`Child never restored in engine #2. Screen:\n${program?.screen()}`);
+					}),
+				]);
+				program.write("/tasks\r");
+				await program.waitForScreen(
+					(screen) =>
+						screen.includes("enter/→ open") && screen.includes("worker") && screen.includes("HOLD_QUEUE_TASK"),
+					STEP_TIMEOUT_MS,
+					"restored worker listed in /tasks",
+				);
+				program.write("\r");
+				await program.waitForScreen(
+					(screen) => screen.includes("LISTED_ONLY_A") && screen.includes("LISTED_ONLY_B"),
+					STEP_TIMEOUT_MS,
+					"listed-only messages restored into worker's composer",
+				);
+				const childScreen = program.screen();
+				assert.ok(
+					childScreen.indexOf("LISTED_ONLY_A") >= 0 &&
+						childScreen.indexOf("LISTED_ONLY_B") > childScreen.indexOf("LISTED_ONLY_A"),
+					`expected LISTED_ONLY_A before LISTED_ONLY_B. Screen:\n${childScreen}`,
+				);
+
+				releaseChildGen2.resolve();
+				program.write("\x03");
+				await program.waitForScreen(
+					(screen) => !screen.includes("LISTED_ONLY_A") && !screen.includes("LISTED_ONLY_B"),
+					STEP_TIMEOUT_MS,
+					"composer cleared",
+				);
+				program.write("\x1b[D");
+				await program.waitForScreen(
+					(screen) => !screen.includes("Message @worker"),
+					STEP_TIMEOUT_MS,
+					"returned to main before quit",
+				);
+				program.write("/quit\r");
+				const exit = await program.exited;
+				assert.equal(exit.timedOut, false);
+			} finally {
+				releaseChildGen2.resolve();
+				for (const res of [...openResponses]) res.destroy();
+				program?.kill();
+				server.closeAllConnections?.();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+				await removeTempRootReleasingBroker(root, agentDir);
+			}
+		},
+		SUBAGENT_QUEUE_PTY_TIMEOUT_MS,
+	);
 });

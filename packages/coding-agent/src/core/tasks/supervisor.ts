@@ -396,6 +396,7 @@ export function watchTaskTranscriptBindings(
 	supervisor: TaskSupervisor,
 	listener: (taskId: C.TaskId) => void,
 ): () => void {
+	if (supervisor == null || typeof supervisor !== "object") return () => {};
 	let listeners = transcriptBindListeners.get(supervisor);
 	if (listeners === undefined) {
 		listeners = new Set();

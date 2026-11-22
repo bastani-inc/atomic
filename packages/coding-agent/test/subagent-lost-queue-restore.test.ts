@@ -20,7 +20,10 @@ import { attachLostAgentQueueNotices } from "../src/modes/interactive/agent-view
 import { setViewedNoticeSink } from "../src/modes/interactive/agent-view/viewed-notices.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.ts";
-import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.ts";
+import {
+	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+} from "../src/modes/interactive-engine/protocol.ts";
 import { FakeAgentViewPort } from "./helpers/fake-agent-view-port.ts";
 
 const openable = vi.hoisted(() => ({
@@ -914,4 +917,173 @@ describe("restoring a lost subagent chat's unsaved queued messages into its own 
 		},
 		HOST_TIMEOUT_MS,
 	);
+
+	test(
+		"listed-only crash (taken=[], no receipts) restores into the child's own composer with zero receipt-store lookups",
+		async () => {
+			host = await createHost();
+			const oldPort = new FakeAgentViewPort({
+				taskId: WORKER_1,
+				name: "worker",
+				sessionId: CHILD_SESSION,
+				sessionFile: CHILD_FILE,
+				busy: true,
+				queued: { steering: ["listed one", "listed two"], followUp: [] },
+			});
+			openable.ports.set(WORKER_1, oldPort);
+			let findCalls = 0;
+			const engine = fakeEngineHarness(host.mode, async () => {
+				findCalls++;
+				return { saved: new Set<string>(), absent: new Set<string>() };
+			});
+
+			await host.type("main draft");
+			await host.view(WORKER_1);
+			engine.crash(oldPort);
+			// Still waiting for recovery; main's draft stays untouched.
+			assert.equal(host.mode.editor.getText(), "main draft");
+
+			engine.recover(true);
+			await until(() => host!.warnings.length === 1);
+			assert.equal(findCalls, 0, "listed-only crash needs no receipt-store lookup");
+			assert.deepEqual(host.warnings, [
+				"Engine restarted; 2 queued messages to worker weren't sent; they're back in its editor when you open it",
+			]);
+			assert.equal(host.mode.editor.getText(), "main draft", "never writes into main's editor");
+
+			const reopened = new FakeAgentViewPort({
+				taskId: WORKER_2,
+				name: "worker",
+				sessionId: CHILD_SESSION,
+				sessionFile: CHILD_FILE,
+			});
+			openable.ports.set(WORKER_2, reopened);
+			await host.view(WORKER_2);
+			assert.equal(host.mode.editor.getText(), "listed one\n\nlisted two");
+			engine.detach();
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"listed + receiptless taken messages keep receiptless taken in unconfirmed notice while restoring listed to child editor",
+		async () => {
+			host = await createHost();
+			const oldPort = new FakeAgentViewPort({
+				taskId: WORKER_1,
+				name: "worker",
+				sessionId: CHILD_SESSION,
+				sessionFile: CHILD_FILE,
+				busy: true,
+				queued: { steering: ["listed safe"], followUp: [] },
+				delivering: { steering: ["taken without receipt"], followUp: [] },
+			});
+			openable.ports.set(WORKER_1, oldPort);
+			let findCalls = 0;
+			const engine = fakeEngineHarness(host.mode, async () => {
+				findCalls++;
+				return { saved: new Set<string>(), absent: new Set<string>() };
+			});
+
+			await host.view(WORKER_1);
+			engine.crash(oldPort);
+			engine.recover(true);
+			await until(() => host!.warnings.length === 2);
+			assert.equal(findCalls, 0);
+			assert.deepEqual(host.warnings, [
+				"Engine restarted; this message to worker may not have been delivered:\ntaken without receipt",
+				"Engine restarted; 1 queued message to worker wasn't sent; it's back in its editor when you open it",
+			]);
+
+			const reopened = new FakeAgentViewPort({
+				taskId: WORKER_2,
+				name: "worker",
+				sessionId: CHILD_SESSION,
+				sessionFile: CHILD_FILE,
+			});
+			openable.ports.set(WORKER_2, reopened);
+			await host.view(WORKER_2);
+			assert.equal(host.mode.editor.getText(), "listed safe");
+			engine.detach();
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"restores into an already-open child view when it opened before lookup settled and binds its sessionId afterward",
+		async () => {
+			host = await createHost();
+			const oldPort = new FakeAgentViewPort({
+				taskId: WORKER_1,
+				name: "worker",
+				sessionId: CHILD_SESSION,
+				sessionFile: CHILD_FILE,
+				busy: true,
+				delivering: { steering: ["late bind msg"], followUp: [] },
+				receipts: {
+					sessionId: CHILD_SESSION,
+					sessionFile: CHILD_FILE,
+					taken: [{ id: "lb-1", after: 1, local: true, typed: "late bind msg" }],
+				},
+			});
+			openable.ports.set(WORKER_1, oldPort);
+			const lookupGate = Promise.withResolvers<{ saved: Set<string>; absent: Set<string> }>();
+			const engine = fakeEngineHarness(host.mode, () => lookupGate.promise);
+
+			await host.view(WORKER_1);
+			engine.crash(oldPort);
+			engine.recover(true);
+
+			// Child opens BEFORE lookup settles, while its sessionId is still unbound.
+			const latePort = new FakeAgentViewPort({
+				taskId: WORKER_2,
+				name: "worker",
+			});
+			openable.ports.set(WORKER_2, latePort);
+			await host.view(WORKER_2);
+			await host.type("typed while opening");
+
+			// Lookup settles while latePort is open with sessionId still undefined -> stashes pending and watches latePort.
+			lookupGate.resolve({ saved: new Set(), absent: new Set(["lb-1"]) });
+			await until(() => host!.warnings.length === 1);
+
+			// Now sessionId arrives on the already-open port: restores directly without closing and reopening!
+			latePort.setStatus({ sessionId: CHILD_SESSION, sessionFile: CHILD_FILE });
+			await settle();
+			assert.equal(
+				host.mode.editor.getText(),
+				"late bind msg\n\ntyped while opening",
+				"late sessionId arrival on an already-open port must restore immediately without close+reopen",
+			);
+			engine.detach();
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test("parseInteractiveEngineMessage rejects engine_agent_queue_invalidated with empty sessionFile", () => {
+		const rejected = parseInteractiveEngineMessage(
+			JSON.stringify({
+				type: "engine_agent_queue_invalidated",
+				sessionId: CHILD_SESSION,
+				sessionFile: "",
+				reason: "stopped",
+			}),
+		);
+		assert.equal(rejected, undefined, "empty sessionFile must be rejected like parseAgentViewStatus");
+
+		const accepted = parseInteractiveEngineMessage(
+			JSON.stringify({
+				type: "engine_agent_queue_invalidated",
+				sessionId: CHILD_SESSION,
+				sessionFile: CHILD_FILE,
+				reason: "stopped",
+			}),
+		);
+		assert.deepEqual(accepted, {
+			type: "engine_agent_queue_invalidated",
+			sessionId: CHILD_SESSION,
+			sessionFile: CHILD_FILE,
+			reason: "stopped",
+		});
+	});
 });

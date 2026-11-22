@@ -604,7 +604,8 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				reason === "stopped" || reason === "cleared" || reason === "session-ended" || reason === "sent-elsewhere";
 			return typeof value.sessionId === "string" &&
 				value.sessionId.length > 0 &&
-				(value.sessionFile === undefined || typeof value.sessionFile === "string") &&
+				(value.sessionFile === undefined ||
+					(typeof value.sessionFile === "string" && value.sessionFile.length > 0)) &&
 				validReason
 				? {
 						type: value.type,

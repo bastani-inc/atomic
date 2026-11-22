@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { taskFixture, taskValue } from "../../../test/helpers/task-projection.js";
+import {
+	SUBAGENT_CHILD_RECORD_TYPE,
+	SUBAGENT_CHILD_RELEASED_STATUS,
+	type SubagentChildRecord,
+} from "../../subagents/src/runs/foreground/subagent-child-records.js";
+import { controlSubagentChildren } from "../../subagents/src/runs/foreground/subagent-run-control.js";
 import type { AgentSession, AgentSessionEvent } from "../src/core/agent-session.js";
-import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
+import { createEventBus } from "../src/core/event-bus.js";
+import type { ExtensionContext, ExtensionUIContext } from "../src/core/extensions/index.ts";
+import { createExtensionRuntime } from "../src/core/extensions/loader.js";
+import { setExtensionRuntimeEventBus } from "../src/core/extensions/loader-core.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { dismissedAgentPanelItems, notifyAgentPanelChanged } from "../src/core/tasks/agent-panel-source.ts";
@@ -262,5 +271,120 @@ describe("engine-side child queue invalidation notices", () => {
 				.some((m) => m.reason === "sent-elsewhere" && m.sessionId === resumedId && m.sessionFile === resumedFile),
 			JSON.stringify(active.invalidations()),
 		);
+	});
+
+	test("handles an OwnerTaskStore bound without a supervisor without throwing WeakMap TypeError", async () => {
+		const messages: InteractiveEngineMessage[] = [];
+		const customUi = new EngineCustomUiService(() => {}, new KeybindingsManager());
+		const ownerSession = {} as AgentSession;
+		bindOwnerTaskStore(ownerSession, {
+			tasks: [],
+			backgroundTasks: [],
+			ownerTasks: [],
+			ownerBackgroundTasks: [],
+			settlementOrder: new Map(),
+			panelRevision: 1,
+			taskRecord: () => undefined,
+			recentActivity: () => [],
+			activityOmitted: () => false,
+			subscribe: () => () => {},
+		} as never);
+		const unbind = bindEngineAgentView({
+			session: ownerSession,
+			send: (message) => messages.push(message),
+			customUi,
+			ui: {
+				getChatRenderSettings: () => ({}),
+				getFooterDataProvider: () => undefined,
+				notify: () => {},
+			} as unknown as ExtensionUIContext,
+		});
+		try {
+			await flush();
+			assert.deepEqual(messages, []);
+		} finally {
+			unbind();
+			customUi.dispose();
+		}
+	});
+
+	test("emits stopped when subagent quit/pause stops an already-released idle child (stopIdleChild)", async () => {
+		const eventBus = createEventBus();
+		const runtime = createExtensionRuntime();
+		setExtensionRuntimeEventBus(runtime, eventBus);
+		const ownerSessionManager = SessionManager.inMemory();
+		const ownerSessionId = ownerSessionManager.getSessionId();
+		const releasedSessionId = "released-child-session-1";
+		const releasedSessionFile = "/tmp/released-child-session-1.jsonl";
+		const releasedRecord: SubagentChildRecord = {
+			version: 1,
+			childId: "run-rel:0",
+			runId: "run-rel",
+			index: 0,
+			agent: "worker",
+			state: "terminal",
+			terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+			cwd: "/tmp",
+			owner: { kind: "session", sessionId: ownerSessionId },
+			taskId: "task-rel-1",
+			childSessionId: releasedSessionId,
+			childSessionFile: releasedSessionFile,
+			intercomTarget: "subagent-worker-rel",
+			waitingOn: [{ toolCallId: "call-1", toolName: "bash" }],
+		};
+		await ownerSessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, releasedRecord);
+
+		const messages: InteractiveEngineMessage[] = [];
+		const customUi = new EngineCustomUiService(() => {}, new KeybindingsManager());
+		const ownerSession = {
+			resourceLoader: { getExtensions: () => ({ runtime }) },
+		} as unknown as AgentSession;
+		const unbind = bindEngineAgentView({
+			session: ownerSession,
+			send: (message) => messages.push(message),
+			customUi,
+			ui: {
+				getChatRenderSettings: () => ({}),
+				getFooterDataProvider: () => undefined,
+				notify: () => {},
+			} as unknown as ExtensionUIContext,
+		});
+		try {
+			const result = await controlSubagentChildren(
+				{
+					config: {},
+					discoverAgents: () => ({ agents: [], diagnostics: [] }),
+					runtime: {} as never,
+					pi: {
+						events: eventBus,
+						appendEntry: async (customType, data) => {
+							await ownerSessionManager.appendCustomEntry(customType, data);
+						},
+						getSessionName: () => undefined,
+					},
+				},
+				{
+					cwd: "/tmp",
+					sessionManager: ownerSessionManager,
+					hasUI: false,
+				} as unknown as ExtensionContext,
+				{ action: "quit", id: "run-rel:0" },
+			);
+			assert.notEqual(result.isError, true, JSON.stringify(result));
+			await flush();
+			const invalidations = messages.filter(
+				(m): m is InvalidationMessage => m.type === "engine_agent_queue_invalidated",
+			);
+			assert.ok(
+				invalidations.some(
+					(m) =>
+						m.reason === "stopped" && m.sessionId === releasedSessionId && m.sessionFile === releasedSessionFile,
+				),
+				JSON.stringify(invalidations),
+			);
+		} finally {
+			unbind();
+			customUi.dispose();
+		}
 	});
 });

@@ -5,6 +5,8 @@
  * as `engine_agent_view_status`, once per microtask.
  */
 import type { TUI } from "@bastani/atomic-tui";
+import { getExtensionRuntimeEventBus } from "../../core/extensions/loader-core.js";
+import type { ExtensionRuntime } from "../../core/extensions/types.ts";
 import { dismissedAgentPanelItems, subscribeAgentPanel } from "../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import {
@@ -72,6 +74,7 @@ interface TrackedChildTask {
 }
 
 const AUTO_RESTART_CONTINUATION_PREFIX = "Atomic restarted while you were working";
+const SUBAGENT_CHILD_STOPPED_EVENT = "subagent:child-stopped";
 
 function userMessagePlainText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -266,7 +269,13 @@ class EngineAgentViewRegistry implements EngineAgentViews {
 			cleanupAllTracked();
 			boundStore = store;
 			initialScanComplete = false;
-			if (store === undefined) return;
+			if (
+				store === undefined ||
+				store.supervisor == null ||
+				typeof store.supervisor !== "object" ||
+				typeof store.resolveTask !== "function"
+			)
+				return;
 			const source = ownerTaskViewSource(store);
 			stopStore = store.subscribe(syncStore);
 			stopTranscriptBind = watchTaskTranscriptBindings(store.supervisor, () => syncStore());
@@ -292,10 +301,36 @@ class EngineAgentViewRegistry implements EngineAgentViews {
 			syncStore();
 		};
 
+		const runtime = (
+			session as { readonly resourceLoader?: { getExtensions?: () => { readonly runtime?: ExtensionRuntime } } }
+		).resourceLoader?.getExtensions?.()?.runtime;
+		const stopIdleChildStopped = runtime
+			? getExtensionRuntimeEventBus(runtime).on(SUBAGENT_CHILD_STOPPED_EVENT, (payload) => {
+					if (payload == null || typeof payload !== "object") return;
+					const record = payload as {
+						readonly taskId?: unknown;
+						readonly sessionId?: unknown;
+						readonly sessionFile?: unknown;
+					};
+					const taskId = typeof record.taskId === "string" ? (record.taskId as TaskId) : undefined;
+					const entry = taskId === undefined ? undefined : tracked.get(taskId);
+					const sid =
+						typeof record.sessionId === "string" && record.sessionId.length > 0
+							? record.sessionId
+							: entry?.sessionId;
+					const sfile =
+						typeof record.sessionFile === "string" && record.sessionFile.length > 0
+							? record.sessionFile
+							: entry?.sessionFile;
+					this.emitInvalidation(sid, sfile, "stopped");
+				})
+			: undefined;
+
 		const stopBinding = watchOwnerTaskStoreBinding(session, () => bindStore(getOwnerTaskStore(session)));
 		const stopPanel = subscribeAgentPanel(session, () => syncStore());
 		bindStore(getOwnerTaskStore(session));
 		return () => {
+			stopIdleChildStopped?.();
 			stopPanel();
 			stopBinding();
 			stopStore?.();

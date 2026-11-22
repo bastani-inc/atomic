@@ -502,9 +502,10 @@ export function attachLostAgentQueueNotices(
 	const stopPending =
 		switcher?.onPending((pending, settled) => {
 			if (pending !== undefined || settled === undefined) return;
-			const port = deferredOpenPort;
+			const viewed = switcher.viewed;
+			const port = deferredOpenPort ?? (viewed.kind === "agent" ? viewed.port : undefined);
 			deferredOpenPort = undefined;
-			if (port !== undefined && settled.outcome === "shown") watchOpenedPort(port);
+			if (port !== undefined && settled.outcome === "shown" && machine.hasPending()) watchOpenedPort(port);
 		}) ?? (() => {});
 	const stopEngineMessage =
 		runtime.onEngineMessage?.((message) => {
@@ -544,13 +545,15 @@ export function attachLostAgentQueueNotices(
 			controller.loseTarget();
 			const listed = controller.recoverTarget() ?? [];
 			const find = runtime.findQueuedMessages?.bind(runtime);
+			const identity = canTrackChildRestore(status);
+			const hasReceipts =
+				receipts !== undefined && find !== undefined && taken.some((message) => message.receipt !== undefined);
 			if (
-				receipts === undefined ||
-				find === undefined ||
 				runtime.onEngineRecovered === undefined ||
-				!taken.some((message) => message.receipt !== undefined)
+				(!hasReceipts && (listed.length === 0 || identity === undefined))
 			) {
-				// No receipts at all: keep immediate notice at generation end (no recovery wait, no editor write).
+				// Older engines without child session identity, taken-only losses without receipts, or runtimes without
+				// recovery hooks keep immediate notices at generation end (no recovery wait, no editor write).
 				const unconfirmed = taken.map((message) => message.text);
 				if (unconfirmed.length > 0) mode.showWarning(engineLossUnconfirmedNotice(unconfirmed, name));
 				const notice = engineLossSubagentNotice({ agent: name, steering: listed, followUp: [] });
@@ -561,27 +564,38 @@ export function attachLostAgentQueueNotices(
 				agent: name,
 				taken,
 				listed,
-				identity: canTrackChildRestore(status),
+				identity,
 				hostSessionId: currentHostSessionId(mode),
 			});
 			const stop = runtime.onEngineRecovered((replaced) => {
 				stop();
 				stops.delete(stop);
 				void (async () => {
-					const session = {
-						sessionId: receipts.sessionId,
-						...(receipts.sessionFile === undefined ? {} : { sessionFile: receipts.sessionFile }),
-					};
-					const found = replaced
-						? await settledWithin(find(taken, session), RECEIPT_LOOKUP_TIMEOUT_MS)
-						: undefined;
+					let found: { readonly saved: ReadonlySet<string>; readonly absent: ReadonlySet<string> } | undefined;
+					if (replaced && hasReceipts) {
+						const session = {
+							sessionId: receipts.sessionId,
+							...(receipts.sessionFile === undefined ? {} : { sessionFile: receipts.sessionFile }),
+						};
+						found = await settledWithin(find(taken, session), RECEIPT_LOOKUP_TIMEOUT_MS);
+					}
 					const actions = machine.settleLookup(ticket, {
 						replaced,
 						found,
 						currentHostSessionId: currentHostSessionId(mode),
 						currentView: currentChildView(mode),
 					});
-					if (applyRestoreActions(mode, actions)) mode.ui.requestRender();
+					const applied = applyRestoreActions(mode, actions);
+					// If settlement stashed pending messages while a child view was already open with an unbound
+					// sessionId (or mid-open), start watching that port now so late sessionId binding restores cleanly.
+					if (machine.hasPending()) {
+						const viewed = mode.agentView?.viewed;
+						if (viewed?.kind === "agent") {
+							if (mode.agentView?.pendingTaskId !== undefined) deferredOpenPort = viewed.port;
+							else watchOpenedPort(viewed.port);
+						}
+					}
+					if (applied) mode.ui.requestRender();
 				})();
 			});
 			stops.add(stop);
