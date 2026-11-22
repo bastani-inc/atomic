@@ -137,6 +137,11 @@ function lostTerminalBoundEnded(mode: InteractiveModeBase): void {
 	const ending = hostEnding(mode);
 	if (process.platform === "win32" && !ending.consoleClosed) {
 		ending.lostExitDeciding = true;
+		// A quit that stopped the screen also removed the handler of uncaught exceptions: without one, an exception in
+		// these turns would end Atomic with 1. The exit removes this one with the other handlers.
+		const decided = () => {};
+		process.prependListener("uncaughtException", decided);
+		mode.signalCleanupHandlers.push(() => process.off("uncaughtException", decided));
 		setImmediate(() => {
 			// Windows' own notice, read in the first turn, needs no second.
 			if (ending.consoleClosed) return mode.emergencyTerminalExit();

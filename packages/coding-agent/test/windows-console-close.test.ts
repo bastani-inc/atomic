@@ -499,6 +499,36 @@ describe("while the lost terminal's exit gives a close notice its turns", () => 
 		assert.equal(errorListeners(), before, "the handlers are removed");
 	});
 
+	test("after a quit has stopped the screen, an uncaught exception in those turns still ends Atomic quietly, with 129", async () => {
+		const others = process.listeners("uncaughtException");
+		const before = errorListeners();
+		const { context } = createWindowsHost(() => new Promise<void>(() => {}));
+		// The quit stops the screen, which removes the handlers it registered, then waits for the session to close.
+		void context.shutdown();
+		await settle();
+		assert.equal(vi.mocked(context.stop).mock.calls.length, 1, "the quit stopped the screen");
+		process.stdout.emit("error", deadTerminal());
+		await settle();
+		await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
+		assert.deepEqual(exits, []);
+		// As the process treats an exception nothing caught: its listeners hear it, and without one it ends with 1.
+		setTimeout(() => {
+			const own = process.listeners("uncaughtException").filter((listener) => !others.includes(listener));
+			if (own.length === 0) process.exit(1);
+			for (const listener of own) listener(new Error("late failure"), "uncaughtException");
+		}, 1);
+
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
+		assert.deepEqual(exits, [TERMINAL_LOST_EXIT_CODE]);
+		assert.equal(report.mock.calls.length, 0, "nothing is reported as a crash");
+		assert.equal(errorListeners(), before, "the handlers are removed");
+		assert.deepEqual(
+			process.listeners("uncaughtException").filter((listener) => !others.includes(listener)),
+			[],
+			"no listener is left behind",
+		);
+	});
+
 	test("a dead terminal's raw mode failure then does not end Atomic before the engine's notice is read", async () => {
 		const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 		const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime, {
