@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import type * as nodeFs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 /** Real 64-bit NTFS file reference numbers whose IEEE-754 Numbers collide (both 70087269201190380). */
 const COLLIDING_INO_A = 0x00f9_0000_0003_9deen;
@@ -128,12 +141,24 @@ const { recordLockHolder, recordLockHolderAsync, takeOverDeadHolder, takeOverDea
 	"../src/core/lock-holder.js"
 );
 
+const LOCK_HOLDER_MODULE = fileURLToPath(new URL("../src/core/lock-holder.ts", import.meta.url));
+const MAX_SAFE_INO = BigInt(Number.MAX_SAFE_INTEGER);
+
+/** Plain `statSync` legacy lock token exactly as pre-BigInt releases computed it. */
+function legacyLockToken(path: string): string {
+	const stats = statSync(path);
+	return `${stats.ino}:${stats.birthtimeMs}`;
+}
+
 let directory: string;
+let settingsPath: string;
 let lockPath: string;
 
 beforeEach(() => {
 	directory = realpathSync(mkdtempSync(join(tmpdir(), "atomic-bigint-lock-")));
-	lockPath = join(directory, "settings.json.lock");
+	settingsPath = join(directory, "settings.json");
+	writeFileSync(settingsPath, "{}");
+	lockPath = `${settingsPath}.lock`;
 	fakeStats.overrides.clear();
 	fakeStats.beforeRename = undefined;
 	setNativeLocksForTesting(null);
@@ -237,16 +262,15 @@ describe("64-bit BigInt file identity in lock-takeover and lock-holder", () => {
 		assert.equal(await takeOverDeadHolderAsync(lockPath), false);
 	});
 
-	test("mixed-version compatibility: legacy Number(ino) holder records are read safely and never stolen, even at birthtime 0", async () => {
+	test("mixed-version compatibility: legacy Number(ino) holder records fail closed when ino > MAX_SAFE_INTEGER, even at birthtime 0", async () => {
 		mkdirSync(lockPath);
 		// Legacy format had 2 colon-separated fields: `${Number(ino)}:${birthtimeMs}`.
-		// Even when birthtime is 0 and the live successor's exact ino equals the rounded Number(ino)
-		// of the dead older process's lock, a 3-field identity is disjoint and never matches.
-		const deadLegacyBirthtimeMs = 0;
+		// When the live directory's inode exceeds Number.MAX_SAFE_INTEGER, even when birthtime is 0
+		// and its exact ino equals the rounded Number(ino), a legacy record without lockId fails closed.
 		const legacyRecord = {
 			host: hostname(),
 			...exitedProcess(),
-			lock: `${Number(EXACT_MULTIPLE_INO)}:${deadLegacyBirthtimeMs}`,
+			lock: `${Number(EXACT_MULTIPLE_INO)}:0`,
 		};
 		writeFileSync(lockHolderPath(lockPath), JSON.stringify(legacyRecord));
 
@@ -256,22 +280,192 @@ describe("64-bit BigInt file identity in lock-takeover and lock-holder", () => {
 			birthtimeNs: 0n,
 		});
 
-		assert.equal(takeOverDeadHolder(lockPath), false, "must treat legacy 2-field format as unknown and conservative");
+		assert.equal(
+			takeOverDeadHolder(lockPath),
+			false,
+			"must fail closed on legacy record when ino > MAX_SAFE_INTEGER",
+		);
 		assert.equal(await takeOverDeadHolderAsync(lockPath), false);
 		assert.equal(existsSync(lockPath), true);
 
-		// Conversely, a newly written .holder record never matches an older process's 2-field identity.
+		// When ino > MAX_SAFE_INTEGER, a newly written .holder record also avoids writing a lossy
+		// Number(ino) into `lock`, so an older process cannot match a colliding live successor either.
 		recordLockHolder(lockPath);
-		const syncRecorded = JSON.parse((await import("node:fs")).readFileSync(lockHolderPath(lockPath), "utf8")) as {
+		const syncRecorded = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as {
 			lock: string;
+			lockId?: string;
 		};
+		assert.equal(syncRecorded.lockId, `${COLLIDING_DEV}:${EXACT_MULTIPLE_INO}:0`);
 		assert.notEqual(syncRecorded.lock, `${Number(EXACT_MULTIPLE_INO)}:0`);
 
 		await recordLockHolderAsync(lockPath);
-		const asyncRecorded = JSON.parse((await import("node:fs")).readFileSync(lockHolderPath(lockPath), "utf8")) as {
+		const asyncRecorded = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as {
 			lock: string;
+			lockId?: string;
 		};
-		assert.equal(asyncRecorded.lock, syncRecorded.lock);
+		assert.deepEqual(asyncRecorded, syncRecorded);
+	});
+
+	test("mixed-version dead-holder takeover (OLD -> NEW and NEW -> OLD) succeeds immediately on safe inodes with real processes", async () => {
+		// Deterministic safe inode (<= Number.MAX_SAFE_INTEGER) so both directions run on every
+		// filesystem, including Windows NTFS volumes whose sequence numbers are >= 32.
+		const safeIno = 50n;
+		const setSafeStat = () =>
+			fakeStats.overrides.set(resolve(lockPath), {
+				dev: COLLIDING_DEV,
+				ino: safeIno,
+				birthtimeNs: SAME_BIRTHTIME_NS,
+			});
+
+		// 1. OLD(dead) -> NEW (sync, async, and real SettingsManager save).
+		mkdirSync(lockPath);
+		setSafeStat();
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
+		);
+		assert.equal(takeOverDeadHolder(lockPath), true, "NEW sync takeover must reclaim dead OLD lock on safe inode");
+		assert.equal(existsSync(lockPath), false);
+
+		mkdirSync(lockPath);
+		setSafeStat();
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
+		);
+		assert.equal(
+			await takeOverDeadHolderAsync(lockPath),
+			true,
+			"NEW async takeover must reclaim dead OLD lock on safe inode",
+		);
+		assert.equal(existsSync(lockPath), false);
+
+		mkdirSync(lockPath);
+		setSafeStat();
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
+		);
+		const manager = SettingsManager.create(directory, directory);
+		manager.setTheme("dark");
+		await manager.flush();
+		assert.deepEqual(manager.drainErrors(), [], "SettingsManager save must reclaim dead OLD lock immediately");
+		assert.equal(existsSync(lockPath), false);
+
+		// 2. NEW(dead) -> OLD: recordLockHolder and recordLockHolderAsync write byte-identical legacy `lock`
+		// on safe inodes alongside exact `lockId`, so older processes take over immediately too.
+		mkdirSync(lockPath);
+		setSafeStat();
+		recordLockHolder(lockPath);
+		const syncRecord = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as {
+			lock: string;
+			lockId?: string;
+		};
+		assert.equal(syncRecord.lock, legacyLockToken(lockPath));
+		assert.equal(syncRecord.lockId, lockHolder(lockPath));
+		await recordLockHolderAsync(lockPath);
+		const asyncRecord = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as {
+			lock: string;
+			lockId?: string;
+		};
+		assert.deepEqual(asyncRecord, syncRecord);
+		rmSync(lockPath, { recursive: true, force: true });
+
+		// 3. Real OS filesystem + real exited child process (no fake stat overrides).
+		fakeStats.overrides.clear();
+		mkdirSync(lockPath);
+		const realIno = statSync(lockPath, { bigint: true }).ino;
+		const child = spawnSync(
+			"bun",
+			[
+				"--eval",
+				`import { recordLockHolder } from ${JSON.stringify(LOCK_HOLDER_MODULE)}; recordLockHolder(${JSON.stringify(lockPath)});`,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(child.status, 0, child.stderr);
+		const written = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as {
+			host: string;
+			pid: number;
+			started?: string;
+			lock: string;
+			lockId?: string;
+		};
+		assert.equal(written.lockId, lockHolder(lockPath), "real child record must carry exact 64-bit `lockId`");
+		if (realIno <= MAX_SAFE_INO) {
+			assert.equal(
+				written.lock,
+				legacyLockToken(lockPath),
+				"real child record must carry legacy 2-field `lock` on safe inodes so OLD processes take it over",
+			);
+		}
+		assert.equal(takeOverDeadHolder(lockPath), true, "NEW immediately reclaims dead real child's dual-field lock");
+		assert.equal(existsSync(lockPath), false);
+
+		if (realIno <= MAX_SAFE_INO) {
+			mkdirSync(lockPath);
+			writeFileSync(
+				lockHolderPath(lockPath),
+				JSON.stringify({ host: hostname(), ...exitedProcess(), lock: legacyLockToken(lockPath) }),
+			);
+			const realManager = SettingsManager.create(directory, directory);
+			realManager.setTheme("light");
+			await realManager.flush();
+			assert.deepEqual(realManager.drainErrors(), [], "real SettingsManager save reclaims dead OLD lock");
+			assert.equal(existsSync(lockPath), false);
+		}
+	});
+
+	test("dual-field record with mismatched lock vs lockId or non-string lockId fails closed conservatively", async () => {
+		mkdirSync(lockPath);
+		const safeIno = 50n;
+		fakeStats.overrides.set(resolve(lockPath), {
+			dev: COLLIDING_DEV,
+			ino: safeIno,
+			birthtimeNs: SAME_BIRTHTIME_NS,
+		});
+		const legacy = legacyLockToken(lockPath);
+		const exact = lockHolder(lockPath)!;
+
+		// `lock` matches legacy, but `lockId` names a different directory -> conservative false.
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({
+				host: hostname(),
+				...exitedProcess(),
+				lock: legacy,
+				lockId: `${COLLIDING_DEV}:99:${SAME_BIRTHTIME_NS}`,
+			}),
+		);
+		assert.equal(takeOverDeadHolder(lockPath), false);
+		assert.equal(await takeOverDeadHolderAsync(lockPath), false);
+
+		// `lockId` matches exact, but `lock` names a different directory -> conservative false.
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({
+				host: hostname(),
+				...exitedProcess(),
+				lock: "99:0",
+				lockId: exact,
+			}),
+		);
+		assert.equal(takeOverDeadHolder(lockPath), false);
+		assert.equal(await takeOverDeadHolderAsync(lockPath), false);
+
+		// Non-string `lockId` -> conservative false.
+		writeFileSync(
+			lockHolderPath(lockPath),
+			JSON.stringify({
+				host: hostname(),
+				...exitedProcess(),
+				lock: legacy,
+				lockId: 12345,
+			}),
+		);
+		assert.equal(takeOverDeadHolder(lockPath), false);
+		assert.equal(await takeOverDeadHolderAsync(lockPath), false);
+		assert.equal(existsSync(lockPath), true);
 	});
 
 	test("removeStaleMutex does not delete a live replacement directory mutex with a colliding 64-bit inode", () => {
