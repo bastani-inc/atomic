@@ -395,25 +395,29 @@ async function constructAgentSession(
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	const modelRuntime =
+		options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath, refreshOnCreate: false }));
 	const restore = { allowNetwork: false };
 	const observing =
 		recoverMissingModel && ModelRuntime[sessionAccountCheckpoint](modelRuntime)
 			? sessionLifecycleCreation.getStore()
 			: undefined;
 	let missingCatalog = false;
-	if (observing) {
-		observing.catalogRuntime = modelRuntime;
-		observing.catalogRestore = restore;
-	}
-	try {
-		await modelRuntime.refresh(restore);
-		missingCatalog = observing?.copilotObservation === "confirmed";
-	} finally {
+	const skipRedundantRestore = !observing && ModelRuntime.consumeStartupCatalogRestored(modelRuntime);
+	if (!skipRedundantRestore) {
 		if (observing) {
-			observing.catalogRuntime = undefined;
-			observing.catalogRestore = undefined;
-			observing.copilotObservation = undefined;
+			observing.catalogRuntime = modelRuntime;
+			observing.catalogRestore = restore;
+		}
+		try {
+			await modelRuntime.refresh(restore);
+			missingCatalog = observing?.copilotObservation === "confirmed";
+		} finally {
+			if (observing) {
+				observing.catalogRuntime = undefined;
+				observing.catalogRestore = undefined;
+				observing.copilotObservation = undefined;
+			}
 		}
 	}
 
