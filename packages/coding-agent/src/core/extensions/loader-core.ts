@@ -13,6 +13,7 @@ import {
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
 import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.ts";
 import { installBuiltinChildRecordWriter } from "./builtin-subagent-record-writer.js";
+import { createLazyBuiltinFactory, getLazyBuiltinSpec } from "./lazy-builtin.js";
 import { createExtensionAPI } from "./loader-api.ts";
 import {
 	bindRegistrationCallbacks,
@@ -191,9 +192,23 @@ async function loadExtension(
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
 	try {
-		const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`, "extensions");
-		const factory = await loadExtensionModule(resolvedPath, cacheToken, agentDir);
-		endTimingSpan(moduleSpan);
+		const builtinLabel = getBuiltinExtensionEntryLabel(resolvedPath);
+		const lazySpec = builtinLabel ? getLazyBuiltinSpec(builtinLabel) : undefined;
+		let factory: ExtensionFactory | undefined;
+		if (lazySpec) {
+			factory = createLazyBuiltinFactory(lazySpec, async () => {
+				try {
+					return await loadExtensionModule(resolvedPath, cacheToken, agentDir);
+				} catch (err) {
+					const failure = (await updatedInstallError(err, `the ${builtinLabel} extension`)) ?? err;
+					throw failure;
+				}
+			});
+		} else {
+			const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`, "extensions");
+			factory = await loadExtensionModule(resolvedPath, cacheToken, agentDir);
+			endTimingSpan(moduleSpan);
+		}
 		if (!factory) {
 			return {
 				extension: null,
@@ -201,7 +216,7 @@ async function loadExtension(
 			};
 		}
 
-		if (getBuiltinExtensionEntryLabel(resolvedPath) === "subagents") subagentFactories.add(factory);
+		if (builtinLabel === "subagents") subagentFactories.add(factory);
 		const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`, "extensions");
 		const extension = await loadOwnedExtensionFromFactory(
 			[],
