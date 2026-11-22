@@ -280,18 +280,25 @@ describe("blueprint build locks (#4748)", () => {
 					cwd: dir,
 					env: process.env,
 				};
-				const run = runLoggedProcess(waiting, { fd, path: log }, { timeoutMs: 30_000 });
-				const deadline = Date.now() + 30_000;
-				while (recorded()?.steps[0]?.start === undefined && Date.now() < deadline) {
-					await new Promise((resolve) => setTimeout(resolve, 20));
+				const run = runLoggedProcess(waiting, { fd, path: log }, { timeoutMs: POWERSHELL_READS_TIMEOUT_MS });
+				try {
+					const deadline = Date.now() + 30_000;
+					while (
+						(recorded()?.start === undefined || recorded()?.steps[0]?.start === undefined) &&
+						Date.now() < deadline
+					) {
+						await new Promise((resolve) => setTimeout(resolve, 20));
+					}
+					const lock = recorded();
+					const step = lock?.steps[0];
+					assert.equal(lock?.start, own, "the build names this process's start");
+					assert.ok(step, "the running step is still listed in the lock");
+					setNativeProcessCreationTimeForTesting(undefined);
+					assert.equal(step.start, processStartToken(step.pid), "and its running step's");
+				} finally {
+					writeFileSync(gate, "");
+					await run;
 				}
-				const lock = recorded();
-				const step = lock?.steps[0];
-				assert.equal(lock?.start, own, "the build names this process's start");
-				setNativeProcessCreationTimeForTesting(undefined);
-				assert.equal(step?.start, processStartToken(step!.pid), "and its running step's");
-				writeFileSync(gate, "");
-				await run;
 			});
 			closeSync(fd);
 		},

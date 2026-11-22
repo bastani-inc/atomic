@@ -231,6 +231,35 @@ test(
 	GATED_STARTUP_TIMEOUT_MS,
 );
 
+type AllowedHranaPath = "/v2/pipeline" | "/v3/pipeline" | "/version" | "/health";
+
+/** Map allowed Hrana request paths to literal constants so no request-derived string flows into `fetch`. */
+function allowedHranaPath(rawUrl: string | undefined): AllowedHranaPath | undefined {
+	switch (rawUrl) {
+		case "/v2/pipeline":
+			return "/v2/pipeline";
+		case "/v3/pipeline":
+			return "/v3/pipeline";
+		case "/version":
+			return "/version";
+		case "/health":
+			return "/health";
+		default:
+			return undefined;
+	}
+}
+
+function allowedHranaMethod(rawMethod: string | undefined): "GET" | "POST" | undefined {
+	switch (rawMethod) {
+		case "GET":
+			return "GET";
+		case "POST":
+			return "POST";
+		default:
+			return undefined;
+	}
+}
+
 /**
  * Loopback HTTP proxy in front of a Hrana 2 libSQL server that can hold a matching `/pipeline` response until
  * a later concurrent `/pipeline` response has already been delivered, reproducing out-of-order pooled HTTP responses.
@@ -244,6 +273,13 @@ async function startReorderingHttpProxy(upstreamUrl: string) {
 	const sockets = new Set<net.Socket>();
 
 	const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+		const path = allowedHranaPath(req.url);
+		const method = allowedHranaMethod(req.method);
+		if (path === undefined || method === undefined) {
+			res.writeHead(404, { "content-type": "text/plain" });
+			res.end("not found");
+			return;
+		}
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
 		const body = Buffer.concat(chunks);
@@ -254,8 +290,8 @@ async function startReorderingHttpProxy(upstreamUrl: string) {
 				headers[k] = v;
 			}
 		}
-		const upstream = await fetch(new URL(req.url ?? "/", upstreamUrl), {
-			method: req.method ?? "POST",
+		const upstream = await fetch(new URL(path, upstreamUrl), {
+			method,
 			headers,
 			...(body.length > 0 ? { body } : {}),
 		});
@@ -548,4 +584,7 @@ test("two brokers sharing a loopback libSQL HTTP server keep local and cross-nod
 		proxy.reorderedCount >= 1,
 		`expected proxy to reorder concurrent HTTP responses, got ${proxy.reorderedCount}`,
 	);
+	// Confirm non-allowlisted paths are rejected directly by the proxy without forwarding.
+	const rejected = await fetch(`${proxy.url}/unexpected`);
+	assert.equal(rejected.status, 404);
 });
