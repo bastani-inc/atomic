@@ -26,7 +26,7 @@ import {
 import { hostname } from "os";
 import { basename, dirname, join } from "path";
 import { renameWithRetry, renameWithRetryAsync } from "./rename-retry.js";
-import { processCreationTimeOf } from "./start-announcement.js";
+import { processCreationTimeOf, recognisedProcessStart } from "./start-announcement.js";
 
 /**
  * A parked file is renamed, read and removed at once, so one parked longer than this was left by a process that
@@ -406,10 +406,13 @@ export function processState(pid: number, start: string, host: string, hashedSta
   if (host !== "" && host !== hostIdentity()) return "unknown";
   if (!isProcessAlive(pid)) return "abandoned";
   if (start === "" || start === "x") return "held";
+  // A start in a form this reader does not recognise is read as none recorded: the pid alone decides.
+  const recorded = hashedStart ? start : recognisedProcessStart(start);
+  if (recorded === undefined) return "held";
   const started = processStart(pid);
   if (started === undefined) return "held";
   const now = hashedStart ? createHash("sha256").update(started).digest("hex").slice(0, 12) : started;
-  return now === start ? "held" : "abandoned";
+  return now === recorded ? "held" : "abandoned";
 }
 
 export async function processStateAsync(
@@ -421,10 +424,12 @@ export async function processStateAsync(
   if (host !== "" && host !== (await hostIdentityAsync())) return "unknown";
   if (!isProcessAlive(pid)) return "abandoned";
   if (start === "" || start === "x") return "held";
+  const recorded = hashedStart ? start : recognisedProcessStart(start);
+  if (recorded === undefined) return "held";
   const started = await processStartAsync(pid);
   if (started === undefined) return "held";
   const now = hashedStart ? createHash("sha256").update(started).digest("hex").slice(0, 12) : started;
-  return now === start ? "held" : "abandoned";
+  return now === recorded ? "held" : "abandoned";
 }
 
 export function holderState(path: string, written: string | undefined): HolderState {

@@ -11,7 +11,6 @@ import {
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
@@ -23,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { longestMainThreadBlockMs } from "../../../test/helpers/main-thread-work.ts";
 import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../../../test/helpers/recorded-process.js";
+import { renameWithRetry } from "../../../test/helpers/rename-retry.js";
 import {
 	bunExecutable,
 	moduleDir,
@@ -923,7 +923,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			fake = installFakePowerShell("ownerAtStart");
 			const first = verifyWindowsDirectorySecurityAsync(dir);
 			await waitFor(() => fake?.launches().length === 1);
-			renameSync(dir, `${dir}-replaced`);
+			await renameWithRetry(dir, `${dir}-replaced`);
 			mkdirSync(dir);
 			writeFileSync(join(dir, ".owner-sid"), FOREIGN_SID);
 			const second = verifyWindowsDirectorySecurityAsync(dir);
@@ -1089,7 +1089,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		});
 		const oldRead = verifyWindowsDirectorySecurityAsync(dir);
 		await started;
-		renameSync(dir, `${dir}-old`);
+		await renameWithRetry(dir, `${dir}-old`);
 		mkdirSync(dir);
 		try {
 			assert.equal(await verifyWindowsDirectorySecurityAsync(dir), undefined);
@@ -1109,7 +1109,7 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		setWindowsDirectorySecurityReaderForTesting(async (path) => {
 			reads.push(path);
 			if (reads.length === 1) {
-				renameSync(path, `${path}-verified`);
+				await renameWithRetry(path, `${path}-verified`);
 				mkdirSync(path);
 			}
 			return security();

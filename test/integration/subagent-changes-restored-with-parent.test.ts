@@ -5,7 +5,7 @@
  * checkout is moved away before the resume, as on another machine.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type FauxResponseFactory,
@@ -30,6 +30,7 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
+import { renameWithRetry } from "../helpers/rename-retry.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 /** Structural cost: a real parent session runs a real subagent, then a resume restores a Git checkout. */
@@ -160,7 +161,7 @@ test(
 		await session.dispose();
 
 		// As on another machine: the checkout the session worked in is not here.
-		renameSync(clone, `${clone}-elsewhere`);
+		await renameWithRetry(clone, `${clone}-elsewhere`);
 		const database = await openNodeSqliteDatabase(sessions);
 		const store = await SqlSessionStore.open(database);
 		cleanups.push(async () => {
