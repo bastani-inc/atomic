@@ -96,6 +96,17 @@ test("messages a broker kept come back to the next one, in the order they were q
 	assert.deepEqual(budget, [{ childKey: "owner-1\0subagent-worker-1", kind: "wake", at: wokenAt, depth: 2 }]);
 });
 
+test("a store whose caller's directory was removed while its code loaded creates neither the directory nor its file", async () => {
+	const intercom = join(directory(), "intercom");
+	const path = join(intercom, "ended-child-queue.sqlite");
+
+	await assert.rejects(
+		openLocalEndedChildQueueStore(path, "broker-a", false, {}, () => false),
+		/was removed/,
+	);
+	assert.equal(existsSync(intercom), false);
+});
+
 test("a message kept once is kept once: the same id again is a duplicate", async () => {
 	const store = await open(join(directory(), "ended-child-queue.sqlite"), "broker-1");
 	assert.equal(await store.add(entry("m1")), "added");
