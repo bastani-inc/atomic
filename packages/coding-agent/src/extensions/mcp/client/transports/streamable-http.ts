@@ -1,12 +1,10 @@
 import type { AuthProvider, McpFetch } from "../auth-provider.js";
 import {
-	extractHeaderSecrets,
-	isSensitiveKeyName,
-	looksLikeSecretValue,
+	collectSecretsForMasking,
+	NON_SECRET_HTTP_HEADERS,
 	redactOAuthErrorText,
 	redactOAuthErrorTextCapped,
 	redactWwwAuthenticateHeader,
-	SENSITIVE_QUERY_PARAM_NAMES,
 	scrubFetchError,
 	scrubUnknownErrorData,
 } from "../oauth/redact.js";
@@ -296,33 +294,6 @@ async function readBodyText(
 	}
 }
 
-/** Standard non-secret HTTP headers that never carry credentials. */
-const NON_SECRET_HTTP_HEADERS = new Set([
-	"accept",
-	"accept-encoding",
-	"accept-language",
-	"cache-control",
-	"content-type",
-	"mcp-protocol-version",
-	"origin",
-	"pragma",
-	"referer",
-	"user-agent",
-	"x-env",
-	"x-environment",
-	"x-tenant",
-	"x-region",
-	"x-team",
-	"x-app",
-	"x-client",
-	"x-request-id",
-	"x-correlation-id",
-	"x-trace-id",
-	"x-forwarded-for",
-	"x-forwarded-proto",
-	"x-forwarded-host",
-]);
-
 function describeHttpFailure(status: number, body: string): string {
 	const text = body.trim();
 	const snippet = text.length > ERROR_MESSAGE_BODY_CHARS ? `${text.slice(0, ERROR_MESSAGE_BODY_CHARS - 3)}...` : text;
@@ -520,19 +491,13 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		for (const seen of this.seenTokens) {
 			if (seen !== token && seen !== this.lastToken) secrets.push(seen);
 		}
-		if (this.url.password) secrets.push(this.url.password);
-		for (const [key, value] of this.url.searchParams.entries()) {
-			if (value && SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase())) secrets.push(value);
-		}
-		if (this.options.headers) {
-			for (const [name, value] of Object.entries(this.options.headers)) {
-				const lower = name.toLowerCase();
-				if (NON_SECRET_HTTP_HEADERS.has(lower)) continue;
-				if (isSensitiveKeyName(lower) || looksLikeSecretValue(value)) {
-					secrets.push(...extractHeaderSecrets(name, value));
-				}
-			}
-		}
+		secrets.push(
+			...collectSecretsForMasking({
+				url: this.url,
+				headers: this.options.headers,
+				nonSecretHeaders: NON_SECRET_HTTP_HEADERS,
+			}),
+		);
 		return secrets;
 	}
 

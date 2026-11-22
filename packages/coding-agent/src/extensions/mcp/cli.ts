@@ -15,6 +15,7 @@ import { ProjectTrustStore } from "../../core/trust-manager.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { questionTerminal } from "../../utils/terminal-question.js";
 import {
+	collectDeclaredDisplaySecrets,
 	redactAuthorizationUrlForDisplay,
 	redactOAuthErrorText,
 	redactUrlForTransportDisplay,
@@ -122,7 +123,10 @@ function errorMessage(error: unknown): string {
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
 	return "url" in config
-		? redactUrlForTransportDisplay(config.url)
+		? redactUrlForTransportDisplay(
+				config.url,
+				collectDeclaredDisplaySecrets(config.headers, config.oauth?.clientSecret),
+			)
 		: redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 

@@ -245,10 +245,12 @@ function responseBodySecrets(value: unknown, depth = 0): string[] {
 	}
 	const secrets: string[] = [];
 	for (const [key, entry] of Object.entries(value)) {
+		const lowerKey = key.toLowerCase();
+		if (lowerKey === "token_type") continue;
 		if (
 			typeof entry === "string" &&
 			entry.length > 0 &&
-			(SENSITIVE_BODY_FIELDS.has(key.toLowerCase()) || isSensitiveKeyName(key))
+			(SENSITIVE_BODY_FIELDS.has(lowerKey) || isSensitiveKeyName(key))
 		) {
 			secrets.push(entry);
 		} else if (typeof entry === "object" && entry !== null) {

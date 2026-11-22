@@ -9,8 +9,12 @@ import { runMcpCommand } from "../../src/extensions/mcp/cli.js";
 import { McpHttpError, StdioTransport, StreamableHttpTransport } from "../../src/extensions/mcp/client/index.js";
 import { discoverOAuthServerInfo, registerClient } from "../../src/extensions/mcp/client/oauth/index.js";
 import {
+	isLikelySecretForDisplay,
+	isSecretValueForMasking,
+	isSensitiveKeyName,
 	redactAuthorizationUrlForDisplay,
 	redactOAuthErrorText,
+	redactOAuthErrorTextCapped,
 	redactUrlForTransportDisplay,
 } from "../../src/extensions/mcp/client/oauth/redact.js";
 import { McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.js";
@@ -550,5 +554,235 @@ describe("mcp secret redaction follow-up gaps", () => {
 		const crafted = `${Array.from({ length: 2_000 }, (_, i) => `ATOMICPRX${i}P`).join(" ")} Invalid bearer token format`;
 		const out = redactOAuthErrorText(crafted);
 		assert.equal(out, crafted);
+	});
+
+	it("clips raw and percent-encoded URL userinfo straddling the cap (A1)", async () => {
+		// Raw URL userinfo straddling cap
+		const url = "https://alice:urlPassSecret99@host.example.com/mcp";
+		const atIdx = url.indexOf("@");
+		const rawOut = redactOAuthErrorTextCapped(`${"a".repeat(100 - atIdx)}${url}`, [], 100);
+		assert.equal(rawOut.includes("urlPassSecret99"), false, rawOut);
+
+		// Percent-encoded URL userinfo straddling cap
+		const encUrl = "https%3A%2F%2Falice%3AencPassSecret99%40host.example.com";
+		const encAtIdx = encUrl.indexOf("%40");
+		const encOut = redactOAuthErrorTextCapped(`${"b".repeat(100 - encAtIdx)}${encUrl}`, [], 100);
+		assert.equal(encOut.includes("encPassSecret99"), false, encOut);
+
+		// Live HTTP 500 body straddling 8 KiB
+		const srv = await startCustomServer((_req, res) => {
+			res.writeHead(500).end(`${"x".repeat(8192 - atIdx)}${url}`);
+		});
+		const tr = new StreamableHttpTransport({ url: srv.url, openGetStream: false });
+		await tr.start();
+		const httpErr = await tr
+			.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+			.catch((error: unknown) => error);
+		await tr.close();
+		assert.ok(httpErr instanceof McpHttpError);
+		assert.equal(httpErr.body.includes("urlPassSecret99"), false, httpErr.body.slice(-60));
+	});
+
+	it("collects 8-15 char and hex secrets for masking without hiding benign display params (A2)", async () => {
+		const shortSec = "aB3@xY9k!2mN";
+		const hexSec = "deadbeefcafebabe";
+		const urlQuerySec = "xK9mP2vQ7nR4";
+		const srv = await startCustomServer((_req, res) => {
+			res.writeHead(500).end(`rejected ${shortSec} and ${hexSec} and ${urlQuerySec}`);
+		});
+		const agentDir = createAgentDir();
+		const stdioScript = join(agentDir, "short-env.mjs");
+		writeFileSync(
+			stdioScript,
+			`process.stderr.write("rejected " + process.env.MY_CUSTOM + " " + process.env.MY_HEX + "\\n"); process.exit(1);\n`,
+		);
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					httpShort: {
+						url: `${srv.url}?x=${encodeURIComponent(urlQuerySec)}&region=us-east-1&version=2025-11-25&workspace=my_project&org=AcmeCorp`,
+						headers: { "X-Custom": shortSec, "X-Hex": hexSec },
+					},
+					stdioShort: {
+						command: process.execPath,
+						args: [stdioScript],
+						env: { MY_CUSTOM: shortSec, MY_HEX: hexSec },
+					},
+				},
+			}),
+		);
+		const out: string[] = [];
+		await runMcpCommand(["list", "--json"], {
+			cwd: agentDir,
+			agentDir,
+			log: (line) => out.push(line),
+			error: () => {},
+		});
+		const parsed = JSON.parse(out.join("\n")) as { servers: { name: string; transport: string; error?: string }[] };
+		const httpEntry = parsed.servers.find((s) => s.name === "httpShort")!;
+		const stdioEntry = parsed.servers.find((s) => s.name === "stdioShort")!;
+		assert.equal((httpEntry.error ?? "").includes("rejected "), true, httpEntry.error);
+		assert.equal((httpEntry.error ?? "").includes(shortSec), false, httpEntry.error);
+		assert.equal((httpEntry.error ?? "").includes(hexSec), false, httpEntry.error);
+		assert.equal((httpEntry.error ?? "").includes(urlQuerySec), false, httpEntry.error);
+		assert.equal(httpEntry.transport.includes(urlQuerySec), false, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes("region=us-east-1"), true, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes("version=2025-11-25"), true, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes("workspace=my_project"), true, httpEntry.transport);
+		assert.equal(httpEntry.transport.includes("org=AcmeCorp"), true, httpEntry.transport);
+		assert.equal((stdioEntry.error ?? "").includes("rejected "), true, stdioEntry.error);
+		assert.equal((stdioEntry.error ?? "").includes(shortSec), false, stdioEntry.error);
+		assert.equal((stdioEntry.error ?? "").includes(hexSec), false, stdioEntry.error);
+
+		// Masking side collects every 8-15 char & hex secret (superset of main) while display side preserves benign shapes.
+		for (const secret of [
+			"aB3$xY9k!2mN",
+			"sk-123456789012",
+			"p@ssW0rd!99",
+			"opaque123456",
+			"ghp_12345678901",
+			"deadbeefcafebabe",
+			"a1b2c3d4e5f60708",
+		]) {
+			assert.equal(isSecretValueForMasking(secret), true, `masking missed ${secret}`);
+		}
+		for (const plain of ["staging", "production", "localhost", "12345678", "short7"]) {
+			assert.equal(isSecretValueForMasking(plain), false, `masking over-matched ${plain}`);
+		}
+		for (const benign of [
+			"us-east-1",
+			"eu-central-1",
+			"acme-corp",
+			"2025-11-25",
+			"2025-11-25T10:20:30Z",
+			"my_project",
+			"workspace_prod_01",
+			"AcmeCorp",
+			`$\{TENANT_ID}`,
+			"/workspace/app",
+			"v1.2.3",
+		]) {
+			assert.equal(isLikelySecretForDisplay(benign), false, `display hid benign ${benign}`);
+		}
+		for (const displaySec of [
+			"aB3$xY9k!2mN",
+			"sk-123456789012",
+			"ghp_12345678901",
+			"deadbeefcafebabe",
+			"opaqueHighEntropy998877",
+		]) {
+			assert.equal(isLikelySecretForDisplay(displaySec), true, `display missed secret ${displaySec}`);
+		}
+	});
+
+	it("preserves legitimate OAuth authorization URL params and whole-token describeTransport params (A3)", async () => {
+		const legitAuthUrls = [
+			"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id=cid&token_access_type=offline&state=s1",
+			"https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=cid&authuser=0&login_hint=user@example.com&state=s1",
+			"https://www.facebook.com/dialog/oauth?response_type=code&client_id=cid&auth_type=rerequest&state=s1",
+			"https://auth.example.com/authorize?response_type=code&client_id=cid&path=/org/app&state=s1",
+			"https://auth.example.com/authorize?response_type=code&client_id=cid&bypass_cache=1&state=s1",
+			"https://auth.example.com/authorize?response_type=code&client_id=cid&design=dark&state=s1",
+			"https://auth.example.com/authorize?response_type=code&client_id=cid&id_token_hint=hint&state=s1",
+		];
+		for (const authUrl of legitAuthUrls) {
+			assert.equal(redactAuthorizationUrlForDisplay(authUrl), authUrl);
+		}
+		// Explicit secret param names are still stripped from authorization URLs.
+		const secretAuthUrl =
+			"https://auth.example.com/authorize?response_type=code&client_id=cid&client_secret=s1&client-secret=s2" +
+			"&clientsecret=s3&access_token=s4&refresh_token=s5&id_token=s6&api_key=s7&apikey=s8&password=s9&passwd=s10&pwd=s11&state=ok";
+		assert.equal(
+			redactAuthorizationUrlForDisplay(secretAuthUrl),
+			"https://auth.example.com/authorize?response_type=code&client_id=cid&state=ok",
+		);
+		// Whole-token key sensitivity: no substring false positives, all snake/kebab/camel secret names still matched.
+		for (const benignKey of [
+			"path",
+			"NODE_PATH",
+			"design",
+			"bypass_cache",
+			"authuser",
+			"author",
+			"credit",
+			"concert",
+			"outside",
+			"compass",
+			"dispatch",
+		]) {
+			assert.equal(isSensitiveKeyName(benignKey), false, `false positive key ${benignKey}`);
+		}
+		for (const secretKey of [
+			"accessToken",
+			"refresh_token",
+			"client-secret",
+			"clientSecret",
+			"clientsecret",
+			"APIKey",
+			"X-API-Key",
+			"apikey",
+			"GITHUB_PAT",
+			"DB_PASS",
+			"X-Signature",
+			"SECRET1",
+		]) {
+			assert.equal(isSensitiveKeyName(secretKey), true, `missed secret key ${secretKey}`);
+		}
+		assert.equal(
+			redactUrlForTransportDisplay(
+				"https://mcp.example.com/mcp?path=/workspace/app&tenant=acme-corp&bypass_cache=1&design=dark",
+			),
+			"https://mcp.example.com/mcp?path=/workspace/app&tenant=acme-corp&bypass_cache=1&design=dark",
+		);
+
+		// Live signInMcpServer -> openUrl preserves legitimate authorization_endpoint params.
+		let openedUrl = "";
+		const srv = await startCustomServer((req, res, origin) => {
+			const u = new URL(req.url ?? "/", origin);
+			if (u.pathname === "/mcp") {
+				res.writeHead(401, {
+					"www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
+				}).end();
+				return;
+			}
+			if (u.pathname === "/.well-known/oauth-protected-resource/mcp") {
+				json(res, 200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+				return;
+			}
+			if (u.pathname === "/.well-known/oauth-authorization-server") {
+				json(res, 200, {
+					issuer: origin,
+					authorization_endpoint: `${origin}/authorize?token_access_type=offline&authuser=0&path=/org/app`,
+					token_endpoint: `${origin}/token`,
+					response_types_supported: ["code"],
+					code_challenge_methods_supported: ["S256"],
+				});
+				return;
+			}
+			if (u.pathname === "/authorize") {
+				const r = new URL(u.searchParams.get("redirect_uri") ?? "");
+				r.searchParams.set("error", "access_denied");
+				r.searchParams.set("state", u.searchParams.get("state") ?? "");
+				res.writeHead(302, { location: r.href }).end();
+				return;
+			}
+			res.writeHead(404).end();
+		});
+		const agentDir = createAgentDir({ s: { url: srv.url, oauth: { clientId: "cid" } } });
+		await runMcpCommand(["login", "s", "--timeout", "10"], {
+			cwd: agentDir,
+			agentDir,
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			openUrl: (u) => {
+				openedUrl = u;
+				void fetch(u, { redirect: "manual" }).then((r) => fetch(r.headers.get("location") ?? ""));
+			},
+			log: () => {},
+			error: () => {},
+		});
+		assert.equal(openedUrl.includes("token_access_type=offline"), true, openedUrl);
+		assert.equal(openedUrl.includes("authuser=0"), true, openedUrl);
+		assert.equal(openedUrl.includes("path=%2Forg%2Fapp") || openedUrl.includes("path=/org/app"), true, openedUrl);
 	});
 });

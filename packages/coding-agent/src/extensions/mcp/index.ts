@@ -54,6 +54,7 @@ import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
 import type { Tool as McpTool } from "./client/index.js";
 import {
+	collectDeclaredDisplaySecrets,
 	redactAuthorizationUrlForDisplay,
 	redactOAuthErrorText,
 	redactUrlForTransportDisplay,
@@ -435,7 +436,12 @@ function attentionRank(server: McpServer): number {
 
 function describeTransport(entry: McpServerEntry): string {
 	const { config } = entry;
-	if ("url" in config) return redactUrlForTransportDisplay(config.url);
+	if ("url" in config) {
+		return redactUrlForTransportDisplay(
+			config.url,
+			collectDeclaredDisplaySecrets(config.headers, config.oauth?.clientSecret),
+		);
+	}
 	return redactOAuthErrorText([config.command, ...(config.args ?? [])].join(" "));
 }
 

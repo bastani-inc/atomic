@@ -556,29 +556,133 @@ export function extractHeaderSecrets(name: string, value: string | null | undefi
 	return extractAuthorizationSecrets(value);
 }
 
-/** Whether a header or env var name explicitly indicates credential/session material. */
+/** Standard non-secret HTTP headers that never carry credentials. */
+export const NON_SECRET_HTTP_HEADERS: ReadonlySet<string> = new Set([
+	"accept",
+	"accept-encoding",
+	"accept-language",
+	"cache-control",
+	"content-type",
+	"mcp-protocol-version",
+	"origin",
+	"pragma",
+	"referer",
+	"user-agent",
+	"x-env",
+	"x-environment",
+	"x-tenant",
+	"x-region",
+	"x-team",
+	"x-app",
+	"x-client",
+	"x-request-id",
+	"x-correlation-id",
+	"x-trace-id",
+	"x-forwarded-for",
+	"x-forwarded-proto",
+	"x-forwarded-host",
+]);
+
+const SENSITIVE_KEY_TOKENS = new Set([
+	"authorization",
+	"authenticate",
+	"auth",
+	"oauth",
+	"token",
+	"tokens",
+	"accesstoken",
+	"refreshtoken",
+	"idtoken",
+	"authtoken",
+	"secret",
+	"secrets",
+	"clientsecret",
+	"key",
+	"keys",
+	"apikey",
+	"privkey",
+	"privatekey",
+	"pass",
+	"password",
+	"passwd",
+	"passphrase",
+	"pwd",
+	"cred",
+	"creds",
+	"credential",
+	"credentials",
+	"cookie",
+	"cookies",
+	"session",
+	"sessionid",
+	"jsessionid",
+	"phpsessid",
+	"sessid",
+	"sid",
+	"sig",
+	"sign",
+	"signature",
+	"signing",
+	"pat",
+	"jwt",
+	"bearer",
+	"private",
+	"cert",
+	"certificate",
+]);
+
+/** Split snake_case, kebab-case, camelCase, PascalCase, acronym, and letter/digit boundaries into lowercase tokens. */
+function splitKeyTokens(name: string): string[] {
+	const tokens: string[] = [];
+	let start = -1;
+	for (let i = 0; i < name.length; i++) {
+		const c = name.charCodeAt(i);
+		const isUpper = c >= 65 && c <= 90;
+		const isLower = c >= 97 && c <= 122;
+		const isDigit = c >= 48 && c <= 57;
+		const isAlpha = isUpper || isLower;
+		if (!isAlpha && !isDigit) {
+			if (start >= 0) {
+				tokens.push(name.slice(start, i).toLowerCase());
+				start = -1;
+			}
+			continue;
+		}
+		if (start < 0) {
+			start = i;
+			continue;
+		}
+		const prev = name.charCodeAt(i - 1);
+		const prevIsUpper = prev >= 65 && prev <= 90;
+		const prevIsLower = prev >= 97 && prev <= 122;
+		const prevIsDigit = prev >= 48 && prev <= 57;
+		const prevIsAlpha = prevIsUpper || prevIsLower;
+		if ((prevIsAlpha && isDigit) || (prevIsDigit && isAlpha)) {
+			tokens.push(name.slice(start, i).toLowerCase());
+			start = i;
+		} else if (isUpper && prevIsLower) {
+			tokens.push(name.slice(start, i).toLowerCase());
+			start = i;
+		} else if (isUpper && prevIsUpper && i + 1 < name.length) {
+			const next = name.charCodeAt(i + 1);
+			if (next >= 97 && next <= 122) {
+				tokens.push(name.slice(start, i).toLowerCase());
+				start = i;
+			}
+		}
+	}
+	if (start >= 0) {
+		tokens.push(name.slice(start).toLowerCase());
+	}
+	return tokens;
+}
+
+/** Whether a header, env var, JSON field, or query key has a whole credential/session token (never substring). */
 export function isSensitiveKeyName(name: string): boolean {
-	const lower = name.toLowerCase();
-	return (
-		lower === "authorization" ||
-		lower === "proxy-authorization" ||
-		lower === "cookie" ||
-		lower.includes("token") ||
-		lower.includes("secret") ||
-		lower.includes("key") ||
-		lower.includes("auth") ||
-		lower.includes("pass") ||
-		lower.includes("pwd") ||
-		lower.includes("cred") ||
-		lower.includes("session") ||
-		lower.includes("sid") ||
-		lower.includes("sign") ||
-		lower.includes("pat") ||
-		lower.includes("jwt") ||
-		lower.includes("bearer") ||
-		lower.includes("private") ||
-		lower.includes("cert")
-	);
+	for (const token of splitKeyTokens(name)) {
+		if (SENSITIVE_KEY_TOKENS.has(token)) return true;
+	}
+	return false;
 }
 
 function shannonEntropy(value: string): number {
@@ -596,19 +700,252 @@ function shannonEntropy(value: string): number {
 	return entropy;
 }
 
+function isHexToken(value: string): boolean {
+	if (value.length < 16) return false;
+	let hasHexAlpha = false;
+	for (let i = 0; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		if ((c >= 65 && c <= 70) || (c >= 97 && c <= 102)) hasHexAlpha = true;
+		else if (!(c >= 48 && c <= 57)) return false;
+	}
+	return hasHexAlpha;
+}
+
+function isEnvTemplatePlaceholder(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length < 2) return false;
+	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return true;
+	if (matchesAsciiInsensitive(trimmed, 0, "$env:")) return true;
+	if (trimmed.charCodeAt(0) === 36) {
+		const first = trimmed.charCodeAt(1);
+		if (!((first >= 65 && first <= 90) || (first >= 97 && first <= 122) || first === 95)) return false;
+		for (let i = 2; i < trimmed.length; i++) {
+			if (!isAsciiAlphaNumOrUnderscore(trimmed.charCodeAt(i))) return false;
+		}
+		return true;
+	}
+	return false;
+}
+
+function isDateOrTimestamp(value: string): boolean {
+	if (value.length < 10 || value.length > 35) return false;
+	const isDigitAt = (idx: number) => {
+		const c = value.charCodeAt(idx);
+		return c >= 48 && c <= 57;
+	};
+	if (!(isDigitAt(0) && isDigitAt(1) && isDigitAt(2) && isDigitAt(3))) return false;
+	const sep = value.charCodeAt(4);
+	if (sep !== 45 && sep !== 47) return false;
+	if (!(isDigitAt(5) && isDigitAt(6) && value.charCodeAt(7) === sep && isDigitAt(8) && isDigitAt(9))) return false;
+	if (value.length === 10) return true;
+	const t = value.charCodeAt(10);
+	if (t !== 84 && t !== 116) return false;
+	for (let i = 11; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		const ok =
+			(c >= 48 && c <= 57) ||
+			c === 58 || // :
+			c === 46 || // .
+			c === 90 || // Z
+			c === 122 || // z
+			c === 43 || // +
+			c === 45; // -
+		if (!ok) return false;
+	}
+	return true;
+}
+
+function isVersionString(value: string): boolean {
+	let i = value.charCodeAt(0) === 118 || value.charCodeAt(0) === 86 ? 1 : 0;
+	if (i >= value.length) return false;
+	let dots = 0;
+	let digitsInPart = 0;
+	for (; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		if (c >= 48 && c <= 57) {
+			digitsInPart++;
+			continue;
+		}
+		if (c === 46) {
+			if (digitsInPart === 0) return false;
+			dots++;
+			digitsInPart = 0;
+			continue;
+		}
+		if (c === 45 && dots >= 1 && digitsInPart > 0) {
+			const restLen = value.length - (i + 1);
+			if (restLen <= 0 || restLen > 16) return false;
+			for (let j = i + 1; j < value.length; j++) {
+				const r = value.charCodeAt(j);
+				const ok = (r >= 97 && r <= 122) || (r >= 48 && r <= 57) || r === 46 || r === 45;
+				if (!ok) return false;
+			}
+			return true;
+		}
+		return false;
+	}
+	return dots >= 1 && digitsInPart > 0;
+}
+
+function isSimplePath(value: string): boolean {
+	if (value.charCodeAt(0) !== 47) return false;
+	let segStart = 1;
+	for (let i = 1; i <= value.length; i++) {
+		const isEnd = i === value.length;
+		const c = isEnd ? 47 : value.charCodeAt(i);
+		if (c === 47) {
+			const seg = value.slice(segStart, i);
+			if (seg.length >= 16) {
+				if (isHexToken(seg)) return false;
+				let hasUpper = false;
+				let hasDigit = false;
+				for (let j = 0; j < seg.length; j++) {
+					const s = seg.charCodeAt(j);
+					if (s >= 65 && s <= 90) hasUpper = true;
+					else if (s >= 48 && s <= 57) hasDigit = true;
+				}
+				if (hasUpper && hasDigit && shannonEntropy(seg) >= 3.5) return false;
+			}
+			segStart = i + 1;
+			continue;
+		}
+		const ok =
+			(c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 45 || c === 95 || c === 46;
+		if (!ok) return false;
+	}
+	return true;
+}
+
+function isBenignKebabOrSnakeSlug(value: string): boolean {
+	let hasDelim = false;
+	let hasWord = false;
+	let segStart = 0;
+	for (let i = 0; i <= value.length; i++) {
+		const isEnd = i === value.length;
+		const c = isEnd ? 45 : value.charCodeAt(i);
+		if (c === 45 || c === 95) {
+			if (!isEnd) hasDelim = true;
+			const segLen = i - segStart;
+			if (segLen > 0) {
+				let allLower = true;
+				let allDigit = true;
+				for (let j = segStart; j < i; j++) {
+					const s = value.charCodeAt(j);
+					if (!(s >= 97 && s <= 122)) allLower = false;
+					if (!(s >= 48 && s <= 57)) allDigit = false;
+				}
+				if (allLower) {
+					if (segLen >= 16 && isHexToken(value.slice(segStart, i))) return false;
+					if (segLen >= 2) hasWord = true;
+				} else if (allDigit) {
+					if (segLen > 4) return false;
+				} else if (segLen > 4) {
+					return false;
+				}
+			}
+			segStart = i + 1;
+			continue;
+		}
+		if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57))) return false;
+	}
+	return hasDelim && hasWord;
+}
+
 /**
- * Whether an unlabelled value looks like a high-entropy opaque credential/token rather than a benign
- * identifier such as `us-east-1`, `acme-corp`, `2025-11-25`, `my_project`, `AcmeCorp`, or `${TENANT_ID}`.
+ * Whether a configured header, env, or query value should be collected into the masking registry.
+ * Strictly a superset of the original value rule: catches auth schemes, 16+ char hex tokens, and
+ * any 8+ char value containing mixed case, digits, or symbols (skipping short values, plain words, and pure digits).
  */
-export function looksLikeSecretValue(value: string): boolean {
+export function isSecretValueForMasking(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed.length < 8) return false;
 	if (matchesAsciiInsensitive(trimmed, 0, "bearer ") || matchesAsciiInsensitive(trimmed, 0, "bearer\t")) return true;
 	if (matchesAsciiInsensitive(trimmed, 0, "basic ") || matchesAsciiInsensitive(trimmed, 0, "basic\t")) return true;
-	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return false;
-	if (matchesAsciiInsensitive(trimmed, 0, "$env:")) return false;
 	if (trimmed.includes(" ") || trimmed.includes("\n")) return false;
-	if (trimmed.length < 16) return false;
+	if (isHexToken(trimmed)) return true;
+	let hasUpper = false;
+	let hasLower = false;
+	let hasDigit = false;
+	let hasSymbol = false;
+	for (let i = 0; i < trimmed.length; i++) {
+		const c = trimmed.charCodeAt(i);
+		if (c >= 65 && c <= 90) hasUpper = true;
+		else if (c >= 97 && c <= 122) hasLower = true;
+		else if (c >= 48 && c <= 57) hasDigit = true;
+		else hasSymbol = true;
+	}
+	// Plain lowercase words ("localhost", "production", "staging") or pure digits ("12345678") are not treated as secrets.
+	if (!hasUpper && !hasDigit && !hasSymbol) return false;
+	if (!hasUpper && !hasLower && !hasSymbol) return false;
+	return (hasUpper && hasLower) || hasDigit || hasSymbol;
+}
+
+export interface SecretCollectionInput {
+	readonly url?: URL;
+	readonly headers?: Readonly<Record<string, string>>;
+	readonly nonSecretHeaders?: ReadonlySet<string>;
+	readonly env?: Readonly<Record<string, string>>;
+	readonly nonSecretEnv?: ReadonlySet<string>;
+}
+
+/**
+ * Collect secret values from a transport's URL, headers, and environment variables for error/log masking.
+ */
+export function collectSecretsForMasking(input: SecretCollectionInput): string[] {
+	const secrets: string[] = [];
+	if (input.url) {
+		if (input.url.password) secrets.push(input.url.password);
+		for (const [key, value] of input.url.searchParams.entries()) {
+			if (!value) continue;
+			if (
+				SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
+				isSensitiveKeyName(key) ||
+				isSecretValueForMasking(value)
+			) {
+				secrets.push(value);
+			}
+		}
+	}
+	if (input.headers) {
+		for (const [name, value] of Object.entries(input.headers)) {
+			if (input.nonSecretHeaders?.has(name.toLowerCase())) continue;
+			if (isSensitiveKeyName(name) || isSecretValueForMasking(value)) {
+				secrets.push(...extractHeaderSecrets(name, value));
+			}
+		}
+	}
+	if (input.env) {
+		for (const [name, value] of Object.entries(input.env)) {
+			if (input.nonSecretEnv?.has(name.toUpperCase())) continue;
+			if (isSensitiveKeyName(name) || isSecretValueForMasking(value)) {
+				secrets.push(...extractAuthorizationSecrets(value));
+			}
+		}
+	}
+	return secrets;
+}
+
+/**
+ * Whether an unlabelled URL query value looks like an opaque secret in transport display (`atomic mcp list`, `/mcp`)
+ * rather than a benign display parameter such as `us-east-1`, `acme-corp`, `2025-11-25`, `my_project`, `AcmeCorp`,
+ * `/workspace/app`, or `${TENANT_ID}`.
+ */
+export function isLikelySecretForDisplay(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length < 8) return false;
+	if (matchesAsciiInsensitive(trimmed, 0, "bearer ") || matchesAsciiInsensitive(trimmed, 0, "bearer\t")) return true;
+	if (matchesAsciiInsensitive(trimmed, 0, "basic ") || matchesAsciiInsensitive(trimmed, 0, "basic\t")) return true;
+	if (isEnvTemplatePlaceholder(trimmed)) return false;
+	if (trimmed.includes(" ") || trimmed.includes("\n")) return false;
+	if (
+		isDateOrTimestamp(trimmed) ||
+		isVersionString(trimmed) ||
+		isSimplePath(trimmed) ||
+		isBenignKebabOrSnakeSlug(trimmed)
+	) {
+		return false;
+	}
+	if (isHexToken(trimmed)) return true;
 	let hasUpper = false;
 	let hasLower = false;
 	let hasDigit = false;
@@ -620,11 +957,35 @@ export function looksLikeSecretValue(value: string): boolean {
 		else if (c >= 48 && c <= 57) hasDigit = true;
 		else hasOther = true;
 	}
+	// Plain ASCII words (lowercase, uppercase, CamelCase/PascalCase) and pure digits are not display secrets.
+	if (!hasDigit && !hasOther) return false;
+	if (!hasUpper && !hasLower && !hasOther) return false;
 	const classes = (hasUpper ? 1 : 0) + (hasLower ? 1 : 0) + (hasDigit ? 1 : 0) + (hasOther ? 1 : 0);
-	if (classes < 2) return false;
-	// Lowercase hyphen/underscore slugs without digits or uppercase (e.g. `my-long-workspace-name`) are not secrets.
-	if (!hasUpper && !hasDigit) return false;
-	return shannonEntropy(trimmed) >= 3.3;
+	const entropy = shannonEntropy(trimmed);
+	if (trimmed.length >= 16 && classes >= 2 && (hasUpper || hasDigit) && entropy >= 3.3) return true;
+	if (trimmed.length >= 10 && classes >= 4 && entropy >= 3.0) return true;
+	if (trimmed.length >= 10 && classes >= 3 && entropy >= 3.4) return true;
+	return false;
+}
+
+/** Collect declared secret values from an HTTP server config for display-URL scrubbing without hiding benign params. */
+export function collectDeclaredDisplaySecrets(
+	headers?: Readonly<Record<string, string>>,
+	clientSecret?: string,
+): string[] {
+	const secrets: string[] = [];
+	if (clientSecret && !isEnvTemplatePlaceholder(clientSecret)) secrets.push(clientSecret);
+	if (headers) {
+		for (const [name, value] of Object.entries(headers)) {
+			if (NON_SECRET_HTTP_HEADERS.has(name.toLowerCase()) || isEnvTemplatePlaceholder(value)) continue;
+			if (isSensitiveKeyName(name) || isLikelySecretForDisplay(value)) {
+				for (const extracted of extractHeaderSecrets(name, value)) {
+					if (!isEnvTemplatePlaceholder(extracted)) secrets.push(extracted);
+				}
+			}
+		}
+	}
+	return secrets;
 }
 
 /**
@@ -664,23 +1025,34 @@ export function redactUrlForDisplay(rawUrl: string): string {
 	return safe;
 }
 
-const PUBLIC_OAUTH_AUTHORIZATION_PARAMS = new Set([
-	"response_type",
-	"client_id",
-	"code_challenge",
-	"code_challenge_method",
-	"redirect_uri",
-	"state",
-	"scope",
-	"prompt",
-	"resource",
+/** Explicit secret query parameter names stripped from OAuth authorization URLs (never substring heuristics). */
+const AUTHORIZATION_URL_SECRET_PARAMS = new Set([
+	"client_secret",
+	"client-secret",
+	"clientsecret",
+	"access_token",
+	"access-token",
+	"accesstoken",
+	"refresh_token",
+	"refresh-token",
+	"refreshtoken",
+	"id_token",
+	"id-token",
+	"idtoken",
+	"api_key",
+	"api-key",
+	"apikey",
+	"password",
+	"passwd",
+	"pwd",
 ]);
 
 /**
  * Format a server URL for transport display (`atomic mcp list`, `/mcp`):
  * strip userinfo and fragment, preserve benign query parameters (such as `?region=us-east-1`,
- * `?tenant=acme-corp`, `?version=2025-11-25`, `?workspace=my_project`, `?org=AcmeCorp`, `?tenant=${TENANT_ID}`),
- * and omit only query parameters with sensitive names, registered secrets, or high-entropy credential-like values.
+ * `?tenant=acme-corp`, `?version=2025-11-25`, `?workspace=my_project`, `?org=AcmeCorp`,
+ * `?path=/workspace/app`, `?tenant=${TENANT_ID}`), and omit only query parameters with sensitive
+ * whole-token names, registered secrets, or high-entropy credential-like values.
  */
 export function redactUrlForTransportDisplay(rawUrl: string, secrets: Iterable<string | undefined> = []): string {
 	if (!URL.canParse(rawUrl)) return redactUrlForDisplay(rawUrl);
@@ -697,18 +1069,23 @@ export function redactUrlForTransportDisplay(rawUrl: string, secrets: Iterable<s
 		changed = true;
 	}
 	const keysToDelete: string[] = [];
+	const updates: [string, string][] = [];
 	for (const [key, value] of parsed.searchParams.entries()) {
 		if (
 			SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
 			isSensitiveKeyName(key) ||
 			(!registry.empty && registry.mask(value) !== value) ||
-			looksLikeSecretValue(value)
+			isLikelySecretForDisplay(value)
 		) {
 			keysToDelete.push(key);
+			continue;
 		}
+		const stripped = redactUrlCredentials(value, "text");
+		if (stripped !== value) updates.push([key, stripped]);
 	}
-	if (keysToDelete.length > 0) {
+	if (keysToDelete.length > 0 || updates.length > 0) {
 		for (const key of keysToDelete) parsed.searchParams.delete(key);
+		for (const [key, value] of updates) parsed.searchParams.set(key, value);
 		changed = true;
 	}
 	return changed ? parsed.href : rawUrl;
@@ -716,9 +1093,10 @@ export function redactUrlForTransportDisplay(rawUrl: string, secrets: Iterable<s
 
 /**
  * Prepare an OAuth authorization URL for display, copy, or browser open:
- * keep the full query intact (so PKCE/OAuth sign-in always works) while stripping URL userinfo
- * (including single- or double-encoded nested userinfo inside query params), any `client_secret` /
- * sensitive non-public query parameter, and any query parameter whose value contains a registered secret.
+ * keep the full query intact (including legitimate provider parameters like `token_access_type`,
+ * `authuser`, `auth_type`, `path`, `bypass_cache`, `design`) while stripping only URL userinfo
+ * (including single- or double-encoded nested userinfo inside query params), explicit secret parameter
+ * names, and any query parameter whose value contains a registered secret.
  */
 export function redactAuthorizationUrlForDisplay(
 	input: string | URL,
@@ -738,13 +1116,7 @@ export function redactAuthorizationUrlForDisplay(
 	const updates: [string, string][] = [];
 	for (const [key, value] of url.searchParams.entries()) {
 		const lowerKey = key.toLowerCase();
-		const isSecretParamName =
-			!PUBLIC_OAUTH_AUTHORIZATION_PARAMS.has(lowerKey) &&
-			(lowerKey === "client_secret" ||
-				lowerKey === "client-secret" ||
-				lowerKey === "clientsecret" ||
-				isSensitiveKeyName(lowerKey));
-		if (isSecretParamName || (!registry.empty && registry.mask(value) !== value)) {
+		if (AUTHORIZATION_URL_SECRET_PARAMS.has(lowerKey) || (!registry.empty && registry.mask(value) !== value)) {
 			keysToDelete.push(key);
 			continue;
 		}
@@ -1478,7 +1850,9 @@ function clipRedactedPrefix(redactedHead: string, redactedFull: string): string 
 			return redactedFull.slice(0, j + REDACTED.length);
 		}
 	}
-	return redactedHead;
+	// Otherwise a deletion/shortening redaction (such as raw or percent-encoded URL userinfo straddling the cap)
+	// diverged at `lcp`; clip right at the divergence point so zero characters of the unredacted prefix survive.
+	return redactedHead.slice(0, lcp);
 }
 
 /**
