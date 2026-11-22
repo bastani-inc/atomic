@@ -8,6 +8,16 @@ export function getUserAgentDirs(): string[] {
 	return getAgentConfigPaths("agents");
 }
 
+/**
+ * The user agent directories in the order discovery reads them; a later directory's agent replaces an earlier one's
+ * of the same name. Legacy `~/.pi/agent/agents` comes first, then `~/.agents`, then Atomic's own agent directory,
+ * which wins as `.atomic/agents` does in a project.
+ */
+export function getUserAgentReadDirs(): string[] {
+	const dirs = getUserAgentDirs();
+	return [...dirs.slice(1), path.join(os.homedir(), ".agents"), ...dirs.slice(0, 1)];
+}
+
 export async function isDirectory(p: string): Promise<boolean> {
 	try {
 		return (await stat(p)).isDirectory();

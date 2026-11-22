@@ -132,7 +132,7 @@ Useful override fields: `model`, `fallbackModels`, `thinking`, `systemPromptMode
 
 Agent files can live in:
 
-- `~/.atomic/agent/agents/**/*.md` for user scope (user discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set).
+- `~/.atomic/agent/agents/**/*.md` for user scope (user discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, with `~/.atomic/agent/agents/` winning user-scope conflicts).
 - `.atomic/agents/**/*.md` for project scope.
 - `.agents/**/*.md` and legacy `.pi/agents/**/*.md` for project compatibility, with `.atomic/agents/` winning project-scope conflicts.
 
