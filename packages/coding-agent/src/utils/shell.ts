@@ -466,6 +466,11 @@ function safeKillCwd(commandPath) {
   }
   return fallback;
 }
+function exitHost() {
+  // Inside a worker thread, process.exit(1) only exits the worker; SIGKILL on our own PID terminates the host process.
+  try { process.kill(process.pid, "SIGKILL"); } catch {}
+  process.exit(1);
+}
 function fallbackTaskkillSelf() {
   // Same System32 hardening as killProcessTree: PATH is not trusted here, and an
   // unconsumed async "error" from a failed spawn would take the guardian thread
@@ -476,11 +481,11 @@ function fallbackTaskkillSelf() {
     const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
     const cwd = safeKillCwd(taskkillPath);
     const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(process.pid)], { ...(cwd === undefined ? {} : { cwd }), stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
-    child.once("error", () => process.exit(1));
-    child.once("exit", () => process.exit(1));
+    child.once("error", exitHost);
+    child.once("exit", exitHost);
     return;
   } catch {}
-  process.exit(1);
+  exitHost();
 }
 function killTracked(pid, entry, native) {
   if (process.platform === "win32") {
@@ -507,7 +512,7 @@ function killSelf(native) {
           held.endDescendants();
           held.endAll();
         } catch {}
-        process.exit(1);
+        exitHost();
       }
       if (held) {
         try { held.release(); } catch {}

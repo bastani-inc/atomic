@@ -854,9 +854,15 @@ setTimeout(() => { process.stdout.write("SURVIVED"); process.exit(0); }, 20_000)
 			);
 		});
 
-		test("PARENT_GUARDIAN_SOURCE exits its host via process.exit(1) when natives are unavailable and fallback taskkill cannot spawn", async () => {
+		test("PARENT_GUARDIAN_SOURCE terminates its host process when natives are unavailable and fallback taskkill cannot spawn", async () => {
 			const dir = makeTempDir("atomic-win-guardian-tk-enoent-");
 			const stopFile = join(dir, "stop");
+			const childPidFile = join(dir, "child.pid");
+			const childScript = join(dir, "child.cjs");
+			writeFileSync(
+				childScript,
+				`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
+			);
 			const emptySystemRoot = join(dir, "empty-win");
 			mkdirSync(emptySystemRoot);
 			const preload = join(dir, "no-natives-preload.cjs");
@@ -878,9 +884,31 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
 } });`)}`;
 			const shellUrl = pathToFileURL(join(process.cwd(), "src/utils/shell.ts")).href;
+			// Mutate SystemRoot/windir inside the booted host (clearing any uppercase SYSTEMROOT/WINDIR variants)
+			// AFTER spawning the detached child so Node's DLLs load cleanly while the guardian worker truly hits
+			// taskkill.exe ENOENT. The detached child proves real C:\Windows\System32\taskkill.exe /F /T did not run.
 			const hostScript = `
-import { writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { startParentProcessGuardian } from ${JSON.stringify(shellUrl)};
+
+spawn(process.execPath, [${JSON.stringify(childScript)}, ${JSON.stringify(childPidFile)}], {
+	cwd: tmpdir(),
+	detached: true,
+	stdio: "ignore",
+	windowsHide: true,
+}).unref();
+while (!(existsSync(${JSON.stringify(childPidFile)}) && readFileSync(${JSON.stringify(childPidFile)}, "utf8").trim() !== "")) {
+	await new Promise((r) => setTimeout(r, 20));
+}
+
+for (const key of Object.keys(process.env)) {
+	if (/^(systemroot|windir)$/i.test(key)) delete process.env[key];
+}
+process.env.SystemRoot = ${JSON.stringify(emptySystemRoot)};
+process.env.windir = ${JSON.stringify(emptySystemRoot)};
+
 startParentProcessGuardian(process.pid, ${JSON.stringify(stopFile)});
 await new Promise((r) => setTimeout(r, 150));
 writeFileSync(${JSON.stringify(stopFile)}, "stop");
@@ -893,8 +921,6 @@ setTimeout(() => { process.stdout.write("SURVIVED"); process.exit(0); }, 20_000)
 					stderr: "pipe",
 					env: {
 						...process.env,
-						SystemRoot: emptySystemRoot,
-						windir: emptySystemRoot,
 						NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
 					},
 				},
@@ -902,13 +928,22 @@ setTimeout(() => { process.stdout.write("SURVIVED"); process.exit(0); }, 20_000)
 			const hostRec = await recordProcess(host.pid!);
 			recordedProcs.push(hostRec);
 
+			const childRec = await waitForPidFile(childPidFile);
+			const stdoutPromise = new Response(host.stdout).text();
 			const exitCode = await Promise.race([
 				host.exited,
 				new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 10_000)),
 			]);
 			if (exitCode === "timeout") host.kill();
+			const stdout = await stdoutPromise;
 
-			assert.equal(exitCode, 1, "guardian still exited host with code 1 when fallback taskkill failed with ENOENT");
+			assert.equal(exitCode, 1, "guardian terminated the host process when fallback taskkill failed with ENOENT");
+			assert.equal(stdout, "", "host did not survive past guardian trigger");
+			assert.equal(
+				await waitUntilGone(childRec, NOT_ENDED_MS),
+				false,
+				"detached child stayed alive, proving real taskkill.exe did not run",
+			);
 		});
 	},
 );
