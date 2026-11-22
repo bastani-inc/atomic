@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { ConnectionRequest } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { SessionNotFoundError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import type { SessionEntry } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { interceptConnectionRequests, requestSql } from "../helpers/sqlite-connection-requests.js";
 
@@ -53,7 +53,7 @@ function countWaits() {
 	};
 }
 
-const header = (id: string) => ({ id, cwd: "/work", createdAt: "2026-11-22T00:00:00.000Z" });
+const header = (id: string) => ({ id, version: 4 as const, cwd: "/work", createdAt: "2026-11-22T00:00:00.000Z" });
 let nextId = 0;
 function message(text: string, parentId: string | null): SessionEntry {
 	nextId += 1;
@@ -83,7 +83,9 @@ test("creating a session and appending to it each wait for the connection's thre
 	assert.equal(waits.take(), 4);
 	const loaded = await store.load("s1");
 	assert.deepEqual(
-		loaded.entries.map((entry) => (entry.type === "message" ? entry.message.content : entry.type)),
+		loaded.entries.map((entry) =>
+			entry.type === "message" && "content" in entry.message ? entry.message.content : "",
+		),
 		["first", "second", "third"],
 	);
 });
