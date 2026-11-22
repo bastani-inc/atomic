@@ -326,7 +326,12 @@ function serializeEditedMcpServers(
 	text: string | undefined,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
 ): string | undefined {
-	const parsed: unknown = text === undefined ? {} : JSON.parse(text);
+	let parsed: unknown;
+	try {
+		parsed = text === undefined ? {} : JSON.parse(text);
+	} catch {
+		throw new Error(`${path}: failed to parse MCP configuration`);
+	}
 	if (!isRecord(parsed) || (parsed.mcpServers !== undefined && !isRecord(parsed.mcpServers))) {
 		throw new Error(`${path}: expected an object with an "mcpServers" object`);
 	}

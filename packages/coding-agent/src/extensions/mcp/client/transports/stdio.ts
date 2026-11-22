@@ -10,7 +10,14 @@ import {
 	helperLaunchAsync,
 	missingHelperOptions,
 } from "../../../../utils/helper-command.ts";
-import { type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
+import {
+	extractAuthorizationSecrets,
+	isSensitiveKeyName,
+	looksLikeSecretValue,
+	redactOAuthErrorText,
+	scrubUnknownErrorData,
+} from "../oauth/redact.js";
+import { isJsonRpcResponse, type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
 import { type McpTransport, TransportEvents } from "./transport.js";
 
@@ -225,6 +232,62 @@ export interface StdioTransportOptions {
 	closeTimeoutMs?: number;
 }
 
+/** Standard non-secret runtime env vars; all other configured `env` entries are scrubbed from stderr and logs. */
+const NON_SECRET_STDIO_ENV_VARS = new Set([
+	"PATH",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"TERM",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TZ",
+	"TMPDIR",
+	"TEMP",
+	"TMP",
+	"NODE_ENV",
+	"NODE_OPTIONS",
+	"DEBUG",
+	"LOG_LEVEL",
+	"HOST",
+	"HOSTNAME",
+	"PORT",
+	"WORKSPACE",
+	"ENV",
+	"ENVIRONMENT",
+	"STAGE",
+	"REGION",
+	"MODE",
+	"FORMAT",
+	"VERBOSE",
+	"QUIET",
+	"NO_COLOR",
+	"FORCE_COLOR",
+	"CI",
+	"PWD",
+	"OLDPWD",
+	"EDITOR",
+	"VISUAL",
+	"PAGER",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_CACHE_HOME",
+	"XDG_STATE_HOME",
+	"XDG_RUNTIME_DIR",
+	"SYSTEMROOT",
+	"WINDIR",
+	"COMSPEC",
+	"PATHEXT",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"USERPROFILE",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"PROGRAMFILES",
+]);
+
 export class StdioTransport extends TransportEvents implements McpTransport {
 	readonly options: Readonly<StdioTransportOptions>;
 	private child: ChildProcess | undefined;
@@ -241,9 +304,34 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			maxMessageBytes: this.options.maxMessageBytes,
 			maxStderrBytes: this.options.maxStderrBytes,
 			onStderr: this.options.onStderr,
-			onMessage: (message) => this.emitMessage(message),
+			onMessage: (message) => this.emitMessage(this.scrubIncomingMessage(message)),
 			onError: (error) => this.emitError(error),
 		});
+	}
+
+	/** Configured secret `env` values that must be scrubbed from stderr, errors, and logs. */
+	activeSecrets(): string[] {
+		const secrets: string[] = [];
+		for (const [name, value] of Object.entries(this.options.env ?? {})) {
+			if (NON_SECRET_STDIO_ENV_VARS.has(name.toUpperCase())) continue;
+			if (isSensitiveKeyName(name) || looksLikeSecretValue(value)) {
+				secrets.push(...extractAuthorizationSecrets(value));
+			}
+		}
+		return secrets;
+	}
+
+	private scrubIncomingMessage(message: JsonRpcMessage): JsonRpcMessage {
+		if (!isJsonRpcResponse(message) || !("error" in message)) return message;
+		const secrets = this.activeSecrets();
+		return {
+			...message,
+			error: {
+				...message.error,
+				message: redactOAuthErrorText(message.error.message, secrets),
+				...(message.error.data === undefined ? {} : { data: scrubUnknownErrorData(message.error.data, secrets) }),
+			},
+		};
 	}
 
 	get pid(): number | undefined {

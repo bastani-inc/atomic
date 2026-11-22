@@ -6,6 +6,8 @@ import {
 	clearConfigValueCache,
 	resolveConfigValue,
 	resolveConfigValueAsync,
+	resolveConfigValueOrThrow,
+	resolveConfigValueOrThrowAsync,
 	resolveConfigValueUncachedAsync,
 } from "../src/core/resolve-config-value.js";
 import { killTrackedDetachedChildren } from "../src/utils/shell.js";
@@ -53,6 +55,103 @@ describe("resolveConfigValueAsync", () => {
 			expect(await resolveConfigValueAsync(command)).toBeUndefined();
 		},
 	);
+
+	test("resolveConfigValueOrThrow and resolveConfigValueOrThrowAsync omit raw commands and literal secret fragments while keeping explicit env var names", async () => {
+		const bangSecret = "opaqueBangSecret991122";
+		const dollarSuffix = "UnsetSecretSegment778899";
+
+		expect(() => resolveConfigValueOrThrow(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret')).toThrow(
+			'Failed to resolve MCP server "s" oauth.clientSecret from shell command',
+		);
+		try {
+			resolveConfigValueOrThrow(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret');
+		} catch (error) {
+			expect((error as Error).message).not.toContain(bangSecret);
+		}
+
+		await expect(
+			resolveConfigValueOrThrowAsync(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret'),
+		).rejects.toThrow('Failed to resolve MCP server "s" oauth.clientSecret from shell command');
+		try {
+			await resolveConfigValueOrThrowAsync(`!${bangSecret}`, 'MCP server "s" oauth.clientSecret');
+		} catch (error) {
+			expect((error as Error).message).not.toContain(bangSecret);
+		}
+
+		// Ambiguous unbraced `$` inside literal secrets must not leak fragments.
+		const envRef = (name: string) => `$\{${name}}`;
+		for (const [raw, leakedFragment] of [
+			[`prefix$${dollarSuffix}`, dollarSuffix],
+			["$SECRET9988", "SECRET9988"],
+			["abc-$A7B9C3D1", "A7B9C3D1"],
+		] as const) {
+			await expect(resolveConfigValueOrThrowAsync(raw, 'MCP server "s" oauth.clientSecret', {})).rejects.toThrow(
+				'Failed to resolve MCP server "s" oauth.clientSecret from environment variable',
+			);
+			try {
+				await resolveConfigValueOrThrowAsync(raw, 'MCP server "s" oauth.clientSecret', {});
+			} catch (error) {
+				expect((error as Error).message).not.toContain(leakedFragment);
+			}
+		}
+
+		// Braced `${VAR}` is unambiguously a reference and always preserves the missing env var name;
+		// unbraced `$VAR` preserves POSIX-style low-entropy env var names.
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`Bearer ${envRef("MISSING_DOCS_TOKEN")}`,
+				'MCP server "docs" header "Authorization"',
+				{},
+			),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "docs" header "Authorization" from environment variable: MISSING_DOCS_TOKEN',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`Api-Key ${envRef("MY_API_KEY")}`,
+				'MCP server "docs" header "Authorization"',
+				{},
+			),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "docs" header "Authorization" from environment variable: MY_API_KEY',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`Bot ${envRef("DISCORD_TOKEN")}`,
+				'MCP server "bot" header "Authorization"',
+				{},
+			),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "bot" header "Authorization" from environment variable: DISCORD_TOKEN',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`postgres://user:${envRef("DB_PASS")}@localhost/db`,
+				'MCP server "db" env "DATABASE_URL"',
+				{},
+			),
+		).rejects.toThrow('Failed to resolve MCP server "db" env "DATABASE_URL" from environment variable: DB_PASS');
+		await expect(
+			resolveConfigValueOrThrowAsync(
+				`${envRef("FIRST_VAR")}:${envRef("SECOND_VAR")}`,
+				'MCP server "docs" header "X-Pair"',
+				{},
+			),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "docs" header "X-Pair" from environment variables: FIRST_VAR, SECOND_VAR',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync(envRef("OAUTH_CLIENT_SECRET"), 'MCP server "s" oauth.clientSecret', {}),
+		).rejects.toThrow(
+			'Failed to resolve MCP server "s" oauth.clientSecret from environment variable: OAUTH_CLIENT_SECRET',
+		);
+		await expect(
+			resolveConfigValueOrThrowAsync("$MISSING_API_KEY", 'API key for provider "custom"', {}),
+		).rejects.toThrow('Failed to resolve API key for provider "custom" from environment variable: MISSING_API_KEY');
+		await expect(resolveConfigValueOrThrowAsync("$TOKEN", 'API key for provider "custom"', {})).rejects.toThrow(
+			'Failed to resolve API key for provider "custom" from environment variable: TOKEN',
+		);
+	});
 
 	/** How long a stopped command may take to settle, far below the 10 s command timeout and the grandchild's 30 s. */
 	const SETTLE_WITHIN_MS = 1_500;

@@ -43,7 +43,7 @@ See [Providers fields](/models-configuration#providers) for the full list of pro
   "apiKey": "sk-..."
   ```
 
-Legacy bare uppercase names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is set in the environment; otherwise Atomic keeps them as literals. Use explicit `$ENV_VAR` or `${ENV_VAR}` syntax in new configs.
+Legacy bare uppercase names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is set in the environment; otherwise Atomic keeps them as literals. Use explicit `${ENV_VAR}` or `$ENV_VAR` syntax in new configs. When resolution fails, Atomic omits `!command` text; braced `${NAME}` references always report the unset variable name, whereas unbraced `$NAME` references report the name only when it reads like a POSIX environment variable name so literal secrets containing `$` do not leak fragments.
 
 In `models.json`, shell commands run at request time without built-in TTL caching or stale reuse. If a command is slow, rate-limited, or needs fallback caching, wrap that logic in a local script. `/model` availability checks verify auth presence without running shell commands.
 

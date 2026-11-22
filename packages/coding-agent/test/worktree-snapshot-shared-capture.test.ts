@@ -33,31 +33,55 @@ const captures = vi.hoisted(() => ({
 	/** Turns that reached their capture: by then each has joined, queued or started one. */
 	entered: 0,
 	calls: 0,
+	inFlight: 0,
+	maxInFlight: 0,
 	previous: [] as (string | undefined)[],
 	/** Longest elapsed duration of any completed capture in this worker, bounding the module-level `lastCaptureMs`. */
 	maxElapsedMs: 0,
 	/** Captures of these checkouts wait until `until` settles. */
 	held: undefined as { readonly roots: ReadonlySet<string>; readonly until: Promise<void> } | undefined,
+	/** Optional gate intercepting the next `recordWorktreeCapture` entry before `sharedCheckoutCapture` runs. */
+	interceptEnter: undefined as ((proceed: () => Promise<void>) => Promise<void>) | undefined,
+	/** Optional observer receiving the exact promise returned by `captureLocatedCheckout`. */
+	onCapturePromise: undefined as ((promise: Promise<unknown>) => void) | undefined,
 }));
 
 vi.mock("../src/core/worktree-snapshot/capture.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("../src/core/worktree-snapshot/capture.ts")>();
 	return {
 		...original,
-		recordWorktreeCapture: async (...args: Parameters<typeof original.recordWorktreeCapture>) => {
+		recordWorktreeCapture: (...args: Parameters<typeof original.recordWorktreeCapture>) => {
 			captures.entered++;
-			const started = performance.now();
-			try {
-				return await original.recordWorktreeCapture(...args);
-			} finally {
-				captures.maxElapsedMs = Math.max(captures.maxElapsedMs, performance.now() - started);
+			const run = async () => {
+				const started = performance.now();
+				try {
+					return await original.recordWorktreeCapture(...args);
+				} finally {
+					captures.maxElapsedMs = Math.max(captures.maxElapsedMs, performance.now() - started);
+				}
+			};
+			if (captures.interceptEnter !== undefined) {
+				const intercept = captures.interceptEnter;
+				captures.interceptEnter = undefined;
+				return intercept(run);
 			}
+			return run();
 		},
-		captureLocatedCheckout: async (...args: Parameters<typeof original.captureLocatedCheckout>) => {
-			captures.calls++;
-			captures.previous.push((args[1]?.previous as WorktreeSnapshot | undefined)?.id);
-			if (captures.held?.roots.has(args[0].root)) await captures.held.until;
-			return original.captureLocatedCheckout(...args);
+		captureLocatedCheckout: (...args: Parameters<typeof original.captureLocatedCheckout>) => {
+			const promise = (async () => {
+				captures.calls++;
+				captures.inFlight++;
+				captures.maxInFlight = Math.max(captures.maxInFlight, captures.inFlight);
+				captures.previous.push((args[1]?.previous as WorktreeSnapshot | undefined)?.id);
+				try {
+					if (captures.held?.roots.has(args[0].root)) await captures.held.until;
+					return await original.captureLocatedCheckout(...args);
+				} finally {
+					captures.inFlight--;
+				}
+			})();
+			captures.onCapturePromise?.(promise);
+			return promise;
 		},
 	};
 });
@@ -70,8 +94,12 @@ beforeEach(() => {
 	sandbox = new GitSandbox();
 	captures.entered = 0;
 	captures.calls = 0;
+	captures.inFlight = 0;
+	captures.maxInFlight = 0;
 	captures.previous = [];
 	captures.held = undefined;
+	captures.interceptEnter = undefined;
+	captures.onCapturePromise = undefined;
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
@@ -329,4 +357,148 @@ test("a fresh session's exported history holds none of another session's earlier
 	for (const { patch } of parentSnapshot.chain) if (patch !== null) assert.ok(!exported.includes(patch), patch);
 	for (const { patch } of childSnapshot.chain)
 		if (patch !== null) assert.ok(exported.includes(patch), "its own patch");
+});
+
+test("handing off to a queued capture is atomic: a turn entering in the settlement microtask never observes an idle gap or starts a concurrent capture", async () => {
+	const { clone, sessions } = await checkoutWithSessions(3);
+	const [first, second, third] = sessions;
+	const releaseFirst = Promise.withResolvers<void>();
+	const releaseSecond = Promise.withResolvers<void>();
+	let firstCapturePromise: Promise<unknown> | undefined;
+	captures.onCapturePromise = (promise) => {
+		firstCapturePromise ??= promise;
+	};
+	captures.held = { roots: new Set([clone]), until: releaseFirst.promise };
+	sandbox.write(join(clone, "a.txt"), "first\n");
+	const firstTurn = first!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+	let secondTurn: Promise<void> | undefined;
+	let thirdTurn: Promise<void> | undefined;
+	try {
+		await vi.waitFor(() => assert.equal(captures.calls, 1), CAPTURE_WAIT);
+		assert.ok(firstCapturePromise, "captured the running capture's promise");
+
+		// Inject `third` directly on `firstCapturePromise`'s reaction queue *before* `second` queues behind `first`,
+		// so `third` enters `sharedCheckoutCapture` in the exact microtask right after `first` settles and before any
+		// separately-chained queued-capture callback would run.
+		const thirdSettled = Promise.withResolvers<void>();
+		captures.interceptEnter = (proceed) => {
+			firstCapturePromise!.then(() => {
+				proceed().then(thirdSettled.resolve, thirdSettled.reject);
+			});
+			return thirdSettled.promise;
+		};
+		sandbox.write(join(clone, "c.txt"), "third\n");
+		thirdTurn = third!.recorder.recordTurn(wrote(join(clone, "c.txt")));
+		await vi.waitFor(() => assert.equal(captures.entered, 2), CAPTURE_WAIT);
+
+		// Now `second` enters and queues Capture 2 behind `first`.
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		secondTurn = second!.recorder.recordTurn(wrote(join(clone, "b.txt")));
+		await vi.waitFor(() => assert.equal(captures.entered, 3), CAPTURE_WAIT);
+		assert.equal(captures.calls, 1, "no capture starts beside the running one");
+
+		// Release `first` while holding any subsequent capture so concurrent starts overlap visibly.
+		captures.held = { roots: new Set([clone]), until: releaseSecond.promise };
+		releaseFirst.resolve();
+		await vi.waitFor(() => assert.equal(captures.calls, 2), CAPTURE_WAIT);
+		// Allow any duplicate capture spawned in a non-atomic hand-off gap to reach `captureLocatedCheckout`.
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		assert.equal(captures.maxInFlight, 1, "at most one capture runs at a time across the hand-off");
+		assert.equal(
+			captures.calls,
+			2,
+			"the interleaved turn joins the promoted queued capture instead of starting another",
+		);
+	} finally {
+		releaseFirst.resolve();
+		releaseSecond.resolve();
+		await Promise.all([firstTurn, secondTurn, thirdTurn]);
+	}
+	assert.equal(captures.maxInFlight, 1);
+	assert.equal(captures.calls, 2);
+	for (const [session, path, content] of [
+		[second, "b.txt", "second"],
+		[third, "c.txt", "third"],
+	] as const) {
+		const snapshot = session!.manager.getLatestWorktreeSnapshots().get(clone);
+		assert.ok(snapshot);
+		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:${path}`), content);
+	}
+});
+
+test("a superseded stuck capture that finishes later does not inflate the wait budget for subsequent queued captures", async () => {
+	const { clone, sessions } = await checkoutWithSessions(5);
+	const [warmup, stuckTurn, queuedAfterStuck, laterStuckTurn, laterQueuedTurn] = sessions;
+	const releaseStuck = Promise.withResolvers<void>();
+	const releaseLaterStuck = Promise.withResolvers<void>();
+	let stuckPromise: Promise<void> | undefined;
+	let queuedPromise: Promise<void> | undefined;
+	let laterStuckPromise: Promise<void> | undefined;
+	let laterQueuedPromise: Promise<void> | undefined;
+	try {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"], shouldAdvanceTime: true });
+		// Establish a short baseline `lastCaptureMs` so the first stuck wait is bounded by a known duration.
+		sandbox.write(join(clone, "warmup.txt"), "warmup\n");
+		const warmupStart = performance.now();
+		await warmup!.recorder.recordTurn(wrote(join(clone, "warmup.txt")));
+		const warmupMs = performance.now() - warmupStart;
+		const callsAfterWarmup = captures.calls;
+
+		// Start Capture 1 (stuck) and queue Capture 2 behind it.
+		captures.held = { roots: new Set([clone]), until: releaseStuck.promise };
+		sandbox.write(join(clone, "a.txt"), "stuck\n");
+		stuckPromise = stuckTurn!.recorder.recordTurn(wrote(join(clone, "a.txt")));
+		await vi.waitFor(() => assert.equal(captures.calls, callsAfterWarmup + 1), CAPTURE_WAIT);
+
+		captures.held = { roots: new Set(), until: releaseStuck.promise };
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		const enteredBeforeSecond = captures.entered;
+		queuedPromise = queuedAfterStuck!.recorder.recordTurn(wrote(join(clone, "b.txt")));
+		await vi.waitFor(() => assert.equal(captures.entered, enteredBeforeSecond + 1), CAPTURE_WAIT);
+
+		// Wait expires: Capture 2 starts, superseding Capture 1, and finishes quickly.
+		vi.advanceTimersByTime(
+			Math.max(QUEUED_CAPTURE_MIN_WAIT_MS, Math.ceil(QUEUED_CAPTURE_WAIT_MULTIPLIER * warmupMs) + 1),
+		);
+		const capture2Start = performance.now();
+		await vi.waitFor(() => assert.equal(captures.calls, callsAfterWarmup + 2), CAPTURE_WAIT);
+		await queuedPromise;
+		const capture2Ms = performance.now() - capture2Start;
+
+		// Advance clock far past `QUEUED_CAPTURE_MIN_WAIT_MS` before the superseded stuck capture finally finishes.
+		vi.advanceTimersByTime(4 * QUEUED_CAPTURE_MIN_WAIT_MS);
+		releaseStuck.resolve();
+		await stuckPromise;
+
+		// A subsequent queued capture must still wait only the normal budget (not 4x the superseded stuck duration).
+		captures.held = { roots: new Set([clone]), until: releaseLaterStuck.promise };
+		sandbox.write(join(clone, "c.txt"), "later-stuck\n");
+		laterStuckPromise = laterStuckTurn!.recorder.recordTurn(wrote(join(clone, "c.txt")));
+		await vi.waitFor(() => assert.equal(captures.calls, callsAfterWarmup + 3), CAPTURE_WAIT);
+
+		captures.held = { roots: new Set(), until: releaseLaterStuck.promise };
+		sandbox.write(join(clone, "d.txt"), "later-queued\n");
+		const enteredBeforeLaterQueued = captures.entered;
+		laterQueuedPromise = laterQueuedTurn!.recorder.recordTurn(wrote(join(clone, "d.txt")));
+		await vi.waitFor(() => assert.equal(captures.entered, enteredBeforeLaterQueued + 1), CAPTURE_WAIT);
+
+		vi.advanceTimersByTime(
+			Math.max(QUEUED_CAPTURE_MIN_WAIT_MS, Math.ceil(QUEUED_CAPTURE_WAIT_MULTIPLIER * capture2Ms) + 1),
+		);
+		await vi.waitFor(
+			() =>
+				assert.equal(
+					captures.calls,
+					callsAfterWarmup + 4,
+					"a superseded stuck capture must not inflate subsequent queued capture waits",
+				),
+			CAPTURE_WAIT,
+		);
+		await laterQueuedPromise;
+	} finally {
+		vi.useRealTimers();
+		releaseStuck.resolve();
+		releaseLaterStuck.resolve();
+		await Promise.all([stuckPromise, queuedPromise, laterStuckPromise, laterQueuedPromise]);
+	}
 });
