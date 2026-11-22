@@ -38,8 +38,11 @@ fixture.overrideAgentDir();
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 
-/** A start budget a real child start on a loaded machine reaches its extensions' start within. */
-const BUDGET_MS = 12_000;
+/**
+ * A start budget a real child start on a loaded machine reaches its extensions' start within. A launch also waits half
+ * of it for a stalled start to let go of its session before it retries, which a loaded Windows runner took over 6 s for.
+ */
+const BUDGET_MS = 24_000;
 /**
  * The longest the first start is held if its launch never reports the retry: the stall is let go as soon as the launch
  * has given up on that start and waits for it to let go of its session.
@@ -329,7 +332,11 @@ for (const { stallAt, resume } of [
 			});
 			startHold.settle(result);
 			try {
-				assert.equal(starts, 2, "the first start stalled and was retried once");
+				assert.equal(
+					starts,
+					2,
+					`the first start stalled and was retried once: ${JSON.stringify({ reports, cause: result.cause })}`,
+				);
 				assert.equal(result.status, "ok", JSON.stringify(result));
 				await retryDisposing.promise;
 				await new Promise<void>((resolve) => setImmediate(resolve));
