@@ -69,6 +69,7 @@ type ReleasedAskerReplyRouter,
 	type RemoteSendRouter,
 	type RestoringRecipientHold,
 	createReturnPathAuthority,
+	mayUseReturnPath,
 	type ReturnPathAuthority,
 	returnPathParty,
 	type SendClientMessage,
@@ -78,7 +79,13 @@ type ReleasedAskerReplyRouter,
 	senderAtReceipt,
 } from "./send-handler.js";
 import { buildMessageSendSignature } from "./send-signature.js";
-import { DurableEndedQueue, type KeptFailure, isRestoredSend, type RestoredEndedQueues } from "./durable-ended-queue.js";
+import {
+  DurableEndedQueue,
+  isRestoredSend,
+  type KeptFailure,
+  type RestoredEndedQueues,
+  shouldHoldSendForEndedQueueRestore,
+} from "./durable-ended-queue.js";
 import type * as EndedChildQueueStoreModule from "./sql-ended-child-queue-store.js";
 import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { ReturnPaths } from "./return-paths.js";
@@ -1890,9 +1897,32 @@ class IntercomBroker {
   private dispatchSend(socket: net.Socket, clientMessage: SendClientMessage, senderId: string | null): void {
     // Durable wake queue: a send to a subagent an earlier broker kept messages for waits until they are taken up again, so
     // a sender's later message never overtakes its earlier ones. Sends to other sessions never wait.
-    if (typeof clientMessage.to === "string" && this.endedQueue.holds(clientMessage.to)) {
-      this.endedQueue.whenRestored(() => this.dispatchSend(socket, clientMessage, senderId));
-      return;
+    if (typeof clientMessage.to === "string" && this.endedQueue.restorePhase !== "idle" && this.endedQueue.restorePhase !== "ready") {
+      const sender = senderId === null ? undefined : this.sessions.get(senderId);
+      const extraReachable: ConnectedSession[] = [];
+      if (sender !== undefined) {
+        const message = isMessage(clientMessage.message) ? clientMessage.message : undefined;
+        const replyTo = message?.replyTo;
+        if (replyTo !== undefined) {
+          for (const session of this.sessions.values()) {
+            if (this.pendingQuestions.matchesReply(sender.info.id, session.info.id, replyTo)) {
+              extraReachable.push(session);
+            }
+          }
+        }
+        if (message !== undefined && mayUseReturnPath(message, clientMessage.type === "supervisor_send", sender)) {
+          for (const session of this.returnPathAuthority.answerable(sender)) extraReachable.push(session);
+        }
+      }
+      if (
+        shouldHoldSendForEndedQueueRestore(this.endedQueue, clientMessage.to, sender, this.sessions, {
+          ...(this.multiNode === undefined ? {} : { localAliasTarget: (target) => this.multiNode?.localAliasTarget(target) }),
+          ...(extraReachable.length === 0 ? {} : { extraReachable }),
+        })
+      ) {
+        this.endedQueue.whenRestored(() => this.dispatchSend(socket, clientMessage, senderId));
+        return;
+      }
     }
     handleBrokerSend(
       socket,
@@ -2332,10 +2362,9 @@ class IntercomBroker {
   }
 
   private queueForEndedChildWake(held: HeldSend, target: string, sender: WakeSender): boolean {
-    // Durable wake queue: what an earlier broker kept may be for this target, and this may be a retry of one of them
-    // whose answer the restart cut off: the send waits until it is taken up again (bounded), then is decided anew.
-    if (!this.endedQueue.loaded) {
-      void this.endedQueue.untilLoaded().then(() => this.dispatchSend(held.socket, held.clientMessage, held.senderId));
+    // Durable wake queue: while restoration is still running, defer wake sends in the unified FIFO queue under the
+    // shared ENDED_QUEUE_LOAD_WAIT_MS bound without mutating pending.
+    if (this.endedQueue.deferForTarget(target, () => this.dispatchSend(held.socket, held.clientMessage, held.senderId))) {
       return true;
     }
     // A child its owner reported gone keeps that answer; one its owner already holds (restoring, resuming or pausing it)

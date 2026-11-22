@@ -21,6 +21,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 - On macOS, an Intercom broker's spawn and socket locks now record their holder's start beside its process ID, as on Windows and Linux, so a lock whose holder exited while macOS gave its ID to another process is taken over at once rather than when it ages out. A broker found stopped is now checked by that start, read without starting `ps`. A lock written by an earlier version still goes by the process ID alone.
 - Database duplicate-column detection and departed-child delivery-failure messages no longer slow down on long error strings with repeated `column ` phrases or leading whitespace, returning the same results in one linear pass.
 - The Intercom broker now checks Unix socket ownership with exact 64-bit `BigInt` device and inode identities instead of rounded numbers, preventing a displaced broker on a 64-bit-inode filesystem from mistaking a successor broker's socket for its own or unlinking it on shutdown.
+- Right after an Intercom broker restarts, a message sent to a resumed subagent can no longer overtake messages still queued for that subagent from before the restart, including while the restarted broker is identifying which subagents have queued messages or when the send addresses the subagent by its new session ID.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
