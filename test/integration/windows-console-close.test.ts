@@ -202,6 +202,30 @@ function consoleCloseEnding(closed: ClosedSession): "Atomic" | "Windows" {
 	return "Atomic";
 }
 
+/**
+ * How Atomic ended once its console was closed, by the ordering Windows gave it. Windows tells the processes on a
+ * closed console one at a time, the engine first, and Atomic finds its console gone at once and stops the engine. When
+ * the engine is gone before Windows has told it, in the runs where that happened Windows then told neither process:
+ * Atomic has nothing that proves a close and exits as a lost terminal does, with 129. Whenever the engine heard the
+ * close, Atomic must exit with the console-close status. `endedBy` says who may end Atomic then: Atomic itself within
+ * its bound, or also Windows, after a handler that finished.
+ */
+function closeEnding(closed: ClosedSession, endedBy: "Atomic" | "Atomic or Windows"): string {
+	if (closed.run.exitCode === TERMINAL_LOST_EXIT_CODE) {
+		assert.deepEqual(
+			closed.engineNotices,
+			[],
+			"Atomic exited as a lost terminal although Windows had told the engine its console was closed",
+		);
+		assertExitedWithinBound(closed);
+		return "Windows told no process; Atomic ended itself as a lost terminal";
+	}
+	assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
+	if (endedBy === "Atomic or Windows") return `${consoleCloseEnding(closed)} ended Atomic`;
+	assertExitedWithinBound(closed);
+	return "Atomic ended Atomic";
+}
+
 // Only Windows has a console that is closed this way; Linux and macOS are covered by the terminal tests (#6104).
 describe.skipIf(process.platform !== "win32")("closing the Windows console", () => {
 	test(
@@ -217,25 +241,9 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 				],
 				`the handler ran once, in the engine, told that the session was ended for it\n${closed.run.screen}`,
 			);
-			// Windows tells the processes on a closed console one at a time, the engine first. Atomic finds its console gone
-			// at once and stops the engine; a handler as quick as this one can let the engine exit before Windows has told
-			// it, and in the runs where that happened Windows then told neither process: Atomic has nothing that proves a
-			// close and exits as a lost terminal does. Whenever the engine heard the close, Atomic must exit with the
-			// console-close status.
-			if (closed.run.exitCode === TERMINAL_LOST_EXIT_CODE) {
-				assert.deepEqual(
-					closed.engineNotices,
-					[],
-					"Atomic exited as a lost terminal although Windows had told the engine its console was closed",
-				);
-				assertExitedWithinBound(closed);
-				console.info("After its console closed, Windows told no process; Atomic ended itself as a lost terminal.");
-			} else {
-				assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
-				// The handler finished, so Atomic exits within its bound; on a starved runner Windows can end it first, with
-				// the same status, which a user cannot tell apart.
-				console.info(`After its console closed, ${consoleCloseEnding(closed)} ended Atomic.`);
-			}
+			// The handler finished, so Atomic exits within its bound; on a starved runner Windows can end it first, with the
+			// console-close status, which a user cannot tell apart.
+			console.info(`After its console closed, ${closeEnding(closed, "Atomic or Windows")}.`);
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
 			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 			assert.ok(delayOf(closed.records, "engine", "shutdown"), "the engine wrote its shutdown record");
@@ -249,8 +257,7 @@ describe.skipIf(process.platform !== "win32")("closing the Windows console", () 
 			const closed = await closeSession(ENDLESS_HANDLER_WORK_MS);
 
 			assert.deepEqual(closed.calls, [{ pid: closed.enginePid, reason: "quit", fromSignal: true, finished: false }]);
-			assert.equal(closed.run.exitCode, CONSOLE_CLOSED_EXIT_CODE, closed.run.screen);
-			assertExitedWithinBound(closed);
+			console.info(`After its console closed, ${closeEnding(closed, "Atomic")}.`);
 			assert.equal(closed.engineGone, true, "the engine outlived Atomic");
 			assert.equal(closed.enginesStarted, 1, "Atomic replaced the engine its console's close ended");
 		},
