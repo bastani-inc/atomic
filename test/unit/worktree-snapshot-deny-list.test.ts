@@ -122,6 +122,15 @@ describe("the built-in deny list (#4245)", () => {
 		await assertNoKeyBytes(blobs);
 	});
 
+	test("unpushed history that only deletes a private key the remote has is bundled", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", id_rsa: "PRIVATE\n" });
+		await sandbox.git(clone, "rm", "-q", "id_rsa");
+		const commit = await sandbox.commitAll(clone, "remove the key");
+		const snapshot = snapshotOf(await captureWorktreeSnapshot(clone, { blobs: new MemorySnapshotBlobStore() }));
+		assert.deepEqual(snapshot.bundle?.commits, [commit]);
+		assert.deepEqual(snapshot.omitted, []);
+	});
+
 	test("unpushed history that adds only a public key and an id_ source file is bundled", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "id_rsa.pub"), "ssh-ed25519 PUBLIC\n");
