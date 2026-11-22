@@ -2584,33 +2584,30 @@ export class SubagentControlRuntime {
 			"opening-session",
 			admitted.spec.onStartProgress,
 		);
-		// What a start that ran out of its budget or was aborted before its session came up still holds.
+		// What a start that ran out of its budget still holds: work that settles late, and the session it brings up.
 		const abandoned: Promise<unknown>[] = [];
 		const released = Promise.withResolvers<void>();
-		const startStopSignal = AbortSignal.any([startBudget.signal, signals.abort, signals.interrupt]);
-		/** Settle with `work`, or fail once the start budget runs out or the attempt is aborted; late results are abandoned. */
+		/** Settle with `work`, or fail once the start budget runs out; a result that arrives later is `abandon`ed. */
 		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => unknown): Promise<T> =>
 			new Promise<T>((resolve, reject) => {
 				const expire = () => {
-					if (signals.abort.aborted) termination ??= "abort";
-					else if (signals.interrupt.aborted) termination ??= "interrupt";
 					abandoned.push(
 						work.then(
 							(late) => abandon?.(late),
 							() => undefined,
 						),
 					);
-					reject(startStopSignal.reason ?? new DOMException("Aborted", "AbortError"));
+					reject(startBudget.signal.reason);
 				};
-				if (startStopSignal.aborted) return expire();
-				startStopSignal.addEventListener("abort", expire, { once: true });
+				if (startBudget.signal.aborted) return expire();
+				startBudget.signal.addEventListener("abort", expire, { once: true });
 				work.then(
 					(value) => {
-						startStopSignal.removeEventListener("abort", expire);
+						startBudget.signal.removeEventListener("abort", expire);
 						resolve(value);
 					},
 					(error: unknown) => {
-						startStopSignal.removeEventListener("abort", expire);
+						startBudget.signal.removeEventListener("abort", expire);
 						reject(error);
 					},
 				);
@@ -2779,38 +2776,77 @@ export class SubagentControlRuntime {
 						: { parentSessionId, parentHiddenTools: inherited.parentHiddenTools },
 				);
 				startBudget.enter("creating-session");
-				created = await beforeStartDeadline(
-					createAgentSession({
-						...inherited,
-						...(forked ? { tools: forked.tools } : {}),
-						...explicitEffort,
-						extensionBindings,
-						customTools: admitted.policy.customTools ?? inherited.customTools,
-						resourceLoader,
-						resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startBudget.signal]),
-						onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
-						subagentPolicy: {
-							...admitted.policy,
-							...(forked?.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
-							executionEnded: executionEnded.signal,
-							onTurnDrained: () => {
-								for (const listener of turnDrainedListeners) listener();
-							},
-							taskPending: () => taskPending,
-							// Intercom acknowledges a message to a paused child as held; a restored one is from its start.
-							turnPaused: () => restoringPaused || session?.turnPaused === true,
-							// Intercom registers the child before its first turn, inside this start's budget.
-							startup: {
-								signal: startStopSignal,
-								enterStep: (step) => startBudget.enter(step),
-								firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
-							},
-							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
+				const creatingSession = createAgentSession({
+					...inherited,
+					...(forked ? { tools: forked.tools } : {}),
+					...explicitEffort,
+					extensionBindings,
+					customTools: admitted.policy.customTools ?? inherited.customTools,
+					resourceLoader,
+					resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startBudget.signal]),
+					onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
+					subagentPolicy: {
+						...admitted.policy,
+						...(forked?.codemodeRoutingOnly ? { codemodeRoutingOnly: true } : {}),
+						executionEnded: executionEnded.signal,
+						onTurnDrained: () => {
+							for (const listener of turnDrainedListeners) listener();
 						},
-						settingsManager,
-						sessionManager,
-						...promptBehavior,
-					}),
+						taskPending: () => taskPending,
+						// Intercom acknowledges a message to a paused child as held; a restored one is from its start.
+						turnPaused: () => restoringPaused || session?.turnPaused === true,
+						// Intercom registers the child before its first turn, inside this start's budget.
+						// Keep child-local startBudget.signal (never AbortSignal.any over parent signals) so a finished
+						// child's session and timers are never retained by long-lived owner signals (#5186).
+						startup: {
+							signal: startBudget.signal,
+							enterStep: (step) => startBudget.enter(step),
+							firstTurnPending: () => startBudget.active && startBudget.currentStep !== "dispatching-task",
+						},
+						...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
+					},
+					settingsManager,
+					sessionManager,
+					...promptBehavior,
+				});
+				// Observe abort/interrupt only while createAgentSession is in flight and remove both listeners on settle
+				// so closing the owning session during child startup never stalls shutdown and leaves zero retained listeners.
+				const createSessionWithAbort = new Promise<{ session: AgentSession }>((resolve, reject) => {
+					const cleanup = () => {
+						signals.abort.removeEventListener("abort", onAbort);
+						signals.interrupt.removeEventListener("abort", onAbort);
+					};
+					const onAbort = () => {
+						cleanup();
+						if (signals.abort.aborted) termination ??= "abort";
+						else if (signals.interrupt.aborted) termination ??= "interrupt";
+						abandoned.push(
+							creatingSession.then(
+								(late) => late.session.dispose().catch(() => undefined),
+								() => undefined,
+							),
+						);
+						reject(new DOMException("Aborted", "AbortError"));
+					};
+					if (signals.abort.aborted || signals.interrupt.aborted) {
+						onAbort();
+						return;
+					}
+					signals.abort.addEventListener("abort", onAbort, { once: true });
+					signals.interrupt.addEventListener("abort", onAbort, { once: true });
+					creatingSession.then(
+						(value) => {
+							cleanup();
+							resolve(value);
+						},
+						(error: unknown) => {
+							cleanup();
+							reject(error);
+						},
+					);
+				});
+				created = await beforeStartDeadline(
+					createSessionWithAbort,
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),
 				);
@@ -3008,7 +3044,7 @@ export class SubagentControlRuntime {
 						? 0
 						: typeof sessionManager.getEntrySeq === "function"
 							? sessionManager.getEntrySeq(currentLeafId)
-							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startStopSignal)),
+							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId, startBudget.signal)),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
