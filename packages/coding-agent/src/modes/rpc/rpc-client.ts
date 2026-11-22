@@ -348,7 +348,15 @@ export class RpcClient extends RpcClientApi {
 	 */
 	async announceExplicitQuit(timeoutMs = EXPLICIT_QUIT_ACK_TIMEOUT_MS): Promise<boolean> {
 		const writer = this.stdinWriter;
-		if (!writer || !this.engineMonitor || this.generation <= this.lastEndedGeneration) return false;
+		if (!writer || !this.engineMonitor || this.generation <= this.lastEndedGeneration) {
+			try {
+				(await import("node:fs")).appendFileSync(
+					process.env.ATOMIC_QUIT_PROBE_LOG ?? "",
+					`PROBE host announce SKIPPED writer=${!!writer} monitor=${!!this.engineMonitor} generation=${this.generation} lastEnded=${this.lastEndedGeneration}\n`,
+				);
+			} catch {}
+			return false;
+		}
 		const generation = this.generation;
 		const done = Promise.withResolvers<boolean>();
 		this.explicitQuitAck = { generation, acknowledge: () => done.resolve(true) };
@@ -426,6 +434,12 @@ export class RpcClient extends RpcClientApi {
 		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
 		this.engineMonitor?.stop();
+		try {
+			(await import("node:fs")).appendFileSync(
+				process.env.ATOMIC_QUIT_PROBE_LOG ?? "",
+				`PROBE host stop graceful=${graceful} hostSignaled=${hostSignaled} writerPending=${this.stdinWriter?.pendingBytes} generation=${this.generation}\n`,
+			);
+		} catch {}
 		this.stdinWriter?.close(stopError);
 		// Unblock an in-flight start()/waitUntilBound() for the generation being
 		// replaced. Readiness has no deadline by design, so without this an
