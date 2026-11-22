@@ -7,7 +7,8 @@ import subagentEagerFactory from "../../../packages/subagents/src/extension/inde
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.js";
-import { hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
+import { createLazyBuiltinFactory, hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
+import { subagentsLazyBuiltinSpec } from "../src/core/extensions/lazy-builtins/subagents.js";
 import { loadExtensionFromFactory, loadExtensions } from "../src/core/extensions/loader.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
@@ -198,5 +199,134 @@ describe("lazy builtin subagents", () => {
 		bus.emit("subagent:await-child-restoration", restoreReq);
 		assert.ok(restoreReq.completion instanceof Promise);
 		assert.equal(await restoreReq.completion, undefined);
+	});
+
+	test("replays buffered intercom:connected into implementation during onActivated before first tool execute", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-subagents-ic-replay-"));
+		tempDirs.push(dir);
+		const receivedConnected: unknown[] = [];
+		const factory = createLazyBuiltinFactory(subagentsLazyBuiltinSpec, async () => (pi) => {
+			pi.events.on("intercom:connected", (payload) => {
+				receivedConnected.push(payload);
+			});
+			pi.registerTool({
+				name: "subagent",
+				label: "Subagent",
+				description: "Subagent",
+				parameters: { type: "object", properties: {} } as never,
+				execute: async () => ({
+					content: [{ type: "text", text: `seen:${receivedConnected.length}` }],
+					details: {},
+				}),
+			});
+		});
+		const bus = createEventBus();
+		const runtime = createExtensionRuntime();
+		const ext = await loadExtensionFromFactory(factory, dir, bus, runtime, "builtin:subagents");
+		const runner = new ExtensionRunner(
+			[ext],
+			runtime,
+			dir,
+			SessionManager.inMemory(dir),
+			new ModelRegistry(AuthStorage.inMemory()),
+		);
+		runner.bindCore(
+			{
+				sendMessage: () => {},
+				sendMessages: () => {},
+				sendUserMessage: () => {},
+				appendEntry: async () => {},
+				setSessionName: async () => {},
+				getSessionName: () => undefined,
+				setLabel: async () => {},
+				getActiveTools: () => ["subagent"],
+				getAllTools: () => [],
+				setActiveTools: () => {},
+				refreshTools: () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => "off",
+				setThinkingLevel: async () => {},
+			},
+			{
+				getModel: () => undefined,
+				getScopedModels: () => [],
+				isIdle: () => true,
+				isProjectTrusted: () => true,
+				getSignal: () => undefined,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: () => {},
+				getSystemPrompt: () => "",
+			},
+		);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		bus.emit("intercom:connected", { sessionId: "parent-ic-99" });
+		assert.deepEqual(receivedConnected, []);
+
+		const res = await ext.tools
+			.get("subagent")!
+			.definition.execute("c1", { action: "list" }, undefined, undefined, runner.createContext());
+		assert.deepEqual(receivedConnected, [{ sessionId: "parent-ic-99" }]);
+		assert.deepEqual(res.content, [{ type: "text", text: "seen:1" }]);
+	});
+
+	test("activates on session_start when tail-loaded session has archived subagent children", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-subagents-archived-"));
+		tempDirs.push(dir);
+		let activated = 0;
+		const factory = createLazyBuiltinFactory(subagentsLazyBuiltinSpec, async () => () => {
+			activated += 1;
+		});
+		const bus = createEventBus();
+		const runtime = createExtensionRuntime();
+		const ext = await loadExtensionFromFactory(factory, dir, bus, runtime, "builtin:subagents");
+		const sessionManager = SessionManager.inMemory(dir);
+		(sessionManager as unknown as { getArchivedChildCatalog: () => unknown[] }).getArchivedChildCatalog = () => [
+			{ childId: "run1:0", agent: "worker", state: "terminal" },
+		];
+		const runner = new ExtensionRunner(
+			[ext],
+			runtime,
+			dir,
+			sessionManager,
+			new ModelRegistry(AuthStorage.inMemory()),
+		);
+		runner.bindCore(
+			{
+				sendMessage: () => {},
+				sendMessages: () => {},
+				sendUserMessage: () => {},
+				appendEntry: async () => {},
+				setSessionName: async () => {},
+				getSessionName: () => undefined,
+				setLabel: async () => {},
+				getActiveTools: () => ["subagent"],
+				getAllTools: () => [],
+				setActiveTools: () => {},
+				refreshTools: () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => "off",
+				setThinkingLevel: async () => {},
+			},
+			{
+				getModel: () => undefined,
+				getScopedModels: () => [],
+				isIdle: () => true,
+				isProjectTrusted: () => true,
+				getSignal: () => undefined,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: () => {},
+				getSystemPrompt: () => "",
+			},
+		);
+		await runner.emit({ type: "session_start", reason: "resume" });
+		assert.equal(activated, 1);
 	});
 });

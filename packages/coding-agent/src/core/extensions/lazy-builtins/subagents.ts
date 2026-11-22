@@ -597,24 +597,29 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			sessionHadChildRecords = false;
 		});
 
-		controller.onActivated(async () => {
+		controller.onActivated(async (handle) => {
 			if (bufferedIntercomConnected !== undefined) {
-				await controller.dispatchBusEvent(INTERCOM_CONNECTED_EVENT, bufferedIntercomConnected);
+				for (const handler of [...(handle.captured.eventHandlers.get(INTERCOM_CONNECTED_EVENT) ?? [])]) {
+					await handler(bufferedIntercomConnected);
+				}
 			}
 		});
+
+		const hasArchivedChildren = (sessionManager: { getArchivedChildCatalog?: () => readonly unknown[] }): boolean =>
+			(sessionManager.getArchivedChildCatalog?.().length ?? 0) > 0;
 
 		controller.onSessionStart(async (_event, ctx) => {
 			let hasHistory = false;
 			try {
 				const entries = ctx.sessionManager.getEntries();
-				sessionHadChildRecords = hasSubagentChildRecords(entries);
+				sessionHadChildRecords = hasSubagentChildRecords(entries) || hasArchivedChildren(ctx.sessionManager);
 				hasHistory = sessionHadChildRecords || hasSubagentSessionHistory(entries);
 			} catch {
 				sessionHadChildRecords = false;
 				hasHistory = false;
 			}
-			// Fresh sessions stay dormant; resumed sessions with subagent records or cards activate
-			// immediately so holds, child cards, slash snapshots, and custom message renderers restore.
+			// Fresh sessions stay dormant; resumed sessions with subagent records, archived children,
+			// or cards activate immediately so holds, child cards, slash snapshots, and renderers restore.
 			if (hasHistory) {
 				await controller.activate(ctx);
 			}
@@ -625,7 +630,8 @@ export const subagentsLazyBuiltinSpec: LazyBuiltinSpec = {
 			let hasRecords = sessionHadChildRecords;
 			if (!hasRecords) {
 				try {
-					hasRecords = hasSubagentChildRecords(ctx.sessionManager.getEntries());
+					hasRecords =
+						hasSubagentChildRecords(ctx.sessionManager.getEntries()) || hasArchivedChildren(ctx.sessionManager);
 				} catch {
 					hasRecords = false;
 				}
