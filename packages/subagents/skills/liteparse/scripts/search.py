@@ -8,6 +8,9 @@
 # ///
 import argparse
 import asyncio
+import codecs
+import io
+import sys
 from typing import TypedDict, cast
 
 import aiofiles
@@ -23,49 +26,52 @@ def _chunk(content: str) -> list[LineRecord]:
     return [{"index": i, "content": c} for (i, c) in enumerate(content.splitlines())]
 
 
-def _expand(corpus: list[LineRecord], match: LineRecord, n: int) -> str:
+def _expand(corpus: list[LineRecord], match: LineRecord, n: int, first_line: int) -> str:
     idx = match["index"]
     start = max(0, idx - n)
     end = min(len(corpus) - 1, idx + n)
-    return f"Lines {start} - {end}\n\n\n" + "\n".join(
+    # Atomic: numbered by the line in the whole file, not in the chunk.
+    return f"Lines {first_line + start} - {first_line + end}\n\n\n" + "\n".join(
         [c["content"] for c in corpus[start : end + 1]]
     )
 
 
 def _retrieve(
-    corpus: list[LineRecord], query: str, top_k: int | None, expand: int = 0
+    corpus: list[LineRecord], query: str, top_k: int | None, expand: int = 0, first_line: int = 0
 ) -> list[tuple[str, float]]:
     corpus_tokens = bm25s.tokenize([c["content"] for c in corpus])
     retriever = bm25s.BM25(corpus=corpus)
     retriever.index(corpus_tokens)
     query_tokens = bm25s.tokenize(query)
-    docs, scores = retriever.retrieve(query_tokens, k=top_k or 10)
+    # Atomic: bm25s refuses to return more matches than the chunk has lines.
+    docs, scores = retriever.retrieve(query_tokens, k=min(top_k or 10, len(corpus)))
 
     results: list[tuple[str, float]] = []
     for doc, score in zip(docs[0].tolist(), scores[0].tolist()):
-        window = _expand(corpus, doc, expand) if expand > 0 else [doc]
+        window = _expand(corpus, doc, expand, first_line) if expand > 0 else [doc]
         results.append((cast(str, window), score))
     return results
 
 
 def _chunk_and_retrieve(
-    content: str, query: str, top_k: int | None, expand_n: int
+    content: str, query: str, top_k: int | None, expand_n: int, first_line: int
 ) -> list[tuple[str, float]]:
     corpus = _chunk(content)
-    return _retrieve(corpus, query, top_k, expand_n)
+    return _retrieve(corpus, query, top_k, expand_n, first_line)
 
 
 async def process_chunk(
-    content: bytes, query: str, top_k: int | None, expand_n: int
+    content: str, query: str, top_k: int | None, expand_n: int, first_line: int
 ) -> list[tuple[str, float]]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
         _chunk_and_retrieve,
-        content.decode("utf-8"),
+        content,
         query,
         top_k,
         expand_n,
+        first_line,
     )
 
 
@@ -76,10 +82,25 @@ async def read_and_process(
     async with asyncio.TaskGroup() as tg:
         async with aiofiles.open(file_path, "rb") as f:
             # read 64KB chunks
-            while chunk := await f.read(65536):
-                tasks.append(
-                    tg.create_task(process_chunk(chunk, query, top_k, expand_n or 5))
-                )
+            # Atomic: a chunk ends at the last line end of its block (the last chunk at the end of the file), so no
+            # character or line is cut in two, and carries the number of its first line in the whole file. A file of
+            # one block is one chunk, as before.
+            first_line = 0
+            pending: list[bytes] = []  # the start of a line not ended yet, from earlier blocks
+            block = await f.read(65536)
+            while block:
+                following = await f.read(65536)
+                cut = block.rfind(b"\n") + 1 if following else len(block)
+                if cut:
+                    content = b"".join([*pending, block[:cut]]).decode("utf-8")
+                    pending = [block[cut:]]
+                    tasks.append(
+                        tg.create_task(process_chunk(content, query, top_k, expand_n or 5, first_line))
+                    )
+                    first_line += len(content.splitlines())
+                else:
+                    pending.append(block)
+                block = following
     results = [task.result() for task in tasks]
     flattened = [r for result in results for r in result if r[1] >= 0.5]
     flattened.sort(key=lambda x: x[1], reverse=True)
@@ -125,4 +146,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Atomic: matches are read from a pipe as UTF-8, but on Windows Python writes to a pipe in the ANSI code page,
+    # such as cp1252, which has no separator line and lacks most characters: write UTF-8 unless the stream already does.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()
