@@ -14,7 +14,6 @@ import {
 	mkdtempSync,
 	readdirSync,
 	realpathSync,
-	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -23,6 +22,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it, vi } from "vitest";
+import { renameWithRetry } from "../../../test/helpers/rename-retry.js";
 import { spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { getGitInstallPath, getNpmInstallRoot } from "../src/core/package-manager-paths.ts";
@@ -323,7 +323,7 @@ describe("temporary extension install directories", () => {
 			const dir = await ensurePrivateTempDirAsync("nested", "extensions");
 			const root = dirname(dirname(dir));
 			const movedRoot = `${root}-original`;
-			renameSync(root, movedRoot);
+			await renameWithRetry(root, movedRoot);
 			symlinkSync(movedRoot, root, isPosix ? "dir" : "junction");
 
 			const reopened =
@@ -377,7 +377,7 @@ describe("temporary extension install directories", () => {
 		const sid = "S-1-5-21-1001";
 		const root = await ensurePrivateTempDirAsync();
 		const original = lstatSync(root, { bigint: true });
-		renameSync(root, `${root}-original`);
+		await renameWithRetry(root, `${root}-original`);
 		mkdirSync(root);
 		const ticks = original.birthtimeNs / 100n + 621355968000000000n;
 		const restored = spawnSyncCollect(
@@ -414,7 +414,7 @@ describe("temporary extension install directories", () => {
 			const dir = await ensurePrivateTempDirAsync("nested", "extensions");
 			const root = dirname(dirname(dir));
 			const movedRoot = `${root}-original`;
-			renameSync(root, movedRoot);
+			await renameWithRetry(root, movedRoot);
 			symlinkSync(movedRoot, root, isPosix ? "dir" : "junction");
 
 			for (const name of ["fresh", "extensions"]) {
