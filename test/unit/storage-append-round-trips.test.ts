@@ -154,3 +154,35 @@ test("a large write sends its entries a few at a time as it makes them, not all 
 	assert.ok(largest < 2 * 1024 * 1024, `the largest request carried ${largest} bytes`);
 	assert.equal((await store.load("bulk")).entries.length, 25);
 });
+
+test("a large write makes each entry's statements only when it reaches them", async () => {
+	const { store } = await openStore();
+	const events: string[] = [];
+	const interception = interceptConnectionRequests((request, send) => {
+		if (request.kind === "run" || request.kind === "sequence") events.push("request");
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
+	const entries: SessionEntry[] = [];
+	for (let index = 0; index < 24; index++) {
+		const entry = message(`${index}`.padEnd(400 * 1024, "x"), entries.at(-1)?.id ?? null);
+		// Encoding an entry for its row reads its message; the entries before the first request were encoded up front.
+		let encoded = false;
+		entries.push(
+			Object.assign(entry, {
+				toJSON() {
+					if (!encoded) events.push(`encode ${index}`);
+					encoded = true;
+					const { toJSON: _ignored, ...plain } = this as typeof entry & { toJSON: unknown };
+					return plain;
+				},
+			}),
+		);
+	}
+	await store.create(header("lazy"), entries);
+	const first = events.indexOf("request");
+	assert.ok(first >= 0);
+	const encodedFirst = events.slice(0, first).filter((event) => event.startsWith("encode")).length;
+	assert.ok(encodedFirst <= 4, `${encodedFirst} of 24 entries were encoded before the first statement was sent`);
+	assert.equal((await store.load("lazy")).entries.length, 24);
+});
