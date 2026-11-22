@@ -516,6 +516,48 @@ test("a broker replaced by a successor mid-status reports the successor as runni
 	}
 });
 
+test("a silent broker that times out broker_status while a live spawn lock exists is not retried or reported stopped (#4538)", async () => {
+	const { getBrokerSpawnLockPath } = await import("../../packages/intercom/broker/paths.js");
+	const agentDir = agentDirectory("silent-with-lock");
+	writeFileSync(getBrokerPidPath(agentDir), String(process.pid));
+	writeFileSync(getBrokerSpawnLockPath(agentDir), `${process.pid}\n${Date.now()}\n`);
+	let requests = 0;
+	const sockets = new Set<net.Socket>();
+	const server = net.createServer((socket) => {
+		sockets.add(socket);
+		socket.on("error", () => {});
+		socket.on("close", () => sockets.delete(socket));
+		socket.on(
+			"data",
+			createMessageReader(
+				(frame) => {
+					if (
+						typeof frame === "object" &&
+						frame !== null &&
+						!Array.isArray(frame) &&
+						frame.type === "broker_status"
+					) {
+						requests += 1;
+						// Stay silent until the caller's timeout expires.
+					}
+				},
+				() => {},
+			),
+		);
+	});
+	await new Promise<void>((resolveListening) =>
+		server.listen(getBrokerSocketPath(process.platform, agentDir), resolveListening),
+	);
+	try {
+		const query = await queryIntercomBroker(agentDir, 250);
+		assert.deepEqual(query, { state: "legacy", pid: process.pid });
+		assert.equal(requests, 1);
+	} finally {
+		for (const socket of sockets) socket.destroy();
+		if (server.listening) await new Promise<void>((resolveClosed) => server.close(() => resolveClosed()));
+	}
+});
+
 test("a stale legacy endpoint with a dead PID is stopped, not a restarted broker (#3857)", async () => {
 	const agentDir = agentDirectory("stale-legacy");
 	const dead = await keptExitedPid();

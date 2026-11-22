@@ -12,8 +12,6 @@ const SPAWN_LOCK_MAX_AGE_MS = 60_000;
 /** Windows file times count 100 ns intervals from 1601-01-01 UTC; Node stat times count from 1970-01-01 UTC. */
 const WINDOWS_EPOCH_OFFSET_TICKS = 116_444_736_000_000_000n;
 
-const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/u;
-
 export type BrokerPidStat =
 	| { readonly kind: "missing" }
 	| { readonly kind: "present"; readonly ino: bigint; readonly mtimeNs: bigint; readonly size: bigint }
@@ -21,9 +19,8 @@ export type BrokerPidStat =
 
 function parsePositivePid(value: string): number | undefined {
 	const trimmed = value.trim();
-	if (!POSITIVE_INTEGER_PATTERN.test(trimmed)) return undefined;
 	const pid = Number.parseInt(trimmed, 10);
-	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+	return Number.isSafeInteger(pid) && pid > 0 && String(pid) === trimmed ? pid : undefined;
 }
 
 function parseLeadingPositivePid(line: string): number | undefined {
@@ -92,7 +89,7 @@ async function inspectBrokerPidAsync(agentDir: string, statAfter: BrokerPidStat)
 	if (pid === undefined) return { status: "unknown" };
 	if (!isProcessAlive(pid)) return { status: "dead" };
 	if (process.platform === "win32") {
-		const created = nativeProcessCreationTime(pid);
+		const created = recognisedProcessStart(nativeProcessCreationTime(pid));
 		if (created !== undefined && wroteFileAt(windowsCreationNs(created), statAfter.mtimeNs) === "no") {
 			return { status: "dead" };
 		}

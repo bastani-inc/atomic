@@ -110,10 +110,14 @@ async function queryBroker(
 		if (typeof reply === "object" && reply !== null && !Array.isArray(reply) && isBrokerStatusReport(reply.report)) {
 			return { query: { state: "running", report: reply.report } };
 		}
-		if (reply === undefined && (await isUnansweredCloseFromRetiringBroker(socketPath, agentDir, pidBefore))) {
-			if (attempt === 0) continue;
-			return { query: { state: "stopped" } };
-		}
+	if (
+		reply === undefined &&
+		answer.timedOut !== true &&
+		(await isUnansweredCloseFromRetiringBroker(socketPath, agentDir, pidBefore))
+	) {
+		if (attempt === 0) continue;
+		return { query: { state: "stopped" } };
+	}
 		const pid = readBrokerPid(agentDir);
 		if (pid === undefined) return { query: { state: "legacy" } };
 		// Windows can briefly accept a named-pipe connection after its broker has terminated, and gives its pid to another
