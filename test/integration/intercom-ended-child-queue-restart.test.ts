@@ -26,11 +26,13 @@ const { PAUSED_RECIPIENT_TARGET, RESUMING_RECIPIENT_TARGET } = await import(
 	"../../packages/intercom/broker/ended-child-wakes.js"
 );
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
-const { ENDED_QUEUE_OPEN_WAIT_ENV, ENDED_QUEUE_OPEN_WAIT_MS } = await import(
+const { ENDED_QUEUE_LOAD_WAIT_ENV, ENDED_QUEUE_OPEN_WAIT_ENV, ENDED_QUEUE_OPEN_WAIT_MS } = await import(
 	"../../packages/intercom/broker/durable-ended-queue.js"
 );
 /** The shared storage adapter the multi-node suites select: SQLite, through the storage layer's adapter module. */
 const STORAGE_ADAPTER = join(repoRoot, "test/fixtures/storage-adapter.ts");
+/** A SQLite adapter that can park `store.load()` on a gate file for deterministic restore-window ordering tests. */
+const LOAD_GATE_ADAPTER = join(repoRoot, "test/fixtures/intercom-ended-queue-load-gate-adapter.ts");
 const SHARED_PREFIX = "ecq_";
 
 type Client = InstanceType<typeof IntercomClient>;
@@ -70,11 +72,14 @@ const SLOW_STORE_LOAD_MS = ENDED_QUEUE_OPEN_WAIT_MS + 1_000;
 const SLOW_MODULE_LOAD_PRELOAD = join(repoRoot, "test/fixtures/intercom-slow-module-load-preload.cjs");
 
 const fixtures: IntercomBrokerFixture[] = [];
+const tempDirs: string[] = [];
 afterEach(async () => {
 	for (const fixture of fixtures.splice(0)) await fixture.cleanup();
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 afterAll(async () => {
 	for (const fixture of fixtures.splice(0)) await fixture.cleanup();
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 /** Ask the broker to shut down in order, as `atomic intercom restart` does, on every platform. */
@@ -110,6 +115,7 @@ class Host {
 	constructor(
 		private readonly shared?: string,
 		private readonly openGate?: string,
+		loadGate?: string,
 	) {
 		this.fixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "ecq-")));
 		fixtures.push(this.fixture);
@@ -118,8 +124,12 @@ class Host {
 				join(this.agentDir, "settings.json"),
 				JSON.stringify({
 					storage: {
-						adapter: STORAGE_ADAPTER,
-						options: { path: shared, ...(openGate === undefined ? {} : { openGate }) },
+						adapter: loadGate === undefined ? STORAGE_ADAPTER : LOAD_GATE_ADAPTER,
+						options: {
+							path: shared,
+							...(openGate === undefined ? {} : { openGate }),
+							...(loadGate === undefined ? {} : { loadGate }),
+						},
 						prefix: SHARED_PREFIX,
 					},
 				}),
@@ -280,6 +290,8 @@ interface SessionOptions {
 	readonly ownerToken?: string;
 	readonly supervisor?: { capability: string; supervisorSessionId: string };
 	readonly memory?: Memory;
+	readonly group?: string;
+	readonly reach?: () => { readonly home: string; readonly reachable: readonly string[] } | undefined;
 	/** Confirm each message once saved, as a session's durable inbox does (#3761). */
 	readonly confirms?: boolean;
 }
@@ -287,11 +299,13 @@ interface SessionOptions {
 /** A session as its extension registers it, and again after a restart: same return address, same Intercom id. */
 async function connect(host: Host, name: string, options: SessionOptions = {}): Promise<Session> {
 	const returnAddress = options.returnAddress ?? randomUUID();
+	const group = options.group ?? "default";
 	const client = new IntercomClient(returnAddress, {
 		brokerSocketPath: getBrokerSocketPath(process.platform, host.agentDir),
 		...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
 		...(options.confirms === false ? {} : { acknowledgesReceipt: true }),
 		...(options.memory === undefined ? {} : { endedQueue: options.memory }),
+		...(options.reach === undefined ? {} : { reach: options.reach }),
 	});
 	client.on("error", () => {});
 	const received: Received[] = [];
@@ -312,13 +326,13 @@ async function connect(host: Host, name: string, options: SessionOptions = {}): 
 			status: "idle",
 			startedAt: Date.now(),
 			lastActivity: Date.now(),
-			group: "default",
-			groups: ["default"],
+			group,
+			groups: [group],
 		},
 		options.supervisor,
 		options.ownerToken,
 		undefined,
-		"default",
+		group,
 	);
 	host.fixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	assert.ok(client.sessionId);
@@ -1259,6 +1273,214 @@ test(
 		rmSync(getBrokerEndedChildQueuePath(host.agentDir), { force: true });
 		rmSync(`${getBrokerEndedChildQueuePath(host.agentDir)}-wal`, { force: true });
 		rmSync(`${getBrokerEndedChildQueuePath(host.agentDir)}-shm`, { force: true });
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a resumed subagent that renamed before restore finishes still receives its kept messages ahead of live sends, never misdelivering to a peer with its old name",
+	async () => {
+		const directory = mkdtempSync(join(tmpdir(), "ecq-rename-"));
+		tempDirs.push(directory);
+		const loadGate = join(directory, "load-gate");
+		const host = new Host(join(directory, "shared.sqlite"), undefined, loadGate);
+		await host.start();
+		const ownerBefore = await owner(host, "rename");
+		const childName = "subagent-worker-rename-1";
+		await endedChild(host, ownerBefore, childName, "stopped");
+		const senderBefore = await connect(host, "rename-sender");
+		const keptAskId = randomUUID();
+		const first = await senderBefore.client.send(childName, {
+			text: "kept-before-rename-0",
+			wakeEndedRecipient: true,
+		});
+		const second = await senderBefore.client.send(childName, {
+			text: "kept-before-rename-ask",
+			messageId: keptAskId,
+			expectsReply: true,
+			wakeEndedRecipient: true,
+		});
+		assert.equal(first.queued, true, first.reason);
+		assert.equal(second.queued, true, second.reason);
+
+		await host.kill();
+		// Park `store.load()` on the restarted broker so the subagent registers, renames, and a colliding peer claims
+		// the vacated name deterministically before `restoreEndedQueue` runs.
+		writeFileSync(loadGate, "closed");
+		try {
+			await host.start({ [ENDED_QUEUE_LOAD_WAIT_ENV]: String(STORE_OPEN_WAIT_MS) });
+			await vi.waitFor(() => assert.equal(existsSync(`${loadGate}.parked`), true, "store.load() parked"), WAIT);
+
+			const ownerBack = await owner(host, "rename", ownerBefore);
+			const sender = await again(host, "rename-sender", senderBefore);
+			const child = await resume(host, ownerBack, childName);
+			await child.client.updatePresenceAcked({ name: "renamed-worker-1" });
+			const collidingPeer = await connect(host, childName);
+
+			// Start a live send to the renamed subagent (must wait behind kept rows), then send to the non-subagent
+			// colliding peer (must deliver immediately while restore is still parked).
+			const liveToRenamed = sender.client.send("renamed-worker-1", { text: "live-after-rename" });
+			const liveToColliding = await sender.client.send(childName, { text: "for-colliding-peer" });
+			assert.equal(liveToColliding.delivered, true, liveToColliding.reason);
+			await vi.waitFor(() => assert.deepEqual(texts(collidingPeer), ["for-colliding-peer"]), WAIT);
+			assert.deepEqual(texts(child), [], "live send to renamed subagent waits while restore is loading");
+
+			// Release `store.load()` so `restoreEndedQueue` dispatches kept rows by session identity, then releases held live sends.
+			writeFileSync(loadGate, "open");
+			const liveResult = await liveToRenamed;
+			assert.equal(liveResult.delivered, true, liveResult.reason);
+			await vi.waitFor(() => assert.equal(child.received.length, 3), WAIT);
+			assert.deepEqual(texts(child), ["kept-before-rename-0", "kept-before-rename-ask", "live-after-rename"]);
+			assert.equal(child.received[0]!.message.heldWhilePaused, true);
+			assert.equal(child.received[1]!.message.heldWhilePaused, true);
+			assert.equal(child.received[1]!.message.id, keptAskId);
+
+			// The renamed subagent can reply to the restored ask; the colliding peer never received any kept row.
+			const reply = await child.client.send(child.received[1]!.from.id, {
+				text: "renamed-ask-reply",
+				replyTo: keptAskId,
+				requirePendingReply: true,
+			});
+			assert.equal(reply.delivered, true, reply.reason);
+			await vi.waitFor(
+				() =>
+					assert.deepEqual(
+						sender.received
+							.filter(({ message }) => message.replyTo === keptAskId)
+							.map(({ message }) => message.content.text),
+						["renamed-ask-reply"],
+					),
+				WAIT,
+			);
+			await sleep(SETTLE_MS);
+			assert.deepEqual(texts(collidingPeer), ["for-colliding-peer"], "colliding peer must never receive kept rows");
+			assert.deepEqual(
+				sender.received.filter(({ message }) => message.replyError !== undefined),
+				[],
+				"no kept row may fail after subagent rename",
+			);
+		} finally {
+			writeFileSync(loadGate, "open");
+		}
+	},
+	RESTART_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a supervisor-channel vertical-bypass reply across group isolation waits behind kept rows during restore across all addressing forms",
+	async () => {
+		for (const withReachPolicy of [false, true] as const) {
+			const label = withReachPolicy ? "vb-reach" : "vb-open";
+			const isolatedGroup = `sub-isolated-${label}`;
+			const directory = mkdtempSync(join(tmpdir(), `ecq-${label}-`));
+			tempDirs.push(directory);
+			const loadGate = join(directory, "load-gate");
+			const host = new Host(join(directory, "shared.sqlite"), undefined, loadGate);
+			await host.start();
+
+			const ownerReach = withReachPolicy ? () => ({ home: "default", reachable: ["default"] }) : undefined;
+			const ownerToken = randomUUID();
+			const ownerBefore = await connect(host, `${label}-owner`, {
+				ownerToken,
+				group: "default",
+				...(ownerReach === undefined ? {} : { reach: ownerReach }),
+			});
+			const childName = `subagent-worker-${label}-1`;
+			const childBefore = await connect(host, childName, {
+				returnAddress: childReturnAddress(childName),
+				supervisor: await ownerBefore.client.authorizeSupervisorChild(childName),
+				group: isolatedGroup,
+			});
+			const childBeforeId = childBefore.sessionId;
+			await childBefore.client.disconnect();
+			const siblingBefore = await connect(host, `${label}-sibling`, { group: isolatedGroup });
+			await untilGone(siblingBefore.client, childBeforeId);
+			await ownerBefore.client.markEndedChildren([
+				{
+					childName,
+					childId: `${childName}:0`,
+					group: isolatedGroup,
+					outcome: "stopped",
+					aliases: [],
+					messages: "hold",
+				},
+			]);
+
+			const kept0 = await siblingBefore.client.send(childName, { text: "kept-vb-0", wakeEndedRecipient: true });
+			const kept1 = await siblingBefore.client.send(childName, { text: "kept-vb-1", wakeEndedRecipient: true });
+			assert.equal(kept0.queued, true, kept0.reason);
+			assert.equal(kept1.queued, true, kept1.reason);
+
+			await host.kill();
+			writeFileSync(loadGate, "closed");
+			try {
+				await host.start({ [ENDED_QUEUE_LOAD_WAIT_ENV]: String(STORE_OPEN_WAIT_MS) });
+				await vi.waitFor(
+					() => assert.equal(existsSync(`${loadGate}.parked`), true, `${label}: store.load() parked`),
+					WAIT,
+				);
+
+				const ownerBack = await again(host, `${label}-owner`, ownerBefore, {
+					ownerToken,
+					group: "default",
+					...(ownerReach === undefined ? {} : { reach: ownerReach }),
+				});
+				const sameGroupPeer = await connect(host, `${label}-peer`, { group: "default" });
+				const child = await connect(host, childName, {
+					returnAddress: childReturnAddress(childName),
+					supervisor: await ownerBack.client.authorizeSupervisorChild(childName),
+					group: isolatedGroup,
+				});
+				const childTargetName = withReachPolicy ? childName : `renamed-${label}-1`;
+				if (!withReachPolicy) await child.client.updatePresenceAcked({ name: childTargetName });
+
+				// Child sends a one-way `supervisor_send` (`expectsReply` omitted -> no pendingQuestions entry; ONLY
+				// supervisorChannel.record — plus returnPaths when ownerReach is undefined!).
+				const crossingId = randomUUID();
+				const crossing = await child.client.sendToSupervisor(ownerBack.sessionId, {
+					text: "progress update across groups",
+					messageId: crossingId,
+				});
+				assert.equal(crossing.delivered, true, crossing.reason);
+
+				// Supervisor sends vertical-bypass replies addressed by exact ID, name (original or renamed), 8-hex
+				// prefix, and host session ID while `store.load()` is still parked.
+				const replyById = ownerBack.client.send(child.sessionId, { text: "vb-by-id", replyTo: crossingId });
+				const replyByName = ownerBack.client.send(childTargetName, { text: "vb-by-name", replyTo: crossingId });
+				const replyByPrefix = ownerBack.client.send(child.sessionId.slice(0, 8), {
+					text: "vb-by-prefix",
+					replyTo: crossingId,
+				});
+				const replyByHostId = ownerBack.client.send(child.returnAddress, {
+					text: "vb-by-host-id",
+					replyTo: crossingId,
+				});
+
+				// Causal barrier: a send to a non-subagent peer in the supervisor's group delivers immediately without
+				// waiting for `loadGate`.
+				const peerSend = await ownerBack.client.send(sameGroupPeer.sessionId, { text: "peer-unblocked" });
+				assert.equal(peerSend.delivered, true, peerSend.reason);
+				await vi.waitFor(() => assert.deepEqual(texts(sameGroupPeer), ["peer-unblocked"]), WAIT);
+				assert.deepEqual(
+					texts(child),
+					[],
+					`${label}: vertical-bypass replies must wait behind kept rows while restore is loading`,
+				);
+
+				writeFileSync(loadGate, "open");
+				const replyResults = await Promise.all([replyById, replyByName, replyByPrefix, replyByHostId]);
+				for (const result of replyResults) assert.equal(result.delivered, true, result.reason);
+
+				await vi.waitFor(() => assert.equal(child.received.length, 6), WAIT);
+				assert.deepEqual(
+					texts(child),
+					["kept-vb-0", "kept-vb-1", "vb-by-id", "vb-by-name", "vb-by-prefix", "vb-by-host-id"],
+					`${label}: kept rows must precede all vertical-bypass replies in FIFO order`,
+				);
+			} finally {
+				writeFileSync(loadGate, "open");
+			}
+		}
 	},
 	RESTART_TEST_TIMEOUT_MS,
 );

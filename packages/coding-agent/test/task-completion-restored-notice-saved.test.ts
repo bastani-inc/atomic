@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
-import { describe, test, vi } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
 import { replaceSessionTaskOwner } from "../src/core/agent-session-tasks.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -22,9 +22,41 @@ import { createHarness, getMessageText } from "./suite/harness.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/restored-task-notice-host.ts", import.meta.url));
 const REPOSITORY = fileURLToPath(new URL("../../../", import.meta.url));
+// Atomic's sources import `.js` specifiers that name `.ts` files; this hook resolves them directly under Node without jiti.
+const RESOLVE_TS_SOURCES = `import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, nextResolve) {
+	try { return nextResolve(specifier, context); }
+	catch (error) { if (/^\\.\\.?\\//.test(specifier) && specifier.endsWith(".js")) return nextResolve(specifier.slice(0, -3) + ".ts", context); throw error; }
+} });`;
+const RESOLVE_TS_SOURCES_URL = `data:text/javascript,${encodeURIComponent(RESOLVE_TS_SOURCES)}`;
 const COMPLETION_ID = "completion-from-earlier-process";
-/** Loading the agent session through jiti in a new process: structural, not a slow test. */
+/** Loading the agent session in a new Node process: structural, not a slow test. */
 const HOST_TIMEOUT_MS = 120_000;
+/** Direct wait chunk for the unrelated shell in the id-reuse check; retried until settled. */
+const SHELL_SETTLE_WAIT_MS = 10_000;
+
+const spawnedChildren: ChildProcess[] = [];
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+	for (const child of spawnedChildren.splice(0)) {
+		if (child.exitCode === null && child.signalCode === null) {
+			const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+			child.kill("SIGKILL");
+			await exited;
+		}
+	}
+	for (const root of temporaryRoots.splice(0)) {
+		rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+	}
+});
+
+/** First complete newline-terminated JSON line in `output`, ignoring any trailing partial fragment. */
+function completeJsonLine(output: string): string | undefined {
+	const lines = output.split("\n");
+	lines.pop();
+	return lines.find((candidate) => candidate.startsWith("{"));
+}
 
 const intent: TaskCompletionEnvelope = {
 	completionId: COMPLETION_ID,
@@ -118,12 +150,16 @@ describe("restored task completion notices are acknowledged only once saved", ()
 		"killing the process mid-turn after a restored flush leaves the notice owed or shown once, and reopening shows it once (#5047)",
 		async () => {
 			const root = mkdtempSync(join(tmpdir(), "restored-notice-kill-"));
+			temporaryRoots.push(root);
 			const dir = join(root, "sessions");
-			const child = spawn(process.execPath, ["--import", "jiti/register", FIXTURE, root, dir], {
+			const child = spawn(process.execPath, ["--import", RESOLVE_TS_SOURCES_URL, FIXTURE, root, dir], {
 				cwd: REPOSITORY,
 				stdio: ["ignore", "pipe", "pipe"],
 			});
-			const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+			spawnedChildren.push(child);
+			const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+				child.once("exit", (code, signal) => resolve({ code, signal })),
+			);
 			let output = "";
 			let errors = "";
 			child.stderr.on("data", (chunk: Buffer) => {
@@ -131,15 +167,33 @@ describe("restored task completion notices are acknowledged only once saved", ()
 			});
 			try {
 				const ready = await new Promise<{ file: string }>((resolve, reject) => {
+					let settled = false;
 					child.stdout.on("data", (chunk: Buffer) => {
+						if (settled) return;
 						output += chunk.toString();
-						const line = output.split("\n").find((candidate) => candidate.startsWith("{"));
-						if (line && output.includes("\n")) resolve(JSON.parse(line) as { file: string });
+						const line = completeJsonLine(output);
+						if (line !== undefined) {
+							settled = true;
+							resolve(JSON.parse(line) as { file: string });
+						}
 					});
-					child.once("exit", () => reject(new Error(`the host ended before it was ready: ${errors}`)));
+					child.once("exit", (code, signal) => {
+						if (settled) return;
+						settled = true;
+						reject(new Error(`the host ended before it was ready (code=${code}, signal=${signal}): ${errors}`));
+					});
 				});
+				// Confirm the host actually stays blocked mid-turn rather than draining its event loop and self-exiting.
+				const stayedAlive = await Promise.race([
+					ended.then(() => false),
+					new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 150)),
+				]);
+				assert.equal(stayedAlive, true, `host exited before kill: ${errors}`);
+				assert.doesNotMatch(errors, /unsettled top-level await/i);
 				child.kill("SIGKILL");
-				await ended;
+				const termination = await ended;
+				if (process.platform !== "win32") assert.equal(termination.signal, "SIGKILL");
+				else assert.notEqual(termination.code, 13, `host self-exited before kill: ${errors}`);
 
 				const reopened = await SessionManager.open(ready.file, dir, root);
 				assertOwedOrShownOnce(reopened);
@@ -155,9 +209,8 @@ describe("restored task completion notices are acknowledged only once saved", ()
 					await harness.cleanup();
 				}
 			} finally {
-				child.kill("SIGKILL");
+				if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 				await ended;
-				rmSync(root, { recursive: true, force: true });
 			}
 		},
 		HOST_TIMEOUT_MS,
@@ -290,10 +343,15 @@ describe("a restored completion notice describes its own task, not a new one tha
 					mode === "foreground" ? { kind: "foreground", budgetMs: 10_000 } : { kind: "background" },
 				);
 				assert.ok(first.ok);
-				await vi.waitFor(async () => {
-					const observed = await commandOwner.supervisor.waitForTaskId(commandOwner.owner, taskId, 100);
-					assert.ok(observed.ok && observed.value.kind === "settled");
-				});
+				for (;;) {
+					const observed = await commandOwner.supervisor.waitForTaskId(
+						commandOwner.owner,
+						taskId,
+						SHELL_SETTLE_WAIT_MS,
+					);
+					assert.ok(observed.ok);
+					if (observed.value.kind === "settled") break;
+				}
 
 				await session._taskCompletionOutbox!.flushRestored();
 

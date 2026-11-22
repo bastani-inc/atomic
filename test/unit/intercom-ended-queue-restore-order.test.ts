@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
 import { afterEach, test, vi } from "vitest";
+import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import {
 	DurableEndedQueue,
 	ENDED_QUEUE_LOAD_WAIT_MS,
@@ -9,11 +10,18 @@ import {
 	shouldHoldSendForEndedQueueRestore,
 } from "../../packages/intercom/broker/durable-ended-queue.js";
 import { EndedChildWakeBudget } from "../../packages/intercom/broker/ended-child-wakes.js";
-import type { BrokerConnectedSession } from "../../packages/intercom/broker/send-handler.js";
+import {
+	type BrokerConnectedSession,
+	detachSend,
+	handleBrokerSend,
+	retargetSendToSessionId,
+	type SendClientMessage,
+} from "../../packages/intercom/broker/send-handler.js";
 import type {
 	EndedChildQueueStore,
 	EndedQueueRow,
 } from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
+import type { BrokerMessage } from "../../packages/intercom/types.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -849,4 +857,359 @@ test("resolves host-ID / alias targets canonically so a later live send to a new
 	loadGate.resolve();
 	await queue.untilLoaded();
 	assert.deepEqual(keptDelivered, ["kept-after-1-by-host", "kept-after-2-by-new-id"]);
+});
+
+test("holds cross-group vertical-bypass and return-path sends across all addressing forms without duplicate ambiguity or new non-subagent holds", async () => {
+	const keptName = "subagent-worker-vb-1";
+	const cleanName = "subagent-worker-vb-clean-1";
+	const targetsGate = deferred<string[]>();
+	const loadGate = deferred<void>();
+	cleanups.unshift(() => {
+		targetsGate.resolve([keptName]);
+		loadGate.resolve();
+	});
+	const { queue } = createQueue(async () =>
+		stubStore({
+			targets: () => targetsGate.promise,
+			load: () => loadGate.promise,
+		}),
+	);
+	await queue.decide(() => {});
+	assert.equal(queue.restorePhase, "identifying_targets");
+
+	const supervisor = connectedSession({
+		id: "aaaaaaaa-1111-2222-3333-444444444444",
+		name: "supervisor",
+		groups: ["default"],
+	});
+	const sameGroupPeer = connectedSession({
+		id: "bbbbbbbb-1111-2222-3333-444444444444",
+		name: "shared-peer-name",
+		groups: ["default"],
+		returnAddress: "host-same-group-peer",
+	});
+	const sameGroupCollidingPeer = connectedSession({
+		id: "cccccccc-1111-2222-3333-444444444444",
+		name: keptName,
+		groups: ["default"],
+		returnAddress: "host-colliding-peer",
+	});
+	const isolatedPeer = connectedSession({
+		id: "dddddddd-1111-2222-3333-444444444444",
+		name: "isolated-non-subagent",
+		groups: ["isolated"],
+		returnAddress: "host-isolated-peer",
+	});
+	const keptChild = connectedSession({
+		id: "11223344-aaaa-bbbb-cccc-dddddddddddd",
+		name: "renamed-vb-worker",
+		registrationName: keptName,
+		groups: ["isolated"],
+		supervisorId: supervisor.info.id,
+		returnAddress: "host-vb-kept-1",
+	});
+	const shadowedReturnChild = connectedSession({
+		id: "55667788-aaaa-bbbb-cccc-dddddddddddd",
+		name: "shared-peer-name",
+		registrationName: "subagent-worker-shadowed-1",
+		groups: ["isolated"],
+		supervisorId: supervisor.info.id,
+		returnAddress: "host-shadowed-1",
+	});
+	const cleanChild = connectedSession({
+		id: "99aabbcc-aaaa-bbbb-cccc-dddddddddddd",
+		name: cleanName,
+		registrationName: cleanName,
+		groups: ["isolated"],
+		supervisorId: supervisor.info.id,
+		returnAddress: "host-vb-clean-1",
+	});
+	const collidingNameChild = connectedSession({
+		id: "ddeeff00-aaaa-bbbb-cccc-dddddddddddd",
+		name: keptName,
+		registrationName: keptName,
+		groups: ["isolated"],
+		supervisorId: supervisor.info.id,
+		returnAddress: "host-colliding-child",
+	});
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[supervisor.info.id, supervisor],
+		[sameGroupPeer.info.id, sameGroupPeer],
+		[sameGroupCollidingPeer.info.id, sameGroupCollidingPeer],
+		[isolatedPeer.info.id, isolatedPeer],
+		[keptChild.info.id, keptChild],
+		[shadowedReturnChild.info.id, shadowedReturnChild],
+		[cleanChild.info.id, cleanChild],
+		[collidingNameChild.info.id, collidingNameChild],
+	]);
+
+	// Both vertical-bypass (extraReachable) AND return path (returnPathReachable) contain keptChild (and duplicated in
+	// extraReachable): every addressing form (ID, 8-hex prefix, renamed name, host session ID) MUST hold without
+	// false ambiguity!
+	const vbAndReturnOptions = {
+		extraReachable: [keptChild, keptChild, isolatedPeer, cleanChild],
+		returnPathReachable: [keptChild, isolatedPeer],
+	};
+	for (const addressing of [keptChild.info.id, "11223344", "renamed-vb-worker", "host-vb-kept-1"]) {
+		assert.equal(
+			shouldHoldSendForEndedQueueRestore(queue, addressing, supervisor, sessions, vbAndReturnOptions),
+			true,
+			`identifying_targets must hold vertical-bypass reply addressed by ${addressing}`,
+		);
+	}
+	// Clean subagent in extraReachable waits during identifying_targets; non-subagent peer NEVER waits.
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "host-vb-clean-1", supervisor, sessions, vbAndReturnOptions),
+		true,
+	);
+	for (const addressing of [isolatedPeer.info.id, "dddddddd", "isolated-non-subagent", "host-isolated-peer"]) {
+		assert.equal(
+			shouldHoldSendForEndedQueueRestore(queue, addressing, supervisor, sessions, vbAndReturnOptions),
+			false,
+			`non-subagent peer in extraReachable/returnPath must never hold (${addressing})`,
+		);
+	}
+
+	// Return-path-only subagent: ID/name/prefix hold, but host session ID does NOT resolve via return path, and a
+	// same-group peer with the same display name shadows the return-path fallback (matching handleBrokerSend).
+	const returnOnlyOptions = { returnPathReachable: [keptChild, shadowedReturnChild] };
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, keptChild.info.id, supervisor, sessions, returnOnlyOptions),
+		true,
+	);
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "renamed-vb-worker", supervisor, sessions, returnOnlyOptions),
+		true,
+	);
+	assert.equal(shouldHoldSendForEndedQueueRestore(queue, "11223344", supervisor, sessions, returnOnlyOptions), true);
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "host-vb-kept-1", supervisor, sessions, returnOnlyOptions),
+		false,
+		"return-path-only session must not be held by host session ID (handleBrokerSend does not resolve return paths by host ID)",
+	);
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "shared-peer-name", supervisor, sessions, returnOnlyOptions),
+		false,
+		"same-group non-subagent peer shadows return-path-only subagent with the same name",
+	);
+
+	// Ambiguous name between same-group peer and extraReachable subagent fails immediately in handleBrokerSend: never hold.
+	const ambiguousOptions = { extraReachable: [collidingNameChild] };
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, keptName, supervisor, sessions, ambiguousOptions),
+		false,
+		"ambiguous name in identifying_targets must not hold",
+	);
+
+	// Unreachable cross-group subagent (e.g. fabricated replyTo -> not in extraReachable/returnPathReachable): never hold.
+	for (const addressing of [keptChild.info.id, "11223344", "renamed-vb-worker", "host-vb-kept-1"]) {
+		assert.equal(
+			shouldHoldSendForEndedQueueRestore(queue, addressing, supervisor, sessions),
+			false,
+			`unreachable cross-group subagent must not hold (${addressing})`,
+		);
+	}
+
+	// Phase: loading (only keptName is pending)
+	targetsGate.resolve([keptName]);
+	await vi.waitFor(() => assert.equal(queue.restorePhase, "loading"));
+	for (const addressing of [keptChild.info.id, "11223344", "renamed-vb-worker", "host-vb-kept-1"]) {
+		assert.equal(
+			shouldHoldSendForEndedQueueRestore(queue, addressing, supervisor, sessions, vbAndReturnOptions),
+			true,
+			`loading must hold pending vertical-bypass reply addressed by ${addressing}`,
+		);
+	}
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, cleanChild.info.id, supervisor, sessions, vbAndReturnOptions),
+		false,
+		"loading must not hold clean subagent in extraReachable",
+	);
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "host-vb-clean-1", supervisor, sessions, vbAndReturnOptions),
+		false,
+		"loading must not hold clean subagent host ID in extraReachable",
+	);
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, keptName, supervisor, sessions, ambiguousOptions),
+		false,
+		"ambiguous name collision in loading must not fall through to queue.holds(trimmed)",
+	);
+
+	loadGate.resolve();
+	await queue.untilLoaded();
+	assert.equal(queue.restorePhase, "ready");
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "host-vb-kept-1", supervisor, sessions, vbAndReturnOptions),
+		false,
+	);
+});
+
+test("retargetSendToSessionId delivers to the exact resumed session across renames, old IDs, colliding peers, and detached senders while preserving signatures and #2603 prefix checks", () => {
+	const senderSocket = {} as net.Socket;
+	const targetSocket = {} as net.Socket;
+	const collidingSocket = {} as net.Socket;
+	const sender = {
+		...connectedSession({
+			id: "11111111-1111-2222-3333-444444444444",
+			name: "sender",
+			returnAddress: "sender-host-1",
+		}),
+		socket: senderSocket,
+	};
+	const resumedChild = {
+		...connectedSession({
+			id: "22222222-1111-2222-3333-444444444444",
+			name: "renamed-child",
+			registrationName: "subagent-worker-orig",
+			supervisorId: "owner-1",
+			returnAddress: "child-host-1",
+		}),
+		socket: targetSocket,
+	};
+	const collidingPeer = {
+		...connectedSession({
+			id: "33333333-1111-2222-3333-444444444444",
+			name: "subagent-worker-orig",
+			returnAddress: "colliding-host-1",
+		}),
+		socket: collidingSocket,
+	};
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[resumedChild.info.id, resumedChild],
+		[collidingPeer.info.id, collidingPeer],
+	]);
+	const deliveredMessages = new DeliveredMessageCache();
+	const frames: Array<{ socket: net.Socket; frame: BrokerMessage }> = [];
+	const write = (socket: net.Socket, frame: BrokerMessage): boolean => {
+		frames.push({ socket, frame });
+		return true;
+	};
+
+	// 1. Detached (disconnected) sender whose kept row originally targeted the old display name (now owned by
+	// collidingPeer) delivers strictly to resumedChild with heldWhilePaused, leaving original frame untouched.
+	const origNamed: SendClientMessage = {
+		type: "send",
+		to: "subagent-worker-orig",
+		wakeEndedRecipient: true,
+		message: { id: "msg-named", timestamp: 1, content: { text: "hello renamed" } },
+	};
+	detachSend(origNamed, sender);
+	const retargetedNamed = retargetSendToSessionId(origNamed, resumedChild.info.id, {
+		id: "msg-named",
+		timestamp: 1,
+		heldWhilePaused: true,
+		content: { text: "hello renamed" },
+	});
+	handleBrokerSend(senderSocket, retargetedNamed, sender.info.id, sessions, deliveredMessages, write);
+	assert.equal(origNamed.to, "subagent-worker-orig", "original SendClientMessage is never mutated");
+	assert.equal(
+		frames.some((f) => f.socket === targetSocket && f.frame.type === "message" && f.frame.message.id === "msg-named"),
+		true,
+		"delivered strictly to resumedChild",
+	);
+	assert.equal(
+		frames.some((f) => f.socket === collidingSocket),
+		false,
+		"collidingPeer must never receive retargeted wake send",
+	);
+	assert.equal(
+		frames.some(
+			(f) => f.socket === senderSocket && f.frame.type === "delivered" && f.frame.messageId === "msg-named",
+		),
+		true,
+	);
+
+	// 2. Signature dedup: retrying msg-named with its original logical target matches DeliveredMessageCache instead of
+	// raising message_id_conflict.
+	frames.length = 0;
+	const retrySameSig = retargetSendToSessionId(origNamed, resumedChild.info.id);
+	handleBrokerSend(senderSocket, retrySameSig, sender.info.id, sessions, deliveredMessages, write);
+	assert.deepEqual(
+		frames.map((f) => [f.socket === senderSocket, f.frame.type]),
+		[[true, "delivered"]],
+		"retry with preserved logicalTarget deduplicates cleanly without conflict",
+	);
+
+	// 3. Kept row originally addressed by old session ID / 8-hex prefix delivers without hitting #2603 prefix rejection.
+	frames.length = 0;
+	const origOldId: SendClientMessage = {
+		type: "send",
+		to: "99999999-aaaa-bbbb-cccc-dddddddddddd",
+		logicalTarget: "99999999",
+		wakeEndedRecipient: true,
+		message: { id: "msg-old-id", timestamp: 2, content: { text: "hello from old id" } },
+	};
+	detachSend(origOldId, sender);
+	handleBrokerSend(
+		senderSocket,
+		retargetSendToSessionId(origOldId, resumedChild.info.id),
+		sender.info.id,
+		sessions,
+		deliveredMessages,
+		write,
+	);
+	assert.equal(
+		frames.some(
+			(f) => f.socket === targetSocket && f.frame.type === "message" && f.frame.message.id === "msg-old-id",
+		),
+		true,
+	);
+
+	// 4. Disconnected retargeted session fails with "Session not found" and NEVER falls back to collidingPeer.
+	frames.length = 0;
+	sessions.delete(resumedChild.info.id);
+	const origForGone: SendClientMessage = {
+		type: "send",
+		to: "subagent-worker-orig",
+		wakeEndedRecipient: true,
+		message: { id: "msg-gone", timestamp: 3, content: { text: "target gone" } },
+	};
+	detachSend(origForGone, sender);
+	handleBrokerSend(
+		senderSocket,
+		retargetSendToSessionId(origForGone, resumedChild.info.id),
+		sender.info.id,
+		sessions,
+		deliveredMessages,
+		write,
+	);
+	assert.equal(
+		frames.some((f) => f.socket === collidingSocket),
+		false,
+		"never falls back to colliding peer",
+	);
+	assert.equal(
+		frames.some(
+			(f) =>
+				f.socket === senderSocket &&
+				f.frame.type === "delivery_failed" &&
+				f.frame.messageId === "msg-gone" &&
+				f.frame.reason === "Session not found",
+		),
+		true,
+	);
+
+	// 5. Ordinary non-retargeted client sends still enforce #2603 prefix revalidation.
+	frames.length = 0;
+	sessions.set(sender.info.id, sender);
+	sessions.set(resumedChild.info.id, resumedChild);
+	const clientPrefixSend: SendClientMessage = {
+		type: "send",
+		to: resumedChild.info.id,
+		logicalTarget: "subagent-worker-orig",
+		message: { id: "msg-2603", timestamp: 4, content: { text: "stale canonical target" } },
+	};
+	handleBrokerSend(senderSocket, clientPrefixSend, sender.info.id, sessions, deliveredMessages, write);
+	assert.equal(
+		frames.some(
+			(f) => f.socket === senderSocket && f.frame.type === "delivery_failed" && f.frame.messageId === "msg-2603",
+		),
+		true,
+		"non-retargeted client send must still fail #2603 canonical-target revalidation",
+	);
+	assert.equal(
+		frames.some((f) => f.socket === targetSocket),
+		false,
+	);
 });

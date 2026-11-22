@@ -31,9 +31,9 @@
 // package after `npm run build`. The builtin extensions' bundles (`dist/builtin/`) are left out: the extension loader
 // links them against the running process's own modules, not files (`test/unit/in-place-update-imports.test.ts`).
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { basename, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "acorn";
 import { ancestor } from "acorn-walk";
@@ -587,10 +587,16 @@ const RECORDED_DEPENDENCIES = [
 ];
 const APPLICATION = "@bastani/atomic";
 
-/** Unpacks the tarball `file` into a new directory under `into`, and returns the package's directory. */
+/**
+ * Unpacks the tarball `file` into a new directory under `into`, from a copy there named without a directory (GNU tar,
+ * which Git for Windows puts on PATH, takes `C:` in a path for a remote host), and returns the package's directory.
+ */
 function unpack(file, into) {
 	const dir = mkdtempSync(join(into, "package-"));
-	const result = spawnSync("tar", ["-xzf", file, "-C", dir], { stdio: ["ignore", "ignore", "pipe"] });
+	const copy = join(dir, basename(file));
+	copyFileSync(file, copy);
+	const result = spawnSync("tar", ["-xzf", basename(file)], { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
+	rmSync(copy, { force: true });
 	if (result.status !== 0) throw new Error(`could not unpack ${file}: ${result.stderr}`);
 	return join(dir, "package");
 }
