@@ -275,7 +275,10 @@ function readFallbackCreation(pid: number, fresh = false): Promise<string | unde
 	} else {
 		fallbackReads.delete(pid);
 		const pending = pendingReads.get(pid);
-		if (pending !== undefined) pending.superseded = true;
+		if (pending !== undefined) {
+			if (pid === process.pid) return pending.reading;
+			pending.superseded = true;
+		}
 	}
 	const generation = fallbackGeneration;
 	const current = {
@@ -283,7 +286,7 @@ function readFallbackCreation(pid: number, fresh = false): Promise<string | unde
 		reading: queryCreationTime(pid).then((answer) => {
 			if (generation !== fallbackGeneration) return undefined;
 			if (pendingReads.get(pid) === current) pendingReads.delete(pid);
-			if (current.superseded) return knownFallbackCreation(pid)?.created;
+			if (current.superseded) return pendingReads.get(pid)?.reading ?? knownFallbackCreation(pid)?.created;
 			rememberFallbackCreation(pid, answer);
 			return answer.created;
 		}),

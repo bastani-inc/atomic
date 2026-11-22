@@ -149,6 +149,7 @@ interface BuildLockWriter {
 	readonly steps: Map<number, LockedProcess>;
 	readonly retryTimers: Map<number, ReturnType<typeof setTimeout>>;
 	readonly onUnwritable?: (message: string) => void;
+	writeFailures: number;
 	started: boolean;
 	settled: boolean;
 	told: boolean;
@@ -177,20 +178,32 @@ function clearAllRetryTimers(writer: BuildLockWriter): void {
 	writer.retryTimers.clear();
 }
 
-function readStepStartDurably(writer: BuildLockWriter, pid: number, step: LockedProcess, attempt: number): void {
+function usesFallbackStartReader(): boolean {
+	return process.platform === "win32" && processStartToken.nativeProcessCreationTime?.(process.pid) === undefined;
+}
+
+function readStepStartDurably(
+	writer: BuildLockWriter,
+	pid: number,
+	step: LockedProcess,
+	attempt: number,
+	stillRunning?: () => boolean,
+): void {
+	const isAlive = () => (stillRunning === undefined ? processAlive(pid) : stillRunning());
+	if (!isAlive()) return;
 	void processStartToken.processStartTokenAsync(pid, { fresh: true }).then((start) => {
-		if (writer.settled || writer.steps.get(pid) !== step) return;
+		if (writer.settled || writer.steps.get(pid) !== step || !isAlive()) return;
 		if (start !== undefined) {
 			writer.steps.set(pid, { ...step, start });
 			writeBuildLocksDurably(writer);
 			return;
 		}
-		if (process.platform !== "win32" || attempt >= STEP_START_MAX_ATTEMPTS || !processAlive(pid)) return;
+		if (!usesFallbackStartReader() || attempt >= STEP_START_MAX_ATTEMPTS) return;
 		clearRetryTimer(writer, pid);
 		const timer = setTimeout(() => {
 			writer.retryTimers.delete(pid);
-			if (writer.settled || writer.steps.get(pid) !== step || !processAlive(pid)) return;
-			readStepStartDurably(writer, pid, step, attempt + 1);
+			if (writer.settled || writer.steps.get(pid) !== step || !isAlive()) return;
+			readStepStartDurably(writer, pid, step, attempt + 1, stillRunning);
 		}, STEP_START_RETRY_MS);
 		timer.unref?.();
 		writer.retryTimers.set(pid, timer);
@@ -199,7 +212,7 @@ function readStepStartDurably(writer: BuildLockWriter, pid: number, step: Locked
 
 function backfillHolderStart(writer: BuildLockWriter, attempt: number): void {
 	if (writer.settled || writer.holder.start !== undefined) return;
-	if (process.platform !== "win32" || attempt >= STEP_START_MAX_ATTEMPTS) return;
+	if (!usesFallbackStartReader() || attempt >= STEP_START_MAX_ATTEMPTS) return;
 	clearRetryTimer(writer, HOLDER_RETRY_KEY);
 	const timer = setTimeout(() => {
 		writer.retryTimers.delete(HOLDER_RETRY_KEY);
@@ -218,37 +231,47 @@ function backfillHolderStart(writer: BuildLockWriter, attempt: number): void {
 	writer.retryTimers.set(HOLDER_RETRY_KEY, timer);
 }
 
-function recordStepProcessDurably(writer: BuildLockWriter, pid: number, running: boolean): void {
+function recordStepProcessDurably(
+	writer: BuildLockWriter,
+	pid: number,
+	running: boolean,
+	stillRunning?: () => boolean,
+): void {
 	const { steps } = writer;
 	clearRetryTimer(writer, pid);
 	if (running) {
 		writer.started = true;
 		const step: LockedProcess = { pid, at: Date.now() };
 		steps.set(pid, step);
-		readStepStartDurably(writer, pid, step, 1);
+		readStepStartDurably(writer, pid, step, 1, stillRunning);
 	} else steps.delete(pid);
 	writeBuildLocksDurably(writer);
 }
 
-function writeBuildLocksDurably(writer: BuildLockWriter, attempt = 1): void {
+function writeBuildLocksDurably(writer: BuildLockWriter): void {
 	if (writer.settled) return;
 	clearRetryTimer(writer, WRITE_RETRY_KEY);
 	const lock: BuildLock = { host: HOST, ...writer.holder, steps: [...writer.steps.values()] };
-	let retryTransient = false;
+	let transientFailed = false;
+	let permanentFailed = false;
+	const nextAttempt = writer.writeFailures + 1;
 	for (const [file, root] of writer.files) {
 		const temporary = `${file}.${process.pid}.tmp`;
+		let dirReady = false;
 		try {
 			mkdirSync(dirname(file), { recursive: true });
+			dirReady = true;
 			writeFileSync(temporary, JSON.stringify(lock), { mode: 0o600 });
 			renameSync(temporary, file);
 		} catch (error) {
 			try {
 				rmSync(temporary, { force: true });
 			} catch {}
-			if (isTransientWindowsLockError(error, attempt)) {
-				retryTransient = true;
+			if (dirReady && isTransientWindowsLockError(error, nextAttempt)) {
+				transientFailed = true;
 				continue;
 			}
+			permanentFailed = true;
 			if (writer.told) continue;
 			writer.told = true;
 			const reason = error instanceof Error ? error.message : String(error);
@@ -257,10 +280,15 @@ function writeBuildLocksDurably(writer: BuildLockWriter, attempt = 1): void {
 			);
 		}
 	}
-	if (retryTransient && !writer.settled) {
+	if (!transientFailed && !permanentFailed) {
+		writer.writeFailures = 0;
+		return;
+	}
+	if (transientFailed && !writer.settled) {
+		writer.writeFailures = nextAttempt;
 		const timer = setTimeout(() => {
 			writer.retryTimers.delete(WRITE_RETRY_KEY);
-			writeBuildLocksDurably(writer, attempt + 1);
+			writeBuildLocksDurably(writer);
 		}, LOCK_IO_RETRY_MS);
 		timer.unref?.();
 		writer.retryTimers.set(WRITE_RETRY_KEY, timer);
@@ -364,11 +392,17 @@ async function stepsWhose(
 }
 
 async function provenForStop(steps: readonly LockedProcess[]): Promise<ProvenProcess[]> {
-	if (process.platform !== "win32") return stepsWhose(steps, "same", { fresh: true });
+	if (process.platform !== "win32") return stepsWhose(steps, "same");
 	const checked = await Promise.all(
 		steps.map(async (step): Promise<ProvenProcess | undefined> => {
-			if (!processAlive(step.pid) || step.start === undefined) return undefined;
-			const created = await processStartToken.readProcessCreationTime(step.pid);
+			if (step.start === undefined) return undefined;
+			const native = processStartToken.nativeProcessCreationTime?.(step.pid);
+			const created =
+				native !== undefined
+					? (native ?? undefined)
+					: processAlive(step.pid)
+						? await processStartToken.readProcessCreationTime(step.pid)
+						: undefined;
 			if (created === undefined || windowsStartToken(created) !== step.start) return undefined;
 			return { ...step, created };
 		}),
@@ -645,6 +679,7 @@ export async function withBuildLocks<T>(
 		steps,
 		retryTimers: new Map(),
 		...(onUnwritable === undefined ? {} : { onUnwritable }),
+		writeFailures: 0,
 		started: false,
 		settled: false,
 		told: false,
@@ -656,7 +691,8 @@ export async function withBuildLocks<T>(
 		writer.started = true;
 		writeBuildLocksDurably(writer);
 	};
-	const watch = (pid: number, running: boolean) => recordStepProcessDurably(writer, pid, running);
+	const watch = (pid: number, running: boolean, stillRunning?: () => boolean) =>
+		recordStepProcessDurably(writer, pid, running, stillRunning);
 	try {
 		return await stepStartingWatcher.run(starting, () => stepProcessWatcher.run(watch, build));
 	} finally {

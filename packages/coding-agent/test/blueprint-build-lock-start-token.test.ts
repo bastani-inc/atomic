@@ -88,7 +88,7 @@ async function until(condition: () => boolean): Promise<void> {
 	assert.ok(condition());
 }
 
-function watcher(): (pid: number, running: boolean) => void {
+function watcher(): (pid: number, running: boolean, stillRunning?: () => boolean) => void {
 	const watch = stepProcessWatcher.getStore();
 	assert.ok(watch);
 	return watch;
@@ -491,6 +491,83 @@ describe("blueprint build lock step starts (#4748)", () => {
 			assert.equal(posixCalls, 1, "POSIX does not retry readFile on EBUSY");
 		} finally {
 			vi.mocked(readFile).mockImplementation(actualRead);
+		}
+	});
+
+	test("on Windows, a step whose child handle exited never retries or records a reused pid's start, and native misses do not retry (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const step = sleeper();
+		let handleAlive = true;
+		let stepQueries = 0;
+		startTokens.setNativeProcessCreationTimeForTesting(null);
+		startTokens.setProcessCreationTimeQueryForTesting({
+			file: process.execPath,
+			args: (pid) => {
+				if (pid === process.pid) return ["-e", 'console.log("132000000000000095")'];
+				if (++stepQueries === 1) {
+					handleAlive = false;
+					return ["-e", "process.exitCode = 1"];
+				}
+				return ["-e", 'console.log("132000000000000099")'];
+			},
+		});
+		await withBuildLocks(dir, [root()], async () => {
+			watcher()(step.pid!, true, () => handleAlive);
+			await until(() => stepQueries >= 1 && !handleAlive);
+			await new Promise((resolve) => setTimeout(resolve, 700));
+			assert.equal(stepQueries, 1, "does not retry start reads once child handle exited");
+			assert.equal(stepsOf()[0]?.start, undefined, "never records a reused pid's start during post-exit drain");
+			watcher()(step.pid!, false);
+		});
+
+		// With the native reader available, a null creation time is deterministic and must not schedule retries.
+		let nativeCalls = 0;
+		startTokens.setNativeProcessCreationTimeForTesting((pid) => {
+			if (pid === process.pid) return "132000000000000095";
+			nativeCalls++;
+			return null;
+		});
+		await withBuildLocks(dir, [root()], async () => {
+			watcher()(step.pid!, true, () => true);
+			await until(() => nativeCalls >= 1);
+			await new Promise((resolve) => setTimeout(resolve, 700));
+			assert.equal(nativeCalls, 1, "native reader returning null schedules no retry timers");
+			watcher()(step.pid!, false);
+		});
+	});
+
+	test("on Windows, permanent EPERM on lock rename reports onUnwritable even when step updates keep arriving (#5315)", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		if (PLATFORM.value !== "win32") vi.stubEnv("SystemRoot", tmpdir());
+		const step = sleeper();
+		startTokens.setNativeProcessCreationTimeForTesting((pid) =>
+			pid === process.pid ? "132000000000000096" : "132000000000000097",
+		);
+		const actualRename = vi.mocked(renameSync).getMockImplementation()!;
+		const lockFile = buildLockPath(dir, root());
+		vi.mocked(renameSync).mockImplementation((from, to) => {
+			if (String(to) === lockFile) {
+				throw Object.assign(new Error("EPERM: permanent write denial"), { code: "EPERM" });
+			}
+			return actualRename(from, to);
+		});
+		const told: string[] = [];
+		try {
+			await withBuildLocks(
+				dir,
+				[root()],
+				async () => {
+					for (let i = 0; i < 30; i++) {
+						watcher()(step.pid!, i % 2 === 0);
+					}
+				},
+				(message) => told.push(message),
+			);
+			assert.equal(told.length, 1, "permanent EPERM eventually reports onUnwritable instead of resetting forever");
+			assert.match(told[0]!, /could not be written/);
+		} finally {
+			vi.mocked(renameSync).mockImplementation(actualRename);
 		}
 	});
 });
