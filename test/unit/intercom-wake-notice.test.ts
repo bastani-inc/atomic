@@ -316,4 +316,41 @@ describe("intercom_subagent_wake notice card renderer", () => {
 			}
 		}
 	});
+
+	test("expanded wake notice wraps long childName and UUID childId without dropping any characters at 80 and 120 cols", async () => {
+		const { dormant, light, heavy } = await loadAllThreeWakeRenderers();
+		const longChildName = "subagent-very-long-custom-codebase-analyzer-45255a2f-17";
+		const uuidChildId = "11111111-2222-3333-4444-555555555555:16";
+		const longSenderName = "subagent-extremely-verbose-worker-coordinator-99887766-42";
+		const senderId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+		const msg = wakeMessage({
+			childName: longChildName,
+			childId: uuidChildId,
+			from: { id: senderId, name: longSenderName },
+			depth: 3,
+		});
+
+		for (const [label, renderer] of [
+			["dormant", dormant],
+			["light", light],
+			["heavy", heavy],
+		] as const) {
+			for (const width of [80, 120]) {
+				const comp = new CustomMessageComponent(msg, renderer);
+				comp.setExpanded(true);
+				const rows = comp.render(width);
+				for (const row of rows) {
+					assert.ok(visibleWidth(row) <= width, `${label} overflowed width ${width}`);
+				}
+				const collapsedText = plain(rows)
+					.map((r) => r.trim())
+					.join(" ");
+				assert.ok(collapsedText.includes(longChildName), `${label} w=${width} lost full childName`);
+				assert.ok(collapsedText.includes(uuidChildId), `${label} w=${width} lost full uuidChildId`);
+				assert.ok(collapsedText.includes(longSenderName), `${label} w=${width} lost full senderName`);
+				assert.ok(collapsedText.includes(senderId), `${label} w=${width} lost full senderId`);
+				assert.ok(collapsedText.includes("Depth     3"), `${label} w=${width} lost depth`);
+			}
+		}
+	});
 });

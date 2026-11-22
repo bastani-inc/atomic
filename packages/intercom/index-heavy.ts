@@ -1817,8 +1817,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
 
 
-  pi.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
   pi.registerMessageRenderer(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
+  pi.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
 
   const replyWaits = replyWaitGates(() => client);
   /**

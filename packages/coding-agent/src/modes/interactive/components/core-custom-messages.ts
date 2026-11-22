@@ -1,5 +1,5 @@
 import type { TextContent } from "@bastani/atomic-ai/compat";
-import { type Component, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { type Component, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { SESSION_RECOVERY_NOTICE_TYPE, SESSION_RECOVERY_REPLAY_TYPE } from "../../../core/agent-session-recovery.ts";
 import { EVENT_REPORT_MESSAGE_TYPE } from "../../../core/event-subscriptions/session-subscription.js";
 import type { MessageRenderOptions } from "../../../core/extensions/types.ts";
@@ -16,13 +16,21 @@ import {
 
 export const OVERSIZED_HISTORY_ENTRY_TYPE = "atomic.oversized-history-entry";
 
-const OVERSIZED_ENTRY_RE = /^Saved entry (\d+) is (\d+) bytes\b/i;
+const OVERSIZED_ENTRY_RE = /^Saved (?:(file )?entry(?: at byte)? (\d+)) is (\d+) bytes\b/i;
 const EVENT_REPORT_PREFIX_RE = /^Report from event child "([^"]+)" \(event ([^)]+)\):\s*\n\n/;
 
 function cleanOneLine(value: string): string {
 	return terminalDisplayText(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
+		.trim();
+}
+
+function cleanMultiline(value: string): string {
+	return terminalDisplayText(value)
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n")
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ")
 		.trim();
 }
 
@@ -43,11 +51,35 @@ function formatByteSize(bytes: number): string {
 	return `${(safe / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function singleLineRecord(text: string): Component {
+/** Wraps multi-line text to the available width without truncating any content. */
+function wrappedRecord(text: string, style: (line: string) => string): Component {
 	return {
 		invalidate(): void {},
 		render(width: number): string[] {
-			return width < 1 ? [] : [truncateToWidth(text, width, "…")];
+			if (width < 1) return [];
+			const lines: string[] = [];
+			for (const rawLine of text.split("\n")) {
+				const wrapped = wrapTextWithAnsi(style(rawLine), width);
+				lines.push(...(wrapped.length > 0 ? wrapped : [""]));
+			}
+			return lines;
+		},
+	};
+}
+
+/** Keeps the title intact and truncates a single trailing dim summary to the remaining width instead of dropping it. */
+function titleWithTruncatedMeta(titleStyled: string, metaText: string | undefined, theme: Theme): Component {
+	return {
+		invalidate(): void {},
+		render(width: number): string[] {
+			if (width < 1) return [];
+			const titleW = visibleWidth(titleStyled);
+			if (!metaText || titleW + 4 >= width) {
+				return [truncateToWidth(titleStyled, width, "…")];
+			}
+			const room = width - titleW - 3;
+			const shown = visibleWidth(metaText) <= room ? metaText : truncateToWidth(metaText, room, "…");
+			return [`${titleStyled}${theme.fg("dim", ` · ${shown}`)}`];
 		},
 	};
 }
@@ -81,41 +113,43 @@ function renderSessionRecoveryNotice(
 	const rawNotices = Array.isArray(details?.notices)
 		? details.notices
 				.filter((item): item is string => typeof item === "string")
-				.map(cleanOneLine)
+				.map(cleanMultiline)
 				.filter(Boolean)
 		: [];
 	const fallbackLines =
 		rawNotices.length > 0
 			? rawNotices
-			: extractText(message.content)
-					.split("\n")
-					.map((line) => cleanOneLine(line.replace(/^\s*-\s*/, "")))
-					.filter((line) => line.length > 0 && !/^Session recovery after restart:?$/i.test(line));
+			: (() => {
+					const raw = cleanMultiline(extractText(message.content));
+					const body = raw.replace(/^Session recovery after restart:?\n?/i, "");
+					if (!body) return [];
+					return body
+						.split("\n")
+						.map((line) => line.replace(/^\s*-\s*/, ""))
+						.filter((line) => line.trim().length > 0);
+				})();
 	const reason = typeof details?.reason === "string" ? cleanOneLine(details.reason) : "";
-	const meta: string[] = [];
-	if (fallbackLines.length === 1) {
-		meta.push(fallbackLines[0]!);
-	} else if (fallbackLines.length > 1) {
-		meta.push(`${fallbackLines.length} notices`);
-	} else if (reason) {
-		meta.push(reason);
-	}
+	const summary =
+		fallbackLines.length === 1
+			? cleanOneLine(fallbackLines[0]!)
+			: fallbackLines.length > 1
+				? `${fallbackLines.length} notices`
+				: reason || undefined;
 
 	const records: Component[] = [];
 	if (options.expanded) {
 		for (const item of fallbackLines) {
-			records.push(singleLineRecord(theme.fg("muted", item)));
+			records.push(wrappedRecord(item, (line) => theme.fg("muted", line)));
 		}
 		if (reason) {
-			records.push(singleLineRecord(theme.fg("dim", `Reason · ${reason}`)));
+			records.push(wrappedRecord(`Reason · ${reason}`, (line) => theme.fg("dim", line)));
 		}
 	}
 
 	return new ReplayableToolBlock(
 		new ToolBlock({
 			status: "info",
-			title: new Text(theme.fg("text", "Session recovery"), 0, 0),
-			meta,
+			title: titleWithTruncatedMeta(theme.fg("text", "Session recovery"), summary, theme),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),
@@ -138,31 +172,29 @@ function renderSessionRecoveryReplay(
 				.filter(Boolean)
 		: [];
 	const reason = typeof details?.reason === "string" ? cleanOneLine(details.reason) : "";
+	const rawText = cleanMultiline(extractText(message.content));
 	const titleText =
 		entryIds.length > 0
 			? `Replaying ${entryIds.length === 1 ? "1 interrupted delivery" : `${entryIds.length} interrupted deliveries`}`
-			: cleanOneLine(extractText(message.content)).replace(/\s+from before the restart\.?$/i, "") ||
-				"Replaying interrupted deliveries";
+			: cleanOneLine(rawText).replace(/\s+from before the restart\.?$/i, "") || "Replaying interrupted deliveries";
 
 	const records: Component[] = [];
 	if (options.expanded) {
+		if (rawText) {
+			records.push(wrappedRecord(rawText, (line) => theme.fg("muted", line)));
+		}
 		if (entryIds.length > 0) {
-			records.push(singleLineRecord(theme.fg("muted", `Entries · ${entryIds.join(", ")}`)));
+			records.push(wrappedRecord(`Entries · ${entryIds.join(", ")}`, (line) => theme.fg("muted", line)));
 		}
 		if (reason) {
-			records.push(singleLineRecord(theme.fg("dim", `Reason · ${reason}`)));
-		}
-		if (records.length === 0) {
-			const fallback = cleanOneLine(extractText(message.content));
-			if (fallback) records.push(singleLineRecord(theme.fg("muted", fallback)));
+			records.push(wrappedRecord(`Reason · ${reason}`, (line) => theme.fg("dim", line)));
 		}
 	}
 
 	return new ReplayableToolBlock(
 		new ToolBlock({
 			status: "info",
-			title: new Text(theme.fg("text", titleText), 0, 0),
-			meta: ["from before restart"],
+			title: titleWithTruncatedMeta(theme.fg("text", titleText), "from before restart", theme),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),
@@ -203,8 +235,11 @@ function renderEventReport(message: CustomMessage<unknown>, options: MessageRend
 
 	const records: Component[] = [];
 	if (options.expanded) {
-		if (subscriptionId) records.push(singleLineRecord(theme.fg("dim", `Subscription · ${subscriptionId}`)));
-		if (eventId && eventId !== shortEventId) records.push(singleLineRecord(theme.fg("dim", `Event · ${eventId}`)));
+		if (child) records.push(wrappedRecord(`Child · ${child}`, (line) => theme.fg("dim", line)));
+		if (eventId) records.push(wrappedRecord(`Event · ${eventId}`, (line) => theme.fg("dim", line)));
+		if (subscriptionId) {
+			records.push(wrappedRecord(`Subscription · ${subscriptionId}`, (line) => theme.fg("dim", line)));
+		}
 	}
 
 	return new ReplayableToolBlock(
@@ -224,30 +259,30 @@ function renderOversizedHistoryEntry(
 	options: MessageRenderOptions,
 	theme: Theme,
 ): Component {
-	const raw = cleanOneLine(extractText(message.content));
-	const match = OVERSIZED_ENTRY_RE.exec(raw);
-	const meta: string[] = [];
+	const rawMultiline = cleanMultiline(extractText(message.content));
+	const rawOneLine = cleanOneLine(rawMultiline);
+	const match = OVERSIZED_ENTRY_RE.exec(rawOneLine);
+	const metaParts: string[] = [];
 	if (match) {
-		const seq = match[1]!;
-		const bytes = Number(match[2]);
-		meta.push(`#${seq}`);
-		if (Number.isFinite(bytes)) meta.push(formatByteSize(bytes));
+		const isFile = Boolean(match[1]);
+		const seqOrOffset = match[2]!;
+		const bytes = Number(match[3]);
+		metaParts.push(isFile ? `byte ${seqOrOffset}` : `#${seqOrOffset}`);
+		if (Number.isFinite(bytes)) metaParts.push(formatByteSize(bytes));
 	}
 
 	const records: Component[] = [];
-	if (options.expanded && raw) {
-		records.push(singleLineRecord(theme.fg("muted", raw)));
+	if (options.expanded && rawMultiline) {
+		records.push(wrappedRecord(rawMultiline, (line) => theme.fg("muted", line)));
 	}
+
+	const headerTitle = match ? "Omitted large history entry" : rawOneLine || "Omitted large history entry";
+	const headerMeta = metaParts.length > 0 ? metaParts.join(" · ") : undefined;
 
 	return new ReplayableToolBlock(
 		new ToolBlock({
 			status: "info",
-			title: new Text(
-				theme.fg("text", match ? "Omitted large history entry" : raw || "Omitted large history entry"),
-				0,
-				0,
-			),
-			meta,
+			title: titleWithTruncatedMeta(theme.fg("text", headerTitle), headerMeta, theme),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),

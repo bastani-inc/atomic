@@ -1,5 +1,12 @@
 import type { TextContent } from "@bastani/atomic-ai/compat";
-import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	type Component,
+	stripTerminalSequences,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import type { Theme } from "../theme/theme.js";
@@ -19,12 +26,20 @@ const UNNAMED_CHAT_ALIAS_RE = /^subagent-chat-([0-9a-f]{8})(?:-[0-9a-f-]+)?$/i;
 const UUID_RE = /^([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LEGACY_WAKE_RE = /^Resuming subagent `([^`]+)`(?:\s+\(([^)]+)\))?\s+for an Intercom message from ([^.]+)\./;
 const CONTENT_READY_RE = /^Content fetched for (\d+)\/(\d+) URLs \[([^\]]+)\]/;
-const CONTENT_ERROR_RE = /^Content fetch failed \[([^\]]+)\]:\s*(.+)$/;
+const CONTENT_ERROR_RE = /^Content fetch failed \[([^\]]+)\]:\s*([\s\S]+)$/;
 
 function cleanOneLine(value: string): string {
 	return terminalDisplayText(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
+		.trim();
+}
+
+function cleanMultiline(value: string): string {
+	return terminalDisplayText(value)
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n")
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ")
 		.trim();
 }
 
@@ -41,11 +56,33 @@ function messageText(content: unknown): string {
 		.join("\n");
 }
 
-function singleLineRecord(text: string): Component {
+function wrappedRecord(text: string, style: (line: string) => string): Component {
 	return {
 		invalidate(): void {},
 		render(width: number): string[] {
-			return width < 1 ? [] : [truncateToWidth(text, width, "…")];
+			if (width < 1) return [];
+			const lines: string[] = [];
+			for (const rawLine of text.split("\n")) {
+				const wrapped = wrapTextWithAnsi(style(rawLine), width);
+				lines.push(...(wrapped.length > 0 ? wrapped : [""]));
+			}
+			return lines;
+		},
+	};
+}
+
+function titleWithTruncatedMeta(titleStyled: string, metaText: string | undefined, theme: Theme): Component {
+	return {
+		invalidate(): void {},
+		render(width: number): string[] {
+			if (width < 1) return [];
+			const titleW = visibleWidth(titleStyled);
+			if (!metaText || titleW + 4 >= width) {
+				return [truncateToWidth(titleStyled, width, "…")];
+			}
+			const room = width - titleW - 3;
+			const shown = visibleWidth(metaText) <= room ? metaText : truncateToWidth(metaText, room, "…");
+			return [`${titleStyled}${theme.fg("dim", ` · ${shown}`)}`];
 		},
 	};
 }
@@ -134,6 +171,7 @@ class DormantWakeNoticeComponent implements Component {
 	readonly historyReplayable = true;
 	private readonly parsed: ParsedWake | undefined;
 	private readonly fallbackText: string;
+	private readonly fallbackMultiline: string;
 	private readonly expanded: boolean;
 	private readonly outputPad: number;
 	private readonly theme: Theme;
@@ -141,12 +179,14 @@ class DormantWakeNoticeComponent implements Component {
 	constructor(
 		parsed: ParsedWake | undefined,
 		fallbackText: string,
+		fallbackMultiline: string,
 		expanded: boolean,
 		outputPad: number,
 		theme: Theme,
 	) {
 		this.parsed = parsed;
 		this.fallbackText = fallbackText;
+		this.fallbackMultiline = fallbackMultiline;
 		this.expanded = expanded;
 		this.outputPad = outputPad;
 		this.theme = theme;
@@ -204,18 +244,25 @@ class DormantWakeNoticeComponent implements Component {
 				details.push(`${this.theme.fg("dim", "Depth     ")}${this.theme.fg("muted", String(parsed.depth))}`);
 			}
 			details.push(this.theme.fg("dim", "Result stays with this session and arrives here."));
-		} else if (this.fallbackText) {
-			details.push(this.theme.fg("muted", this.fallbackText));
+		} else if (this.fallbackMultiline) {
+			for (const line of this.fallbackMultiline.split("\n")) {
+				details.push(this.theme.fg("muted", line));
+			}
 		}
 
+		const detailWidth = contentWidth > DETAIL_PREFIX.length ? contentWidth - DETAIL_PREFIX.length : contentWidth;
 		const rows = [header];
-		for (let i = 0; i < details.length; i += 1) {
-			const line = details[i]!;
-			if (contentWidth > DETAIL_PREFIX.length) {
-				const prefix = i === 0 ? this.theme.fg("dim", DETAIL_FIRST_PREFIX) : DETAIL_PREFIX;
-				rows.push(`${prefix}${truncateToWidth(line, contentWidth - DETAIL_PREFIX.length, "…")}`);
-			} else {
-				rows.push(truncateToWidth(line, contentWidth, "…"));
+		let firstRow = true;
+		for (const line of details) {
+			const wrappedLines = wrapTextWithAnsi(line, Math.max(1, detailWidth));
+			for (const wrapped of wrappedLines) {
+				if (contentWidth > DETAIL_PREFIX.length) {
+					const prefix = firstRow ? this.theme.fg("dim", DETAIL_FIRST_PREFIX) : DETAIL_PREFIX;
+					rows.push(`${prefix}${wrapped}`);
+				} else {
+					rows.push(truncateToWidth(wrapped, contentWidth, "…"));
+				}
+				firstRow = false;
 			}
 		}
 		return rows.map(finish);
@@ -224,41 +271,54 @@ class DormantWakeNoticeComponent implements Component {
 
 /** Dormant renderer for `intercom_subagent_wake`, matching `packages/intercom/ui/wake-notice.ts` before activation. */
 export const renderDormantIntercomWakeMessage: MessageRenderer = (message, options, theme) => {
+	const raw = messageText(message.content);
 	const parsed = parseWake(message.content, message.details);
-	const fallbackText = cleanOneLine(messageText(message.content));
-	return new DormantWakeNoticeComponent(parsed, fallbackText, options.expanded, options.outputPad ?? 1, theme);
+	const fallbackText = cleanOneLine(raw);
+	const fallbackMultiline = cleanMultiline(raw);
+	return new DormantWakeNoticeComponent(
+		parsed,
+		fallbackText,
+		fallbackMultiline,
+		options.expanded,
+		options.outputPad ?? 1,
+		theme,
+	);
 };
 
-/** Dormant renderer for `curator-config`, matching `packages/web-access/ui/custom-messages.ts` before activation. */
+/** Dormant renderer for `curator-config`, matching `packages/web-access/message-renderers.ts` before activation. */
 export const renderDormantCuratorConfigMessage: MessageRenderer = (message, options, theme) => {
 	const details =
 		message.details && typeof message.details === "object"
 			? (message.details as { readonly workflow?: unknown })
 			: undefined;
+	const rawMultiline = cleanMultiline(messageText(message.content));
 	const workflow = details?.workflow;
 	const title =
 		workflow === "none"
 			? "Search curator disabled"
 			: workflow === "summary-review"
 				? "Search curator enabled"
-				: cleanOneLine(messageText(message.content)) || "Search curator updated";
+				: cleanOneLine(rawMultiline) || "Search curator updated";
 	const meta =
 		workflow === "none"
-			? ["web_search returns raw results"]
+			? "web_search returns raw results"
 			: workflow === "summary-review"
-				? ["web_search opens curator with summary draft"]
-				: [];
+				? "web_search opens curator with summary draft"
+				: undefined;
 	return new ReplayableBlock(
 		new ToolBlock({
 			status: "info",
-			title: new Text(theme.fg("text", title), 0, 0),
-			meta,
+			title: titleWithTruncatedMeta(theme.fg("text", title), meta, theme),
+			details:
+				options.expanded && rawMultiline
+					? new ToolBlockRecords([wrappedRecord(rawMultiline, (line) => theme.fg("muted", line))])
+					: undefined,
 			outputPad: options.outputPad,
 		}),
 	);
 };
 
-/** Dormant renderer for `google-account`, matching `packages/web-access/ui/custom-messages.ts` before activation. */
+/** Dormant renderer for `google-account`, matching `packages/web-access/message-renderers.ts` before activation. */
 export const renderDormantGoogleAccountMessage: MessageRenderer = (message, options, theme) => {
 	const details =
 		message.details && typeof message.details === "object"
@@ -268,32 +328,34 @@ export const renderDormantGoogleAccountMessage: MessageRenderer = (message, opti
 					readonly email?: unknown;
 				})
 			: undefined;
-	const rawText = cleanOneLine(messageText(message.content));
+	const rawMultiline = cleanMultiline(messageText(message.content));
+	const rawOneLine = cleanOneLine(rawMultiline);
 	const available = details?.available === true;
 	const email = typeof details?.email === "string" ? cleanOneLine(details.email) : "";
 	const cookieDisabled = details?.available === false && details?.cookieAccessAllowed === false;
 
 	const status = available && email ? "success" : "info";
-	const meta: string[] = [];
-	if (available && email) meta.push(email);
-	else if (available) meta.push("Gemini Web available · account unknown");
-	else if (cookieDisabled) meta.push("browser cookie access disabled");
-	else if (details?.available === false) meta.push("Gemini Web unavailable");
-	else if (rawText) meta.push(rawText);
+	let summary: string | undefined;
+	if (available && email) summary = email;
+	else if (available) summary = "Gemini Web available · account unknown";
+	else if (cookieDisabled) summary = "browser cookie access disabled";
+	else if (details?.available === false) summary = "Gemini Web unavailable";
+	else if (rawOneLine) summary = rawOneLine;
 
-	const showDetail = options.expanded && rawText.length > 0 && !(available && email);
 	return new ReplayableBlock(
 		new ToolBlock({
 			status,
-			title: new Text(theme.fg("text", "Google account"), 0, 0),
-			meta,
-			details: showDetail ? new ToolBlockRecords([singleLineRecord(theme.fg("muted", rawText))]) : undefined,
+			title: titleWithTruncatedMeta(theme.fg("text", "Google account"), summary, theme),
+			details:
+				options.expanded && rawMultiline
+					? new ToolBlockRecords([wrappedRecord(rawMultiline, (line) => theme.fg("muted", line))])
+					: undefined,
 			outputPad: options.outputPad,
 		}),
 	);
 };
 
-/** Dormant renderer for `web-search-results`, matching `packages/web-access/ui/custom-messages.ts` before activation. */
+/** Dormant renderer for `web-search-results`, matching `packages/web-access/message-renderers.ts` before activation. */
 export const renderDormantWebSearchResultsMessage: MessageRenderer = (message, options, theme) => {
 	const details =
 		message.details && typeof message.details === "object"
@@ -338,49 +400,58 @@ export const renderDormantWebSearchResultsMessage: MessageRenderer = (message, o
 	);
 };
 
-/** Dormant renderer for `web-search-content-ready`, matching `packages/web-access/ui/custom-messages.ts` before activation. */
+/** Dormant renderer for `web-search-content-ready`, matching `packages/web-access/message-renderers.ts` before activation. */
 export const renderDormantWebSearchContentReadyMessage: MessageRenderer = (message, options, theme) => {
-	const rawText = cleanOneLine(messageText(message.content));
-	const match = CONTENT_READY_RE.exec(rawText);
-	const meta = match ? [`${match[1]}/${match[2]} URLs fetched`] : rawText ? [rawText] : [];
+	const rawMultiline = cleanMultiline(messageText(message.content));
+	const rawOneLine = cleanOneLine(rawMultiline);
+	const match = CONTENT_READY_RE.exec(rawOneLine);
+	const summary = match ? `${match[1]}/${match[2]} URLs fetched` : rawOneLine || undefined;
 	const fetchId = match?.[3] ? cleanOneLine(match[3]) : "";
 
 	const records: Component[] = [];
 	if (options.expanded) {
-		if (fetchId) records.push(singleLineRecord(theme.fg("dim", `Fetch ID · ${fetchId}`)));
-		records.push(singleLineRecord(theme.fg("muted", "Full page content available via get_search_content.")));
+		if (fetchId) records.push(wrappedRecord(`Fetch ID · ${fetchId}`, (line) => theme.fg("dim", line)));
+		if (rawMultiline) {
+			records.push(wrappedRecord(rawMultiline, (line) => theme.fg("muted", line)));
+		} else {
+			records.push(
+				wrappedRecord("Full page content available via get_search_content.", (line) => theme.fg("muted", line)),
+			);
+		}
 	}
 
 	return new ReplayableBlock(
 		new ToolBlock({
 			status: "success",
-			title: new Text(theme.fg("text", "Web content ready"), 0, 0),
-			meta,
+			title: titleWithTruncatedMeta(theme.fg("text", "Web content ready"), summary, theme),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),
 	);
 };
 
-/** Dormant renderer for `web-search-error`, matching `packages/web-access/ui/custom-messages.ts` before activation. */
+/** Dormant renderer for `web-search-error`, matching `packages/web-access/message-renderers.ts` before activation. */
 export const renderDormantWebSearchErrorMessage: MessageRenderer = (message, options, theme) => {
-	const rawText = cleanOneLine(messageText(message.content));
-	const match = CONTENT_ERROR_RE.exec(rawText);
+	const rawMultiline = cleanMultiline(messageText(message.content));
+	const match = CONTENT_ERROR_RE.exec(rawMultiline);
 	const fetchId = match?.[1] ? cleanOneLine(match[1]) : "";
-	const reason = match?.[2] ? cleanOneLine(match[2]) : rawText;
-	const shortReason = visibleWidth(reason) > 48 ? truncateToWidth(reason, 48, "…") : reason;
+	const reasonMultiline = match?.[2] ? match[2].trim() : rawMultiline;
+	const firstLineReason = cleanOneLine(reasonMultiline.split("\n", 1)[0] ?? "");
 
 	const records: Component[] = [];
 	if (options.expanded) {
-		if (fetchId) records.push(singleLineRecord(theme.fg("dim", `Fetch ID · ${fetchId}`)));
-		if (reason) records.push(singleLineRecord(theme.fg("error", reason)));
+		if (fetchId) records.push(wrappedRecord(`Fetch ID · ${fetchId}`, (line) => theme.fg("dim", line)));
+		if (reasonMultiline) records.push(wrappedRecord(reasonMultiline, (line) => theme.fg("error", line)));
 	}
 
 	return new ReplayableBlock(
 		new ToolBlock({
 			status: "failure",
-			title: new Text(theme.fg("text", "Web content fetch failed"), 0, 0),
-			meta: shortReason ? [shortReason] : [],
+			title: titleWithTruncatedMeta(
+				theme.fg("text", "Web content fetch failed"),
+				firstLineReason || undefined,
+				theme,
+			),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),

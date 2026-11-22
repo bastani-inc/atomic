@@ -1,16 +1,29 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@bastani/atomic-tui";
+import { Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test } from "vitest";
-import { getBuiltinPackageLocations } from "../../packages/coding-agent/src/core/builtin-packages.js";
+import {
+	getBuiltinPackageLocations,
+	getBuiltinPackagePaths,
+	getMandatoryBuiltinExtensionPaths,
+} from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { createLazyBuiltinFactory } from "../../packages/coding-agent/src/core/extensions/lazy-builtin.js";
+import { intercomLazyBuiltinSpec } from "../../packages/coding-agent/src/core/extensions/lazy-builtins/intercom.js";
+import { webAccessLazyBuiltinSpec } from "../../packages/coding-agent/src/core/extensions/lazy-builtins/web-access.js";
 import { loadExtensionFromFactory, loadExtensions } from "../../packages/coding-agent/src/core/extensions/loader.js";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.js";
+import { ExtensionRunner } from "../../packages/coding-agent/src/core/extensions/runner.js";
 import type { ExtensionAPI, MessageRenderer } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { createCustomMessage } from "../../packages/coding-agent/src/core/messages.js";
+import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
+import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import { keyHint, keyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
 import {
@@ -35,6 +48,21 @@ afterEach(() => {
 
 function plain(lines: readonly string[]): string[] {
 	return lines.map((line) => stripVTControlCharacters(line));
+}
+
+function normalizedText(lines: readonly string[]): string {
+	return plain(lines)
+		.map((l) => l.replace(/^\s*(?:⎿\s+)?/, "").trim())
+		.filter(Boolean)
+		.join(" ")
+		.replace(/\s+/g, " ");
+}
+
+function unbrokenText(lines: readonly string[]): string {
+	return plain(lines)
+		.map((l) => l.replace(/^\s*(?:⎿\s+)?/, "").trim())
+		.filter(Boolean)
+		.join("");
 }
 
 function assertClickMatchesCtrlO(component: CustomMessageComponent, width = 100): void {
@@ -78,21 +106,21 @@ describe("core coding-agent owned custom messages never fall back to bracketed l
 				notices: ["Restored 2 background subagents", "Reattached Intercom group default"],
 			},
 			expectCollapsed: "Session recovery",
-			expectExpanded: "Reattached Intercom group default",
+			expectExpanded: ["Restored 2 background subagents", "Reattached Intercom group default"],
 		},
 		{
 			customType: "session-recovery-replay",
 			content: "Replaying 2 interrupted deliveries from before the restart.",
 			details: { reason: "resume", entryIds: ["entry-1111aaaa", "entry-2222bbbb"] },
 			expectCollapsed: "Replaying 2 interrupted deliveries",
-			expectExpanded: "entry-1111aaaa",
+			expectExpanded: ["entry-1111aaaa", "entry-2222bbbb", "from before the restart."],
 		},
 		{
 			customType: "event_report",
 			content: 'Report from event child "ci#1/build-42" (event build-42):\n\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5',
 			details: { subscriptionId: "sess-1/ci#1", eventId: "build-42", child: "ci#1/build-42" },
 			expectCollapsed: "ci#1/build-42",
-			expectExpanded: "Line 5",
+			expectExpanded: ["Line 5", "Child · ci#1/build-42", "Subscription · sess-1/ci#1"],
 		},
 		{
 			customType: "atomic.oversized-history-entry",
@@ -100,12 +128,12 @@ describe("core coding-agent owned custom messages never fall back to bracketed l
 				"Saved entry 42 is 2097152 bytes. Read the original bytes with the session history reader or export this session.",
 			details: undefined,
 			expectCollapsed: "2.0 MB",
-			expectExpanded: "2097152 bytes",
+			expectExpanded: ["Saved entry 42 is 2097152 bytes.", "session history reader or export this session."],
 		},
 	] as const;
 
 	for (const tc of coreCases) {
-		test(`${tc.customType} renders as notice card, expands via Ctrl+O & click, and fits narrow/wide widths`, () => {
+		test(`${tc.customType} renders as notice card, expands losslessly at 80 and 120 cols via Ctrl+O & click`, () => {
 			const msg = createCustomMessage(tc.customType, tc.content, true, tc.details, new Date(0).toISOString());
 			const comp = new CustomMessageComponent(msg);
 
@@ -119,9 +147,17 @@ describe("core coding-agent owned custom messages never fall back to bracketed l
 
 			assertClickMatchesCtrlO(comp, 100);
 
-			comp.setExpanded(true);
-			const expandedPlain = plain(comp.render(120)).join("\n");
-			assert.ok(expandedPlain.includes(tc.expectExpanded), `expected "${tc.expectExpanded}" in:\n${expandedPlain}`);
+			for (const w of [80, 120]) {
+				comp.setExpanded(true);
+				const rows = comp.render(w);
+				for (const row of rows) {
+					assert.ok(visibleWidth(row) <= w, `${tc.customType} overflowed width ${w}`);
+				}
+				const joined = normalizedText(rows);
+				for (const expected of tc.expectExpanded) {
+					assert.ok(joined.includes(expected), `${tc.customType} w=${w} lost "${expected}" in:\n${joined}`);
+				}
+			}
 
 			for (const w of [1, 20, 40, 80, 120]) {
 				for (const exp of [false, true]) {
@@ -139,6 +175,81 @@ describe("core coding-agent owned custom messages never fall back to bracketed l
 			}
 		});
 	}
+
+	test("long and multi-line core messages wrap losslessly at 80 and 120 cols without popping collapsed summaries to blank", () => {
+		// 1. Single long multi-line recovery notice (> 80 chars)
+		const longNotice =
+			"Closed 25 answered subagent asks after restart and reconciled pending deliveries across sessions.\nSecond line of recovery detail preserved intact.";
+		const recMsg = createCustomMessage(
+			"session-recovery-notice",
+			`Session recovery after restart:\n- ${longNotice}`,
+			true,
+			{ reason: "resume", notices: [longNotice] },
+			new Date(0).toISOString(),
+		);
+		const recComp = new CustomMessageComponent(recMsg);
+		const recCollapsed80 = plain(recComp.render(80))[1]!;
+		assert.ok(
+			recCollapsed80.includes("Session recovery · Closed 25"),
+			`80-col collapsed single recovery notice must not pop meta to blank, got: ${recCollapsed80}`,
+		);
+		for (const w of [80, 120]) {
+			recComp.setExpanded(true);
+			const rows = recComp.render(w);
+			for (const row of rows) assert.ok(visibleWidth(row) <= w);
+			const joined = normalizedText(rows);
+			assert.ok(joined.includes("reconciled pending deliveries across sessions."));
+			assert.ok(joined.includes("Second line of recovery detail preserved intact."));
+		}
+
+		// 2. File-archive oversized entry emitter ("Saved file entry at byte N is M bytes...")
+		const fileOversized =
+			"Saved file entry at byte 42 is 2097152 bytes. Read the original bytes with the session history reader or export this session.";
+		const fileComp = new CustomMessageComponent(
+			createCustomMessage(
+				"atomic.oversized-history-entry",
+				fileOversized,
+				true,
+				undefined,
+				new Date(0).toISOString(),
+			),
+		);
+		const fileCollapsed80 = plain(fileComp.render(80))[1]!;
+		assert.ok(fileCollapsed80.includes("byte 42"), `expected byte offset in collapsed line, got: ${fileCollapsed80}`);
+		assert.ok(fileCollapsed80.includes("2.0 MB"));
+		for (const w of [80, 120]) {
+			fileComp.setExpanded(true);
+			const rows = fileComp.render(w);
+			for (const row of rows) assert.ok(visibleWidth(row) <= w);
+			assert.ok(normalizedText(rows).includes(fileOversized), `w=${w} lost file oversized text`);
+		}
+
+		// 3. Event report with very long child name that truncates in header at 80 cols
+		const longChild = "deployment-pipeline-monitor-production-us-east-1#42/build-event-2026-11-22-final";
+		const evComp = new CustomMessageComponent(
+			createCustomMessage(
+				"event_report",
+				`Report from event child "${longChild}" (event evt-long-id-12345678901234567890):\n\nAll checks succeeded.`,
+				true,
+				{
+					subscriptionId: "session-abc/deployment-pipeline#42",
+					eventId: "evt-long-id-12345678901234567890",
+					child: longChild,
+				},
+				new Date(0).toISOString(),
+			),
+		);
+		for (const w of [80, 120]) {
+			evComp.setExpanded(true);
+			const rows = evComp.render(w);
+			for (const row of rows) assert.ok(visibleWidth(row) <= w);
+			const joined = normalizedText(rows);
+			const unbroken = unbrokenText(rows);
+			assert.ok(unbroken.includes(longChild), `w=${w} lost full event child name in:\n${plain(rows).join("\n")}`);
+			assert.ok(joined.includes("evt-long-id-12345678901234567890"), `w=${w} lost full eventId`);
+			assert.ok(joined.includes("session-abc/deployment-pipeline#42"), `w=${w} lost subscriptionId`);
+		}
+	});
 
 	test("third-party unknown customType preserves default bracketed fallback (no regression)", () => {
 		const msg = createCustomMessage(
@@ -223,54 +334,66 @@ describe("web-access owned custom messages register across dormant, light, and h
 		};
 	}
 
-	test("all 5 web-access customTypes render identically across dormant, light, and heavy paths without bracketed labels", async () => {
+	test("all 5 web-access customTypes render identically across dormant, light, and heavy paths and expand losslessly at 80 and 120 cols", async () => {
 		const { dormant, light, heavy } = await loadWebRenderers();
+		const cookieDisabledText =
+			"Gemini Web browser cookie access is disabled. Set allowBrowserCookies: true in ~/.atomic/web-search.json to enable it.";
+		const multiLineError =
+			"Content fetch failed [fetch-1234abcd]: ECONNRESET while fetching https://example.com/very/long/path/document.html\nRetry after checking proxy configuration and TLS certificates.";
 		const samples = [
-			createCustomMessage(
-				"curator-config",
-				[
-					{
-						type: "text",
-						text: "Curator enabled — web_search will open curator and auto-generate a summary draft",
-					},
+			{
+				msg: createCustomMessage(
+					"curator-config",
+					[
+						{
+							type: "text",
+							text: "Curator enabled — web_search will open curator and auto-generate a summary draft",
+						},
+					],
+					true,
+					{ workflow: "summary-review" },
+					new Date(0).toISOString(),
+				),
+				expectExpanded: ["auto-generate a summary draft"],
+			},
+			{
+				msg: createCustomMessage(
+					"google-account",
+					[{ type: "text", text: cookieDisabledText }],
+					true,
+					{ available: false, cookieAccessAllowed: false },
+					new Date(0).toISOString(),
+				),
+				expectExpanded: ["allowBrowserCookies: true in ~/.atomic/web-search.json to enable it."],
+			},
+			{
+				msg: createCustomMessage(
+					"web-search-results",
+					[{ type: "text", text: "Result line 1\nResult line 2\nResult line 3\nResult line 4\nResult line 5" }],
+					true,
+					{ curated: true, queryCount: 2, totalResults: 8, queries: ["atomic tui", "catppuccin"] },
+					new Date(0).toISOString(),
+				),
+				expectExpanded: ["Result line 5"],
+			},
+			{
+				msg: createCustomMessage(
+					"web-search-content-ready",
+					"Content fetched for 3/4 URLs [fetch-1234abcd]. Full page content now available.",
+					true,
+					undefined,
+					new Date(0).toISOString(),
+				),
+				expectExpanded: ["fetch-1234abcd", "Full page content now available."],
+			},
+			{
+				msg: createCustomMessage("web-search-error", multiLineError, true, undefined, new Date(0).toISOString()),
+				expectExpanded: [
+					"fetch-1234abcd",
+					"https://example.com/very/long/path/document.html",
+					"Retry after checking proxy configuration and TLS certificates.",
 				],
-				true,
-				{ workflow: "summary-review" },
-				new Date(0).toISOString(),
-			),
-			createCustomMessage(
-				"google-account",
-				[
-					{
-						type: "text",
-						text: "Gemini Web is unavailable. Sign into gemini.google.com in a supported Chromium-based browser.",
-					},
-				],
-				true,
-				{ available: false, cookieAccessAllowed: true },
-				new Date(0).toISOString(),
-			),
-			createCustomMessage(
-				"web-search-results",
-				[{ type: "text", text: "Result line 1\nResult line 2\nResult line 3\nResult line 4\nResult line 5" }],
-				true,
-				{ curated: true, queryCount: 2, totalResults: 8, queries: ["atomic tui", "catppuccin"] },
-				new Date(0).toISOString(),
-			),
-			createCustomMessage(
-				"web-search-content-ready",
-				"Content fetched for 3/4 URLs [fetch-1234abcd]. Full page content now available.",
-				true,
-				undefined,
-				new Date(0).toISOString(),
-			),
-			createCustomMessage(
-				"web-search-error",
-				"Content fetch failed [fetch-1234abcd]: ECONNRESET while fetching remote host",
-				true,
-				undefined,
-				new Date(0).toISOString(),
-			),
+			},
 		];
 
 		for (const customType of webTypes) {
@@ -279,25 +402,295 @@ describe("web-access owned custom messages register across dormant, light, and h
 			assert.ok(heavy.has(customType), `heavy web-access/index-heavy.ts must register ${customType}`);
 		}
 
-		for (const msg of samples) {
+		for (const { msg, expectExpanded } of samples) {
 			const rDormant = dormant.get(msg.customType)!;
 			const rLight = light.get(msg.customType)!;
 			const rHeavy = heavy.get(msg.customType)!;
 
-			for (const expanded of [false, true]) {
-				const opts = { expanded, outputPad: 1, keyText, keyHint };
-				const outDormant = rDormant(msg, opts, theme)?.render(100);
-				const outLight = rLight(msg, opts, theme)?.render(100);
-				const outHeavy = rHeavy(msg, opts, theme)?.render(100);
-				assert.ok(outDormant && outDormant.length > 0);
-				assert.deepEqual(outDormant, outLight, `${msg.customType} dormant vs light mismatch`);
-				assert.deepEqual(outLight, outHeavy, `${msg.customType} light vs heavy mismatch`);
-				assert.ok(!plain(outLight!).join("\n").includes(`[${msg.customType}]`));
+			for (const width of [80, 120]) {
+				for (const expanded of [false, true]) {
+					const opts = { expanded, outputPad: 1, keyText, keyHint };
+					const outDormant = rDormant(msg, opts, theme)?.render(width);
+					const outLight = rLight(msg, opts, theme)?.render(width);
+					const outHeavy = rHeavy(msg, opts, theme)?.render(width);
+					assert.ok(outDormant && outDormant.length > 0);
+					assert.deepEqual(outDormant, outLight, `${msg.customType} dormant vs light mismatch (w=${width})`);
+					assert.deepEqual(outLight, outHeavy, `${msg.customType} light vs heavy mismatch (w=${width})`);
+					assert.ok(!plain(outLight!).join("\n").includes(`[${msg.customType}]`));
+					for (const row of outLight!) {
+						assert.ok(visibleWidth(row) <= width, `${msg.customType} overflowed width ${width}`);
+					}
+					if (expanded) {
+						const joined = normalizedText(outLight!);
+						for (const snippet of expectExpanded) {
+							assert.ok(
+								joined.includes(snippet),
+								`${msg.customType} w=${width} lost "${snippet}" in:\n${joined}`,
+							);
+						}
+					}
+				}
 			}
 
 			const comp = new CustomMessageComponent(msg, rLight);
 			assert.equal(comp.historyReplayable, true, `${msg.customType} must be historyReplayable`);
-			assertClickMatchesCtrlO(comp, 100);
+			assertClickMatchesCtrlO(comp, 80);
 		}
+	});
+});
+
+describe("resumed sessions keep intercom and web-access dormant for new custom_message types", () => {
+	test("session_start with intercom_subagent_wake keeps Intercom dormant while rendering the wake card", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-dormant-wake-resume-"));
+		tempDirs.push(dir);
+		let loadCount = 0;
+		const factory = createLazyBuiltinFactory(intercomLazyBuiltinSpec, async () => {
+			loadCount += 1;
+			return () => {};
+		});
+		const bus = createEventBus();
+		const runtime = createExtensionRuntime();
+		const ext = await loadExtensionFromFactory(factory, dir, bus, runtime, "builtin:intercom");
+		const manager = SessionManager.inMemory(dir);
+		await manager.appendCustomMessageEntry(
+			"intercom_subagent_wake",
+			"Resuming subagent `subagent-debugger-45255a2f-7` (45255a2f:6) for an Intercom message from subagent-worker-45255a2f-3. It stays this session's subagent: its result arrives here.",
+			true,
+			{
+				childName: "subagent-debugger-45255a2f-7",
+				childId: "45255a2f:6",
+				from: { id: "133acdf4-dc40-4f80-865c-ba1931d0a8cc", name: "subagent-worker-45255a2f-3" },
+				depth: 1,
+			},
+		);
+		const modelRegistry = new ModelRegistry(await ModelRuntime.create({ modelsPath: null }));
+		const runner = new ExtensionRunner([ext], runtime, dir, manager, modelRegistry);
+		await runner.emit({ type: "session_start", reason: "resume" });
+		assert.equal(
+			loadCount,
+			0,
+			"resuming a session with only intercom_subagent_wake must not eagerly activate Intercom",
+		);
+
+		const renderer = runner.getMessageRenderer("intercom_subagent_wake");
+		assert.ok(renderer, "dormant wake renderer must be registered");
+		const rendered = plain(
+			renderer(
+				createCustomMessage(
+					"intercom_subagent_wake",
+					"Resuming subagent `subagent-debugger-45255a2f-7` (45255a2f:6) for an Intercom message from subagent-worker-45255a2f-3. It stays this session's subagent: its result arrives here.",
+					true,
+					{
+						childName: "subagent-debugger-45255a2f-7",
+						childId: "45255a2f:6",
+						from: { id: "133acdf4-dc40-4f80-865c-ba1931d0a8cc", name: "subagent-worker-45255a2f-3" },
+						depth: 1,
+					},
+					new Date(0).toISOString(),
+				),
+				{ expanded: false, outputPad: 1, keyText, keyHint },
+				theme,
+			)!.render(120),
+		).join("\n");
+		assert.ok(rendered.includes("Woke subagent-debugger-…-7 for a message from subagent-worker-…-3"));
+		assert.equal(loadCount, 0, "rendering the wake card must stay dormant");
+	});
+
+	test("session_start with all 5 web-access custom_message types keeps Web Access dormant while rendering each card", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-dormant-web-resume-"));
+		tempDirs.push(dir);
+		let loadCount = 0;
+		const factory = createLazyBuiltinFactory(webAccessLazyBuiltinSpec, async () => {
+			loadCount += 1;
+			return () => {};
+		});
+		const bus = createEventBus();
+		const runtime = createExtensionRuntime();
+		const ext = await loadExtensionFromFactory(factory, dir, bus, runtime, "builtin:web-access");
+		const manager = SessionManager.inMemory(dir);
+		for (const customType of [
+			"curator-config",
+			"google-account",
+			"web-search-results",
+			"web-search-content-ready",
+			"web-search-error",
+		]) {
+			await manager.appendCustomMessageEntry(customType, `saved ${customType}`, true, {});
+		}
+		const modelRegistry = new ModelRegistry(await ModelRuntime.create({ modelsPath: null }));
+		const runner = new ExtensionRunner([ext], runtime, dir, manager, modelRegistry);
+		await runner.emit({ type: "session_start", reason: "resume" });
+		assert.equal(
+			loadCount,
+			0,
+			"resuming a session with web-access custom messages must not eagerly activate Web Access",
+		);
+
+		for (const customType of [
+			"curator-config",
+			"google-account",
+			"web-search-results",
+			"web-search-content-ready",
+			"web-search-error",
+		]) {
+			const renderer = runner.getMessageRenderer(customType);
+			assert.ok(renderer, `dormant renderer for ${customType} must be registered`);
+			const out = plain(
+				renderer(
+					createCustomMessage(customType, `saved ${customType}`, true, {}, new Date(0).toISOString()),
+					{ expanded: false, outputPad: 1, keyText, keyHint },
+					theme,
+				)!.render(100),
+			).join("\n");
+			assert.ok(!out.includes(`[${customType}]`));
+		}
+		assert.equal(loadCount, 0, "rendering web-access custom messages must stay dormant");
+	});
+});
+
+describe("extension message renderer precedence over builtin notice cards", () => {
+	const ALL_TEN_TYPES = [
+		"intercom_subagent_wake",
+		"session-recovery-notice",
+		"session-recovery-replay",
+		"event_report",
+		"atomic.oversized-history-entry",
+		"curator-config",
+		"google-account",
+		"web-search-results",
+		"web-search-content-ready",
+		"web-search-error",
+	] as const;
+
+	function writeOverrideExtensionFile(filePath: string, marker: string): void {
+		const typesJson = JSON.stringify(ALL_TEN_TYPES);
+		writeFileSync(
+			filePath,
+			`export default function (pi) {
+	for (const customType of ${typesJson}) {
+		pi.registerMessageRenderer(customType, () => ({
+			invalidate() {},
+			render() { return ["${marker}:" + customType]; },
+		}));
+	}
+}
+`,
+		);
+	}
+
+	async function assertAllTenWin(loader: DefaultResourceLoader, marker: string): Promise<void> {
+		await loader.reload();
+		const loaded = loader.getExtensions();
+		assert.deepEqual(loaded.errors, []);
+		const modelRegistry = new ModelRegistry(await ModelRuntime.create({ modelsPath: null }));
+		const runner = new ExtensionRunner(
+			loaded.extensions,
+			loaded.runtime,
+			process.cwd(),
+			SessionManager.inMemory(process.cwd()),
+			modelRegistry,
+		);
+		for (const customType of ALL_TEN_TYPES) {
+			const msg = createCustomMessage(customType, "body", true, {}, new Date(0).toISOString());
+			const comp = new CustomMessageComponent(msg, runner.getMessageRenderer(customType));
+			const rendered = plain(comp.render(100)).join("\n");
+			assert.ok(
+				rendered.includes(`${marker}:${customType}`),
+				`expected ${marker} override to win for ${customType}, got:\n${rendered}`,
+			);
+		}
+	}
+
+	test("inline SDK extensionFactories override wins over builtinPackagePaths for all 10 types", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-precedence-inline-"));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			builtinPackagePaths: getBuiltinPackagePaths(),
+			extensionFactories: [
+				(pi) => {
+					for (const customType of ALL_TEN_TYPES) {
+						pi.registerMessageRenderer(customType, () => new Text(`INLINE:${customType}`, 0, 0));
+					}
+				},
+			],
+		});
+		await assertAllTenWin(loader, "INLINE");
+	});
+
+	test("CLI -e additionalExtensionPaths override wins over builtinPackagePaths for all 10 types", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-precedence-cli-"));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const extFile = join(root, "cli-override.mjs");
+		writeOverrideExtensionFile(extFile, "CLI");
+
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			builtinPackagePaths: getBuiltinPackagePaths(),
+			additionalExtensionPaths: [extFile],
+		});
+		await assertAllTenWin(loader, "CLI");
+	});
+
+	test("project .atomic/extensions override wins over builtinPackagePaths for all 10 types", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-precedence-project-"));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const projectExtDir = join(cwd, ".atomic", "extensions");
+		mkdirSync(projectExtDir, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeOverrideExtensionFile(join(projectExtDir, "project-override.js"), "PROJECT");
+
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			builtinPackagePaths: getBuiltinPackagePaths(),
+		});
+		await assertAllTenWin(loader, "PROJECT");
+	});
+
+	test("installed package extension override wins over builtinPackagePaths for all 10 types", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-precedence-pkg-"));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const pkgDir = join(root, "my-ext-pkg");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(pkgDir, { recursive: true });
+		writeOverrideExtensionFile(join(pkgDir, "index.mjs"), "PACKAGE");
+		writeFileSync(
+			join(pkgDir, "package.json"),
+			JSON.stringify({ name: "my-ext-pkg", version: "1.0.0", atomic: { extensions: ["./index.mjs"] } }),
+		);
+
+		const settingsManager = SettingsManager.inMemory({ packages: [pkgDir] });
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			builtinPackagePaths: getBuiltinPackagePaths(),
+		});
+		await assertAllTenWin(loader, "PACKAGE");
+	});
+
+	test("mandatory intercom entry path stays valid when loaded standalone", () => {
+		const [intercomEntry] = getMandatoryBuiltinExtensionPaths();
+		assert.ok(intercomEntry);
 	});
 });

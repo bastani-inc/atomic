@@ -97,8 +97,7 @@ const ENDED_CHILD_WAKE_MESSAGE_TYPE = "intercom_subagent_wake";
 function hasIntercomHistory(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
 		(entry) =>
-			(entry.type === "custom_message" &&
-				(entry.customType === "intercom_message" || entry.customType === ENDED_CHILD_WAKE_MESSAGE_TYPE)) ||
+			(entry.type === "custom_message" && entry.customType === "intercom_message") ||
 			(entry.type === "custom" && entry.customType === "intercom_inbox") ||
 			(entry.type === "custom" && entry.customType === "intercom_ask") ||
 			(entry.type === "custom" && entry.customType === "subagent-child") ||
@@ -756,17 +755,17 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			renderResult: (...args) => renderResultFallback(controller, "intercom", args),
 		});
 
+		pi.registerMessageRenderer(ENDED_CHILD_WAKE_MESSAGE_TYPE, (message, options, theme) => {
+			const loaded = controller.active?.captured.messageRenderers.get(ENDED_CHILD_WAKE_MESSAGE_TYPE);
+			if (loaded) return loaded(message, options, theme);
+			return renderDormantIntercomWakeMessage(message, options, theme);
+		});
+
 		pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
 			const loaded = controller.active?.captured.messageRenderers.get("intercom_message");
 			if (loaded) return loaded(message, options, theme);
 			const content = typeof message.content === "string" ? message.content : "";
 			return new Text(theme.fg("toolOutput", content), 0, 0);
-		});
-
-		pi.registerMessageRenderer(ENDED_CHILD_WAKE_MESSAGE_TYPE, (message, options, theme) => {
-			const loaded = controller.active?.captured.messageRenderers.get(ENDED_CHILD_WAKE_MESSAGE_TYPE);
-			if (loaded) return loaded(message, options, theme);
-			return renderDormantIntercomWakeMessage(message, options, theme);
 		});
 
 		pi.registerToolRenderer((toolName, next) => {

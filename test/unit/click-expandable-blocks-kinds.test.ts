@@ -28,7 +28,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "../../packages/intercom/ui/wake-notice.js";
 import { renderSubagentNotification } from "../../packages/subagents/src/extension/index.js";
-import { WEB_ACCESS_MESSAGE_RENDERERS } from "../../packages/web-access/ui/custom-messages.js";
+import { WEB_ACCESS_MESSAGE_RENDERERS } from "../../packages/web-access/message-renderers.js";
 
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
@@ -316,6 +316,7 @@ const EXPANDING = new Set([
 	"a session recovery notice",
 	"an event report notice",
 	"a web search results notice",
+	"a curator config notice",
 	"a finished-task notice",
 	"a task heartbeat",
 	"a subagent notice",

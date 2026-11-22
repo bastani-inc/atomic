@@ -1014,8 +1014,8 @@ ${ASK_USAGE}
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 		renderCall: renderIntercomCall,
 	});
-	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
 	pi.registerMessageRenderer?.(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
+	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
 	pi.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
 		if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self") return registered;

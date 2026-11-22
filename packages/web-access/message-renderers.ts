@@ -2,21 +2,30 @@ import {
 	collapseToolBlockLines,
 	type ExtensionAPI,
 	type MessageRenderer,
+	type Theme,
 	TOOL_BLOCK_LIMITS,
 	ToolBlock,
 	ToolBlockMarkdown,
 	ToolBlockRecords,
 	terminalDisplayText,
 } from "@bastani/atomic";
-import { type Component, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { type Component, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 
 const CONTENT_READY_RE = /^Content fetched for (\d+)\/(\d+) URLs \[([^\]]+)\]/;
-const CONTENT_ERROR_RE = /^Content fetch failed \[([^\]]+)\]:\s*(.+)$/;
+const CONTENT_ERROR_RE = /^Content fetch failed \[([^\]]+)\]:\s*([\s\S]+)$/;
 
 function cleanOneLine(value: string): string {
 	return terminalDisplayText(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
+		.trim();
+}
+
+function cleanMultiline(value: string): string {
+	return terminalDisplayText(value)
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n")
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ")
 		.trim();
 }
 
@@ -33,11 +42,33 @@ function messageText(content: unknown): string {
 		.join("\n");
 }
 
-function singleLineRecord(text: string): Component {
+function wrappedRecord(text: string, style: (line: string) => string): Component {
 	return {
 		invalidate(): void {},
 		render(width: number): string[] {
-			return width < 1 ? [] : [truncateToWidth(text, width, "…")];
+			if (width < 1) return [];
+			const lines: string[] = [];
+			for (const rawLine of text.split("\n")) {
+				const wrapped = wrapTextWithAnsi(style(rawLine), width);
+				lines.push(...(wrapped.length > 0 ? wrapped : [""]));
+			}
+			return lines;
+		},
+	};
+}
+
+function titleWithTruncatedMeta(titleStyled: string, metaText: string | undefined, theme: Theme): Component {
+	return {
+		invalidate(): void {},
+		render(width: number): string[] {
+			if (width < 1) return [];
+			const titleW = visibleWidth(titleStyled);
+			if (!metaText || titleW + 4 >= width) {
+				return [truncateToWidth(titleStyled, width, "…")];
+			}
+			const room = width - titleW - 3;
+			const shown = visibleWidth(metaText) <= room ? metaText : truncateToWidth(metaText, room, "…");
+			return [`${titleStyled}${theme.fg("dim", ` · ${shown}`)}`];
 		},
 	};
 }
@@ -64,24 +95,28 @@ export const renderCuratorConfigMessage: MessageRenderer = (message, options, th
 		message.details && typeof message.details === "object"
 			? (message.details as { readonly workflow?: unknown })
 			: undefined;
+	const rawMultiline = cleanMultiline(messageText(message.content));
 	const workflow = details?.workflow;
 	const title =
 		workflow === "none"
 			? "Search curator disabled"
 			: workflow === "summary-review"
 				? "Search curator enabled"
-				: cleanOneLine(messageText(message.content)) || "Search curator updated";
+				: cleanOneLine(rawMultiline) || "Search curator updated";
 	const meta =
 		workflow === "none"
-			? ["web_search returns raw results"]
+			? "web_search returns raw results"
 			: workflow === "summary-review"
-				? ["web_search opens curator with summary draft"]
-				: [];
+				? "web_search opens curator with summary draft"
+				: undefined;
 	return new ReplayableBlock(
 		new ToolBlock({
 			status: "info",
-			title: new Text(theme.fg("text", title), 0, 0),
-			meta,
+			title: titleWithTruncatedMeta(theme.fg("text", title), meta, theme),
+			details:
+				options.expanded && rawMultiline
+					? new ToolBlockRecords([wrappedRecord(rawMultiline, (line) => theme.fg("muted", line))])
+					: undefined,
 			outputPad: options.outputPad,
 		}),
 	);
@@ -96,26 +131,28 @@ export const renderGoogleAccountMessage: MessageRenderer = (message, options, th
 					readonly email?: unknown;
 				})
 			: undefined;
-	const rawText = cleanOneLine(messageText(message.content));
+	const rawMultiline = cleanMultiline(messageText(message.content));
+	const rawOneLine = cleanOneLine(rawMultiline);
 	const available = details?.available === true;
 	const email = typeof details?.email === "string" ? cleanOneLine(details.email) : "";
 	const cookieDisabled = details?.available === false && details?.cookieAccessAllowed === false;
 
 	const status = available && email ? "success" : "info";
-	const meta: string[] = [];
-	if (available && email) meta.push(email);
-	else if (available) meta.push("Gemini Web available · account unknown");
-	else if (cookieDisabled) meta.push("browser cookie access disabled");
-	else if (details?.available === false) meta.push("Gemini Web unavailable");
-	else if (rawText) meta.push(rawText);
+	let summary: string | undefined;
+	if (available && email) summary = email;
+	else if (available) summary = "Gemini Web available · account unknown";
+	else if (cookieDisabled) summary = "browser cookie access disabled";
+	else if (details?.available === false) summary = "Gemini Web unavailable";
+	else if (rawOneLine) summary = rawOneLine;
 
-	const showDetail = options.expanded && rawText.length > 0 && !(available && email);
 	return new ReplayableBlock(
 		new ToolBlock({
 			status,
-			title: new Text(theme.fg("text", "Google account"), 0, 0),
-			meta,
-			details: showDetail ? new ToolBlockRecords([singleLineRecord(theme.fg("muted", rawText))]) : undefined,
+			title: titleWithTruncatedMeta(theme.fg("text", "Google account"), summary, theme),
+			details:
+				options.expanded && rawMultiline
+					? new ToolBlockRecords([wrappedRecord(rawMultiline, (line) => theme.fg("muted", line))])
+					: undefined,
 			outputPad: options.outputPad,
 		}),
 	);
@@ -166,22 +203,28 @@ export const renderWebSearchResultsMessage: MessageRenderer = (message, options,
 };
 
 export const renderWebSearchContentReadyMessage: MessageRenderer = (message, options, theme) => {
-	const rawText = cleanOneLine(messageText(message.content));
-	const match = CONTENT_READY_RE.exec(rawText);
-	const meta = match ? [`${match[1]}/${match[2]} URLs fetched`] : rawText ? [rawText] : [];
+	const rawMultiline = cleanMultiline(messageText(message.content));
+	const rawOneLine = cleanOneLine(rawMultiline);
+	const match = CONTENT_READY_RE.exec(rawOneLine);
+	const summary = match ? `${match[1]}/${match[2]} URLs fetched` : rawOneLine || undefined;
 	const fetchId = match?.[3] ? cleanOneLine(match[3]) : "";
 
 	const records: Component[] = [];
 	if (options.expanded) {
-		if (fetchId) records.push(singleLineRecord(theme.fg("dim", `Fetch ID · ${fetchId}`)));
-		records.push(singleLineRecord(theme.fg("muted", "Full page content available via get_search_content.")));
+		if (fetchId) records.push(wrappedRecord(`Fetch ID · ${fetchId}`, (line) => theme.fg("dim", line)));
+		if (rawMultiline) {
+			records.push(wrappedRecord(rawMultiline, (line) => theme.fg("muted", line)));
+		} else {
+			records.push(
+				wrappedRecord("Full page content available via get_search_content.", (line) => theme.fg("muted", line)),
+			);
+		}
 	}
 
 	return new ReplayableBlock(
 		new ToolBlock({
 			status: "success",
-			title: new Text(theme.fg("text", "Web content ready"), 0, 0),
-			meta,
+			title: titleWithTruncatedMeta(theme.fg("text", "Web content ready"), summary, theme),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),
@@ -189,23 +232,22 @@ export const renderWebSearchContentReadyMessage: MessageRenderer = (message, opt
 };
 
 export const renderWebSearchErrorMessage: MessageRenderer = (message, options, theme) => {
-	const rawText = cleanOneLine(messageText(message.content));
-	const match = CONTENT_ERROR_RE.exec(rawText);
+	const rawMultiline = cleanMultiline(messageText(message.content));
+	const match = CONTENT_ERROR_RE.exec(rawMultiline);
 	const fetchId = match?.[1] ? cleanOneLine(match[1]) : "";
-	const reason = match?.[2] ? cleanOneLine(match[2]) : rawText;
-	const shortReason = visibleWidth(reason) > 48 ? truncateToWidth(reason, 48, "…") : reason;
+	const reasonMultiline = match?.[2] ? match[2].trim() : rawMultiline;
+	const firstLineReason = cleanOneLine(reasonMultiline.split("\n", 1)[0] ?? "");
 
 	const records: Component[] = [];
 	if (options.expanded) {
-		if (fetchId) records.push(singleLineRecord(theme.fg("dim", `Fetch ID · ${fetchId}`)));
-		if (reason) records.push(singleLineRecord(theme.fg("error", reason)));
+		if (fetchId) records.push(wrappedRecord(`Fetch ID · ${fetchId}`, (line) => theme.fg("dim", line)));
+		if (reasonMultiline) records.push(wrappedRecord(reasonMultiline, (line) => theme.fg("error", line)));
 	}
 
 	return new ReplayableBlock(
 		new ToolBlock({
 			status: "failure",
-			title: new Text(theme.fg("text", "Web content fetch failed"), 0, 0),
-			meta: shortReason ? [shortReason] : [],
+			title: titleWithTruncatedMeta(theme.fg("text", "Web content fetch failed"), firstLineReason || undefined, theme),
 			details: records.length > 0 ? new ToolBlockRecords(records) : undefined,
 			outputPad: options.outputPad,
 		}),

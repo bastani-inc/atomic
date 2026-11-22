@@ -61,13 +61,23 @@ export function hasExtensionHandlers(extensions: Extension[], eventType: string)
 }
 
 export function findMessageRenderer(extensions: Extension[], customType: string): MessageRenderer | undefined {
+	let bundledFallback: MessageRenderer | undefined;
+	let inheritedFallback: MessageRenderer | undefined;
 	for (const ext of extensions) {
 		const renderer = ext.messageRenderers.get(customType);
-		if (renderer) {
-			return renderer;
+		if (!renderer) continue;
+		const origin = ext.sourceInfo?.configurationOrigin;
+		if (origin === "bundled") {
+			bundledFallback ??= renderer;
+			continue;
 		}
+		if (origin === "inherited-pi") {
+			inheritedFallback ??= renderer;
+			continue;
+		}
+		return renderer;
 	}
-	return undefined;
+	return bundledFallback ?? inheritedFallback;
 }
 
 export function collectMarkdownTransformers(extensions: Extension[]): MarkdownTransformer[] {

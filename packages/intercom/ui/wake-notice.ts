@@ -1,5 +1,11 @@
 import { type MessageRenderer, type Theme, terminalDisplayText } from "@bastani/atomic";
-import { type Component, stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	type Component,
+	stripTerminalSequences,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 
 /** #5999: the notice, in the session that launched a subagent, that it is resuming it for another session's message. */
 export const ENDED_CHILD_WAKE_MESSAGE_TYPE = "intercom_subagent_wake";
@@ -31,6 +37,14 @@ function cleanOneLine(value: string): string {
 	return terminalDisplayText(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
+		.trim();
+}
+
+function cleanMultiline(value: string): string {
+	return terminalDisplayText(value)
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n")
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ")
 		.trim();
 }
 
@@ -70,7 +84,8 @@ function parseWakeNotice(content: unknown, details: unknown): ParsedWakeNotice |
 		const fromRecord = record?.from && typeof record.from === "object" ? record.from : undefined;
 		const rawFromName = typeof fromRecord?.name === "string" ? cleanOneLine(fromRecord.name) : "";
 		const rawFromId = typeof fromRecord?.id === "string" ? cleanOneLine(fromRecord.id) : "";
-		const rawDepth = typeof record?.depth === "number" && Number.isFinite(record.depth) ? Math.floor(record.depth) : undefined;
+		const rawDepth =
+			typeof record?.depth === "number" && Number.isFinite(record.depth) ? Math.floor(record.depth) : undefined;
 		return {
 			childName: rawChildName,
 			...(rawChildId ? { childId: rawChildId } : {}),
@@ -98,6 +113,7 @@ class WakeNoticeComponent implements Component {
 	readonly historyReplayable = true;
 	private readonly parsed: ParsedWakeNotice | undefined;
 	private readonly fallbackText: string;
+	private readonly fallbackMultiline: string;
 	private readonly expanded: boolean;
 	private readonly outputPad: number;
 	private readonly theme: Theme;
@@ -105,12 +121,14 @@ class WakeNoticeComponent implements Component {
 	constructor(
 		parsed: ParsedWakeNotice | undefined,
 		fallbackText: string,
+		fallbackMultiline: string,
 		expanded: boolean,
 		outputPad: number,
 		theme: Theme,
 	) {
 		this.parsed = parsed;
 		this.fallbackText = fallbackText;
+		this.fallbackMultiline = fallbackMultiline;
 		this.expanded = expanded;
 		this.outputPad = outputPad;
 		this.theme = theme;
@@ -172,18 +190,25 @@ class WakeNoticeComponent implements Component {
 				details.push(`${this.theme.fg("dim", "Depth     ")}${this.theme.fg("muted", String(parsed.depth))}`);
 			}
 			details.push(this.theme.fg("dim", "Result stays with this session and arrives here."));
-		} else if (this.fallbackText) {
-			details.push(this.theme.fg("muted", this.fallbackText));
+		} else if (this.fallbackMultiline) {
+			for (const line of this.fallbackMultiline.split("\n")) {
+				details.push(this.theme.fg("muted", line));
+			}
 		}
 
+		const detailWidth = contentWidth > DETAIL_PREFIX.length ? contentWidth - DETAIL_PREFIX.length : contentWidth;
 		const rows = [header];
-		for (let i = 0; i < details.length; i += 1) {
-			const line = details[i]!;
-			if (contentWidth > DETAIL_PREFIX.length) {
-				const prefix = i === 0 ? this.theme.fg("dim", DETAIL_FIRST_PREFIX) : DETAIL_PREFIX;
-				rows.push(`${prefix}${truncateToWidth(line, contentWidth - DETAIL_PREFIX.length, "…")}`);
-			} else {
-				rows.push(truncateToWidth(line, contentWidth, "…"));
+		let firstRow = true;
+		for (const line of details) {
+			const wrappedLines = wrapTextWithAnsi(line, Math.max(1, detailWidth));
+			for (const wrapped of wrappedLines) {
+				if (contentWidth > DETAIL_PREFIX.length) {
+					const prefix = firstRow ? this.theme.fg("dim", DETAIL_FIRST_PREFIX) : DETAIL_PREFIX;
+					rows.push(`${prefix}${wrapped}`);
+				} else {
+					rows.push(truncateToWidth(wrapped, contentWidth, "…"));
+				}
+				firstRow = false;
 			}
 		}
 		return rows.map(finish);
@@ -191,7 +216,16 @@ class WakeNoticeComponent implements Component {
 }
 
 export const renderIntercomWakeMessage: MessageRenderer = (message, options, theme) => {
+	const raw = messageText(message.content);
 	const parsed = parseWakeNotice(message.content, message.details);
-	const fallbackText = cleanOneLine(messageText(message.content));
-	return new WakeNoticeComponent(parsed, fallbackText, options.expanded, options.outputPad ?? 1, theme);
+	const fallbackText = cleanOneLine(raw);
+	const fallbackMultiline = cleanMultiline(raw);
+	return new WakeNoticeComponent(
+		parsed,
+		fallbackText,
+		fallbackMultiline,
+		options.expanded,
+		options.outputPad ?? 1,
+		theme,
+	);
 };

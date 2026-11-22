@@ -11,7 +11,6 @@ import type { ToolDefinition } from "../types.ts";
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
 
 const WEB_ACCESS_TOOLS = new Set(["web_search", "code_search", "fetch_content", "get_search_content"]);
-const WEB_ACCESS_MESSAGE_TYPES = new Set(Object.keys(DORMANT_WEB_ACCESS_MESSAGE_RENDERERS));
 
 function isAllFailedWebResult(toolName: string, details: unknown): boolean {
 	if (toolName !== "web_search" && toolName !== "fetch_content") return false;
@@ -22,10 +21,9 @@ function isAllFailedWebResult(toolName: string, details: unknown): boolean {
 function hasWebAccessHistory(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
 		(entry) =>
-			(entry.type === "message" &&
-				entry.message.role === "toolResult" &&
-				WEB_ACCESS_TOOLS.has(entry.message.toolName)) ||
-			(entry.type === "custom_message" && WEB_ACCESS_MESSAGE_TYPES.has(entry.customType)),
+			entry.type === "message" &&
+			entry.message.role === "toolResult" &&
+			WEB_ACCESS_TOOLS.has(entry.message.toolName),
 	);
 }
 

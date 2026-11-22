@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { type KeyId, Text } from "@bastani/atomic-tui";
 import { Type } from "@bastani/atomic-ai";
 import { renderWebAccessToolResult } from "./result-renderers.js";
-import { registerWebAccessMessageRenderers } from "./ui/custom-messages.js";
+import { registerWebAccessMessageRenderers } from "./message-renderers.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";
 
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
