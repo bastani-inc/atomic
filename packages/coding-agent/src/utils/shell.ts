@@ -375,7 +375,9 @@ function killTree(pid, exited) {
     // unconsumed async "error" from a failed spawn would take the guardian thread
     // down and leak every detached child it exists to reap.
     try {
-      const child = spawn(join(process.env.SystemRoot || "C:\\\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
+      // In the system directory: a kill never keeps the folder Atomic ran in in use.
+      const systemRoot = process.env.SystemRoot || "C:\\\\Windows";
+      const child = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], { cwd: systemRoot, stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
       child.once("error", () => {});
     } catch {}
     return;
@@ -555,20 +557,19 @@ export function killChildProcessTree(child: ChildProcess, exited: boolean): void
 
 function taskkillTree(pid: number, settled?: () => void): void {
 	// Use the trusted System32 executable so cleanup does not depend on PATH.
+	const systemRoot = process.env.SystemRoot || "C:\\Windows";
 	try {
-		const child = spawn(
-			join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
-			["/F", "/T", "/PID", String(pid)],
-			{
-				stdio: "ignore",
-				detached: true,
-				// `detached` gives the child its own console on Windows unless this is
-				// set, so omitting it both flashes a window and pays for a console
-				// allocation on every tree kill. Every other spawn in the fork sets it.
-				windowsHide: true,
-				env: createChildProcessEnvironment(),
-			},
-		);
+		const child = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], {
+			// In the system directory: a kill never keeps the folder Atomic runs in, the project's, in use.
+			cwd: systemRoot,
+			stdio: "ignore",
+			detached: true,
+			// `detached` gives the child its own console on Windows unless this is
+			// set, so omitting it both flashes a window and pays for a console
+			// allocation on every tree kill. Every other spawn in the fork sets it.
+			windowsHide: true,
+			env: createChildProcessEnvironment(),
+		});
 		// A failed spawn emits "error" asynchronously; consume it to avoid crashing Node.
 		let done = false;
 		const finish = () => {
