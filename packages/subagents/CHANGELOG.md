@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.4-alpha.1] - 2026-11-22
+
 ### Fixed
 
 - A background subagent that finished while its question to you (`contact_supervisor` or an Intercom `ask`) was still open is no longer relaunched after a restart only to be told that the question was interrupted. The next time the subagent runs, it is told once ([#6168](https://github.com/bastani-inc/atomic/issues/6168)).
@@ -26,6 +28,8 @@
 - `skill-creator`'s review viewer no longer saves over feedback it did not show. A `feedback.json` it cannot read, or partly cannot, is kept as `feedback.json.corrupt-<time>` and the page says so before your next save replaces it; one it cannot read at all is never saved over. A tab opened before another tab or program saved feedback refuses to save over it and asks you to reload. One tab's saves are sent one at a time, in order; from Submit All Reviews until you close the done dialog every save keeps the review complete, and the dialog shows only once the review is saved; and a save that fails says so instead of showing "Saved".
 - `skill-creator`'s review viewer starts when the previous iteration's `feedback.json`, or a run's `eval_metadata.json` or `grading.json`, cannot be read, instead of failing: the page says which feedback it could not read. It also runs with its standard output captured in place, as by `runpy`.
 - `skill-creator`'s `package_skill.py` gives the `.skill` file its name only once it is complete: a failure or Ctrl+C leaves an earlier `.skill` file as it was and no partial file, a replaced file keeps its permissions, and a `.skill` file written inside the skill folder no longer contains itself.
+- A user agent in `~/.atomic/agent/agents/` now wins over an agent of the same name in `~/.agents/` or legacy `~/.pi/agent/agents/`, as `.atomic/agents/` already does in a project. Before, the agent in `~/.agents/` or `~/.pi/agent/agents/` ran instead.
+- The `subagent` tool's `share` parameter no longer tells the model that it uploads the session to a GitHub Gist: it has no effect, and nothing is uploaded. Sibling `subagent` calls in one message no longer have to agree on it: one that sets `share: true` next to one that leaves it out no longer rejects both with "incompatible top-level field 'share'", and both launch. The `sessionDir` parameter's description no longer says that `share` decides whether sessions are kept; it now says that `sessionDir` keeps fresh (not forked) subagents' sessions as JSONL files under that directory instead of the launching session's store.
 
 ## [0.10.3] - 2026-11-21
 

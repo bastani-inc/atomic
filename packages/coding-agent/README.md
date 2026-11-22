@@ -594,7 +594,7 @@ Shell commands (`bash` and `powershell`) receive an execution-time session snaps
 
 ## Contributing & Development
 
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) and [docs/development.md](docs/development.md).
+See [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md) and [docs/development.md](docs/development.md).
 
 ## License
 
