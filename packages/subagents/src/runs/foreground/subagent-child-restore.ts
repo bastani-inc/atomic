@@ -49,8 +49,8 @@ import {
 	interruptedStillRunningResult,
 	pendingToolCalls,
 	planReleasedChildWake,
+	readHeldToolResultsBack,
 	SUBAGENT_OWNER_GENERATION,
-	savedToolResultIdsInHistory,
 } from "./released-children.js";
 import type { SubagentResumeNote } from "./resume-note.js";
 import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
@@ -805,13 +805,14 @@ async function relaunchChild(
 	const latest = readableSubagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012). Also
 	// when a compaction since took it out of the transcript's context.
-	const saved =
+	const readBack =
 		sessionManager && !fresh
-			? await savedToolResultIdsInHistory(sessionManager, [
+			? await readHeldToolResultsBack(sessionManager, [
 					...(latest.heldToolResults ?? []),
 					...(resume?.toolResults ?? []),
 				])
-			: [];
+			: undefined;
+	const saved = readBack?.saved ?? [];
 	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>
 		results.filter((result) => !saved.includes(result.toolCallId));
@@ -968,7 +969,13 @@ async function relaunchChild(
 		...(wakePlan
 			? {
 					resumeToolResults: wakePlan.resumeToolResults,
-					...(wakePlan.lateResults.length > 0 ? { resumeLateToolResults: wakePlan.lateResults } : {}),
+					...(wakePlan.lateResults.length > 0
+						? {
+								resumeLateToolResults: wakePlan.lateResults,
+								// Where their calls are, as the read-back above found them: the run does not read back again.
+								...(readBack ? { resumeLateToolResultCalls: readBack.issuingCalls } : {}),
+							}
+						: {}),
 					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
 					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
 				}

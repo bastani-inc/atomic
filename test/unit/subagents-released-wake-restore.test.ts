@@ -1944,6 +1944,35 @@ for (const compacted of [false, true])
 		assert.equal(lateTimes(run, late), 1, "the result it never read reaches it once");
 	});
 
+test("a woken child's run is told which entry issued its late result's call, as the restore read it back (#3274)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "late-call-entry");
+	assert.ok(record.childSessionFile);
+	// An earlier call under the same id, answered with its own result, then the call the late result is for.
+	await endSessionOnPendingCall(record);
+	await saveIntoTranscript(record, [waitResult("run 6 passed")]);
+	await endSessionOnPendingCall(record);
+	await saveIntoTranscript(record, [stillRunning]);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	const calls = session
+		.getBranch()
+		.filter(
+			(entry) =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.content.some((part) => part.type === "toolCall" && part.id === WAIT_CALL.toolCallId),
+		)
+		.map((entry) => entry.id);
+	assert.equal(calls.length, 2);
+	const late = waitResult("run 7 deployed");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.equal(lateTimes(run, late), 1);
+	assert.equal(run.resumeLateToolResultCalls?.get(WAIT_CALL.toolCallId), calls[1], "the newer call's entry");
+});
+
 test("a late result the child already read as a message is not given to it again (#5012)", async () => {
 	const h = harness();
 	const record = await endedOnPendingCall(h, "late-already-read");
