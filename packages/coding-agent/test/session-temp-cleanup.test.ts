@@ -13,7 +13,6 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -23,6 +22,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { renameSyncWithRetry } from "../../../test/helpers/rename-retry.js";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import {
@@ -776,7 +776,7 @@ describe("asynchronous cleanup gate races (#5285)", () => {
 					: kind === "project"
 						? sweepToolResultsRoot(root, options)
 						: sweepSessionDirToolResults(root, options);
-			renameSync(root, `${root}-original`);
+			renameSyncWithRetry(root, `${root}-original`);
 			symlinkSync(outside, root, linkType);
 			assert.equal(await sweep, "missing", kind);
 			assert.equal(existsSync(file), true, `${kind} outside file must survive`);

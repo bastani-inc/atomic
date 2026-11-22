@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { afterAll, afterEach, beforeEach, test, vi } from "vitest";
 import { toJsLiteral } from "../helpers/js-literal.js";
+import { renameWithRetry } from "../helpers/rename-retry.js";
 import { fileExists, makeTempDirectory, readText, removeTempDirectory } from "../helpers/runtime.js";
 
 /** Junctions need no extra privileges on Windows. */
@@ -491,7 +492,7 @@ test("clearing the cache leaves a clone moved outside the clone directory alone"
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
 	const [target] = cloneTargets();
 	const outside = join(sandbox, "outside-owner");
-	renameSync(join(clonePath, "octo"), outside);
+	await renameWithRetry(join(clonePath, "octo"), outside);
 	symlinkSync(outside, join(clonePath, "octo"), LINK_TYPE);
 	await clearCloneCache();
 	assert.equal(

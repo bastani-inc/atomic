@@ -5,9 +5,10 @@
  * the session's records name them as it records them.
  */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { renameWithRetry } from "../../../test/helpers/rename-retry.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import {
@@ -105,7 +106,7 @@ async function subagent(parent: SessionManager, store: SqlSessionStore, cwd: str
 
 /** Resumes `parent` as a new process does, with its checkout `clone` moved away first when `elsewhere`. */
 async function resume(store: SqlSessionStore, parent: SessionManager, clone: string, elsewhere: boolean) {
-	if (elsewhere) renameSync(clone, `${clone}-moved-${launched}`);
+	if (elsewhere) await renameWithRetry(clone, `${clone}-moved-${launched}`);
 	const reopened = await SessionManager.open(store, parent.getSessionId());
 	const options = sessionResumeOptions(
 		"cli",
@@ -140,7 +141,7 @@ test("a session continued where it worked, as a released session is woken, comes
 	const { child, finished } = await subagent(parent, store, clone);
 	sandbox.write(join(clone, "work.txt"), "child\n");
 	await finished(await capture(child, store, clone));
-	renameSync(clone, `${clone}-moved`);
+	await renameWithRetry(clone, `${clone}-moved`);
 
 	const reopened = await SessionManager.open(store, parent.getSessionId());
 	const options = sessionResumeOptions(
@@ -351,7 +352,7 @@ test("a subagent's capture one compaction archived still counts after a later co
 	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
 	await parent.appendCompaction("later work", null, 100, { strategy: "verbatim-lines" });
 	await parent.appendMessage({ role: "user", content: "even later", timestamp: Date.now() });
-	renameSync(clone, `${clone}-moved`);
+	await renameWithRetry(clone, `${clone}-moved`);
 
 	const options = sessionResumeOptions(
 		"cli",
@@ -381,7 +382,7 @@ test("a subagent's capture a compaction archived stops counting once the same se
 	await second.finished(secondAt);
 	await parent.appendCompaction("other work", null, 100, { strategy: "verbatim-lines" });
 	await parent.appendMessage({ role: "user", content: "later", timestamp: Date.now() });
-	renameSync(clone, `${clone}-moved`);
+	await renameWithRetry(clone, `${clone}-moved`);
 
 	const options = sessionResumeOptions(
 		"cli",
