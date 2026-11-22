@@ -1013,8 +1013,19 @@ const buildApplication = (() => {
 	const config = manifest.atomicConfig ?? manifest.piConfig;
 	return typeof config?.name === "string" ? config.name : "atomic";
 })();
-/** Whether a dynamic import's specifier names a module of Atomic's own packages, which an update replaces. */
-const isOwnPackage = (specifier) => /^@bastani\/atomic(?:-[a-z]+)?(?:\/|$)/.test(specifier);
+/**
+ * Atomic's own packages, which an update replaces with this one: this package and the packages of its family it depends
+ * on (`@bastani/atomic-ai`, `@bastani/atomic-agent-core`, ...), by their names in its manifest.
+ */
+const ownPackages = (() => {
+	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+	return new Set([
+		manifest.name,
+		...Object.keys(manifest.dependencies ?? {}).filter((name) => name.startsWith(`${manifest.name}-`)),
+	]);
+})();
+/** Whether a dynamic import's specifier names a module of Atomic's own packages, or a subpath of one. */
+const isOwnPackage = (specifier) => ownPackages.has(packageOf(specifier));
 // This build's own code imports each module on demand where it has the module's code, never a gate: a fresh process
 // meets no gate, and a bundle of the split package (as the standalone binary's, in CommonJS, which cannot hold a gate's
 // top-level await) holds none. Each such import is guarded at its call site: when it fails in a process an update left
@@ -1037,14 +1048,15 @@ const guardCallSites = (from, source) => {
 		}
 		if (node.type === "ImportExpression" && node.source.type === "Literal" && typeof node.source.value === "string") {
 			const specifier = node.source.value;
-			const relativeSpecifier = /^\.{1,2}\//.test(specifier);
+			const relativeSpecifier = specifier.startsWith("./") || specifier.startsWith("../");
 			if (relativeSpecifier || isOwnPackage(specifier)) {
 				let feature = "this feature";
 				if (relativeSpecifier) {
 					const target = relativeImport(from, specifier);
 					feature = gatedFeature(target);
 					if (gated.has(target)) {
-						const code = specifier.replace(/\.js$/, ".code.js");
+						// The module's path (a gated module's is a file of this package, `<name>.js`) with its code's name.
+						const code = `${specifier.slice(0, -".js".length)}.code.js`;
 						edits.push({ start: node.source.start, end: node.source.end, text: JSON.stringify(code) });
 					}
 				}

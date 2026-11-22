@@ -27,10 +27,17 @@ export const GATE_FILE_MARK = "// Written by the build (scripts/in-place-update-
  * never needs a gate. This build's own code imports it there, and so do the releases after it, each with a call-site
  * guard ({@link callSiteGuardSource}); a later release keeps the file at that path.
  */
-export const codePath = (path) => path.replace(/\.js$/, ".code.js");
+export const codePath = (path) => {
+	if (!path.endsWith(".js")) throw new Error(`in-place update gates: ${path} is not a module's path`);
+	return `${path.slice(0, -".js".length)}.code.js`;
+};
 
 /** The module a recorded on-demand path names: an earlier release's path of a gated module's code, or the module. */
-export const moduleOfPath = (path) => path.replace(/\.(?:impl|code)\.js$/, ".js");
+export const moduleOfPath = (path) => {
+	for (const suffix of [".impl.js", ".code.js"])
+		if (path.endsWith(suffix)) return `${path.slice(0, -suffix.length)}.js`;
+	return path;
+};
 
 /**
  * The first release whose own code guards each module it imports on demand at the call site: a process of it, or of a

@@ -6,19 +6,28 @@
  * loaded before.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { type Node, parse } from "acorn";
+import { ancestor } from "acorn-walk";
 import { afterEach, describe, test } from "vitest";
 import {
 	CALL_SITE_GUARD,
 	callSiteGuardSource,
 	codePath,
+	GATE_FILE_MARK,
 	gateSource,
 	moduleOfPath,
 	RELEASE_MODULE_STUB,
 	releaseVersionModules,
 } from "../../packages/coding-agent/scripts/in-place-update-gate.mjs";
-import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	makeTempDirectory,
+	moduleDir,
+	removeTempDirectory,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 /** One Node or Bun child process per case: structural, not a slow test. */
 const CHILD_TIMEOUT_MS = 60_000;
@@ -331,5 +340,72 @@ describe("the modules that tell which release a process runs", () => {
 		assert.equal(moduleOfPath("core/export-html/index.impl.js"), "core/export-html/index.js");
 		assert.equal(moduleOfPath(codePath("core/export-html/index.js")), "core/export-html/index.js");
 		assert.equal(moduleOfPath("core/export-html/index.js"), "core/export-html/index.js");
+	});
+});
+
+describe("the built package", () => {
+	const root = join(moduleDir(import.meta.url), "..", "..");
+	const dist = join(root, "packages", "coding-agent", "dist");
+	/** Atomic's own packages, which an update replaces: the workspace packages the application depends on, and itself. */
+	const ownPackages = (() => {
+		const application = JSON.parse(readFileSync(join(root, "packages", "coding-agent", "package.json"), "utf8")) as {
+			name: string;
+			dependencies: Record<string, string>;
+		};
+		const workspace = readdirSync(join(root, "packages"), { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.flatMap((entry) => {
+				try {
+					return [
+						(
+							JSON.parse(readFileSync(join(root, "packages", entry.name, "package.json"), "utf8")) as {
+								name: string;
+							}
+						).name,
+					];
+				} catch {
+					return [];
+				}
+			});
+		return new Set([application.name, ...workspace.filter((name) => name in application.dependencies)]);
+	})();
+	const packageOf = (specifier: string) =>
+		specifier
+			.split("/")
+			.slice(0, specifier.startsWith("@") ? 2 : 1)
+			.join("/");
+
+	test("guards every import on demand of its own code and Atomic's packages at the call site", () => {
+		assert.ok(ownPackages.has("@bastani/atomic-agent-core"), "the workspace names Atomic's packages");
+		const unguarded: string[] = [];
+		let guarded = 0;
+		for (const file of readdirSync(dist, { recursive: true }).map(String)) {
+			const path = file.split("\\").join("/");
+			// The builtin extensions load through the extension loader, and the standalone binary bundles its entry's imports.
+			if (!path.endsWith(".js") || path.startsWith("builtin/") || path.startsWith("bun/")) continue;
+			const source = readFileSync(join(dist, path), "utf8");
+			// A gate or stub is for a process of an earlier release, which imports it by its path.
+			if (source.startsWith(GATE_FILE_MARK)) continue;
+			ancestor(parse(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true }), {
+				ImportExpression(node: Node, _state: unknown, ancestors: Node[]) {
+					const specifier = (node as Node & { source: { type: string; value?: unknown } }).source;
+					if (specifier.type !== "Literal" || typeof specifier.value !== "string") return;
+					const value = specifier.value;
+					if (!value.startsWith("./") && !value.startsWith("../") && !ownPackages.has(packageOf(value))) return;
+					const parent = ancestors.at(-2) as (Node & { property?: { name?: string } }) | undefined;
+					const call = ancestors.at(-3) as (Node & { arguments?: Node[] }) | undefined;
+					const handler = call?.arguments?.[0] ? source.slice(call.arguments[0].start, call.arguments[0].end) : "";
+					if (
+						parent?.type === "MemberExpression" &&
+						parent.property?.name === "catch" &&
+						handler.includes(`${CALL_SITE_GUARD}(error,`)
+					)
+						guarded++;
+					else unguarded.push(`${path}: import(${JSON.stringify(value)})`);
+				},
+			});
+		}
+		assert.deepEqual(unguarded, []);
+		assert.ok(guarded > 0);
 	});
 });

@@ -331,7 +331,7 @@ export async function updateRunningBuild(tarballs, version, repositoryRoot) {
 		/** The file holding module `module`'s code: beside its gate when the build gates it (`.impl.js` in 0.10.4). */
 		const codeFile = (module) =>
 			[".code.js", ".impl.js", ".js"]
-				.map((suffix) => session(module.replace(/\.js$/, suffix)))
+				.map((suffix) => session(`${module.slice(0, -".js".length)}${suffix}`))
 				.find((file) => existsSync(file));
 		const host = join(prefix, "host.mjs");
 		writeFileSync(host, BUILD_HOST);
