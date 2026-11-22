@@ -7,9 +7,9 @@ import {
 	type JsonObject,
 } from "@bastani/atomic-ai/compat";
 
-export default function (pi: ExtensionAPI): void {
+export default function (atomic: ExtensionAPI): void {
 	let taskId: string | undefined;
-	pi.registerProvider("openai", {
+	atomic.registerProvider("openai", {
 		api: "subagent-kill-fixture",
 		apiKey: "fixture-only",
 		baseUrl: "http://127.0.0.1:1/unused",

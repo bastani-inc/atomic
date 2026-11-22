@@ -346,7 +346,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 			}
 		},
 	};
-	const pi = {
+	const atomic = {
 		events,
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
 			await sessionManager.appendCustomEntry(customType, data);
@@ -429,7 +429,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 					orchestratorIntercomTarget: "parent",
 					...extra,
 				},
-				recordChild: createSubagentChildRecordSink(pi, state.ctx),
+				recordChild: createSubagentChildRecordSink(atomic, state.ctx),
 				runtime: { runSync: runtime },
 				...(state.launchHeartbeatMs === undefined ? {} : { heartbeatMs: state.launchHeartbeatMs }),
 				...(state.wakeDispatcher ? { wakeDispatcher: state.wakeDispatcher } : {}),
@@ -522,7 +522,7 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 		return !original && state.settleAs === "error" ? { ...result, status: "error", error: "boom" } : result;
 	};
 	const deps: ExecutorDeps = {
-		pi,
+		pi: atomic,
 		state: {
 			baseCwd: cwd,
 			currentSessionId: "parent",

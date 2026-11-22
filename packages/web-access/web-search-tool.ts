@@ -27,8 +27,8 @@ interface RegisterWebSearchToolDeps {
 	buildSearchReturn: SearchReturnBuilder;
 }
 
-export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchToolDeps): void {
-	pi.registerTool({
+export function registerWebSearchTool(atomic: ExtensionAPI, deps: RegisterWebSearchToolDeps): void {
+	atomic.registerTool({
 		name: "web_search",
 		label: "Web Search",
 		description:

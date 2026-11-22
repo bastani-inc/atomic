@@ -180,14 +180,14 @@ function readIntercomPolicy(ctx: ExtensionContext): IntercomPolicyView | undefin
   }
 }
 
-export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
+export default function piIntercomExtension(atomic: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   const restoreIntercomSessionIdEnv = (): void => {
     if (inheritedIntercomSessionId === undefined) delete process.env[INTERCOM_SESSION_ID_ENV];
     else process.env[INTERCOM_SESSION_ID_ENV] = inheritedIntercomSessionId;
   };
   let client: IntercomClient | null = null;
-  const replyCapability = registerSubagentReplyCapability(pi, () => client);
+  const replyCapability = registerSubagentReplyCapability(atomic, () => client);
   const config: IntercomConfig = defaultConfig();
   const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
@@ -351,7 +351,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let intercomPolicy: IntercomPolicyView | undefined;
   let stopApplyingReach: (() => void) | undefined;
   const sessionMemberships = sessionScopedExtensionState<Map<string, readonly string[]>>(
-    pi.lifecycleScope ?? pi.events ?? pi,
+    atomic.lifecycleScope ?? atomic.events ?? atomic,
     "intercom:session-memberships:v1",
     () => new Map(),
   );
@@ -362,7 +362,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     Object.assign(config, loaded);
     replyWaiters.setMaxPending(loaded.maxPendingAsks);
   });
-  const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
+  const foregroundDetachHandoff = new ForegroundDetachHandoff(atomic);
   function sessionBranch(): SessionEntry[] {
     try {
       return runtimeContext?.sessionManager.getBranch() ?? [];
@@ -393,8 +393,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const durableInbox = new DurableInbox({
     durable: sessionIsSaved,
     entries: sessionBranch,
-    append: (record) => pi.appendEntry(INTERCOM_INBOX_ENTRY, record),
-    appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
+    append: (record) => atomic.appendEntry(INTERCOM_INBOX_ENTRY, record),
+    appendHandled: (messageId) => atomic.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
   /** Messages a starting subagent is writing as context for its first turn; its start waits for them. */
@@ -404,7 +404,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   // #4751: the asks this session sent; their replies arrive as messages on this session's own thread.
   const outboundAsks = new OutboundAsks({
     entries: sessionBranch,
-    append: (customType, data) => pi.appendEntry(customType, data),
+    append: (customType, data) => atomic.appendEntry(customType, data),
     sessionId: () => currentSessionId,
   });
   function outboundAskFor(from: SessionInfo, message: Message): OutboundAskRecord | undefined {
@@ -632,7 +632,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const sessionId = currentSessionId;
     if (!sessionId) return;
     try {
-      await pi.appendEntry(INTERCOM_SESSION_MEMBERSHIPS_ENTRY, {
+      await atomic.appendEntry(INTERCOM_SESSION_MEMBERSHIPS_ENTRY, {
         sessionId,
         homeGroup: resolveSessionHomeGroup(),
         groups: groups === null ? null : [...normalizeGroups(groups)],
@@ -664,7 +664,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!liveContext || !currentSessionId || sessionStartedAt === null) {
       throw new Error("Intercom runtime not initialized");
     }
-    const identity = buildPresenceIdentity(pi, currentSessionId);
+    const identity = buildPresenceIdentity(atomic, currentSessionId);
     return {
       name: identity.name,
       cwd: liveContext.cwd ?? process.cwd(),
@@ -682,7 +682,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!client || !getLiveContext()) {
       return;
     }
-    client.updatePresence({ ...buildPresenceIdentity(pi, sessionId), status: currentStatus() });
+    client.updatePresence({ ...buildPresenceIdentity(atomic, sessionId), status: currentStatus() });
   }
   function syncPresenceStatus(): void {
     if (!client || !currentSessionId || !getLiveContext()) {
@@ -698,18 +698,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     };
     addTarget(currentSessionId);
     addTarget(activeClient?.sessionId);
-    addTarget(pi.getSessionName());
-    if (currentSessionId) addTarget(buildPresenceIdentity(pi, currentSessionId).name);
+    addTarget(atomic.getSessionName());
+    if (currentSessionId) addTarget(buildPresenceIdentity(atomic, currentSessionId).name);
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
   const sendIncomingMessage = createIncomingMessageSender({
-    pi,
+    pi: atomic,
     currentGeneration: () => runtimeGeneration,
     canDeliver: (generation) => !runtimeStarted || Boolean(getLiveContext(runtimeContext, generation)),
     queueTurnContext: (context) => replyTracker.queueTurnContext(context),
   });
-  const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(pi, {
+  const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(atomic, {
     queue: pendingIdleMessages,
     toMessage: buildIncomingCustomMessage,
     // A prelude is admitted synchronously when idle, or FIFO-queued when busy.
@@ -723,7 +723,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // A finished child's completion notice follows every message already in line, from it or from anyone else.
     admissionPlace: () => inboundOrder.reserveBehindBusyLine(),
   });
-  pi.on("session_shutdown", () => { unregisterTerminalOrderingBarrier(); });
+  atomic.on("session_shutdown", () => { unregisterTerminalOrderingBarrier(); });
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
     if (!getLiveContext()) {
       return;
@@ -768,7 +768,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (batch.replyContext) replyTracker.queueTurnContext({ from: batch.replyContext.from, message: batch.replyContext.message, receivedAt: Date.now() });
     const messages = entries.map(buildIncomingCustomMessage);
     await retryStableDelivery({
-      deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: batch.triggerTurn })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, batch.sendOptions[index]))).then(() => {}),
+      deliver: () => typeof atomic.sendMessages === "function" ? Promise.resolve(atomic.sendMessages(messages, { triggerTurn: batch.triggerTurn })) : Promise.all(messages.map((message, index) => atomic.sendMessage(message, batch.sendOptions[index]))).then(() => {}),
       isCurrent: () => Boolean(getLiveContext(ctx, generation)),
     }).catch(() => {});
   }
@@ -909,7 +909,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           continue;
         }
         try {
-          await pi.sendMessage(buildIncomingCustomMessage(historyEntry), { triggerTurn: false });
+          await atomic.sendMessage(buildIncomingCustomMessage(historyEntry), { triggerTurn: false });
         } catch {
           // Unwritten, the message stays unshown and the next resume decides about it again.
         }
@@ -1204,7 +1204,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     });
     nextClient.on("released_child_reply", (notice: ReleasedChildReply) => {
       const request: ReleasedChildReplyRequest = { childName: notice.childName, replyTo: notice.replyTo, message: notice.message };
-      if (client === nextClient && getLiveContext()) pi.events.emit(RELEASED_CHILD_REPLY_EVENT, request);
+      if (client === nextClient && getLiveContext()) atomic.events.emit(RELEASED_CHILD_REPLY_EVENT, request);
       void (request.completion ?? Promise.resolve(false)).then(
         (accepted) => nextClient.acknowledgeReleasedChildReply(notice, accepted === true, accepted === "deliver"),
         () => nextClient.acknowledgeReleasedChildReply(notice, false),
@@ -1213,7 +1213,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // #4326: a send waits at the broker for a released child of this session; Subagents wakes it.
     nextClient.on("restoring_recipient_wake", (notice: { childName: string }) => {
       const wake: ReleasedChildWakeNotice = { childName: notice.childName };
-      pi.events.emit(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, wake);
+      atomic.events.emit(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, wake);
     });
     // #5999: a message waits at the broker for a child of this session that ended; Subagents resumes it, and answers.
     nextClient.on("ended_child_wake", (notice: EndedChildWakeNotice) => {
@@ -1225,7 +1225,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         // The user sees, where the child's result will arrive, who woke it and why.
         const waker = notice.from.name ?? notice.from.id;
         void Promise.resolve(
-          pi.sendMessage(
+          atomic.sendMessage(
             {
               customType: ENDED_CHILD_WAKE_MESSAGE_TYPE,
               content: `Resuming subagent \`${notice.childName}\`${notice.childId === undefined ? "" : ` (${notice.childId})`} for an Intercom message from ${waker}. It stays this session's subagent: its result arrives here.`,
@@ -1245,7 +1245,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       };
       if (client === nextClient && getLiveContext()) {
         try {
-          pi.events.emit(SUBAGENT_ENDED_CHILD_WAKE_EVENT, request);
+          atomic.events.emit(SUBAGENT_ENDED_CHILD_WAKE_EVENT, request);
         } catch {
           // Answered below as not taken.
         }
@@ -1347,7 +1347,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   /** Remember the Intercom id this session registered under, so a resume or restore can ask for it back (#3760). */
   async function recordIntercomSessionIdentity(sessionId: string, intercomSessionId: string): Promise<void> {
     try {
-      await pi.appendEntry(INTERCOM_SESSION_IDENTITY_ENTRY, {
+      await atomic.appendEntry(INTERCOM_SESSION_IDENTITY_ENTRY, {
         sessionId,
         intercomSessionId,
       } satisfies IntercomSessionIdentity);
@@ -1457,7 +1457,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             // The broker forgot every reservation this connection made when the last one ended.
             if (nextClient.sessionId) {
               const connected: IntercomConnectedNotice = { sessionId: nextClient.sessionId };
-              pi.events.emit(INTERCOM_CONNECTED_EVENT, connected);
+              atomic.events.emit(INTERCOM_CONNECTED_EVENT, connected);
             }
             return nextClient;
           } catch (error) {
@@ -1538,7 +1538,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     ownershipRecorded.resolve();
     return nextReconnectPromise;
   }
-  registerSubagentRelay(pi, {
+  registerSubagentRelay(atomic, {
     runtimeGeneration: () => runtimeGeneration,
     runtimeStarted: () => runtimeStarted,
     runtimeContext: () => runtimeContext,
@@ -1552,18 +1552,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     homeGroup: currentIntercomGroup,
   });
 
-  pi.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
     if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
     const request = payload;
     request.completion = ensureConnected("background").then((activeClient) => waitForIntercomPeer(activeClient, request));
   });
-  pi.events.on(INTERCOM_INBOX_REPLAY_EVENT, (payload) => {
+  atomic.events.on(INTERCOM_INBOX_REPLAY_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
     const request = payload as IntercomInboxReplayRequest;
     if (request.completion || !Array.isArray(request.restored)) return;
     request.completion = replayDurableInbox(request);
   });
-  pi.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
+  atomic.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
     const request = payload as IntercomStartupJoinRequest;
     if (request.completion) return;
@@ -1572,14 +1572,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await ensureConnected("join");
     });
   });
-  pi.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
+  atomic.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
     const request = payload as IntercomRecoveryPeersRequest;
     if (request.completion) return;
     request.completion = ensureConnected("background").then((activeClient) => activeClient.listSessions());
   });
   // #3760: the capability was issued to this session's own broker connection, so that connection reserves.
-  pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
     if (!isReserveRestoringChildRequest(payload) || payload.completion) return;
     const request = payload;
     request.completion = ensureConnected("background").then((activeClient) =>
@@ -1593,7 +1593,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     ).then(() => undefined);
   });
   // #4326: released children are reserved by name for this connection, any number in one call.
-  pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
     if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
     const request = payload;
     supervisorAuthorizations.forget(request.children.map((child) => child.childName));
@@ -1601,7 +1601,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       activeClient.reserveReleasedChildren(request.children),
     );
   });
-  pi.events.on(SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, (payload) => {
     if (!isDropReleasedChildrenRequest(payload) || payload.completion) return;
     const request = payload;
     supervisorAuthorizations.forget(request.childNames);
@@ -1616,7 +1616,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   // #4639: how children this session launched ended; a report lives on this connection, like a reservation.
   // #5999: `subagent({ action: "resume" })` of a child another session launched is a message to it that asks to wake it:
   // its launching session resumes it, under the same group and reach rules as any message.
-  pi.events.on(SUBAGENT_PEER_RESUME_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_PEER_RESUME_EVENT, (payload) => {
     if (!isPeerResumeRequest(payload) || payload.completion) return;
     const request = payload;
     // Only through a connection already up: `resume` of an id nobody here answers to keeps its prompt answer.
@@ -1650,7 +1650,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return { kind: "refused", reason: result.reason ?? result.error.message };
     })().catch((): PeerResumeOutcome => ({ kind: "unknown" }));
   });
-  pi.events.on(SUBAGENT_MARK_ENDED_CHILDREN_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_MARK_ENDED_CHILDREN_EVENT, (payload) => {
     if (!isMarkEndedChildrenRequest(payload) || payload.completion) return;
     const request = payload;
     const activeClient = client;
@@ -1658,7 +1658,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       ? activeClient.markEndedChildren(request.children)
       : Promise.resolve();
   });
-  pi.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (payload) => {
     if (!isAcknowledgeReleasedChildWakeRequest(payload) || payload.completion) return;
     const request = payload;
     const activeClient = client;
@@ -1668,7 +1668,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         : activeClient.acknowledgeReleasedChildWake(request.childName)
       : Promise.resolve();
   });
-  pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
+  atomic.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
     if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
     const request = payload;
     if (request.gone !== undefined) supervisorAuthorizations.forgetCapability(request.capability);
@@ -1682,10 +1682,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       : Promise.resolve();
   });
 
-  pi.on("session_shutdown", (event) => {
+  atomic.on("session_shutdown", (event) => {
     if (event.reason !== "reload" && currentSessionId) sessionMemberships.delete(currentSessionId);
   });
-  registerIntercomLifecycle(pi, {
+  registerIntercomLifecycle(atomic, {
     config,
     sessionResumable: () => runtimeContext !== null && sessionIsSaved(),
     client: () => client,
@@ -1775,7 +1775,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     restoreIntercomSessionIdEnv,
     currentStatus,
   });
-  pi.on("session_start", async (event, ctx) => {
+  atomic.on("session_start", async (event, ctx) => {
     // A reload keeps the memberships this process held. A restart or resume reopens the session from its
     // store, so it rejoins the groups its own last `join`/`leave` recorded there (#4079), before the session
     // first connects: its registration then carries them, as a reconnect's does.
@@ -1818,7 +1818,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
 
 
-  pi.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
+  atomic.registerMessageRenderer("intercom_message", renderIntercomCustomMessage);
 
   const replyWaits = replyWaitGates(() => client);
   /**
@@ -1835,7 +1835,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     await current?.disconnect().catch(() => undefined);
     await ensureConnected("tool");
   }
-  registerContactSupervisorTool(pi, {
+  registerContactSupervisorTool(atomic, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     retrySupervisorAuthorization,
     ensureConnected,
@@ -1844,7 +1844,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     ...replyWaits,
   });
-  registerIntercomTool(pi, {
+  registerIntercomTool(atomic, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
@@ -1868,7 +1868,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     outboundAsks,
     cancelReplyWait: (askId) => replyWaiters.cancel(askId, new Error("Ask cancelled")),
   });
-  registerIntercomOverlay(pi, {
+  registerIntercomOverlay(atomic, {
     runtimeGeneration: () => runtimeGeneration,
     getLiveContext,
     notifyIfLive,

@@ -24,9 +24,9 @@ interface RegisterContentToolsDeps {
 	formatFullResults(queryData: QueryResultData): string;
 }
 
-export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentToolsDeps): void {
+export function registerContentTools(atomic: ExtensionAPI, deps: RegisterContentToolsDeps): void {
 	const { getResult, storeResult } = deps.storage ?? createResultStorage();
-	pi.registerTool({
+	atomic.registerTool({
 		name: "code_search",
 		label: "Code Search",
 		description: "Ask DeepWiki about code, architecture, and APIs in a public GitHub repository. Requires repoName in owner/repo format. No API key required; no web-search fallback.",
@@ -58,7 +58,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 		renderResult: renderCodeSearchResult,
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "fetch_content",
 		label: "Fetch Content",
 		description: 'Fetch webpages, PDFs, GitHub repositories, YouTube videos, or local video files. For ordinary pages, pass only {"urls":["https://example.com"]}; readable content is returned as markdown. For video analysis, include the user\'s question in prompt. Optional frames and timestamp extract images only from YouTube or local videos and are ignored for other inputs, including in mixed batches. Content is stored for get_search_content. Blocked or unreadable pages use extraction fallbacks.',
@@ -114,7 +114,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 				timestamp: Date.now(),
 				urls: deps.stripThumbnails(fetchResults),
 			};
-			await pi.appendEntry("web-search-results", data);
+			await atomic.appendEntry("web-search-results", data);
 			storeResult(responseId, data);
 
 			if (urlList.length === 1) {
@@ -219,7 +219,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 		renderResult: renderFetchContentResult,
 	});
 
-	pi.registerTool({
+	atomic.registerTool({
 		name: "get_search_content",
 		label: "Get Search Content",
 		description: "Retrieve full content from a previous web_search or fetch_content call.",

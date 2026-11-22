@@ -79,14 +79,14 @@ test.each([
 		let interruptSent = false;
 		let settledRuns = 0;
 		const evidence: Record<string, unknown> = { interrupt };
-		const extensionFactory = (pi: ExtensionAPI) => {
-			pi.on("agent_settled", () => {
+		const extensionFactory = (atomic: ExtensionAPI) => {
+			atomic.on("agent_settled", () => {
 				settledRuns += 1;
 			});
-			pi.on("input", async () => {
+			atomic.on("input", async () => {
 				if (!interrupt || interruptSent) return { action: "continue" as const };
 				interruptSent = true;
-				await pi.sendMessage(
+				await atomic.sendMessage(
 					{ customType: "intercom_message", content: "extension interrupt", display: true },
 					{ triggerTurn: true, deliverAs: "interrupt" },
 				);
@@ -153,11 +153,11 @@ test(
 		env.faux.setResponses(Array.from({ length: 6 }, () => answerPendingInput()));
 		let chat: AgentSession | undefined;
 		let interruptSent = false;
-		const extensionFactory = (pi: ExtensionAPI) => {
-			pi.on("input", () => {
+		const extensionFactory = (atomic: ExtensionAPI) => {
+			atomic.on("input", () => {
 				if (!interruptSent) {
 					interruptSent = true;
-					void pi.sendMessage(
+					void atomic.sendMessage(
 						{ customType: "intercom_message", content: "extension interrupt", display: true },
 						{ triggerTurn: true, deliverAs: "interrupt" },
 					);

@@ -124,9 +124,9 @@ describe("project trust before any extension runs (#5693)", () => {
 			const inline = (name: string, bundledMark: boolean): InlineExtension => ({
 				name,
 				bundled: bundledMark,
-				factory: (pi) => {
+				factory: (atomic) => {
 					loaded.push(name);
-					pi.registerCommand(`${name}-${loaded.length}`, { handler: async () => {} });
+					atomic.registerCommand(`${name}-${loaded.length}`, { handler: async () => {} });
 				},
 			});
 			const load = async (preTrustExtensions: "bundled" | "voters") => {

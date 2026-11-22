@@ -38,7 +38,7 @@ interface ContactSupervisorDeps {
 	retrySupervisorAuthorization?: () => Promise<void>;
 }
 
-export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSupervisorDeps): void {
+export function registerContactSupervisorTool(atomic: ExtensionAPI, deps: ContactSupervisorDeps): void {
 	const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, resolveSessionTarget, beginReplyWait } = deps;
   const getMetadata = typeof childOrchestratorMetadata === "function"
     ? childOrchestratorMetadata
@@ -48,7 +48,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 	let supervisorWaitActive = false;
 	let supervisorHandoffClaimed = false;
   if (childOrchestratorMetadata !== null) {
-    pi.registerTool({
+    atomic.registerTool({
       name: "contact_supervisor",
       exposure: "model-only",
       detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && contactSupervisorCallMayDetach(params),
@@ -151,7 +151,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 		try {
 			if (
 				blockingSupervisorWait &&
-				requestParentAskHandoff(pi.events, metadata, {
+				requestParentAskHandoff(atomic.events, metadata, {
 					kind: reason === "interview_request" ? "interview" : "decision",
 					question: typeof params.message === "string" ? params.message : "",
 					...(supervisorInterview ? { interview: supervisorInterview } : {}),
@@ -243,7 +243,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
                 details: { messageId: result.id, delivered: false, reason: result.reason },
               };
             }
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to: metadata.orchestratorTarget,
               message: { text: message, reason },
               messageId: result.id,
@@ -302,7 +302,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
               details: { error: true },
             };
           }
-          await pi.appendEntry("intercom_sent", {
+          await atomic.appendEntry("intercom_sent", {
             to: metadata.orchestratorTarget,
             message: {
               text: reason === "interview_request" ? requestText : params.message,
@@ -313,7 +313,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             timestamp: Date.now(),
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
-          await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 }, () => deps.mayDetachReplyWait?.() === true);
+          await prepareReleasedReplyWait(atomic, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 }, () => deps.mayDetachReplyWait?.() === true);
           const replyMessage = await wait.promise;
           // #5188: a failed ask is reported as a failure, never as the supervisor's reply or a parsed interview answer.
           if (replyMessage.replyError !== undefined)
@@ -327,7 +327,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             ? formatAttachments(replyMessage.content.attachments)
             : "";
           const structuredReply = reason === "interview_request" ? parseStructuredSupervisorReply(replyText, supervisorInterview!) : undefined;
-          const receipt = await appendEntryUnlessReleased(pi, "intercom_received", {
+          const receipt = await appendEntryUnlessReleased(atomic, "intercom_received", {
             from: metadata.orchestratorTarget,
             message: { text: replyText, attachments: replyMessage.content.attachments },
             messageId: replyMessage.id,
@@ -335,7 +335,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
           // Once the reply is saved as taken, a reopened session keeps neither it nor the question's other records.
-          if (receipt === "appended") await recordAnsweredQuestion(pi, questionId);
+          if (receipt === "appended") await recordAnsweredQuestion(atomic, questionId);
           return {
             content: [{ type: "text", text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
             isError: false,

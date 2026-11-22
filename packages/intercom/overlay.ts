@@ -14,7 +14,7 @@ interface OverlayDeps {
   syncPresenceIdentity(sessionId: string): void;
 }
 
-export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): void {
+export function registerIntercomOverlay(atomic: ExtensionAPI, deps: OverlayDeps): void {
   async function openIntercomOverlay(ctx: ExtensionContext): Promise<void> {
     const overlayGeneration = deps.runtimeGeneration();
     const liveContext = deps.getLiveContext(ctx, overlayGeneration);
@@ -81,7 +81,7 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
     // Dismissal releases idle UI, not a delivery already admitted by this command.
     const result = compose?.pendingSend ? await compose.pendingSend : uiResult;
     if (result?.sent && result.messageId && result.text) {
-      await pi.appendEntry("intercom_sent", {
+      await atomic.appendEntry("intercom_sent", {
         to: selectedSession.name || selectedSession.id,
         message: { text: result.text },
         messageId: result.messageId,
@@ -91,12 +91,12 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
     }
   }
 
-  pi.registerCommand("intercom", {
+  atomic.registerCommand("intercom", {
     description: "Open session intercom overlay",
     handler: async (_args, ctx) => openIntercomOverlay(ctx),
   });
 
-  pi.registerShortcut("alt+m", {
+  atomic.registerShortcut("alt+m", {
     description: "Open session intercom",
     handler: async (ctx) => openIntercomOverlay(ctx),
   });

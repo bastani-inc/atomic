@@ -15,8 +15,8 @@ import type { ExtensionAPI } from "@bastani/atomic";
 
 const TRIGGER = /\b(changes?|diff|modified)\b/i;
 
-export default function (pi: ExtensionAPI) {
-	pi.on("input", async (event) => {
+export default function (atomic: ExtensionAPI) {
+	atomic.on("input", async (event) => {
 		// During steering, skip the exec call — corrections should be fast
 		if (event.streamingBehavior === "steer") {
 			return { action: "continue" };
@@ -26,7 +26,7 @@ export default function (pi: ExtensionAPI) {
 			return { action: "continue" };
 		}
 
-		const { stdout, code } = await pi.exec("git", ["diff", "--stat"]);
+		const { stdout, code } = await atomic.exec("git", ["diff", "--stat"]);
 		if (code !== 0 || !stdout.trim()) {
 			return { action: "continue" };
 		}

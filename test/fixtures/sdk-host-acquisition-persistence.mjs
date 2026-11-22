@@ -18,9 +18,9 @@ try {
   let acquired = 0;
   const active = new Set();
   const settingsManager = SettingsManager.inMemory();
-  const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [pi => {
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [atomic => {
    const id = ++acquired; active.add(id);
-   pi.on("session_shutdown", () => { active.delete(id); });
+   atomic.on("session_shutdown", () => { active.delete(id); });
   }] });
   await loader.reload();
   const cause = new Error("preconstructor failure");

@@ -469,12 +469,12 @@ function formatDormantReleasedReply(request: ReleasedReplyFormatRequest): Releas
 	};
 }
 
-function rejectLazyResultRelay(pi: ExtensionAPI, eventName: string, payload: unknown, error: unknown): void {
+function rejectLazyResultRelay(atomic: ExtensionAPI, eventName: string, payload: unknown, error: unknown): void {
 	if (eventName !== SUBAGENT_RESULT_INTERCOM_EVENT || !payload || typeof payload !== "object") return;
 	const requestId = (payload as { requestId?: unknown }).requestId;
 	if (typeof requestId !== "string") return;
 	try {
-		pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
+		atomic.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
 			requestId,
 			delivered: false,
 			error: error instanceof Error ? error.message : String(error),
@@ -492,7 +492,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 	label: "intercom",
 	managedEvents: MANAGED_EVENTS,
 	interceptedBusEvents: INTERCEPTED_BUS_EVENTS,
-	register(pi, controller) {
+	register(atomic, controller) {
 		const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
 		let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
 
@@ -504,15 +504,15 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 		};
 
 		const activateTypedContactSupervisor = (): void => {
-			const activeTools = pi.getActiveTools();
-			if (!activeTools.includes("contact_supervisor")) pi.setActiveTools([...activeTools, "contact_supervisor"]);
+			const activeTools = atomic.getActiveTools();
+			if (!activeTools.includes("contact_supervisor")) atomic.setActiveTools([...activeTools, "contact_supervisor"]);
 		};
 
 		const registerTypedContactSupervisor = (): void => {
 			if (!typedContactSupervisorRegistered) {
 				typedContactSupervisorRegistered = true;
 				controller.markStaticSurface("tool", "contact_supervisor");
-				pi.registerTool({
+				atomic.registerTool({
 					name: "contact_supervisor",
 					exposure: "model-only",
 					detachable: (params) =>
@@ -597,16 +597,16 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			everSawAgentStart = false;
 			const typedIdentity = ctx.subagentPolicy?.intercom;
 			if (typedIdentity) {
-				if (typedIdentity.sessionName && typeof pi.setSessionName === "function") {
-					await pi.setSessionName(typedIdentity.sessionName);
+				if (typedIdentity.sessionName && typeof atomic.setSessionName === "function") {
+					await atomic.setSessionName(typedIdentity.sessionName);
 				}
 				registerTypedContactSupervisor();
 				// Admitted subagent children register on Intercom before their first turn.
 				await controller.activate(ctx);
 				return;
 			}
-			if (inheritedDelegatedSessionName && typeof pi.setSessionName === "function") {
-				await pi.setSessionName(inheritedDelegatedSessionName);
+			if (inheritedDelegatedSessionName && typeof atomic.setSessionName === "function") {
+				await atomic.setSessionName(inheritedDelegatedSessionName);
 			}
 			// A resumed session with existing Intercom history activates the lightweight wrapper so custom
 			// intercom_message cards and tool renderers have their rich components immediately.
@@ -623,7 +623,9 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 				startupJoinFromEnv() !== false &&
 				!hasSubagentIntercomEnv() &&
 				!inheritedDelegatedSessionName &&
-				joinsIntercomAtStartup(ctx, () => (typeof pi.getActiveTools === "function" ? pi.getActiveTools() : []))
+				joinsIntercomAtStartup(ctx, () =>
+					typeof atomic.getActiveTools === "function" ? atomic.getActiveTools() : [],
+				)
 			) {
 				scheduleDormantStartupJoin(ctx);
 			}
@@ -638,7 +640,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			}
 		});
 
-		pi.on("session_recovery_restore", async (event, ctx) => {
+		atomic.on("session_recovery_restore", async (event, ctx) => {
 			let needsIntercom = false;
 			try {
 				needsIntercom = hasIntercomHistory(ctx.sessionManager.getEntries());
@@ -652,7 +654,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 				| undefined;
 		});
 
-		pi.on("session_recovery_replay", async (event, ctx) => {
+		atomic.on("session_recovery_replay", async (event, ctx) => {
 			if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;
 			await controller.activate(ctx);
 			return (await controller.dispatchHandlers("session_recovery_replay", event, ctx)) as
@@ -667,7 +669,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 			SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 		] as const) {
-			pi.events.on(channel, (payload) => {
+			atomic.events.on(channel, (payload) => {
 				if (!isObjectRecord(payload) || payload.completion) return;
 				if (controller.active) {
 					void controller.dispatchBusEvent(channel, payload);
@@ -695,7 +697,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			SUBAGENT_MARK_ENDED_CHILDREN_EVENT,
 			SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 		] as const) {
-			pi.events.on(channel, (payload) => {
+			atomic.events.on(channel, (payload) => {
 				if (!isObjectRecord(payload) || payload.completion) return;
 				if (!controller.active) {
 					payload.completion = Promise.resolve();
@@ -707,7 +709,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 
 		// Background subagent control & result relays.
 		for (const channel of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
-			pi.events.on(channel, (payload) => {
+			atomic.events.on(channel, (payload) => {
 				if (controller.active) {
 					void controller.dispatchBusEvent(channel, payload);
 					return;
@@ -719,13 +721,13 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 						await controller.dispatchBusEvent(channel, payload);
 					})
 					.catch((error: unknown) => {
-						rejectLazyResultRelay(pi, channel, payload, error);
+						rejectLazyResultRelay(atomic, channel, payload, error);
 					});
 			});
 		}
 
 		// Synchronous released-reply formatting protocol.
-		pi.events.on(RELEASED_REPLY_FORMAT_EVENT, (payload) => {
+		atomic.events.on(RELEASED_REPLY_FORMAT_EVENT, (payload) => {
 			if (!isReleasedReplyFormatRequest(payload) || payload.result !== undefined) return;
 			const active = controller.active;
 			if (active) {
@@ -737,7 +739,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			payload.result = formatDormantReleasedReply(payload);
 		});
 
-		pi.registerTool({
+		atomic.registerTool({
 			name: "intercom",
 			exposure: "model-only",
 			scriptAccess: intercomScriptAccess,
@@ -752,14 +754,14 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			renderResult: (...args) => renderResultFallback(controller, "intercom", args),
 		});
 
-		pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
+		atomic.registerMessageRenderer("intercom_message", (message, options, theme) => {
 			const loaded = controller.active?.captured.messageRenderers.get("intercom_message");
 			if (loaded) return loaded(message, options, theme);
 			const content = typeof message.content === "string" ? message.content : "";
 			return new Text(theme.fg("toolOutput", content), 0, 0);
 		});
 
-		pi.registerToolRenderer((toolName, next) => {
+		atomic.registerToolRenderer((toolName, next) => {
 			const registered = next();
 			if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self")
 				return registered;
@@ -781,7 +783,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 		});
 
 		if (hasSubagentIntercomEnv()) {
-			pi.registerTool({
+			atomic.registerTool({
 				name: "contact_supervisor",
 				exposure: "model-only",
 				detachable: (params) =>
@@ -805,12 +807,12 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			});
 		}
 
-		pi.registerShortcut("alt+m", {
+		atomic.registerShortcut("alt+m", {
 			description: "Open session intercom overlay",
 			handler: (ctx) => controller.runShortcut("alt+m", ctx),
 		});
 
-		pi.registerCommand("intercom", {
+		atomic.registerCommand("intercom", {
 			description: "Open session intercom overlay",
 			handler: (args, ctx) => controller.runCommand("intercom", args, ctx),
 		});

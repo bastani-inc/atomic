@@ -187,7 +187,7 @@ test(
 			getChildSessionOptions: (session) => ({ ...childOptions(session), parentCommandTaskOwner }),
 		});
 		const events = ownerEvents();
-		const pi = {
+		const atomic = {
 			events,
 			appendEntry: async (customType: string, data?: SubagentChildRecord) =>
 				void (await owner.appendCustomEntry(customType, data)),
@@ -211,7 +211,7 @@ test(
 		};
 		const stopWakes = bindReleasedChildWakes(
 			{
-				pi,
+				pi: atomic,
 				state: {
 					baseCwd: env.root,
 					currentSessionId: "parent",
@@ -263,7 +263,7 @@ test(
 			task: "build, then wait for the build",
 			options: { ...withChildOptions({ ...base, releaseWhenWaiting: subagentReleasePolicy(0) }), index: 0 },
 			wakeDispatcher: dispatcher,
-			recordChild: createSubagentChildRecordSink(pi, ctx),
+			recordChild: createSubagentChildRecordSink(atomic, ctx),
 			runtime,
 		});
 		assert.ok(response.kind === "admitted");

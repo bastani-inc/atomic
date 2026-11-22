@@ -26,7 +26,7 @@ import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import { toolContext } from "../helpers/tool-context.js";
 
-type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
+type HeavyModule = { default: (atomic: ExtensionAPI) => void | Promise<void> };
 type ImportResult = { error: Error } | { module: HeavyModule };
 type LifecycleEvent = SessionStartEvent | SessionShutdownEvent;
 type LifecycleHandler = (event: LifecycleEvent, ctx: ExtensionContext) => Promise<void> | void;
@@ -299,12 +299,12 @@ describe("Intercom heavy runtime admitted child registration", () => {
 		const saving = Promise.withResolvers<void>();
 		const releaseSave = Promise.withResolvers<void>();
 		const handlers: LifecycleHandlers = new Map();
-		const pi = harnessPi(handlers, new Map());
+		const atomic = harnessPi(handlers, new Map());
 		const sendMessage = vi.fn(async (_message: unknown, _options?: unknown) => {
 			saving.resolve();
 			await releaseSave.promise;
 		});
-		pi.sendMessage = sendMessage;
+		atomic.sendMessage = sendMessage;
 		mockBrokerClient(() => {});
 		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
 			this.emit(
@@ -322,7 +322,7 @@ describe("Intercom heavy runtime admitted child registration", () => {
 			);
 		});
 		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
-		intercomHeavy(pi);
+		intercomHeavy(atomic);
 		const ctx = connectedChildContext({
 			...admittedChildPolicy,
 			startup: {
@@ -356,9 +356,9 @@ describe("Intercom heavy runtime admitted child registration", () => {
 
 	test("a message kept while it was paused never holds its start, and reaches it after its first turn started (#5999)", async () => {
 		const handlers: LifecycleHandlers = new Map();
-		const pi = harnessPi(handlers, new Map());
+		const atomic = harnessPi(handlers, new Map());
 		const sendMessage = vi.fn(async (_message: unknown, _options?: unknown) => {});
-		pi.sendMessage = sendMessage;
+		atomic.sendMessage = sendMessage;
 		mockBrokerClient(() => {});
 		vi.mocked(IntercomClient.prototype.connect).mockImplementation(async function (this: IntercomClient) {
 			const peer = {
@@ -385,7 +385,7 @@ describe("Intercom heavy runtime admitted child registration", () => {
 			});
 		});
 		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
-		intercomHeavy(pi);
+		intercomHeavy(atomic);
 		let firstTurnPending = true;
 		const ctx = connectedChildContext({
 			...admittedChildPolicy,

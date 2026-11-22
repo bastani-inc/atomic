@@ -227,8 +227,8 @@ describe("lazy builtin intercom", () => {
 			let implLoadCount = 0;
 			const factory = createLazyBuiltinFactory(intercomLazyBuiltinSpec, async () => {
 				implLoadCount += 1;
-				return (pi) => {
-					pi.events.on("intercom:startup-join", (payload) => {
+				return (atomic) => {
+					atomic.events.on("intercom:startup-join", (payload) => {
 						implJoinCalls += 1;
 						(payload as { completion?: Promise<void> }).completion = Promise.resolve();
 					});

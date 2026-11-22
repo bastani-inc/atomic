@@ -38,9 +38,9 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
+				(atomic) => {
+					atomic.on("session_start", () => {
+						atomic.registerTool({
 							name: "dynamic_tool",
 							label: "Dynamic Tool",
 							description: "Tool registered from session_start",

@@ -245,7 +245,7 @@ function toolReachRefusal(reach: IntercomReachPolicy, action: string, group: str
 	return undefined;
 }
 
-export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
+export function registerIntercomTool(atomic: ExtensionAPI, deps: IntercomToolDeps): void {
   const retryIdentities = new RetryIdentityReservations({ maxEntries: deps.retryIdentityMaxEntries });
   const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
@@ -278,7 +278,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   const ownOutboundAsks = deps.outboundAsks === undefined
     ? new OutboundAsks({
         entries: () => [],
-        append: (customType, data) => pi.appendEntry(customType, data),
+        append: (customType, data) => atomic.appendEntry(customType, data),
         sessionId: () => null,
       })
     : undefined;
@@ -342,7 +342,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
             return patternError(multipleMatchesRefusal(pattern.pattern, recipients));
           }
         } else {
-          const children = await listIntercomChildren(pi.events, request.toolSessionId, pattern.runId);
+          const children = await listIntercomChildren(atomic.events, request.toolSessionId, pattern.runId);
           if (children.length === 0) {
             return patternError(`This session has no running, released or paused subagents${
               pattern.runId === undefined ? "" : ` in run ${pattern.runId}`
@@ -395,7 +395,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     }));
     return patternSendResult(target, outcomes);
   };
-  pi.registerTool({
+  atomic.registerTool({
     name: "intercom",
     exposure: "model-only",
     scriptAccess: intercomScriptAccess,
@@ -803,7 +803,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               replyTo,
               expectsReply: false,
             }, retryToken);
-            const goneChild = await awaitSubagentChildRestoration(pi.events, toolSessionId, to);
+            const goneChild = await awaitSubagentChildRestoration(atomic.events, toolSessionId, to);
             if (goneChild !== undefined) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
@@ -851,7 +851,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: result.id,
@@ -895,7 +895,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: result.id,
@@ -996,7 +996,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const claimParentAsk = (resolvedTargetId: string): boolean =>
               Boolean(
                 metadata &&
-                requestParentAskHandoff(pi.events, metadata, {
+                requestParentAskHandoff(atomic.events, metadata, {
                   kind: "intercom",
                   question: typeof message === "string" ? message : "",
                   attachments: params.attachments,
@@ -1017,7 +1017,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
 
-            const goneChild = await awaitSubagentChildRestoration(pi.events, toolSessionId, to);
+            const goneChild = await awaitSubagentChildRestoration(atomic.events, toolSessionId, to);
             if (goneChild !== undefined) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
@@ -1139,7 +1139,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               wait?.cancel(new Error(`Ask queued for ${to}, which had ended`));
               wait = null;
               await outboundAsks().persist(questionId);
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: sendResult.id,
@@ -1164,7 +1164,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
               wait?.cancel(new Error(`Message queued for ${to}`));
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: sendResult.id,
@@ -1201,7 +1201,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
             outboundAsks().open({ askId: questionId, to, recipientId: replyFrom, question });
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: sendResult.id,
@@ -1221,7 +1221,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const activeWait: ReplyWait = wait;
             if (budgetMs !== undefined) {
               await prepareReleasedReplyWait(
-                pi,
+                atomic,
                 activeWait,
                 signal,
                 { toolCallId, questionId, from: replyFrom, retryCount: retries },
@@ -1250,7 +1250,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
               : "";
-            const receipt = await appendEntryUnlessReleased(pi, "intercom_received", {
+            const receipt = await appendEntryUnlessReleased(atomic, "intercom_received", {
               from: to,
               message: { text: replyText, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,
@@ -1413,7 +1413,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              await pi.appendEntry("intercom_sent", {
+              await atomic.appendEntry("intercom_sent", {
                 to: displayTarget,
                 message: { text: message, attachments, replyTo: route.messageId },
                 messageId: result.id,
@@ -1448,7 +1448,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 : {};
               // #6168: an ask no reply can reach any more is closed, so it does not stay pending for good.
               const closed = route.expectsReply
-                ? await closeRefusedAsk(pi, activeReplyTracker(), toolSessionId, route.messageId, result)
+                ? await closeRefusedAsk(atomic, activeReplyTracker(), toolSessionId, route.messageId, result)
                 : undefined;
               return {
                 content: [{
@@ -1469,7 +1469,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            await pi.appendEntry("intercom_sent", {
+            await atomic.appendEntry("intercom_sent", {
               to: displayTarget,
               message: { text: message, attachments, replyTo: route.messageId },
               messageId: result.id,
@@ -1572,7 +1572,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             const sender = context.from.name || context.from.id;
-            if (!(await closeInboundAsk(pi, activeReplyTracker(), context.message.id, "closed"))) {
+            if (!(await closeInboundAsk(atomic, activeReplyTracker(), context.message.id, "closed"))) {
               return {
                 content: [{ type: "text", text: `Ask ${context.message.id} from ${sender} was not closed: its close could not be saved to the session. It is still pending; try again.` }],
                 isError: true,

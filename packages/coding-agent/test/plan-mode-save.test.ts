@@ -13,7 +13,7 @@ for (const action of ["progress", "completion"] as const) {
 		const send = vi.fn();
 		const status = vi.fn();
 		const loaded = await createTestExtensionsResult([
-			(pi) => planMode({ ...pi, appendEntry: append, sendMessage: send, setActiveTools() {} }),
+			(atomic) => planMode({ ...atomic, appendEntry: append, sendMessage: send, setActiveTools() {} }),
 		]);
 		const extension = loaded.extensions[0];
 		const ctx = {
@@ -69,7 +69,7 @@ test("plan-mode completes every step when the final message says the plan is don
 	const append = vi.fn().mockResolvedValue(undefined);
 	const send = vi.fn();
 	const loaded = await createTestExtensionsResult([
-		(pi) => planMode({ ...pi, appendEntry: append, sendMessage: send, setActiveTools() {} }),
+		(atomic) => planMode({ ...atomic, appendEntry: append, sendMessage: send, setActiveTools() {} }),
 	]);
 	const extension = loaded.extensions[0];
 	const ctx = {
@@ -120,7 +120,7 @@ async function startExecution(todos: TodoState[]) {
 	const send = vi.fn();
 	const widget = vi.fn();
 	const loaded = await createTestExtensionsResult([
-		(pi) => planMode({ ...pi, appendEntry: append, sendMessage: send, setActiveTools() {} }),
+		(atomic) => planMode({ ...atomic, appendEntry: append, sendMessage: send, setActiveTools() {} }),
 	]);
 	const extension = loaded.extensions[0];
 	const ctx = {

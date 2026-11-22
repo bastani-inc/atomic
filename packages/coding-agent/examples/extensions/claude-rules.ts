@@ -46,12 +46,12 @@ function findMarkdownFiles(dir: string, basePath: string = ""): string[] {
 	return results;
 }
 
-export default function claudeRulesExtension(pi: ExtensionAPI) {
+export default function claudeRulesExtension(atomic: ExtensionAPI) {
 	let ruleFiles: string[] = [];
 	let rulesDir: string = "";
 
 	// Scan for rules on session start
-	pi.on("session_start", async (_event, ctx) => {
+	atomic.on("session_start", async (_event, ctx) => {
 		rulesDir = path.join(ctx.cwd, ".claude", "rules");
 		ruleFiles = findMarkdownFiles(rulesDir);
 
@@ -61,7 +61,7 @@ export default function claudeRulesExtension(pi: ExtensionAPI) {
 	});
 
 	// Append available rules to system prompt
-	pi.on("before_agent_start", async (event) => {
+	atomic.on("before_agent_start", async (event) => {
 		if (ruleFiles.length === 0) {
 			return;
 		}

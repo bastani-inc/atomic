@@ -31,13 +31,13 @@ async function endpoint() {
 			depth: 1,
 		},
 		extensionFactories: [
-			(pi) => {
-				intercomHeavy(pi, {
+			(atomic) => {
+				intercomHeavy(atomic, {
 					captureInboundHandler: (handler) => {
 						inbound = handler;
 					},
 				});
-				pi.on("session_start", (_event, ctx) => {
+				atomic.on("session_start", (_event, ctx) => {
 					context = ctx;
 				});
 			},

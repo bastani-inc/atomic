@@ -7,7 +7,7 @@ const interactiveQuits = new WeakMap<object, InteractiveQuit>();
 
 /**
  * Makes `runtime`'s `dispose()` quit as the interactive app does, which gives the sessions' `session_shutdown` handlers
- * about five seconds: an extension's `pi.exec` command still running is ended first, and with `handlerLimitMs` the
+ * about five seconds: an extension's `atomic.exec` command still running is ended first, and with `handlerLimitMs` the
  * handlers are waited for at most that long from the start of the dispose, as an interactive engine's are before its
  * host ends it. The rest of each session's close still runs and is waited for.
  */

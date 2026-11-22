@@ -71,16 +71,16 @@ async function createRunner(
 	const events: UIPromptEvent[] = [];
 	const runtime = createExtensionRuntime();
 	const extension = await loadExtensionFromFactory(
-		async (pi) => {
-			pi.on("ui_prompt_start", async (event) => {
+		async (atomic) => {
+			atomic.on("ui_prompt_start", async (event) => {
 				events.push(event);
 				await options.onStart?.(event);
 			});
-			pi.on("ui_prompt_end", async (event) => {
+			atomic.on("ui_prompt_end", async (event) => {
 				events.push(event);
 				await options.onEnd?.(event);
 			});
-			await options.configure?.(pi);
+			await options.configure?.(atomic);
 		},
 		process.cwd(),
 		createEventBus(),
@@ -96,8 +96,8 @@ async function createRunner(
 test("in-process extension shortcuts emit prompt lifecycle events", async () => {
 	const shortcutFinished = deferred<void>();
 	const { runner, events } = await createRunner({
-		configure: (pi) => {
-			pi.registerShortcut("ctrl+g", {
+		configure: (atomic) => {
+			atomic.registerShortcut("ctrl+g", {
 				description: "Open a prompt",
 				handler: async (ctx) => {
 					assert.equal(await ctx.ui.select("Shortcut prompt", ["one"]), "one");

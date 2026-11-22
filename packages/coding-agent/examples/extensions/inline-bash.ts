@@ -16,11 +16,11 @@
  */
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
+export default function (atomic: ExtensionAPI) {
 	const PATTERN = /!\{([^}]+)\}/g;
 	const TIMEOUT_MS = 30000;
 
-	pi.on("input", async (event, ctx) => {
+	atomic.on("input", async (event, ctx) => {
 		const text = event.text;
 
 		// Don't process if it's a whole-line bash command (starts with !)
@@ -51,7 +51,7 @@ export default function (pi: ExtensionAPI) {
 		// Execute each command and collect results
 		for (const { full, command } of matches) {
 			try {
-				const bashResult = await pi.exec("bash", ["-c", command], {
+				const bashResult = await atomic.exec("bash", ["-c", command], {
 					timeout: TIMEOUT_MS,
 				});
 

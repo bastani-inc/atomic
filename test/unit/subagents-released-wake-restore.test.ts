@@ -175,7 +175,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 			}
 		},
 	};
-	const pi = {
+	const atomic = {
 		events,
 		appendEntry: async (customType: string, data?: SubagentChildRecord) => {
 			await sessionManager.appendCustomEntry(customType, data);
@@ -233,7 +233,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 					orchestratorIntercomTarget: "parent",
 					...extra,
 				},
-				recordChild: createSubagentChildRecordSink(pi, state.ctx),
+				recordChild: createSubagentChildRecordSink(atomic, state.ctx),
 				runtime: { runSync: runtime },
 			});
 			assert.equal(response.kind, "admitted");
@@ -341,7 +341,7 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 		};
 	};
 	const deps: ExecutorDeps = {
-		pi,
+		pi: atomic,
 		state: {
 			baseCwd: cwd,
 			currentSessionId: "parent",

@@ -428,8 +428,8 @@ describe("RPC prompt response semantics", () => {
 			withAuth: true,
 			responseDelayMs: 0,
 			extensionsResult: await createTestExtensionsResult([
-				(pi) => {
-					pi.on("before_agent_start", () => {
+				(atomic) => {
+					atomic.on("before_agent_start", () => {
 						pauseSession?.();
 					});
 				},
@@ -455,9 +455,9 @@ describe("RPC prompt response semantics", () => {
 			withAuth: false,
 			responseDelayMs: 0,
 			extensionsResult: await createTestExtensionsResult([
-				(pi) => {
-					pi.registerCommand("handled", { handler: async () => {} });
-					pi.on("input", (event) => {
+				(atomic) => {
+					atomic.registerCommand("handled", { handler: async () => {} });
+					atomic.on("input", (event) => {
 						if (event.text === "handled input") return { action: "handled" };
 					});
 				},
@@ -527,10 +527,10 @@ describe("RPC prompt response semantics", () => {
 				withAuth: true,
 				responseDelayMs: 500,
 				extensionsResult: await createTestExtensionsResult([
-					(pi) => {
-						pi.on("input", (event) => {
+					(atomic) => {
+						atomic.on("input", (event) => {
 							if (event.text === "A" && event.source === "rpc") {
-								pi.sendUserMessage("B", { deliverAs: type === "steer" ? "steer" : "followUp" });
+								atomic.sendUserMessage("B", { deliverAs: type === "steer" ? "steer" : "followUp" });
 								return { action: "handled" };
 							}
 						});
@@ -575,8 +575,8 @@ describe("RPC prompt response semantics", () => {
 			withAuth: false,
 			responseDelayMs: 0,
 			extensionsResult: await createTestExtensionsResult([
-				(pi) => {
-					pi.on("input", (event) => {
+				(atomic) => {
+					atomic.on("input", (event) => {
 						if (event.text === "A") return { action: "transform", text: "B" };
 					});
 				},
@@ -687,8 +687,8 @@ describe("RPC extension shutdown requests", () => {
 			withAuth: false,
 			responseDelayMs: 0,
 			extensionsResult: await createTestExtensionsResult([
-				(pi) => {
-					pi.on("session_start", (_event, ctx) => {
+				(atomic) => {
+					atomic.on("session_start", (_event, ctx) => {
 						requestShutdown = () => ctx.shutdown();
 					});
 				},
@@ -715,8 +715,8 @@ describe("RPC extension shutdown requests", () => {
 			withAuth: false,
 			responseDelayMs: 0,
 			extensionsResult: await createTestExtensionsResult([
-				(pi) => {
-					pi.registerCommand("quit-now", {
+				(atomic) => {
+					atomic.registerCommand("quit-now", {
 						handler: async (_args, ctx) => {
 							ctx.shutdown();
 							await sleep(10);
@@ -746,11 +746,11 @@ describe("RPC extension shutdown requests", () => {
 			withAuth: false,
 			responseDelayMs: 0,
 			extensionsResult: await createTestExtensionsResult([
-				(pi) => {
-					pi.on("session_start", (_event, ctx) => {
+				(atomic) => {
+					atomic.on("session_start", (_event, ctx) => {
 						requestShutdown = () => ctx.shutdown();
 					});
-					pi.registerCommand("slow", {
+					atomic.registerCommand("slow", {
 						handler: async () => {
 							await sleep(50);
 						},

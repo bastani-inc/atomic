@@ -168,7 +168,7 @@ type ActiveLifecycleState = {
 	modelSelect: LifecycleSnapshot<"model_select"> | null;
 };
 interface LightweightIntercomOptions {
-	importHeavy?: () => Promise<{ default: (pi: ExtensionAPI) => void | Promise<void> }>;
+	importHeavy?: () => Promise<{ default: (atomic: ExtensionAPI) => void | Promise<void> }>;
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -289,7 +289,7 @@ class BrokerOutage {
 	}
 }
 
-export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
+export default function intercom(atomic: ExtensionAPI, options: LightweightIntercomOptions = {}) {
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
   let heavyAttempt: HeavyAttempt | null = null;
   let loadedHeavy: IntercomHeavyHandle | null = null;
@@ -422,7 +422,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			try {
 				const mod = await (options.importHeavy?.() ?? import("./index-heavy.js"));
 				assertLease(lease);
-				await mod.default(createHeavyProxy(pi, captured));
+				await mod.default(createHeavyProxy(atomic, captured));
 				assertLease(lease);
 				if (!sessionSnapshot && ctx) {
 					sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration, lease };
@@ -505,13 +505,13 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	}
   let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
   const activateTypedContactSupervisor = (): void => {
-    const activeTools = pi.getActiveTools();
-    if (!activeTools.includes("contact_supervisor")) pi.setActiveTools([...activeTools, "contact_supervisor"]);
+    const activeTools = atomic.getActiveTools();
+    if (!activeTools.includes("contact_supervisor")) atomic.setActiveTools([...activeTools, "contact_supervisor"]);
   };
   const registerTypedContactSupervisor = (): void => {
     if (!typedContactSupervisorRegistered) {
       typedContactSupervisorRegistered = true;
-      pi.registerTool({
+      atomic.registerTool({
         name: "contact_supervisor",
         exposure: "model-only",
         detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
@@ -600,13 +600,13 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		}, attempt === 0 ? STARTUP_JOIN_DELAY_MS : reconnectDelayMs(attempt - 1));
 		join.timer.unref?.();
 	}
-  pi.on("session_start", async (event, ctx) => {
+  atomic.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;
     if (typedIdentity) {
-      if (typedIdentity.sessionName && typeof pi.setSessionName === "function") await pi.setSessionName(typedIdentity.sessionName);
+      if (typedIdentity.sessionName && typeof atomic.setSessionName === "function") await atomic.setSessionName(typedIdentity.sessionName);
       registerTypedContactSupervisor();
-    } else if (inheritedDelegatedSessionName && typeof pi.setSessionName === "function") {
-      await pi.setSessionName(inheritedDelegatedSessionName);
+    } else if (inheritedDelegatedSessionName && typeof atomic.setSessionName === "function") {
+      await atomic.setSessionName(inheritedDelegatedSessionName);
     }
     if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
     const lease = activeLease;
@@ -629,12 +629,12 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
       startupJoinFromEnv() !== false &&
       !hasSubagentIntercomEnv() &&
       !inheritedDelegatedSessionName &&
-      joinsIntercomAtStartup(ctx, () => (typeof pi.getActiveTools === "function" ? pi.getActiveTools() : []))
+      joinsIntercomAtStartup(ctx, () => (typeof atomic.getActiveTools === "function" ? atomic.getActiveTools() : []))
     ) {
       scheduleStartupJoin(ctx, lease, generation);
     }
   });
-	pi.on("session_shutdown", async (event, ctx) => {
+	atomic.on("session_shutdown", async (event, ctx) => {
 		cancelStartupJoin();
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;
@@ -663,13 +663,13 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await retainedCleanup;
 		}
 	});
-	pi.on("turn_start", async (event, ctx) => {
+	atomic.on("turn_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.turnStart = { event, ctx };
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "turn_start", event, ctx));
 	});
-	pi.on("turn_end", async (event, ctx) => {
+	atomic.on("turn_end", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.turnStart = null;
 		activeLifecycle.agentStart = null;
@@ -677,7 +677,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "turn_end", event, ctx));
 	});
-	pi.on("agent_start", async (event, ctx) => {
+	atomic.on("agent_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		const pending = startupJoin;
 		if (pending && !pending.settled && pending.lease === activeLease && sessionSnapshot?.generation === pending.generation) {
@@ -689,7 +689,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_start", event, ctx));
 	});
-	pi.on("agent_end", async (event, ctx) => {
+	atomic.on("agent_end", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.agentStart = null;
 		activeLifecycle.activeTools.clear();
@@ -697,30 +697,30 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_end", event, ctx));
 	});
 	// The heavy lifecycle binds a reply context when its intercom message enters the model's context.
-	pi.on("message_start", async (event, ctx) => {
+	atomic.on("message_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "message_start", event, ctx));
 	});
-	pi.on("tool_execution_start", async (event, ctx) => {
+	atomic.on("tool_execution_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_start", event, ctx));
 	});
-	pi.on("tool_execution_end", async (event, ctx) => {
+	atomic.on("tool_execution_end", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.activeTools.delete(event.toolCallId);
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_end", event, ctx));
 	});
-	pi.on("model_select", async (event, ctx) => {
+	atomic.on("model_select", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.modelSelect = { event, ctx };
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "model_select", event, ctx));
 	});
-	pi.registerShortcut("alt+m", {
+	atomic.registerShortcut("alt+m", {
 		description: "Open session intercom overlay",
 		handler: async (ctx) => {
 			const handle = await loadHeavy(ctx);
@@ -743,7 +743,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			?? [...activeLifecycle.activeTools.values()].at(-1)?.ctx
 			?? activeLifecycle.modelSelect?.ctx;
 	}
-	pi.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
+	atomic.events.on(INTERCOM_STARTUP_JOIN_EVENT, (payload) => {
 		const request = payload as IntercomStartupJoinRequest | null;
 		if (!request || typeof request !== "object" || request.completion) return;
 		const ctx = latestLifecycleContext();
@@ -751,7 +751,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		cancelStartupJoin();
 		request.completion = joinAtStartup(ctx);
 	});
-	pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
 		const request = payload as SupervisorAuthorizationRequest;
 		if (typeof request.childName !== "string" || !request.childName.trim() || request.completion) return;
@@ -777,7 +777,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				throw error;
 			});
 	});
-	pi.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
 		const forwarded: AwaitIntercomPeerRequest = {
 			name: payload.name,
@@ -793,7 +793,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			.catch(() => false);
 	});
 	// #3760: a resume restoring a child asks the broker, through this session's connection, to hold its sends.
-	pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
 		if (!isReserveRestoringChildRequest(payload) || payload.completion) return;
 		const forwarded: ReserveRestoringChildRequest = {
 			capability: payload.capability,
@@ -809,9 +809,9 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await forwarded.completion;
 		});
 	});
-	answerReleasedReplyFormatRequests(pi.events);
+	answerReleasedReplyFormatRequests(atomic.events);
 	// #4326: the owner reserves its released children by name, in bulk, on its own broker connection.
-	pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
 		if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
 		const forwarded: ReserveReleasedChildrenRequest = { children: payload.children };
 		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
@@ -829,7 +829,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		[SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, isAcknowledgeReleasedChildWakeRequest],
 		[SUBAGENT_MARK_ENDED_CHILDREN_EVENT, isMarkEndedChildrenRequest],
 	] as const) {
-		pi.events.on(eventName, (payload) => {
+		atomic.events.on(eventName, (payload) => {
 			if (!isRequest(payload) || payload.completion) return;
 			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest | MarkEndedChildrenRequest = {
 				...payload,
@@ -855,7 +855,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 					})();
 		});
 	}
-	pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
+	atomic.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
 		if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
 		const forwarded: ReleaseRestoringChildRequest = {
 			capability: payload.capability,
@@ -899,7 +899,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		peers: readonly SessionInfo[] | undefined,
 	): Promise<readonly string[]> {
 		try {
-			const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
+			const restored = await awaitRestoredIntercomPeers(atomic.events, ctx.sessionManager.getSessionId());
 			const handle = await loadHeavy(ctx);
 			handle.assertCurrent();
 			const forwarded: IntercomInboxReplayRequest = { peers, restored };
@@ -910,8 +910,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			return [];
 		}
 	}
-	pi.on("session_recovery_restore", async (_event, ctx) => {
-		const closed = await closeFinishedChildAsks(pi, ctx);
+	atomic.on("session_recovery_restore", async (_event, ctx) => {
+		const closed = await closeFinishedChildAsks(atomic, ctx);
 		const usedIntercom = hasIntercomHistory(ctx.sessionManager.getEntries());
 		const peers = usedIntercom ? await recoveryPeers(ctx) : undefined;
 		const taken = ctx.sessionManager.getSessionRecoveryState?.().intercomTakenIds;
@@ -924,19 +924,19 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		if (usedIntercom)
 			await new OutboundAsks({
 				entries: () => ctx.sessionManager.getBranch(),
-				append: (customType, data) => pi.appendEntry(customType, data),
+				append: (customType, data) => atomic.appendEntry(customType, data),
 				sessionId: () => ctx.sessionManager.getSessionId(),
 			}).recordTakenAnswers(taken);
 		return closed.length + notices.length > 0 ? { notices: [...closed, ...notices] } : undefined;
 	});
-	pi.on("session_recovery_replay", async (event, ctx) => {
+	atomic.on("session_recovery_replay", async (event, ctx) => {
 		if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;
 		const peers = await recoveryPeers(ctx);
-		const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
+		const restored = await awaitRestoredIntercomPeers(atomic.events, ctx.sessionManager.getSessionId());
 		return planIntercomRecoveryReplay(event.pending, peers, restored);
 	});
 	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
-		pi.events.on(eventName, (payload) => {
+		atomic.events.on(eventName, (payload) => {
 			const ctx = latestLifecycleContext();
 			const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
 			const loaded = loadHeavy(ctx);
@@ -950,7 +950,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			void completion.then(
 				() => brokerOutage.recovered(),
 				(error) => {
-					rejectLazyResultRelay(pi, eventName, payload, error);
+					rejectLazyResultRelay(atomic, eventName, payload, error);
 					reportBackgroundRelayFailure(diagnosticRoute, eventName, error);
 				},
 			);
@@ -958,7 +958,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	}
 	// Heavy Intercom state stays unloaded until the model or user invokes an
 	// Intercom tool, command, shortcut, or relay that needs it.
-	pi.registerTool({
+	atomic.registerTool({
 		name: "intercom",
 		exposure: "model-only",
 		scriptAccess: intercomScriptAccess,
@@ -1013,8 +1013,8 @@ ${ASK_USAGE}
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 		renderCall: renderIntercomCall,
 	});
-	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
-	pi.registerToolRenderer?.((toolName, next) => {
+	atomic.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
+	atomic.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
 		if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self") return registered;
 		if (toolName === "contact_supervisor") {
@@ -1034,7 +1034,7 @@ ${ASK_USAGE}
 		return registered;
 	});
 	if (hasSubagentIntercomEnv()) {
-		pi.registerTool({
+		atomic.registerTool({
 			name: "contact_supervisor",
 			exposure: "model-only",
 			detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
@@ -1074,7 +1074,7 @@ ${ASK_USAGE}
 		});
 	}
 
-	pi.registerCommand("intercom", {
+	atomic.registerCommand("intercom", {
 		description: "Open session intercom overlay",
 		handler: (args, ctx) => runHeavyCommand(loadHeavy, args, ctx),
 	});

@@ -21,8 +21,8 @@ afterEach(async () => {
 /** An extension's message renderer whose component counts the frames that draw it. */
 function countingNote() {
 	const renders: string[] = [];
-	const extension = (pi: { registerMessageRenderer: (type: string, renderer: () => Component) => void }) =>
-		pi.registerMessageRenderer("note", () => ({
+	const extension = (atomic: { registerMessageRenderer: (type: string, renderer: () => Component) => void }) =>
+		atomic.registerMessageRenderer("note", () => ({
 			render: () => {
 				renders.push("note");
 				return ["  extension note"];

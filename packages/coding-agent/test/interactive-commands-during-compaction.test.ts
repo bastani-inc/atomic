@@ -41,8 +41,8 @@ afterEach(async () => {
 });
 
 function workflowCommand(invocations: string[]): ExtensionFactory {
-	return (pi) => {
-		pi.registerCommand("workflows", {
+	return (atomic) => {
+		atomic.registerCommand("workflows", {
 			description: "Browse running and completed workflows",
 			handler: async (args) => {
 				invocations.push(args);
@@ -53,8 +53,8 @@ function workflowCommand(invocations: string[]): ExtensionFactory {
 
 /** Commands that send user messages, written like the send-user-message example extension. */
 function messageCommands(invocations: string[]): ExtensionFactory {
-	return (pi) => {
-		pi.registerCommand("ask", {
+	return (atomic) => {
+		atomic.registerCommand("ask", {
 			description: "Send a user message",
 			handler: async (args, ctx) => {
 				invocations.push(`ask ${args}`);
@@ -62,21 +62,21 @@ function messageCommands(invocations: string[]): ExtensionFactory {
 					ctx.ui.notify("Agent is busy", "warning");
 					return;
 				}
-				pi.sendUserMessage(args);
+				atomic.sendUserMessage(args);
 			},
 		});
-		pi.registerCommand("steer", {
+		atomic.registerCommand("steer", {
 			description: "Send a steering message",
 			handler: async (args) => {
 				invocations.push(`steer ${args}`);
-				pi.sendUserMessage(args, { deliverAs: "steer" });
+				atomic.sendUserMessage(args, { deliverAs: "steer" });
 			},
 		});
-		pi.registerCommand("followup", {
+		atomic.registerCommand("followup", {
 			description: "Send a follow-up message",
 			handler: async (args) => {
 				invocations.push(`followup ${args}`);
-				pi.sendUserMessage(args, { deliverAs: "followUp" });
+				atomic.sendUserMessage(args, { deliverAs: "followUp" });
 			},
 		});
 	};

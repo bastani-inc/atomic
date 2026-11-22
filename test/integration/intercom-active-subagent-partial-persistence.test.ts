@@ -24,13 +24,13 @@ test("a failed card commit retries without a duplicate visible card", async () =
 			depth: 1,
 		},
 		extensionFactories: [
-			(pi) => {
-				intercomHeavy(pi, {
+			(atomic) => {
+				intercomHeavy(atomic, {
 					captureInboundHandler: (handler) => {
 						inbound = handler;
 					},
 				});
-				pi.on("session_start", (_event, context) => {
+				atomic.on("session_start", (_event, context) => {
 					ctx = context;
 				});
 			},

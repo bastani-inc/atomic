@@ -625,8 +625,8 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		const commands: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("user_bash", async (event) => {
+				(atomic) => {
+					atomic.on("user_bash", async (event) => {
 						commands.push(event.command);
 						return { result: { output: "intercepted", exitCode: 0, cancelled: false, truncated: false } };
 					});

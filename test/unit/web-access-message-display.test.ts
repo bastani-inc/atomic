@@ -63,7 +63,7 @@ vi.mock("../../packages/web-access/web-search-summary.js", () => ({
 
 interface CommandModule {
 	registerWebSearchCommand(
-		pi: ExtensionAPI,
+		atomic: ExtensionAPI,
 		deps: {
 			state: { activeCurator: { close(): void } | null };
 			closeCurator(): void;
@@ -74,7 +74,7 @@ interface CommandModule {
 	): void;
 }
 
-const { default: webAccessCommands } = await vi.importActual<{ default: (pi: ExtensionAPI) => Promise<void> }>(
+const { default: webAccessCommands } = await vi.importActual<{ default: (atomic: ExtensionAPI) => Promise<void> }>(
 	"../../packages/web-access/index-heavy.js",
 );
 const { registerWebSearchCommand } = await vi.importActual<CommandModule>(
@@ -98,8 +98,8 @@ async function runCommands(manager: SessionManager): Promise<void> {
 		sessionManager: manager,
 		extensionFactories: [
 			webAccessCommands,
-			(pi: ExtensionAPI) =>
-				registerWebSearchCommand(pi, {
+			(atomic: ExtensionAPI) =>
+				registerWebSearchCommand(atomic, {
 					state: { activeCurator: null },
 					closeCurator() {},
 					buildSearchReturn: async () => ({ content: [{ type: "text", text: "Search results" }], details: {} }),

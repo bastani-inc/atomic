@@ -25,14 +25,14 @@ type CompactFailedEvent = {
 
 function captureCompactFailedEvents(): {
 	events: CompactFailedEvent[];
-	extensionFactories: Array<(pi: { on: AgentSession["on"] }) => void>;
+	extensionFactories: Array<(atomic: { on: AgentSession["on"] }) => void>;
 } {
 	const events: CompactFailedEvent[] = [];
 	return {
 		events,
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_compact_failed", (event) => events.push(event));
+			(atomic) => {
+				atomic.on("session_compact_failed", (event) => events.push(event));
 			},
 		],
 	};
@@ -212,8 +212,8 @@ describe("session_compact_failed", () => {
 		const failed = captureCompactFailedEvents();
 		harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
+				(atomic) => {
+					atomic.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
 				},
 				...failed.extensionFactories,
 			],

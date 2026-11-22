@@ -4,8 +4,8 @@ import type { SubagentState } from "../shared/types.js";
 import { AgentBrowser } from "../tui/agent-browser.js";
 
 /** The human catalog is separate from model-driven subagent execution. */
-export function registerSlashCommands(pi: ExtensionAPI, _state: SubagentState): void {
-	pi.registerCommand("agents", {
+export function registerSlashCommands(atomic: ExtensionAPI, _state: SubagentState): void {
+	atomic.registerCommand("agents", {
 		description: "Browse available subagents and inspect their configuration",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) {
