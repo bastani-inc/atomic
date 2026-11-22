@@ -32,6 +32,8 @@ pub use process::{
 	CommandIntent, CommandOutputSink, CommandResourceOptions, CommandShell, CommandTaskKind,
 	CommandTerminal, InputData, InputReceipt, OutputPage, OutputRange, StdinLease,
 };
+#[cfg(windows)]
+pub(crate) use process::{ContainmentJob, windows_pipe};
 use report_identity::{TASK_REPORT_IDENTITY_WINDOW, activity_hash};
 use retention::OwnerTasks;
 use strings::JsString;

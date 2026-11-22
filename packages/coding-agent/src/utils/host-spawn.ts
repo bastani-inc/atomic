@@ -144,6 +144,57 @@ export function spawnHostProcess(
 	return new NativeChildProcess(start, file, args, options);
 }
 
+/** A process {@link spawnContainedProcess} started: it and every process it starts are in a job of its own. */
+export interface ContainedChildProcess extends HostChildProcess {
+	/** Ends the process and every process still in its job. False once {@link releaseTree} let them go. */
+	endTree(): boolean;
+	/** Lets the processes still in its job run on: neither {@link endTree} nor this process's exit ends them then. */
+	releaseTree(): void;
+}
+
+/** A drive or UNC path: libuv looks a program given so up without the working directory or `PATH`. */
+const FULL_WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/;
+
+function hasNul(text: string): boolean {
+	return text.includes("\0");
+}
+
+/**
+ * On Windows, starts `file` (a full path) with `args` as `child_process.spawn(file, args, { ...options,
+ * windowsHide: true })` would, with the same command line and environment, but suspended and in a job of its own,
+ * which holds it before its first instruction and every process it starts after: {@link ContainedChildProcess.endTree}
+ * ends them through the job, by no process ID, also once `file` exited. A program that asks to leave the job cannot
+ * start. While the job is held, this process's exit ends them too; {@link ContainedChildProcess.releaseTree} lets them
+ * run on. Undefined elsewhere, with {@link HOST_SPAWN_ENV} set to `child-process`, without a native module that can
+ * contain it, for a `file` that is not a full path, and for a NUL in the input, which `child_process` refuses itself:
+ * the caller then starts it through `child_process`.
+ */
+export function spawnContainedProcess(
+	file: string,
+	args: readonly string[],
+	options: HostSpawnOptions = {},
+): ContainedChildProcess | undefined {
+	if (process.platform !== "win32" || process.env[HOST_SPAWN_ENV] === "child-process") return undefined;
+	if (!FULL_WINDOWS_PATH.test(file) || options.detached === true) return undefined;
+	const environment = options.env ?? process.env;
+	if (
+		[file, ...args, options.cwd ?? ""].some(hasNul) ||
+		Object.entries(environment).some(([key, value]) => hasNul(key) || (value !== undefined && hasNul(value)))
+	) {
+		return undefined;
+	}
+	const start = loadNativeStart();
+	if (start === null) return undefined;
+	try {
+		return new NativeChildProcess(start, file, args, options);
+	} catch (error) {
+		// A native module that cannot start one here (ENOSYS) or cannot contain it (ENOTSUP) ran nothing.
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOSYS" || code === "ENOTSUP") return undefined;
+		throw error;
+	}
+}
+
 /** Start failures `child_process` reports through an `error` event rather than by throwing, as libuv sorts them. */
 const ASYNC_SPAWN_ERRORS: ReadonlySet<string> = new Set(["EACCES", "EAGAIN", "EMFILE", "ENFILE", "ENOENT"]);
 
@@ -174,14 +225,32 @@ function spawnError(code: string, file: string, args: readonly string[]): NodeJS
 	return error;
 }
 
+/**
+ * The child's complete environment, as `child_process` takes it from `env`: on Windows, where names ignore case, only
+ * the first of the names that differ only in case, in sort order, and without it if its value is undefined.
+ */
 function environmentOf(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
 	const complete: Record<string, string> = {};
-	for (const [key, value] of Object.entries(env ?? process.env)) if (value !== undefined) complete[key] = value;
+	const source = env ?? process.env;
+	let keys = Object.keys(source);
+	if (process.platform === "win32") {
+		const seen = new Set<string>();
+		keys = keys.sort().filter((key) => {
+			const name = key.toUpperCase();
+			if (seen.has(name)) return false;
+			seen.add(name);
+			return true;
+		});
+	}
+	for (const key of keys) {
+		const value = source[key];
+		if (value !== undefined) complete[key] = value;
+	}
 	return complete;
 }
 
 /** A process started through the native module, with the events and streams `child_process` gives one. */
-class NativeChildProcess extends EventEmitter implements HostChildProcess {
+class NativeChildProcess extends EventEmitter implements ContainedChildProcess {
 	pid: number | undefined;
 	readonly stdin: Writable | null;
 	readonly stdout: Readable | null;
@@ -306,6 +375,14 @@ class NativeChildProcess extends EventEmitter implements HostChildProcess {
 		const sent = this.#process.kill(number, false);
 		if (sent) this.killed = true;
 		return sent;
+	}
+
+	endTree(): boolean {
+		return this.#process?.endTree() ?? false;
+	}
+
+	releaseTree(): void {
+		this.#process?.releaseTree();
 	}
 
 	ref(): void {

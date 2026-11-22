@@ -47,16 +47,22 @@ export declare class HostProcess {
   /**
    * Sends `signal` to the process, or to its process group when `group` is true. False once the process was
    * reaped, after its output ended and its exit was reported, as its ID may name another process by then, or when
-   * the signal could not be sent.
+   * the signal could not be sent. On Windows, as `child_process` there, `SIGINT`, `SIGQUIT`, `SIGKILL` and `SIGTERM`
+   * end the process itself, and false once it exited.
    */
   kill(signal: number, group: boolean): boolean
   /** Keeps the host's event loop alive until the process has ended, which is the default. */
   ref(): void
   /**
    * Says the host has handled the process's `close`, after which it never signals it again: the process is reaped
-   * once it has exited and this was called, or the handle was dropped.
+   * once it has exited and this was called, or the handle was dropped. On Windows nothing more of its output is
+   * read: this process's ends of its pipes close.
    */
   release(): void
+  /** Ends the process and every process in its job (Windows). False once the job was released, and elsewhere. */
+  endTree(): boolean
+  /** Lets the processes in its job run on (Windows): neither the job nor this process's exit ends them afterwards. */
+  releaseTree(): void
   /** Lets the host's event loop end while the process runs. */
   unref(): void
 }
@@ -583,6 +589,7 @@ export type HostObservation =
 export interface HostProcessEvent {
   kind: HostProcessEventKind
   data?: Buffer
+  /** The exit code; on Windows the process's whole 32-bit exit status, as `child_process` reports it. */
   code?: number
   signal?: number
   errno?: string
@@ -601,7 +608,7 @@ export interface HostProcessOptions {
   pipeStdin: boolean
   pipeStdout: boolean
   pipeStderr: boolean
-  /** Starts the process in a session of its own, as Node's `detached` does. */
+  /** Starts the process in a session of its own, as Node's `detached` does. Refused on Windows. */
   detached: boolean
   /**
    * Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
@@ -911,8 +918,9 @@ export declare function signalIgnored(signal: number): boolean | null
 
 /**
  * Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A
- * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. Off Linux it always
- * refuses with `ENOSYS`.
+ * failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. On Windows the
+ * process starts suspended in a job of its own, and a start that cannot put it there throws `ENOTSUP` before the
+ * program ran. Off Linux and Windows it always refuses with `ENOSYS`.
  */
 export declare function startHostProcess(options: HostProcessOptions, onEvent: (event: HostProcessEvent) => void): HostProcess
 

@@ -1,7 +1,8 @@
 //! Processes the host starts for its own work, such as the Git commands of worktree snapshots. On Linux they start
 //! without fork (see `crate::spawn`), so starting one costs the host's JavaScript thread the same at any memory size,
-//! and a thread of their own moves their input and output and reaps them. Elsewhere `startHostProcess` refuses, and
-//! the host starts them through Node's `child_process` as before.
+//! and a thread of their own moves their input and output and reaps them. On Windows a process starts suspended in a
+//! job of its own, which holds it and every process it starts until the host ends them or lets them go (see
+//! `windows`). Elsewhere `startHostProcess` refuses, and the host starts them through Node's `child_process` as before.
 use napi::bindgen_prelude::{Buffer, Unknown};
 use napi::threadsafe_function::ThreadsafeFunction;
 #[cfg(target_os = "linux")]
@@ -9,6 +10,13 @@ use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::{Env, Status};
 use napi_derive::napi;
 use std::collections::HashMap;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(windows)]
+use windows as platform;
 
 /// Delivers a process's events to the host, keeping its event loop alive until the process has ended.
 type EventCallback =
@@ -26,7 +34,7 @@ pub struct HostProcessOptions {
 	pub pipe_stdin: bool,
 	pub pipe_stdout: bool,
 	pub pipe_stderr: bool,
-	/// Starts the process in a session of its own, as Node's `detached` does.
+	/// Starts the process in a session of its own, as Node's `detached` does. Refused on Windows.
 	pub detached: bool,
 	/// Ends the process with `SIGKILL` when this process ends, however it ends; not the processes it starts. Not for a
 	/// detached process.
@@ -34,7 +42,7 @@ pub struct HostProcessOptions {
 }
 
 #[napi(string_enum = "kebab-case")]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostProcessEventKind {
 	Stdout,
 	StdoutEnd,
@@ -50,12 +58,13 @@ pub enum HostProcessEventKind {
 pub struct HostProcessEvent {
 	pub kind: HostProcessEventKind,
 	pub data: Option<Buffer>,
-	pub code: Option<i32>,
+	/// The exit code; on Windows the process's whole 32-bit exit status, as `child_process` reports it.
+	pub code: Option<i64>,
 	pub signal: Option<i32>,
 	pub errno: Option<String>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl HostProcessEvent {
 	fn of(kind: HostProcessEventKind) -> Self {
 		Self { kind, data: None, code: None, signal: None, errno: None }
@@ -66,8 +75,8 @@ impl HostProcessEvent {
 #[napi]
 pub struct HostProcess {
 	pid: u32,
-	#[cfg(target_os = "linux")]
-	shared: std::sync::Arc<linux::Shared>,
+	#[cfg(any(target_os = "linux", windows))]
+	shared: std::sync::Arc<platform::Shared>,
 }
 
 #[napi]
@@ -81,9 +90,9 @@ impl HostProcess {
 	/// the process's output thread finished.
 	#[napi]
 	pub fn write(&self, chunk: Buffer) -> bool {
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", windows))]
 		return self.shared.write(chunk.to_vec());
-		#[cfg(not(target_os = "linux"))]
+		#[cfg(not(any(target_os = "linux", windows)))]
 		{
 			let _ = chunk;
 			false
@@ -93,18 +102,19 @@ impl HostProcess {
 	/// Closes standard input once everything queued was written.
 	#[napi]
 	pub fn end(&self) {
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", windows))]
 		self.shared.end();
 	}
 
 	/// Sends `signal` to the process, or to its process group when `group` is true. False once the process was
 	/// reaped, after its output ended and its exit was reported, as its ID may name another process by then, or when
-	/// the signal could not be sent.
+	/// the signal could not be sent. On Windows, as `child_process` there, `SIGINT`, `SIGQUIT`, `SIGKILL` and `SIGTERM`
+	/// end the process itself, and false once it exited.
 	#[napi]
 	pub fn kill(&self, signal: i32, group: bool) -> bool {
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", windows))]
 		return self.shared.kill(signal, group);
-		#[cfg(not(target_os = "linux"))]
+		#[cfg(not(any(target_os = "linux", windows)))]
 		{
 			let _ = (signal, group);
 			false
@@ -114,9 +124,9 @@ impl HostProcess {
 	/// Keeps the host's event loop alive until the process has ended, which is the default.
 	#[napi(js_name = "ref")]
 	pub fn refer(&self, env: Env) -> napi::Result<()> {
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", windows))]
 		return self.shared.refer(&env, true);
-		#[cfg(not(target_os = "linux"))]
+		#[cfg(not(any(target_os = "linux", windows)))]
 		{
 			let _ = env;
 			Ok(())
@@ -124,19 +134,36 @@ impl HostProcess {
 	}
 
 	/// Says the host has handled the process's `close`, after which it never signals it again: the process is reaped
-	/// once it has exited and this was called, or the handle was dropped.
+	/// once it has exited and this was called, or the handle was dropped. On Windows nothing more of its output is
+	/// read: this process's ends of its pipes close.
 	#[napi]
 	pub fn release(&self) {
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", windows))]
 		self.shared.release_by_host();
+	}
+
+	/// Ends the process and every process in its job (Windows). False once the job was released, and elsewhere.
+	#[napi(js_name = "endTree")]
+	pub fn end_tree(&self) -> bool {
+		#[cfg(windows)]
+		return self.shared.end_tree();
+		#[cfg(not(windows))]
+		false
+	}
+
+	/// Lets the processes in its job run on (Windows): neither the job nor this process's exit ends them afterwards.
+	#[napi(js_name = "releaseTree")]
+	pub fn release_tree(&self) {
+		#[cfg(windows)]
+		self.shared.release_tree();
 	}
 
 	/// Lets the host's event loop end while the process runs.
 	#[napi]
 	pub fn unref(&self, env: Env) -> napi::Result<()> {
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", windows))]
 		return self.shared.refer(&env, false);
-		#[cfg(not(target_os = "linux"))]
+		#[cfg(not(any(target_os = "linux", windows)))]
 		{
 			let _ = env;
 			Ok(())
@@ -144,7 +171,7 @@ impl HostProcess {
 	}
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Drop for HostProcess {
 	fn drop(&mut self) {
 		self.shared.release_by_host();
@@ -152,16 +179,17 @@ impl Drop for HostProcess {
 }
 
 /// Starts `options.file`, delivering its output, its end and its exit to `on_event` in the order they happened. A
-/// failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. Off Linux it always
-/// refuses with `ENOSYS`.
+/// failure to start it throws with the errno name (`ENOENT`, `EACCES`, ...) as the error's code. On Windows the
+/// process starts suspended in a job of its own, and a start that cannot put it there throws `ENOTSUP` before the
+/// program ran. Off Linux and Windows it always refuses with `ENOSYS`.
 #[napi(js_name = "startHostProcess")]
 pub fn start_host_process(
 	options: HostProcessOptions,
 	#[napi(ts_arg_type = "(event: HostProcessEvent) => void")] on_event: EventCallback,
 ) -> napi::Result<HostProcess, String> {
-	#[cfg(target_os = "linux")]
-	return linux::start(options, on_event);
-	#[cfg(not(target_os = "linux"))]
+	#[cfg(any(target_os = "linux", windows))]
+	return platform::start(options, on_event);
+	#[cfg(not(any(target_os = "linux", windows)))]
 	{
 		let _ = (options, on_event);
 		Err(napi::Error::new("ENOSYS".to_string(), "host processes start through child_process here"))
@@ -325,7 +353,7 @@ mod linux {
 		}
 		fn emit_exit(&self, status: ExitStatus) {
 			self.emit(HostProcessEvent {
-				code: status.code,
+				code: status.code.map(i64::from),
 				signal: status.signal,
 				..HostProcessEvent::of(HostProcessEventKind::Exit)
 			});

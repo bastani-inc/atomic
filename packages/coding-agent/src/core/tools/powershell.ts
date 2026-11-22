@@ -1,13 +1,7 @@
 import { win32 } from "node:path";
 import { APP_NAME } from "../../config.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
-import {
-	getPowerShellConfigAsync,
-	getShellEnvAsync,
-	killProcessTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-} from "../../utils/shell.ts";
+import { getPowerShellConfigAsync, getShellEnvAsync, spawnShellProcess } from "../../utils/shell.ts";
 import {
 	type BashOperations,
 	type BashSpawnContext,
@@ -79,25 +73,22 @@ export function createLocalPowerShellOperations(binding?: {
 					? executeSupervisedCommand(encoded, cwd, execution, pty)
 					: executeNativePty(encoded, cwd, execution);
 			}
-			const { spawn } = await import("node:child_process");
 			const shellEnv = options.env ?? (await getShellEnvAsync());
 			if (options.signal?.aborted) throw new Error("aborted");
-			const child = spawn(shell, [...args, script], {
+			const shellProcess = spawnShellProcess(shell, [...args, script], {
 				cwd,
 				env: createChildProcessEnvironment(undefined, shellEnv),
-				windowsHide: true,
+				stdin: "pipe",
 			});
-			if (child.pid) trackDetachedChildPid(child.pid);
+			const { child } = shellProcess;
 			let timedOut = false;
 			let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
-			};
+			const onAbort = () => shellProcess.stop();
 			try {
 				if (options.timeout !== undefined && options.timeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
+						shellProcess.stop();
 					}, options.timeout * 1000);
 				}
 				child.stdout?.on("data", (data: Buffer) => options.onData(data, "stdout"));
@@ -111,7 +102,7 @@ export function createLocalPowerShellOperations(binding?: {
 				if (timedOut) throw new Error(`timeout:${options.timeout}`);
 				return { exitCode };
 			} finally {
-				if (child.pid) untrackDetachedChildPid(child.pid);
+				shellProcess.finish();
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				options.signal?.removeEventListener("abort", onAbort);
 			}

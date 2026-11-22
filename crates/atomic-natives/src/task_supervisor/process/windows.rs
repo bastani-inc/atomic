@@ -29,9 +29,9 @@ use windows_sys::Win32::{
 	},
 };
 
-pub(super) struct ContainmentJob(OwnedHandle);
+pub(crate) struct ContainmentJob(OwnedHandle);
 impl ContainmentJob {
-	pub(super) fn create() -> io::Result<Self> {
+	pub(crate) fn create() -> io::Result<Self> {
 		let job = unsafe { CreateJobObjectW(null(), null()) };
 		if job.is_null() {
 			return Err(io::Error::last_os_error());
@@ -56,10 +56,10 @@ impl ContainmentJob {
 		}
 		Ok(())
 	}
-	pub(super) fn release(self) -> io::Result<()> {
+	pub(crate) fn release(self) -> io::Result<()> {
 		self.limit(0)
 	}
-	pub(super) fn assign(&self, process: HANDLE) -> io::Result<()> {
+	pub(crate) fn assign(&self, process: HANDLE) -> io::Result<()> {
 		if unsafe { AssignProcessToJobObject(raw(&self.0), process) } == 0 {
 			Err(io::Error::last_os_error())
 		} else {
@@ -82,7 +82,7 @@ impl ContainmentJob {
 		}
 		Ok(info.ActiveProcesses)
 	}
-	pub(super) fn terminate(&self) -> io::Result<()> {
+	pub(crate) fn terminate(&self) -> io::Result<()> {
 		if unsafe { TerminateJobObject(raw(&self.0), 1) } == 0 {
 			Err(io::Error::last_os_error())
 		} else {
@@ -218,7 +218,7 @@ pub(super) fn poll_failed_windows() {
 		}
 	});
 }
-pub(super) fn pipe() -> io::Result<(File, File)> {
+pub(crate) fn pipe() -> io::Result<(File, File)> {
 	let mut read = null_mut();
 	let mut write = null_mut();
 	let attributes = SECURITY_ATTRIBUTES {

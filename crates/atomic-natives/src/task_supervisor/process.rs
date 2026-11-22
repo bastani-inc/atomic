@@ -23,6 +23,8 @@ mod spool;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub(crate) use windows::{ContainmentJob, pipe as windows_pipe};
+#[cfg(windows)]
 mod windows_command;
 #[cfg(windows)]
 mod windows_pty;
