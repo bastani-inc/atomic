@@ -43,10 +43,16 @@ const RUNTIMES = [
 interface ChildReport {
 	readonly started: boolean;
 	readonly created: readonly string[];
-	/** The longest the fixture's event loop went without a turn around its brief block, by the fixture's own timer. */
-	readonly briefBlockGapMs: number;
-	/** The longest the fixture's event loop went without a turn in the session phase, by the fixture's own timer. */
-	readonly sessionGapMs: number;
+	/**
+	 * The longest two gaps in a row between the fixture's event loop turns around its brief block, by its own timer: the
+	 * longest any timer of the monitor's can have seen there.
+	 */
+	readonly briefBlockGapsMs: number;
+	/**
+	 * The longest two gaps in a row between the fixture's event loop turns in the session phase, by its own timer: the
+	 * longest any timer of the monitor's can have seen there.
+	 */
+	readonly sessionGapsMs: number;
 }
 
 interface LogRecord {
@@ -140,7 +146,7 @@ for (const runtime of RUNTIMES) {
 				);
 				// A loaded machine's scheduler can hold the loop past the threshold while the brief block runs, and the monitor
 				// then rightly records it: the brief block is never recorded when the loop turned in time.
-				if ((report?.briefBlockGapMs ?? Number.POSITIVE_INFINITY) < THRESHOLD_MS)
+				if ((report?.briefBlockGapsMs ?? Number.POSITIVE_INFINITY) < THRESHOLD_MS)
 					assert.deepEqual(blocksNaming(records, "holdTheEventLoopBriefly"), []);
 
 				const delays = records.filter((record) => record.type === "delay");
@@ -152,8 +158,8 @@ for (const runtime of RUNTIMES) {
 				assert.ok((startup?.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup?.maxMs} ms`);
 				assert.ok((session?.ticks ?? 0) > 0);
 				assert.ok(
-					(session?.maxMs ?? Infinity) <= (report?.sessionGapMs ?? 0) + SESSION_DELAY_SLACK_MS,
-					`session max ${session?.maxMs} ms, the fixture's longest gap ${report?.sessionGapMs} ms`,
+					(session?.maxMs ?? Infinity) <= (report?.sessionGapsMs ?? 0) + SESSION_DELAY_SLACK_MS,
+					`session max ${session?.maxMs} ms, the fixture's longest two gaps ${report?.sessionGapsMs} ms`,
 				);
 				assert.doesNotMatch(stderr, /debugger/i);
 			},
@@ -183,8 +189,8 @@ for (const runtime of RUNTIMES) {
 				);
 				assert.ok((startup.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup.maxMs} ms`);
 				assert.ok(
-					(session.maxMs ?? Infinity) <= (report?.sessionGapMs ?? 0) + SESSION_DELAY_SLACK_MS,
-					`session max ${session.maxMs} ms, the fixture's longest gap ${report?.sessionGapMs} ms`,
+					(session.maxMs ?? Infinity) <= (report?.sessionGapsMs ?? 0) + SESSION_DELAY_SLACK_MS,
+					`session max ${session.maxMs} ms, the fixture's longest two gaps ${report?.sessionGapsMs} ms`,
 				);
 			},
 			CHILD_TEST_TIMEOUT_MS,

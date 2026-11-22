@@ -37,22 +37,37 @@ async function settle(ms: number): Promise<void> {
 	for (let turn = 0; turn < SETTLE_TURNS || performance.now() < until; turn++) await delay(TURN_MS);
 }
 
-/**
- * Watches the event loop's turns with a timer of its own. `stop` returns the longest it went without a turn: what a
- * block lasted, whether the code that ran or the machine's scheduler held the loop.
- */
-function watchTurns(): { stop(): number } {
+/** How long the event loop went without a turn, as a timer of the fixture's own saw it. */
+interface Turns {
+	/** The longest gap between two turns: what a block lasted, whether code that ran or the scheduler held the loop. */
+	readonly longestGapMs: number;
+	/**
+	 * The longest two gaps in a row. A timer of the monitor's that runs later in a turn than this one also counts the
+	 * work done after this one in that turn, which this one counts in its next gap.
+	 */
+	readonly longestTwoGapsMs: number;
+}
+
+/** Watches the event loop's turns with a timer of its own until `stop`. */
+function watchTurns(): { stop(): Turns } {
 	let last = performance.now();
-	let longest = 0;
-	const timer = setInterval(() => {
+	let previousGap = 0;
+	let longestGapMs = 0;
+	let longestTwoGapsMs = 0;
+	const turn = () => {
 		const now = performance.now();
-		longest = Math.max(longest, now - last);
+		const gap = now - last;
+		longestGapMs = Math.max(longestGapMs, gap);
+		longestTwoGapsMs = Math.max(longestTwoGapsMs, previousGap + gap);
+		previousGap = gap;
 		last = now;
-	}, 5);
+	};
+	const timer = setInterval(turn, 5);
 	return {
 		stop: () => {
 			clearInterval(timer);
-			return Math.max(longest, performance.now() - last);
+			turn();
+			return { longestGapMs, longestTwoGapsMs };
 		},
 	};
 }
@@ -63,12 +78,15 @@ hook?.enable();
 const started = startEventLoopMonitor("host");
 hook?.disable();
 
-let sessionTurns: { stop(): number } | undefined;
-/** Ends the startup phase once, and from then on times the session phase's turns. */
+let sessionTurns: { stop(): Turns } | undefined;
+/**
+ * Ends the startup phase once, and times the session phase's turns from just before: the monitor's own work as the phase
+ * changes, such as reading the samples of a block that just ended, holds the loop in the new phase.
+ */
 function startSession(): void {
 	if (sessionTurns) return;
-	markEventLoopStartupComplete();
 	sessionTurns = watchTurns();
+	markEventLoopStartupComplete();
 }
 
 await settle(Number(settleMs));
@@ -90,13 +108,15 @@ if (mode === "anonymous") {
 	});
 }
 await settle(Number(settleMs));
+// Watched from a wait before it: the monitor's own timer can last have run turns before the brief block.
 const aroundBriefBlock = watchTurns();
+await settle(Number(settleMs));
 holdTheEventLoopBriefly(Number(shortBlockMs));
 await settle(Number(settleMs));
-const briefBlockGapMs = aroundBriefBlock.stop();
+const briefBlockGapsMs = aroundBriefBlock.stop().longestTwoGapsMs;
 startSession();
 await settle(Number(settleMs));
-const sessionGapMs = sessionTurns?.stop();
+const sessionGapsMs = sessionTurns?.stop().longestTwoGapsMs;
 markEventLoopShutdown();
 await settle(Number(settleMs));
-console.log(JSON.stringify({ started, created, briefBlockGapMs, sessionGapMs }));
+console.log(JSON.stringify({ started, created, briefBlockGapsMs, sessionGapsMs }));
