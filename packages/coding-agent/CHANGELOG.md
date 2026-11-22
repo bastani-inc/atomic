@@ -20,6 +20,7 @@
 - On Windows, MCP server shutdown and process-tree kill commands now validate their working directory through canonical path resolution and explicit drive-root handling, so `taskkill.exe` never runs inside the project folder even when `SystemRoot` or `windir` points to a junction, `subst` drive, extended-length alias, bare drive, or directory inside the project.
 - Fixed `/tasks` on the isolated host so cancelling or failing a subagent open with `Esc` never leaves a speculative agent-panel preview painted or lands the next `/tasks` on the cancelled subagent, while staying compatible with older hosts and engines across in-place updates.
 - Inside a Herdr pane, a session status update that arrives just as the previous Herdr report finishes is now sent right away instead of leaving Herdr showing the older status until the next activity event.
+- Restored interrupted running subagents in `/tasks` and the agent panel automatically after an isolated-engine crash without showing user-facing resume prompts or replaying interrupted deliveries.
 
 ## [0.10.4] - 2026-11-22
 
