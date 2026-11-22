@@ -72,8 +72,11 @@ describe("execCommand", () => {
 	] as const)(
 		"keeps complete UTF-8 characters from %s output %s capped at %i bytes",
 		async (stream, output, maxBuffer, expected) => {
-			const script = `process.${stream}.write(${JSON.stringify(output)})`;
-			const result = await execCommand(process.execPath, ["-e", script], process.cwd(), { maxBuffer });
+			const script =
+				'const [stream, text] = process.argv.slice(1); (stream === "stdout" ? process.stdout : process.stderr).write(text);';
+			const result = await execCommand(process.execPath, ["-e", script, "--", stream, output], process.cwd(), {
+				maxBuffer,
+			});
 
 			expect(result).toMatchObject({ [stream]: expected, truncated: true, killed: true });
 			expect(result.code).not.toBe(0);
