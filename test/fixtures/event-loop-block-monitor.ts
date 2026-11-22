@@ -27,18 +27,28 @@ function holdTheEventLoopBriefly(ms: number): number {
 	return spins;
 }
 
+/** Turns of the event loop each wait spans at least, so each phase's delay histogram samples it however busy the machine is. */
+const SETTLE_TURNS = 5;
+const TURN_MS = 20;
+
+/** Waits `ms`, and for at least {@link SETTLE_TURNS} turns of the event loop. */
+async function settle(ms: number): Promise<void> {
+	const until = performance.now() + ms;
+	for (let turn = 0; turn < SETTLE_TURNS || performance.now() < until; turn++) await delay(TURN_MS);
+}
+
 const created: string[] = [];
 const hook = process.versions.bun ? undefined : createHook({ init: (_id, type) => created.push(type) });
 hook?.enable();
 const started = startEventLoopMonitor("host");
 hook?.disable();
 
-await delay(Number(settleMs));
+await settle(Number(settleMs));
 holdTheEventLoopForLong(Number(longBlockMs));
 if (mode === "exit-inside-block") process.exit(0);
 if (mode === "phase-inside-block") markEventLoopStartupComplete();
 if (mode === "anonymous") {
-	await delay(Number(settleMs));
+	await settle(Number(settleMs));
 	// An anonymous function holds the loop across several statements, so its samples land on different lines.
 	runAnonymousBlock(() => {
 		const until = performance.now() + Number(longBlockMs);
@@ -51,11 +61,11 @@ if (mode === "anonymous") {
 		return spins;
 	});
 }
-await delay(Number(settleMs));
+await settle(Number(settleMs));
 holdTheEventLoopBriefly(Number(shortBlockMs));
-await delay(Number(settleMs));
+await settle(Number(settleMs));
 markEventLoopStartupComplete();
-await delay(Number(settleMs));
+await settle(Number(settleMs));
 markEventLoopShutdown();
-await delay(Number(settleMs));
+await settle(Number(settleMs));
 console.log(JSON.stringify({ started, created }));
