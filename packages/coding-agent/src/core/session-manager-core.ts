@@ -48,6 +48,8 @@ import type {
 	BranchSummaryEntry,
 	ContextEditEntry,
 	FileEntry,
+	LatestBranchSetting,
+	LatestBranchSettings,
 	ModelChangeEntry,
 	ModelFallbackRecord,
 	NewSessionOptions,
@@ -141,6 +143,7 @@ import type {
 	SessionRecordHeader,
 	SessionRecoveryState,
 	SessionResume,
+	SessionResumeRetainedSetting,
 	SessionSnapshot,
 	SessionStore,
 	SessionStoredEntry,
@@ -383,6 +386,50 @@ export function physicalForkHeader(manager: SessionManager): SessionHeader | und
 	return typeof read === "function" ? read.call(manager) : undefined;
 }
 
+/** Whether `branch` is a gap-free active path all the way from a root entry (`parentId === null`) to `leafId`. */
+function isRootCompleteBranch(branch: readonly SessionEntry[], leafId: string | null): boolean {
+	if (leafId === null || branch.length === 0) return false;
+	if (branch[0]!.parentId !== null || branch.at(-1)!.id !== leafId) return false;
+	for (let index = 1; index < branch.length; index++) {
+		if (branch[index]!.parentId !== branch[index - 1]!.id) return false;
+	}
+	return true;
+}
+
+/**
+ * Lowest sequence position from which a reopened manager can vouch for one setting axis (`model_change` or
+ * `thinking_level_change`): `1` means the entire active branch is covered (either via full history, confirmed absence,
+ * or a verified retained setting before the window); `tailFrom` covers the contiguous active-branch tail; `lastSeq + 1`
+ * fails closed when the store explicitly reports `not-held` or contradicts the returned entries.
+ */
+function vouchedFromForResumeAxis(
+	entryType: "model_change" | "thinking_level_change",
+	retained: SessionResumeRetainedSetting | undefined,
+	path: readonly SessionStoredEntry[],
+	leafId: string | null,
+	hasFullHistory: boolean,
+	lastSeq: number,
+	tailFrom: number,
+): number {
+	if (leafId === null) return 1;
+	if (hasFullHistory && retained?.status !== "not-held") return 1;
+	if (retained === undefined) return tailFrom;
+	if (retained.status === "not-held") return lastSeq + 1;
+	if (retained.status === "none") {
+		return path.some(({ entry }) => entry.type === entryType) ? lastSeq + 1 : 1;
+	}
+	const { seq } = retained;
+	if (!Number.isSafeInteger(seq) || seq < 1 || seq > lastSeq) return lastSeq + 1;
+	let matched = false;
+	for (const held of path) {
+		if (held.entry.type !== entryType) continue;
+		if (held.seq > seq) return lastSeq + 1;
+		if (held.seq === seq) matched = true;
+	}
+	if (!matched) return lastSeq + 1;
+	return seq < tailFrom ? 1 : tailFrom;
+}
+
 /** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {
 	private sessionId = "";
@@ -418,6 +465,7 @@ export class SessionManager {
 
 	private historyStartSeq = 1;
 	private answerWindowStart = 1;
+	private branchSettingsVouchedFrom: { model: number; thinkingLevel: number } = { model: 1, thinkingLevel: 1 };
 	private priorAnswer?: AssistantAnswer;
 	private childArchive = new ChildCatalog();
 	private archiveOnlyEpoch = false;
@@ -520,6 +568,27 @@ export class SessionManager {
 		const path = [...state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
 		this.leafId = resume.leafId;
+		const tailFrom = this.hasFullHistory() ? 1 : (resume.branch[0]?.seq ?? resume.lastSeq + 1);
+		this.branchSettingsVouchedFrom = {
+			model: vouchedFromForResumeAxis(
+				"model_change",
+				resume.retainedSettings?.model,
+				path,
+				resume.leafId,
+				this.hasFullHistory(),
+				resume.lastSeq,
+				tailFrom,
+			),
+			thinkingLevel: vouchedFromForResumeAxis(
+				"thinking_level_change",
+				resume.retainedSettings?.thinkingLevel,
+				path,
+				resume.leafId,
+				this.hasFullHistory(),
+				resume.lastSeq,
+				tailFrom,
+			),
+		};
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
 
@@ -543,6 +612,7 @@ export class SessionManager {
 		this.appendHalt = undefined;
 		this.historyStartSeq = partial?.fromSeq ?? 1;
 		this.answerWindowStart = 1;
+		this.branchSettingsVouchedFrom = { model: 1, thinkingLevel: 1 };
 		this.priorAnswer = undefined;
 		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
@@ -638,6 +708,7 @@ export class SessionManager {
 		this.fileEntries = [this.fileEntries[0]!, ...ordered.map(([, entry]) => entry)];
 		this.entrySeqs = new Map(ordered.map(([seq, entry]) => [entry.id, seq]));
 		this.historyStartSeq = 1;
+		this.branchSettingsVouchedFrom = { model: 1, thinkingLevel: 1 };
 		this.omittedTotals = undefined;
 		this.branchLinks = undefined;
 		this._buildIndex();
@@ -868,28 +939,53 @@ export class SessionManager {
 
 	/**
 	 * @internal The latest model change and the latest thinking-level change on the active branch after position
-	 * `afterSeq`, each with its position; one the branch has none of after it is absent. Answered from memory, never
-	 * from the store. A session holding only part of its history still holds both: the resume plan that opened it, and
-	 * each compaction that released an earlier window, keep the latest of each on the active branch (the `setting:`
-	 * state of the resume index). A subagent's restore relies on that to continue on the model and level it last ran.
+	 * `afterSeq`, each reported as `"found"` (with its entry and position), `"none"` (confirmed absent after `afterSeq`),
+	 * or `"not-held"` (partial history or an unvouched resume plan omitted entries that could carry a change after
+	 * `afterSeq`). Answered from memory, never from the store. A session opened through Atomic's resume plan retains
+	 * both axes (`setting:` state + `SessionResume.retainedSettings`), so normal full and tail resumes never report
+	 * `"not-held"`.
 	 */
-	getLatestBranchSettings(afterSeq = 0): {
-		readonly model?: { readonly entry: ModelChangeEntry; readonly seq: number };
-		readonly thinkingLevel?: { readonly entry: ThinkingLevelChangeEntry; readonly seq: number };
-	} {
-		let model: { readonly entry: ModelChangeEntry; readonly seq: number } | undefined;
-		let thinkingLevel: { readonly entry: ThinkingLevelChangeEntry; readonly seq: number } | undefined;
+	getLatestBranchSettings(afterSeq = 0): LatestBranchSettings {
+		if (this.leafId === null) {
+			return { model: { status: "none" }, thinkingLevel: { status: "none" } };
+		}
 		const branch = this.getBranch();
+		const leafSeq = this.entrySeqs.get(this.leafId);
+		const needsRootCheck =
+			this.branchSettingsVouchedFrom.model > 1 || this.branchSettingsVouchedFrom.thinkingLevel > 1;
+		const rootComplete = needsRootCheck && isRootCompleteBranch(branch, this.leafId);
+		let modelEntry: { readonly entry: ModelChangeEntry; readonly seq: number } | undefined;
+		let thinkingEntry: { readonly entry: ThinkingLevelChangeEntry; readonly seq: number } | undefined;
 		// Positions grow along a branch: walking it back from the leaf, the first of each kind is its latest.
-		for (let index = branch.length - 1; index >= 0 && (model === undefined || thinkingLevel === undefined); index--) {
+		for (
+			let index = branch.length - 1;
+			index >= 0 && (modelEntry === undefined || thinkingEntry === undefined);
+			index--
+		) {
 			const entry = branch[index]!;
 			const seq = this.entrySeqs.get(entry.id);
 			if (seq === undefined) continue;
 			if (seq <= afterSeq) break;
-			if (entry.type === "model_change") model ??= { entry, seq };
-			else if (entry.type === "thinking_level_change") thinkingLevel ??= { entry, seq };
+			if (entry.type === "model_change") modelEntry ??= { entry, seq };
+			else if (entry.type === "thinking_level_change") thinkingEntry ??= { entry, seq };
 		}
-		return { ...(model ? { model } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) };
+		const classify = <T extends SessionEntry>(
+			found: { readonly entry: T; readonly seq: number } | undefined,
+			vouchedFrom: number,
+		): LatestBranchSetting<T> => {
+			if (found !== undefined) {
+				return found.seq >= vouchedFrom || rootComplete
+					? { status: "found", entry: found.entry, seq: found.seq }
+					: { status: "not-held" };
+			}
+			if (leafSeq !== undefined && afterSeq >= leafSeq) return { status: "none" };
+			if (vouchedFrom <= 1 || afterSeq + 1 >= vouchedFrom || rootComplete) return { status: "none" };
+			return { status: "not-held" };
+		};
+		return {
+			model: classify(modelEntry, this.branchSettingsVouchedFrom.model),
+			thinkingLevel: classify(thinkingEntry, this.branchSettingsVouchedFrom.thinkingLevel),
+		};
 	}
 
 	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
@@ -940,6 +1036,7 @@ export class SessionManager {
 		this.childArchive = new ChildCatalog();
 		this.historyStartSeq = 1;
 		this.answerWindowStart = 1;
+		this.branchSettingsVouchedFrom = { model: 1, thinkingLevel: 1 };
 		this.priorAnswer = undefined;
 		this.omittedTotals = undefined;
 		this.branchLinks = undefined;
@@ -1355,6 +1452,28 @@ export class SessionManager {
 		this.priorAnswer = retiringAnswer ?? this.priorAnswer;
 		this.answerWindowStart = start;
 		const path = current.filter((entry) => keep.has(entry.id));
+		const rootComplete = isRootCompleteBranch(current, leaf);
+		const updateVouched = (entryType: "model_change" | "thinking_level_change", previous: number): number => {
+			const effectivePrev = rootComplete ? 1 : previous;
+			let latestSeq = 0;
+			for (let index = current.length - 1; index >= 0; index--) {
+				const entry = current[index]!;
+				if (entry.type !== entryType) continue;
+				const seq = this.entrySeqs.get(entry.id);
+				if (seq !== undefined && seq >= effectivePrev) {
+					latestSeq = seq;
+					break;
+				}
+			}
+			if (latestSeq > 0 && !path.some((entry) => this.entrySeqs.get(entry.id) === latestSeq)) {
+				return this.lastSeq + 1;
+			}
+			return latestSeq >= start ? Math.max(effectivePrev, start) : effectivePrev;
+		};
+		const nextBranchSettingsVouchedFrom = {
+			model: updateVouched("model_change", this.branchSettingsVouchedFrom.model),
+			thinkingLevel: updateVouched("thinking_level_change", this.branchSettingsVouchedFrom.thinkingLevel),
+		};
 		const retained: FileEntry[] = [this.fileEntries[0]!];
 		let totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
 		for (const [i, entry] of entries.entries()) {
@@ -1380,6 +1499,7 @@ export class SessionManager {
 		if (keep.size < this.lastSeq) {
 			this.historyStartSeq = Math.max(2, start);
 			this.omittedTotals = totals;
+			this.branchSettingsVouchedFrom = nextBranchSettingsVouchedFrom;
 		}
 		this.branchLinks = new Map(path.slice(1).map((entry, i) => [entry.id, path[i]!.id]));
 		this._buildIndex();

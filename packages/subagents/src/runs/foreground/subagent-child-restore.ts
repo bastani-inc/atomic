@@ -10,9 +10,12 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
+	type HostDiagnostic,
 	isRetryableStorageError,
 	isStaleExtensionContextError,
+	type LatestBranchSetting,
 	mapRestoredPathAsync,
+	reportDebugAsync,
 	type SessionEntry,
 	type SessionManager,
 	SettingsManager,
@@ -414,11 +417,54 @@ function recordTime(entry: { readonly timestamp: string }): number | undefined {
 	return Number.isNaN(at) ? undefined : at;
 }
 
+const BUILTIN_DIAGNOSTIC_CONTEXT_KEY = Symbol.for("atomic.builtin-diagnostic-context.v1");
+type BuiltinDiagnosticReporter = (diagnostic: Omit<HostDiagnostic, "sessionId">) => void;
+
+type LegacyBranchSetting<T extends SessionEntry> = { readonly entry: T; readonly seq: number } | undefined;
+
+function normalizeBranchSetting<T extends SessionEntry>(
+	value: LatestBranchSetting<T> | LegacyBranchSetting<T>,
+): LatestBranchSetting<T> {
+	if (value === undefined) return { status: "none" };
+	if ("status" in value) return value;
+	return { status: "found", entry: value.entry, seq: value.seq };
+}
+
+function reportSettingsNotHeldDiagnostic(
+	record: SubagentChildRecord,
+	sessionManager: SessionManager,
+	launchSeq: number,
+	notHeldAxes: readonly ("model" | "thinking level")[],
+): void {
+	const message = `Restored subagent ${record.childId} could not confirm post-launch ${notHeldAxes.join(" and ")} changes from partial session history; keeping launch settings.`;
+	const host = globalThis as typeof globalThis & {
+		[BUILTIN_DIAGNOSTIC_CONTEXT_KEY]?: { getStore(): BuiltinDiagnosticReporter | undefined };
+	};
+	const report = host[BUILTIN_DIAGNOSTIC_CONTEXT_KEY]?.getStore();
+	let delivered = false;
+	if (report) {
+		try {
+			report({ level: "warning", source: "subagents", message });
+			delivered = true;
+		} catch {
+			// A failing diagnostic listener must never abort subagent restoration.
+		}
+	}
+	if (!delivered) console.warn(`atomic-subagents: ${message}`);
+	void reportDebugAsync("storage", "subagent-restore-settings-not-held", {
+		childId: record.childId,
+		childSessionId: sessionManager.getSessionId(),
+		launchSeq,
+		axes: [...notHeldAxes],
+	});
+}
+
 /**
  * The latest model and thinking level the child's own session changed to after its launch, each on its own. They are
  * read from memory, never from the session's saved history: a session that holds only part of its history still holds
- * the latest change of each on its branch, which is what `getLatestBranchSettings` answers. A session without it
- * (an SDK caller's) is searched from its launch on, as it holds it.
+ * the latest change of each on its branch when its resume vouches for it, which `getLatestBranchSettings` reports as
+ * `found | none | not-held` per axis. On `not-held`, the restore keeps the launch record's settings for that axis and
+ * emits a diagnostic. A session without `getLatestBranchSettings` (an SDK caller's) is searched from its launch on.
  */
 async function settingsChangedSinceLaunch(
 	sessionManager: SessionManager,
@@ -431,10 +477,18 @@ async function settingsChangedSinceLaunch(
 	) {
 		const launchSeq = await launchSeqOf(sessionManager, record);
 		if (launchSeq !== undefined) {
-			const { model, thinkingLevel } = sessionManager.getLatestBranchSettings(launchSeq);
+			const raw = sessionManager.getLatestBranchSettings(launchSeq);
+			const model = normalizeBranchSetting(raw.model);
+			const thinkingLevel = normalizeBranchSetting(raw.thinkingLevel);
+			const notHeldAxes: ("model" | "thinking level")[] = [];
+			if (model.status === "not-held") notHeldAxes.push("model");
+			if (thinkingLevel.status === "not-held") notHeldAxes.push("thinking level");
+			if (notHeldAxes.length > 0) {
+				reportSettingsNotHeldDiagnostic(record, sessionManager, launchSeq, notHeldAxes);
+			}
 			return {
-				...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
-				...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+				...(model.status === "found" ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+				...(thinkingLevel.status === "found" ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
 			};
 		}
 		const branch = sessionManager.getBranch();

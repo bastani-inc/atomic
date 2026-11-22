@@ -480,9 +480,14 @@ function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<vo
 function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
 	if (typeof sessionManager.getLatestBranchSettings === "function") {
 		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
+		const foundModel =
+			model !== undefined && ("status" in model ? (model.status === "found" ? model : undefined) : model);
+		const foundThinking =
+			thinkingLevel !== undefined &&
+			("status" in thinkingLevel ? (thinkingLevel.status === "found" ? thinkingLevel : undefined) : thinkingLevel);
 		return {
-			...(model ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
-			...(thinkingLevel ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+			...(foundModel ? { model: `${foundModel.entry.provider}/${foundModel.entry.modelId}` } : {}),
+			...(foundThinking ? { thinking: foundThinking.entry.thinkingLevel } : {}),
 		};
 	}
 	const context = sessionManager.buildSessionContext();

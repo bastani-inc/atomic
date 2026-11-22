@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `SessionResume` now carries optional per-axis `retainedSettings` provenance (`"held"`, `"none"`, or `"not-held"`) for the active branch's latest model and thinking-level changes, allowing partial-history sessions to distinguish confirmed absence from unretained pre-window settings without additional store reads.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

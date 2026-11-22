@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restoring a background subagent whose partial session history did not retain its latest model or thinking-level change (for example from a custom session store or after an in-window branch rewind) now keeps the launch record's setting for the omitted axis and emits a warning diagnostic instead of silently treating that axis as unchanged after launch. Full resumes and Atomic's built-in session stores behave as before.
+
 ## [0.10.4] - 2026-11-22
 
 ### Changed
