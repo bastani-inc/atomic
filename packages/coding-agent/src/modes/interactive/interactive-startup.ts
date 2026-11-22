@@ -11,6 +11,7 @@ import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
 import { shortenHomePath } from "../../utils/paths.ts";
+import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-view.js";
 import { engineHeapRuntimeArgsForHost } from "../interactive-engine/engine-heap.ts";
@@ -56,6 +57,7 @@ import {
 	getPiUserAgent,
 	isInstallTelemetryEnabled,
 	type MarkdownTheme,
+	needsChangelogPreload,
 	normalizeChangelogLinks,
 	onThemeChange,
 	path,
@@ -454,6 +456,19 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// animation frame remains the external benchmark's startup-complete mark.
 	recordTimeSinceReset("time-to-first-frame");
 
+	// Start preloading CHANGELOG.md only when a "What's New" notice can display,
+	// overlapping its disk read with waiting for the isolated engine to bind.
+	const eagerChangelogPreload =
+		!this.deferredStartupPending &&
+		needsChangelogPreload(
+			(this.session?.state?.messages?.length ?? 0) > 0,
+			this.settingsManager?.getLastChangelogVersion?.(),
+			VERSION,
+		)
+			? preloadChangelog(getChangelogPath())
+			: undefined;
+	eagerChangelogPreload?.catch(() => {});
+
 	// A host attaching to an already populated, unsaved engine must own its archive before it
 	// can bind. Paint recent visible text while its private pages arrive, without binding a partial session.
 	let bootstrapPreview: Text | undefined;
@@ -489,7 +504,17 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	} else {
-		await preloadChangelog(getChangelogPath());
+		if (eagerChangelogPreload) {
+			await eagerChangelogPreload;
+		} else if (
+			needsChangelogPreload(
+				(this.session?.state?.messages?.length ?? 0) > 0,
+				this.settingsManager?.getLastChangelogVersion?.(),
+				VERSION,
+			)
+		) {
+			await preloadChangelog(getChangelogPath());
+		}
 		const startup = this.sessionStartup;
 		await bindInitialEagerSession(this);
 		if (startup?.cancelled) return;
@@ -555,7 +580,12 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 
 	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 
-	setTimeout(() => {
+	if (this.postStartupTimer !== undefined) {
+		clearTimeout(this.postStartupTimer);
+	}
+	this.postStartupTimer = setTimeout(() => {
+		this.postStartupTimer = undefined;
+		if (this.isShuttingDown) return;
 		// Hearing the end of the Windows session costs a thread and a hidden window, so it starts once the screen is up.
 		watchWindowsSessionEnd();
 		const startupNoticesContainer = this.startupNoticesContainer;
@@ -582,7 +612,14 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 				.then(({ warmCompileCache }) => warmCompileCache(engineHeapRuntimeArgsForHost(true)))
 				.catch(() => {});
 		}
+		// Load non-core highlight.js language grammars off the first-prompt critical path.
+		void loadAllHighlightLanguages().then(() => {
+			if (this.isShuttingDown) return;
+			this.ui.invalidate();
+			this.ui.requestRender();
+		});
 	}, 500);
+	this.postStartupTimer.unref?.();
 
 	// Show startup warnings
 	const { migratedProviders, startupDiagnostics, resumeNotices, initialMessage, initialImages, initialMessages } =
