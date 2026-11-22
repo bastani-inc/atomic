@@ -302,7 +302,7 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 			const deps = (outEdges.get(id) ?? []).filter((d) => active.has(d));
 			if (deps.length !== 0) continue;
 			const parents = [...(inEdges.get(id) ?? [])].filter((p) => active.has(p));
-			if (parents.length !== 1) continue;
+			if (parents.length !== 1 || globalImporters.get(id)?.size !== 1) continue;
 			const soleParent = /** @type {string} */ (parents[0]);
 			if (inlineEntryIds.has(soleParent) || ownerPrivate.has(soleParent)) continue;
 			contractedInto.set(id, soleParent);

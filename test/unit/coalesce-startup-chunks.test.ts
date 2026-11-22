@@ -293,7 +293,7 @@ console.log(JSON.stringify({ shared, files, kb: Math.round(bytes / 1024), extern
 
 		// Importing the SDK entry must never execute rpc-entry (which would launch RPC mode and hang).
 		const sdk = audit("index.js");
-		assert.ok(sdk.shared.length <= 26, `expected <= 26 dist/_shared chunks for index.js, got ${sdk.shared.length}`);
+		assert.ok(sdk.shared.length <= 32, `expected <= 32 dist/_shared chunks for index.js, got ${sdk.shared.length}`);
 
 		// Compat shared file for compile-cache-warmup-host must re-export the exact same bundled singleton as p0-cli,
 		// not a duplicate copy from dist/utils/compile-cache-warmup-host.js.
