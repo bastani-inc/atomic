@@ -371,7 +371,9 @@ export class RpcClient extends RpcClientApi {
 			// Ahead of whatever waits to be written: an engine too busy to read can hold an earlier write past the ack's
 			// deadline, and the stop that follows drops what is still queued.
 			this.bestEffort(
-				writer.writeUrgent(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
+				writer.writeUrgent(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })).then(() => {
+					probeWritten = true;
+				}),
 				"explicit quit",
 			);
 			const acked = await done.promise;
@@ -472,6 +474,9 @@ export class RpcClient extends RpcClientApi {
 				shutdownComplete.promise,
 				hostSignaled,
 			);
+			try {
+				(await import("node:fs")).appendFileSync(process.env.ATOMIC_QUIT_PROBE_LOG ?? "", "PROBE host stop done\n");
+			} catch {}
 		} finally {
 			if (this.stoppingEngine === child) this.stoppingEngine = undefined;
 		}
