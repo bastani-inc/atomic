@@ -125,6 +125,8 @@ export interface TasksReturnRecord {
 	readonly pending?: {
 		readonly targetId: TaskId;
 		readonly anchor: ListSelectionAnchor;
+		/** Engine `engine_view_agent.requestId` that staged this pending open; undefined for local host or legacy hosts. */
+		readonly requestId?: number;
 	};
 }
 
@@ -143,11 +145,16 @@ export function stagePendingTasksReturn(
 	anchor: ListSelectionAnchor,
 	fallbackAnchor?: ListSelectionAnchor,
 	fallbackTaskId?: TaskId,
+	requestId?: number,
 ): void {
 	tasksReturnRecords.set(owner, {
 		...(fallbackAnchor === undefined ? {} : { anchor: fallbackAnchor }),
 		...(fallbackAnchor !== undefined && fallbackTaskId !== undefined ? { anchorTaskId: fallbackTaskId } : {}),
-		pending: { targetId, anchor },
+		pending: {
+			targetId,
+			anchor,
+			...(requestId === undefined ? {} : { requestId }),
+		},
 	});
 }
 
@@ -159,14 +166,42 @@ export function resolveStoreTaskKey(store: OwnerTaskStore, taskId: TaskId): stri
 /**
  * Settle any pending `/tasks` subagent open (and clear stale anchors on external switches to another subagent)
  * without registering any listener on `AgentViewBridge`.
+ * When `settledRequestId` is provided and is strictly less than `record.pending.requestId`, the host has not yet
+ * settled the pending request (e.g., a host-initiated switch raced an unreceived `engine_view_agent`), so
+ * `record.pending` is preserved while updating any settled `record.anchor`.
  */
 export function settleTasksReturnAnchor(
 	owner: object,
 	viewedTaskId: TaskId | undefined,
 	resolveKey: (taskId: TaskId) => string,
+	settledRequestId?: number,
 ): void {
 	const record = tasksReturnRecords.get(owner);
 	if (record === undefined) return;
+	const pendingUnreached =
+		record.pending !== undefined &&
+		record.pending.requestId !== undefined &&
+		settledRequestId !== undefined &&
+		settledRequestId < record.pending.requestId;
+	if (pendingUnreached) {
+		if (viewedTaskId === undefined) return;
+		const viewedKey = resolveKey(viewedTaskId);
+		if (
+			record.anchor !== undefined &&
+			(viewedTaskId === record.anchorTaskId || viewedKey === record.anchor.selectedKey)
+		) {
+			if (record.anchorTaskId !== viewedTaskId) {
+				tasksReturnRecords.set(owner, {
+					anchor: record.anchor,
+					anchorTaskId: viewedTaskId,
+					pending: record.pending,
+				});
+			}
+			return;
+		}
+		tasksReturnRecords.set(owner, { pending: record.pending });
+		return;
+	}
 	if (viewedTaskId === undefined) {
 		if (record.anchor === undefined) {
 			tasksReturnRecords.delete(owner);
@@ -202,9 +237,13 @@ export function settleTasksReturnAnchor(
 	tasksReturnRecords.delete(owner);
 }
 
-export function settleStoreTasksReturn(store: OwnerTaskStore | undefined, viewedTaskId: TaskId | undefined): void {
+export function settleStoreTasksReturn(
+	store: OwnerTaskStore | undefined,
+	viewedTaskId: TaskId | undefined,
+	settledRequestId?: number,
+): void {
 	if (store === undefined || !tasksReturnRecords.has(store)) return;
-	settleTasksReturnAnchor(store, viewedTaskId, (id) => resolveStoreTaskKey(store, id));
+	settleTasksReturnAnchor(store, viewedTaskId, (id) => resolveStoreTaskKey(store, id), settledRequestId);
 }
 
 export function tasksReturnRecord(owner: object): TasksReturnRecord | undefined {

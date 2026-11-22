@@ -8,6 +8,7 @@
  * new code's copy of it beside the one it holds.
  */
 import { createHash } from "node:crypto";
+import { codeStringLiteral } from "./code-string-literal.mjs";
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
@@ -66,7 +67,7 @@ export function compatSharedFiles(released, outputs, directory) {
 		const specifier = candidates[0].file.startsWith(".") ? candidates[0].file : `./${candidates[0].file}`;
 		files.set(path, {
 			path,
-			contents: `export { ${[...names].sort().join(", ")} } from ${JSON.stringify(specifier)};\n//# sourceMappingURL=${file}.map\n`,
+			contents: `export { ${[...names].sort().join(", ")} } from ${codeStringLiteral(specifier)};\n//# sourceMappingURL=${file}.map\n`,
 		});
 		files.set(`${path}.map`, {
 			path: `${path}.map`,

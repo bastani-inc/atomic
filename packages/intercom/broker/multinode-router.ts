@@ -84,6 +84,7 @@ import {
 	restoringRecipientRetryReason,
 	unrestoredReasonCode,
 } from "./restoring-recipients.js";
+import { SendOrderGate, type SendOrderTicket, type TargetMatchInfo } from "./send-order-gate.js";
 import {
 	answerAs,
 	type BrokerConnectedSession,
@@ -496,6 +497,8 @@ interface Waiter {
 	readonly socket: BrokerConnectedSession["socket"];
 	readonly attemptId?: string;
 	readonly senderSessionId: string;
+	/** Canonical sender identity for per-(sender, target) outbox-before-local ordering. */
+	readonly senderKey: string;
 	/** The sender's groups: the released child's reservation it may read when its send is queued (#4512). */
 	readonly sender: ReservationSender;
 	readonly expectsReply: boolean;
@@ -532,6 +535,8 @@ interface TrackedHold {
 }
 
 interface PresenceEntry {
+	/** Monotonic registration epoch on this broker; used to skip unrelated earlier remote sends in O(1). */
+	readonly registeredSeq: number;
 	lease?: Lease;
 	/** `Date.now()` when this broker last wrote the session's known-session record. */
 	knownAt?: number;
@@ -1034,7 +1039,16 @@ export class MultiNodeRouter {
 	private readonly unpublished = new Map<string, UnpublishedReservation>();
 	private readonly pendingPublishRetries = new Set<string>();
 	private readonly heldIdentities = new Set<string>();
-	private readonly scanning = new Map<string, { rescan: boolean }>();
+	private readonly scanning = new Map<string, { rescan: boolean; done: Promise<void> }>();
+	private readonly initialScans = new Map<string, { readonly promise: Promise<void>; readonly resolve: () => void }>();
+	/** Refcount of unsettled outbox waiters per `(senderKey, targetIdentity)` pair, maintained by `setWaiter`/`dropWaiter`. */
+	private readonly unsettledOutboxPairs = new Map<string, number>();
+	private readonly sendOrder = new SendOrderGate();
+	private activeLocalCommit:
+		| { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest }
+		| undefined;
+	private registrationSeq = 0;
+	private checkingHolds: { again: boolean } | undefined;
 	private readonly serials = new Map<string, Promise<void>>();
 	private readonly settling = new Set<Promise<void>>();
 	/**
@@ -2398,7 +2412,7 @@ export class MultiNodeRouter {
 		boundMs: number = PRESENCE_REGISTRATION_BOUND_MS,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
-		const entry: PresenceEntry = {};
+		const entry: PresenceEntry = { registeredSeq: ++this.registrationSeq };
 		const presented = grant?.recovery ?? reclaim?.recovery ?? recovery;
 		if (presented !== undefined) entry.presented = presented;
 		// The registration of a released subagent its owner authorized has the asks parked for it moved to it (`rebindParked`).
@@ -2434,10 +2448,18 @@ export class MultiNodeRouter {
 		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
 		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
 		insertedBy?.catch(() => {});
+		let resolveInitialScan: () => void = () => {};
+		const initialScanPromise = new Promise<void>((res) => {
+			resolveInitialScan = res;
+		});
+		const initialScanEntry = { promise: initialScanPromise, resolve: resolveInitialScan };
+		this.initialScans.get(identity)?.resolve();
+		this.initialScans.set(identity, initialScanEntry);
 		return new Promise<void>((resolve) => {
 			const bound = setTimeout(resolve, boundMs);
 			bound.unref?.();
 			this.serial(identity, async () => {
+				let shouldScan = false;
 				try {
 					// #5607: a session registered while routing was opening takes its id now, or reconnects for a fresh one. A
 					// write that fails leaves it to take the id at the next check (`renewOwners`).
@@ -2473,11 +2495,20 @@ export class MultiNodeRouter {
 						};
 						await this.finishRegistration(session, entry);
 					}
+					shouldScan = true;
 				} finally {
 					clearTimeout(bound);
 					resolve();
+					const finishInitial = () => {
+						if (this.initialScans.get(identity) === initialScanEntry) this.initialScans.delete(identity);
+						resolveInitialScan();
+					};
+					if (shouldScan && !this.closed) {
+						void this.scanIdentity(identity).finally(finishInitial);
+					} else {
+						finishInitial();
+					}
 				}
-				this.scanIdentity(identity);
 			});
 		});
 	}
@@ -2877,6 +2908,13 @@ export class MultiNodeRouter {
 		// Its id names another session across nodes: that session's asks and records are not this one's to end.
 		const unbound = entry.unbound === true;
 		const identity = deliveryTargetIdentity(session);
+		if (![...this.presence.keys()].some((other) => deliveryTargetIdentity(other) === identity)) {
+			const initial = this.initialScans.get(identity);
+			if (initial !== undefined) {
+				this.initialScans.delete(identity);
+				initial.resolve();
+			}
+		}
 		const claims = [...this.inflight.values()].filter((inflight) => inflight.session === session);
 		for (const inflight of claims) {
 			this.inflight.delete(inflight.row.messageId);
@@ -3446,23 +3484,132 @@ export class MultiNodeRouter {
 
 	/** Answer a send no local session resolved: another node's session, a shared hold, an offline session, or none. */
 	routeSend(request: RemoteSendRequest): void {
+		if (this.activeLocalCommit !== undefined && this.activeLocalCommit.clientMessage === request.clientMessage) {
+			this.activeLocalCommit.reentrant = request;
+			return;
+		}
+		const ticket = this.sendOrder.begin(
+			request.localTarget === undefined
+				? {
+						senderKey: deliveryTargetIdentity(request.from),
+						rawTarget: request.target,
+						arrivedRegSeq: this.registrationSeq,
+						isLocal: false,
+					}
+				: {
+						senderKey: deliveryTargetIdentity(request.from),
+						rawTarget: request.target,
+						arrivedRegSeq: this.registrationSeq,
+						isLocal: true,
+						targetIdentity: deliveryTargetIdentity(request.localTarget),
+					},
+		);
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
 		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
-		if (isReleasedReplyCandidate(request)) this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request));
-		else void this.routeSendSafely(request);
+		if (isReleasedReplyCandidate(request)) {
+			if (request.localTarget !== undefined) this.sendOrder.markUnbounded(ticket);
+			this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request, ticket, true));
+		} else {
+			void this.routeSendSafely(request, ticket, true);
+		}
 	}
 
-	private async routeSendSafely(request: RemoteSendRequest): Promise<void> {
+	private async routeSendSafely(request: RemoteSendRequest, ticket: SendOrderTicket, ownsTicket: boolean): Promise<void> {
+		const startedAt = performance.now();
 		// #5607: a sender or local recipient whose id may have passed to another registration is checked first.
 		const owners = this.sendOwnerChecks(request);
 		try {
-			if (request.localTarget !== undefined) await this.answerLocalRetry(request, request.localTarget, owners);
-			else if (owners === undefined || (await this.senderOwns(request, owners))) await this.route(request);
+			if (this.closed) return;
+			if (request.localTarget !== undefined) await this.answerLocalRetry(request, request.localTarget, owners, ticket);
+			else if (owners === undefined || (await this.senderOwns(request, owners))) await this.route(request, ticket);
 		} catch (error) {
 			this.report(error);
+			if (this.closed) return;
 			// Local delivery does not depend on the shared database (spec §8).
-			if (request.localTarget !== undefined) return this.deliverLocally(request, request.localTarget);
+			if (request.localTarget !== undefined) {
+				const remainingMs = Math.max(0, startedAt + LOCAL_RETRY_LOOKUP_BOUND_MS - performance.now());
+				await this.deliverLocally(request, request.localTarget, ticket, remainingMs);
+				return;
+			}
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
+		} finally {
+			if (ownsTicket) this.sendOrder.finish(ticket);
+		}
+	}
+
+	/** Wait for strictly earlier sends from the same sender to `target` before performing a local commit. */
+	private async waitForEarlierLocal(
+		ticket: SendOrderTicket,
+		target: BrokerConnectedSession,
+		localBound?: Promise<"expired">,
+		localBoundExpired?: boolean,
+	): Promise<void> {
+		const entry = this.presence.get(target);
+		const names: string[] = [];
+		if (target.info.name !== undefined) names.push(target.info.name);
+		if (target.registrationName !== undefined && target.registrationName !== target.info.name)
+			names.push(target.registrationName);
+		const aliases: string[] = [];
+		if (entry?.awaits !== undefined) aliases.push(entry.awaits.id);
+		if (entry?.alias !== undefined) aliases.push(entry.alias.intercomSessionId);
+		const targetMatch: TargetMatchInfo = {
+			sessionId: target.info.id,
+			...(names.length === 0 ? {} : { names }),
+			...(target.registrationReturnAddress === undefined
+				? {}
+				: { atomicSessionId: target.registrationReturnAddress }),
+			...(aliases.length === 0 ? {} : { aliases }),
+		};
+		const wait = this.sendOrder.waitForEarlier(ticket, {
+			targetIdentity: deliveryTargetIdentity(target),
+			...(entry === undefined ? {} : { targetRegSeq: entry.registeredSeq }),
+			...(entry?.awaits === undefined ? {} : { awaitedId: entry.awaits.id }),
+			...(entry?.alias === undefined ? {} : { aliasId: entry.alias.intercomSessionId }),
+			targetMatch,
+			...(localBound === undefined ? {} : { localBound }),
+			...(localBoundExpired === true ? { localBoundExpired: true } : {}),
+		});
+		if (wait !== undefined) await wait;
+	}
+
+	/**
+	 * Wait for any initial or active outbox scan of `identity` on this broker, bounded by `expired`, only when
+	 * `senderKey` actually has an unsettled outbox waiter for `identity`. Unrelated senders and targets with no
+	 * unsettled outbox rows from this sender never wait behind slow presence writes or other senders' claims.
+	 */
+	private async waitForPendingOutboxScan(
+		senderKey: string,
+		identity: string,
+		expired: Promise<"expired">,
+	): Promise<void> {
+		if (!this.unsettledOutboxPairs.has(outboxPairKey(senderKey, identity))) return;
+		const initial = this.initialScans.get(identity)?.promise;
+		if (initial !== undefined) await Promise.race([initial, expired]);
+		if (this.closed) return;
+		const active = this.scanning.get(identity)?.done;
+		if (active !== undefined) await Promise.race([active, expired]);
+	}
+
+	/**
+	 * Hand a local send back to `handleBrokerSend` while capturing any synchronous re-entrant fallback into
+	 * `routeSend` (e.g. if the local target disconnected, was fenced, or lost an alias mid-lookup) so the fallback
+	 * runs in place on the same order ticket without self-deadlock or priority inversion.
+	 */
+	private async commitLocalNotFound(request: RemoteSendRequest, ticket: SendOrderTicket): Promise<void> {
+		if (this.closed) return;
+		const frame: { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest } = {
+			clientMessage: request.clientMessage,
+		};
+		const previous = this.activeLocalCommit;
+		this.activeLocalCommit = frame;
+		try {
+			request.notFound();
+		} finally {
+			this.activeLocalCommit = previous;
+		}
+		if (frame.reentrant !== undefined && !this.closed) {
+			this.sendOrder.reenterRemote(ticket);
+			await this.routeSendSafely(frame.reentrant, ticket, false);
 		}
 	}
 
@@ -3471,19 +3618,42 @@ export class MultiNodeRouter {
 	 * broker's own routes say answers an ask to its sender's alias goes out as from that alias while the alias is
 	 * confirmed its own, and is refused as retryable while it is not: the database that could confirm it failed.
 	 */
-	private deliverLocally(request: RemoteSendRequest, target: BrokerConnectedSession): void {
+	private async deliverLocally(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		ticket: SendOrderTicket,
+		remainingBoundMs: number,
+	): Promise<void> {
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		let boundExpired = remainingBoundMs <= 0;
+		const expired =
+			boundExpired
+				? Promise.resolve("expired" as const)
+				: new Promise<"expired">((resolve) => {
+						bound = setTimeout(() => {
+							boundExpired = true;
+							resolve("expired");
+						}, remainingBoundMs);
+						bound.unref?.();
+					});
+		try {
+			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
+		} finally {
+			clearTimeout(bound);
+		}
+		if (this.closed) return;
 		const replyTo = request.message.replyTo;
 		const alias = this.replyAlias(request);
 		const pending = this.host.pendingQuestions;
 		if (replyTo === undefined || alias === undefined || pending.matchesReply(request.from.info.id, target.info.id, replyTo))
-			return request.notFound();
+			return this.commitLocalNotFound(request, ticket);
 		// Only the database that failed could show an ask to the alias that no route here names: a reply that must answer
 		// an open ask is refused as retryable, not for good.
 		if (!pending.matchesReply(alias.id, target.info.id, replyTo))
-			return request.requirePendingReply ? this.refuseRouteUnavailable(request) : request.notFound();
+			return request.requirePendingReply ? this.refuseRouteUnavailable(request) : this.commitLocalNotFound(request, ticket);
 		const sending = this.answeringAsHeld(request, alias);
 		if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-		(sending ?? request).notFound();
+		await this.commitLocalNotFound(sending ?? request, ticket);
 	}
 
 	/** Whether this broker's own routes authorize `request`'s reply to `target`. */
@@ -3531,14 +3701,14 @@ export class MultiNodeRouter {
 		});
 	}
 
-	private async route(request: RemoteSendRequest): Promise<void> {
+	private async route(request: RemoteSendRequest, ticket: SendOrderTicket): Promise<void> {
 		if (request.message.replyTo !== undefined) await Promise.all([...this.settling]);
 		if (mayUseReturnPath(request.message, request.supervisorSend, request.from)) {
 			while (await this.awaitReturnPathOpeningForTarget(request.from, request.target, request.returnPathArrivalSeq)) {
 				// Each iteration finishes at least one matching opening handed over before this send arrived.
 			}
 		}
-		if (await this.routeReleasedReply(request)) return;
+		if (await this.routeReleasedReply(request, undefined, ticket)) return;
 		const from = request.from;
 		const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
 			(lease) =>
@@ -3620,43 +3790,80 @@ export class MultiNodeRouter {
 		}
 		if (resolved !== undefined) {
 			const subject = presenceOf(resolved);
-			await this.deliverThroughOutbox(request, {
-				identity: subject.targetIdentity,
-				sessionId: subject.session.id,
-				groups: sessionGroups(subject.session),
-				gates: subject.session,
-				hostBrokerId: resolved.holderId,
-			});
+			await this.deliverThroughOutbox(
+				request,
+				{
+					identity: subject.targetIdentity,
+					sessionId: subject.session.id,
+					groups: sessionGroups(subject.session),
+					gates: subject.session,
+					hostBrokerId: resolved.holderId,
+				},
+				ticket,
+				{
+					sessionId: subject.session.id,
+					...(subject.session.name === undefined ? {} : { names: [subject.session.name] }),
+					...(returnAddressOf(subject.targetIdentity) === undefined
+						? {}
+						: { atomicSessionId: returnAddressOf(subject.targetIdentity) }),
+					...(subject.aliases === undefined || subject.aliases.length === 0
+						? {}
+						: { aliases: subject.aliases.map((alias) => alias.id) }),
+				},
+			);
 			return;
 		}
 		if (!request.supervisorSend && !request.requirePendingReply && request.expectedRecipientId === undefined) {
-			if (await this.holdForRemoteReservation(request)) return;
+			if (await this.holdForRemoteReservation(request, ticket)) return;
 		}
 		const known = await this.resolveKnownSession(request);
 		if (known === "answered") return;
 		if (known !== undefined) {
-			await this.deliverThroughOutbox(request, {
-				identity: known.targetIdentity,
-				sessionId: known.intercomSessionId,
-				groups: new Set(known.groups),
-				gates: known,
-			});
+			await this.deliverThroughOutbox(
+				request,
+				{
+					identity: known.targetIdentity,
+					sessionId: known.intercomSessionId,
+					groups: new Set(known.groups),
+					gates: known,
+				},
+				ticket,
+				{
+					sessionId: known.intercomSessionId,
+					...(known.name === undefined ? {} : { names: [known.name] }),
+					...(known.atomicSessionId === undefined ? {} : { atomicSessionId: known.atomicSessionId }),
+					...(known.aliasSessionId === undefined ? {} : { aliases: [known.aliasSessionId] }),
+				},
+			);
 			return;
 		}
 		request.notFound();
 	}
 
 	/** #4386: a reply to a released asker's question goes to the asker's owner, once; true when it was one. */
-	private async routeReleasedReply(request: RemoteSendRequest, answered?: ReleasedAskRecord): Promise<boolean> {
+	private async routeReleasedReply(
+		request: RemoteSendRequest,
+		answered?: ReleasedAskRecord,
+		ticket?: SendOrderTicket,
+	): Promise<boolean> {
 		const decision = await decideReleasedAskerReply(this.state, request, answered);
 		if (decision === undefined) return false;
 		switch (decision.kind) {
 			case "refused":
 				this.failReleasedReply(request, decision.error);
 				return true;
-			case "deliver":
+			case "deliver": {
+				// Released-child replies are already strictly ordered per sender by `serial("reply:...")` (#4386),
+				// and non-reply sends never commit to a `released-reply:*` target: resolve the ticket target so
+				// unrelated later sends do not wait, and never stall behind unrelated still-resolving plain sends.
+				if (ticket !== undefined) {
+					this.sendOrder.markUnbounded(ticket);
+					this.sendOrder.resolveTarget(ticket, `released-reply:${decision.owner.identity}`);
+					if (this.closed) return true;
+				}
 				await this.sendReleasedReply(request, decision);
 				return true;
+			}
 		}
 	}
 
@@ -3672,6 +3879,11 @@ export class MultiNodeRouter {
 	 * began (`adoptSharedRouteWithin`); both lookups together end within `PRESENCE_REGISTRATION_BOUND_MS` of it, so the
 	 * reply, and the next reply its sender queued behind it, are answered before the sender stops waiting.
 	 */
+	private sameLocalTarget(target: BrokerConnectedSession): boolean {
+		const current = this.host.sessions.get(target.info.id);
+		return current !== undefined && deliveryTargetIdentity(current) === deliveryTargetIdentity(target);
+	}
+
 	private async routeUnreachable(
 		request: RemoteSendRequest,
 		target: BrokerConnectedSession,
@@ -3679,6 +3891,7 @@ export class MultiNodeRouter {
 	): Promise<boolean> {
 		const replyTo = request.message.replyTo;
 		if (!request.requirePendingReply || replyTo === undefined) return false;
+		if (!this.sameLocalTarget(target)) return false;
 		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)) return false;
 		// A retry of a reply already delivered here is answered by the local path.
 		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
@@ -3745,7 +3958,7 @@ export class MultiNodeRouter {
 		late: { readonly abandoned: boolean },
 	): Promise<RemoteSendRequest | typeof UNCERTAIN_ALIAS> {
 		const replyTo = request.message.replyTo;
-		if (replyTo === undefined) return request;
+		if (replyTo === undefined || !this.sameLocalTarget(target)) return request;
 		// #5607: an ask to the id its sender holds as an alias, received under that id, is answered as that id.
 		const alias = this.replyAlias(request);
 		const repliers = alias === undefined ? [request.from.info.id] : [request.from.info.id, alias.id];
@@ -3767,7 +3980,7 @@ export class MultiNodeRouter {
 			const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
 			if ((await this.state.pendingAsks.matchesReply(route)).status !== "match") continue;
 			if (alias !== undefined && replySenderSessionId === alias.id) await this.confirmAlias(request, alias);
-			if (late.abandoned) return request;
+			if (late.abandoned || !this.sameLocalTarget(target)) return request;
 			const sending = answering(replySenderSessionId);
 			// Its alias lost meanwhile authorizes nothing; one held unconfirmed leaves the shared route where it is.
 			if (sending === UNCERTAIN_ALIAS || (sending === request && replySenderSessionId !== request.from.info.id))
@@ -4060,8 +4273,10 @@ export class MultiNodeRouter {
 	private async answerLocalRetry(
 		request: RemoteSendRequest,
 		target: BrokerConnectedSession,
-		owners?: SendOwnerChecks,
+		owners: SendOwnerChecks | undefined,
+		ticket: SendOrderTicket,
 	): Promise<void> {
+		const targetIdentity = deliveryTargetIdentity(target);
 		const lookup = this.state.outbox.read(request.message.id);
 		// #5607: a lookup that fails while an owner check is still answering is reported when it is awaited below, not
 		// left unobserved meanwhile. The checks are waited for within the lookup's own bound, counted from now.
@@ -4072,8 +4287,12 @@ export class MultiNodeRouter {
 			return undefined;
 		});
 		let bound: ReturnType<typeof setTimeout> | undefined;
+		let boundExpired = false;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
+			bound = setTimeout(() => {
+				boundExpired = true;
+				resolve("expired");
+			}, LOCAL_RETRY_LOOKUP_BOUND_MS);
 			bound.unref?.();
 		});
 		try {
@@ -4085,35 +4304,68 @@ export class MultiNodeRouter {
 					lookup.catch((error: Error) => this.report(error));
 					// A sender disconnected here has nothing to be answered; a recipient disconnected here, or an alias it
 					// no longer holds, is looked for wherever that id lives now.
-					if (found.sender !== "lost") request.notFound();
+					if (found.sender !== "lost") {
+						await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
+						await this.commitLocalNotFound(request, ticket);
+					}
 					return;
 				}
 			}
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
-				const decisionStartedAt = performance.now();
-				const sending = await this.adoptSharedRouteWithin(request, target);
-				if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-				// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
-				// the local path's final refusal just because the outbox lookup was slow.
-				if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
-				sending.notFound();
+				let sending = request;
+				if (request.message.replyTo !== undefined) {
+					if (!this.routedHere(request, target)) this.sendOrder.markUnbounded(ticket);
+					const decisionStartedAt = performance.now();
+					const adopted = await this.adoptSharedRouteWithin(request, target);
+					if (adopted === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+					// #4997: a reply whose ask's route may be on a broker that is down is refused as retryable here too, not by
+					// the local path's final refusal just because the outbox lookup was slow.
+					if (await this.routeUnreachable(adopted, target, decisionStartedAt)) return;
+					sending = adopted;
+				}
+				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
+				await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
+				await this.commitLocalNotFound(sending, ticket);
 				return;
 			}
 			if (existing.status === "found") {
 				const digest = crossNodeDigest(request.signature);
 				const recipient = await this.rowRecipient(existing.row, target, expired);
+				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
+				if (this.closed) return;
+				if (existing.row.state === "delivered" || existing.row.state === "failed") {
+					// Already settled earlier: this retry writes no frame to target.socket, so release its order ticket
+					// before post-settlement store writes (`sentMessages.accept`) so later local sends never wait on them.
+					this.sendOrder.finish(ticket);
+					await this.answerExistingRow(request, recipient, digest, existing.row);
+					return;
+				}
+				this.sendOrder.markUnbounded(ticket);
 				await this.answerExistingRow(request, recipient, digest, existing.row);
+				if (recipient.hostBrokerId === this.brokerId) {
+					await Promise.race([this.scanIdentity(recipient.identity), expired]);
+				}
 				return;
 			}
 			const moved = await Promise.race([released, expired]);
-			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
-			const decisionStartedAt = performance.now();
-			const sending = await this.adoptSharedRouteWithin(request, target);
-			if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-			if (await this.routeUnreachable(sending, target, decisionStartedAt)) return;
-			sending.notFound();
+			if (moved !== "expired" && moved !== undefined) {
+				this.sendOrder.markUnbounded(ticket);
+				if (await this.routeReleasedReply(request, moved, ticket)) return;
+			}
+			let sending = request;
+			if (request.message.replyTo !== undefined) {
+				if (!this.routedHere(request, target)) this.sendOrder.markUnbounded(ticket);
+				const decisionStartedAt = performance.now();
+				const adopted = await this.adoptSharedRouteWithin(request, target);
+				if (adopted === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+				if (await this.routeUnreachable(adopted, target, decisionStartedAt)) return;
+				sending = adopted;
+			}
+			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
+			await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
+			await this.commitLocalNotFound(sending, ticket);
 		} finally {
 			clearTimeout(bound);
 		}
@@ -4179,7 +4431,7 @@ export class MultiNodeRouter {
 			(await this.holdsSessionId(request.target, byAlias.atomicSessionId)) &&
 			(await this.aliasStillAnswers(byAlias, request.target))
 		)
-			return { ...byAlias, intercomSessionId: request.target };
+			return { ...byAlias, intercomSessionId: request.target, aliasSessionId: byAlias.intercomSessionId };
 		const replyAuthorized = await this.replyAuthorizedTargets(
 			request,
 			sessions.map((session) => session.intercomSessionId),
@@ -4225,7 +4477,13 @@ export class MultiNodeRouter {
 	}
 
 	/** Run the origin's routing decisions on the shared state, then enqueue the exact local frame. */
-	private async deliverThroughOutbox(request: RemoteSendRequest, target: RemoteTarget): Promise<void> {
+	private async deliverThroughOutbox(
+		request: RemoteSendRequest,
+		target: RemoteTarget,
+		ticket: SendOrderTicket,
+		targetMatch?: TargetMatchInfo,
+	): Promise<void> {
+		this.sendOrder.resolveTarget(ticket, target.identity);
 		const { message } = request;
 		if (!isAgentRecipient(target.gates)) {
 			this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
@@ -4238,14 +4496,38 @@ export class MultiNodeRouter {
 		const digest = crossNodeDigest(request.signature);
 		const existing = await this.state.outbox.read(message.id);
 		if (existing.status === "found") {
+			const wait = this.sendOrder.waitForEarlier(ticket, {
+				targetIdentity: target.identity,
+				...(targetMatch === undefined ? {} : { targetMatch }),
+			});
+			if (wait !== undefined) await wait;
+			if (this.closed) return;
 			await this.answerExistingRow(request, target, digest, existing.row);
 			return;
 		}
 		if (this.answerLocalDelivery(request, target)) return;
 		const answering = await this.correlatedReply(request, target.sessionId);
 		if (answering === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
+		const wait = this.sendOrder.waitForEarlier(ticket, {
+			targetIdentity: target.identity,
+			...(targetMatch === undefined ? {} : { targetMatch }),
+		});
+		if (wait !== undefined) await wait;
+		if (this.closed) return;
 		// #5607: a reply to an ask its sender's alias received goes out as from that alias.
 		await this.enqueueThroughOutbox(answering ?? request, target, digest, answering !== undefined);
+		if (this.localSessionFor(target.identity) !== undefined && !this.closed) {
+			let bound: ReturnType<typeof setTimeout> | undefined;
+			const expired = new Promise<"expired">((resolve) => {
+				bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
+				bound.unref?.();
+			});
+			try {
+				await Promise.race([this.scanIdentity(target.identity), expired]);
+			} finally {
+				clearTimeout(bound);
+			}
+		}
 	}
 
 	/** `request`, checked by `deliverThroughOutbox`, written to the shared outbox; `correlatedReply`: an open ask's reply. */
@@ -4460,6 +4742,7 @@ export class MultiNodeRouter {
 			socket: request.socket,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			senderSessionId: request.from.info.id,
+			senderKey: deliveryTargetIdentity(request.from),
 			sender: reservationSender(request.from),
 			expectsReply: message.expectsReply === true,
 			resolveReplyTarget: request.resolveReplyTarget,
@@ -4470,7 +4753,7 @@ export class MultiNodeRouter {
 			waitingSince: performance.now(),
 		};
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
-		this.waiters.set(message.id, waiter);
+		this.setWaiter(waiter);
 		if (offline) {
 			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
 			return;
@@ -4520,7 +4803,7 @@ export class MultiNodeRouter {
 		this.dropWaiter(waiter);
 		const queued: Waiter = { ...waiter, queued: true, timer: undefined, capTimer: undefined, holdCheck: undefined };
 		this.armWaiter(queued, DELIVERED_MESSAGE_TTL_MS);
-		this.waiters.set(queued.messageId, queued);
+		this.setWaiter(queued);
 		this.host.write(queued.socket, queuedFrame(queued.messageId, queued.attemptId, position));
 		void this.wakeReleasedRecipient(queued).catch((error: Error) => this.report(error));
 		return true;
@@ -4581,7 +4864,7 @@ export class MultiNodeRouter {
 	}
 
 	/** §5.7: a reservation shared by another broker holds this send here, at its origin. */
-	private async holdForRemoteReservation(request: RemoteSendRequest): Promise<boolean> {
+	private async holdForRemoteReservation(request: RemoteSendRequest, ticket: SendOrderTicket): Promise<boolean> {
 		const { from, message } = request;
 		const lookup = await this.state.reservations.lookup(
 			normalizeTarget(request.target),
@@ -4594,6 +4877,14 @@ export class MultiNodeRouter {
 			this.fail(request, reservation.gone ?? restoringRecipientRetryReason(reservation.childName));
 			return true;
 		}
+		const reservationTarget = `reservation:${reservation.reservationKey}`;
+		const reservationNames = [reservation.childName, ...reservation.targets];
+		const wait = this.sendOrder.waitForEarlier(ticket, {
+			targetIdentity: reservationTarget,
+			targetMatch: { names: reservationNames },
+		});
+		if (wait !== undefined) await wait;
+		if (this.closed) return true;
 		const listed = await this.state.heldSends.list(reservation.reservationKey);
 		const count = listed.status === "listed" ? listed.sends.length : 0;
 		const reasonCode = unrestoredReasonCode(reservation.reservationKey, reservation.wake);
@@ -4674,51 +4965,70 @@ export class MultiNodeRouter {
 
 	/** Read the reservation of every send held here and dispatch or refuse the ones whose hold ended (§5.7). */
 	private async checkHolds(): Promise<void> {
-		for (const hold of [...this.holds.values()]) {
-			let key = hold.reservationKey;
-			let decision: { readonly kind: "keep" } | { readonly kind: "refuse"; readonly reason: string } | { readonly kind: "dispatch" } = {
-				kind: "keep",
-			};
-			for (let hop = 0; hop < MAX_SUPERSEDED_HOPS; hop++) {
-				const read = await this.state.reservations.read(key);
-				if (read.status === "active") {
-					decision = read.reservation.gone === undefined ? { kind: "keep" } : { kind: "refuse", reason: read.reservation.gone };
-				} else if (read.status === "ended" && read.end.outcome === "superseded") {
-					key = read.end.by;
-					continue;
-				} else if (read.status === "ended" && read.end.outcome === "released" && read.end.refusal !== undefined) {
-					decision = { kind: "refuse", reason: read.end.refusal };
-				} else if (read.status !== "invalid") {
-					decision = { kind: "dispatch" };
+		if (this.checkingHolds !== undefined) {
+			this.checkingHolds.again = true;
+			return;
+		}
+		const state = { again: false };
+		this.checkingHolds = state;
+		try {
+			do {
+				state.again = false;
+				for (const hold of [...this.holds.values()]) {
+					let key = hold.reservationKey;
+					let decision:
+						| { readonly kind: "keep" }
+						| { readonly kind: "refuse"; readonly reason: string }
+						| { readonly kind: "dispatch" } = {
+						kind: "keep",
+					};
+					for (let hop = 0; hop < MAX_SUPERSEDED_HOPS; hop++) {
+						const read = await this.state.reservations.read(key);
+						if (read.status === "active") {
+							decision =
+								read.reservation.gone === undefined ? { kind: "keep" } : { kind: "refuse", reason: read.reservation.gone };
+						} else if (read.status === "ended" && read.end.outcome === "superseded") {
+							key = read.end.by;
+							continue;
+						} else if (read.status === "ended" && read.end.outcome === "released" && read.end.refusal !== undefined) {
+							decision = { kind: "refuse", reason: read.end.refusal };
+						} else if (read.status !== "invalid") {
+							decision = { kind: "dispatch" };
+						}
+						break;
+					}
+					if (decision.kind === "keep" || this.holds.get(hold.messageId) !== hold) continue;
+					this.holds.delete(hold.messageId);
+					clearTimeout(hold.timer);
+					if ((await this.state.heldSends.drop(hold.messageId)).status !== "dropped") continue;
+					if (decision.kind === "refuse") {
+						this.writeHoldFailure(hold, decision.reason);
+						continue;
+					}
+					const sender = this.host.sessions.get(hold.senderId);
+					if (sender?.socket === hold.socket) this.host.dispatch(hold.socket, hold.clientMessage, hold.senderId);
 				}
-				break;
-			}
-			if (decision.kind === "keep" || this.holds.get(hold.messageId) !== hold) continue;
-			this.holds.delete(hold.messageId);
-			clearTimeout(hold.timer);
-			if ((await this.state.heldSends.drop(hold.messageId)).status !== "dropped") continue;
-			if (decision.kind === "refuse") {
-				this.writeHoldFailure(hold, decision.reason);
-				continue;
-			}
-			const sender = this.host.sessions.get(hold.senderId);
-			if (sender?.socket === hold.socket) this.host.dispatch(hold.socket, hold.clientMessage, hold.senderId);
+			} while (state.again && !this.closed);
+		} catch (error) {
+			this.report(error);
+		} finally {
+			this.checkingHolds = undefined;
 		}
 	}
 
 	// ---------------------------------------------------------------------------------------------------------
 	// Delivering the shared outbox to this broker's sessions
 
-	private scanIdentity(identity: string): void {
-		if (this.closed) return;
+	private scanIdentity(identity: string): Promise<void> {
+		if (this.closed) return Promise.resolve();
 		const running = this.scanning.get(identity);
 		if (running !== undefined) {
 			running.rescan = true;
-			return;
+			return running.done;
 		}
-		const state = { rescan: false };
+		const state: { rescan: boolean; done: Promise<void> } = { rescan: false, done: Promise.resolve() };
 		this.scanning.set(identity, state);
-		void (async () => {
+		const done = (async () => {
 			try {
 				do {
 					state.rescan = false;
@@ -4727,9 +5037,11 @@ export class MultiNodeRouter {
 			} catch (error) {
 				this.report(error);
 			} finally {
-				this.scanning.delete(identity);
+				if (this.scanning.get(identity) === state) this.scanning.delete(identity);
 			}
 		})();
+		state.done = done;
+		return done;
 	}
 
 	private scanAll(): void {
@@ -4763,15 +5075,20 @@ export class MultiNodeRouter {
 		}
 		this.heldIdentities.delete(identity);
 		if (claimed.status !== "claimed") return;
-		for (const { row, claim } of claimed.rows) {
+		for (let index = 0; index < claimed.rows.length; index++) {
+			const { row, claim } = claimed.rows[index]!;
 			const session = this.localSessionFor(identity);
-			if (session === undefined) {
-				// The recipient left while the claim was on its way to the database: the row was never written to it, so it
-				// goes back as never claimed. Its sender's broker then still queues it for the recipient's return
-				// (`positionIfRecipientLeft`), instead of reporting the send uncertain once its receipt wait ends.
-				const released = await this.state.outbox.releaseClaim(claim, { unwritten: true });
-				if (released.status === "released") await this.wakeOrigin(row);
-				continue;
+			if (session === undefined || session !== recipient) {
+				// The recipient left or was replaced while this batch was being delivered: release this row and every
+				// later row in the batch unwritten so a reconnected session never receives a later row ahead of an earlier
+				// released row.
+				for (let remaining = index; remaining < claimed.rows.length; remaining++) {
+					const pending = claimed.rows[remaining]!;
+					const released = await this.state.outbox.releaseClaim(pending.claim, { unwritten: true });
+					if (released.status === "released") await this.wakeOrigin(pending.row);
+				}
+				if (this.localSessionFor(identity) !== undefined) void this.scanIdentity(identity);
+				return;
 			}
 			if (row.frame.type === "released_child_reply") {
 				const handoffRefusal = await releasedReplyHandoffRefusal(this.state, row.frame);
@@ -5141,8 +5458,22 @@ export class MultiNodeRouter {
 		});
 	}
 
+	private setWaiter(waiter: Waiter): void {
+		const previous = this.waiters.get(waiter.messageId);
+		if (previous !== undefined) this.dropWaiter(previous);
+		this.waiters.set(waiter.messageId, waiter);
+		const pair = outboxPairKey(waiter.senderKey, waiter.targetIdentity);
+		this.unsettledOutboxPairs.set(pair, (this.unsettledOutboxPairs.get(pair) ?? 0) + 1);
+	}
+
 	private dropWaiter(waiter: Waiter): void {
-		if (this.waiters.get(waiter.messageId) === waiter) this.waiters.delete(waiter.messageId);
+		if (this.waiters.get(waiter.messageId) === waiter) {
+			this.waiters.delete(waiter.messageId);
+			const pair = outboxPairKey(waiter.senderKey, waiter.targetIdentity);
+			const next = (this.unsettledOutboxPairs.get(pair) ?? 0) - 1;
+			if (next <= 0) this.unsettledOutboxPairs.delete(pair);
+			else this.unsettledOutboxPairs.set(pair, next);
+		}
 		if (waiter.timer !== undefined) clearTimeout(waiter.timer);
 		if (waiter.capTimer !== undefined) clearTimeout(waiter.capTimer);
 	}
@@ -5421,11 +5752,15 @@ export class MultiNodeRouter {
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		this.sendOrder.close();
+		for (const initial of this.initialScans.values()) initial.resolve();
+		this.initialScans.clear();
 		for (const timer of this.timers) clearInterval(timer);
 		// #5607: the ids an unanswered claim may still bind are given up with all of this broker's (`retireBroker`).
 		for (const use of this.unansweredClaims.values()) use.resolve("kept");
 		this.unansweredClaims.clear();
 		for (const waiter of [...this.waiters.values()]) this.dropWaiter(waiter);
+		this.unsettledOutboxPairs.clear();
 		for (const hold of this.holds.values()) clearTimeout(hold.timer);
 		this.holds.clear();
 		await Promise.all([...this.serials.values()]);
@@ -5452,4 +5787,8 @@ export class MultiNodeRouter {
 /** A target identity a return path can bind: a registration's return address, never a reusable bare session id. */
 function stableIdentity(targetIdentity: string): string | undefined {
 	return targetIdentity.startsWith('["return",') ? targetIdentity : undefined;
+}
+
+function outboxPairKey(senderKey: string, targetIdentity: string): string {
+	return `${senderKey}\0${targetIdentity}`;
 }
