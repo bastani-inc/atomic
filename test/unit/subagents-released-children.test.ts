@@ -18,6 +18,7 @@ import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagent
 import {
 	lateToolResultNotice,
 	lateToolResultNoticeIds,
+	lateToolResultNoticeKey,
 	legacyLateToolResultMessage,
 	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
@@ -56,6 +57,7 @@ import { SUBAGENT_RESERVE_RESTORING_CHILD_EVENT } from "../../packages/subagents
 import {
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
+	type SubagentChildHeldToolResult,
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
@@ -819,6 +821,118 @@ test("reading a woken child's history back finds the entry of the newest call of
 		["ci-1", deploy],
 		["ci-2", lint],
 	]);
+});
+
+/**
+ * A child whose call `ci-1` (`first`) kept running in the background, whose late result was read in a notice keyed to
+ * that call, and which then made another call a provider gave the same id (`newer`): answered with its own result, told
+ * it is still running, or still waiting on it.
+ */
+async function readThenReusedId(newer: "answered" | "still running" | "pending" | "unread") {
+	const store = new MemorySessionStore();
+	const child = await SessionManager.create(store, "/repo");
+	const call = (run: string) =>
+		child.appendMessage({
+			...fauxAssistantMessage([fauxToolCall("wait_for_ci", { run }, { id: "ci-1" })], { stopReason: "toolUse" }),
+		});
+	await child.appendMessage({ role: "user", content: "watch CI", timestamp: 1 });
+	const first = await call("7");
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-1",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }],
+		isError: false,
+		timestamp: 2,
+	});
+	const late = result("ci-1", "run 7 deployed");
+	if (newer !== "unread") {
+		const notice = lateToolResultNotice([late]);
+		await child.appendCustomMessageEntry(
+			notice.customType,
+			notice.content,
+			true,
+			notice.details,
+			true,
+			{ delivery: "steer" },
+			lateToolResultNoticeKey([late], new Map([["ci-1", first]])),
+		);
+	}
+	const second = await call("8");
+	if (newer === "answered" || newer === "still running")
+		await child.appendMessage({
+			role: "toolResult",
+			toolCallId: "ci-1",
+			toolName: "wait_for_ci",
+			content: [{ type: "text", text: newer === "answered" ? "run 8 passed" : SUBAGENT_STILL_RUNNING_RESULT }],
+			isError: false,
+			timestamp: 3,
+		});
+	const bound: SubagentChildHeldToolResult = { ...late, callEntryId: first };
+	return { child, late, bound, first, second };
+}
+
+for (const newer of ["answered", "still running", "pending"] as const)
+	test(`a held result a wake bound to its call and a run then read is found read past a newer call with its id, ${newer} (#3274)`, async () => {
+		const { child, bound } = await readThenReusedId(newer);
+
+		const found = await readHeldToolResultsBack(child, [bound]);
+
+		assert.deepEqual(found.saved, ["ci-1"], "the run that read it saved it; only its release was not recorded");
+		assert.deepEqual([...found.issuingCalls], []);
+	});
+
+test("a held result bound to an older call than the one its child waits on with that id is late, never that call's result (#3274)", async () => {
+	const { child, bound, late, first } = await readThenReusedId("unread");
+
+	const found = await readHeldToolResultsBack(child, [bound]);
+	assert.deepEqual(found.saved, []);
+	assert.deepEqual([...found.issuingCalls], [["ci-1", first]], "its own call");
+	assert.deepEqual([...found.olderCalls], ["ci-1"]);
+
+	const plan = planReleasedChildWake(pendingToolCalls(child), [late], false, undefined, found.olderCalls);
+	assert.deepEqual(plan.lateResults, [late]);
+	assert.deepEqual(plan.resumeToolResults, [stillRunning("ci-1")], "the newer call is still running");
+});
+
+test("a held result bound to its call is not taken as read from a newer call's own result with its id (#3274)", async () => {
+	const { child, bound } = await readThenReusedId("unread");
+	await child.appendMessage({
+		role: "toolResult",
+		toolCallId: "ci-1",
+		toolName: "wait_for_ci",
+		content: [{ type: "text", text: "run 8 passed" }],
+		isError: false,
+		timestamp: 3,
+	});
+
+	const found = await readHeldToolResultsBack(child, [bound]);
+
+	assert.deepEqual(found.saved, [], "the run that read run 8's result never read this one");
+});
+
+test("a notice of an older call's result read after a newer call with the same id does not count as reading that newer call's (#3274)", async () => {
+	const { child } = await readThenReusedId("pending");
+	// The notice of an older call's result, read after the newer call was made.
+	const older = result("ci-1", "run 7 deployed");
+	const notice = lateToolResultNotice([older]);
+	const branch = child.getBranch();
+	const firstCall = branch.find((entry) => entry.type === "message" && entry.message.role === "assistant")?.id;
+	assert.ok(firstCall);
+	await child.appendCustomMessageEntry(
+		notice.customType,
+		notice.content,
+		true,
+		notice.details,
+		true,
+		{ delivery: "steer" },
+		lateToolResultNoticeKey([older], new Map([["ci-1", firstCall]])),
+	);
+	const newerResult = result("ci-1", "run 8 passed");
+
+	const found = await readHeldToolResultsBack(child, [newerResult]);
+
+	assert.deepEqual(found.saved, [], "the newer call's result was never read");
 });
 
 test("a woken child's history is read back only as far as the call of each result it may have read", async () => {

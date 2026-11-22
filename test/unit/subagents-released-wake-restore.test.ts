@@ -29,6 +29,7 @@ import {
 	lateToolResultNotice,
 	lateToolResultNoticeKey,
 	legacyLateToolResultMessage,
+	SUBAGENT_LATE_TOOL_RESULT_TYPE,
 } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
@@ -1942,6 +1943,48 @@ for (const compacted of [false, true])
 		const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
 
 		assert.equal(lateTimes(run, late), 1, "the result it never read reaches it once");
+	});
+
+for (const newer of ["told it is still running", "waiting on it"] as const)
+	test(`a late result a run read whose release its owner did not record is not given again after a newer call with its id, ${newer} (#3274)`, async () => {
+		const h = harness();
+		const record = await endedOnPendingCall(h, `unrecorded-release-${newer.split(" ")[0]}`);
+		await saveIntoTranscript(record, [stillRunning]);
+		const late = waitResult("run 7 deployed");
+		await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+		const first = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+		assert.equal(lateTimes(first, late), 1);
+		assert.ok(record.childSessionFile);
+		const transcript = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+		assert.ok(
+			transcript
+				.getBranch()
+				.some((entry) => entry.type === "custom_message" && entry.customType === SUBAGENT_LATE_TOOL_RESULT_TYPE),
+			"its run saved the notice",
+		);
+		// The owner's record that lets the result go was lost: its latest record holds what it held as the run started.
+		const records = h.sessionManager
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === SUBAGENT_CHILD_RECORD_TYPE
+					? [entry.data as SubagentChildRecord]
+					: [],
+			)
+			.filter((written) => written.childId === record.childId);
+		const holding = records.findLast((written) => (written.heldToolResults?.length ?? 0) > 0);
+		assert.ok(holding?.heldToolResults);
+		const lost = { ...h.latest(record.childId), heldToolResults: holding.heldToolResults } as SubagentChildRecord;
+		await appendRecord(h, lost);
+		observeSubagentChildRecord(lost);
+		// The child then made another call a provider gave the same id.
+		await endSessionOnPendingCall(record);
+		if (newer === "told it is still running") await saveIntoTranscript(record, [stillRunning]);
+
+		const second = await restored(h, record.childId, { prompt: "another message", message: "another message" });
+
+		assert.doesNotMatch(told(second), /run 7 deployed/, "neither again nor as the newer call's result");
+		assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "it is let go");
 	});
 
 test("a woken child's run is told which entry issued its late result's call, as the restore read it back (#3274)", async () => {

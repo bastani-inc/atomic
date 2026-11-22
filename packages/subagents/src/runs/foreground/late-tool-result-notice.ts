@@ -280,6 +280,36 @@ function noticeItems(details: unknown): LateToolResultNoticeItem[] {
 	});
 }
 
+/**
+ * The calls whose late results a saved notice holds: each one's id, and the entry that issued it when the notice was
+ * admitted under a key that names it ({@link lateToolResultNoticeKey}).
+ */
+export function lateToolResultNoticeCalls(message: {
+	readonly customType?: string;
+	readonly details?: unknown;
+	readonly stageAdmissionKey?: unknown;
+}): Array<{ readonly toolCallId: string; readonly callEntryId?: string }> {
+	const entries = new Map<string, string>();
+	const key = message.stageAdmissionKey;
+	const prefix = `${SUBAGENT_LATE_TOOL_RESULT_TYPE}:`;
+	if (typeof key === "string" && key.startsWith(prefix)) {
+		let named: unknown;
+		try {
+			named = JSON.parse(key.slice(prefix.length));
+		} catch {
+			named = undefined;
+		}
+		if (Array.isArray(named))
+			for (const item of named)
+				if (Array.isArray(item) && typeof item[0] === "string" && typeof item[1] === "string")
+					entries.set(item[0], item[1]);
+	}
+	return lateToolResultNoticeIds(message).map((toolCallId) => {
+		const callEntryId = entries.get(toolCallId);
+		return callEntryId === undefined ? { toolCallId } : { toolCallId, callEntryId };
+	});
+}
+
 /** The ids of the calls whose late results a saved notice holds. */
 export function lateToolResultNoticeIds(message: {
 	readonly customType?: string;

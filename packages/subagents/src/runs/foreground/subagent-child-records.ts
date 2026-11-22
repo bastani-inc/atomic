@@ -106,6 +106,16 @@ export function pendingMessagesOfResult(result: {
 }
 
 /** A detached tool call a released child waits on. */
+/**
+ * A result held for a child, and, once a wake read the child's transcript back for it, the entry that issued the call
+ * it is for. A later read-back goes back to that call rather than to a newer one a provider gave the same id (#3274):
+ * a result a run saved, whose release the owner did not record, is then still found saved, never taken for the newer
+ * call's.
+ */
+export interface SubagentChildHeldToolResult extends DetachedToolResult {
+	readonly callEntryId?: string;
+}
+
 export interface SubagentChildWaitingCall {
 	readonly toolCallId: string;
 	readonly toolName: string;
@@ -253,7 +263,7 @@ export interface SubagentChildRecord {
 	 * Results of its detached calls that arrived while the child could not take them (paused, quit, or live in another
 	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
 	 */
-	readonly heldToolResults?: readonly DetachedToolResult[];
+	readonly heldToolResults?: readonly SubagentChildHeldToolResult[];
 	/**
 	 * Notices of finished background tasks the child launched that reached it while it could not take them (released,
 	 * paused or quit), in arrival order. Its next run that saves them delivers each as the notice a running child gets,
@@ -847,23 +857,36 @@ export async function recordSubagentChildHeldToolResults(
 	return next as SubagentChildRecord;
 }
 
+/**
+ * Let go of the results held for a child with these call ids. With `calls`, the read-back that found them saved also
+ * found where the calls of the others are: each kept result not bound to its call yet is bound to the one `calls` names
+ * for its id, in the same write, before a run is given it (`SubagentChildHeldToolResult.callEntryId`).
+ */
 export async function clearSubagentChildHeldToolResults(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 	childId: string,
 	toolCallIds: readonly string[],
+	calls?: ReadonlyMap<string, string>,
 ): Promise<void> {
 	await inOrder(ownerSessionId, async () => {
 		const reading = recordReadable(ownerSessionId, childId);
 		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		const held = latest?.heldToolResults ?? [];
-		const kept = held.filter((result) => !toolCallIds.includes(result.toolCallId));
+		let bound = 0;
+		const kept = held.flatMap((result): SubagentChildHeldToolResult[] => {
+			if (toolCallIds.includes(result.toolCallId)) return [];
+			const callEntryId = result.callEntryId === undefined ? calls?.get(result.toolCallId) : undefined;
+			if (callEntryId === undefined) return [result];
+			bound++;
+			return [{ ...result, callEntryId }];
+		});
 		if (latest === undefined) return;
 		const waitingOn = latest.waitingOn?.filter(
 			(call) => call.replyWait === undefined || !toolCallIds.includes(call.toolCallId),
 		);
-		if (kept.length === held.length && waitingOn?.length === latest.waitingOn?.length) return;
+		if (kept.length === held.length && bound === 0 && waitingOn?.length === latest.waitingOn?.length) return;
 		await appendObserved(
 			pi,
 			observeSubagentChildRecord({
@@ -910,9 +933,9 @@ export async function holdInterruptedStillRunningCalls(
 }
 
 function withHeldToolResults(
-	held: readonly DetachedToolResult[] | undefined,
+	held: readonly SubagentChildHeldToolResult[] | undefined,
 	added: readonly DetachedToolResult[],
-): DetachedToolResult[] {
+): SubagentChildHeldToolResult[] {
 	const kept = [...(held ?? [])];
 	for (const result of added)
 		if (!kept.some((existing) => existing.toolCallId === result.toolCallId)) kept.push(result);

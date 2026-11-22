@@ -76,6 +76,7 @@ import {
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
+	type SubagentChildHeldToolResult,
 	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
@@ -813,9 +814,18 @@ async function relaunchChild(
 				])
 			: undefined;
 	const saved = readBack?.saved ?? [];
-	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
-	const unsaved = (results: readonly DetachedToolResult[]) =>
-		results.filter((result) => !saved.includes(result.toolCallId));
+	// The others are bound to the calls the read-back found for them, before any run is given them: a run that saves one
+	// and stops before the owner lets it go leaves it found saved by the next read-back, also past a newer call a provider
+	// gave the same id (#3274).
+	await clearSubagentChildHeldToolResults(
+		deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		saved,
+		readBack?.issuingCalls,
+	);
+	const unsaved = (results: readonly SubagentChildHeldToolResult[]): DetachedToolResult[] =>
+		results.flatMap(({ callEntryId: _bound, ...result }) => (saved.includes(result.toolCallId) ? [] : [result]));
 	// So were the notices of finished background tasks held for it that its transcript already holds.
 	const heldNotices = latest.heldNotices ?? [];
 	const savedNotices = sessionManager && !fresh ? savedNoticeIds(sessionManager, heldNotices) : [];
@@ -889,7 +899,7 @@ async function relaunchChild(
 	const wakePlan =
 		pending === undefined
 			? undefined
-			: planReleasedChildWake(pending, toolResults, !promptless, interruptedByRestart(record));
+			: planReleasedChildWake(pending, toolResults, !promptless, interruptedByRestart(record), readBack?.olderCalls);
 	// Each reaches it as the notice a running child gets, with its next turn, once. A paused child keeps them held.
 	const notices =
 		!redispatch && !restoredPaused && !fresh && sessionManager
