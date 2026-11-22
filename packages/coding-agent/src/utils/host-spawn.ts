@@ -17,6 +17,7 @@ import { EventEmitter } from "node:events";
 import { createServer, type Server, type Socket } from "node:net";
 import { constants as osConstants } from "node:os";
 import { Readable, Writable } from "node:stream";
+import { getSystemErrorMap } from "node:util";
 import type * as native from "@bastani/atomic-natives";
 import { createModuleRequire } from "./module-require.js";
 
@@ -224,9 +225,15 @@ export async function spawnContainedProcess(
 		// nothing.
 		const code = (failure as NodeJS.ErrnoException).code ?? "EIO";
 		if (code === "ENOSYS" || code === "ENOTSUP") return undefined;
-		const error = spawnError(code, file, args);
-		if (!ASYNC_SPAWN_ERRORS.has(code)) throw error;
-		child.failedStart(error, piped);
+		if (!ASYNC_SPAWN_ERRORS.has(code)) {
+			// As `child_process.spawn` throws one: without the program's name.
+			const error: NodeJS.ErrnoException = new Error(`spawn ${code}`);
+			error.errno = errnoOf(code);
+			error.code = code;
+			error.syscall = "spawn";
+			throw error;
+		}
+		child.failedStart(spawnError(code, file, args), piped);
 		return child;
 	}
 	child.pid = started.pid;
@@ -314,11 +321,17 @@ function signalNumber(signal: NodeJS.Signals | number | undefined): number {
 	return number;
 }
 
+/** The number the runtime gives the error named `code`, as `child_process` reports it (libuv's, on Windows too). */
+function errnoOf(code: string): number | undefined {
+	for (const [errno, [name]] of getSystemErrorMap()) if (name === code) return errno;
+	const errno = osConstants.errno[code as keyof typeof osConstants.errno];
+	return errno === undefined ? undefined : -errno;
+}
+
 /** The error `child_process` gives for a failed start, with the same code, message and fields. */
 function spawnError(code: string, file: string, args: readonly string[]): NodeJS.ErrnoException {
-	const errno = osConstants.errno[code as keyof typeof osConstants.errno];
 	const error: NodeJS.ErrnoException & { spawnargs?: string[] } = new Error(`spawn ${file} ${code}`);
-	error.errno = errno === undefined ? undefined : -errno;
+	error.errno = errnoOf(code);
 	error.code = code;
 	error.syscall = `spawn ${file}`;
 	error.path = file;
@@ -569,6 +582,10 @@ class ContainedProcess extends EventEmitter implements ContainedChildProcess {
 		this.signalCode = event.signal === undefined ? null : (SIGNAL_NAMES.get(event.signal) ?? null);
 		this.stdin?.destroy();
 		this.emit("exit", this.exitCode, this.signalCode);
+		// As `child_process` flushes its output on exit: an output nobody reads is read to its end, so `close` comes.
+		process.nextTick(() => {
+			for (const stream of [this.stdout, this.stderr]) if (stream?.readable) stream.resume();
+		});
 		this.#maybeClose();
 	}
 

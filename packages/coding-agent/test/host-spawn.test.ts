@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -31,6 +31,8 @@ const PROCESS_GONE_TIMEOUT_MS = 10_000;
 const LEFT_RUNNING_MS = 120_000;
 /** Longer than an ended process takes to be gone; one still there after it was not ended. */
 const NOT_ENDED_MS = 1_000;
+/** How long a test waits for a process that exited to close, before failing. */
+const CLOSE_TIMEOUT_MS = 10_000;
 
 interface Ended {
 	readonly code: number | null;
@@ -146,6 +148,7 @@ describe.each(BACKENDS)("host processes started through %s", (backend) => {
 		const result = await ended(child);
 		assert.deepEqual(result.events, ["error ENOENT", "close"]);
 		assert.equal(errors[0]?.message, `spawn ${missing} ENOENT`);
+		assert.equal(errors[0]?.errno, process.platform === "win32" ? -4058 : -2, "libuv's number for ENOENT");
 		assert.equal(errors[0]?.syscall, `spawn ${missing}`);
 		assert.equal(errors[0]?.path, missing);
 		assert.equal(child.pid, undefined);
@@ -338,6 +341,54 @@ describe("a host process started in a job of its own", () => {
 
 			assert.equal(child.endTree(), false);
 			assert.equal(await waitUntilGone(program, NOT_ENDED_MS), false, "the released program was ended");
+		},
+	);
+
+	test.runIf(process.platform === "win32")(
+		"a program can write to its own input, as under child_process",
+		async () => {
+			const script =
+				"try{require('fs').writeSync(0,'abc');process.stdout.write('wrote')}catch(e){process.stdout.write(e.code)}";
+			const expected = await ended(spawn(node, ["-e", script], { windowsHide: true }));
+			const actual = await ended(await contained(node, ["-e", script]));
+			assert.equal(expected.stdout, "wrote");
+			assert.equal(actual.stdout, "wrote");
+		},
+	);
+
+	test.runIf(process.platform === "win32")(
+		"a process whose output nobody reads closes after its exit, as under child_process",
+		async () => {
+			const child = await contained(node, ["-e", "process.stdout.write('out');process.stderr.write('err')"]);
+			const closed = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+			assert.equal(await Promise.race([closed, sleep(CLOSE_TIMEOUT_MS).then(() => "no close")]), 0);
+		},
+	);
+
+	test.runIf(process.platform === "win32")(
+		"a file that is not a program fails as child_process.spawn throws for it",
+		async () => {
+			const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-contained-")));
+			try {
+				const file = join(directory, "not-a-program.exe");
+				writeFileSync(file, "not a program");
+				const fields = (error: NodeJS.ErrnoException) => [error.message, error.code, error.errno, error.syscall];
+				let expected: NodeJS.ErrnoException | undefined;
+				try {
+					spawn(file, [], { windowsHide: true });
+				} catch (error) {
+					expected = error as NodeJS.ErrnoException;
+				}
+				assert.ok(expected, "child_process.spawn threw");
+				const actual = await spawnContainedProcess(file, []).then(
+					() => undefined,
+					(error: NodeJS.ErrnoException) => error,
+				);
+				assert.ok(actual, "the contained start threw");
+				assert.deepEqual(fields(actual), fields(expected));
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
 		},
 	);
 

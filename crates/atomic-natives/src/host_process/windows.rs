@@ -24,17 +24,17 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows_sys::Win32::Foundation::{
-	DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_BAD_EXE_FORMAT, ERROR_DIRECTORY,
-	ERROR_ELEVATION_REQUIRED, ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_DRIVE,
-	ERROR_INVALID_NAME, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY,
-	ERROR_PATH_NOT_FOUND, ERROR_TOO_MANY_OPEN_FILES, GENERIC_READ, GENERIC_WRITE, HANDLE,
-	HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+	ERROR_ACCESS_DENIED, ERROR_BAD_EXE_FORMAT, ERROR_DIRECTORY, ERROR_ELEVATION_REQUIRED,
+	ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_DRIVE, ERROR_INVALID_NAME,
+	ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY, ERROR_PATH_NOT_FOUND,
+	ERROR_TOO_MANY_OPEN_FILES, GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT,
+	INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Globalization::{CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-	CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES,
-	GetFileAttributesW, GetShortPathNameW, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+	CreateFileW, FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesW, GetShortPathNameW,
+	INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
 use windows_sys::Win32::System::JobObjects::{
@@ -45,11 +45,10 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
 	CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
-	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-	GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-	PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESHOWWINDOW,
-	STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent, TerminateProcess, UpdateProcThreadAttribute,
-	WaitForMultipleObjects, WaitForSingleObject,
+	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
+	InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
+	ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, SetEvent,
+	TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -113,24 +112,26 @@ impl Job {
 }
 
 /// The program's end of its piped standard stream `index` (0 input, 1 output, 2 error): the client end of the host's
-/// pipe server `name`, opened as libuv opens a child's end of its pipe (writing and reading its attributes for output,
-/// reading and writing its attributes for input, not overlapped), after `prefix` and the stream's number were written
-/// into it. Refused when the server is not this process's, so the stream cannot lead elsewhere.
+/// pipe server `name`, opened as libuv opens a child's end of a pipe `child_process` asks for (reading and writing, not
+/// overlapped), after `prefix` and the stream's number were written into it. Refused when the server is not this
+/// process's, so the stream cannot lead elsewhere.
 fn connect_stream(name: &[u16], index: u8, prefix: &[u8]) -> io::Result<File> {
 	let attributes = SECURITY_ATTRIBUTES {
 		nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
 		lpSecurityDescriptor: null_mut(),
 		bInheritHandle: 0,
 	};
-	let input = index == 0;
-	// Input's end writes once, for the prefix, and then keeps only the access libuv gives it.
-	let access = if input {
-		GENERIC_READ | GENERIC_WRITE | FILE_WRITE_ATTRIBUTES
-	} else {
-		GENERIC_WRITE | FILE_READ_ATTRIBUTES
+	let opened = unsafe {
+		CreateFileW(
+			name.as_ptr(),
+			GENERIC_READ | GENERIC_WRITE,
+			0,
+			&attributes,
+			OPEN_EXISTING,
+			0,
+			null_mut(),
+		)
 	};
-	let opened =
-		unsafe { CreateFileW(name.as_ptr(), access, 0, &attributes, OPEN_EXISTING, 0, null_mut()) };
 	if opened == INVALID_HANDLE_VALUE {
 		return Err(io::Error::last_os_error());
 	}
@@ -144,26 +145,7 @@ fn connect_stream(name: &[u16], index: u8, prefix: &[u8]) -> io::Result<File> {
 	}
 	file.write_all(prefix)?;
 	file.write_all(&[index])?;
-	if !input {
-		return Ok(file);
-	}
-	let mut reduced = null_mut();
-	let process = unsafe { GetCurrentProcess() };
-	if unsafe {
-		DuplicateHandle(
-			process,
-			raw(&file),
-			process,
-			&mut reduced,
-			GENERIC_READ | FILE_WRITE_ATTRIBUTES,
-			0,
-			0,
-		)
-	} == 0
-	{
-		return Err(io::Error::last_os_error());
-	}
-	Ok(unsafe { File::from_raw_handle(reduced) })
+	Ok(file)
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
