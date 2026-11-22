@@ -261,7 +261,7 @@ test("a delayed stop failure remains visible below an open transcript (#4521)", 
 		await flush();
 		const lines = h.frame(110, 24);
 		assert.equal(lines.length, 24);
-		assert.match(plain(lines), /← task.*\? keys\nCould not stop the task: stop refused/);
+		assert.match(plain(lines), / {2}← task.*\? keys\n {2}Could not stop the task: stop refused/);
 	} finally {
 		result.resolve({ ok: false, error: { message: "stop refused" } });
 		await h.dispose();
