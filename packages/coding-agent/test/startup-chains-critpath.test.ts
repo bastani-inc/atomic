@@ -3,12 +3,14 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { createAgentSessionServices } from "../src/core/agent-session-services.ts";
+import { ModelRuntime } from "../src/core/model-runtime.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { hasProjectTrustInputs, hasProjectTrustInputsAsync } from "../src/core/trust-manager.ts";
 import { shouldPrewarmInteractiveEngine } from "../src/modes/interactive-engine/engine-prewarm.ts";
 
-describe("PR 3 startup serial chains and CLI prewarm/spare-DB helpers", () => {
+describe("startup serial chains and CLI spare-DB helpers", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
@@ -24,38 +26,16 @@ describe("PR 3 startup serial chains and CLI prewarm/spare-DB helpers", () => {
 		}
 	});
 
-	it("shouldPrewarmInteractiveEngine skips spawning a doomed engine on unpinned --no-approve while keeping pinned or overridden runs", () => {
+	it("shouldPrewarmInteractiveEngine keeps prewarming plain interactive launches including --no-approve", () => {
 		const host = { stdinIsTTY: true, stdoutIsTTY: true, cpus: 8 };
-		// Clear storage-pinning env vars so test is isolated from shell env.
-		for (const key of [
-			"ATOMIC_SESSION_DIR",
-			"PI_SESSION_DIR",
-			"ATOMIC_STORAGE",
-			"PI_STORAGE",
-			"ATOMIC_SESSIONS_STORAGE",
-			"PI_SESSIONS_STORAGE",
-		]) {
-			vi.stubEnv(key, "");
-		}
-
-		// Unpinned --no-approve / -na guarantees in-process mode -> must NOT prewarm.
-		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve"], host), false);
-		assert.equal(shouldPrewarmInteractiveEngine(["-na"], host), false);
-		assert.equal(shouldPrewarmInteractiveEngine(["--offline", "--no-mcp", "--no-approve"], host), false);
-
-		// Last trust flag wins: --no-approve followed by --approve still prewarms.
-		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve", "--approve"], host), true);
-		assert.equal(shouldPrewarmInteractiveEngine(["-na", "-a"], host), true);
-		// Value-taking flag whose value is "--no-approve" must NOT be mistaken for a trust flag.
-		assert.equal(shouldPrewarmInteractiveEngine(["--name", "--no-approve"], host), true);
-
-		// Storage pinned via CLI flag or env still allows isolation -> still prewarms.
-		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve", "--no-session"], host), true);
-		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve", "--session-dir", tempDir], host), true);
-		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve", `--session-dir=${tempDir}`], host), true);
-		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve", "--storage", "sqlite"], host), true);
-		vi.stubEnv("ATOMIC_SESSION_DIR", tempDir);
+		assert.equal(shouldPrewarmInteractiveEngine([], host), true);
+		assert.equal(shouldPrewarmInteractiveEngine(["--approve"], host), true);
 		assert.equal(shouldPrewarmInteractiveEngine(["--no-approve"], host), true);
+		assert.equal(shouldPrewarmInteractiveEngine(["-na"], host), true);
+		assert.equal(shouldPrewarmInteractiveEngine(["--offline", "--no-mcp", "--no-approve"], host), true);
+		// Non-interactive launches still skip prewarm.
+		assert.equal(shouldPrewarmInteractiveEngine(["-p", "hi"], host), false);
+		assert.equal(shouldPrewarmInteractiveEngine(["--help"], host), false);
 	});
 
 	it("shouldStartSpareDatabaseThread covers -p and plain --mode rpc while excluding metadata, subcommands, --no-session, and non-sqlite storage", async () => {
@@ -165,5 +145,52 @@ describe("PR 3 startup serial chains and CLI prewarm/spare-DB helpers", () => {
 		assert.ok(loader.getSkills().diagnostics.some((d) => d.path === missingSkill));
 		assert.ok(loader.getPrompts().diagnostics.some((d) => d.path === missingPrompt));
 		assert.ok(loader.getThemes().diagnostics.some((d) => d.path === missingTheme));
+	});
+
+	it("createAgentSessionServices overlaps ModelRuntime.create and SettingsManager.createAsync while preserving single-refresh marking", async () => {
+		const agentDir = join(tempDir, "agent-overlap");
+		const projectDir = join(tempDir, "proj-overlap");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(projectDir, { recursive: true });
+
+		const origModelCreate = ModelRuntime.create.bind(ModelRuntime);
+		const origSettingsCreate = SettingsManager.createAsync.bind(SettingsManager);
+		let releaseModel!: () => void;
+		let modelEntered = false;
+		let settingsStartedWhileModelPending = false;
+
+		const modelSpy = vi.spyOn(ModelRuntime, "create").mockImplementation(async (opts) => {
+			modelEntered = true;
+			await new Promise<void>((resolve) => {
+				releaseModel = resolve;
+			});
+			return origModelCreate(opts);
+		});
+		const settingsSpy = vi.spyOn(SettingsManager, "createAsync").mockImplementation(async (cwd, dir) => {
+			if (modelEntered) {
+				settingsStartedWhileModelPending = true;
+				releaseModel();
+			}
+			return origSettingsCreate(cwd, dir);
+		});
+
+		const services = await createAgentSessionServices({
+			cwd: projectDir,
+			agentDir,
+			resourceLoaderOptions: {
+				builtinPackagePaths: [],
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+			},
+		});
+
+		assert.equal(settingsStartedWhileModelPending, true);
+		assert.equal(modelSpy.mock.calls.length, 1);
+		assert.equal(modelSpy.mock.calls[0]?.[0]?.refreshOnCreate, false);
+		assert.equal(settingsSpy.mock.calls.length, 1);
+		assert.equal(ModelRuntime.consumeStartupCatalogRestored(services.modelRuntime), true);
+		assert.equal(ModelRuntime.consumeStartupCatalogRestored(services.modelRuntime), false);
 	});
 });

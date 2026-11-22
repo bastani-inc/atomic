@@ -93,12 +93,12 @@ if (heapArgs.length > 0) {
 		? prewarm!.then(({ prewarmInteractiveEngineForArgs }) => prewarmInteractiveEngineForArgs(args)).catch(() => {})
 		: Promise.resolve();
 	// An interactive session shows its editor and takes typing before the rest of Atomic has loaded, where nothing it
-	// shows before its editor would come first (startup-shell.ts). Its eligibility module loads concurrently with
-	// prewarmInteractiveEngineForArgs; planStartupShell still waits for prewarmed so argument env overrides apply first.
+	// shows before its editor would come first (startup-shell.ts). Its modules load before the rest.
 	const started =
 		interactiveHost && isPlainInteractiveSessionInvocation(args, terminal)
-			? Promise.all([prewarmed, import("./modes/interactive/startup-shell-eligibility.ts")])
-					.then(async ([, { planStartupShell }]) => {
+			? prewarmed
+					.then(() => import("./modes/interactive/startup-shell-eligibility.ts"))
+					.then(async ({ planStartupShell }) => {
 						const plan = planStartupShell(args, process.cwd());
 						if (!plan) return;
 						const shell = await import("./modes/interactive/startup-shell.ts");
