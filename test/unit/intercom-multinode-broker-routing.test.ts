@@ -1390,10 +1390,13 @@ test("an old connection of a session that reconnected to the same broker leaves 
 	const live = await b!.connect("recipient", { returnAddress });
 	b!.leave(old);
 	// The old connection's departure is done once it recorded the session as it last knew it.
-	await vi.waitFor(async () => {
-		const known = await b!.opened.state.knownSessions.lookup(old.info.id, KNOWN_SESSION_RETENTION_MS);
-		assert.equal(known.status, "found");
-	});
+	await vi.waitFor(
+		async () => {
+			const known = await b!.opened.state.knownSessions.lookup(old.info.id, KNOWN_SESSION_RETENTION_MS);
+			assert.equal(known.status, "found");
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
 
 	const sent = message();
 	a!.send(sender, live.info.id, sent);
@@ -2478,11 +2481,13 @@ async function parkedAskScene() {
 	const ask = await savedAsk(a!, asker, b!, child);
 	b!.sessions.delete(child.info.id);
 	b!.router.sessionLeft(child, { ownerSessionId: owner.info.id, childName: "child" });
-	await vi.waitFor(async () =>
-		assert.deepEqual(await a!.opened.state.pendingAsks.listParked(owner.info.id), {
-			status: "listed",
-			asks: [{ senderSessionId: asker.info.id, targetSessionId: child.info.id, messageId: ask.id }],
-		}),
+	await vi.waitFor(
+		async () =>
+			assert.deepEqual(await a!.opened.state.pendingAsks.listParked(owner.info.id), {
+				status: "listed",
+				asks: [{ senderSessionId: asker.info.id, targetSessionId: child.info.id, messageId: ask.id }],
+			}),
+		{ timeout: CROSS_NODE_WAIT_MS },
 	);
 	assert.deepEqual(failuresOf(asker, ask.id), [], "a released subagent's ask is still open");
 	return { a: a!, b: b!, asker, owner, child, ask };
@@ -2506,11 +2511,13 @@ async function toldOnce(scene: Awaited<ReturnType<typeof parkedAskScene>>): Prom
 	});
 	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
 	assert.equal(failuresOf(scene.asker, scene.ask.id).length, 1, "told once");
-	await vi.waitFor(async () =>
-		assert.deepEqual(await scene.a.opened.state.pendingAsks.listParked(scene.owner.info.id), {
-			status: "listed",
-			asks: [],
-		}),
+	await vi.waitFor(
+		async () =>
+			assert.deepEqual(await scene.a.opened.state.pendingAsks.listParked(scene.owner.info.id), {
+				status: "listed",
+				asks: [],
+			}),
+		{ timeout: CROSS_NODE_WAIT_MS },
 	);
 }
 
@@ -2654,13 +2661,21 @@ test("an away asker of a child that turned terminal and then ended gets only the
 	await waitOffline(b!, asker);
 	child.info.replyCapability = "terminal";
 	b!.router.sessionUpdated(child);
-	await vi.waitFor(async () => {
-		const row = await b!.opened.state.outbox.read(`terminal:${ask.id}`);
-		assert.equal(row.status, "found");
-	});
+	await vi.waitFor(
+		async () => {
+			const row = await b!.opened.state.outbox.read(`terminal:${ask.id}`);
+			assert.equal(row.status, "found");
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
 	b!.leave(child);
-	await vi.waitFor(async () =>
-		assert.deepEqual(await a!.opened.state.pendingAsks.listForTarget(child.info.id), { status: "listed", asks: [] }),
+	await vi.waitFor(
+		async () =>
+			assert.deepEqual(await a!.opened.state.pendingAsks.listForTarget(child.info.id), {
+				status: "listed",
+				asks: [],
+			}),
+		{ timeout: CROSS_NODE_WAIT_MS },
 	);
 	assert.deepEqual(await b!.opened.state.outbox.read(`ended:${ask.id}`), { status: "missing" }, "not failed again");
 	const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
