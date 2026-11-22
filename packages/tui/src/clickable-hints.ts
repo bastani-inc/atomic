@@ -9,10 +9,13 @@ import { getKeybindings, type KeybindingsManager } from "./keybindings.ts";
 import { type KeyId, keyInputData } from "./keys.ts";
 import { extractAnsiCode, HINT_CLOSE, HINT_OPEN, visibleWidth } from "./utils.ts";
 
-/** What a click on a hint runs: a key, exactly as if it were pressed, or a slash command such as `/tasks`. */
+/**
+ * What a click on a hint runs: a key, exactly as if it were pressed, or a slash command such as `/tasks`. A command with
+ * a `route` runs only where that route leads, such as the chat that drew the hint; without one it runs in the main chat.
+ */
 export type HintAction =
 	| { readonly kind: "key"; readonly key: KeyId }
-	| { readonly kind: "command"; readonly command: string };
+	| { readonly kind: "command"; readonly command: string; readonly route?: string };
 
 /** Where a hint was painted on a row, in columns `[start, end)`, and what a click on it runs. */
 export interface HintSpan {
@@ -33,12 +36,21 @@ export function keyHintAction(key: KeyId): HintAction {
 	return { kind: "key", key };
 }
 
-export function commandHintAction(command: string): HintAction {
-	return { kind: "command", command };
+export function commandHintAction(command: string, route?: string): HintAction {
+	return route === undefined ? { kind: "command", command } : { kind: "command", command, route };
 }
 
+/**
+ * A routed command is written as `r:<route>:<command>`, which a renderer that knows only keys (`k:`) and commands (`c:`)
+ * reads as no action: there its text is drawn and a click on it does nothing.
+ */
 function encodeAction(action: HintAction): string {
-	const payload = action.kind === "key" ? `k:${action.key}` : `c:${action.command}`;
+	const payload =
+		action.kind === "key"
+			? `k:${action.key}`
+			: action.route === undefined
+				? `c:${action.command}`
+				: `r:${action.route.replaceAll(":", "")}:${action.command}`;
 	return payload.replace(CONTROL_CHARACTERS, "");
 }
 
@@ -47,6 +59,12 @@ function decodeAction(payload: string): HintAction | undefined {
 	if (value === "") return undefined;
 	if (payload.startsWith("k:")) return { kind: "key", key: value as KeyId };
 	if (payload.startsWith("c:")) return { kind: "command", command: value };
+	if (payload.startsWith("r:")) {
+		const split = value.indexOf(":");
+		const route = value.slice(0, split);
+		const command = value.slice(split + 1);
+		return split > 0 && command !== "" ? { kind: "command", command, route } : undefined;
+	}
 	return undefined;
 }
 
@@ -279,10 +297,13 @@ export function clickableHintText(text: string, bindings?: readonly KeyId[]): st
 		.join(" · ");
 }
 
-/** A hint naming a slash command, such as `/tasks to manage`, that runs the command when clicked. */
-export function slashCommandHint(text: string): string {
+/**
+ * A hint naming a slash command, such as `/tasks to manage`, that runs the command when clicked: in the main chat, or,
+ * with a `route`, only where the route leads.
+ */
+export function slashCommandHint(text: string, route?: string): string {
 	const command = /^\/[\w:-]+/.exec(text)?.[0];
-	return command === undefined ? text : clickableHint(text, commandHintAction(command));
+	return command === undefined ? text : clickableHint(text, commandHintAction(command, route));
 }
 
 /** Whether `line` has hint markers. */
