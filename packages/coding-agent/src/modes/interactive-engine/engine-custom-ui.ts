@@ -743,6 +743,10 @@ export class EngineCustomUiService {
 		const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
 		const rowKeys = rowKeysOf(record.component, lines.length);
 		const layout = record.transcript === true ? transcriptLayoutOf(record.component) : undefined;
+		const previewSeq =
+			record.widgetKey !== undefined
+				? (record.component as { previewSeq?(): number | undefined }).previewSeq?.()
+				: undefined;
 		record.frame = (record.frame ?? 0) + 1;
 		this.send({
 			type: "engine_custom_frame",
@@ -752,6 +756,7 @@ export class EngineCustomUiService {
 			frame: record.frame,
 			...(rowKeys ? { rowKeys } : {}),
 			...(layout ? { layout } : {}),
+			...(previewSeq !== undefined && previewSeq > 0 ? { previewSeq } : {}),
 			...(scrollRequest ? { scrollRequest } : {}),
 		});
 	}

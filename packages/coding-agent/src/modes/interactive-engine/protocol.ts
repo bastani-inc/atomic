@@ -117,6 +117,8 @@ export type InteractiveEngineMessage =
 	| {
 			type: "engine_view_agent";
 			taskId: string | null;
+			/** Monotonic positive integer per engine bridge/generation identifying this request; omitted by older engines. */
+			requestId?: number;
 			/** The request closes `/tasks`: the host keeps its prompt and panel as painted until the subagent is shown. */
 			keepScreen?: true;
 			/**
@@ -175,6 +177,11 @@ export type InteractiveEngineMessage =
 			rowKeys?: string[];
 			/** How a viewed subagent's transcript laid out this frame, so the host can place it in another height. */
 			layout?: TranscriptFrameLayout;
+			/**
+			 * Host preview sequence number when this frame was rendered under a speculative `panelOnView` preview;
+			 * omitted on committed frames and by older engines.
+			 */
+			previewSeq?: number;
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string; evictCache?: true }
@@ -593,6 +600,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? {
 						type: value.type,
 						taskId: value.taskId,
+						...(typeof value.requestId === "number" &&
+						Number.isSafeInteger(value.requestId) &&
+						value.requestId > 0
+							? { requestId: value.requestId }
+							: {}),
 						...(value.keepScreen === true ? { keepScreen: true } : {}),
 						...(value.panel === true ? { panel: true } : {}),
 						...(value.panelOnView === true ? { panelOnView: true } : {}),
@@ -718,6 +730,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 							? { rowKeys: value.rowKeys as string[] }
 							: {}),
 						...layoutField(value.layout),
+						...(typeof value.previewSeq === "number" &&
+						Number.isSafeInteger(value.previewSeq) &&
+						value.previewSeq > 0
+							? { previewSeq: value.previewSeq }
+							: {}),
 						...(isJsonObject(value.scrollRequest) &&
 						typeof value.scrollRequest.version === "number" &&
 						typeof value.scrollRequest.scrollTop === "number"

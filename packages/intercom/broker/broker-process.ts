@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as atomicHost from "@bastani/atomic";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 import { processCreationTimeOf, recognisedProcessStart } from "./start-announcement.js";
+import { resolveSafeWindowsWorkingDirectoryAsync } from "./windows-cwd.js";
 
 /**
  * A broker process found by its pid, told apart from a later process the OS gives the same pid (#6133). Windows gives
@@ -320,17 +321,36 @@ export async function stopWindowsProcess(
 	if ((await readProcessCreationTime(pid)) !== started) return;
 	if (performance.now() - entered >= WINDOWS_STOP_START_MS) return;
 	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+	const powershellPath = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	const cwdBudgetMs = Math.min(150, Math.max(0, Math.floor(WINDOWS_STOP_START_MS - (performance.now() - entered))));
+	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({
+		commandPath: powershellPath,
+		preferCommandDir: true,
+		timeoutMs: cwdBudgetMs,
+	});
+	if (performance.now() - entered >= WINDOWS_STOP_START_MS) return;
 	await new Promise<void>((resolve) => {
-		const powershell = spawn(
-			join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-			[
-				"-NoProfile",
-				"-NonInteractive",
-				"-EncodedCommand",
-				Buffer.from(stopWindowsProcessScript(pid, started, waitMs, descendants), "utf16le").toString("base64"),
-			],
-			{ cwd: systemRoot, env: hostCommandEnvironment(), stdio: "ignore", windowsHide: true },
-		);
+		let powershell: ReturnType<typeof spawn>;
+		try {
+			powershell = spawn(
+				powershellPath,
+				[
+					"-NoProfile",
+					"-NonInteractive",
+					"-EncodedCommand",
+					Buffer.from(stopWindowsProcessScript(pid, started, waitMs, descendants), "utf16le").toString("base64"),
+				],
+				{
+					...(cwd === undefined ? {} : { cwd }),
+					env: hostCommandEnvironment(),
+					stdio: "ignore",
+					windowsHide: true,
+				},
+			);
+		} catch {
+			resolve();
+			return;
+		}
 		powershell.unref();
 		const done = () => {
 			clearTimeout(timer);
