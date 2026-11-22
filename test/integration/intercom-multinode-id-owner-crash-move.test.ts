@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS, type IntercomIdHandoff } from "../../packages/intercom/broker/client.js";
 import { SESSION_ID_OWNER_SAFE_MS } from "../../packages/intercom/broker/multinode-router.js";
@@ -10,7 +11,7 @@ import {
 	twoBrokerHarnessStartTimeoutMs,
 } from "../helpers/intercom-two-broker-harness.js";
 import { type RecordedProcess, recordProcess, signalRecordedProcess } from "../helpers/recorded-process.js";
-import { sleep } from "../helpers/runtime.js";
+import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 /**
  * #5607: broker "a" stops (its process is stopped, so no broker can tell it apart from one on another machine that
@@ -89,6 +90,41 @@ function disconnectedOnce(client: TwoBrokerClient): Promise<void> {
 	return new Promise((resolve) => client.client.once("disconnected", () => resolve()));
 }
 
+/** Whether every thread of process `pid` has stopped: a signal to stop it takes effect after it is sent. */
+function processStopped(pid: number): boolean {
+	if (process.platform === "linux") {
+		const tasks = readdirSync(`/proc/${pid}/task`);
+		return tasks.every((task) => {
+			const stat = readFileSync(`/proc/${pid}/task/${task}/stat`, "utf8");
+			const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+			return state === "T" || state === "t";
+		});
+	}
+	return spawnSyncCollect(["ps", "-o", "state=", "-p", String(pid)])
+		.stdout.toString()
+		.trim()
+		.startsWith("T");
+}
+
+/**
+ * Stops the broker process `pid` while it holds no write lock on the shared database: the test holds that lock itself
+ * until every thread of the broker has stopped. A broker on another machine that crashed holds none, as a broker stopped
+ * in the middle of a write would, for as long as it stays stopped, keeping every other broker's writes waiting.
+ */
+async function stopOutsideAWrite(pid: number): Promise<void> {
+	const recorded = await recordProcess(pid);
+	const database = await harness.openSharedStorage("c");
+	await database.transaction(async () => {
+		// Continued by `afterAll` whatever happens from here on.
+		stopped = recorded;
+		assert.ok(await signalRecordedProcess(recorded, "SIGSTOP"));
+		await vi.waitFor(() => assert.ok(processStopped(pid), "the broker has not stopped yet"), {
+			timeout: 5_000,
+			interval: 5,
+		});
+	});
+}
+
 async function within(promise: Promise<void>, ms: number, what: string): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -123,8 +159,7 @@ test.skipIf(process.platform === "win32")(
 
 		const pid = harness.brokerPid("a");
 		assert.ok(pid !== undefined);
-		stopped = await recordProcess(pid);
-		assert.ok(await signalRecordedProcess(stopped, "SIGSTOP"));
+		await stopOutsideAWrite(pid);
 		const stoppedAt = performance.now();
 		await sleep(500);
 
