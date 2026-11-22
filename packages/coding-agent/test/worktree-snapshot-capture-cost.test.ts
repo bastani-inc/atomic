@@ -25,7 +25,8 @@ useTemporaryAgentDir();
 /**
  * Git processes one turn may start to learn that its checkout did not change: one `rev-parse` locates the checkout,
  * its Git directory, its index and HEAD; one `status` lists the files that differ from HEAD and the untracked ones
- * through the private index, which still holds HEAD's tree, so it is not read again; `update-index --stdin` adds the
+ * through the private index, which still holds HEAD's tree, so it is not read again (a checkout with submodules adds
+ * `update-index --refresh` and `diff-files`, which look into them); `update-index --stdin` adds the
  * files that differ from HEAD to a copy of it, and `write-tree` writes the tree. The files staged in the user's index
  * despite an ignore rule (`diff-index`) were listed by the turn before, from the same index and HEAD. The session ref
  * already names the snapshot's commit, so it is not written again. Every turn that calls a file-writing tool pays

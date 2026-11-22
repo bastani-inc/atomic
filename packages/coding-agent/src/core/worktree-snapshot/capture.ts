@@ -360,6 +360,8 @@ interface IndexRecord {
 	readonly pristine?: string;
 	/** The tree `write-tree` gives for that index, once a capture learned it. */
 	readonly tree?: string;
+	/** Whether that index holds a submodule, once a capture read it. */
+	readonly submodules?: boolean;
 }
 
 /** The record next to `index`, when it is of this version; anything else reads as none. */
@@ -454,13 +456,13 @@ async function writeCapturedTree(
 		}
 		// The copy has the recorded bytes: it is HEAD's tree alone when the record says so for this HEAD.
 		const pristine = !reseed && record?.pristine === checkout.head;
-		const { state, headTree } = await writeScannedTree(
+		const { state, headTree, submodules } = await writeScannedTree(
 			working,
 			checkout,
 			settings,
 			policy,
 			scratch,
-			{ pristine, tree: pristine ? record?.tree : undefined },
+			{ pristine, tree: pristine ? record?.tree : undefined, submodules: pristine ? record?.submodules : undefined },
 			() => ignoredAdditionsToHead(checkout, userIndexPath, scratch, signal),
 			signal,
 		);
@@ -470,6 +472,7 @@ async function writeCapturedTree(
 			index: sha256Hex(await readFile(working)),
 			pristine: checkout.head,
 			...(headTree === undefined ? {} : { tree: headTree }),
+			...(submodules === undefined ? {} : { submodules }),
 		};
 		await renameWithRetry(working, index, { signal });
 		await writeAtomically(`${index}.json`, JSON.stringify(written));
@@ -802,27 +805,25 @@ async function admittedFiles(
 /**
  * The settings and arguments of the `status` that lists, through a private index holding HEAD's tree, the files that
  * differ from it and the untracked ones, as `update-index --refresh`, `diff-files` and `ls-files --others
- * --exclude-standard` list them: the untracked cache, which `ls-files` does not read, is not used, and
- * `diff.ignoreSubmodules`, which `diff-files` does not read, is set to its default, so both follow each submodule's
- * own `ignore` setting alike. A submodule whose only change is untracked files is the exception: `status` lists it,
- * and `diff-files` lists it or not depending on the Git version.
+ * --exclude-standard` list them, apart from submodules: the untracked cache, which `ls-files` does not read, is not
+ * used, and submodules are not looked into at all, so `status` starts no Git process in a submodule's repository, where
+ * its settings and optional locks would reach (`diff-files` lists submodules: {@link writeScannedTree}).
  */
 const SCAN_COMMAND = [
 	"-c",
 	"core.untrackedCache=false",
-	"-c",
-	"diff.ignoreSubmodules=none",
 	"status",
 	"--porcelain=v2",
 	"-z",
 	"--untracked-files=all",
 	"--no-renames",
+	"--ignore-submodules=all",
 ];
 
 /**
  * The files that differ from the private index `git` names, which holds HEAD's tree, and the untracked ones, from one
- * `status` that also refreshes the index's file times. `askDiffFiles`: it listed a submodule whose only change is
- * untracked files, or an entry other than a changed or an untracked one, so `diff-files` lists the changed files.
+ * `status` that also refreshes the index's file times. `askDiffFiles`: it listed an entry other than a changed or an
+ * untracked file, such as an unmerged one, so `diff-files` lists the changed files.
  */
 async function scanWorkingFiles(
 	git: GitRunOptions,
@@ -838,12 +839,8 @@ async function scanWorkingFiles(
 		if (field.startsWith("? ")) {
 			untracked.push(field.slice(2));
 		} else if (field.startsWith("1 ")) {
-			// `1 XY sub mH mI mW hH hI path`: Y is the file against the index; `sub` is `S..U` for a submodule with only
-			// untracked files in it.
-			const [, states = "", sub = ""] = field.split(" ", 3);
-			if (states[1] === ".") continue;
-			if (sub === "S..U") askDiffFiles = true;
-			changed.push(field.split(" ").slice(8).join(" "));
+			// `1 XY sub mH mI mW hH hI path`: Y is the file against the index.
+			if (field[3] !== ".") changed.push(field.split(" ").slice(8).join(" "));
 		} else {
 			// A rename (with its original path next), an unmerged path or anything else: not one of HEAD's files alone.
 			askDiffFiles = true;
@@ -853,13 +850,61 @@ async function scanWorkingFiles(
 	return { changed, untracked, askDiffFiles };
 }
 
+/** The number of bytes of an object id of the repository whose HEAD commit is `head`, as Git writes it in an index. */
+function objectIdBytes(head: string): number {
+	return head.length / 2;
+}
+
+/**
+ * Whether the Git index `bytes`, with object ids of `oidBytes` bytes, holds a submodule (an entry of mode 160000), read
+ * from its entries in index versions 2 to 4. Undefined when its bytes cannot be read that way, such as an index split
+ * into a shared file that holds most of its entries.
+ */
+function indexHoldsSubmodule(bytes: Uint8Array, oidBytes: number): boolean | undefined {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	// The entries and extensions end where the checksum of the whole file starts.
+	const end = bytes.byteLength - oidBytes;
+	if (end < 12 || view.getUint32(0) !== 0x44495243) return undefined;
+	const version = view.getUint32(4);
+	if (version < 2 || version > 4) return undefined;
+	let submodule = false;
+	let offset = 12;
+	for (let entry = view.getUint32(8); entry > 0; entry--) {
+		// Ten 32-bit fields (times, device, inode, mode, owner, size), the object id, then 16-bit flags.
+		const flags = offset + 40 + oidBytes;
+		if (flags + 2 > end) return undefined;
+		if ((view.getUint32(offset + 24) & 0o170000) === 0o160000) submodule = true;
+		const extended = (view.getUint16(flags) & 0x4000) !== 0;
+		if (extended && version < 3) return undefined;
+		let name = flags + 2 + (extended ? 2 : 0);
+		if (version === 4) {
+			// How much of the previous entry's name this one keeps, as a variable-length number, then the rest of it.
+			do {
+				if (name >= end) return undefined;
+			} while ((bytes[name++]! & 0x80) !== 0);
+		}
+		const nul = bytes.indexOf(0, name);
+		if (nul < 0 || nul >= end) return undefined;
+		// Versions 2 and 3 pad each entry with NULs to a multiple of 8 bytes; version 4 does not pad.
+		offset = version === 4 ? nul + 1 : offset + ((nul - offset + 8) & ~7);
+	}
+	while (offset + 8 <= end) {
+		// A split index (`link`) keeps the rest of its entries in a shared index.
+		if (String.fromCharCode(...bytes.subarray(offset, offset + 4)) === "link") return undefined;
+		offset += 8 + view.getUint32(offset + 4);
+	}
+	return offset === end ? submodule : undefined;
+}
+
 /**
  * The tree of a capture's working files through the private index `index`, kept between captures as HEAD's tree alone,
- * refreshed: `pristine` says it already is HEAD's tree, so it is not read again, and `tree` is the tree it gives when
- * known. One `status` lists the files that differ from it and the untracked ones ({@link scanWorkingFiles}); the files
- * the snapshot records go into a copy, in `scratch`, so `index` stays HEAD's tree. Records exactly the tree and
- * omissions {@link writeTreeThrough} records with a refresh and the files staged despite an ignore rule. Resolves
- * the tree `index` gives too, when this capture learned it.
+ * refreshed: `pristine` says it already is HEAD's tree, so it is not read again, `tree` is the tree it gives when
+ * known, and `submodules` whether it holds one, when known. One `status` lists the files that differ from it and the
+ * untracked ones ({@link scanWorkingFiles}); where the index holds a submodule, or may, `update-index --refresh` and
+ * `diff-files` list the changed files, submodules included, as before. The files the snapshot records go into a copy,
+ * in `scratch`, so `index` stays HEAD's tree. Records exactly the tree and omissions {@link writeTreeThrough} records
+ * with a refresh and the files staged despite an ignore rule. Resolves the tree `index` gives and whether it holds a
+ * submodule, when this capture learned them.
  */
 async function writeScannedTree(
 	index: string,
@@ -867,16 +912,24 @@ async function writeScannedTree(
 	settings: WorktreeSnapshotSettings,
 	policy: SnapshotPathPolicy,
 	scratch: string,
-	known: { readonly pristine: boolean; readonly tree: string | undefined },
+	known: { readonly pristine: boolean; readonly tree: string | undefined; readonly submodules: boolean | undefined },
 	forceAdded: () => Promise<string[]>,
 	signal?: AbortSignal,
-): Promise<{ readonly state: WorkingTreeState; readonly headTree: string | undefined }> {
+): Promise<{
+	readonly state: WorkingTreeState;
+	readonly headTree: string | undefined;
+	readonly submodules: boolean | undefined;
+}> {
 	const { root } = checkout;
 	const git: GitRunOptions = { cwd: root, env: { GIT_INDEX_FILE: index }, signal };
 	if (!known.pristine) await runGit(["read-tree", "--reset", checkout.head], git);
+	// The index holds HEAD's tree now: whether it holds a submodule follows from its entries.
+	const submodules =
+		(known.pristine ? known.submodules : undefined) ??
+		indexHoldsSubmodule(await readFile(index), objectIdBytes(checkout.head));
 	const scan = await scanWorkingFiles(git);
 	let { changed } = scan;
-	if (scan.askDiffFiles) {
+	if (scan.askDiffFiles || submodules !== false) {
 		await runGit(["update-index", "-q", "--refresh"], { ...git, allowExitCodes: [1] });
 		changed = nulFields((await runGit(["diff-files", "-z", "--name-only", "--no-renames"], git)).stdout);
 	}
@@ -885,7 +938,7 @@ async function writeScannedTree(
 	const headTree = known.pristine ? known.tree : undefined;
 	if (admitted.length === 0) {
 		const tree = headTree ?? (await gitText(["write-tree"], git));
-		return { state: { tree, omitted }, headTree: tree };
+		return { state: { tree, omitted }, headTree: tree, submodules };
 	}
 	const recorded = join(scratch, "capture-index");
 	await copyWithTimes(index, recorded);
@@ -894,7 +947,7 @@ async function writeScannedTree(
 		...files,
 		input: `${admitted.join("\0")}\0`,
 	});
-	return { state: { tree: await gitText(["write-tree"], files), omitted }, headTree };
+	return { state: { tree: await gitText(["write-tree"], files), omitted }, headTree, submodules };
 }
 
 /**
