@@ -21,6 +21,7 @@ import {
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { normalizeJitiAliases } from "./jiti-aliases.js";
 import { hasLazyBuiltinSpec } from "./lazy-builtin.js";
+import { ensureDefaultLazyBuiltinsRegistered } from "./lazy-builtins/index.js";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath, isSourceBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import {
@@ -973,6 +974,7 @@ export async function prepareExtensionEntries(
 	agentDir?: string,
 ): Promise<void> {
 	if (isBunBinary || isBundledBuild) return;
+	ensureDefaultLazyBuiltinsRegistered();
 	const resident = isCurrentCacheToken(cacheToken) ? extensionCache : undefined;
 	const entries = extensionPaths.filter((entry) => {
 		if (resident?.has(entry) || !isSourceBuiltinExtensionPath(entry)) return false;
