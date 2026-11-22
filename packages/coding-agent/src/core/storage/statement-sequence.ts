@@ -1,6 +1,20 @@
 import type { SqliteExecutor, SqliteStatement } from "./database.js";
 
-/** Statements run as one sequence: `repeat` first, then `statements` in order, each with `run`. */
+/**
+ * A statement of a sequence, run with `run`; with `script`, SQL text of one or more statements without parameters,
+ * run as `exec` runs it.
+ */
+export interface SequencedStatement extends SqliteStatement {
+	readonly script?: boolean;
+}
+
+/**
+ * The most statements one request of a sequence carries, so a message to the connection's thread stays small: a
+ * sequence of no more is sent as one request, at once.
+ */
+export const MAX_SEQUENCE_REQUEST_STATEMENTS = 256;
+
+/** Statements run as one sequence: `repeat` first, then `statements` in order, each with `run` (or `exec`). */
 export interface SqliteSequence {
 	/**
 	 * `statement` run up to `times` times, each run between two reads of `SELECT total_changes() AS changes`, stopping
@@ -9,7 +23,7 @@ export interface SqliteSequence {
 	 */
 	readonly repeat?: { readonly statement: SqliteStatement; readonly times: number; readonly minChanges: number };
 	/** Taken a request's worth at a time, so a long sequence is never held in memory, or sent, all at once. */
-	readonly statements: Iterable<SqliteStatement>;
+	readonly statements: Iterable<SequencedStatement>;
 	/**
 	 * Read before each run of `repeat` and before each statement, where a caller running them one at a time would call
 	 * `signal.throwIfAborted()`: once it has aborted nothing more runs, and the sequence rejects with `signal.reason`.
