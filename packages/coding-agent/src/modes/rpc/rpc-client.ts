@@ -357,8 +357,10 @@ export class RpcClient extends RpcClientApi {
 		});
 		const timer = setTimeout(() => done.resolve(false), timeoutMs);
 		try {
+			// Ahead of whatever waits to be written: an engine too busy to read can hold an earlier write past the ack's
+			// deadline, and the stop that follows drops what is still queued.
 			this.bestEffort(
-				writer.write(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
+				writer.writeUrgent(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
 				"explicit quit",
 			);
 			return await done.promise;
