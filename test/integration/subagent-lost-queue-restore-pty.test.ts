@@ -371,7 +371,11 @@ describe("restoring a lost subagent chat's unsaved queued messages in a real PTY
 				// Clean shutdown.
 				releaseChildGen2.resolve();
 				program.write("\x1b[D");
-				await sleep(200);
+				await program.waitForScreen(
+					(screen) => !screen.includes("Message @worker"),
+					STEP_TIMEOUT_MS,
+					"returned to main before quit",
+				);
 				program.write("/quit\r");
 				const exit = await program.exited;
 				assert.equal(exit.timedOut, false);
@@ -380,7 +384,8 @@ describe("restoring a lost subagent chat's unsaved queued messages in a real PTY
 				releaseChildGen2.resolve();
 				for (const res of [...openResponses]) res.destroy();
 				program?.kill();
-				await server.close();
+				server.closeAllConnections?.();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
 				await removeTempRootReleasingBroker(root, agentDir);
 			}
 		},
