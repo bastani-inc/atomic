@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP credential redaction now shares the core ANSI stripping, HTTP `Basic` credential detection, and `[redacted]` range-application helpers with `redactCredentialShapes` while keeping all MCP OAuth, URL, header, and stdio patterns. This also preserves `[redacted]` markers when a pre-masked secret appears inside a `Bearer` token or query parameter.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

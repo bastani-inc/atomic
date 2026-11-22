@@ -1,8 +1,24 @@
 import { randomBytes } from "node:crypto";
 import { redactUrlCredentials } from "../../../../core/error-contract.ts";
-import { redactCredentialShapes } from "../../../../utils/credential-redaction.js";
+import {
+	applyRedactionRanges,
+	REDACTED_PLACEHOLDER,
+	type RedactionRange,
+	redactCredentialShapes,
+	scanBasicAuthEndAt,
+	stripAnsiWithOrigin,
+} from "../../../../utils/credential-redaction.js";
+import {
+	isAsciiDigitCode,
+	isAsciiHexCode,
+	isAsciiLetterCode,
+	isAsciiWordCode,
+	isHorizontalWsCode,
+	matchesAsciiCaseInsensitiveAt,
+	skipHorizontalWs,
+} from "../../../../utils/linear-text.js";
 
-const REDACTED = "[redacted]";
+const REDACTED = REDACTED_PLACEHOLDER;
 /** Minimum length for unlabelled literal secret scrubbing so 1-3 character strings (e.g. HTTP status codes) are never over-redacted. */
 const MIN_LITERAL_SECRET_LENGTH = 4;
 
@@ -72,10 +88,6 @@ function scanMaxMatchLengths(text: string, automaton: AhoCorasick): Int32Array {
 	return result;
 }
 
-function isHexCharCode(code: number): boolean {
-	return (code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
-}
-
 function upperHexChar(code: number): string {
 	return String.fromCharCode(code >= 97 && code <= 102 ? code - 32 : code);
 }
@@ -93,8 +105,8 @@ function normalizePercentHex(text: string): string {
 		if (
 			text.charCodeAt(i) === 37 &&
 			i + 2 < text.length &&
-			isHexCharCode(text.charCodeAt(i + 1)) &&
-			isHexCharCode(text.charCodeAt(i + 2))
+			isAsciiHexCode(text.charCodeAt(i + 1)) &&
+			isAsciiHexCode(text.charCodeAt(i + 2))
 		) {
 			const c1 = text.charCodeAt(i + 1);
 			const c2 = text.charCodeAt(i + 2);
@@ -502,8 +514,7 @@ export function extractAuthorizationSecrets(headerValue: string | null | undefin
 	const results = [trimmed];
 	let sep = -1;
 	for (let i = 0; i < trimmed.length; i++) {
-		const ch = trimmed.charCodeAt(i);
-		if (ch === 32 || ch === 9) {
+		if (isHorizontalWsCode(trimmed.charCodeAt(i))) {
 			sep = i;
 			break;
 		}
@@ -785,12 +796,12 @@ function isEnvTemplatePlaceholder(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed.length < 2) return false;
 	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return true;
-	if (matchesAsciiInsensitive(trimmed, 0, "$env:")) return true;
+	if (matchesAsciiCaseInsensitiveAt(trimmed, "$env:", 0)) return true;
 	if (trimmed.charCodeAt(0) === 36) {
 		const first = trimmed.charCodeAt(1);
-		if (!((first >= 65 && first <= 90) || (first >= 97 && first <= 122) || first === 95)) return false;
+		if (!(isAsciiLetterCode(first) || first === 95)) return false;
 		for (let i = 2; i < trimmed.length; i++) {
-			if (!isAsciiAlphaNumOrUnderscore(trimmed.charCodeAt(i))) return false;
+			if (!isAsciiWordCode(trimmed.charCodeAt(i))) return false;
 		}
 		return true;
 	}
@@ -929,8 +940,12 @@ function isBenignKebabOrSnakeSlug(value: string): boolean {
 export function isSecretValueForMasking(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed.length < 8) return false;
-	if (matchesAsciiInsensitive(trimmed, 0, "bearer ") || matchesAsciiInsensitive(trimmed, 0, "bearer\t")) return true;
-	if (matchesAsciiInsensitive(trimmed, 0, "basic ") || matchesAsciiInsensitive(trimmed, 0, "basic\t")) return true;
+	if (matchesAsciiCaseInsensitiveAt(trimmed, "bearer ", 0) || matchesAsciiCaseInsensitiveAt(trimmed, "bearer\t", 0)) {
+		return true;
+	}
+	if (matchesAsciiCaseInsensitiveAt(trimmed, "basic ", 0) || matchesAsciiCaseInsensitiveAt(trimmed, "basic\t", 0)) {
+		return true;
+	}
 	if (trimmed.includes(" ") || trimmed.includes("\n")) return false;
 	if (isHexToken(trimmed)) return true;
 	let hasUpper = false;
@@ -1003,8 +1018,12 @@ export function collectSecretsForMasking(input: SecretCollectionInput): string[]
 export function isLikelySecretForDisplay(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed.length < 8) return false;
-	if (matchesAsciiInsensitive(trimmed, 0, "bearer ") || matchesAsciiInsensitive(trimmed, 0, "bearer\t")) return true;
-	if (matchesAsciiInsensitive(trimmed, 0, "basic ") || matchesAsciiInsensitive(trimmed, 0, "basic\t")) return true;
+	if (matchesAsciiCaseInsensitiveAt(trimmed, "bearer ", 0) || matchesAsciiCaseInsensitiveAt(trimmed, "bearer\t", 0)) {
+		return true;
+	}
+	if (matchesAsciiCaseInsensitiveAt(trimmed, "basic ", 0) || matchesAsciiCaseInsensitiveAt(trimmed, "basic\t", 0)) {
+		return true;
+	}
 	if (isEnvTemplatePlaceholder(trimmed)) return false;
 	if (trimmed.includes(" ") || trimmed.includes("\n")) return false;
 	if (
@@ -1206,10 +1225,6 @@ export function redactAuthorizationUrlForDisplay(
 	return changed ? url.href : raw;
 }
 
-function isAsciiAlphaNumOrUnderscore(code: number): boolean {
-	return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
-}
-
 function isTokenStopChar(code: number): boolean {
 	return (
 		code <= 32 ||
@@ -1227,72 +1242,12 @@ function isTokenStopChar(code: number): boolean {
 	);
 }
 
-function isBase64CredentialChar(code: number): boolean {
-	return (
-		(code >= 48 && code <= 57) ||
-		(code >= 65 && code <= 90) ||
-		(code >= 97 && code <= 122) ||
-		code === 43 || // +
-		code === 47 || // /
-		code === 61 || // =
-		code === 95 || // _
-		code === 45 // -
-	);
-}
-
-function isValidStandardBase64(value: string): boolean {
-	if (value.length < 4 || value.length % 4 !== 0) return false;
-	let pad = 0;
-	for (let i = value.length - 1; i >= 0 && value.charCodeAt(i) === 61; i--) pad++;
-	if (pad > 2) return false;
-	const end = value.length - pad;
-	for (let i = 0; i < end; i++) {
-		const c = value.charCodeAt(i);
-		const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47;
-		if (!ok) return false;
-	}
-	return true;
-}
-
-function looksLikeBase64Credential(value: string): boolean {
-	if (value.length < 4) return false;
-	let hasUpper = false;
-	let hasLower = false;
-	let hasDigit = false;
-	let hasSymbol = false;
-	for (let i = 0; i < value.length; i++) {
-		const c = value.charCodeAt(i);
-		if (c >= 65 && c <= 90) hasUpper = true;
-		else if (c >= 97 && c <= 122) hasLower = true;
-		else if (c >= 48 && c <= 57) hasDigit = true;
-		else hasSymbol = true;
-	}
-	if (hasSymbol) return true;
-	if (value.length >= 8 && ((hasUpper && hasLower) || hasDigit)) return true;
-	return false;
-}
-
-/**
- * Unbounded one-sided check for RFC 7617 `Basic <base64(id:secret)>`:
- * every valid RFC 7617 `Basic` credential has length >= 4, multiple of 4, valid Base64, and decodes to bytes
- * containing `:` (0x3a). Falls back to `looksLikeBase64Credential` for non-colon opaque tokens.
- * Leaves ordinary prose ("Basic auth", "Basic mode", "Basic text") untouched.
- */
-function isBasicAuthPayload(value: string): boolean {
-	if (value.length < 4) return false;
-	if (isValidStandardBase64(value) && Buffer.from(value, "base64").includes(0x3a)) {
-		return true;
-	}
-	return looksLikeBase64Credential(value);
-}
-
 function isSignedInteger(value: string): boolean {
 	if (value.length === 0) return false;
 	let i = value.charCodeAt(0) === 45 ? 1 : 0;
 	if (i === value.length) return false;
 	for (; i < value.length; i++) {
-		const c = value.charCodeAt(i);
-		if (c < 48 || c > 57) return false;
+		if (!isAsciiDigitCode(value.charCodeAt(i))) return false;
 	}
 	return true;
 }
@@ -1377,32 +1332,17 @@ const BEARER_PROSE_WORDS = new Set([
 	"flow",
 ]);
 
-function matchesAsciiInsensitive(text: string, offset: number, lowerKeyword: string): boolean {
-	if (offset < 0 || offset + lowerKeyword.length > text.length) return false;
-	for (let i = 0; i < lowerKeyword.length; i++) {
-		let c = text.charCodeAt(offset + i);
-		if (c >= 65 && c <= 90) c += 32;
-		if (c !== lowerKeyword.charCodeAt(i)) return false;
-	}
-	return true;
-}
-
-function skipHorizontalWs(text: string, pos: number): number {
-	while (pos < text.length && (text.charCodeAt(pos) === 32 || text.charCodeAt(pos) === 9)) pos++;
-	return pos;
-}
-
 function isAuthorizationPrefixContext(text: string, kwStart: number): boolean {
 	let pos = kwStart;
-	while (pos > 0 && (text.charCodeAt(pos - 1) === 32 || text.charCodeAt(pos - 1) === 9)) pos--;
+	while (pos > 0 && isHorizontalWsCode(text.charCodeAt(pos - 1))) pos--;
 	if (pos === 0) return false;
 	const sep = text.charCodeAt(pos - 1);
 	if (sep !== 58 && sep !== 61) return false; // ':' or '='
 	pos--;
-	while (pos > 0 && (text.charCodeAt(pos - 1) === 32 || text.charCodeAt(pos - 1) === 9)) pos--;
+	while (pos > 0 && isHorizontalWsCode(text.charCodeAt(pos - 1))) pos--;
 	if (pos > 0 && (text.charCodeAt(pos - 1) === 34 || text.charCodeAt(pos - 1) === 39)) pos--;
-	if (pos >= 13 && matchesAsciiInsensitive(text, pos - 13, "authorization")) return true;
-	if (pos >= 4 && matchesAsciiInsensitive(text, pos - 4, "auth")) return true;
+	if (pos >= 13 && matchesAsciiCaseInsensitiveAt(text, "authorization", pos - 13)) return true;
+	if (pos >= 4 && matchesAsciiCaseInsensitiveAt(text, "auth", pos - 4)) return true;
 	return false;
 }
 
@@ -1516,88 +1456,13 @@ function isWwwAuthenticateChallengeParam(text: string, start: number): boolean {
 }
 
 /**
- * Strip ANSI CSI/OSC sequences into `plain`, recording for each index of `plain` its index in `text`
- * (plus `text.length` sentinel at the end). Chunked linear single pass, zero regular expressions.
- */
-function stripAnsiWithOrigin(text: string): {
-	readonly plain: string;
-	readonly origin: Int32Array | undefined;
-} {
-	if (!text.includes("\x1b")) return { plain: text, origin: undefined };
-	const chunks: string[] = [];
-	const origin = new Int32Array(text.length + 1);
-	let plainLen = 0;
-	let copied = 0;
-	let i = 0;
-
-	const flush = (end: number) => {
-		if (end <= copied) return;
-		chunks.push(text.slice(copied, end));
-		for (let k = copied; k < end; k++) origin[plainLen++] = k;
-		copied = end;
-	};
-
-	while (i < text.length) {
-		const esc = text.indexOf("\x1b", i);
-		if (esc === -1) {
-			flush(text.length);
-			break;
-		}
-		if (esc + 1 < text.length) {
-			const next = text.charCodeAt(esc + 1);
-			if (next === 0x5b) {
-				// CSI: ESC [ [0-?]* [ -/]* [@-~]
-				let j = esc + 2;
-				while (j < text.length && text.charCodeAt(j) >= 0x30 && text.charCodeAt(j) <= 0x3f) j++;
-				while (j < text.length && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
-				if (j < text.length && text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) {
-					flush(esc);
-					copied = j + 1;
-					i = j + 1;
-					continue;
-				}
-			} else if (next === 0x5d) {
-				// OSC: ESC ] [^\x07\x1b]* (BEL | ESC \) — break on any ESC so unterminated OSC stays O(n).
-				let j = esc + 2;
-				let matched = false;
-				while (j < text.length) {
-					const c = text.charCodeAt(j);
-					if (c === 0x07) {
-						flush(esc);
-						copied = j + 1;
-						i = j + 1;
-						matched = true;
-						break;
-					}
-					if (c === 0x1b) {
-						if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
-							flush(esc);
-							copied = j + 2;
-							i = j + 2;
-							matched = true;
-						}
-						break;
-					}
-					j++;
-				}
-				if (matched) continue;
-			}
-		}
-		i = esc + 1;
-	}
-	if (copied < text.length) flush(text.length);
-	origin[plainLen] = text.length;
-	return { plain: chunks.join(""), origin };
-}
-
-/**
  * Single-pass linear-time secondary net for OAuth/HTTP credential shapes:
  * - `Bearer <token>` (SP/HTAB, arbitrary opaque token chars incl. `!`, `$`, `%`, `:`; preserves prose & WWW-Authenticate challenges)
- * - standalone or assigned `Basic <base64>` (SP/HTAB; unbounded RFC 7617 `:` check + Base64 fallback)
+ * - standalone or assigned `Basic <base64>` (SP/HTAB; shared `scanBasicAuthEndAt` with `includeOpaqueTokens: true`)
  * - `code_verifier` / `code-verifier` / `codeVerifier` (form, JSON, escaped `\"...\"`, ANSI-styled)
  * - `code=<secret>` (excluding integers, POSIX/Node `E...` error codes, and standard OAuth error codes)
  * - sensitive URL query parameter values (`?api_key=...`, `&token=...`, etc.)
- * - long-line `password=<token>` linear fallback (covers >2KB lines where regex engines may abort)
+ * - long-input `password=<token>` linear fallback (covers >2KB multi-line bodies and preserves `&` parameter boundaries)
  */
 function redactOAuthStructuredCredentials(text: string): string {
 	if (!text) return text;
@@ -1605,19 +1470,19 @@ function redactOAuthStructuredCredentials(text: string): string {
 	const mapStart = (index: number) => (origin === undefined ? index : origin[index]!);
 	const mapEnd = (index: number) => (origin === undefined ? index : origin[index - 1]! + 1);
 
-	const parts: string[] = [];
-	let copied = 0;
+	const ranges: RedactionRange[] = [];
+	let lastRangeEnd = 0;
 	let i = 0;
 	const longInput = plain.length > 2048;
 
-	const emitReplacement = (plainFrom: number, plainTo: number) => {
+	const addRange = (plainFrom: number, plainTo: number) => {
 		if (plainTo <= plainFrom) return;
 		const origFrom = mapStart(plainFrom);
 		const origTo = mapEnd(plainTo);
-		if (origFrom < copied) return;
+		if (origFrom < lastRangeEnd) return;
 		if (plain.slice(plainFrom, plainTo) === REDACTED) return;
-		parts.push(text.slice(copied, origFrom), REDACTED);
-		copied = origTo;
+		ranges.push({ start: origFrom, end: origTo });
+		lastRangeEnd = origTo;
 	};
 
 	while (i < plain.length) {
@@ -1626,10 +1491,10 @@ function redactOAuthStructuredCredentials(text: string): string {
 			continue;
 		}
 
-		const prevWord = i > 0 && isAsciiAlphaNumOrUnderscore(plain.charCodeAt(i - 1));
+		const prevWord = i > 0 && isAsciiWordCode(plain.charCodeAt(i - 1));
 
 		// 1. `Bearer[ \t]+<token>` (preserves prose like "Invalid bearer token format" & WWW-Authenticate challenge params)
-		if (!prevWord && matchesAsciiInsensitive(plain, i, "bearer")) {
+		if (!prevWord && matchesAsciiCaseInsensitiveAt(plain, "bearer", i)) {
 			const afterKw = i + 6;
 			const valStart = skipHorizontalWs(plain, afterKw);
 			if (valStart > afterKw && valStart < plain.length && !isWwwAuthenticateChallengeParam(plain, valStart)) {
@@ -1652,42 +1517,32 @@ function redactOAuthStructuredCredentials(text: string): string {
 				const isPlainProse =
 					!isAuthorizationPrefixContext(plain, i) && BEARER_PROSE_WORDS.has(candidate.toLowerCase());
 				if (valEnd > valStart && !isPlainProse) {
-					emitReplacement(i, valEnd);
+					addRange(i, valEnd);
 					i = valEnd;
 					continue;
 				}
 			}
 		}
 
-		// 2. `Basic[ \t]+<base64>`
-		if (!prevWord && matchesAsciiInsensitive(plain, i, "basic")) {
-			const afterKw = i + 5;
-			const valStart = skipHorizontalWs(plain, afterKw);
-			if (valStart > afterKw && valStart < plain.length) {
-				if (plain.startsWith(REDACTED, valStart)) {
-					i = valStart + REDACTED.length;
-					continue;
-				}
-				let valEnd = valStart;
-				while (valEnd < plain.length && isBase64CredentialChar(plain.charCodeAt(valEnd))) {
-					valEnd++;
-				}
-				const candidate = plain.slice(valStart, valEnd);
-				const nextOk = valEnd === plain.length || !isAsciiAlphaNumOrUnderscore(plain.charCodeAt(valEnd));
-				if (nextOk && isBasicAuthPayload(candidate)) {
-					emitReplacement(i, valEnd);
-					i = valEnd;
-					continue;
-				}
+		// 2. `Basic[ \t]+<base64>` (reuses shared `scanBasicAuthEndAt` with MCP opaque-token superset)
+		if (!prevWord) {
+			const basicEnd = scanBasicAuthEndAt(plain, i, { includeOpaqueTokens: true });
+			if (basicEnd !== -1) {
+				addRange(i, basicEnd);
+				i = basicEnd;
+				continue;
 			}
 		}
 
 		// 3. `code_verifier` / `code-verifier` / `codeVerifier` (including escaped JSON `\"code_verifier\":\"...\"`)
 		if (!prevWord) {
 			let kvLen = 0;
-			if (matchesAsciiInsensitive(plain, i, "code_verifier") || matchesAsciiInsensitive(plain, i, "code-verifier")) {
+			if (
+				matchesAsciiCaseInsensitiveAt(plain, "code_verifier", i) ||
+				matchesAsciiCaseInsensitiveAt(plain, "code-verifier", i)
+			) {
 				kvLen = 13;
-			} else if (matchesAsciiInsensitive(plain, i, "codeverifier")) {
+			} else if (matchesAsciiCaseInsensitiveAt(plain, "codeverifier", i)) {
 				kvLen = 12;
 			}
 			if (kvLen > 0) {
@@ -1700,7 +1555,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 					if (pos < plain.length && !plain.startsWith(REDACTED, pos)) {
 						const valEnd = scanQuotedOrTokenValueEnd(plain, pos);
 						if (valEnd > pos) {
-							emitReplacement(pos, valEnd);
+							addRange(pos, valEnd);
 							i = valEnd;
 							continue;
 						}
@@ -1713,7 +1568,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		if (
 			!prevWord &&
 			!(i > 0 && plain.charCodeAt(i - 1) === 45) &&
-			matchesAsciiInsensitive(plain, i, "code") &&
+			matchesAsciiCaseInsensitiveAt(plain, "code", i) &&
 			i + 4 < plain.length &&
 			plain.charCodeAt(i + 4) === 61
 		) {
@@ -1727,7 +1582,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 					!isPosixOrSystemErrorCode(val) &&
 					!KNOWN_OAUTH_ERROR_CODES.has(val.toLowerCase())
 				) {
-					emitReplacement(valStart, valEnd);
+					addRange(valStart, valEnd);
 					i = valEnd;
 					continue;
 				}
@@ -1739,7 +1594,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 			let nameEnd = i + 1;
 			while (
 				nameEnd < plain.length &&
-				(isAsciiAlphaNumOrUnderscore(plain.charCodeAt(nameEnd)) || plain.charCodeAt(nameEnd) === 45)
+				(isAsciiWordCode(plain.charCodeAt(nameEnd)) || plain.charCodeAt(nameEnd) === 45)
 			) {
 				nameEnd++;
 			}
@@ -1767,7 +1622,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 									KNOWN_OAUTH_ERROR_CODES.has(val.toLowerCase()))
 							)
 						) {
-							emitReplacement(valStart, valEnd);
+							addRange(valStart, valEnd);
 							i = valEnd;
 							continue;
 						}
@@ -1776,18 +1631,18 @@ function redactOAuthStructuredCredentials(text: string): string {
 			}
 		}
 
-		// 6. Long-line linear fallback for `password=<val>` / `passwd=<val>` / `pwd=<val>` (avoids regex match-limit bypass on >2KB lines)
+		// 6. Long-input linear fallback for `password=<val>` / `passwd=<val>` / `pwd=<val>` (preserves >2KB multi-line & `&` boundaries)
 		if (longInput && !prevWord) {
 			let pwdLen = 0;
-			if (matchesAsciiInsensitive(plain, i, "password")) pwdLen = 8;
-			else if (matchesAsciiInsensitive(plain, i, "passwd")) pwdLen = 6;
-			else if (matchesAsciiInsensitive(plain, i, "pwd")) pwdLen = 3;
+			if (matchesAsciiCaseInsensitiveAt(plain, "password", i)) pwdLen = 8;
+			else if (matchesAsciiCaseInsensitiveAt(plain, "passwd", i)) pwdLen = 6;
+			else if (matchesAsciiCaseInsensitiveAt(plain, "pwd", i)) pwdLen = 3;
 			if (pwdLen > 0 && i + pwdLen < plain.length && plain.charCodeAt(i + pwdLen) === 61) {
 				const valStart = i + pwdLen + 1;
 				if (valStart < plain.length && !plain.startsWith(REDACTED, valStart)) {
 					const valEnd = scanQuotedOrTokenValueEnd(plain, valStart);
 					if (valEnd > valStart) {
-						emitReplacement(valStart, valEnd);
+						addRange(valStart, valEnd);
 						i = valEnd;
 						continue;
 					}
@@ -1798,9 +1653,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		i++;
 	}
 
-	if (copied === 0) return text;
-	parts.push(text.slice(copied));
-	return parts.join("");
+	return applyRedactionRanges(text, ranges, { preserveAnsi: false });
 }
 
 function chooseFreshPlaceholderPrefix(text: string): string {
@@ -1821,8 +1674,8 @@ function redactRemainingCredentialShapes(text: string): string {
 	const protectedSpans: { start: number; end: number; original: string }[] = [];
 	let i = 0;
 	while (i < text.length) {
-		const prevWord = i > 0 && isAsciiAlphaNumOrUnderscore(text.charCodeAt(i - 1));
-		if (!prevWord && matchesAsciiInsensitive(text, i, "bearer")) {
+		const prevWord = i > 0 && isAsciiWordCode(text.charCodeAt(i - 1));
+		if (!prevWord && matchesAsciiCaseInsensitiveAt(text, "bearer", i)) {
 			const afterKw = i + 6;
 			const valStart = skipHorizontalWs(text, afterKw);
 			if (valStart > afterKw && valStart < text.length) {

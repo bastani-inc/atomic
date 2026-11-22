@@ -1,19 +1,19 @@
 import { redactUrlCredentials } from "../core/error-contract.ts";
 import {
+	isAsciiDigitCode,
+	isAsciiHexCode,
+	isAsciiLetterCode,
 	isAsciiWordCode,
+	isHorizontalWsCode,
 	isJsWhitespaceCode,
 	isLineTerminatorCode,
 	matchesAsciiCaseInsensitiveAt,
+	skipHorizontalWs,
 } from "./linear-text.js";
 
-const REDACTED = "[redacted]";
-
-/**
- * An ANSI CSI sequence, such as the styling `jq -C` or a terminal-aware CLI puts around a field name, its separator,
- * an authorization scheme or a value, or an OSC sequence such as an OSC 8 hyperlink. Patterns match text with these
- * removed, and redaction maps back to the text.
- */
-const ANSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu;
+/** Sentinel emitted in place of redacted credential material. */
+export const REDACTED_PLACEHOLDER = "[redacted]";
+const REDACTED = REDACTED_PLACEHOLDER;
 
 /** The header of a private key block. {@link PRIVATE_KEY_BLOCK_VALUE} redacts it to its footer, or to the end. */
 const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/gu;
@@ -705,31 +705,12 @@ const STEPS: readonly (readonly [RegExp, Redaction])[] = [
 	...CREDENTIAL_SHAPES,
 ];
 
-/** `text` without ANSI sequences, and for each of its characters the index it has in `text`, plus `text`'s length. */
-function withoutAnsi(text: string): { readonly plain: string; readonly origin: readonly number[] | undefined } {
-	if (!text.includes("\x1b")) return { plain: text, origin: undefined };
-	let plain = "";
-	const origin: number[] = [];
-	let copied = 0;
-	const keep = (end: number) => {
-		for (let index = copied; index < end; index++) origin.push(index);
-		plain += text.slice(copied, end);
-	};
-	for (const sequence of text.matchAll(ANSI_SEQUENCE)) {
-		keep(sequence.index);
-		copied = sequence.index + sequence[0].length;
-	}
-	keep(text.length);
-	origin.push(text.length);
-	return { plain, origin };
-}
-
 /**
  * `text` with each match of `pattern`, found with ANSI sequences ignored, redacted as `redaction` says. A replacement
  * that would start inside one already made, as a YAML block's can, is skipped.
  */
 function redactMatches(text: string, pattern: RegExp, redaction: Redaction): string {
-	const { plain, origin } = withoutAnsi(text);
+	const { plain, origin } = stripAnsiWithOrigin(text);
 	const at = (index: number) => (origin === undefined ? index : origin[index]!);
 	let redacted = "";
 	let copied = 0;
@@ -793,18 +774,6 @@ function redactCredentialShapesBase(urlRedacted: string): string {
 
 const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
 
-function isAsciiLetterCode(code: number): boolean {
-	return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
-}
-
-function isHexCode(code: number): boolean {
-	return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66);
-}
-
-function isHorizontalWsCode(code: number): boolean {
-	return code === 0x20 || code === 0x09;
-}
-
 function isHighSurrogate(code: number): boolean {
 	return code >= 0xd800 && code <= 0xdbff;
 }
@@ -830,43 +799,105 @@ function base64DigitValue(code: number): number {
 	return -1;
 }
 
+/** Whether `code` is a standard or URL-safe Base64 credential character (`[A-Za-z0-9+/=_-]`). */
+export function isBase64CredentialCharCode(code: number): boolean {
+	return base64DigitValue(code) !== -1 || code === 0x3d || code === 0x5f || code === 0x2d;
+}
+
+/** Options controlling how {@link isBasicAuthPayload} and {@link scanBasicAuthEndAt} match `Basic` credentials. */
+export interface BasicAuthPayloadOptions {
+	/**
+	 * Also accept non-UTF-8 RFC 7617 padded Base64 `user:pass` payloads (such as ISO-8859-1) and opaque
+	 * Base64-like tokens (containing Base64 symbols, or 8+ chars with mixed case or digits), using relaxed
+	 * non-word trailing boundaries. Used in HTTP/OAuth error redaction where `Basic` rarely introduces prose.
+	 */
+	readonly includeOpaqueTokens?: boolean;
+}
+
+function looksLikeBase64Credential(value: string): boolean {
+	if (value.length < 4) return false;
+	let hasUpper = false;
+	let hasLower = false;
+	let hasDigit = false;
+	let hasSymbol = false;
+	for (let i = 0; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		if (!isBase64CredentialCharCode(c)) return false;
+		if (c >= 0x41 && c <= 0x5a) hasUpper = true;
+		else if (c >= 0x61 && c <= 0x7a) hasLower = true;
+		else if (c >= 0x30 && c <= 0x39) hasDigit = true;
+		else hasSymbol = true;
+	}
+	if (hasSymbol) return true;
+	return value.length >= 8 && ((hasUpper && hasLower) || hasDigit);
+}
+
 /**
  * Whether `value` is an RFC 7617 `Basic` credential payload: canonical standard Base64 (padded or unpadded,
  * length >= 4) whose decoded bytes are valid printable UTF-8 (no C0/DEL control bytes other than HTAB) containing
  * the `:` (`0x3a`) user-id/password separator. Leaves ordinary prose (`auth`, `mode`, `HTTP`, `Settings`, `Overview`)
  * and challenge parameters (`realm="example"`) untouched while covering every `base64(userid:password)` form.
+ *
+ * When `options.includeOpaqueTokens` is `true` (MCP OAuth pre-pass), accepts padded standard Base64 `user:pass`
+ * payloads in any byte encoding (including ISO-8859-1) plus opaque Base64-like tokens (URL-safe, non-colon,
+ * mixed-case, or symbol-bearing credentials), leaving unpadded short payloads to core `redactCredentialShapes`
+ * so `Authorization: Basic <prefix>@rest` values are redacted whole rather than truncated at `@`.
  */
-export function isBasicAuthPayload(value: string): boolean {
-	if (value.length < 4 || value.length % 4 === 1) return false;
+export function isBasicAuthPayload(value: string, options?: BasicAuthPayloadOptions): boolean {
+	const includeOpaqueTokens = options?.includeOpaqueTokens === true;
+	if (value.length < 4) return false;
+	const mod4Len = value.length % 4;
+	let isStdBase64 = includeOpaqueTokens ? mod4Len === 0 : mod4Len !== 1;
 	let pad = 0;
-	for (let i = value.length - 1; i >= 0 && value.charCodeAt(i) === 0x3d; i--) pad++;
-	if (pad > 2) return false;
-	if (pad > 0 && value.length % 4 !== 0) return false;
-	const end = value.length - pad;
-	if (end < 2) return false;
+	let end = value.length;
 	let lastSextet = 0;
-	for (let i = 0; i < end; i++) {
-		const sextet = base64DigitValue(value.charCodeAt(i));
-		if (sextet === -1) return false;
-		lastSextet = sextet;
+	if (isStdBase64) {
+		for (let i = value.length - 1; i >= 0 && value.charCodeAt(i) === 0x3d; i--) pad++;
+		if (pad > 2 || (pad > 0 && mod4Len !== 0) || value.length - pad < 2) {
+			isStdBase64 = false;
+		} else {
+			end = value.length - pad;
+			for (let i = 0; i < end; i++) {
+				const sextet = base64DigitValue(value.charCodeAt(i));
+				if (sextet === -1) {
+					isStdBase64 = false;
+					break;
+				}
+				lastSextet = sextet;
+			}
+		}
 	}
-	// Canonical RFC 4648 trailing-bit check (unused trailing bits must be 0).
-	const mod4 = end % 4;
-	if ((pad === 1 || (pad === 0 && mod4 === 3)) && (lastSextet & 0x03) !== 0) return false;
-	if ((pad === 2 || (pad === 0 && mod4 === 2)) && (lastSextet & 0x0f) !== 0) return false;
-
-	const decoded = Buffer.from(value, "base64");
-	if (!decoded.includes(0x3a)) return false;
-	for (let i = 0; i < decoded.length; i++) {
-		const byte = decoded[i]!;
-		if ((byte < 0x20 && byte !== 0x09) || byte === 0x7f) return false;
+	if (isStdBase64) {
+		if (includeOpaqueTokens) {
+			if (Buffer.from(value, "base64").includes(0x3a)) return true;
+		} else {
+			// Canonical RFC 4648 trailing-bit check (unused trailing bits must be 0).
+			const mod4 = end % 4;
+			const canonicalTrailingBits =
+				!((pad === 1 || (pad === 0 && mod4 === 3)) && (lastSextet & 0x03) !== 0) &&
+				!((pad === 2 || (pad === 0 && mod4 === 2)) && (lastSextet & 0x0f) !== 0);
+			if (canonicalTrailingBits) {
+				const decoded = Buffer.from(value, "base64");
+				if (decoded.includes(0x3a)) {
+					let printable = true;
+					for (let i = 0; i < decoded.length; i++) {
+						const byte = decoded[i]!;
+						if ((byte < 0x20 && byte !== 0x09) || byte === 0x7f) {
+							printable = false;
+							break;
+						}
+					}
+					if (printable) {
+						try {
+							UTF8_FATAL_DECODER.decode(decoded);
+							return true;
+						} catch {}
+					}
+				}
+			}
+		}
 	}
-	try {
-		UTF8_FATAL_DECODER.decode(decoded);
-		return true;
-	} catch {
-		return false;
-	}
+	return includeOpaqueTokens ? looksLikeBase64Credential(value) : false;
 }
 
 /**
@@ -951,19 +982,30 @@ export function stripAnsiWithOrigin(text: string): {
  * A range `[start, end)` in a buffer's UTF-16 coordinates to replace with `[redacted]`.
  * Every additive pass returns only ranges; only {@link applyRedactionRanges} rewrites text.
  */
-interface RedactionRange {
+export interface RedactionRange {
 	readonly start: number;
 	readonly end: number;
 	/** Optional pure-whitespace prefix (e.g. `" "` or `"\n  "`) emitted before `[redacted]` at `start`. */
 	readonly leadingSpace?: string;
 }
 
-function collectProtectedSpans(buffer: string): [number, number][] {
+/** Options controlling protected spans inside {@link applyRedactionRanges}. */
+export interface ApplyRedactionRangesOptions {
+	/**
+	 * Keep ANSI CSI/OSC escape sequences verbatim when splitting ranges around protected spans.
+	 * Defaults to `true` (core credential redaction); set `false` when untrusted pre-pass spans
+	 * should scrub embedded OSC/CSI sequences together with the credential while keeping existing
+	 * `[redacted]` markers intact.
+	 */
+	readonly preserveAnsi?: boolean;
+}
+
+function collectProtectedSpans(buffer: string, preserveAnsi: boolean): [number, number][] {
 	const markers: [number, number][] = [];
 	for (let pos = buffer.indexOf(REDACTED); pos !== -1; pos = buffer.indexOf(REDACTED, pos + REDACTED.length)) {
 		markers.push([pos, pos + REDACTED.length]);
 	}
-	if (!buffer.includes("\x1b")) return markers;
+	if (!preserveAnsi || !buffer.includes("\x1b")) return markers;
 
 	const ansi: [number, number][] = [];
 	let i = 0;
@@ -1005,11 +1047,15 @@ function isAllWhitespaceRange(text: string, start: number, end: number): boolean
 }
 
 /**
- * Structurally monotone range applier: merges `ranges`, subtracts every existing `[redacted]` marker and every
- * ANSI CSI/OSC escape sequence in `buffer`, and replaces only the resulting non-marker, non-ANSI fragments with
- * `[redacted]`. Existing `[redacted]` markers, ANSI escape sequences, and bytes outside `ranges` are never modified.
+ * Structurally monotone range applier: merges `ranges`, subtracts every existing `[redacted]` marker (and, when
+ * `options.preserveAnsi !== false`, every ANSI CSI/OSC escape sequence) in `buffer`, and replaces only the resulting
+ * unprotected fragments with `[redacted]`. Existing `[redacted]` markers and bytes outside `ranges` are never modified.
  */
-function applyRedactionRanges(buffer: string, ranges: readonly RedactionRange[]): string {
+export function applyRedactionRanges(
+	buffer: string,
+	ranges: readonly RedactionRange[],
+	options?: ApplyRedactionRangesOptions,
+): string {
 	if (ranges.length === 0) return buffer;
 	const clamped: RedactionRange[] = [];
 	for (const r of ranges) {
@@ -1030,14 +1076,15 @@ function applyRedactionRanges(buffer: string, ranges: readonly RedactionRange[])
 		}
 	}
 
-	const prot = collectProtectedSpans(buffer);
+	const preserveAnsi = options?.preserveAnsi ?? true;
+	const prot = collectProtectedSpans(buffer, preserveAnsi);
 	const parts: string[] = [];
 	let copied = 0;
 	let p = 0;
 
 	const emitFragment = (fStart: number, fEnd: number, wasSplit: boolean, prefix: string) => {
 		if (fEnd <= fStart || fStart < copied) return;
-		if (wasSplit && isAllWhitespaceRange(buffer, fStart, fEnd)) return;
+		if (preserveAnsi && wasSplit && isAllWhitespaceRange(buffer, fStart, fEnd)) return;
 		parts.push(buffer.slice(copied, fStart), prefix, REDACTED);
 		copied = fEnd;
 	};
@@ -1059,7 +1106,7 @@ function applyRedactionRanges(buffer: string, ranges: readonly RedactionRange[])
 			}
 			if (prot[p]![0] > cur) {
 				const prefix = !usedPrefix && cur === range.start ? range.leadingSpace : "";
-				if (!isAllWhitespaceRange(buffer, cur, prot[p]![0])) {
+				if (!preserveAnsi || !isAllWhitespaceRange(buffer, cur, prot[p]![0])) {
 					emitFragment(cur, prot[p]![0], true, prefix);
 					usedPrefix = true;
 				}
@@ -1221,6 +1268,50 @@ function isBasicBoundaryAt(text: string, pos: number): boolean {
 	return false;
 }
 
+/**
+ * Scan a `Basic <credential>` token starting at `index` in ANSI-stripped `plain`, returning its exclusive
+ * end index or `-1` if `index` does not begin a matching `Basic` credential.
+ */
+export function scanBasicAuthEndAt(plain: string, index: number, options?: BasicAuthPayloadOptions): number {
+	if (index < 0 || index >= plain.length) return -1;
+	const c = plain.charCodeAt(index);
+	if (c !== 0x42 && c !== 0x62) return -1;
+	if (index > 0 && isAsciiWordCode(plain.charCodeAt(index - 1))) return -1;
+	if (!matchesAsciiCaseInsensitiveAt(plain, "basic", index)) return -1;
+	const afterKw = index + 5;
+	const valStart = skipHorizontalWs(plain, afterKw);
+	if (valStart === afterKw || valStart >= plain.length || plain.startsWith(REDACTED, valStart)) return -1;
+
+	if (options?.includeOpaqueTokens) {
+		let valEnd = valStart;
+		while (valEnd < plain.length && isBase64CredentialCharCode(plain.charCodeAt(valEnd))) valEnd++;
+		const nextOk = valEnd === plain.length || !isAsciiWordCode(plain.charCodeAt(valEnd));
+		if (nextOk && isBasicAuthPayload(plain.slice(valStart, valEnd), options)) {
+			return valEnd;
+		}
+		return -1;
+	}
+
+	let valEnd = valStart;
+	while (valEnd < plain.length && base64DigitValue(plain.charCodeAt(valEnd)) !== -1) valEnd++;
+	const padStart = valEnd;
+	while (valEnd < plain.length && plain.charCodeAt(valEnd) === 0x3d && valEnd - padStart < 2) valEnd++;
+	const candidate = plain.slice(valStart, valEnd);
+	const nextChar = valEnd < plain.length ? plain.charCodeAt(valEnd) : -1;
+	const afterQuote = valEnd + 1 < plain.length ? plain.charCodeAt(valEnd + 1) : -1;
+	// Do not treat `Basic name="value"` (1 `=` before an opening quote) as Base64, but do match JSON keys `{"Basic <b64>": true}` where `:` follows the closing quote.
+	const quotedAttrStart =
+		(nextChar === 0x22 || nextChar === 0x27) &&
+		valEnd - padStart === 1 &&
+		afterQuote !== -1 &&
+		afterQuote !== 0x3a &&
+		!isBasicBoundaryAt(plain, valEnd + 1);
+	if (!quotedAttrStart && isBasicBoundaryAt(plain, valEnd) && isBasicAuthPayload(candidate)) {
+		return valEnd;
+	}
+	return -1;
+}
+
 function collectStandaloneBasicRanges(buffer: string): RedactionRange[] {
 	if (!buffer.includes("\x1b") && !BASIC_FAST_CHECK.test(buffer)) return [];
 	const { plain, origin } = stripAnsiWithOrigin(buffer);
@@ -1234,33 +1325,11 @@ function collectStandaloneBasicRanges(buffer: string): RedactionRange[] {
 			i += REDACTED.length;
 			continue;
 		}
-		const c = plain.charCodeAt(i);
-		if ((c === 0x42 || c === 0x62) && !(i > 0 && isAsciiWordCode(plain.charCodeAt(i - 1)))) {
-			if (matchesAsciiCaseInsensitiveAt(plain, "basic", i)) {
-				let valStart = i + 5;
-				while (valStart < plain.length && isHorizontalWsCode(plain.charCodeAt(valStart))) valStart++;
-				if (valStart > i + 5 && valStart < plain.length) {
-					let valEnd = valStart;
-					while (valEnd < plain.length && base64DigitValue(plain.charCodeAt(valEnd)) !== -1) valEnd++;
-					const padStart = valEnd;
-					while (valEnd < plain.length && plain.charCodeAt(valEnd) === 0x3d && valEnd - padStart < 2) valEnd++;
-					const candidate = plain.slice(valStart, valEnd);
-					const nextChar = valEnd < plain.length ? plain.charCodeAt(valEnd) : -1;
-					const afterQuote = valEnd + 1 < plain.length ? plain.charCodeAt(valEnd + 1) : -1;
-					// Do not treat `Basic name="value"` (1 `=` before an opening quote) as Base64, but do match JSON keys `{"Basic <b64>": true}` where `:` follows the closing quote.
-					const quotedAttrStart =
-						(nextChar === 0x22 || nextChar === 0x27) &&
-						valEnd - padStart === 1 &&
-						afterQuote !== -1 &&
-						afterQuote !== 0x3a &&
-						!isBasicBoundaryAt(plain, valEnd + 1);
-					if (!quotedAttrStart && isBasicBoundaryAt(plain, valEnd) && isBasicAuthPayload(candidate)) {
-						ranges.push({ start: at(i), end: at(valEnd - 1) + 1 });
-						i = valEnd;
-						continue;
-					}
-				}
-			}
+		const valEnd = scanBasicAuthEndAt(plain, i);
+		if (valEnd !== -1) {
+			ranges.push({ start: at(i), end: at(valEnd - 1) + 1 });
+			i = valEnd;
+			continue;
 		}
 		i++;
 	}
@@ -1495,8 +1564,8 @@ function scanBearerExtendedTailEnd(text: string, start: number): number {
 		} else if (
 			c === 0x25 &&
 			i + 2 < text.length &&
-			isHexCode(text.charCodeAt(i + 1)) &&
-			isHexCode(text.charCodeAt(i + 2))
+			isAsciiHexCode(text.charCodeAt(i + 1)) &&
+			isAsciiHexCode(text.charCodeAt(i + 2))
 		) {
 			i += 3;
 		} else if (
@@ -1506,8 +1575,8 @@ function scanBearerExtendedTailEnd(text: string, start: number): number {
 			(isRfc6750BodyCode(text.charCodeAt(i + 1)) ||
 				(text.charCodeAt(i + 1) === 0x25 &&
 					i + 3 < text.length &&
-					isHexCode(text.charCodeAt(i + 2)) &&
-					isHexCode(text.charCodeAt(i + 3))))
+					isAsciiHexCode(text.charCodeAt(i + 2)) &&
+					isAsciiHexCode(text.charCodeAt(i + 3))))
 		) {
 			i++;
 		} else {
@@ -2414,7 +2483,7 @@ function isCredentialOptionName(name: string): boolean {
 		if (c === 0x2d) {
 			if (segLen === 0) return false;
 			segLen = 0;
-		} else if (isAsciiLetterCode(c) || (c >= 0x30 && c <= 0x39)) {
+		} else if (isAsciiLetterCode(c) || isAsciiDigitCode(c)) {
 			segLen++;
 		} else {
 			return false;

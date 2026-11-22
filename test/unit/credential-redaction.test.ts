@@ -5,7 +5,14 @@ import { generatePKCE } from "../../packages/ai/src/auth/oauth/pkce.ts";
 import { redactUrlCredentials } from "../../packages/coding-agent/src/core/error-contract.ts";
 import { configuredSecretRedactor } from "../../packages/coding-agent/src/core/storage/sqlite-facade.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
-import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
+import {
+	applyRedactionRanges,
+	isBasicAuthPayload,
+	REDACTED_PLACEHOLDER,
+	redactCredentialShapes,
+	scanBasicAuthEndAt,
+	stripAnsiWithOrigin,
+} from "../../packages/coding-agent/src/utils/credential-redaction.ts";
 import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
@@ -1346,6 +1353,7 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 			["auth=Bearer opaqueTok99 PORT=8080", "auth= [redacted] [redacted] PORT=8080"],
 			["auth=Bearer\nnext", "auth= [redacted]\nnext"],
 			["Bearer tok%2Ftail%3D", "[redacted][redacted]"],
+			["Bearer tok%2ftail%3d", "[redacted][redacted]"],
 			["Bearer tok:secretTail", "[redacted][redacted]"],
 			["Expected Bearer https://example.com/auth", "Expected [redacted]://example.com/auth"],
 			["Cookie: a=}}", "Cookie: a=[redacted]}"],
@@ -1591,4 +1599,78 @@ console.log("BUN_REDACTION_OK");
 		},
 		BUN_SUBPROCESS_TIMEOUT_MS,
 	);
+
+	test("shared ANSI, Basic auth, and range-application helpers preserve core strictness and MCP superset semantics", () => {
+		assert.equal(REDACTED_PLACEHOLDER, "[redacted]");
+
+		// stripAnsiWithOrigin handles CSI SGR, OSC 8 BEL/ST, nested ESC inside OSC, and unterminated sequences
+		const styled = "a\x1b[31;1mb\x1b[0m\x1b]8;;https://example.com\x07c\x1b]8;;\x1b\\d";
+		const stripped = stripAnsiWithOrigin(styled);
+		assert.equal(stripped.plain, "abcd");
+		assert.ok(stripped.origin !== undefined);
+		for (let k = 0; k < stripped.plain.length; k++) {
+			assert.equal(styled[stripped.origin[k]!], stripped.plain[k]);
+		}
+		assert.equal(stripped.origin[stripped.plain.length], styled.length);
+		assert.equal(stripAnsiWithOrigin("x\x1b]unterm\x1b[31my\x1b[0mz").plain, "x\x1b]untermyz");
+
+		// Unified isBasicAuthPayload: strict mode (core) vs includeOpaqueTokens (MCP)
+		const latin1Basic = Buffer.from("user:caf\xe9", "latin1").toString("base64");
+		const delBasic = Buffer.from("user:p\x7fass", "latin1").toString("base64");
+		const unpaddedUtf8 = Buffer.from("a:bc", "utf8").toString("base64").replace(/=+$/u, "");
+		assert.equal(isBasicAuthPayload(unpaddedUtf8), true);
+		// Short unpadded Basic stays deferred to core strict boundaries so Authorization: Basic YTpiYw@host is redacted whole
+		assert.equal(isBasicAuthPayload(unpaddedUtf8, { includeOpaqueTokens: true }), false);
+		assert.equal(isBasicAuthPayload(latin1Basic), false);
+		assert.equal(isBasicAuthPayload(latin1Basic, { includeOpaqueTokens: true }), true);
+		assert.equal(isBasicAuthPayload(delBasic), false);
+		assert.equal(isBasicAuthPayload(delBasic, { includeOpaqueTokens: true }), true);
+		for (const opaque of [
+			"opaqueBasicToken9988",
+			"token12345678",
+			"a_b-c1234",
+			Buffer.from("opaque-token-without-colon").toString("base64"),
+			"Y2xpZW50OnNlY3Jld",
+			"Y2xpZW50OnNlY3JldDF",
+			"a+bc",
+		]) {
+			assert.equal(isBasicAuthPayload(opaque), false, `core must reject ${opaque}`);
+			assert.equal(isBasicAuthPayload(opaque, { includeOpaqueTokens: true }), true, `MCP must accept ${opaque}`);
+		}
+		assert.equal(isBasicAuthPayload("Y2xpZW50OnNlY3JldDE"), true);
+		assert.equal(isBasicAuthPayload("Y2xpZW50OnNlY3JldDE", { includeOpaqueTokens: true }), true);
+		for (const prose of ["auth", "mode", "text", "Oolong"]) {
+			assert.equal(isBasicAuthPayload(prose), false, `core must keep ${prose}`);
+			assert.equal(isBasicAuthPayload(prose, { includeOpaqueTokens: true }), false, `MCP must keep ${prose}`);
+		}
+		assert.equal(isBasicAuthPayload("Settings"), false);
+		assert.equal(isBasicAuthPayload("Overview"), false);
+
+		// Shared scanBasicAuthEndAt honors strict core boundaries vs MCP opaque boundaries
+		assert.equal(scanBasicAuthEndAt("Basic opaqueBasicToken9988!", 0), -1);
+		assert.equal(scanBasicAuthEndAt("Basic opaqueBasicToken9988!", 0, { includeOpaqueTokens: true }), 26);
+		assert.equal(scanBasicAuthEndAt("Basic Y2xpZW50OnNlY3JldA==?foo", 0), -1);
+		assert.equal(scanBasicAuthEndAt("Basic Y2xpZW50OnNlY3JldA==?foo", 0, { includeOpaqueTokens: true }), 26);
+		assert.equal(scanBasicAuthEndAt('Basic realm="example"', 0), -1);
+		assert.equal(scanBasicAuthEndAt('Basic realm="example"', 0, { includeOpaqueTokens: true }), 12);
+
+		// Shared applyRedactionRanges protects markers in both modes and ANSI only when preserveAnsi is true
+		assert.equal(applyRedactionRanges("abc[redacted]def", [{ start: 0, end: 16 }]), "[redacted][redacted][redacted]");
+		assert.equal(
+			applyRedactionRanges("Bearer foo\x1b]0;oscSecret\x07bar", [{ start: 0, end: 27 }], { preserveAnsi: true }),
+			"[redacted]\x1b]0;oscSecret\x07[redacted]",
+		);
+		assert.equal(
+			applyRedactionRanges("Bearer foo\x1b]0;oscSecret\x07bar", [{ start: 0, end: 27 }], { preserveAnsi: false }),
+			"[redacted]",
+		);
+		assert.equal(
+			applyRedactionRanges("Bearer foo[redacted]bar", [{ start: 0, end: 19 }], { preserveAnsi: false }),
+			"[redacted][redacted]bar",
+		);
+		assert.equal(
+			applyRedactionRanges('v="[redacted]   [redacted]"', [{ start: 2, end: 27 }], { preserveAnsi: false }),
+			"v=[redacted][redacted][redacted][redacted][redacted]",
+		);
+	});
 });
