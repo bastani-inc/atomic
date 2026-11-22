@@ -281,6 +281,52 @@ describe("closing the Windows console", () => {
 	});
 });
 
+describe("a closed console whose loss Atomic sees before Windows says it closed", () => {
+	/** Windows tells the console's processes one at a time, newest first: the engine, then the host, up to 5 s later. */
+	const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+	beforeEach(() => {
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+	});
+	afterEach(() => {
+		if (stdinIsTTY) Object.defineProperty(process.stdin, "isTTY", stdinIsTTY);
+		else Reflect.deleteProperty(process.stdin, "isTTY");
+	});
+
+	for (const [loss, lose] of [
+		["its input ends", () => process.stdin.emit("end")],
+		["a write finds it gone", () => process.stdout.emit("error", deadTerminal())],
+	] as const) {
+		test(`when ${loss}, the session shuts down and Atomic exits with STATUS_CONTROL_C_EXIT`, async () => {
+			const disposed = Promise.withResolvers<void>();
+			const { context } = createWindowsHost(() => disposed.promise);
+
+			lose();
+			await settle();
+			assert.deepEqual(vi.mocked(context.runtimeHost.dispose).mock.calls, [[{ fromSignal: true }]]);
+			assert.deepEqual(exits, [], "Atomic does not exit before the session has shut down");
+
+			disposed.resolve();
+			await settle();
+			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+			assert.equal(vi.mocked(context.stop).mock.calls.length, 0, "the console is not restored");
+		});
+
+		test(`when ${loss}, a shutdown that does not end is cut short before Windows would end Atomic`, async () => {
+			const { closeConsole } = createWindowsHost(() => new Promise<void>(() => {}));
+			const bound = WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS - OWN_EXIT_MS;
+
+			lose();
+			await settle();
+			await vi.advanceTimersByTimeAsync(bound - 1);
+			assert.deepEqual(exits, []);
+			// Windows says it closed only now: the exit keeps to the bound counted from the loss.
+			closeConsole();
+			await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
+			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		});
+	}
+});
+
 describe("on Linux and macOS", () => {
 	test.skipIf(process.platform === "win32")("a lost terminal still exits with 129", async () => {
 		const disposed = Promise.withResolvers<void>();

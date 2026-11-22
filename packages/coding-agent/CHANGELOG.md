@@ -36,6 +36,7 @@
 - After you change a Git packing setting, such as `core.compression` or `pack.window`, unpushed commits that a worktree snapshot left out because their bundle was over `snapshots.maxSnapshotBytes` are bundled again, and recorded when they now fit. Atomic kept leaving them out until the commits or the repository's packs changed.
 - A line written straight to standard output while Atomic starts, for example by an extension as it loads, is no longer lost when the editor shown before the session is ready gives way to it: it shows once, where it would without that editor, whether Atomic then exits or the session goes on ([#6344](https://github.com/bastani-inc/atomic/pull/6344))
 - A worktree snapshot that leaves unpushed history out because commits add a denied path, such as a private key, now names every such commit after the remote branch moves back, for example after a force-push to an older commit. A capture of an unchanged checkout kept the earlier list, which left out the commits that became unpushed again.
+- On Windows, closing the console Atomic runs in now always ends it with the console-close status (`STATUS_CONTROL_C_EXIT`) and within the time Windows allows, also when Atomic finds its console gone before Windows says the console was closed, as it can on a busy machine. Before, it exited with status 129 in that case, and gave the session's shutdown handlers the longer bound of a lost terminal, past the time Windows allows.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
