@@ -21,16 +21,20 @@ const HANDLER_WORK_MS = 200;
 const ENDLESS_HANDLER_WORK_MS = 10 * CLI_TIMEOUT_MS;
 /** STATUS_CONTROL_C_EXIT: the status Windows gives a process it ends when its console is closed. */
 const CONSOLE_CLOSED_EXIT_CODE = 0xc000013a;
-/** How long Windows lets a process run after its console was closed before it ends the process itself. */
-const WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS = 5_000;
-/** Atomic's own bound on its shutdown once it has proof the console closed, inside Windows' timeout. */
-const CONSOLE_CLOSED_SHUTDOWN_MS = WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS - 1_000;
+/** The interactive engine's shutdown grace period. */
+const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
+/**
+ * The longest Atomic's shutdown takes once it finds its terminal gone (#6104). Atomic can find its console gone, from
+ * its input's end, before Windows says the console was closed, first to the engine and then, once the engine is gone,
+ * to Atomic itself. That alone is not proof of a close and keeps this bound. Windows' notice only shortens it, to end
+ * before Windows would end Atomic, counted from the notice; when it comes is not recorded.
+ */
+const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
 /**
  * The exit's own work after that bound on a loaded runner: ending what Atomic started, then its exit handlers. The exit
- * is measured from Atomic's first proof of the close, the start of its shutdown phase, by its own clock. Measured from
- * the harness's close, a starved runner also counts the time until Atomic was scheduled and read its console's end,
- * which no bound of Atomic's can cover; Windows itself counts from each process's own notice, which reaches the host
- * after the engine's.
+ * is measured from the start of Atomic's shutdown phase, when it first learned its console was gone, by its own clock.
+ * Measured from the harness's close, a starved runner also counts the time until Atomic was scheduled and read its
+ * console's end, which no bound of Atomic's can cover.
  */
 const EXIT_HEADROOM_MS = 3_000;
 /** Longer than a killed process takes to be gone, however loaded the machine. */
@@ -139,8 +143,8 @@ export default (pi) => {
 }
 
 /**
- * Atomic ended itself, as its record of its shutdown phase, written as it exits, shows, within its console-close bound
- * and the exit's headroom from its first proof of the close.
+ * Atomic ended itself, as its record of its shutdown phase, written as it exits, shows, within its bound and the exit's
+ * headroom from when it first learned its console was gone.
  */
 function assertExitedWithinBound(closed: ClosedSession): void {
 	const shutdown = delayOf(closed.records, "host", "shutdown");
@@ -151,8 +155,8 @@ function assertExitedWithinBound(closed: ClosedSession): void {
 		`Atomic did not end itself: it exited ${closed.run.exitedAfterMs} ms after the close, ${session ? `${session.durationMs} ms into its session, after its shutdown began` : "before its shutdown began"}`,
 	);
 	assert.ok(
-		shutdown.durationMs < CONSOLE_CLOSED_SHUTDOWN_MS + EXIT_HEADROOM_MS,
-		`Atomic exited ${shutdown.durationMs} ms after it learned the console closed, ${closed.run.exitedAfterMs} ms after the close`,
+		shutdown.durationMs < TERMINAL_LOST_SHUTDOWN_MS + EXIT_HEADROOM_MS,
+		`Atomic exited ${shutdown.durationMs} ms after it learned its console was gone, ${closed.run.exitedAfterMs} ms after the close`,
 	);
 }
 

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.ts";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../src/modes/rpc/rpc-client-process.js";
 
 // Windows reports the closing of the console window as SIGHUP, and ends the process about five seconds later. The
 // session then shuts down as it does when its terminal is gone, within a bound that ends first, and Atomic exits with
@@ -15,6 +16,10 @@ const CONSOLE_CLOSED_EXIT_CODE = 0xc000013a;
 const WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS = 5_000;
 /** What Atomic leaves of that timeout for its own exit. */
 const OWN_EXIT_MS = 1_000;
+/** The longest a session whose terminal is gone may take to shut down (#6104): past it, Atomic ends anyway. */
+const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
+/** The lost terminal's exit status (#6104). */
+const TERMINAL_LOST_EXIT_CODE = 129;
 
 interface Context {
 	isShuttingDown: boolean;
@@ -281,8 +286,10 @@ describe("closing the Windows console", () => {
 	});
 });
 
-describe("a closed console whose loss Atomic sees before Windows says it closed", () => {
-	/** Windows tells the console's processes one at a time, newest first: the engine, then the host, up to 5 s later. */
+describe("a console Atomic finds gone before Windows says it closed", () => {
+	// Windows tells the console's processes one at a time, newest first: the engine, then the host once the engine is
+	// gone. The host can find its console gone first, from its input's end or a failed write. That alone does not prove
+	// the console was closed: only Windows' notice, to the host or to its engine, does.
 	const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 	beforeEach(() => {
 		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
@@ -296,7 +303,7 @@ describe("a closed console whose loss Atomic sees before Windows says it closed"
 		["its input ends", () => process.stdin.emit("end")],
 		["a write finds it gone", () => process.stdout.emit("error", deadTerminal())],
 	] as const) {
-		test(`when ${loss}, the session shuts down and Atomic exits with STATUS_CONTROL_C_EXIT`, async () => {
+		test(`when ${loss} and no close notice comes, Atomic exits as a lost terminal does, with 129`, async () => {
 			const disposed = Promise.withResolvers<void>();
 			const { context } = createWindowsHost(() => disposed.promise);
 
@@ -307,20 +314,45 @@ describe("a closed console whose loss Atomic sees before Windows says it closed"
 
 			disposed.resolve();
 			await settle();
-			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
-			assert.equal(vi.mocked(context.stop).mock.calls.length, 0, "the console is not restored");
+			assert.deepEqual(exits, [TERMINAL_LOST_EXIT_CODE]);
+			assert.equal(vi.mocked(context.stop).mock.calls.length, 0, "the terminal is not restored");
 		});
 
-		test(`when ${loss}, a shutdown that does not end is cut short before Windows would end Atomic`, async () => {
-			const { closeConsole } = createWindowsHost(() => new Promise<void>(() => {}));
-			const bound = WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS - OWN_EXIT_MS;
+		test(`when ${loss} and no close notice comes, a shutdown that does not end is cut short at the lost terminal's bound`, async () => {
+			createWindowsHost(() => new Promise<void>(() => {}));
 
 			lose();
 			await settle();
+			await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
+			assert.deepEqual(exits, []);
+			await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
+			assert.deepEqual(exits, [TERMINAL_LOST_EXIT_CODE]);
+		});
+
+		test(`when ${loss} and then Windows says the console closed, Atomic exits with STATUS_CONTROL_C_EXIT within the close's bound`, async () => {
+			const { closeConsole } = createWindowsHost(() => new Promise<void>(() => {}));
+			const bound = WINDOWS_CONSOLE_CLOSE_TIMEOUT_MS - OWN_EXIT_MS;
+			const noticeAfterMs = 500;
+
+			lose();
+			await settle();
+			await vi.advanceTimersByTimeAsync(noticeAfterMs);
+			closeConsole();
 			await vi.advanceTimersByTimeAsync(bound - 1);
 			assert.deepEqual(exits, []);
-			// Windows says it closed only now: the exit keeps to the bound counted from the loss.
+			await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
+			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
+		});
+
+		test(`when ${loss} and Windows says the console closed only late, Atomic still exits at the lost terminal's bound, with STATUS_CONTROL_C_EXIT`, async () => {
+			const { closeConsole } = createWindowsHost(() => new Promise<void>(() => {}));
+
+			lose();
+			await settle();
+			await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1_000);
 			closeConsole();
+			await vi.advanceTimersByTimeAsync(1_000 - 1);
+			assert.deepEqual(exits, []);
 			await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
 			assert.deepEqual(exits, [CONSOLE_CLOSED_EXIT_CODE]);
 		});

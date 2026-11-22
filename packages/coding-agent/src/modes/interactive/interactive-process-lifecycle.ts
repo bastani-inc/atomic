@@ -91,25 +91,18 @@ type TerminalEndNotice =
 	| { readonly kind: "terminal-lost" };
 
 /**
- * Whether `notice` proves the console was closed. On Windows a terminal on standard input is a console, and only a
- * closed console is ever gone. Windows tells the processes on a closed console one at a time, newest first, so this
- * host can find its console gone well before its own notice, or the interactive engine's, arrives.
- */
-function provesConsoleClosed(notice: TerminalEndNotice): boolean {
-	return notice.kind === "console-closed" || (process.platform === "win32" && process.stdin.isTTY === true);
-}
-
-/**
- * The host's terminal is ending, as `notice` says. A closed console, however its notices race, shuts the session down
- * as when its terminal is gone, within a bound that ends before Windows would end this process, counted from the first
- * proof of the close, and Atomic exits with the status Windows gives a console program it ends then.
+ * The host's terminal is ending, as `notice` says. Any notice shuts the session down as when its terminal is gone. Only
+ * Windows' word that the console was closed proves that it was: a terminal found gone alone keeps the lost terminal's
+ * bound and status, even on Windows, where the host can find its console gone well before its own notice, or the
+ * interactive engine's, arrives. Once the close is proven, whatever came first, the shutdown is also bounded to end
+ * before Windows would end this process, counted from when Windows said so, and Atomic exits with the status Windows
+ * gives a console program it ends then.
  */
 function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): void {
 	const ending = hostEnding(mode);
-	if (!ending.consoleClosed && provesConsoleClosed(notice)) {
+	if (notice.kind === "console-closed" && !ending.consoleClosed) {
 		ending.consoleClosed = true;
-		const closedMsAgo = notice.kind === "console-closed" ? notice.closedMsAgo : 0;
-		setTimeout(() => mode.emergencyTerminalExit(), Math.max(CONSOLE_CLOSED_SHUTDOWN_MS - closedMsAgo, 0));
+		setTimeout(() => mode.emergencyTerminalExit(), Math.max(CONSOLE_CLOSED_SHUTDOWN_MS - notice.closedMsAgo, 0));
 	}
 	if (ending.terminalLost) return;
 	ending.terminalLost = true;
