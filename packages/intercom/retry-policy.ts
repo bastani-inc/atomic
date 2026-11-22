@@ -10,6 +10,8 @@ export const DELIVERED_MESSAGE_TTL_MS = RETRY_IDENTITY_TTL_MS + RETRY_IDENTITY_R
 export const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 /** How long a sender waits for one send's outcome before its client gives up. */
 export const SEND_RESPONSE_TIMEOUT_MS = 10_000;
+/** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
+export const HELD_SEND_GRACE_MS = 5_000;
 /** The broker answers an unconfirmed save before the sender's own wait ends, so the sender learns the outcome is uncertain. */
 export const RECIPIENT_RECEIPT_TIMEOUT_MS = 8_000;
 /**

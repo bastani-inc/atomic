@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterAll, beforeAll, test } from "vitest";
+import { afterAll, beforeAll, test, vi } from "vitest";
 import { TwoBrokerHarness, twoBrokerHarnessStartTimeoutMs } from "../helpers/intercom-two-broker-harness.js";
 
 const localMessage = randomUUID();
@@ -76,3 +76,50 @@ test("a reply to an ask on a crashed broker gets a retryable refusal without los
 	assert.equal(live.messagesWithId(reply).length, 1);
 	assert.match(readFileSync(`${harness.sharedDatabasePath}.reads`, "utf8"), /^route\nsettled$/mu);
 }, 45_000);
+
+const SLOW_STORE_SEND_TEST_TIMEOUT_MS = 120_000;
+
+test(
+	"a cross-node ask and reply over a slow shared database extend the sender's deadline instead of failing with Send timeout",
+	async () => {
+		const slowOptions = {
+			storageAdapter: resolve(import.meta.dirname, "../fixtures/intercom-dynamic-delay-adapter.ts"),
+		};
+		const slowHarness = await TwoBrokerHarness.start(slowOptions);
+		const delayFile = `${slowHarness.sharedDatabasePath}.delay`;
+		const group = `slow-${randomUUID().slice(0, 8)}`;
+		const askId = randomUUID();
+		try {
+			const asker = await slowHarness.connect("a", "slow-asker", { group });
+			const recipient = await slowHarness.connect("b", "slow-recipient", { group });
+			// 800 ms per shared-database call makes routing + outbox round trips exceed SEND_RESPONSE_TIMEOUT_MS (10 s).
+			writeFileSync(delayFile, "800");
+			const sent = await asker.client.send(recipient.sessionId, {
+				messageId: askId,
+				text: "slow ask",
+				expectsReply: true,
+			});
+			assert.equal(sent.delivered, true, sent.reason);
+			await vi.waitFor(() => assert.equal(recipient.messagesWithId(askId).length, 1), {
+				timeout: 15_000,
+				interval: 25,
+			});
+
+			const replied = await recipient.client.send(asker.sessionId, {
+				text: "slow reply",
+				replyTo: askId,
+				requirePendingReply: true,
+				expectedRecipientId: asker.sessionId,
+			});
+			assert.equal(replied.delivered, true, replied.reason);
+			await vi.waitFor(
+				() => assert.equal(asker.received.filter((frame) => frame.message.replyTo === askId).length, 1),
+				{ timeout: 15_000, interval: 25 },
+			);
+		} finally {
+			rmSync(delayFile, { force: true });
+			await slowHarness.cleanup();
+		}
+	},
+	SLOW_STORE_SEND_TEST_TIMEOUT_MS,
+);

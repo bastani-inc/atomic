@@ -26,6 +26,8 @@
 - Inside a Herdr pane, a session status update that arrives just as the previous Herdr report finishes is now sent right away instead of leaving Herdr showing the older status until the next activity event.
 - Restored interrupted running subagents in `/tasks` and the agent panel automatically after an isolated-engine crash without showing user-facing resume prompts or replaying interrupted deliveries.
 - Restored a lost subagent chat's known-unsaved queued messages into that child chat's own editor ahead of any draft (immediately if open and writable, or on first writable reopen in the same session, with a main-chat notice while closed and fallback to the full-text notice when read-only or from an older engine).
+- Editing the `debug` or `httpProxy` global setting in `settings.json` while Atomic is starting no longer discards a same-build prewarmed interactive engine and starts a second one: the updated setting values are reconciled over the engine adoption handshake before the engine configures HTTP or starts its session.
+- Blueprint build locks on Windows now read fresh process start times when recording newly started steps and build holders without the native module, retry transient fallback start-time lookups and concurrent Windows lock-file read/rename refusals while a build runs or settles, and check process liveness before querying fallback start times so reused PIDs never record a stale start and dead builds settle promptly.
 
 ## [0.10.4] - 2026-11-22
 
