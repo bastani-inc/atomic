@@ -34,7 +34,7 @@ import {
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
 import { ResumeTimingsRecorder } from "../src/core/resume/timings.js";
 import type { ShellConfig } from "../src/utils/shell.ts";
-import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { expireStepBudgetOnceStarted, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
 
 const STEP_TIMEOUT_MS = 60_000;
@@ -136,64 +136,6 @@ async function waitFor(done: () => boolean, what: string): Promise<void> {
 		assert.ok(Date.now() < deadline, `${what} never happened`);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
-}
-
-/**
- * Makes the step budget timer armed for {@link BLUEPRINT_STEP_TIMEOUT_MS} expire once `started()` is true, rather than
- * after three hours or before a slow shell on a loaded machine writes its start marker. Records every intercepted delay
- * so the test still verifies that {@link runSection} forwarded the step budget to the process timer.
- *
- * The poll is always scheduled on a later timer turn (never synchronously inside `setTimeout`) so the process runner
- * finishes wiring its timer handle and exit listeners before the callback runs. Real wall-clock expiry and `elapsedMs`
- * reporting remain covered by the unpatched-timer timeout test in `step timings (#4748)`.
- */
-function expireStepBudgetOnceStarted(started: () => boolean): {
-	readonly armedDelays: number[];
-	restore(): void;
-} {
-	const realSetTimeout = globalThis.setTimeout;
-	const realClearTimeout = globalThis.clearTimeout;
-	const armedDelays: number[] = [];
-	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
-	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
-		if (typeof timeout !== "number" || timeout <= BLUEPRINT_STEP_TIMEOUT_MS / 2) {
-			return realSetTimeout(handler, timeout, ...args);
-		}
-		armedDelays.push(timeout);
-		const budget: (typeof budgets)[number] = {
-			standIn: realSetTimeout(() => undefined, 2 ** 31 - 1),
-			cleared: false,
-		};
-		budget.standIn.unref();
-		budgets.push(budget);
-		const look = () => {
-			if (budget.cleared) return;
-			if (started()) handler(...args);
-			else budget.watch = realSetTimeout(look, 20);
-		};
-		budget.watch = realSetTimeout(look, 20);
-		return budget.standIn;
-	}) as typeof setTimeout;
-	globalThis.clearTimeout = ((timer?: NodeJS.Timeout | string | number) => {
-		const budget = budgets.find((entry) => entry.standIn === timer);
-		if (budget !== undefined) {
-			budget.cleared = true;
-			realClearTimeout(budget.watch);
-		}
-		realClearTimeout(timer);
-	}) as typeof clearTimeout;
-	return {
-		armedDelays,
-		restore() {
-			globalThis.setTimeout = realSetTimeout;
-			globalThis.clearTimeout = realClearTimeout;
-			for (const budget of budgets) {
-				budget.cleared = true;
-				realClearTimeout(budget.watch);
-				realClearTimeout(budget.standIn);
-			}
-		},
-	};
 }
 
 function lowestFreeDescriptor(): number {
