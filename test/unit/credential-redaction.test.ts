@@ -1391,7 +1391,7 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 			["\x1b[31mPASSWORD=mySecret99\x1b[0m \n", "\x1b[31mPASSWORD= [redacted]\x1b[0m \n"],
 			["auth=\x1b[31mBearer\x1b[0m mySecret99", "auth=\x1b[31m [redacted]\x1b[0m [redacted]"],
 			["Bearer tok\x1b[31m%2Fsecret\x1b[0m", "[redacted]\x1b[31m[redacted]\x1b[0m"],
-			["rejected \x1b[31mBasic\x1b[0m Y2xpZW50OnNlY3JldA==", "rejected \x1b[31m[redacted]\x1b[0m [redacted]"],
+			["rejected \x1b[31mBasic\x1b[0m Y2xpZW50OnNlY3JldA==", "rejected \x1b[31m[redacted]\x1b[0m[redacted]"],
 		];
 		for (const [input, expected] of cases) {
 			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
