@@ -156,6 +156,10 @@ export function getExtensionRuntimeEventBus(runtime: ExtensionRuntime): EventBus
 	return eventBus;
 }
 
+export function setExtensionRuntimeEventBus(runtime: ExtensionRuntime, eventBus: EventBus): void {
+	runtimeEventBuses.set(runtime, eventBus);
+}
+
 const INTER_EXTENSION_YIELD_THRESHOLD_MS = 16;
 
 /**
