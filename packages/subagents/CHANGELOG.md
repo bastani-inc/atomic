@@ -2,11 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled `impeccable` skill to 4.10.0 with engine 0.1.27. Long `DESIGN.md` files load as a short map with on-demand token, component, and section lookups and consent-gated `design-compact`; `doctor` reports concrete dead paths and color drift instead of commit counts; `animate` captures normal and reduced-motion frames for motion review; world builds check the first viewport with `impeccable shot` and `first-viewport` and start documenting alongside the final review; and Live Mode keeps its bottom bar steady under the pointer, persists Exit across reloads, adds 44px touch targets, and shows the missing-`PRODUCT.md` notice once per browser. Atomic's telemetry and update-check opt-outs, CSPRNG session IDs, and helper-origin overlay script loading remain intact.
+
 ### Fixed
 
 - On Windows with Python 3.13 or 3.14, the `liteparse` skill's `search.py` no longer fails when its output goes to a pipe, as it does when Atomic runs it, on finding two or more matches or a match with text outside the system's code page: it now writes its output and errors as UTF-8, as it already did on Python 3.15. On every system it no longer fails on a document over 64 KiB with a character split between two 64 KiB blocks, or when the document, or a 64 KiB part of it, has fewer lines than the matches asked for (`-k`, 10 by default). A match after the first 64 KiB now shows its line numbers in the whole document, instead of counting from the start of its block, and a line that crossed a block boundary is no longer split in two.
 - With Git 2.30 to 2.32, a named worktree (`worktree: { branch }`) is created instead of failing with `unknown option 'reason'`. With those versions, one whose creation was cut off, for example by a killed Atomic, is reported as busy after a 30-second wait rather than at once.
 - The feedback skill's privacy scrub no longer takes seconds, or minutes on a busy machine, on long text that alternates letters or digits with `.`, `-`, `%` or `+`, such as `a-a-a-...`: 64 KiB took 4 s. It finds the same emails as before, in one pass.
+- Creating a named worktree (`worktree: { branch }`) on a busy machine no longer fails with `failed to read .../worktrees/<name>/commondir` while Git is still registering another worktree. The add makes up to five attempts, and its own Git commands no longer use up the time it waits for that registration.
 
 ## [0.10.4-alpha.1] - 2026-11-22
 

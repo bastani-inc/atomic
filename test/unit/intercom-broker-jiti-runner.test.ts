@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
+import { codingAgentDependencyClosure } from "../helpers/coding-agent-dependency-closure.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 
 /**
@@ -136,19 +137,15 @@ describe("shipped dependency manifests", () => {
 		assert.ok(codingAgent.dependencies?.jiti, "the broker runner must stay a declared dependency");
 	});
 
-	test("the published shrinkwrap excludes removed client runtimes and obsolete tsx runners", () => {
-		const shrinkwrap = JSON.parse(
-			readFileSync(join(repoRoot, "packages/coding-agent/npm-shrinkwrap.json"), "utf8"),
-		) as { packages: Record<string, { version?: string }> };
+	test("an install of Atomic leaves out removed client runtimes and obsolete tsx runners", () => {
+		const names = codingAgentDependencyClosure(repoRoot).map(({ name }) => name);
 
-		const obsolete = Object.keys(shrinkwrap.packages).filter((entry) =>
-			/(^|\/)node_modules\/(tsx|fsevents|esbuild|@esbuild\/[^/]+|@earendil-works\/(chord|pi-client|pi-protocol))$/u.test(
-				entry,
-			),
+		const obsolete = names.filter((name) =>
+			/^(tsx|fsevents|esbuild|@esbuild\/[^/]+|@earendil-works\/(chord|pi-client|pi-protocol))$/u.test(name),
 		);
 
 		assert.deepEqual(obsolete, []);
-		assert.ok(Object.keys(shrinkwrap.packages).some((entry) => entry.endsWith("node_modules/jiti")));
+		assert.ok(names.includes("jiti"));
 	});
 });
 
