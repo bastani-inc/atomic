@@ -189,13 +189,14 @@ test("a wrapped connection reaching the file through a linked directory waits to
 
 test("a wrapped write still waiting at its busy timeout fails as SQLite's busy handler does, off the event loop and having run nothing (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
-	const busyTimeoutMs = 800;
+	// Long enough that half of it is room for a loaded machine's event loop, which went 0.6 s without a turn.
+	const busyTimeoutMs = 3_000;
 	const { wrapped } = await openWrapped(path, busyTimeoutMs);
 	// What node:sqlite throws for a statement the lock refuses at once.
 	const reference = new DatabaseSync(path);
 	cleanups.push(() => reference.close());
 	reference.exec("PRAGMA busy_timeout=0");
-	const { committed, settled } = await holdLock(threaded, 4 * busyTimeoutMs);
+	const { committed, settled } = await holdLock(threaded, 2 * busyTimeoutMs);
 	let refused: unknown;
 	try {
 		reference.prepare("INSERT INTO items VALUES ('r')").run();
