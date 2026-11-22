@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,11 +13,17 @@ process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 
 const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
-const { getBrokerSocketPath, getIntercomDirPath } = await import("../../packages/intercom/broker/paths.js");
-const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-const { BROKER_ROUTING_CHANGED_CODE, BROKER_ROUTING_CHANGED_REASON } = await import(
-	"../../packages/intercom/recoverable-disconnect.js"
+const { getBrokerPidPath, getBrokerSocketPath, getBrokerSpawnLockPath, getIntercomDirPath } = await import(
+	"../../packages/intercom/broker/paths.js"
 );
+const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+const { BROKER_SPAWN_LOCK_MAX_AGE_MS } = await import("../../packages/intercom/broker/spawn.js");
+const {
+	BROKER_ROUTING_CHANGED_CODE,
+	BROKER_ROUTING_CHANGED_REASON,
+	IntercomBrokerRetiringError,
+	isIntercomBrokerRetiring,
+} = await import("../../packages/intercom/recoverable-disconnect.js");
 const {
 	isIntercomBrokerProtocolError,
 	isIntercomRoutingChangedError,
@@ -32,6 +38,8 @@ afterEach(async () => {
 	for (const server of servers.splice(0)) {
 		if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
 	}
+	rmSync(getBrokerPidPath(agentDir), { force: true });
+	rmSync(getBrokerSpawnLockPath(agentDir), { force: true });
 });
 
 afterAll(() => {
@@ -130,6 +138,117 @@ describe("registering with the routing a session verified (#4320)", () => {
 			received.map((frame) => frame.type),
 			["register_verified"],
 		);
+	});
+
+	test("a verified registration dropped while a successor broker replaced broker.pid is retiring even when the socket already answers (#4538)", async () => {
+		for (const scenario of ["unlinked", "replaced-pid", "replaced-same-pid-new-mtime", "created"] as const) {
+			const pidPath = getBrokerPidPath(agentDir);
+			mkdirSync(getIntercomDirPath(agentDir), { recursive: true, mode: 0o700 });
+			rmSync(pidPath, { force: true });
+			if (scenario !== "created") {
+				writeFileSync(pidPath, String(process.pid));
+				const earlier = (Date.now() - 5_000) / 1_000;
+				utimesSync(pidPath, earlier, earlier);
+			}
+			await fakeBroker((socket) => {
+				if (scenario === "unlinked") rmSync(pidPath, { force: true });
+				else if (scenario === "replaced-pid") writeFileSync(pidPath, String(process.pid + 1));
+				else if (scenario === "replaced-same-pid-new-mtime") {
+					writeFileSync(pidPath, String(process.pid));
+					const later = Date.now() / 1_000;
+					utimesSync(pidPath, later, later);
+				} else if (scenario === "created") writeFileSync(pidPath, String(process.pid));
+				socket.destroy();
+			});
+
+			const error = await connectFailure(false);
+
+			assert.ok(error instanceof IntercomBrokerRetiringError, `${scenario}: ${String(error)}`);
+			assert.equal(isIntercomBrokerRetiring(error), true, scenario);
+			assert.equal(isIntercomRoutingUnavailableError(error), false, scenario);
+			for (const server of servers.splice(0)) {
+				if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+			}
+		}
+	});
+
+	test("a verified registration dropped while a live spawn lock is held is retiring even if the socket still briefly answers (#4538)", async () => {
+		mkdirSync(getIntercomDirPath(agentDir), { recursive: true, mode: 0o700 });
+		writeFileSync(getBrokerSpawnLockPath(agentDir), `${process.pid}\n${Date.now()}\n`);
+		await fakeBroker((socket) => socket.destroy());
+
+		const error = await connectFailure(false);
+
+		assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+		assert.equal(isIntercomRoutingUnavailableError(error), false);
+	});
+
+	test("a stale spawn lock does not mask an answering broker that drops register_verified as unsupported (#4538)", async () => {
+		mkdirSync(getIntercomDirPath(agentDir), { recursive: true, mode: 0o700 });
+		const staleLocks = [
+			`99999999\n${Date.now()}\n`,
+			`0\n${Date.now()}\n`,
+			`-1\n${Date.now()}\n`,
+			`${process.pid}\n${Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS - 1_000}\n`,
+			"",
+		];
+		if (process.platform === "linux" || process.platform === "win32" || process.platform === "darwin") {
+			staleLocks.push(`${process.pid} 1\n${Date.now()}\n`);
+		}
+		await fakeBroker((socket) => socket.destroy());
+		for (const staleLock of staleLocks) {
+			writeFileSync(getBrokerSpawnLockPath(agentDir), staleLock);
+			const error = await connectFailure(false);
+			assert.ok(isIntercomRoutingUnavailableError(error), `${JSON.stringify(staleLock)}: ${String(error)}`);
+			assert.deepEqual([error.reason, error.phase], ["unsupported", "register"]);
+		}
+	});
+
+	test("a verified registration dropped by a crashed broker whose broker.pid names an exited process is retiring (#4538)", async () => {
+		mkdirSync(getIntercomDirPath(agentDir), { recursive: true, mode: 0o700 });
+		writeFileSync(getBrokerPidPath(agentDir), "99999999");
+		await fakeBroker((socket) => socket.destroy());
+
+		const error = await connectFailure(false);
+
+		assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+		assert.equal(isIntercomRoutingUnavailableError(error), false);
+	});
+
+	test("an explicit brokerSocketPath ignores a live spawn lock in the ambient agent directory (#4538)", async () => {
+		const otherDir = mkdtempSync(join(tmpdir(), "icv-explicit-"));
+		mkdirSync(getIntercomDirPath(agentDir), { recursive: true, mode: 0o700 });
+		writeFileSync(getBrokerSpawnLockPath(agentDir), `${process.pid}\n${Date.now()}\n`);
+		const explicitSocket = getBrokerSocketPath(process.platform, otherDir);
+		mkdirSync(getIntercomDirPath(otherDir), { recursive: true, mode: 0o700 });
+		const server = net.createServer((socket) => {
+			socket.on("error", () => {});
+			socket.on(
+				"data",
+				createMessageReader(
+					() => socket.destroy(),
+					() => socket.destroy(),
+				),
+			);
+		});
+		await new Promise<void>((resolve) => server.listen(explicitSocket, resolve));
+		servers.push(server);
+		try {
+			const client = new IntercomClient("explicit-client", {
+				connectTimeoutMs: 2_000,
+				brokerSocketPath: explicitSocket,
+			});
+			const error = await client
+				.connect(SESSION, undefined, undefined, undefined, undefined, { acrossMachines: false, verify: true })
+				.catch((caught: unknown) => caught);
+			assert.ok(isIntercomRoutingUnavailableError(error), String(error));
+			assert.deepEqual([error.reason, error.phase], ["unsupported", "register"]);
+		} finally {
+			for (const s of servers.splice(0)) {
+				if (s.listening) await new Promise<void>((resolve) => s.close(() => resolve()));
+			}
+			removeTestDirectory(otherDir, { retries: 20, retryDelayMs: 50 });
+		}
 	});
 
 	test("an unverified registration closed by a broker that still answers keeps the plain closed-connection error", async () => {

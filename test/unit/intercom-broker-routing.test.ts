@@ -1,27 +1,57 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 
-const control = vi.hoisted(() => ({ reply: undefined as unknown, calls: [] as unknown[][] }));
+const control = vi.hoisted(() => ({
+	reply: undefined as unknown,
+	calls: [] as unknown[][],
+	socketAnswering: true,
+	onControl: undefined as (() => void) | undefined,
+}));
 
 vi.mock("../../packages/intercom/broker/control-request.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../packages/intercom/broker/control-request.js")>()),
 	controlRequest: async (...args: unknown[]) => {
 		control.calls.push(args);
+		control.onControl?.();
 		return control.reply;
 	},
 }));
 
+vi.mock("../../packages/intercom/broker/socket-liveness.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../packages/intercom/broker/socket-liveness.js")>()),
+	isSocketAnswering: async () => control.socketAnswering,
+}));
+
 const { queryBrokerRouting } = await import("../../packages/intercom/broker/broker-routing.js");
 const { BROKER_CONTROL_TIMEOUT_MS } = await import("../../packages/intercom/broker/control-request.js");
+const { BROKER_SPAWN_LOCK_MAX_AGE_MS } = await import("../../packages/intercom/broker/spawn.js");
 const { isIntercomRoutingTimeoutError, isIntercomRoutingUnavailableError } = await import("@bastani/atomic");
-const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { getBrokerPidPath, getBrokerSocketPath, getBrokerSpawnLockPath, getIntercomDirPath } = await import(
+	"../../packages/intercom/broker/paths.js"
+);
 const { IntercomBrokerRetiringError, isIntercomBrokerRetiring } = await import(
 	"../../packages/intercom/recoverable-disconnect.js"
 );
 
+const tempDirs: string[] = [];
+
+function createTempAgentDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "ic-routing-"));
+	mkdirSync(getIntercomDirPath(dir), { recursive: true });
+	tempDirs.push(dir);
+	return dir;
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	control.calls.length = 0;
+	control.socketAnswering = true;
+	control.onControl = undefined;
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 test("a timed-out status request reports at least its own timeout as elapsed, even when the clock steps back (#4320)", async () => {
@@ -113,11 +143,167 @@ test("a broker nothing is listening on is a lost broker that the caller can repl
 	assert.equal(isIntercomRoutingUnavailableError(error), false);
 });
 
-test("a broker that closes the status request without answering is unsupported at the broker_status phase (#4320)", async () => {
+test("a broker that closes the status request without answering while still answering is unsupported at the broker_status phase (#4320)", async () => {
+	const dir = createTempAgentDir();
 	control.reply = { connected: true };
-	const error = await queryBrokerRouting("/unused").catch((caught: unknown) => caught);
+	control.socketAnswering = true;
+	const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
 	assert.ok(isIntercomRoutingUnavailableError(error));
 	assert.deepEqual([error.reason, error.phase, error.retryable], ["unsupported", "broker_status", true]);
+	assert.equal(control.calls.length, 1);
+});
+
+test("a broker that closes the status request without answering and stops answering is retiring, not unsupported (#4538)", async () => {
+	const dir = createTempAgentDir();
+	control.reply = { connected: true };
+	control.socketAnswering = false;
+	const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+	assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+	assert.equal(isIntercomBrokerRetiring(error), true);
+	assert.equal(isIntercomRoutingUnavailableError(error), false);
+});
+
+test("a status request dropped while the broker is replaced (broker.pid changed or unlinked) is retiring even if the successor already answers (#4538)", async () => {
+	for (const scenario of ["unlinked", "replaced-pid", "replaced-same-pid-new-mtime", "created"] as const) {
+		const dir = createTempAgentDir();
+		const pidPath = getBrokerPidPath(dir);
+		if (scenario !== "created") {
+			writeFileSync(pidPath, String(process.pid));
+			const earlier = (Date.now() - 5_000) / 1_000;
+			utimesSync(pidPath, earlier, earlier);
+		}
+		control.reply = { connected: true };
+		control.socketAnswering = true;
+		control.onControl = () => {
+			if (scenario === "unlinked") rmSync(pidPath, { force: true });
+			else if (scenario === "replaced-pid") writeFileSync(pidPath, String(process.pid + 1));
+			else if (scenario === "replaced-same-pid-new-mtime") {
+				writeFileSync(pidPath, String(process.pid));
+				const later = Date.now() / 1_000;
+				utimesSync(pidPath, later, later);
+			} else if (scenario === "created") writeFileSync(pidPath, String(process.pid));
+		};
+		const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+		assert.ok(error instanceof IntercomBrokerRetiringError, `${scenario}: ${String(error)}`);
+		assert.equal(isIntercomRoutingUnavailableError(error), false, scenario);
+	}
+});
+
+test("a status request dropped while a live spawn lock is held is retiring even if the socket still briefly answers (#4538)", async () => {
+	for (const createdAt of [Date.now(), Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS + 5_000]) {
+		const dir = createTempAgentDir();
+		writeFileSync(getBrokerSpawnLockPath(dir), `${process.pid}\n${createdAt}\n`);
+		control.reply = { connected: true };
+		control.socketAnswering = true;
+		const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+		assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+		assert.equal(isIntercomRoutingUnavailableError(error), false);
+	}
+});
+
+test("a stale spawn lock does not mask an answering broker that drops broker_status as unsupported (#4538)", async () => {
+	const staleLocks = [
+		`99999999\n${Date.now()}\n`,
+		`0\n${Date.now()}\n`,
+		`-1\n${Date.now()}\n`,
+		`${process.pid}\n${Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS - 1_000}\n`,
+		"",
+	];
+	if (process.platform === "linux" || process.platform === "win32" || process.platform === "darwin") {
+		// "1" is a valid decimal FILETIME on Windows/macOS and a mismatched start token on Linux.
+		staleLocks.push(`${process.pid} 1\n${Date.now()}\n`);
+	}
+	for (const staleLock of staleLocks) {
+		const dir = createTempAgentDir();
+		writeFileSync(getBrokerSpawnLockPath(dir), staleLock);
+		control.reply = { connected: true };
+		control.socketAnswering = true;
+		control.calls.length = 0;
+		const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+		assert.ok(isIntercomRoutingUnavailableError(error), `${JSON.stringify(staleLock)}: ${String(error)}`);
+		assert.deepEqual([error.reason, error.phase], ["unsupported", "broker_status"]);
+		assert.equal(control.calls.length, 1);
+	}
+});
+
+test("an unrecognised start token format in a live spawn lock falls back to pid liveness on Windows and macOS (#4538)", async () => {
+	if (process.platform !== "win32" && process.platform !== "darwin") return;
+	const dir = createTempAgentDir();
+	writeFileSync(getBrokerSpawnLockPath(dir), `${process.pid} future-format-token\n${Date.now()}\n`);
+	control.reply = { connected: true };
+	control.socketAnswering = true;
+	const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+	assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+});
+
+test("a corrupt, non-positive, or directory broker.pid or directory spawn lock does not livelock an answering unsupported broker (#4538)", async () => {
+	for (const badPid of ["", "not-a-pid", "0", "-1"]) {
+		const dir = createTempAgentDir();
+		writeFileSync(getBrokerPidPath(dir), badPid);
+		control.reply = { connected: true };
+		control.socketAnswering = true;
+		const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+		assert.ok(isIntercomRoutingUnavailableError(error), `${JSON.stringify(badPid)}: ${String(error)}`);
+		assert.deepEqual([error.reason, error.phase], ["unsupported", "broker_status"]);
+	}
+	const dirWithPidDir = createTempAgentDir();
+	mkdirSync(getBrokerPidPath(dirWithPidDir));
+	control.reply = { connected: true };
+	control.socketAnswering = true;
+	const pidDirError = await queryBrokerRouting(dirWithPidDir).catch((caught: unknown) => caught);
+	assert.ok(isIntercomRoutingUnavailableError(pidDirError), String(pidDirError));
+
+	const dirWithLockDir = createTempAgentDir();
+	mkdirSync(getBrokerSpawnLockPath(dirWithLockDir));
+	control.reply = { connected: true };
+	control.socketAnswering = true;
+	const lockDirError = await queryBrokerRouting(dirWithLockDir).catch((caught: unknown) => caught);
+	assert.ok(isIntercomRoutingUnavailableError(lockDirError), String(lockDirError));
+});
+
+test("a slow-start spawn lock handed off to the same live answering broker does not mask unsupported (#4538)", async () => {
+	const dir = createTempAgentDir();
+	writeFileSync(getBrokerPidPath(dir), String(process.pid));
+	writeFileSync(getBrokerSpawnLockPath(dir), `${process.pid}\n${Date.now()}\n${process.pid}\n`);
+	control.reply = { connected: true };
+	control.socketAnswering = true;
+	const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+	assert.ok(isIntercomRoutingUnavailableError(error), String(error));
+	assert.deepEqual([error.reason, error.phase], ["unsupported", "broker_status"]);
+});
+
+test.skipIf(process.platform !== "win32")(
+	"a status request dropped when broker.pid was dated well before its pid was given to a later process is retiring (#4538)",
+	async () => {
+		const dir = createTempAgentDir();
+		const pidPath = getBrokerPidPath(dir);
+		const later = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		await new Promise<void>((resolve) => later.once("spawn", () => resolve()));
+		assert.ok(later.pid !== undefined);
+		try {
+			writeFileSync(pidPath, String(later.pid));
+			// Date broker.pid 60 s earlier, off the 10 ms coarse step (NTFS resolution), so wroteFileAt reports "no".
+			const written = (Date.now() - 60_000) / 1_000 + 0.000_345_6;
+			utimesSync(pidPath, written, written);
+			control.reply = { connected: true };
+			control.socketAnswering = true;
+			const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+			assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+		} finally {
+			later.kill("SIGKILL");
+			await new Promise<void>((resolve) => later.once("exit", () => resolve()));
+		}
+	},
+);
+
+test("a status request dropped by a crashed broker whose broker.pid names an exited process is retiring even if the pipe briefly answers (#4538)", async () => {
+	const dir = createTempAgentDir();
+	writeFileSync(getBrokerPidPath(dir), "99999999");
+	control.reply = { connected: true };
+	control.socketAnswering = true;
+	const error = await queryBrokerRouting(dir).catch((caught: unknown) => caught);
+	assert.ok(error instanceof IntercomBrokerRetiringError, String(error));
+	assert.equal(isIntercomRoutingUnavailableError(error), false);
 });
 
 test("a status reply without a readable report is malformed at the broker_status phase (#4320)", async () => {
