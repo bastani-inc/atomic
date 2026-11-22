@@ -246,6 +246,17 @@ type HandlerPrototype = {
 };
 const handlerPrototype = InteractiveMode.prototype as unknown as HandlerPrototype;
 
+/**
+ * On Windows, once a lost terminal's bound has run out, Atomic gives a console-close notice it already received two
+ * turns of the event loop to be read before it exits; fake timers run each turn as a timer of its own.
+ */
+const PENDING_NOTICE_TURNS = 2;
+
+/** Runs the pending timers until a session whose shutdown never ends is cut short at its lost terminal's bound. */
+function runUntilLostTerminalBoundEnds(): void {
+	for (let run = 0; run <= PENDING_NOTICE_TURNS; run++) vi.runOnlyPendingTimers();
+}
+
 test("unrelated uncaught EIO and ENOTTY restore the terminal and report a crash (#3429)", () => {
 	const hint = "Error in extension unrelated-extension";
 	const stop = vi.fn();
@@ -319,7 +330,7 @@ test("dead stdin and uncaught terminal errors exit quietly while other errors st
 			// The session shuts down as on SIGHUP first (#6104); one that never ends is cut short.
 			process.stdin.emit("error", Object.assign(new Error(`read ${code}`), { code }));
 			assert.deepEqual(vi.mocked(context.shutdown).mock.calls, [[{ fromSignal: true }]]);
-			assert.throws(() => vi.runOnlyPendingTimers(), /exit 129/);
+			assert.throws(() => runUntilLostTerminalBoundEnds(), /exit 129/);
 			assert.equal(report.mock.calls.length, 0);
 			assert.equal(process.stdin.listenerCount("error"), before);
 			context.isShuttingDown = false;

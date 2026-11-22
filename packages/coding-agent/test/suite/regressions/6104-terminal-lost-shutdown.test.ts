@@ -11,6 +11,11 @@ import { trackDetachedChildPid, untrackDetachedChildPid } from "../../../src/uti
 
 /** The longest a session whose terminal is gone may take to shut down: past it, Atomic ends anyway. */
 const TERMINAL_LOST_SHUTDOWN_MS = ENGINE_SHUTDOWN_GRACE_MS + 1_000;
+/**
+ * On Windows, Atomic gives a console-close notice it already received two turns of the event loop to be read before it
+ * exits at that bound. Fake timers run each turn a millisecond apart.
+ */
+const PENDING_NOTICE_TURNS_MS = 2;
 
 interface Context {
 	isShuttingDown: boolean;
@@ -160,7 +165,7 @@ describe("a terminal that is gone (#6104)", () => {
 		await vi.advanceTimersByTimeAsync(TERMINAL_LOST_SHUTDOWN_MS - 1);
 		assert.deepEqual(exits, []);
 
-		await assert.rejects(vi.advanceTimersByTimeAsync(1), ProcessExit);
+		await assert.rejects(vi.advanceTimersByTimeAsync(1 + PENDING_NOTICE_TURNS_MS), ProcessExit);
 		assert.deepEqual(exits, [129]);
 		assert.equal(context.isShuttingDown, true);
 	});

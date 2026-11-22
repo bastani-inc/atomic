@@ -6,13 +6,13 @@ import {
 	type PathLike,
 	readdirSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
+import { renameSyncWithRetry } from "../helpers/rename-retry.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 type FaultCode = "EPERM" | "EACCES" | "EROFS" | "EIO";
@@ -508,7 +508,7 @@ test.each(REFRESH_FAULT_CODES)(
 		rmSync(original, { recursive: true });
 		const current = join(moved, "main");
 		const movedSibling = join(moved, "sibling");
-		renameSync(join(moved, "a1"), current);
+		renameSyncWithRetry(join(moved, "a1"), current);
 
 		const claimFile = join(moved, ".atomic-storage-parent-owner");
 		const claimBeforeRefresh = readFileSync(claimFile, "utf8");
@@ -594,7 +594,7 @@ test("sibling and clone lookups do not refresh another owner's parent claim reco
 	rmSync(original, { recursive: true });
 	const current = join(moved, "main");
 	const movedSibling = join(moved, "sibling");
-	renameSync(join(moved, "a1"), current);
+	renameSyncWithRetry(join(moved, "a1"), current);
 	resetStorageHomeCacheForTests();
 
 	const claimFile = join(moved, ".atomic-storage-parent-owner");
