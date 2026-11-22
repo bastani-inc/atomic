@@ -1956,6 +1956,12 @@ async function claimLandingLate(node: Node, id: string, returnAddress: string, i
 			await written.promise;
 			await vi.advanceTimersByTimeAsync(0);
 		},
+		/** The write runs, and what it settles runs too, within this turn of the event loop. */
+		async landWithinTurn() {
+			landing.resolve();
+			await written.promise;
+			for (let microtask = 0; microtask < 200; microtask++) await Promise.resolve();
+		},
 	};
 }
 
@@ -3142,6 +3148,24 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 
 		await vi.advanceTimersByTimeAsync(2 * BROKER_LEASE_RENEW_INTERVAL_MS);
 		assert.ok(!here.fenced.includes(back), "it keeps the id");
+		assert.equal((await here.state.knownSessions.owners!.ownerOf(id))?.token, claim.grant.token);
+	});
+
+	test("a session that took its id with its hand-over keeps it when an earlier registration's claim write lands before it is registered (#5607)", async () => {
+		const { here, live, fresh } = await awaitingWhileStopped();
+		await untilMovedBack(here, fresh);
+		const id = live.info.id;
+		const returnAddress = fresh.registrationReturnAddress!;
+		const identity = deliveryTargetIdentity(fresh);
+		const handoff = here.handoffs[0]!.handoff;
+		const late = await claimLandingLate(here, id, returnAddress, identity, handoff);
+		const first = registerUnanswered(here, late.claim, returnAddress, true);
+		await first.registered;
+		const claim = await here.router.claimSessionId(id, returnAddress, identity, handoff);
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		// The first claim's write lands between the hand-over's grant and its registration here, as the broker reads the
+		// grant: the id stays the grant's.
+		await late.landWithinTurn();
 		assert.equal((await here.state.knownSessions.owners!.ownerOf(id))?.token, claim.grant.token);
 	});
 

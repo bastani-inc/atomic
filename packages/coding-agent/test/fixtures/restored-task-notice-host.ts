@@ -1,7 +1,7 @@
 /**
  * A host that restores a task completion intent while a turn streams, then waits to be killed (#5047). Usage:
- * `<jiti> restored-task-notice-host.ts <root> <sessionDir>`. Prints one JSON line `{ file }` once the restored intent
- * has been flushed while the turn's tool call still runs, then waits forever.
+ * `<node --import resolve-ts> restored-task-notice-host.ts <root> <sessionDir>`. Prints one JSON line `{ file }` once
+ * the restored intent has been flushed while the turn's tool call still runs, then stays alive until killed.
  */
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -44,5 +44,7 @@ void harness.session.prompt("go");
 await entered.promise;
 session.getAgentTaskHost();
 await session._taskCompletionOutbox!.flushRestored();
+// Keep the event loop alive while the blocking tool stays suspended: an unsettled top-level Promise alone
+// drains Node's event loop and exits with code 13 instead of waiting to be killed mid-turn.
+setInterval(() => {}, 60_000);
 process.stdout.write(`${JSON.stringify({ file: manager.getSessionFile() })}\n`);
-await new Promise(() => {});
