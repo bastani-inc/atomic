@@ -125,9 +125,17 @@ function windowsStartToken(created: string | undefined): string | undefined {
 	return created === undefined ? undefined : sha12(`windows\n${created}`);
 }
 
+/** Start token matching {@link processStartToken} for a Windows FILETIME creation timestamp string. */
+export function windowsStartTokenForCreationTime(created: string): string {
+	return sha12(`windows\n${created}`);
+}
+
 function sha12(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
+
+/** Whether the loaded native addon was built for Windows (its Windows termination binding exists only there). */
+const NATIVE_WINDOWS_HOST = process.platform === "win32";
 
 /**
  * Ends Windows process `pid` if it was created at `started`, and with `descendants` every process it started that still
@@ -153,6 +161,7 @@ let terminator: CreatedProcessTerminator | null | undefined;
 
 /** The native module's `terminateProcessCreatedAt`, or null where the module or that binding is missing. */
 function nativeTerminator(): CreatedProcessTerminator | null {
+	if (!NATIVE_WINDOWS_HOST) return null;
 	if (terminator === undefined) {
 		try {
 			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {

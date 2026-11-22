@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, stopping workspace `git`/`gh` commands, snapshot Git fallbacks, hung isolated interactive engines, tracked detached processes, and interrupted blueprint build steps now uses Windows Job objects and handle-verified native tree termination rather than bare-PID `taskkill /T`, so orphaned grandchildren end before workspace calls fail and unrelated processes given a reused process ID are never terminated. `taskkill` is used only as a fallback when the native module is unavailable and the child handle is still live.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.
