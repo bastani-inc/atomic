@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
+import { NODE_TS_SOURCE_ARGS } from "../helpers/node-ts-sources.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
@@ -13,7 +14,7 @@ import {
 } from "../helpers/runtime.js";
 
 const OUTPUT_GUARD_MODULE = pathToFileURL(
-	join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/core/output-guard.js"),
+	join(moduleDir(import.meta.url), "../../packages/coding-agent/src/core/output-guard.ts"),
 ).href;
 /** Longer than starting Node, and a process noticing its reader is gone, takes, however loaded the machine. */
 const START_MS = 30_000;
@@ -41,7 +42,7 @@ test("a process whose output's reader is gone knows at its exit that a write to 
 		setInterval(() => guard.writeRawStdout("{}\\n"), 20);
 		writeFileSync(${JSON.stringify(ready)}, "");
 	`;
-	const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+	const child = spawn(process.execPath, [...NODE_TS_SOURCE_ARGS, "--input-type=module", "-e", script], {
 		stdio: ["ignore", "pipe", "ignore"],
 	});
 	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
