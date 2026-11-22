@@ -8,9 +8,15 @@ description: Component and focusable interfaces, keyboard input, line width, inv
 
 ## Tool blocks
 
-Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row and connected result rows. It accepts `status`, `title`, optional `args`, `meta`, `details`, `body` and `outputPad` (default `1`). Supported states are `running` (the working `∀` of a call in progress), `success`, `failure`, `stopped` (a call that was interrupted or not run), `warning`, `paused`, `waiting` (a still, dim `◌`: not working, and wakes by itself when what it waits on finishes) and `info`. A block that stands for a subagent or background task shows its state with the marks of the agent panel and `/tasks`: `agent-running` (a grey `◯`), `shell-running` (`⧗`), `input` (`◆`, waiting for an answer), `task-queued` (a dim `○`, waiting for its turn to run), `task-stopping` (`◼` in the warning colour, being stopped) and `task-stopped` (a red `◯`). `TASK_MARKS` from `@bastani/atomic` holds those marks for text you draw yourself. Code that switches over `ToolBlockStatus` or `NoticeStatus` should handle `waiting`, `agent-running`, `shell-running`, `input`, `task-queued`, `task-stopping` and `task-stopped`.
+Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row, and connected result rows. It accepts `status`, `title`, and optional `args`, `meta`, `details`, `body`, and `outputPad` (default `1`).
 
-A `NoticeLine` reports a task, so it draws `running` as a grey `◯` and `stopped` as a red `◯`, the marks of a running and a stopped subagent; earlier versions drew `∀` and a muted `◼`. A `ToolBlock` keeps `∀` and the muted `◼`. `paused` is `‖` in the warning colour on both, where earlier versions drew a muted `⏸`. With `NO_COLOR`, a running and a stopped notice, like an `agent-running` and a `task-stopped` block, both show `◯`, and only their words tell them apart.
+Supported `ToolBlockStatus` values:
+- General tool states: `running` (`∀`), `success`, `failure`, `stopped` (interrupted or not run, muted `◼`), `warning`, `paused` (warning-colored `‖`), `waiting` (dim `◌`, wakes automatically when what it waits on finishes), and `info`.
+- Subagent and background-task states (shared with the agent panel and `/tasks`): `agent-running` (grey `◯`), `shell-running` (`⧗`), `input` (`◆`, waiting for an answer), `task-queued` (dim `○`), `task-stopping` (warning-colored `◼`), and `task-stopped` (red `◯`).
+
+`TASK_MARKS` from `@bastani/atomic` exports these glyphs for custom rendering. Code switching on `ToolBlockStatus` or `NoticeStatus` should handle `waiting`, `agent-running`, `shell-running`, `input`, `task-queued`, `task-stopping`, and `task-stopped`.
+
+A `NoticeLine` reports a task, drawing `running` as a grey `◯`, `stopped` as a red `◯`, and `paused` as warning-colored `‖`. With `NO_COLOR`, running and stopped notices (like `agent-running` and `task-stopped` blocks) both show plain `◯`, distinguished by their text.
 
 ```typescript
 import { ToolBlock, ToolBlockRecords } from "@bastani/atomic";
@@ -31,11 +37,13 @@ When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSett
 
 `host.replaceMessages(messages)` starts a fresh unread baseline. Use `host.replaceMessages(messages, { preserveUnread: true })` for a new snapshot of the same conversation; arrivals that have not painted yet remain unread.
 
-An extra row supplied through `host.appendExtraEntry()` may exist nowhere else. Atomic keeps those rows in memory until the host is disposed; it does not save private extension data to disk. An extension card in saved chat history can also have state that its saved message cannot reproduce. The chat keeps the original component for such a card when it leaves the screen. If a renderer can recreate its component without losing state, return the component with an own data field `historyReplayable: true`. The chat may then discard it and call the renderer again when it is viewed. Keep private rows and stateful cards small in long-lived chats.
+An extra row supplied through `host.appendExtraEntry()` may exist nowhere else. Atomic keeps those rows in memory until the host is disposed without saving private extension data to disk.
+
+An extension card in saved chat history can also hold state that its saved message cannot reproduce, so the chat keeps the original component when it scrolls offscreen. If a renderer can recreate its component without losing state, set `historyReplayable: true` as an own data property on the component so the chat can discard and re-render it on demand. Keep private rows and stateful cards small in long-lived chats.
 
 The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `hyperlinks: false` and `images: false` in its sixth constructor argument. These options do not change other components or terminal capabilities.
 
-## Component Interface
+## Component interface
 
 All components implement:
 
@@ -52,22 +60,22 @@ interface Component {
 | Method | Description |
 |--------|-------------|
 | `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
-| `handleInput?(data)` | Receive keyboard input when the component has focus. A focused overlay also receives mouse input before the fullscreen viewport. Return `true` when it consumes input; return `false`, `undefined`, or `void` when a matching fullscreen viewport key or overlay mouse event should fall through to viewport handling. Non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available. |
-| `wantsKeyRelease?` | If true, component receives key release events (Kitty protocol). Default: false. |
-| `capturesViewportInput?` | If true while the component has focus, fullscreen viewport keys such as PageUp/PageDown go to the component instead of scrolling the transcript, as they do for a focused overlay. `SelectList`, `SettingsList` and the editor with open autocomplete set it; a wrapper around one of them can forward it. Default: false. |
+| `handleInput?(data)` | Receive keyboard input when focused (a focused overlay also receives mouse input before the fullscreen viewport). Return `true` when consuming input; return `false`, `undefined`, or `void` so matching fullscreen viewport keys or overlay mouse events fall through to the viewport. Non-overlay focused components leave mouse input with `@bastani/atomic-tui` so transcript scrolling, scrollbar dragging, and text selection remain available. |
+| `wantsKeyRelease?` | If `true`, component receives key release events (Kitty protocol). Default: `false`. |
+| `capturesViewportInput?` | If `true` while focused, fullscreen viewport keys such as PageUp/PageDown go to the component instead of scrolling the transcript, as they do for a focused overlay. `SelectList`, `SettingsList`, and the editor with open autocomplete set it; wrappers can forward it. Default: `false`. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
 
-The installed pi-tui type still permits handlers that return `void`; Atomic treats a missing or `undefined` result as unhandled only for a matching fullscreen viewport key or a mouse event deferred to a focused overlay. Components that mutate state for such an input must return `true` so the viewport does not apply it a second time.
+The `@bastani/atomic-tui` `Component` type permits handlers returning `void`; Atomic treats a missing or `undefined` return as unhandled only for matching fullscreen viewport keys or mouse events deferred to a focused overlay. Components that mutate state for such inputs must return `true` so the viewport does not apply them a second time.
 
-A focused overlay without `handleInput` lets fullscreen viewport keys and mouse wheel reports reach the transcript. A notice or progress panel therefore does not freeze scrolling behind it.
+A focused overlay without `handleInput` lets fullscreen viewport keys and mouse wheel reports reach the transcript, so notices and progress panels do not freeze scrolling behind them.
 
-Atomic judges an asynchronous handler when it settles. Only a promise that resolves `true` consumes the input; `false`, `undefined`, and rejection fall through to the viewport. If focus moved while the promise was pending, input goes to the component that holds focus when it settles.
+Atomic evaluates an asynchronous handler when it settles. Only a promise resolving to `true` consumes the input; `false`, `undefined`, and rejection fall through to the viewport (going to whichever component holds focus when it settles).
 
-The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line. Styles do not carry across lines. If you emit multi-line text with styling, reapply styles per line or use `wrapTextWithAnsi()` so styles are preserved for each wrapped line.
+The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line. Styles do not carry across lines; reapply styles per line or use `wrapTextWithAnsi()` when wrapping styled text.
 
-Bundled MCP tools render their server name in the call header before results arrive. Direct calls use the registered server; gateway calls use the explicit target or an unambiguous match in available metadata or configured prefixes. Unresolved calls still show the tool or operation without guessing a server. This display does not open connections or expose tool arguments.
+Bundled MCP tools (`mcp__<server>__<tool>`) render `<server>/<tool>` in the call header before results arrive, including on resumed sessions whose server has not connected yet. Atomic resolves the label from the registered tool owner or splits an unambiguous `mcp__<server>__<tool>` name (falling back to the raw tool name when ambiguous or hash-suffixed), without opening connections or exposing tool arguments.
 
-## Focusable Interface (IME Support)
+## Focusable interface (IME support)
 
 Components that display a text cursor and need IME (Input Method Editor) support should implement the `Focusable` interface:
 
@@ -95,7 +103,7 @@ When a `Focusable` component has focus, TUI:
 
 The hardware cursor remains hidden by default. This keeps the fake cursor rendering, while still positioning the hardware cursor for terminals that track IME candidate windows with hidden cursors. Some terminals require a visible hardware cursor for IME positioning; enable it with `showHardwareCursor`, `setShowHardwareCursor(true)`, or `ATOMIC_HARDWARE_CURSOR=1`. The `Editor` and `Input` built-in components already implement this interface.
 
-### Container Components with Embedded Inputs
+### Container components with embedded inputs
 
 When a container component (dialog, selector, etc.) contains an `Input` or `Editor` child, the container must implement `Focusable` and propagate the focus state to the child. Otherwise, the hardware cursor won't be positioned correctly for IME input.
 
@@ -125,7 +133,7 @@ class SearchDialog extends Container implements Focusable {
 
 Without this propagation, typing with an IME (Chinese, Japanese, Korean, etc.) will show the candidate window in the wrong position on screen.
 
-## Keyboard Input
+## Keyboard input
 
 Use `matchesKey()` for key detection:
 
@@ -160,7 +168,7 @@ For custom text inputs, use `decodePrintableKey(data)` from `@bastani/atomic-tui
 
 For bracketed paste, remove the paste markers and pass the content to `normalizePastedText(content)` from the same package. It restores tmux-encoded control bytes, normalizes CRLF and CR to newlines, expands tabs to four spaces, and removes C0 control bytes other than newlines.
 
-## Line Width
+## Line width
 
 **Critical:** Each line from `render()` must not exceed the `width` parameter.
 
@@ -174,15 +182,15 @@ render(width: number): string[] {
 ```
 
 Utilities:
-- `visibleWidth(str)` - Get display width (ignores ANSI codes)
-- `truncateToWidth(str, width, ellipsis?)` - Truncate with optional ellipsis
-- `wrapTextWithAnsi(str, width)` - Word wrap preserving ANSI codes
+- `visibleWidth(str)`: display width (ignores ANSI codes).
+- `truncateToWidth(str, width, ellipsis?)`: truncate with optional ellipsis.
+- `wrapTextWithAnsi(str, width)`: word wrap preserving ANSI codes.
 
-## Invalidation and Theme Changes
+## Invalidation and theme changes
 
 When the theme changes, the TUI calls `invalidate()` on all components. Clear cached render state there so the new theme takes effect.
 
-### The Problem
+### The problem
 
 If a component pre-bakes theme colors into strings (via `theme.fg()`, `theme.bg()`, etc.) and caches them, the cached strings contain ANSI escape codes from the old theme. Simply clearing the render cache isn't enough if the component stores the themed content separately.
 
@@ -203,7 +211,7 @@ class BadComponent extends Container {
 }
 ```
 
-### The Solution
+### The solution
 
 Components that build content with theme colors must rebuild that content when `invalidate()` is called:
 
@@ -232,7 +240,7 @@ class GoodComponent extends Container {
 }
 ```
 
-### Pattern: Rebuild on Invalidate
+### Pattern: rebuild on invalidate
 
 For components with complex content:
 
@@ -266,19 +274,19 @@ class ComplexComponent extends Container {
 }
 ```
 
-### When This Matters
+### When this matters
 
 This pattern is needed when:
 
-1. **Pre-baking theme colors** - Using `theme.fg()` or `theme.bg()` to create styled strings stored in child components
-2. **Syntax highlighting** - Using `highlightCode()` which applies theme-based syntax colors
-3. **Complex layouts** - Building child component trees that embed theme colors
+1. **Pre-baking theme colors:** using `theme.fg()` or `theme.bg()` to create styled strings stored in child components.
+2. **Syntax highlighting:** using `highlightCode()`, which applies theme-based syntax colors.
+3. **Complex layouts:** building child component trees that embed theme colors.
 
-This pattern is NOT needed when:
+This pattern is not needed when:
 
-1. **Using theme callbacks** - Passing functions like `(text) => theme.fg("accent", text)` that are called during render
-2. **Simple containers** - Just grouping other components without adding themed content
-3. **Stateless render** - Computing themed output fresh in every `render()` call (no caching)
+1. **Using theme callbacks:** passing functions like `(text) => theme.fg("accent", text)` called during render.
+2. **Simple containers:** grouping other components without adding themed content.
+3. **Stateless render:** computing themed output fresh in every `render()` call without caching.
 
 ## Debug logging
 
@@ -328,7 +336,7 @@ In isolated mode, writing escape sequences to `process.stdout` does not control 
 
 ```typescript
 await ctx.ui.custom((tui, theme, keybindings, done) => {
-  tui.terminal.setAutowrap?.(false); // disable autowrap (DECAWM) — Windows terminals only
+  tui.terminal.setAutowrap?.(false); // disable autowrap (DECAWM) on Windows terminals
   return new MyOverlay({ onClose: done });
 }, { overlay: true });
 ```
@@ -337,7 +345,9 @@ Only autowrap control is exposed. Atomic restores the mode when the component hi
 
 ### Renderer mode in an isolated component
 
-`tui.mode` is `"fullscreen"` when Atomic paints on the alternate screen and `"regular"` on the main-screen fallback, which Atomic uses under `TERM=dumb`, in CI, and without a TTY. In isolated mode a `ctx.ui.custom()` component or component-factory widget runs in the engine child, and `tui.mode` reports the host's renderer: each frame the host asks for carries its mode, and Atomic invalidates the component when the mode changes. Before the host has asked the engine for any frame, `tui.mode` is `"regular"`, so read it in `render()` rather than only in the factory.
+`tui.mode` is `"fullscreen"` when Atomic paints on the alternate screen and `"regular"` on the main-screen fallback (used under `TERM=dumb`, in CI, or without a TTY).
+
+In isolated mode, a `ctx.ui.custom()` component or component-factory widget runs in the engine child and `tui.mode` reflects the host's renderer: each frame carries its mode, and Atomic invalidates the component when the mode changes. Before the host requests the first frame, `tui.mode` is `"regular"`, so read it inside `render()` rather than only inside the factory.
 
 ### Host-native session picker
 
@@ -361,9 +371,11 @@ picker.update(await loadMoreRows()); // merge late rows into the open picker
 const path = await picker.result;    // selected row's path, or undefined on cancel
 ```
 
-Each row is two lines: by default its `name` or `firstMessage`, then its age, message count and summary. Set `title` to replace the first line and `detail` to replace the second, for rows that are not sessions, such as jobs or runs. Search matches `title` and `detail` along with the row's other text fields. The request's `title` sets the picker's heading (default `Resume session`). `variant: "runs"` marks the rows as something other than sessions: the picker's default heading becomes `Resume run`, and the folder scope, named-only filter and path keys are left out of the picker and its hint. The default is `variant: "sessions"`.
+Each row renders two lines: `name` or `firstMessage`, followed by age, message count, and summary. Set `title` and `detail` to override those lines for non-session rows such as jobs or runs; search matches `title`, `detail`, and the row's other text fields.
 
-Rows can set `canDelete: false` to hide and disable deletion, even when `onDelete` is present. Leave the field unset to use the request's deletion behavior. Keep the row until deletion finishes, then remove it with `update()`, or report failure with `error()` from that `onDelete` callback. The row cannot be selected while deletion is pending. The exported `SessionInfo` type also carries optional `title`, `detail`, and `canDelete` fields for synthetic selector rows.
+The request's `title` sets the picker heading (default `Resume session`). Set `variant: "runs"` (default `"sessions"`) for non-session rows so the heading defaults to `Resume run` and session-specific folder scope, named-only filter, and path keys are hidden.
+
+Set `canDelete: false` on a row to disable deletion even when `onDelete` is present. Keep the row until deletion finishes, then remove it with `update()` or report errors with `error()` from `onDelete`; rows cannot be selected while deletion is pending. `SessionInfo` exports optional `title`, `detail`, and `canDelete` fields for synthetic rows.
 
 ### Host-native input form
 
@@ -388,4 +400,6 @@ Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. 
 
 Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
 
-Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a whole number within ±9007199254740991`, `must be a number`, `must be on or off`, or `not in choices`). Integers must stay within JavaScript's safe integer range so their value is not rounded. Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
+Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a whole number within ±9007199254740991`, `must be a number`, `must be on or off`, or `not in choices`).
+
+Integers must stay within JavaScript's safe integer range so values are not rounded. Enter on the submit button runs only when every field is ready. Booleans accept `true`, `false`, `on`, `off`, `1`, or `0`; anything else is refused rather than read as off.

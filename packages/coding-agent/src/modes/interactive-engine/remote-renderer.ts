@@ -130,6 +130,7 @@ abstract class RemoteRenderer implements Component {
 	private readonly requestIdentities = new Map<number, string>();
 	private readonly requestScopes = new Map<number, string>();
 	private lastScope: string | undefined;
+	private readonly rememberedIdentities = new Set<string>();
 	/** Each settled click compares both expansions at its own width and data revision. Only the front request is in flight. */
 	private readonly clickChecks: { command: RemoteRenderCommand; baseline?: string[]; changed(): void }[] = [];
 	private toggleAfterChecks = false;
@@ -192,6 +193,7 @@ abstract class RemoteRenderer implements Component {
 				this.requestScopes.delete(requestId);
 			}
 			rememberFrame(identity, message.lines);
+			this.rememberedIdentities.add(identity);
 			if (scope !== runtimeFrameScope(this.runtime)) return;
 			this.appliedRequestId = message.requestId;
 			this.canReplay = message.historyReplayable === true;
@@ -199,6 +201,13 @@ abstract class RemoteRenderer implements Component {
 			if (this.canReplay) this.releaseIfRetired?.();
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
+			if (message.evictCache) {
+				for (const remembered of this.rememberedIdentities) recentFrames.delete(remembered);
+				this.rememberedIdentities.clear();
+				if (this.lastScope !== undefined) {
+					recentFrames.delete(JSON.stringify([this.lastScope, this.frameIdentity()]));
+				}
+			}
 			this.changed();
 		}
 	}
@@ -207,6 +216,7 @@ abstract class RemoteRenderer implements Component {
 		const scope = runtimeFrameScope(this.runtime);
 		if (scope !== this.lastScope) {
 			this.lastScope = scope;
+			this.rememberedIdentities.clear();
 			this.clearClickChecks();
 			this.lines = NOT_RENDERED_YET;
 			this.dirty = true;
@@ -246,6 +256,7 @@ abstract class RemoteRenderer implements Component {
 		if (this.routes.rows.get(this.componentId) === this) this.routes.rows.delete(this.componentId);
 		this.requestIdentities.clear();
 		this.requestScopes.clear();
+		this.rememberedIdentities.clear();
 		this.clearClickChecks();
 		this.runtime.sendEngineCommand({ type: "engine_render_dispose", componentId: this.componentId });
 	}

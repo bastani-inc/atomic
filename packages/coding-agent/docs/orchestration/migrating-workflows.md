@@ -15,13 +15,14 @@ Convert .atomic/workflows/triage.ts into a skill
 /skill:workflow-files .atomic/workflows/triage.ts
 ```
 
-To convert and run immediately, include your inputs (for example: *"Run the triage workflow on these reports."*). Startup notices may mention legacy workflow files, but nothing is written automatically.
+To convert and run immediately, include your inputs, for example: "Run the triage workflow on these reports." Startup notices may mention legacy workflow files, but Atomic writes nothing automatically.
 
-**How conversion works:**
-- Atomic reads the workflow file and helpers as plain text and uses `skill-creator` to write `SKILL.md` plus deterministic scripts under `scripts/`.
+How conversion works:
+
+- Atomic reads the workflow file and local helpers as plain text and uses `skill-creator` to write `SKILL.md` plus deterministic scripts under `scripts/`.
 - The original workflow file is never imported, executed, edited, or deleted.
-- Existing skills are never overwritten (pick a new name or reuse the existing skill).
-- Untrusted projects' workflow files are never offered for conversion (global workflows still convert; for an explicit trusted external source inside an untrusted project, Atomic asks before saving globally).
+- Existing skills are never overwritten. Pick a new name or reuse the existing skill.
+- Workflow files in untrusted projects are never offered for conversion. Global workflows still convert. For an explicitly trusted external source inside an untrusted project, Atomic asks before saving globally.
 
 | Workflow source | Output skill location |
 | --- | --- |
@@ -35,15 +36,15 @@ After reviewing the generated skill and scripts, run `/reload`, then invoke `/sk
 
 | Earlier workflow API | Equivalent in the converted skill |
 | --- | --- |
-| `ctx.stage`, `ctx.task`, model & thinking | Codemode `tools.subagent()` launches in the parent chat preserving prompts, inputs, and model pins. |
+| `ctx.stage`, `ctx.task`, model and thinking | Codemode `tools.subagent()` launches in the parent chat that keep prompts, inputs, and model pins. |
 | Stage `fallbackModels`, `tools`, `mcp` | Named [custom subagent](/subagents/authoring) launched without per-call `model` ([Pinned stages](#pinned-stages)). |
 | `ctx.parallel`, loops, retries | `tasks` batches, explicit round caps, and checks between notices (plus Intercom `group` for peers). |
 | `ctx.tool`, deterministic helpers | Reviewed scripts in `scripts/` with validated args, timeouts, and exit checks. |
-| Inputs, `ctx.ui`, approvals | Skill arguments/defaults plus `ask_user_question` steps (unanswered approval is never a pass). |
-| Nested `ctx.workflow` | Separately converted skill called by name (parent still owns all subagent launches). |
+| Inputs, `ctx.ui`, approvals | Skill arguments and defaults plus `ask_user_question` steps (an unanswered approval is never a pass). |
+| Nested `ctx.workflow` | Separately converted skill called by name (the parent still owns all subagent launches). |
 | Structured outputs, `ctx.exit`, blocked states | Per-child output files validated by codemode, stopping on failure or missing prerequisites. |
 
-Running the new skill starts fresh work—earlier workflow run IDs cannot resume old checkpoints. Verify which external side effects already ran before repeating them. See [What survives interruption?](/orchestration#what-survives-interruption).
+Running the new skill starts fresh work. Earlier workflow run IDs cannot resume old checkpoints. Verify which external side effects already ran before repeating them. See [What survives interruption?](/orchestration#what-survives-interruption).
 
 ### Pinned stages
 
@@ -53,7 +54,7 @@ When a stage pinned `fallbackModels`, exact `tools`, or `mcp` servers, conversio
 ---
 name: triage-reviewer
 description: Review one triage report and classify it
-model: anthropic/claude-sonnet-4:high
+model: anthropic/claude-sonnet-4-6:high
 fallbackModels: openai/gpt-5:medium
 tools: read, search, mcp:issue-tracker
 ---
@@ -71,14 +72,14 @@ Package maintainers can ask Atomic to place the skill and agents directly in the
 
 ## If you used a builtin name
 
-- `classify-and-act`, `fan-out-and-synthesize`, `adversarial-verification`, `generate-and-filter`, `tournament`, `loop-until-done` → use the matching [orchestration pattern](/orchestration/patterns).
-- `ralph` → research, implementation, and review loop in the parent chat with an explicit round limit.
-- `goal` → combine [loop-until-done](/orchestration/patterns#loop-until-done) with [adversarial verification](/orchestration/patterns#adversarial-verification).
-- `open-claude-design` → `/skill:impeccable` with your design brief and target artifact.
+- `classify-and-act`, `fan-out-and-synthesize`, `adversarial-verification`, `generate-and-filter`, `tournament`, and `loop-until-done` map to the matching [orchestration patterns](/orchestration/patterns).
+- `ralph` maps to a research, implementation, and review loop in the parent chat with an explicit round limit.
+- `goal` maps to combining [loop-until-done](/orchestration/patterns#loop-until-done) with [adversarial verification](/orchestration/patterns#adversarial-verification).
+- `open-claude-design` maps to `/skill:impeccable` with your design brief and target artifact.
 
 ## Old data on disk
 
 Old workflow data is safe to leave alone. To reclaim space, back it up and stop any older Atomic binaries first, then remove only workflow-only directories under `~/.atomic/workflows/`:
 
 - Safe to delete if unused: `runs/`, `pool/`, and `journal/`.
-- **Do not delete:** `~/.atomic/workflows/journal.sqlite` (and its sidecar files—they store sessions), the entire `~/.atomic/workflows/` directory, shared databases, or your workflow source files. Custom storage paths may differ.
+- **Do not delete:** `~/.atomic/workflows/journal.sqlite` and its sidecar files (they store sessions), the entire `~/.atomic/workflows/` directory, shared databases, or your workflow source files. Custom storage paths may differ.

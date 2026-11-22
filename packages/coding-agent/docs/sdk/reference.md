@@ -6,7 +6,7 @@ description: SDK options, resource loaders, return values, run modes, and export
 
 # SDK API reference
 
-## Options Reference
+## Options reference
 
 ### Directories
 
@@ -14,7 +14,7 @@ description: SDK options, resource loaders, return values, run modes, and export
 const { session } = await createAgentSession({
   // Working directory for DefaultResourceLoader discovery
   cwd: process.cwd(), // default
-  
+
   // Global config directory
   agentDir: "~/.atomic/agent", // default (expands ~)
 });
@@ -41,12 +41,12 @@ Atomic reads primary `.atomic` locations first and legacy `.pi` locations for co
 - Settings (`settings.json`)
 - Custom models (`models.json`)
 - Credentials (`auth.json`)
-- Sessions (`sessions/`)
-- The TypeScript extension transpile cache (`cache/transpile/`, one directory per Atomic version; a version's directory is removed once no Atomic has used it for a week)
+- Opt-in JSONL sessions (`sessions/`, when JSONL storage is selected; default sessions live in SQLite at `~/.atomic/workflows/journal.sqlite`)
+- The TypeScript extension transpile cache (`cache/transpile/`, one directory per Atomic version; a version's directory is removed once no Atomic process has used it for a week)
 
-`agentDir` is per session, not per process. Each session's extension loads cache their transpiled output under that session's `agentDir`. Without the option, a session uses `ATOMIC_CODING_AGENT_DIR` as set when it is created. Sessions in one process can use different agent directories. Extension loads never create the agent directory: when it doesn't exist, including after you remove it while the process runs, loads skip the cache.
+`agentDir` is per session, not per process. Each session caches its transpiled extensions under its own `agentDir`. Without the option, a session reads `ATOMIC_CODING_AGENT_DIR` when created. Sessions in one process can use different agent directories. Extension loads never create `agentDir`; if it does not exist, loads skip the cache.
 
-When you pass a custom `ResourceLoader`, `cwd` and `agentDir` no longer control resource discovery. They still influence session naming and tool path resolution.
+When you pass a custom `ResourceLoader`, `cwd` and `agentDir` no longer control resource discovery. They still control session naming and tool path resolution.
 
 ### Workspace
 
@@ -59,7 +59,7 @@ const { session, workspace: binding } = await createAgentSession({
 });
 ```
 
-`workspace` accepts a `workspace({ … })` value or an already resolved `BoundWorkspace`. The session's `cwd` becomes the bound worktree, an explicit `cwd` must stay inside it, and a read-only workspace removes and refuses `write`, `edit` and `todo`. `result.workspace` and `session.workspace` hold the resolved binding. See [Workspaces](/sdk#workspaces).
+`workspace` accepts a `workspace({ ... })` value or an already resolved `BoundWorkspace`. The session's `cwd` becomes the bound worktree, an explicit `cwd` must stay inside it, and a read-only workspace removes and refuses `write`, `edit`, and `todo`. `result.workspace` and `session.workspace` hold the resolved binding. See [Workspaces](/sdk#workspaces).
 
 ### Model
 
@@ -120,16 +120,15 @@ if (auto) {
 
 #### Model catalog persistence and refresh
 
-`ModelRuntime.create()` restores cached catalogs from local persistence but does not download
-the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read
-`<url>/api.json` from your own models.dev mirror instead of https://models.dev. `allowModelNetwork` (default `false`) enables a create-time network
-refresh, and `modelRefreshTimeoutMs` (default `15_000`) bounds how long that refresh may run
-before it is aborted. Pass `refreshOnCreate: false` to skip the initial catalog and
-availability refresh entirely; built-in models remain available.
+`ModelRuntime.create()` restores cached catalogs from local persistence and does not download the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read `<url>/api.json` from your own models.dev mirror instead of https://models.dev.
 
-`createAgentSession()` does not fetch an account model list at startup. If its cache restore found no GitHub Copilot catalog and its first prompt has no usable model or fallback, the session can look up the exact saved Copilot model. A supplied `model`, a working preset or fallback, and a cached catalog need no lookup. Only that session uses the result; `models-store.json`, credentials and model listings do not change.
+- `allowModelNetwork` (default `false`): enables a create-time network refresh.
+- `modelRefreshTimeoutMs` (default `15_000`): bounds how long that refresh may run before it is aborted.
+- `refreshOnCreate: false`: skips the initial catalog and availability refresh entirely; built-in models remain available.
 
-The `modelFallbackMessage` returned by `createAgentSession()` describes startup. If the account confirms the model is absent, the first prompt's error says so. A refused, offline or cancelled lookup keeps the usual error. Pass `signal` to `createAgentSession()` to cancel the lookup, or `allowModelNetwork: false` to `ModelRuntime.create()` to disable it. Custom asynchronous-only credential stores keep the usual local selection; discovery never waits on their read queue.
+`createAgentSession()` does not fetch an account model list at startup. If its cache restore found no GitHub Copilot catalog and its first prompt has no usable model or fallback, the session can look up the exact saved Copilot model. A supplied `model`, a working preset or fallback, and a cached catalog need no lookup. Only that session uses the result; `models-store.json`, credentials, and model listings do not change.
+
+The `modelFallbackMessage` returned by `createAgentSession()` describes startup. If the account confirms the model is absent, the first prompt's error says so; a refused, offline, or cancelled lookup keeps the usual error. Pass `signal` to `createAgentSession()` to cancel the lookup, or pass `allowModelNetwork: false` to `ModelRuntime.create()` to disable it. Custom asynchronous-only credential stores keep normal local selection; discovery never waits on their read queue.
 
 ```typescript
 const refreshedRuntime = await ModelRuntime.create({
@@ -138,22 +137,16 @@ const refreshedRuntime = await ModelRuntime.create({
 });
 ```
 
-Remote catalogs are persisted locally so later runtimes can restore them without a network
-request. The default file is `models-store.json` next to `models.json` — with the default
-`modelsPath` that is `~/.atomic/agent/models-store.json`. Set `modelsStorePath` to choose
-another location, or inject `modelsStore` to control persistence entirely; a runtime created
-with `modelsPath: null` keeps its store in memory. Network refreshes are throttled to once
-per provider every four hours unless forced. To force an immediate refresh, call
-`await modelRuntime.refresh({ allowNetwork: true, force: true, signal })`. Setting
-`ATOMIC_OFFLINE` (legacy alias `PI_OFFLINE`) disables model network access, and a
-`refresh()` call that omits `allowNetwork` follows that same runtime network policy.
+Remote catalogs persist locally so later runtimes can restore them without a network request:
 
-`registerProvider()`, `registerNativeProvider()` and `unregisterProvider()` return at once and
-refresh the catalog from the cache in the background, checking each provider's credentials.
-`await modelRuntime.whenRegistrationRefreshesSettled()` resolves once no such refresh is running,
-including one a registration starts while you wait.
+- The default file is `models-store.json` next to `models.json`. With the default `modelsPath`, that file is `~/.atomic/agent/models-store.json`.
+- Set `modelsStorePath` to choose another location, or inject `modelsStore` to control persistence entirely. A runtime created with `modelsPath: null` keeps its store in memory.
+- Network refreshes are throttled to once per provider every four hours unless forced. Call `await modelRuntime.refresh({ allowNetwork: true, force: true, signal })` to force an immediate refresh.
+- Setting `ATOMIC_OFFLINE` (legacy alias `PI_OFFLINE`) disables model network access, and a `refresh()` call that omits `allowNetwork` follows that same runtime network policy.
 
-### API Keys and OAuth
+`registerProvider()`, `registerNativeProvider()`, and `unregisterProvider()` return at once and refresh the catalog from cache in the background while checking provider credentials. `await modelRuntime.whenRegistrationRefreshesSettled()` resolves once no registration refresh is running, including refreshes started while you wait.
+
+### API keys and OAuth
 
 `ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin compatibility facade for extensions; `await modelRegistry.complete(model, context, options)` routes a request through its runtime with the resolved provider and auth. New SDK integrations should pass `modelRuntime` to `createAgentSession` and use `modelRuntime.complete()` directly when they issue standalone requests.
 
@@ -196,11 +189,13 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 ### Structured decisions
 
-Use `generateStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model, or with `decisionModel` when you pass `settings`; the current chat model is also the terminal fallback. With `settings`, `decisionModel` resolves as `decide()` resolves it, and a failure there rejects with a `DecisionError`. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema. See [Structured decisions](/sdk/structured-decisions).
+Use `generateStructuredOutput()` for one schema-validated decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start on `currentModel`, or on `decisionModel` when you pass `settings`; `currentModel` is also the final fallback.
 
-Use `decide()` to ask the user's configured `decisionModel` typed Choice, yes/no and Score questions over your state. It returns typed answers, with probabilities when a classifier answered, and rejects with a `DecisionError`. The `structured_output` tool starts on the same decision model. See [decide](/sdk/structured-decisions#decide).
+With `settings`, `decisionModel` resolves as `decide()` resolves it and rejects with a `DecisionError` on failure. Atomic resolves each ID through `modelRegistry`: chat models use chat inference, and registered classifiers use the generic `classify` operation when the schema is a finite Choice (and are skipped otherwise). See [Structured decisions](/sdk/structured-decisions).
 
-### System Prompt
+Use `decide()` to ask the configured `decisionModel` typed Choice, yes/no, and Score questions over `state`. It returns typed answers, with probabilities when a classifier answered, and rejects with a `DecisionError`. The `structured_output` tool starts on the same decision model. See [decide](/sdk/structured-decisions#decide).
+
+### System prompt
 
 Use a `ResourceLoader` to override the system prompt:
 
@@ -221,17 +216,17 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 Specify which tools to expose by name:
 
-- Built-in tool names enabled by default: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, and `codemode` when its extension is loaded
+- Built-in tool names enabled by default: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `powershell` (on native Windows when PowerShell is available), and `codemode` when its extension is loaded.
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `builtins` selects shipped packages independently of tools: keys are `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
-- The `subagents` builtin ships `bro`, `create-spec`, `how`, `impeccable`, `prompt-engineer`, `research-codebase`, `show-me`, `skill-creator`, `teach`, `unslop`, and `why`. If you want the skills but not the delegation tool, leave the package enabled and set `excludedTools: ["subagent"]`. If you disable the whole package, install independent copies of the skills you need in your [skills directory](/skills#locations).
-- `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes none, including Intercom. A list containing only `+name`/`-name` entries instead changes the resolved defaults, for example `tools: ["+codemode", "-write"]`. Modifiers take exact names, cannot be mixed with plain entries, and apply to reloaded defaults too. Invalid lists throw. Extension/custom tools and MCP exposure retain their default behavior with modifiers.
+- The `subagents` builtin ships all 21 bundled subagent skills: `agent-browser`, `agent-desktop`, `bro`, `create-spec`, `feedback`, `herdr`, `how`, `impeccable`, `liteparse`, `prompt-engineer`, `qlty`, `research-codebase`, `show-me`, `skill-creator`, `subagent`, `tdd`, `teach`, `tmux`, `unslop`, `why`, and `workflow-files`. If you want these skills without the delegation tool, keep `subagents` enabled and pass `excludedTools: ["subagent"]`. If you disable the package, install independent copies of the skills you need in your [skills directory](/skills#locations).
+- `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes no tools, including Intercom. A list containing only `+name`/`-name` entries modifies resolved defaults (for example `tools: ["+codemode", "-write"]`). Modifiers require exact names, cannot mix with plain entries, and apply across reloads. Invalid lists throw.
 - `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
-- `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist or modifiers. It does not remove package resources or authorize services.
-- `noTools: "builtin"` suppresses the built-in selection, including codemode, when `tools` is omitted. Other extension/custom tools stay enabled except exclusions. An explicit `tools` list still wins over this mode.
-- Configured `defaultTools` selects initial coding tools when `tools` and `noTools` are omitted. Plain names replace the defaults; modifier-only lists such as `["-bash", "+ls"]` change the defaults, and project modifier-only lists layer over the global selection. Extension/custom tools retain their own activation behavior. See [defaultTools](/settings#tools).
+- `noTools: "all"` exposes no tools, even with a nonempty `tools` list. It does not remove package resources or authorize services.
+- `noTools: "builtin"` suppresses the built-in selection, including `codemode`, when `tools` is omitted. Other extension and custom tools keep their default activation unless excluded. An explicit `tools` list wins over this mode.
+- Configured `defaultTools` selects initial coding tools when `tools` and `noTools` are omitted. Plain names replace defaults; modifier-only lists such as `["-bash", "+ls"]` modify defaults, and project modifier-only lists layer over global settings. See [defaultTools](/settings#tools).
 
-Subagent children inherit these restrictions. Child allowlists intersect with the parent selection, including during model fallback. A child cannot restore a parent-disabled package or excluded tool. See [child configuration](/sdk#subagent-children) for model/auth, host callback and working-directory inheritance.
+Subagent children inherit these restrictions. Child allowlists intersect with parent selections, including during model fallback, and a child cannot restore a parent-disabled package or excluded tool. See [child configuration](/sdk#subagent-children) for model, auth, host callback, and working-directory inheritance.
 
 ```typescript
 import { createAgentSession } from "@bastani/atomic";
@@ -260,7 +255,7 @@ const { session } = await createAgentSession({
 
 #### Checking tool status
 
-`session.getToolStatus()` explains a session's tools: where the tool selection came from, every registered tool with its exposure, owner, and active state, why each inactive tool is off and how to turn it on, selected names that an exclusion removed, and selected names that nothing registered, with a suggestion when a name looks like a typo. `formatToolStatus()` renders the report as plain text.
+`session.getToolStatus()` explains a session's tools: where the selection came from, every registered tool with its exposure, owner, and active state, why inactive tools are off and how to enable them, excluded names, and missing names with typo suggestions. `formatToolStatus()` renders the report as plain text.
 
 ```typescript
 import { createAgentSession, formatToolStatus } from "@bastani/atomic";
@@ -273,7 +268,7 @@ console.log(formatToolStatus(session.getToolStatus()));
 Tool selection: Atomic's default tool set with +codemode
   read, bash, kill, edit, write, find, search, ask_user_question, todo, codemode
 
-Active (17)
+Active (16)
   read                direct      built-in
   bash                direct      built-in
   kill                direct      built-in
@@ -298,13 +293,13 @@ Inactive (2)
     opt-in; add "+tool_search" to defaultTools or --tools to enable it
 ```
 
-Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or an extension that failed to load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` to add terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
+Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or a failed extension load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` for terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
 
-The report's `git` field says which git Atomic runs: `{ source: "system" | "provisioned", version, path, update? }`, or `{ source: "unavailable", error }`, where `error` is a serialized [git error](#git-errors). A provisioned install of an older pinned release carries `update: { pinnedTag, installedTag?, reason? }`; `reason`, a serialized git error, appears once a replacement was tried in this process and could not be made (offline, or a failed download). A failed replacement is not retried by every later resolution in the same process, and the next start tries again. Reading the status never downloads git.
+The report's `git` field reports which Git Atomic runs: `{ source: "system" | "provisioned", version, path, update? }`, or `{ source: "unavailable", error }` with a serialized [git error](#git-errors). A provisioned install of an older pinned release carries `update: { pinnedTag, installedTag?, reason? }`. `reason` appears if a replacement attempt failed in this process; failed replacements are not retried until the next process start. Reading status never downloads Git.
 
 #### Resolving git
 
-Atomic runs git 2.30.0 or newer (`GIT_MINIMUM_VERSION`) from `PATH`, and otherwise a portable git it downloads into `getBinDir()/git`; see [Git](/getting-started/installation#git). Use the same resolution for your own git commands:
+Atomic runs Git 2.30.0 or newer (`GIT_MINIMUM_VERSION`) from `PATH`, and otherwise a portable Git downloaded into `getBinDir()/git` (see [Git](/getting-started/installation#git)). Use the same resolver for your own Git commands:
 
 ```typescript
 import { spawnSync } from "node:child_process";
@@ -316,32 +311,32 @@ spawnSync(git.path, ["status", "--short"], { cwd: projectDir, env: git.env, enco
 
 | Function | Returns |
 |---|---|
-| `resolveGit({ signal?, onStatus? })` | `Promise<ResolvedGit>`. May download and verify the portable git. `onStatus` receives `{ type: "info" \| "warning", message }` progress. Aborting `signal` rejects with `signal.reason`; concurrent callers share one download, which stops only when every caller has aborted. |
-| `resolveGitSync()` | `ResolvedGit` without downloading. When no git is usable it throws, in this order: the `GitUnavailableError` (`unsupported-platform` or `offline`) that rules out provisioning; else the error the last `resolveGit()` failed with in this process (a `GitUnavailableError` such as `download-failed`, or a `GitProvisionTimeoutError`); else `GitUnavailableError` with code `not-installed`. Pass the error to `isRetryableGitProvisionError()` to tell whether `await resolveGit()` can help. |
+| `resolveGit({ signal?, onStatus? })` | `Promise<ResolvedGit>`. May download and verify portable Git. `onStatus` receives `{ type: "info" \| "warning", message }` progress. Aborting `signal` rejects with `signal.reason`; concurrent callers share one download, which stops only when every caller aborts. |
+| `resolveGitSync()` | `ResolvedGit` without downloading. Throws in order: `GitUnavailableError` (`unsupported-platform` or `offline`), else the last failed `resolveGit()` error in this process (`GitUnavailableError` or `GitProvisionTimeoutError`), else `GitUnavailableError` (`not-installed`). Check `isRetryableGitProvisionError()` to see whether `await resolveGit()` can help. |
 | `getGitStatus()` | `GitToolStatus`, the value in the tools report. Never downloads. |
 
-`ResolvedGit` has `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`: a copy of `process.env` plus, for a provisioned git, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows). Pass `env` to the child process; a `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` you already set is kept. `env` is computed per call, so later changes to `process.env` are picked up.
+`ResolvedGit` provides `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`. For provisioned Git, `env` copies `process.env` and adds `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows), preserving any `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` already set. `env` is computed per call so later changes to `process.env` apply.
 
-For a provisioned git, the returned `path` and matching `env` remain usable across automatic updates. Keep them together for a running command; resolve again when starting work with the currently selected release. Do not construct executable or helper paths from the cache directory yourself.
+For provisioned Git, the returned `path` and `env` stay valid across automatic updates. Keep them together for a running command, and resolve again when starting work with the latest release. Do not construct executable or helper paths from the cache directory yourself.
 
 #### Git errors
 
-Every git resolution failure is a `GitProvisionError`, with `code`, `hint` (the remediation), `retryable`, and JSON-safe `fields`. Invalid SDK options are rejected before provisioning starts. Failed downloads, checksums, and verification never select a partial installation; failed updates leave earlier resolved paths usable. Branch on `code` or the class, never on `message`.
+Every Git resolution failure is a `GitProvisionError` carrying `code`, `hint`, `retryable`, and JSON-safe `fields`. Invalid SDK options fail before provisioning starts. Failed downloads, checksums, and verification never activate a partial install, and failed updates leave earlier resolved paths usable. Branch on `code` or the class, never on `message`.
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
-| `GitUnavailableError` | `unsupported-platform` | No portable build for this system: `reason` is `musl`, `glibc-too-old`, `architecture`, or `platform` | `platform`, `arch`, `reason`, `libc?`, `systemGit?` | Run `installCommand` (for example `apk add git` on Alpine) or install git 2.30.0+ |
-| `GitUnavailableError` | `offline` | `ATOMIC_OFFLINE` is set and no usable git exists | `platform`, `arch`, `offlineVariable`, `systemGit?` | Unset the variable or install git 2.30.0+ |
-| `GitUnavailableError` | `not-installed` | `resolveGitSync()` found no usable git and does not download | `platform`, `arch`, `installDir`, `systemGit?` | `await resolveGit()` first, or install git 2.30.0+ |
-| `GitUnavailableError` | `checksum-mismatch` | The download's SHA-256 differs from the pinned value | `platform`, `arch`, `asset`, `url`, `expectedSha256`, `actualSha256` | Check for a proxy that alters downloads, or install git yourself. Not retryable |
-| `GitUnavailableError` | `download-failed` | The download failed; `httpStatus` is absent for network errors | `platform`, `arch`, `asset`, `url`, `httpStatus?` | Check access to github.com and retry. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
-| `GitUnavailableError` | `install-failed` | Reading the selected install, staging, extracting, running, or publishing the download failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, check cache readability or install git yourself if this system cannot run the build |
+| `GitUnavailableError` | `unsupported-platform` | No portable build for this system: `reason` is `musl`, `glibc-too-old`, `architecture`, or `platform` | `platform`, `arch`, `reason`, `libc?`, `systemGit?` | Run `installCommand` (for example `apk add git` on Alpine) or install Git 2.30.0+ |
+| `GitUnavailableError` | `offline` | `ATOMIC_OFFLINE` is set and no usable Git exists | `platform`, `arch`, `offlineVariable`, `systemGit?` | Unset the variable or install Git 2.30.0+ |
+| `GitUnavailableError` | `not-installed` | `resolveGitSync()` found no usable Git and does not download | `platform`, `arch`, `installDir`, `systemGit?` | Call `await resolveGit()` first, or install Git 2.30.0+ |
+| `GitUnavailableError` | `checksum-mismatch` | Download SHA-256 differs from the pinned value | `platform`, `arch`, `asset`, `url`, `expectedSha256`, `actualSha256` | Check for a proxy altering downloads, or install Git yourself. Not retryable |
+| `GitUnavailableError` | `download-failed` | Download failed; `httpStatus` is absent for network errors | `platform`, `arch`, `asset`, `url`, `httpStatus?` | Check access to github.com and retry. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
+| `GitUnavailableError` | `install-failed` | Reading, staging, extracting, verifying, or promoting failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, check cache readability or install Git yourself |
 | `GitProvisionTimeoutError` | `provision-timeout` | A step exceeded its limit (`phase`: `lock`, `download`, `extract`, `verify`) | `phase`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
 | `GitProvisionConfigError` | `invalid-option` | A `resolveGit()` option had the wrong type; checked before any probe | `source` (`"sdk"`), `field`, `expected` | Fix the option |
 
-`systemGit`, when present, is the git found on `PATH` that Atomic could not use: `{ path, problem: "below-minimum" | "probe-failed", version? }`. `GitUnavailableError` also exposes `platform` directly. Every `GitUnavailableError` and `GitProvisionTimeoutError` carries `installCommand` when Atomic recognizes the distribution (from `/etc/os-release`, or the platform on macOS, Windows, Android, BSD and illumos); `hint` ends with it, and a rehydrated error keeps the command of the machine that raised it. Linux commands are written for a root shell, and Ubuntu earlier than 22.04 gets the git-core PPA because its own package is older than 2.30. A cleanup failure after an error is attached as `cleanupCause` and never replaces it.
+When present, `systemGit` describes the unusable Git found on `PATH`: `{ path, problem: "below-minimum" | "probe-failed", version? }`. `GitUnavailableError` also exposes `platform`. Every `GitUnavailableError` and `GitProvisionTimeoutError` sets `installCommand` when Atomic recognizes the OS or distribution (for example, Linux root commands, using the `git-core` PPA on Ubuntu earlier than 22.04). `hint` ends with `installCommand`, and rehydrated errors preserve the originating machine's command. Cleanup failures attach as `cleanupCause` without replacing the original error.
 
-Guards accept errors from other processes and realms by `name` and `code`: `isGitProvisionError`, `isGitUnavailableError`, `isGitProvisionTimeoutError`, and `isGitProvisionConfigError` test one value; `findGitProvisionError(error)` returns the first git error in a cause chain and `isRetryableGitProvisionError(error)` asks whether any is retryable, both to a bounded depth. `JSON.stringify(error)` produces `{ name, code, message, hint, retryable, fields, cause? }`, and `rehydrateGitProvisionError(payload)` restores the same class with its cause chain; an unknown name becomes a `GitProvisionError` that keeps the original `name` and `code`.
+Guards match across realms and processes by `name` and `code`: `isGitProvisionError`, `isGitUnavailableError`, `isGitProvisionTimeoutError`, and `isGitProvisionConfigError`. `findGitProvisionError(error)` searches a cause chain to a bounded depth, and `isRetryableGitProvisionError(error)` checks whether any error in the chain is retryable. `JSON.stringify(error)` outputs `{ name, code, message, hint, retryable, fields, cause? }`, and `rehydrateGitProvisionError(payload)` restores the class and cause chain (unknown names become `GitProvisionError` keeping their `name` and `code`).
 
 ```typescript
 import { isGitUnavailableError, resolveGit } from "@bastani/atomic";
@@ -356,39 +351,39 @@ try {
 
 #### fd and ripgrep download errors
 
-When `fd` or `ripgrep` is neither in `getBinDir()` nor on `PATH`, the `find`, `grep` and `search` tools download the latest release from GitHub. If a request fails, the tool call rejects with a `ManagedToolError` whose `message` names the request, and interactive startup shows the same text as a warning. Nothing is installed. Offline mode, unsupported platforms and an archive that cannot be unpacked still reject with a plain error.
+When `fd` or `ripgrep` is neither in `getBinDir()` nor on `PATH`, the `find` and `search` tools download the latest release from GitHub. If a request fails, the tool call rejects with a `ManagedToolError` naming the request, interactive startup shows the same warning, and nothing is installed. Offline mode, unsupported platforms, and unreadable archives still reject with plain errors.
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
-| `ManagedToolDownloadError` | `download-failed` | The release lookup (`phase: "resolve-version"`) or archive download (`phase: "download"`) failed, or the response was not usable. `cause` is the underlying error | `tool` (`"fd"` or `"rg"`), `phase`, `url`, `httpStatus?`, `detail?` | Check access to github.com and retry, or install the tool with your package manager. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
-| `ManagedToolTimeoutError` | `download-timeout` | The request did not finish in time: 10 s for the release lookup, 120 s for the archive | `tool`, `phase`, `url`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
+| `ManagedToolDownloadError` | `download-failed` | Release lookup (`phase: "resolve-version"`) or archive download (`phase: "download"`) failed, or the response was unusable (`cause` holds the underlying error) | `tool` (`"fd"` or `"rg"`), `phase`, `url`, `httpStatus?`, `detail?` | Check access to github.com and retry, or install the tool with your package manager. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
+| `ManagedToolTimeoutError` | `download-timeout` | Request exceeded its limit: 10 s for release lookup, 120 s for archive download | `tool`, `phase`, `url`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
 
-`isManagedToolError`, `isManagedToolDownloadError` and `isManagedToolTimeoutError` also accept errors from another realm by `name` and `code`; `isRetryableManagedToolError(error)` asks whether anything in the cause chain is retryable, to a bounded depth. Branch on `code` or the class, never on `message`.
+`isManagedToolError`, `isManagedToolDownloadError`, and `isManagedToolTimeoutError` match across realms by `name` and `code`. `isRetryableManagedToolError(error)` inspects a cause chain to a bounded depth. Branch on `code` or the class, never on `message`.
 
 #### Bash tool behavior
 
-Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
+When `bash` is enabled, commands run through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes `bash`. Atomic has no command-level allow/deny filter for `bash`; use an OS or container sandbox, or a custom tool or extension, when you need command allowlisting or isolation.
 
-Completed `bash` commands also return `structuredContent` shaped as `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }`, including nonzero exits. Programmatic callers receive up to 1 MiB of captured output, plus an omission marker when truncated; larger output keeps its head and tail and supplies a path to the full output. This is a captured-output limit, not a strict serialized JSON size limit. Model-facing text keeps its ordinary truncation limits. Running/background observations keep their existing task lifecycle and result format.
+Completed `bash` calls return `structuredContent` shaped as `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }`, including nonzero exits. Programmatic callers receive up to 1 MiB of captured output plus an omission marker when truncated; larger outputs keep their head and tail and include `full_output_path`. This cap limits captured output rather than serialized JSON size. Model-facing text keeps normal truncation limits, and running or background observations keep their task lifecycle format.
 
 #### Waiting for existing shell tasks
 
-Both Bash and PowerShell factories accept `{ action: "wait", id: taskId, budgetMs: 1000 }` with a trusted `taskOwner` binding. No command is executed. `BashToolInput` and `PowerShellToolInput` distinguish command launches from existing-task waits; narrow by `action` before reading `command`.
+Both Bash and PowerShell factories accept `{ action: "wait", id: taskId, budgetMs: 1000 }` with a trusted `taskOwner` binding without executing a command. Narrow `BashToolInput` and `PowerShellToolInput` by `action` before reading `command`.
 
-`budgetMs` is optional, finite, and non-negative. Omission uses the owner's command wait policy and zero polls. Results keep the `WaitOutcome` in `details.observation`, available exit information in `details.exitCode`, and retained output in text content. Failure and cancellation metadata remain in the settled observation. Yielded waits advance through bounded retained-output pages for the same owned task, even when the tool is recreated. Partial UTF-8 characters continue on the next page. Settled waits return all retained output again, subject to labelled gaps and truncation. Aborting the call releases only its observation. A binding from `AgentTaskHost.ownerBinding` also releases waits for incoming owner messages.
+- `budgetMs` is optional, finite, and non-negative. Omitting it uses the owner's command wait policy; `0` polls immediately.
+- Results store `WaitOutcome` in `details.observation`, available exit status in `details.exitCode`, and retained output in text content. Failure and cancellation metadata stay in the settled observation.
+- Yielded waits advance through bounded retained-output pages for the same owned task even if the tool is recreated, continuing split UTF-8 characters on the next page. Settled waits return all retained output subject to labelled gaps and truncation.
+- Aborting a wait releases only its observation. A binding from `AgentTaskHost.ownerBinding` also releases waits when owner messages arrive.
 
-Do not mix wait arguments with launch fields. Unknown or foreign IDs and unbound waits are rejected before execution hooks. Custom `operations.exec` does not provide existing-task ownership. See [Background tasks](/background-tasks) for examples and lifetime rules.
+Do not mix wait arguments with launch fields. Unknown IDs, foreign IDs, and unbound waits reject before execution hooks. Custom `operations.exec` does not supply task ownership. See [Background tasks](/background-tasks) for examples and lifetime rules.
 
 #### PowerShell tool behavior
 
-`createPowerShellTool()` and `createPowerShellToolDefinition()` provide the same tool used by interactive sessions. When their default local operations execute on native Windows, they prefer `pwsh.exe`, fall back to `powershell.exe`, and throw a clear error when neither executable is available. `createLocalPowerShellOperations()` and `getPowerShellConfig()` are also exported for custom integrations. The PowerShell factories expose the current `ATOMIC_*` and legacy `PI_*` session snapshot by default; set `exposeSessionEnvironment: false` to opt out.
+`createPowerShellTool()` and `createPowerShellToolDefinition()` provide the same tool interactive sessions use. On native Windows, default local operations prefer `pwsh.exe`, fall back to `powershell.exe`, and throw if neither is available. `createLocalPowerShellOperations()` and `getPowerShellConfig()` are exported for custom integrations. Factories expose the execution-time `ATOMIC_*` and legacy `PI_*` session snapshot by default; set `exposeSessionEnvironment: false` to opt out.
 
-PowerShell tools and local operations accept a trusted `taskOwner` binding and the same
-`wait` observation policy as bash. Owned native Windows execution automatically yields
-after the owner's command budget (normally 10000 ms); explicit per-call budgets override it,
-and execution timeout remains separate. Task descriptions retain the original command text.
-Without a supported owner, explicit background requests are refused and foreground execution waits for completion.
-On native Windows, a bash or PowerShell command run without an owner runs in a job of its own: a timeout or an abort ends every process it started, also one left running after the shell exited and one whose starter already exited. A program that asks to leave the job (`CREATE_BREAKAWAY_FROM_JOB`), as every program Git Bash starts does, leaves it: a timeout or an abort ends it only while it is still below the running shell. What a finished command left running keeps running, also after your process exits.
+PowerShell tools and local operations accept a trusted `taskOwner` binding and the same `wait` observation policy as `bash`. Owned native Windows runs auto-yield after the owner's command budget (normally 10000 ms); explicit per-call budgets override it, while execution timeout stays separate. Without a supported owner, explicit background requests reject and foreground execution waits for completion.
+
+On native Windows, an unowned `bash` or `powershell` command runs in its own job object so a timeout or abort terminates child processes even after the shell exits. Processes that break away (`CREATE_BREAKAWAY_FROM_JOB`), including commands started by Git Bash, are terminated on timeout or abort only while still under the running shell; detached children left behind by a finished command continue running.
 
 ```typescript
 import { createPowerShellTool } from "@bastani/atomic";
@@ -396,7 +391,7 @@ import { createPowerShellTool } from "@bastani/atomic";
 const powershell = createPowerShellTool("C:\\path\\to\\project");
 ```
 
-#### Tools with Custom cwd
+#### Tools with custom cwd
 
 When you pass a custom `cwd`, `createAgentSession()` builds selected built-in tools for that cwd.
 
@@ -421,7 +416,7 @@ const { session } = await createAgentSession({
 
 > See [examples/sdk/05-tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/05-tools.ts)
 
-### Custom Tools
+### Custom tools
 
 ```typescript
 import { Type } from "@bastani/atomic/typebox";
@@ -447,21 +442,25 @@ const { session } = await createAgentSession({
 });
 ```
 
-Use `defineTool()` for standalone definitions and arrays like `customTools: [myTool]`. Inline `pi.registerTool({ ... })` already infers parameter types correctly.
+Use `defineTool()` for standalone definitions and arrays like `customTools: [myTool]`. Inline `pi.registerTool({ ... })` infers parameter types automatically.
 
-Custom tools passed via `customTools` are combined with extension-registered tools. Extensions loaded by the ResourceLoader can also register tools via `pi.registerTool()`.
+Custom tools passed via `customTools` combine with extension-registered tools. When you pass a plain-name `tools` allowlist, include each custom or extension tool you want active (for example `tools: ["read", "bash", "my_tool"]`). Modifier-only lists keep default activation and can enable inactive tools with `+name`. `excludedTools` removes any matching tool from the active set.
 
-If you pass a plain-name `tools` allowlist, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`. Modifier-only lists retain default activation and can enable inactive registered tools with `+name`. Use `excludedTools` to remove a custom or extension tool by name from the final exposed set.
+`ToolDefinition.constrainedSampling` survives `defineTool()`, `customTools`, tool wrappers, inspection, and isolated execution:
 
-`ToolDefinition.constrainedSampling` is part of the public SDK and survives `defineTool()`, `customTools`, tool wrappers, session/staged inspection, and isolated execution. Use `{ type: "json_schema", strict: "prefer" | "require" }`, `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`, or `false`. `prefer` can fall back; `require` fails when the active model cannot enforce strict JSON Schema. Grammar constraints require one required string parameter and capable model metadata. Public inspection preserves optional-property identity exactly: an omitted key stays absent, an explicitly present `undefined` stays present, and `false` or a config object remains unchanged. The exported `ConstrainedSamplingConfig` type and [extension reference](/extensions/authoring#constrained-sampling) define the exact shape. Typed RPC clients receive the four model capability flags through optional `ModelInfo.compat`; see [RPC](/rpc/protocol#get_available_models).
+- `{ type: "json_schema", strict: "prefer" | "require" }`: `prefer` may fall back; `require` fails if the active model cannot enforce strict JSON Schema.
+- `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`: requires one required string parameter and capable model metadata.
+- `false`: disables constrained sampling.
 
-Factory-created `createBashTool()` instances receive the same execution-time `ATOMIC_SESSION_*`/`PI_SESSION_*` model and session snapshot as the built-in bash tool. Set `exposeSessionEnvironment: false` only when the subprocess must not receive it. `MessageRenderOptions.outputPad` is likewise passed to normal and isolated custom message renderers.
+Inspection preserves optional-property identity (`undefined` stays present when explicitly set). See `ConstrainedSamplingConfig`, [Constrained sampling](/extensions/authoring#constrained-sampling), and `ModelInfo.compat` in [RPC](/rpc/protocol#get_available_models).
 
-Normal sessions also expose `kill({ id: taskId })` for their owned bash and PowerShell background tasks. Include `kill` when using a `tools` allowlist if the agent should be able to stop those tasks. The exported `createKillTool` and `createKillToolDefinition` factories accept `KillToolOptions.taskOwner`, a trusted execution-time callback returning the same owner binding used by shell launch. Without a binding they reject execution. The result details preserve the supervisor's `CancelReceipt`, including its decision, execution outcome, and cleanup state. See [Background tasks](/background-tasks#stop-a-shell-task-from-a-tool-call).
+Factory-created `createBashTool()` instances receive the same execution-time `ATOMIC_SESSION_*` and `PI_SESSION_*` snapshot as the built-in `bash` tool unless you pass `exposeSessionEnvironment: false`. `MessageRenderOptions.outputPad` is also forwarded to normal and isolated custom message renderers.
+
+Normal sessions expose `kill({ id: taskId })` for owned `bash` and `powershell` background tasks. Include `kill` in any explicit `tools` allowlist if the agent should be able to stop tasks. `createKillTool` and `createKillToolDefinition` accept `KillToolOptions.taskOwner` (the same trusted binding used by shell launches) and reject without one. Result details carry the supervisor's `CancelReceipt`. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
 
 #### Detachable tool calls
 
-A tool whose work does not need the session once it has started (a CI run, a deployment, an external job) can declare `detachable: true`. Running it again with the same call id and arguments after a restart must be safe, because a host may start a call again when the process that ran it died.
+A tool whose work does not need the session once started (such as a CI run, deployment, or external job) can set `detachable: true`. Re-running it with the same call ID and arguments after a restart must be safe, because a host may re-dispatch it if the previous process died.
 
 ```typescript
 const waitForCi = defineTool({
@@ -474,51 +473,46 @@ const waitForCi = defineTool({
 });
 ```
 
-`detachable` may also be a function of the call's arguments. Only a call for which it returns `true` may detach; every other call runs inline however long it takes. The built-in shell tools and Intercom use this, so only a shell `wait` without a budget, an Intercom `ask` and a `contact_supervisor` decision request may detach. Intercom reply waits remain live when multi-node routing is active.
+`detachable` can also be a predicate on the call's arguments. Only calls returning `true` may detach. Built-in shell tools and Intercom use predicates so only a shell `wait` without a budget, an Intercom `ask`, and a `contact_supervisor` decision request can detach. Intercom reply waits stay live when multi-node routing is active.
 
-A detachable call is scheduled like any other call of its message: it starts only once the calls it must follow, as its `concurrency` says, have finished.
+A detachable call follows its message's `concurrency` ordering before starting. If a tool must save a durable handoff first, set `detachmentRequiresReady: true`: check `toolCallNeedsDetachmentHandoff(signal)` while running, then call `markToolCallReadyForDetachment(signal)` once saved. The call detaches only after both that signal and the host's delay (or returns inline if it finishes sooner).
 
-A tool that must save a durable handoff before detaching can also set `detachmentRequiresReady: true`. While the call runs, `toolCallNeedsDetachmentHandoff(signal)` tells it whether a handoff is needed. After saving the handoff, call `markToolCallReadyForDetachment(signal)`; the call detaches only after both that signal and the host's delay. If the call finishes first, its result is returned inline. Both helpers are exported from `@bastani/atomic`.
+Without a detachment policy, detachable calls run inline. A host using persistent storage enables detachment with `session.setToolDetachment({ afterMs })`, where `afterMs` is `0` to `MAX_TOOL_DETACHMENT_AFTER_MS` (`2,147,483,647`):
 
-Without a detachment policy a detachable call runs inline like any other. A host that can keep the conversation in a session store sets one with `session.setToolDetachment({ afterMs })`, where `afterMs` is from 0 to `MAX_TOOL_DETACHMENT_AFTER_MS` (2,147,483,647, the longest timer delay):
+- **Inline vs. detached:** Calls finishing within `afterMs` complete inline. Calls still running detach: the turn's other results save, the detached call remains pending, and `prompt()` resolves so the host can release or dispose of the session.
+- **Interrupts:** Once a turn is interrupted, inline calls no longer detach (even if marked ready in the same tick). They keep their result if they stop within `ATOMIC_TOOL_ABORT_GRACE_MS` (default 10 s); otherwise they record `Operation aborted` and later outcomes are discarded. Queued calls fail immediately with `Operation aborted`. Calls that detached before the interrupt are unaffected and remain available from `takeDetachedToolCalls()`.
+- **`session.takeDetachedToolCalls()`:** Returns each detached call once as a `DetachedToolCall` (`toolCallId`, `toolName`, non-rejecting `result` promise, `abort(reason)`). Calls whose turn the transcript has moved past are cancelled, dropped, and logged as `stale-detached-call`. Thrown errors become `isError` results; errors with a string `code` populate `details.error` via `toJSON()` (or a fallback object with `serialization: "fallback"` if `toJSON()` throws). Unrecordable payloads record a call error instead, while session-store failures still reject resume.
+- **`session.resumeDetachedTurn(results)`:** On a reopened session, records each result after its call and continues the turn (without a new user message) once every detachable call of that turn has a result. You can supply results across multiple calls; until the last arrives, `hasPendingDetachedTurn()` stays `true`. Duplicate, already-answered, or stale results are ignored (stale ones log `stale-detached-call`), while results for nonexistent calls throw `unknown-tool-call`. Calling with no new results continues a turn whose calls already have results.
+- **`session.isWaitingOnDetachedResults()`:** Reports whether the transcript still awaits a detached result. While waiting under a detachment policy, nothing starts a turn on the idle session (including subagent notices, steering, follow-ups, and post-compaction continuations); held custom messages are persisted and replayed after `resumeDetachedTurn()` continues the turn. Do not call `prompt()` while waiting on results.
+- **`session.hasPendingDetachedTurn()` and `session.redispatchDetachedToolCalls()`:** `hasPendingDetachedTurn()` reports whether a reopened transcript ends on a detached turn; continue it with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again. `redispatchDetachedToolCalls()` restarts unanswered detachable calls with their original IDs and arguments and emits `tool_execution_start` before returning.
 
-- A call that finishes within `afterMs` runs inline.
-- A call still running after `afterMs` detaches: the turn's other results are saved, the call has no result yet, and `prompt()` resolves. The call's work goes on outside the session, so the host can dispose of the session meanwhile.
-- Once its turn is interrupted, a call running inline no longer detaches, even one marked ready with `markToolCallReadyForDetachment(signal)` just before the interrupt, in the same tick. Like any tool call, it keeps its own result if it stops within `ATOMIC_TOOL_ABORT_GRACE_MS` (10 seconds by default); otherwise it gets an `Operation aborted` result and gives its place in the session's tool order back. If it returns or throws later, that outcome is not added to the conversation or sent to the model. A call still waiting for its place ends at once with `Operation aborted` and never runs. A call that detached before the interrupt is not affected: the interrupt does not reach its abort signal, and it is still returned by `takeDetachedToolCalls()`.
-- `session.takeDetachedToolCalls()` returns each detached call once, except a call whose turn the transcript has moved past: nothing waits for its result, so the session cancels its work (through its abort signal) and drops it, and records it in the debug log as `stale-detached-call`. Every `DetachedToolCall` has `toolCallId`, `toolName`, a `result` promise that never rejects (a thrown error becomes an `isError` result), and `abort(reason)`. An unprintable rejection reason or unreadable result field becomes a plain error result; it cannot reject the handle. If a result's payload cannot be recorded, the resumed session records an error for that call instead. A failure of the session store itself still rejects the resume. When the thrown error has a string `code`, the result's `details.error` carries it as data, so a host can branch on `code` instead of the text: the error's own `toJSON()` form when it has one, otherwise its `name`, `code`, `message`, and its `hint`, `retryable`, JSON-safe `fields` and cause chain when it has them. If its `toJSON()` throws, `details.error` is built from its properties and carries `serialization: "fallback"`.
-- `session.resumeDetachedTurn(results)` on a session reopened from the store records each result as its call's result, right after the call, and continues the same turn, without a new user message, once every detachable call of the turn has its result. Results may be handed back together or across several calls: until the last one arrives, the call records what it gets and resolves without continuing, and `hasPendingDetachedTurn()` stays `true`. A result for a call that already has one, repeated in `results`, or issued by a turn the transcript has moved past is ignored, the last one with a `stale-detached-call` record in the debug log; a result for a call that no message of the transcript issued throws `unknown-tool-call`. With no new result, a transcript that ends on a detachable call's turn whose every call already has its result continues that turn (the process that recorded the results stopped before the model answered), and a turn still waiting on a call is left as it is.
-- `session.isWaitingOnDetachedResults()` tells whether the transcript still waits on the result of a detachable call, with or without other calls of its turn answered. While it does, and a detachment policy is set, nothing starts a turn on the idle session: custom messages that would start one (such as a finished subagent's notification), interrupting messages, follow-ups and steering, and a continuation after a compaction wait, and the turn that `resumeDetachedTurn()` continues takes them up after the results. A custom message held this way gets a durable card, so it survives the session being released or disposed before the results arrive: the session reopened from the store delivers it after the result (`startPendingRecovery()` replays it). `prompt()` stays the host's call: do not prompt a session that waits on a result.
-- `session.hasPendingDetachedTurn()` tells whether a reopened transcript ends on such a turn, with or without some or all of its results. When it does, continue the turn with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again.
-- `session.redispatchDetachedToolCalls()` starts again the detachable calls that a reopened transcript ends on without a result, with their original ids and arguments. Calls that already have a result are not started again. Session listeners receive a `tool_execution_start` event for each call before the method returns, and extensions receive it in order with the session's other events.
+Results handed to `resumeDetachedTurn()` pass through `tool_result` hooks, image resizing, and output persistence (stored as `tool-output://<sha256>` in blob-capable stores like SQLite, libSQL, and memory, or on disk otherwise; see [Persisted tool output](/tools#persisted-tool-output)).
 
-A result handed to `resumeDetachedTurn()` enters the transcript exactly as an inline call's result would: extension `tool_result` handlers see it and can rewrite it, images are resized for the provider, and output over the persistence threshold is stored with the session when its session store holds blobs (`SessionStore.putBlob`/`getBlob`, which the SQLite, libSQL and in-memory stores have), named `tool-output://<sha256>`, and otherwise saved to a file (see [Persisted tool output](/tools#persisted-tool-output)).
+Detached calls run outside the session's async context and hold no reference to the session:
 
-A detached call runs outside its session's async context and tool wrappers, so it holds no reference to the session while it waits. While the call runs inline, its `onUpdate` and `ctx` reach the session as usual. Once it detaches:
+- `onUpdate` progress updates are dropped after detachment (and from the start on redispatched calls).
+- `ctx` exposes only `cwd`; other properties throw `ToolDetachmentError` with code `context-detached`. Read needed `ctx` values before awaiting, or pass them in tool arguments. (Redispatched calls have full `ctx` only until their first `await`; queued calls get it when they start if the session is still open.)
+- Detached calls report no host diagnostics.
 
-- progress it reports with `onUpdate` is dropped;
-- `ctx` answers only `cwd`, and any other use throws `ToolDetachmentError` with code `context-detached`. Read what the work needs from `ctx` before it awaits anything long, or pass it in the tool's arguments.
+`ask_user_question` always runs inline. A shell `wait` whose task is gone after a restart returns an error result whose `details.error` is a serialized `TaskToolError` (see [Owner-bound task supervisor](#owner-bound-task-supervisor)).
 
-A call started again by `redispatchDetachedToolCalls()` reports no progress from the start. Its `ctx` reaches the session only while the work starts, until its first `await`; read what it needs from `ctx` before then. A call queued behind another call of the same turn gets that `ctx` when it starts, if the session is still open, and otherwise only `cwd`. A detached call reports no host diagnostics.
+While waiting on a detached call, background completion notices are saved and held until `resumeDetachedTurn()` continues the turn. `compact()` rejects while waiting, and automatic compaction waits until right before the continuation request.
 
-The builtin `ask_user_question` runs inline; the question ends with the session that asked it. A shell `wait` whose task is gone after a restart returns an error result whose `details.error` is the serialized `TaskToolError` (see [Owner-bound task supervisor](#owner-bound-task-supervisor-s1)).
-
-While a transcript waits on a detached call's result, a background task's completion notice is saved but not added to the conversation, so nothing comes between the call and its result. It is delivered once `resumeDetachedTurn()` has continued the turn. No compaction boundary is written while the transcript waits on a detached call's result: automatic compaction clears the context just before the request that continues with the result, and `compact()` is rejected while a call is still waiting.
-
-`ToolDetachmentError` reports a refused detachment operation; nothing changed when it is thrown. Check it with `isToolDetachmentError(error)`, or find it in a cause chain with `findToolDetachmentError(error)`, and branch on `code`:
+`ToolDetachmentError` reports refused detachment operations without mutating state. Check it with `isToolDetachmentError(error)` or `findToolDetachmentError(error)`, and branch on `code`:
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
-| `ToolDetachmentError` | `invalid-policy` | `setToolDetachment()` got an `afterMs` that is not a finite number from 0 to `MAX_TOOL_DETACHMENT_AFTER_MS` | `sessionId`, `field`, `value` | Pass an `afterMs` in that range, or `undefined`. To keep calls inline, set no policy |
-| `ToolDetachmentError` | `unknown-tool-call` | `resumeDetachedTurn()` got a new result for a call that no message of the transcript issued | `sessionId`, `toolCallId` | Hand back only results of the calls `takeDetachedToolCalls()` or `redispatchDetachedToolCalls()` returned for this session's transcript |
-| `ToolDetachmentError` | `session-busy` | `resumeDetachedTurn()` was called while the session was still running, or still recording the results an earlier call handed back (`retryable: true`). | `sessionId` | Wait for that call or run to settle, then call it again |
-| `ToolDetachmentError` | `session-closed` | `resumeDetachedTurn()` was called on a session that is disposed or closing. Nothing is recorded | `sessionId` | Reopen the session from its store and hand the results to the new session |
-| `ToolDetachmentError` | `context-detached` | A detached call's work used its `ctx` for anything but `cwd` | `sessionId`, `toolCallId` | Read what the work needs from `ctx` before the call detaches, or pass it in the tool's arguments |
+| `ToolDetachmentError` | `invalid-policy` | `setToolDetachment()` received an `afterMs` outside `0` to `MAX_TOOL_DETACHMENT_AFTER_MS` | `sessionId`, `field`, `value` | Pass a valid `afterMs` or `undefined` to keep calls inline |
+| `ToolDetachmentError` | `unknown-tool-call` | `resumeDetachedTurn()` received a result for a call not in the transcript | `sessionId`, `toolCallId` | Return only results from `takeDetachedToolCalls()` or `redispatchDetachedToolCalls()` for this session |
+| `ToolDetachmentError` | `session-busy` | `resumeDetachedTurn()` ran while the session was running or recording earlier results (`retryable: true`) | `sessionId` | Wait for the active call or run to settle, then retry |
+| `ToolDetachmentError` | `session-closed` | `resumeDetachedTurn()` ran on a closing or disposed session | `sessionId` | Reopen the session from its store and pass the results there |
+| `ToolDetachmentError` | `context-detached` | A detached call accessed a `ctx` member other than `cwd` | `sessionId`, `toolCallId` | Read required `ctx` values before detachment or pass them in arguments |
 
-Every error has `hint` with the remediation and `fields` with the JSON-safe facts above. Only `session-busy` is `retryable`. To pass one across a process boundary, send `JSON.stringify(error)` (its `toJSON()` keeps `name`, `code`, `message`, `hint`, `retryable`, `fields` and a bounded `cause` chain) and rebuild it with `deserializeToolDetachmentError(serialized)`, which returns a `ToolDetachmentError` that the guards recognize. A name or code this version does not know keeps its `name`, `code`, `hint` and message.
+Each error carries `hint` and JSON-safe `fields`; only `session-busy` is `retryable`. `JSON.stringify(error)` serializes `name`, `code`, `message`, `hint`, `retryable`, `fields`, and a bounded `cause` chain, and `deserializeToolDetachmentError(serialized)` restores a `ToolDetachmentError` that guards recognize.
 
 #### Structured output final results
 
-`structured_output` is not registered in normal agent sessions by default. Register the factory when a caller needs a schema-validated decision inferred by a selected model:
+`structured_output` is not registered by default. Register `createStructuredOutputTool()` when you need a schema-validated decision inferred by a selected model:
 
 ```typescript
 import { Type } from "@bastani/atomic/typebox";
@@ -536,18 +530,18 @@ const { session } = await createAgentSession({
 });
 ```
 
-The calling model does not supply the decision fields. It calls `structured_output` with:
+The calling model invokes `structured_output` with:
 
 - `instructions`: the judgment to make.
-- `state`: a nonempty named object containing the task and relevant context. Do not put secrets here.
-- `model`: optional exact `provider/model` ID of a chat model or a registered classifier. Omit it to use the session's `decisionModel`, which defaults to the current session chat model.
+- `state`: a nonempty named object with the task and relevant context (never secrets).
+- `model`: optional exact `provider/model` ID of a chat model or registered classifier (defaults to the session's `decisionModel`, then the current chat model).
 - `fallbackModels`: optional ordered exact IDs tried after the primary.
 
-The tool infers the result through the session model registry. A successful call returns the schema-validated value as pretty-printed JSON, stores that value in `details`, and sets `terminate: true`. It does not capture the calling model's arguments as the decision. A classifier is used only when the registered schema is a finite Choice; otherwise that candidate is skipped and the next fallback, then the current chat model, is tried. A classifier failure such as missing credentials, an unavailable provider, an unsupported classify operation, a refusal, or a malformed answer advances the same chain. A chat provider refusal advances immediately when reported as an error; plain text without a result gets up to three repairs before advancing. Cancellation stops the call. Saved `/login` credentials are used through the session model registry; a listed model does not prove live access.
+The tool infers the answer through the session's model registry rather than capturing caller arguments directly. On success, it returns pretty-printed JSON, sets `details` to the validated value, and sets `terminate: true`. Classifiers run only for finite Choice schemas and are skipped otherwise; classifier failures and chat provider errors advance through the fallback chain, while plain text without a result gets up to three repairs before advancing. Cancellation stops the call immediately.
 
-Each call must finish within a wall-clock deadline that covers every repair attempt, retry, and model fallback. It defaults to the session's [`httpIdleTimeoutMs`](/settings#http) setting; pass `timeoutMs` (a positive integer in milliseconds) to `createStructuredOutputTool()` to change it. The calling model cannot. See [Structured decisions](/sdk/structured-decisions#cancellation-and-failures).
+Each call shares one wall-clock deadline covering repairs, retries, and fallbacks. It defaults to the session's [`httpIdleTimeoutMs`](/settings#http) setting; pass `timeoutMs` (a positive integer in milliseconds) to `createStructuredOutputTool()` to override it. See [Structured decisions](/sdk/structured-decisions#cancellation-and-failures).
 
-A custom tool name still works. Include that name in any explicit `tools` allowlist:
+To register under a custom name, pass `name` and include it in any explicit `tools` allowlist:
 
 ```typescript
 const finalDecision = createStructuredOutputTool({
@@ -561,13 +555,11 @@ await createAgentSession({
 });
 ```
 
-Custom tool names are supported, and the prompt metadata follows the configured name. The examples above use `final_decision` and the default `structured_output` name. Include the name you register in any explicit `tools` allowlist.
-
 > See [examples/sdk/05-tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/05-tools.ts)
 
 ### Extensions
 
-Extensions are loaded by the `ResourceLoader`. `DefaultResourceLoader` discovers extensions from `~/.atomic/agent/extensions/` and `.atomic/extensions/` first, then legacy `~/.pi/agent/extensions/` and `.pi/extensions/`, plus settings.json extension sources.
+`DefaultResourceLoader` discovers extensions from `~/.atomic/agent/extensions/` and `.atomic/extensions/` first, then legacy `~/.pi/agent/extensions/` and `.pi/extensions/`, plus `settings.json` extension sources.
 
 ```typescript
 import { createAgentSession, DefaultResourceLoader } from "@bastani/atomic";
@@ -587,23 +579,38 @@ await loader.reload();
 const { session } = await createAgentSession({ resourceLoader: loader });
 ```
 
-`createAgentSession()` preserves the resources from a supplied loader and adds Atomic's shipped builtin extensions and resources. Repeated references to a shipped builtin load it once. Your loader's arrays and discovery options are not rewritten. Existing tool selection and collision rules still apply.
+`createAgentSession()` preserves resources from a supplied loader and adds Atomic's shipped builtin extensions once without mutating your loader's arrays or options.
 
-Named `extensionFactories` descriptors may set `builtin: true` to expose the factory as a synthetic `builtin:<name>` resource, and `replaceable: true` to omit it when another extension claims the same tool, command, or flag. Use `additionalExtensionPaths: ["builtin:codemode"]` for explicit built-in loading, including with `noExtensions: true`. These inline resource controls are separate from the companion-package `builtins` map. See [built-in extension resources](/extensions#built-in-extension-resources).
+- **Synthetic builtin factories:** Named `extensionFactories` descriptors may set `builtin: true` to expose a `builtin:<name>` resource and `replaceable: true` to yield if another extension registers the same tool, command, or flag. Pass `additionalExtensionPaths: ["builtin:codemode"]` for explicit loading even with `noExtensions: true`. See [built-in extension resources](/extensions#built-in-extension-resources).
+- **Inline built-in extensions:** `DefaultResourceLoader` includes `codemode`, `tool-search`, and `llama.cpp` as `builtin:<name>` paths. `codemode` is active by default (opt out with `tools: ["-codemode"]`), while `tool_search` is opt-in. Turn off an inline builtin with `noExtensions: true`, `disabledBuiltinExtensions: ["codemode"]`, or `extensions: ["-builtin:codemode"]`.
+- **Bindings and startup:** Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler`, or `onError` before `session_start` runs. Creation awaits startup and resource discovery, shutting down a partial session if startup fails. Pass `reportStartupErrors: true` to report `session_start` and `resources_discover` errors to `onError` while keeping the session open. Later `bindExtensions()` calls update bindings without replaying `session_start`.
+- **Strict reloads:** `failOnExtensionErrors: true` requires transactional `prepareReload()` support (`DefaultResourceLoader` implements it). Custom loaders without `prepareReload()` work for ordinary reloads, while strict reload fails before calling their mutating `reload()`.
 
-Every `DefaultResourceLoader` includes Atomic's inline built-in extensions, `codemode`, `tool-search`, and `llama.cpp`, so `defaultTools: ["+codemode"]` or `tools: ["+tool_search"]` works in SDK sessions without extra factories. `loader.getExtensions()` lists them with `builtin:<name>` paths. Codemode follows the ordinary built-in selection: it is active by default, but `tools: ["-codemode"]` opts out and replacement tool lists must include its name. Tool search remains opt-in. A descriptor you pass with the same name replaces the default one, and `noExtensions: true`, `disabledBuiltinExtensions: ["codemode"]`, or an `extensions` setting such as `"-builtin:codemode"` turns one off.
+#### Session disposal and lifecycle
 
-Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler` or `onError` before startup hooks run. Creation awaits startup and resource discovery. A failed startup shuts down the partially created session before rejecting. Set `reportStartupErrors: true` to keep the session instead when a `session_start` or `resources_discover` handler throws: the error goes to `onError` and the extension stays loaded, as in the interactive terminal. Rebinding updates the host without replaying `session_start`; reload emits one start for its new generation. Remove manual post-creation startup calls from integrations that only used them to initialize extensions.
+Always `await session.dispose()`. Disposal seals new admission immediately and waits for active work, extension shutdown handlers, pending settings writes, pending notice-line saves, lease release, and up to 5 seconds for in-flight extension transpile-cache writes started by that session.
 
-Strict reloads (`failOnExtensionErrors: true`) require the loader's transactional `prepareReload()` support so a failed candidate cannot mutate live state before validation. `DefaultResourceLoader` provides that support. Custom loaders without it remain compatible with ordinary reloads, but strict reload fails before calling their mutating `reload()` method.
+Once `dispose()` resolves, nothing the session started is still writing to its session store or extension transpile cache, so deleting `agentDir` or a caller-owned store directory right afterward will not race. (Transpile-cache writes still unfinished after 5 seconds are logged to debug output and left to finish asynchronously.)
 
-Use `await session.dispose()` rather than fire-and-forget cleanup. It seals admission immediately and waits for owned work, extension shutdown, persistence and lease release. Once it resolves, nothing the session started still writes to its session store, so you can remove the folder of a session store you own. Concurrent disposal calls return the same promise. Catch `ShutdownFailed` to inspect its component `errors`; a rejected close is not successful cleanup, and the session stays closed. Do not add a manual MCP or Intercom teardown sequence. Caller-supplied settings, storage and model runtimes remain caller-owned.
+- Concurrent `dispose()` calls share one promise.
+- Catch `ShutdownFailed` to inspect component `errors`; a failed close still leaves the session closed.
+- Settings persistence failures can reject disposal; repair storage and repeat the write before closing (`dispose()` does not drain `SettingsManager.drainErrors()`).
+- Caller-supplied settings, storage, and model runtimes remain caller-owned. Do not add manual MCP or Intercom teardown.
+- `AgentSessionRuntime` uses the same awaited close during session replacement and transfers bindings before the replacement starts. Reload invalidates stale input requests and subscriptions so late replies cannot authorize new work.
+- Duplicate `executeBash()` IDs act as correlation IDs: `abortBash(id)` cancels every active call with that ID.
 
-`AgentSessionRuntime` uses the same awaited close when replacing sessions and transfers configured host bindings before the replacement starts. Reload invalidates old input requests and extension subscriptions while retaining host configuration. A late answer from an old generation cannot authorize replacement work.
+For reload, replacement, and resource ownership patterns, see [Finishing admitted work](/sdk#finishing-admitted-work).
 
-Settings persistence failures can make disposal reject. Repair storage and repeat the write before closing; disposal does not consume the caller's `SettingsManager.drainErrors()` channel. Duplicate `executeBash()` IDs remain correlation IDs, and `abortBash(id)` cancels every active call with that ID.
+#### Prompting options
 
-Ensure callbacks settle independently of disposal. For reload, replacement, and resource ownership guidance, see [SDK lifecycle](/sdk#finishing-admitted-work).
+`session.prompt(text, options?)` accepts:
+
+- `expandPromptTemplates` (default `true`): expands file-based prompt templates, skill commands, and extension commands.
+- `images`: optional `ImageContent[]` attachments.
+- `streamingBehavior`: `"steer"` or `"followUp"` when sending while a turn is active; omitting it while streaming rejects with `AgentSessionBusyError`.
+- `startTurnOnly`: when `true`, starts a turn only if the session is idle and queued messages are not paused. When a turn is already running or queued input is paused, nothing is sent or queued and `prompt()` resolves as `"handled"`.
+- `source`: `InputSource` metadata for `input` hooks.
+- `preflightResult`: callback `(success, disposition?)` invoked once preflight accepts (`"handled"`, `"queued"`, or `"started"`) or rejects the prompt.
 
 Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 
@@ -653,7 +660,7 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 > See [examples/sdk/04-skills.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/04-skills.ts)
 
-### Context Files
+### Context files
 
 ```typescript
 import { createAgentSession, DefaultResourceLoader } from "@bastani/atomic";
@@ -673,7 +680,7 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 > See [examples/sdk/07-context-files.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/07-context-files.ts)
 
-### Slash Commands
+### Slash commands
 
 ```typescript
 import {
@@ -702,7 +709,7 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 > See [examples/sdk/08-prompt-templates.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/08-prompt-templates.ts)
 
-### Session Management
+### Session management
 
 Sessions use a tree structure with `id`/`parentId` linking, enabling in-place branching.
 
@@ -777,7 +784,14 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
-`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window. `getEntries()` and `getTree()` describe the entries held by that manager. To visit older entries, iterate pages with `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`; the manager keeps none of them, so memory stays bounded by the window. Inspect `page.items` for entries or oversized references. For an oversized reference, `sessionManager.readHistoryChunks(reference)` yields the original bytes. Bounds are inclusive and optional. A read stops at the last stored sequence when iteration began; entries appended later are not mixed into it. By default the pages are in recording order and include messages on branches you left. Pass `branchLeafSeq` to read only that saved sequence's ancestry. A custom task transcript source with only `getEntries()` can show only the rows it supplies. To let a reader visit older or off-branch messages, supply the records themselves or expose a paged history source (`readHistory` and `getEarlierCursor` for a live window).
+`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window, so `getEntries()` and `getTree()` return only the resident window.
+
+To visit older entries without loading them into memory, iterate `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`:
+
+- `page.items` contains entries and oversized references; read oversized bytes with `sessionManager.readHistoryChunks(reference)`.
+- `fromSeq` and `toSeq` are inclusive and optional. Iteration stops at the last stored sequence when it began.
+- Pages arrive in recording order across branches by default; pass `branchLeafSeq` to restrict reads to one branch's ancestry.
+- A custom task transcript source implementing only `getEntries()` exposes only its supplied rows; implement `readHistory` and `getEarlierCursor` to support paging into older or off-branch history.
 
 ```typescript
 // Read older entries a page at a time; the manager keeps none of them.
@@ -793,9 +807,9 @@ for await (const page of sessionManager.readHistory()) {
 const entry = await sessionManager.readEntry("entry-id");
 ```
 
-`sessionManager.loadFullHistory()`, and the `{ history: "full" }` option of `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `switchSession()` and `rehydrate()`, load every stored entry into the manager instead, on every branch, so `getEntries()` and `getTree()` describe the whole session. The whole session then stays in memory; use them only when your code needs every entry resident at once. Atomic itself never calls them.
+`sessionManager.loadFullHistory()` and `{ history: "full" }` on `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `switchSession()`, and `rehydrate()` load every stored entry across every branch into memory so `getEntries()` and `getTree()` cover the whole session. Use them only when you need all entries resident at once.
 
-`SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and mutations are asynchronous. `SessionManager.inMemory()` returns an empty private memory-backed manager synchronously. When supplying entries, use `await SessionManager.inMemory(cwd, options, entries)` and keep them stable until the call resolves. Await a mutation before reading its result or starting dependent work. A resolved write is committed; a failed write rejects with the store's typed error and leaves the failed entry unpublished. New persistent sessions store their header during creation and commit setup entries immediately. There is no `flush` method. Reads remain synchronous.
+`SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and all mutations are asynchronous. `SessionManager.inMemory()` with no entries is synchronous; when supplying entries, await `SessionManager.inMemory(cwd, options, entries)` and keep the input array stable until it resolves. A resolved write is committed (there is no `flush()` method), and a failed write rejects with the store's typed error without publishing the entry. Reads remain synchronous.
 
 **SessionManager tree API:**
 
@@ -808,7 +822,7 @@ const allSessions = await SessionManager.listAll(process.cwd());
 
 // Tree traversal
 const entries = sm.getEntries();        // Entries in the current window, without the header
-const tree = sm.getTree();              // Full tree structure
+const tree = sm.getTree();              // Tree structure for the current window
 const path = sm.getPath();              // Path from root to current leaf
 const leaf = sm.getLeafEntry();         // Current leaf entry
 const entry = sm.getEntry(id);          // Get entry by ID
@@ -826,40 +840,51 @@ await sm.createBranchedSession(leafId);       // Extract path to new file
 
 > See [examples/sdk/11-sessions.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/11-sessions.ts) and [Session Format](/session-format)
 
-**Resuming on another machine:** `runtime.switchSession()` prepares a session recorded on another machine before it opens it: a matching checkout is used as-is, otherwise the session's worktree snapshot is restored into a fresh worktree and the session continues there (see [Resume on any machine](/guides/resume-on-any-machine)). `runtime.rehydrate(sessionId)` does the same when it wakes a session, except that each checkout the session worked in on this machine (a worktree this machine restored for it, or a checkout whose repository holds the commit of its latest snapshot, which also holds for a clone where Atomic captured exactly that state) stays as it is, and only the session's other checkouts are checked and restored. A session's tools resolve paths under a checkout it recorded into the worktree that checkout was restored into, after the restores of the run or session it was opened in, if any; a checkout the session restored itself follows its own restore. To resolve paths the same way in your own code, run it inside `withWorktreeRootMappings(sessionManager.getWorktreeRootMappings(), work, outer)` and call `mapPathForCwd(path, cwd)` there; `outer` is `currentWorktreeRootMappings()` read where the session was opened, and defaults to the scope the call runs in. `createAgentSession({ sessionManager })` does the same for a supplied session that recorded worktree snapshots, unless you pass `cwd` or `workspace`. It starts in the recorded checkout when that still matches the snapshot, compared under the `snapshots` option you pass; a recorded path that exists here with a different tree, for example on a runner built from the same image, is restored like a missing one. A session without snapshots, or created with `snapshots: { enabled: false }`, starts as supplied. `prepareSessionResume(sessionManager, options)` runs the step for a `SessionManager` you opened yourself and returns the session opened where it continues, with `notices` for what it did. Only the checkout the session's working directory is in must be restorable: another recorded checkout that is missing or changed never refuses the resume. It continues as it is, or is restored or left out with a `warning` notice that names its path and why; `switchSession()`, `rehydrate()` and `createAgentSession()` do not show these notices. Failures are typed, exported from `@bastani/atomic`, and carry `code`, `hint` and JSON `fields`; `serializeResumeError` and `rehydrateResumeError` carry them across processes. `isResumeFailure(error)` tells a failure the user can fix from a bug. In shared storage, `switchSession()` and `rehydrate()` bound their lookup by `RESUME_CATALOG_TIMEOUT_MS` (15 seconds).
+#### Resuming on another machine
+
+`runtime.switchSession()` prepares a session recorded on another machine before opening it: a matching checkout stays as is, while a missing or drifted checkout is restored into a fresh worktree (see [Resume on any machine](/guides/resume-on-any-machine)).
+
+- **`runtime.rehydrate(sessionId)`:** Applies the same preparation, keeping checkouts already used on this machine (a worktree restored here or a local repository holding the latest snapshot commit) and restoring only other checkouts.
+- **`createAgentSession({ sessionManager })`:** Prepares a supplied session that has worktree snapshots unless `cwd` or `workspace` is passed. A local path with a different tree is restored like a missing checkout. Sessions without snapshots or with `snapshots: { enabled: false }` start as supplied.
+- **Path mapping:** Session tools map recorded checkout paths to restored worktrees. To map paths the same way in host code, run inside `withWorktreeRootMappings(sessionManager.getWorktreeRootMappings(), work, outer)` and call `mapPathForCwd(path, cwd)` (`outer` defaults to `currentWorktreeRootMappings()`).
+- **`prepareSessionResume(sessionManager, options)`:** Runs preparation for a `SessionManager` you opened yourself and returns the opened session plus `notices`.
+- **Non-blocking secondary checkouts:** Only the session's primary checkout needs to be restorable; other missing or changed checkouts emit a warning notice rather than refusing resume (`switchSession()`, `rehydrate()`, and `createAgentSession()` do not print those notices).
+- **Shared-storage timeout:** `switchSession()` and `rehydrate()` bound catalog lookup by `RESUME_CATALOG_TIMEOUT_MS` (15 seconds).
+
+Resume errors extend `ResumeError` (`isResumeError`, `findResumeError`, `isResumeFailure`), carry `code`, `hint`, and JSON-safe `fields`, and cross processes via `serializeResumeError` and `rehydrateResumeError`.
 
 | Class | Code | When | Fields | Guard |
 |---|---|---|---|---|
-| `ResumeNotFoundError` | `not-found` | The session id matches nothing in the selected storage. `reason` is `local-storage-not-joined` (storage only this machine reads; the hint is `atomic storage join <url> --token-file <path>`, after `atomic team leave` on a machine joined with `atomic team join`) or `shared-miss`. | `subject`, `id`, `reason`, `storage` | `isResumeNotFoundError` |
-| `ResumePreconditionError` | `preconditions-unmet` | Checked before anything is opened or written; lists every unmet piece in one pass. | `entryPoint` (`cli`, `switch-session`, `create-agent-session` or `rehydrate`), `problems[]` of `{ code, subject, why, fix, checkout? }` (`checkout` is the path of the checkout a problem belongs to) with codes `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`. With `git-unavailable`, `cause` is the `GitUnavailableError` or `GitProvisionError` that says why no Git could be started or provisioned | `isResumePreconditionError` |
-| `ResumeCatalogUnavailableError` | `catalog-unavailable` | The storage could not be reached during the lookup. `retryable: true`; nothing was changed. | `subject` (`session` or `run`), `id`, `storage`, `phase` | `isResumeCatalogUnavailableError`, `isRetryableResumeError` |
-| `ResumeCatalogTimeoutError` | `catalog-timeout` | The storage did not answer the lookup within 15 seconds. `retryable: true`; nothing was changed. | `subject` (`session` or `run`), `id`, `storage`, `phase`, `timeoutMs`, `elapsedMs` | `isResumeCatalogTimeoutError`, `isRetryableResumeError` |
+| `ResumeNotFoundError` | `not-found` | Session ID matches nothing in selected storage (`reason`: `local-storage-not-joined` or `shared-miss`). | `subject`, `id`, `reason`, `storage` | `isResumeNotFoundError` |
+| `ResumePreconditionError` | `preconditions-unmet` | Unmet preconditions detected before opening (`problems[]` with codes `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`). | `entryPoint` (`cli`, `switch-session`, `create-agent-session`, or `rehydrate`), `problems[]` (`{ code, subject, why, fix, checkout? }`) | `isResumePreconditionError` |
+| `ResumeCatalogUnavailableError` | `catalog-unavailable` | Storage unreachable during lookup (`retryable: true`). | `subject` (`session` or `run`), `id`, `storage`, `phase` | `isResumeCatalogUnavailableError`, `isRetryableResumeError` |
+| `ResumeCatalogTimeoutError` | `catalog-timeout` | Storage lookup exceeded 15 seconds (`retryable: true`). | `subject` (`session` or `run`), `id`, `storage`, `phase`, `timeoutMs`, `elapsedMs` | `isResumeCatalogTimeoutError`, `isRetryableResumeError` |
 
-All of them extend `ResumeError` (`isResumeError`, `findResumeError`), and cross worker and process boundaries as themselves (`serializeResumeError`, `rehydrateResumeError`). A snapshot that cannot be restored stays a `WorkspaceDriftError` with the restore failure as its `cause`. A blueprint never stops a resume, so none of these errors is raised for one; see the blueprint errors below. Cancelling a resume through its `AbortSignal` rejects with the signal's reason, never with one of these errors.
+An unrebuildable snapshot produces a `WorkspaceDriftError` carrying the restore failure as `cause`. Blueprint failures never reject resume (see below), and cancelling via `AbortSignal` rejects with the signal's reason.
 
 #### Missing session directory
 
-`runtime.switchSession()` and `runtime.importFromJsonl()` check a session's recorded working directory, whether the session lives in a JSONL file or in database storage. They reject with a `MissingSessionCwdError` when it does not exist on this machine and no worktree snapshot restored one. Nothing was opened, and an import leaves no copy in storage.
+`runtime.switchSession()` and `runtime.importFromJsonl()` check the session's recorded working directory across both JSONL and database storage. They reject with `MissingSessionCwdError` when that directory does not exist on this machine and no worktree snapshot restored one, leaving storage unchanged.
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
-| `MissingSessionCwdError` | `session-cwd-missing` | The session's working directory does not exist. `retryable` is `false`. | `sessionCwd` (the recorded directory), `fallbackCwd` (the runtime's directory), `sessionFile` (only for a session kept in a file), `hint` | Retry with `{ cwdOverride }` (`switchSession`) or `importFromJsonl(path, cwdOverride)` to run the session in another directory, or fork it there with `SessionManager.forkTo(cwd, store)`. |
+| `MissingSessionCwdError` | `session-cwd-missing` | The session's working directory does not exist (`retryable: false`). | `sessionCwd`, `fallbackCwd`, `sessionFile` (JSONL only), `hint` | Retry with `{ cwdOverride }` (`switchSession`) or `importFromJsonl(path, cwdOverride)`, or fork there with `SessionManager.forkTo(cwd, store)`. |
 
-`isMissingSessionCwdError(error)` recognizes it, including an error that crossed a process boundary as a plain object with the same `name`, `code` and `issue`. `serializeMissingSessionCwdError(error)` returns a `SerializedMissingSessionCwdError`, and `rehydrateMissingSessionCwdError(serialized)` rebuilds it; `isSerializedMissingSessionCwdError(value)` checks an envelope before you do. The RPC client does this for the `switch_session` and `import_session` commands, so the error reaches the host as itself. Its message names both directories and is the text print and RPC modes show. Interactive mode answers it with a prompt to continue in the current directory, fork the session there, or cancel; see [Sessions](/sessions#resuming-and-deleting-sessions).
+Use `isMissingSessionCwdError(error)`, `serializeMissingSessionCwdError(error)`, `isSerializedMissingSessionCwdError(value)`, and `rehydrateMissingSessionCwdError(serialized)` across process boundaries. `RpcClient` rehydrates this error for `switch_session` and `import_session`. Interactive mode prompts to continue in the current directory, fork there, or cancel (see [Sessions](/sessions#resuming-and-deleting-sessions)).
 
 #### Blueprint errors
 
-A blueprint step that fails, a blueprint that is invalid, or a build that cannot read its ledger never rejects a resume. The error is carried in the build outcome (`runBlueprintBuild`, `setUpResumedBlueprints`) and reported as a warning. All of them extend `BlueprintError` (`isBlueprintError`, `findBlueprintError`) and cross worker and process boundaries as themselves (`serializeBlueprintError`, `rehydrateBlueprintError`). None is retryable.
+Blueprint errors never reject a resume; `runBlueprintBuild` and `setUpResumedBlueprints` return them in the build outcome as warnings. All extend `BlueprintError` (`isBlueprintError`, `findBlueprintError`, `serializeBlueprintError`, `rehydrateBlueprintError`) and are not retryable.
 
 | Class | Code | When | Fields | Guard |
 |---|---|---|---|---|
-| `BlueprintInvalidError` | `blueprint-invalid` | A blueprint file breaks the schema or a rule. `reason` names the rule, and `rule` carries Devin's own text for those it words, such as `'uses' steps are not supported in maintenance sections`. | `blueprint`, `scope`, `reason`, `rule`, `subject` | `isBlueprintInvalidError` |
-| `BlueprintStepFailedError` | `blueprint-step-failed` | A step exited non-zero, was stopped by a signal, or could not be started. The rest of its blueprint did not run. | `blueprint`, `scope`, `section`, `index`, `step`, `exitStatus`, `signal`, `logPath` | `isBlueprintStepFailedError` |
-| `BlueprintStepTimedOutError` | `blueprint-step-timed-out` | A step ran for its 3-hour limit and was stopped. | the step fields, `logPath`, `timeoutMs`, `elapsedMs`, `phase` | `isBlueprintStepTimedOutError` |
-| `BlueprintUsesUnsupportedError` | `blueprint-uses-unsupported` | A `uses` step names an action Atomic cannot run (`docker-action`, `unknown-action-type`, `action-not-found`, `action-fetch-failed`, `action-metadata-invalid`, `node-unavailable`, `required-input-missing`, `unsupported-expression`). | the step fields, `uses`, `reason`, `detail`, `logPath` | `isBlueprintUsesUnsupportedError` |
-| `BlueprintBuildFailedError` | `blueprint-build-failed` | The build itself failed, not a step: a blueprint file or the build ledger could not be read or written. | `phase`, `detail` | `isBlueprintBuildFailedError` |
+| `BlueprintInvalidError` | `blueprint-invalid` | A blueprint file breaks the schema or a rule (`reason` names the rule; `rule` carries the validation rule text, such as `'uses' steps are not supported in maintenance sections`). | `blueprint`, `scope`, `reason`, `rule`, `subject` | `isBlueprintInvalidError` |
+| `BlueprintStepFailedError` | `blueprint-step-failed` | A step exited nonzero, stopped on a signal, or failed to start; remaining steps in that blueprint did not run. | `blueprint`, `scope`, `section`, `index`, `step`, `exitStatus`, `signal`, `logPath` | `isBlueprintStepFailedError` |
+| `BlueprintStepTimedOutError` | `blueprint-step-timed-out` | A step exceeded its 3-hour limit and was stopped. | step fields, `logPath`, `timeoutMs`, `elapsedMs`, `phase` | `isBlueprintStepTimedOutError` |
+| `BlueprintUsesUnsupportedError` | `blueprint-uses-unsupported` | A `uses` step names an unsupported action (`docker-action`, `unknown-action-type`, `action-not-found`, `action-fetch-failed`, `action-metadata-invalid`, `node-unavailable`, `required-input-missing`, `unsupported-expression`). | step fields, `uses`, `reason`, `detail`, `logPath` | `isBlueprintUsesUnsupportedError` |
+| `BlueprintBuildFailedError` | `blueprint-build-failed` | A blueprint file or build ledger could not be read or written. | `phase`, `detail` | `isBlueprintBuildFailedError` |
 
-### Settings Management
+### Settings management
 
 ```typescript
 import { createAgentSession, SettingsManager, SessionManager } from "@bastani/atomic";
@@ -890,8 +915,8 @@ const { session } = await createAgentSession({
 ```
 
 **Static factories:**
-- `SettingsManager.create(cwd?, agentDir?)` - Load from files
-- `SettingsManager.inMemory(settings?)` - No file I/O
+- `SettingsManager.create(cwd?, agentDir?)`: load from files.
+- `SettingsManager.inMemory(settings?)`: no file I/O.
 
 **Project-specific settings:**
 
@@ -933,7 +958,7 @@ const themes = loader.getThemes();
 const contextFiles = loader.getAgentsFiles().agentsFiles;
 ```
 
-Package MCP servers from `DefaultResourceLoader` remain available through the session's `mcp` tool when the factory adds the shipped MCP extension. Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
+Package MCP servers discovered by `DefaultResourceLoader` connect through the bundled MCP client extension and register their tools as `mcp__<server>__<tool>` (defaulting to `codemode` exposure). Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
 
 ### Copying extension handlers in `extensionsOverride`
 
@@ -957,7 +982,7 @@ During interactive startup, deferred resource loading can run discovery twice. B
 
 Creating `(...args) => handler(...args)` on every load registers a new callback each time, so you can see two startup errors. Keep separate callbacks when your override changes the handler, adds a step that can fail, or forwards on behalf of separate installations. Don't cache a previous load's handler or share a forwarder by extension name.
 
-## Return Value
+## Return value
 
 `createAgentSession()` returns:
 
@@ -983,7 +1008,7 @@ interface LoadExtensionsResult {
 }
 ```
 
-## Run Modes
+## Run modes
 
 The SDK exports run mode utilities for building custom interfaces on top of `createAgentSession()`:
 
@@ -1168,13 +1193,18 @@ Use the asynchronous helpers in a host that must keep accepting input while it r
 | `appendDebugRecordAsync`, `reportDebugAsync`, `flushDebugLog` | Append debug records off the host thread, or wait for queued records before inspecting their files |
 | `containProcessTree`, `processTreeEnded`, `killProcessTree` | Contain a child tree on Windows, wait for a contained tree to end, or terminate an owned process group across platforms |
 
-Await each operation before starting work that depends on its result. MCP edits of one file are queued. A synchronous MCP edit rejects before changing a file while an asynchronous edit is pending; await that edit before retrying, or use the asynchronous forms throughout. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai/compat` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`. Use process-containment helpers only with child process IDs your integration owns. `containProcessTree()` returns `undefined` off Windows; release a retained containment before closing it on normal completion, or terminate it before closing it on cancellation.
+Await each operation before starting work that depends on its result:
+
+- MCP edits of one file are queued. A synchronous MCP edit rejects while an asynchronous edit is pending; await the pending edit or use asynchronous helpers throughout.
+- `emptySkillCatalog()` is synchronous because it performs no I/O, and `savedProjectTrust()` remains synchronous for existing callers.
+- `@bastani/atomic-ai/compat` exports `getEnvApiKeyAsync()` alongside `getEnvApiKey()`.
+- Use process-containment helpers only on child PIDs your integration owns. `containProcessTree()` returns `undefined` off Windows; release containment before closing on normal completion, or terminate before closing on cancellation.
 
 ## Private temp directories
 
-`ensurePrivateTempDirAsync(...segments)` creates or reuses a directory that only the current account can use, and returns its path. `assertPrivateDirectoryAsync(path)` checks that an existing `path` is a real directory owned by the current account that no other account can open. It rejects with `TempDirRefusedError` for a security refusal. File system errors while inspecting the path, such as `ENOENT` for a missing path, propagate unchanged. Relative paths are resolved against the working directory when the call starts. Neither blocks the main thread.
+`ensurePrivateTempDirAsync(...segments)` creates or reuses an account-private directory and returns its path. `assertPrivateDirectoryAsync(path)` verifies that `path` is a real directory owned by the current account that no other account can open, rejecting with `TempDirRefusedError` on security refusal. Filesystem errors such as `ENOENT` propagate unchanged, and relative paths resolve against the current working directory.
 
-On Windows, the native module reads the directory's owner and access list directly. If the native reader is unavailable or cannot read the directory, an asynchronous PowerShell check provides the fallback. Prefer the asynchronous forms to wait for either reader. The synchronous `ensurePrivateTempDir()` and `assertPrivateDirectory()` never wait for that read. They accept a directory already checked in this process. Otherwise they start the check in the background: `assertPrivateDirectory()` throws `TempDirRefusedError` with the reason `its ownership is still being verified`, and `ensurePrivateTempDir()` returns another private directory. A later call accepts the directory once the check passes.
+On Windows, the native module reads directory ownership and access lists directly, falling back to an asynchronous PowerShell check if unavailable. Prefer the asynchronous functions to wait for verification. Synchronous `ensurePrivateTempDir()` and `assertPrivateDirectory()` never wait: they accept directories already verified in this process and otherwise start background verification (`assertPrivateDirectory()` throws `TempDirRefusedError` with `its ownership is still being verified`, and `ensurePrivateTempDir()` allocates another private directory).
 
 ## Exports
 
@@ -1290,7 +1320,7 @@ type SessionStartConfigSource
 type SessionStartConfigReason
 type SerializedSessionStartError
 type SerializedSessionStartCause
-// Finished task retention (see "Owner-bound task supervisor (S1)")
+// Finished task retention (see "Owner-bound task supervisor")
 FINISHED_TASK_RETENTION
 TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvictedError
 type TaskEvictedErrorCode, type TaskEvictedErrorFields
@@ -1377,8 +1407,8 @@ type SubscriptionErrorCode, type SubscriptionConfigReason, type SubscriptionSetu
 // Tool factories
 createCodingTools
 createReadOnlyTools
-createReadTool, createBashTool, createEditTool, createWriteTool
-createGrepTool, createFindTool, createLsTool
+createReadTool, createBashTool, createPowerShellTool, createKillTool
+createEditTool, createWriteTool, createSearchTool, createFindTool, createLsTool
 
 // Edit and write errors (see Built-in tools: Edit and write errors)
 EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorError, FileToolAbortedError
@@ -1402,74 +1432,95 @@ type Tool
 
 For extension types, see [Extensions](/extensions) for the full API.
 
-## Owner-bound task supervisor (S1)
+<a id="owner-bound-task-supervisor-s1" />
 
-For trusted custom hosts, the package exports `AgentTaskHost` and its integration types, not the raw native supervisor. Bind the actual host scope and a mandatory `authorizeLaunch` guard. Never accept ownership or authorization from model-supplied input or reconstruct a lease from a task ID or saved history.
+## Owner-bound task supervisor
 
-`startAgentTask(intent, operation, runnerFactory)` returns a Result containing `{taskId, lease}` after setup. The factory receives the original `AbortSignal`, reference, and `reportActivity` context. Return separate `result` and `cleanup` promises; report cleanup only when it is confirmed. Replaying the same operation reuses execution without calling another factory.
+For trusted custom hosts, the package exports `AgentTaskHost` and its integration types rather than the raw native supervisor. Bind the host scope and a mandatory `authorizeLaunch` guard. Never accept ownership or authorization from model input or reconstruct a lease from a task ID or saved history.
 
-Use `observeAgentLaunch(taskId, policy?)`, `waitForTask`, `resolveTask`, `cancelTask`, `watchOwnerTasks`, and `close` within the bound owner. Observation returns Result/WaitOutcome. A launch's observation always returns once it is registered, with reason `explicit` for `{ kind: "background" }` and `default-background` without a policy: subagents run in the background. `waitForTask(taskId, budgetMs?, onRegistered?, signal?)` waits for the task up to `budgetMs`, the owner's agent budget when omitted; aborting `signal` ends the wait at once with `ObserverCancelled`. Yielding or cancelling an observation does not stop execution. Cancellation and cleanup failures remain observable; owner close may remain pending until your runner acknowledges cleanup.
+`startAgentTask(intent, operation, runnerFactory)` returns a Result containing `{ taskId, lease }` after setup. The factory receives the original `AbortSignal`, reference, and `reportActivity` context, and returns separate `result` and `cleanup` promises (report cleanup only once confirmed). Replaying the same operation reuses execution without calling another factory.
 
-An owner keeps its 256 most recently finished tasks (`FINISHED_TASK_RETENTION`): a task is finished once its result settled and its cleanup was reaped. Queued, running and stopping tasks, and tasks whose cleanup is quarantined or failed, are never evicted. When more tasks finish, the one that finished longest ago is evicted: `watchOwnerTasks` delivers a `task-evicted` event and later snapshots omit it. While the owner is open or closing, a finished task is evicted only after every live subscription of its owner has drained it and then drained again, so no subscriber misses a settlement. Atomic's sessions also hold each finished task until its completion notice has been delivered, so the notice can still read the task's title, transcript excerpt and output; an owner then keeps more than 256 records until those notices are out. A custom host that reads a finished task later can do the same with `retainTaskRecord(taskId)` and `releaseTaskRecord(taskId)` on `AgentTaskHost`; both leave a task the owner does not keep alone. `retainTaskRecord` returns a Result: a task the owner already evicted takes no hold and refuses with `TaskEvicted`, also when the eviction lands while the call runs, so hold a task from `onTaskSettled` if you need its record. A closing owner's holds no longer count. Closing an owner keeps every task the close settled until the closing host has drained them all, so `onTaskSettled` runs for each one, even past the retention. Only then does `closeTaskOwner` trim the closed owner to its 256 most recently finished tasks, without waiting for other subscriptions, and its subscriptions receive the final retained set before stopping. A settled wait registered before eviction still returns its outcome. Operation replay reuses a task only while it is kept; afterwards the same operation starts a new one.
+Use `observeAgentLaunch(taskId, policy?)`, `waitForTask`, `resolveTask`, `cancelTask`, `watchOwnerTasks`, and `close` within the bound owner:
 
-`resolveTask`, `waitForTask`, `cancelTask`, `retainTaskRecord` and output reads of an evicted task refuse with code `TaskEvicted` instead of `UnknownTask`; the refusal's `message` is the `TaskEvictedError` message. The `wait` and `kill` tools throw a `TaskToolError` with code `TaskEvicted` whose `cause` is a `TaskEvictedError`.
+- Observation returns a `Result` / `WaitOutcome`. Launch observation returns once registered, with reason `explicit` for `{ kind: "background" }` and `default-background` without a policy (subagents run in the background).
+- `waitForTask(taskId, budgetMs?, onRegistered?, signal?)` waits up to `budgetMs` (or the owner's agent budget if omitted); aborting `signal` ends the wait immediately with `ObserverCancelled`.
+- Yielding or cancelling an observation does not stop execution. Cancellation and cleanup failures stay observable, and owner close can stay pending until the runner acknowledges cleanup.
+
+### Finished task retention and eviction
+
+An owner keeps its 256 most recently finished tasks (`FINISHED_TASK_RETENTION`), counting a task as finished once both its result settles and its cleanup is reaped:
+
+- Queued, running, stopping, quarantined-cleanup, and failed-cleanup tasks are never evicted.
+- Beyond 256 finished tasks, the oldest finished task is evicted, emitting `task-evicted` on `watchOwnerTasks` and omitting it from later snapshots.
+- While open or closing, a finished task is evicted only after live owner subscriptions have drained it. Atomic sessions also hold each finished task until its completion notice is delivered.
+- Custom hosts can hold and release finished records with `retainTaskRecord(taskId)` and `releaseTaskRecord(taskId)` on `AgentTaskHost`. Hold from `onTaskSettled` if needed, because `retainTaskRecord` returns `TaskEvicted` once a task is evicted.
+- On owner close, newly settled tasks stay available until `onTaskSettled` finishes for all of them; `closeTaskOwner` then trims the closed owner to its 256 most recent finished tasks and sends subscriptions the final retained set before stopping.
+- A settled wait registered before eviction still returns its outcome. Operation replay reuses a task only while it is retained; afterward the same operation starts a new task.
+
+`resolveTask`, `waitForTask`, `cancelTask`, `retainTaskRecord`, and output reads for an evicted task fail with `TaskEvicted` (carrying the `TaskEvictedError` message). The `wait` and `kill` tools throw `TaskToolError` with code `TaskEvicted` and a `TaskEvictedError` `cause`.
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
-| `TaskEvictedError` | `task_evicted` | A task id or lease names a finished task its owner no longer keeps, because `retainedFinishedTasks` or more of its tasks finished after it. `retryable` is `false`. | `taskId`, `retainedFinishedTasks`, `hint` | Use the result the conversation already reported; a subagent's transcript stays in its own saved session. A shell command's full output is no longer available. |
-| `TaskToolError` | `UnknownTask`, `ScopeMismatch`, `TaskEvicted`, `OwnerClosed`, `EnvironmentClosing`, `ObserverCancelled`, `OutputUnavailable`, `CleanupFailed`, `StaleGeneration` | A `wait` or `kill` of a shell task failed: the id names no task of this session, another session's task, an evicted task, a closed owner, or Atomic is shutting down; the wait was cancelled; the output or the stop could not be read or confirmed; or the task list changed while it was read. Only `StaleGeneration` is `retryable`. | `fields.taskId`, `hint` (absent for `EnvironmentClosing`), `retryable`; `cause` is a `TaskEvictedError` for `TaskEvicted` | Follow `hint`: run `/tasks` to see the current tasks, run the command again for a closed owner, or retry a `StaleGeneration`. |
+| `TaskEvictedError` | `task_evicted` | A task ID or lease names an evicted finished task (`retryable: false`). | `taskId`, `retainedFinishedTasks`, `hint` | Use the result already reported in the conversation; subagent transcripts remain in their saved sessions. |
+| `TaskToolError` | `UnknownTask`, `ScopeMismatch`, `TaskEvicted`, `OwnerClosed`, `EnvironmentClosing`, `ObserverCancelled`, `OutputUnavailable`, `CleanupFailed`, `StaleGeneration` | A shell `wait` or `kill` failed (unknown, foreign, or evicted ID; closed owner; shutdown; cancelled wait; unreadable output or unconfirmed stop; concurrent list change). Only `StaleGeneration` is `retryable`. | `fields.taskId`, `hint` (absent for `EnvironmentClosing`), `retryable`, `cause` (`TaskEvictedError` for `TaskEvicted`) | Follow `hint`: run `/tasks`, re-run the command for a closed owner, or retry `StaleGeneration`. |
 
-`isTaskToolError(value)` checks the class and then `name` and `code`. `rehydrateTaskToolError(value)` rebuilds the class, with an evicted task's `TaskEvictedError` cause, from its serialized form (`toJSON()`: `name`, `code`, `message`, `hint`, `retryable`, `fields`, `cause`), such as a detached shell wait's `details.error`, and returns `undefined` for a copy without a known `code` or a string `fields.taskId`.
-
-`isTaskEvictedError(value)` checks the class first and then `name` and `code`, so it also matches a copy from another realm or process. `findTaskEvictedError(error)` returns the `TaskEvictedError` that is the error or sits in its `cause` chain within eight links, such as the cause of a `TaskToolError`, or `undefined`. `rehydrateTaskEvictedError(value)` rebuilds the class from a copy such as `JSON.parse(JSON.stringify(error))`, and returns `undefined` for a copy without a string `taskId` or a positive integer `retainedFinishedTasks`.
+Use `isTaskToolError(value)` and `rehydrateTaskToolError(value)` to inspect and restore serialized `TaskToolError` payloads (such as a detached shell wait's `details.error`). Use `isTaskEvictedError(value)`, `findTaskEvictedError(error)` (searches up to 8 cause links), and `rehydrateTaskEvictedError(value)` for `TaskEvictedError`. Both rehydrators return `undefined` when required fields are missing or invalid.
 
 ### Supervised command SDK
 
 For shell integration, use the exported Bash and PowerShell factories with a trusted `taskOwner` binding. Execution timeout and observation budget are separate. The automatic command wait is normally 10000 ms; `until-settled` waits for completion. A yielded command remains owned, and later waits can read retained output with explicit omission markers.
 
-Without a supported owner, explicit background execution is refused. Native Windows legacy WSL `bash.exe` is not supported for owned commands; run Atomic inside WSL instead. See [waiting for shell tasks](#waiting-for-existing-shell-tasks) and [Background tasks](/background-tasks) for caller usage.
+Without a supported owner, explicit background execution is refused. Native Windows legacy WSL `bash.exe` is not supported for owned commands; run Atomic inside WSL instead. See [Waiting for existing shell tasks](#waiting-for-existing-shell-tasks) and [Background tasks](/background-tasks) for caller usage.
 
 ### Session-local task prompts
 
-`heldPrompts()` returns the process-local `HeldPrompts` registry used by interactive task views. A `HeldPrompt` has `sessionId`, `promptId`, `kind`, `question`, `title` and `createdAt`, plus the applicable `message`, `choices`, `placeholder`, `initial` or questionnaire `params`. Timed dialogs also have an absolute `expiresAt` timestamp in milliseconds. These prompts are not persisted across process restarts.
+`heldPrompts()` returns the process-local `HeldPrompts` registry used by interactive task views. A `HeldPrompt` has `sessionId`, `promptId`, `kind`, `question`, `title`, and `createdAt`, plus the applicable `message`, `choices`, `placeholder`, `initial`, or questionnaire `params`. Timed dialogs also carry an absolute `expiresAt` timestamp in milliseconds. Held prompts do not persist across restarts.
 
-- `current(sessionId)` reads that session's first pending prompt. Concurrent requests queue in arrival order.
-- `subscribe(listener)` calls `listener(sessionId)` when that session's queue changes and returns an unsubscribe function.
-- `answer({ sessionId, promptId }, { value })` returns `{ ok: true }` only for the current matching prompt and a valid `HeldPromptValue`. A refused answer returns `{ ok: false, reason }` without settling the prompt. Values are booleans for confirmations, literal option labels for selections, strings for text dialogs and `QuestionnaireResult` for questionnaires. There is no typed-reply parser.
-- `cancel({ sessionId, promptId })` cancels only the current matching prompt and returns whether it did so. It never approves a confirmation.
-- `isCurrent(route)` and `routeNamesPrompt(route, prompt)` check both identities. Never answer whichever session happens to be visible without checking its route.
-- `hold(prompt, signal, cancelValue)` lets an input adapter enqueue a prompt and await its validated answer. It adds `createdAt`; supply a unique `promptId` and the asking `sessionId`. Aborting `signal` removes that request, including one still queued. The adapter owns timeout cancellation; `expiresAt` supplies countdown display, not a second timer.
+- `current(sessionId)`: reads that session's first pending prompt (concurrent requests queue in arrival order).
+- `subscribe(listener)`: calls `listener(sessionId)` when that session's queue changes and returns an unsubscribe function.
+- `answer({ sessionId, promptId }, { value })`: returns `{ ok: true }` only for the current matching prompt and a valid `HeldPromptValue` (booleans for confirmations, literal labels for selections, strings for text dialogs, `QuestionnaireResult` for questionnaires). Refused answers return `{ ok: false, reason }` without settling the prompt.
+- `cancel({ sessionId, promptId })`: cancels only the current matching prompt and never approves a confirmation.
+- `isCurrent(route)` and `routeNamesPrompt(route, prompt)`: verify both identities before answering.
+- `hold(prompt, signal, cancelValue)`: enqueues a prompt and awaits its validated answer, adding `createdAt`. Aborting `signal` removes the request even while queued; the adapter owns timeout cancellation.
 
-`HeldPromptKind`, `HeldPromptAnswer` and `HeldPromptResult` describe these calls. `HeldPrompts` is exported as a type; use `heldPrompts()` to obtain the registry. A view can preserve its unsent form state while navigating away, but should discard it once its prompt is no longer current.
+`HeldPromptKind`, `HeldPromptAnswer`, `HeldPromptResult`, and `HeldPrompts` are exported types. Discard unsent form state once a prompt is no longer current.
 
-`watchHeldPromptAttention(sessionId, report)` maps the current prompt to task `input-needed` activity, clears attention when it settles and returns a stop function that unsubscribes and clears its last report. `isHeldPromptInput(input)` distinguishes Atomic's held-prompt adapter from an SDK host's adapter when forwarding child bindings. `isPresentationHostInput(input)` identifies a fallback adapter for a launching chat's presentation, so hosts can discard that adapter without discarding explicitly supplied SDK input.
+- `watchHeldPromptAttention(sessionId, report)`: maps the current prompt to task `input-needed` activity and returns a stop function.
+- `isHeldPromptInput(input)` and `isPresentationHostInput(input)`: distinguish Atomic's held-prompt adapter and presentation fallback adapter from explicit SDK `humanInput` adapters.
 
-Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`.
+Only Atomic's interactive hosts with a task inspector hold child prompts automatically. Plain RPC and SDK `uiContext` hosts continue presenting dialogs directly; custom hosts needing session-local forms should supply `humanInput` and route by `HostInputOptions.sessionId`.
 
 ### Task transcript references
 
-Custom live transcript sources should implement `getEntrySeq(id)` and `entryReceipt(message)` for bounded paging across compaction. If a source provides neither and the chat holds a stateful card with no saved occurrence, the chat keeps the original live transcript rather than discarding that card or matching it to a lookalike.
+Custom live transcript sources should implement `getEntrySeq(id)` and `entryReceipt(message)` for bounded paging across compaction. Without either, a chat holding an unsaved stateful card keeps the original live transcript rather than discarding or mis-matching the card.
 
-Task inspectors show references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and their output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
+Task inspectors display references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and non-rendered entries are excluded. Unbound or empty histories report `Transcript unavailable`, and saved history grants no authority to restart or control a task.
 
-`readTaskTranscript(task, cursor?)` returns the same task-scoped item references and continuation cursors for saved and live tasks. The first occurrence of a repeated public item ID wins. An indexed store checks candidate records by sequence. With an archive that lacks this index, an explicit reference lookup can scan earlier metadata in bounded pages; the work is proportional to the history before the requested window. The chat's ordinary scroll and repaint do not run that scan. Reference pages contain at most 100 items and normally at most 1 MiB of identifiers. For compatibility, if a requested item has an identifier larger than this, it is returned whole, by itself: `source.entryId` remains the real string, not a placeholder. Its unrelated message text, arguments and results are not assembled.
+`readTaskTranscript(task, cursor?)` returns task-scoped item references and continuation cursors for both saved and live tasks:
 
-`TaskViewSource.sendTaskMessage(id, text, lane?)` gives text typed into an agent task's transcript to that task's own session, as the main chat gives typed text to its session. `lane` is `"steer"` (the default) or `"followUp"` (`TaskMessageLane`). While the task works, the text waits in its session's steering or follow-up queue and is delivered raw at that lane's boundary; a task that is not working takes it as its next prompt, and a finished subagent is resumed with it. The call resolves once the session accepted the text, not when the model reads it. A task view that cannot message tasks omits the method. `clearTaskQueue(id)` takes back the typed messages still queued (`QueuedTaskMessages`, `{ steering, followUp }` in order) for the editor; messages from other agents stay queued.
+- The first occurrence of a repeated public item ID wins.
+- Indexed stores check candidate records by sequence; unindexed archives scan earlier metadata in bounded pages only on explicit lookup (never during normal scroll or repaint).
+- Reference pages hold at most 100 items and normally at most 1 MiB of identifiers (oversized single identifiers are returned whole with their real `source.entryId` without assembling unrelated text, arguments, or results).
 
-A custom `TaskTranscriptSource` takes typed messages by implementing `queueMessage(text, lane)`, which resolves with a `TaskMessageDelivery` once its session accepted the text, and `clearQueue()`. A source without `queueMessage` but with `sendMessage(text)` and an Intercom target keeps receiving typed messages through `sendMessage`, as before; one with neither refuses them with `messages-unsupported`.
+#### Steering and pausing agent tasks
 
-`TaskViewSource.pauseTask(id)` pauses an agent task's turn, as Esc does while viewing a subagent, and resolves with the typed messages it took back for the editor; the task stays running and holds everything else queued until `resumeTask(id)` releases it, which the prompt does before sending the reader's next message. A `TaskTranscriptSource` supports this with `pauseTurn()` and `resumeTurn()`; without `pauseTurn()`, `pauseTask` ends the turn as `interruptTurn()` does and takes nothing back. When the pause would not survive a restart, for example because its record could not be saved, the result also carries `warning`, which the prompt shows.
+`TaskViewSource` and `TaskTranscriptSource` expose optional methods for sending messages to, clearing queues on, and pausing or resuming running agent tasks:
 
-A failure rejects with a `TaskMessageError`:
+- **`TaskViewSource.sendTaskMessage(id, text, lane?)`:** Delivers typed text directly to an agent task's session on `lane` (`"steer"` default or `"followUp"`, `TaskMessageLane`). While busy, text waits in the task's queue and is delivered raw at that lane's boundary; idle tasks start a turn, and finished subagents resume. Resolves once the session accepts the text.
+- **`TaskViewSource.clearTaskQueue(id)`:** Removes queued typed messages (`QueuedTaskMessages`: `{ steering, followUp }`) for the editor without removing messages from other agents.
+- **`TaskViewSource.pauseTask(id)` and `resumeTask(id)`:** `pauseTask(id)` interrupts the task's active turn (like `Esc` in a subagent chat), returns removed typed messages (plus an optional `warning` if pause state could not be persisted), and holds remaining queued work until `resumeTask(id)` releases the queue before the next prompt.
+- **`TaskTranscriptSource` hooks:** Implement `queueMessage(text, lane)`, `clearQueue()`, `pauseTurn()`, `resumeTurn()`, `turnPaused()`, and `getQueuedMessages()` on custom transcript sources. Sources without `queueMessage` fall back to `sendMessage(text)` over Intercom if available, and otherwise refuse with `messages-unsupported`. Without `pauseTurn()`, `pauseTask` interrupts the turn via `interruptTurn()` without taking queued messages back.
+
+Failures reject with `TaskMessageError` (or `TaskMessageTimeoutError`):
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
-| `TaskMessageError` | `task-unavailable` | The id names no task the view keeps. `retryable` is `false`. | `taskId`, `hint` | Run `/tasks` to see the current tasks. |
-| `TaskMessageError` | `messages-unsupported` | The task's session cannot take typed messages: its transcript source has neither `queueMessage` nor `sendMessage` with an Intercom target, such as a shell. `retryable` is `false`. | `taskId`, `hint` | Message agent tasks whose session takes typed messages. |
-| `TaskMessageError` | `delivery-refused` | The agent's session did not take the message, for example because it is gone or a finished subagent could not be resumed. `retryable` is `true`: the message did not arrive. | `taskId` and `hint`; `target` (the agent's Intercom name) and `detail` (the reason) when known | Check that the agent is still available, then send again. |
-| `TaskMessageTimeoutError` | `delivery-unconfirmed` | The task's session did not confirm the message within `timeoutMs` (a custom `queueMessage` resolved with `reason: "unconfirmed"`). It may still arrive, so `retryable` is `false`. | `taskId`, `target`, `timeoutMs`, `elapsedMs`, `phase` (`delivery-acknowledgement`), `hint` | Check the transcript before sending the message again. |
-| `TaskMessageError` | `delivery-unconfirmed` | The session failed without an answer: `queueMessage` threw or reported the message lost, for example because its process went away or answered something unexpected or unreadable. The message may have arrived, so `retryable` is `false`. | `taskId`, `target` when known, `detail`, `hint`; `cause` when the channel threw | Check the transcript before sending the message again. |
+| `TaskMessageError` | `task-unavailable` | ID names no task held by the view (`retryable: false`). | `taskId`, `hint` | Run `/tasks` to list current tasks. |
+| `TaskMessageError` | `messages-unsupported` | Task cannot receive typed messages (for example, a shell task; `retryable: false`). | `taskId`, `hint` | Send messages only to agent tasks that accept typed input. |
+| `TaskMessageError` | `delivery-refused` | Task session did not accept the message (`retryable: true`). | `taskId`, `hint`, `target?`, `detail?` | Verify the agent is still available, then retry. |
+| `TaskMessageTimeoutError` | `delivery-unconfirmed` | Session did not confirm within `timeoutMs` (`retryable: false`; message may still arrive). | `taskId`, `target`, `timeoutMs`, `elapsedMs`, `phase` (`delivery-acknowledgement`), `hint` | Check the transcript before resending. |
+| `TaskMessageError` | `delivery-unconfirmed` | Channel threw or dropped without confirming (`retryable: false`; message may have arrived). | `taskId`, `target?`, `detail`, `hint`, `cause?` | Check the transcript before resending. |
 
-`isTaskMessageError(value)` and `isTaskMessageTimeoutError(value)` check the class first and then `name` and `code`. `findTaskMessageError(error)` returns the `TaskMessageError` in an error's `cause` chain, and `isRetryableTaskMessageError(error)` is `true` when a `TaskMessageError` there is `retryable`. `toJSON()` gives the serialized form (`name`, `code`, `message`, `hint`, `retryable`, `fields`, `cause`), and `rehydrateTaskMessageError(value)` rebuilds the class from it; a copy without a known `code` or a string `fields.taskId` gives `undefined`.
+Use `isTaskMessageError(value)`, `isTaskMessageTimeoutError(value)`, `findTaskMessageError(error)`, `isRetryableTaskMessageError(error)`, and `rehydrateTaskMessageError(value)` (restoring from `toJSON()`, or returning `undefined` for invalid payloads).
 
-An agent task's chat is a `ChatSessionHost`, which takes its keys as the main chat's prompt does. It queues a follow-up and brings the queued messages back only on the keys bound to `app.message.followUp` and `app.message.dequeue` (Alt+Enter and Alt+Up by default, Ctrl+Q and Alt+Q on Windows and WSL), through its editor's `onAction`; an editor from `editorFactory` without `onAction` handles neither, and a host without an editor matches those bindings itself. Ctrl+F is the editor's: it moves the cursor right. Earlier releases also sent the prompt as a follow-up on Ctrl+F and brought the queue back on Alt+Up whatever the bindings.
+An agent task's chat is a `ChatSessionHost`. It queues follow-ups and dequeues messages only on the keys bound to `app.message.followUp` and `app.message.dequeue` (`Alt+Enter` and `Alt+Up` by default; `Ctrl+Q` and `Alt+Q` on Windows and WSL) through its editor's `onAction`, or directly when no editor is attached. `Ctrl+F` moves the cursor right.

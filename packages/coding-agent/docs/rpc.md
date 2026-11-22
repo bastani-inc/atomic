@@ -3,403 +3,73 @@ title: "RPC"
 description: "Drive a long-lived Atomic process over stdin/stdout JSONL."
 ---
 
-# RPC Mode
+# RPC mode
 
-RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
+RPC mode runs Atomic headless over a JSON Lines protocol on stdin and stdout. Use it to embed Atomic in other languages, IDEs, or custom UIs.
 
-**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@bastani/atomic` instead of spawning a subprocess. See [`src/core/agent-session.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts).
+If you are building a Node.js or TypeScript application, consider using `AgentSession` directly from the [SDK](/sdk) instead of spawning a subprocess. For a typed subprocess client in TypeScript, use `RpcClient` exported from `@bastani/atomic` (see [RPC client examples](/rpc/examples)).
 
 An extension can call `ctx.shutdown()` to close an idle RPC session without another client command. Shutdown waits for any active command response and running turn. A request during extension-started compaction outside a turn is processed after the next command or turn once compaction finishes.
 
-Closing stdin, `SIGTERM` and `SIGHUP` each start an orderly shutdown that disposes the active runtime before the process exits. Once a shutdown has started, a stdin close or a single signal does not interrupt it, so a client that closes stdin and sends `SIGTERM` together, as a process manager does, lets cleanup finish. A second signal exits at once, with code 143 for `SIGTERM` and 129 for `SIGHUP`. `SIGKILL` always ends the process immediately. An orderly shutdown exits with code 0. If disposing the session fails, the process writes a [`shutdown_error`](/rpc/protocol#shutdown_error) event and exits with code 1, or with the signal's code when a signal started the shutdown.
+Closing stdin, `SIGTERM`, and `SIGHUP` each start an orderly shutdown that disposes the active runtime before exiting. Once shutdown starts, a stdin close or single signal does not interrupt cleanup, so closing stdin and sending `SIGTERM` together lets disposal finish.
 
-[`abort`](/rpc/protocol#abort) holds queued messages, as Esc does in the TUI, so a client can abort and then close stdin: a completion notice still queued is saved for the next session rather than failing the shutdown.
+A second signal exits immediately (`143` for `SIGTERM`, `129` for `SIGHUP`), and `SIGKILL` always ends the process immediately. Orderly shutdown exits with code `0`; if disposal fails, Atomic writes a [`shutdown_error`](/rpc/protocol#shutdown_error) event and exits with code `1` (or the signal's code when a signal started shutdown).
 
-`get_entries`, `get_tree` and `get_fork_messages` retain their existing response shapes (`entries`, `tree` and `messages`). On a compacted or branched session `get_entries` and `get_tree` describe the resident window; `get_fork_messages` still includes prompts from older branches, using the picker's bounded labels. To read older entries, use [`get_history_page`](/rpc/protocol#get_history_page), follow `nextCursor`, and use `get_history_chunk` for oversized items.
+[`abort`](/rpc/protocol#abort) holds queued messages, like `Esc` in the TUI, so a client can abort and then close stdin: any queued completion notice is saved for the next session instead of failing disposal.
+
+`get_entries`, `get_tree`, and `get_fork_messages` keep their existing response shapes (`entries`, `tree`, and `messages`). On a compacted or branched session, `get_entries` and `get_tree` cover the resident window, while `get_fork_messages` still includes prompts from older branches using short picker labels. Use [`get_history_page`](/rpc/protocol#get_history_page) (following `nextCursor`) and `get_history_chunk` to read older entries and oversized items.
 
 ## Where to go next
 
-This page starts RPC mode and walks one client end to end. The rest is split by job:
+This page starts RPC mode and walks through a minimal Python client. Reference details live on dedicated pages:
 
-- [RPC protocol](/rpc/protocol) — every command, event, type, and error contract.
-- [RPC extension UI protocol](/rpc/extension-ui) — drive extension-rendered UI over RPC.
-- [RPC client examples](/rpc/examples) — additional client implementations.
-- [Stored session summaries](/rpc/protocol#stored-session-summaries) — read session summaries without starting a model turn.
+- [RPC protocol](/rpc/protocol): every command, event, type, and error contract.
+- [RPC extension UI protocol](/rpc/extension-ui): drive extension-rendered UI and OAuth prompts over RPC.
+- [RPC client examples](/rpc/examples): Node.js and `RpcClient` client implementations.
+- [Stored session summaries](/rpc/protocol#stored-session-summaries): read session summaries without starting a model turn.
 
-Not sure RPC is the right integration mode? Compare it with the SDK and JSON mode on [Programmatic use](/programmatic).
+Compare RPC mode with the SDK and JSON mode on [Programmatic use](/programmatic).
 
-## Starting RPC Mode
+## Starting RPC mode
 
 ```bash
 atomic --mode rpc [options]
 ```
 
 Common options:
-- `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
-- `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
-- `--name <name>` / `-n <name>`: Set the session display name at startup
-- `--no-session`: No resumable session; [released history may use disk](/sessions)
-- `--session-dir <path>`: Custom session storage directory
-- `--storage '<json>'` / `--storage-file <path>`: Select storage for this process's sessions
+- `--provider <name>`: set the LLM provider (`anthropic`, `openai`, `google`, and others).
+- `--model <pattern>`: model pattern or ID (supports `provider/id` and optional `:<thinking>`).
+- `--name <name>` / `-n <name>`: set the session display name at startup.
+- `--no-session`: run without a resumable session ([released history may use disk](/sessions)).
+- `--session-dir <path>`: custom session storage directory.
+- `--storage '<json>'` / `--storage-file <path>`: select storage for this process's sessions.
 
-To give an RPC child its own store without changing the user's settings, start it with `ATOMIC_STORAGE` (or `--storage`) holding the same JSON selection as the shared `storage` setting, for example an adapter selection with `secrets` read from `{ "env": ... }`. The child keeps its sessions there, and `list_sessions` reports that store. An `atomic` started without the selection keeps using its settings. An invalid selection fails at startup with `StorageConfigError` naming the variable or flag. See [Selecting storage per process](/storage#selecting-storage-per-process).
+To give an RPC child its own store without changing user settings, start it with `ATOMIC_STORAGE` (or `--storage`) holding the same JSON selection as the `storage` setting (for example, an adapter selection with `secrets` read from `{ "env": ... }`). The child keeps its sessions there and `list_sessions` reports that store, while other `atomic` processes keep using their settings. Invalid selections fail at startup with `StorageConfigError`. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
-## Protocol Overview
+## Protocol overview
 
-- **Commands**: JSON objects sent to stdin, one per line
-- **Responses**: JSON objects with `type: "response"` indicating command success/failure
-- **Events**: Agent events streamed to stdout as JSON lines
+- **Commands**: JSON objects sent to stdin, one per line.
+- **Responses**: JSON objects with `type: "response"` indicating command success or failure.
+- **Events**: session events streamed to stdout as JSON lines.
 
-All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`.
+Every command accepts an optional `id` field for request/response correlation. When provided, the matching response echoes the same `id`.
 
-A complete saved provider/model default can block prompts if its provider remains unsupported after registration. The process stays live, but `prompt` returns a correlated error with the generic configuration diagnostic before emitting any user/model event. `get_available_models` and other non-prompt commands remain available.
-
-Clear this condition with a successful explicit `set_model` or a successful `cycle_model` that returns a different available model. A null or unchanged cycle result does not clear it. Replacing the session applies the new session's condition again.
-
-Supported providers with an unknown model or missing authentication retain ordinary automatic fallback behavior.
+If a complete saved provider/model default names a provider that stays unsupported after registration, the process stays live and `prompt` returns a correlated error with the configuration diagnostic before emitting any event. Non-prompt commands such as `get_available_models` keep working. Clear this state with a successful explicit `set_model`, or a `cycle_model` that returns a different available model (a `null` or unchanged cycle result does not clear it). Supported providers with an unknown model or missing auth keep normal automatic fallback behavior.
 
 ### Framing
 
-RPC mode uses strict JSONL semantics with LF (`\n`) as the only record delimiter.
+RPC mode uses strict JSONL framing with LF (`\n`) as the only record delimiter.
 
-Atomic does not impose a size limit on RPC or isolated interactive-engine JSONL records. Commands, responses, events, and render frames are serialized in full. Clients and extensions must account for the memory and latency cost of large records and must not add a smaller line limit unless they intend to reject valid Atomic output.
+Atomic imposes no line-size limit on RPC or isolated interactive-engine JSONL records; commands, responses, events, and render frames serialize in full. Clients must account for memory and latency on large records and should not add smaller line caps unless they intend to reject valid output.
 
-This matters for clients:
-- Split records on `\n` only
-- Accept optional `\r\n` input by stripping a trailing `\r`
-- Do not use generic line readers that treat Unicode separators as newlines
+Client framing rules:
+- Split records on `\n` only.
+- Accept optional `\r\n` input by stripping a trailing `\r`.
+- Avoid generic line readers that split on Unicode line separators.
 
-In particular, Node `readline` is not protocol-compliant for RPC mode because it also splits on `U+2028` and `U+2029`, which are valid inside JSON strings.
+Node's `readline` module is not protocol-compliant for RPC mode because it splits on `U+2028` and `U+2029`, which are valid unescaped inside JSON strings.
 
-## Commands
-
-Moved to [RPC protocol](/rpc/protocol#commands).
-
-### Prompting
-
-Moved to [RPC protocol](/rpc/protocol#prompting).
-
-#### prompt
-
-Moved to [RPC protocol](/rpc/protocol#prompt).
-
-#### steer
-
-Moved to [RPC protocol](/rpc/protocol#steer).
-
-#### follow_up
-
-Moved to [RPC protocol](/rpc/protocol#follow_up).
-
-#### abort
-
-Moved to [RPC protocol](/rpc/protocol#abort).
-
-#### clear_queue
-
-Moved to [RPC protocol](/rpc/protocol#clear_queue).
-
-#### new_session
-
-Moved to [RPC protocol](/rpc/protocol#new_session).
-
-### State
-
-Moved to [RPC protocol](/rpc/protocol#state).
-
-#### get_state
-
-Moved to [RPC protocol](/rpc/protocol#get_state).
-
-#### get_messages
-
-Moved to [RPC protocol](/rpc/protocol#get_messages).
-
-### Model
-
-Moved to [RPC protocol](/rpc/protocol#model).
-
-#### set_model
-
-Switch to a specific model, with optional `thinkingLevel` (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`) and `persist`. See [RPC protocol](/rpc/protocol#set_model) for examples.
-
-#### cycle_model
-
-Moved to [RPC protocol](/rpc/protocol#cycle_model).
-
-#### get_available_models
-
-Moved to [RPC protocol](/rpc/protocol#get_available_models).
-
-#### logout_provider
-
-Moved to [RPC protocol](/rpc/protocol#logout_provider).
-
-### Thinking
-
-Moved to [RPC protocol](/rpc/protocol#thinking).
-
-#### set_thinking_level
-
-Moved to [RPC protocol](/rpc/protocol#set_thinking_level).
-
-#### cycle_thinking_level
-
-Moved to [RPC protocol](/rpc/protocol#cycle_thinking_level).
-
-#### get_available_thinking_levels
-
-Moved to [RPC protocol](/rpc/protocol#get_available_thinking_levels).
-
-### Queue Modes
-
-Moved to [RPC protocol](/rpc/protocol#queue-modes).
-
-#### set_steering_mode
-
-Moved to [RPC protocol](/rpc/protocol#set_steering_mode).
-
-#### set_follow_up_mode
-
-Moved to [RPC protocol](/rpc/protocol#set_follow_up_mode).
-
-### Compaction
-
-Moved to [RPC protocol](/rpc/protocol#compaction).
-
-#### compact
-
-Moved to [RPC protocol](/rpc/protocol#compact).
-
-#### set_auto_compaction
-
-Moved to [RPC protocol](/rpc/protocol#set_auto_compaction).
-
-### Retry
-
-Moved to [RPC protocol](/rpc/protocol#retry).
-
-#### set_auto_retry
-
-Moved to [RPC protocol](/rpc/protocol#set_auto_retry).
-
-#### abort_retry
-
-Moved to [RPC protocol](/rpc/protocol#abort_retry).
-
-### Bash
-
-Moved to [RPC protocol](/rpc/protocol#bash).
-
-#### bash
-
-Moved to [RPC protocol](/rpc/protocol#bash-2).
-
-#### abort_bash
-
-Moved to [RPC protocol](/rpc/protocol#abort_bash).
-
-### Session
-
-Moved to [RPC protocol](/rpc/protocol#session).
-
-#### get_session_stats
-
-Moved to [RPC protocol](/rpc/protocol#get_session_stats).
-
-#### export_html
-
-Moved to [RPC protocol](/rpc/protocol#export_html).
-
-#### switch_session
-
-Moved to [RPC protocol](/rpc/protocol#switch_session).
-
-#### fork
-
-Moved to [RPC protocol](/rpc/protocol#fork).
-
-#### clone
-
-Moved to [RPC protocol](/rpc/protocol#clone).
-
-#### get_fork_messages
-
-Moved to [RPC protocol](/rpc/protocol#get_fork_messages).
-
-#### get_entries
-
-Moved to [RPC protocol](/rpc/protocol#get_entries).
-
-#### get_tree
-
-Moved to [RPC protocol](/rpc/protocol#get_tree).
-
-#### get_last_assistant_text
-
-Moved to [RPC protocol](/rpc/protocol#get_last_assistant_text).
-
-#### set_session_name
-
-Moved to [RPC protocol](/rpc/protocol#set_session_name).
-
-### Commands
-
-Moved to [RPC protocol](/rpc/protocol#commands-2).
-
-#### get_commands
-
-Moved to [RPC protocol](/rpc/protocol#get_commands).
-
-## Events
-
-Moved to [RPC protocol](/rpc/protocol#events).
-
-### Event Types
-
-Moved to [RPC protocol](/rpc/protocol#event-types).
-
-### agent_start
-
-Moved to [RPC protocol](/rpc/protocol#agent_start).
-
-### agent_end
-
-Moved to [RPC protocol](/rpc/protocol#agent_end).
-
-### turn_start / turn_end
-
-Moved to [RPC protocol](/rpc/protocol#turn_start-/-turn_end).
-
-### message_start / message_end
-
-Moved to [RPC protocol](/rpc/protocol#message_start-/-message_end).
-
-### message_update (Streaming)
-
-Moved to [RPC protocol](/rpc/protocol#message_update-streaming).
-
-### tool_execution_start / tool_execution_update / tool_execution_end
-
-Moved to [RPC protocol](/rpc/protocol#tool_execution_start-/-tool_execution_update-/-tool_execution_end).
-
-### bash_execution_update
-
-Moved to [RPC protocol](/rpc/protocol#bash_execution_update).
-
-### queue_update
-
-Moved to [RPC protocol](/rpc/protocol#queue_update).
-
-### compaction_start / compaction_end
-
-Moved to [RPC protocol](/rpc/protocol#compaction_start-/-compaction_end).
-
-### auto_retry_start / auto_retry_end
-
-Moved to [RPC protocol](/rpc/protocol#auto_retry_start-/-auto_retry_end).
-
-### summarization_retry_scheduled / summarization_retry_attempt_start / summarization_retry_finished
-
-Moved to [RPC protocol](/rpc/protocol#summarization_retry_scheduled-/-summarization_retry_attempt_start-/-summarization_retry_finished).
-
-### extension_error
-
-Moved to [RPC protocol](/rpc/protocol#extension_error).
-
-## Extension UI Protocol
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#extension-ui-protocol).
-
-### Extension UI Requests (stdout)
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#extension-ui-requests-stdout).
-
-#### select
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#select).
-
-#### confirm
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#confirm).
-
-#### input
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#input).
-
-#### editor
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#editor).
-
-#### notify
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#notify).
-
-#### setStatus
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#setstatus).
-
-#### setWidget
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#setwidget).
-
-#### setTitle
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#settitle).
-
-#### set_editor_text
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#set_editor_text).
-
-### Extension UI Responses (stdin)
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#extension-ui-responses-stdin).
-
-#### Value response (select, input, editor)
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#value-response-select-input-editor).
-
-#### Confirmation response (confirm)
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#confirmation-response-confirm).
-
-#### Cancellation response (any dialog)
-
-Moved to [RPC extension UI protocol](/rpc/extension-ui#cancellation-response-any-dialog).
-
-## Error Handling
-
-Moved to [RPC protocol](/rpc/protocol#error-handling).
-
-## Types
-
-Moved to [RPC protocol](/rpc/protocol#types).
-
-### Model
-
-Moved to [RPC protocol](/rpc/protocol#model-2).
-
-### UserMessage
-
-Moved to [RPC protocol](/rpc/protocol#usermessage).
-
-### AssistantMessage
-
-Moved to [RPC protocol](/rpc/protocol#assistantmessage).
-
-### ToolResultMessage
-
-Moved to [RPC protocol](/rpc/protocol#toolresultmessage).
-
-### BashExecutionMessage
-
-Moved to [RPC protocol](/rpc/protocol#bashexecutionmessage).
-
-### Attachment
-
-Moved to [RPC protocol](/rpc/protocol#attachment).
-
-## Example: Basic Client (Python)
+## Example: basic client (Python)
 
 ```python
 import subprocess
@@ -429,12 +99,100 @@ for event in read_events():
         delta = event.get("assistantMessageEvent", {})
         if delta.get("type") == "text_delta":
             print(delta["delta"], end="", flush=True)
-    
+
     if event.get("type") == "agent_end":
         print()
         break
 ```
 
-## Example: Interactive Client (Node.js)
+## Moved sections
 
-Moved to [RPC client examples](/rpc/examples#example-interactive-client-node-js).
+<a id="commands" />
+<a id="prompting" />
+<a id="prompt" />
+<a id="steer" />
+<a id="follow_up" />
+<a id="abort" />
+<a id="clear_queue" />
+<a id="new_session" />
+<a id="state" />
+<a id="get_state" />
+<a id="get_messages" />
+<a id="model" />
+<a id="set_model" />
+<a id="cycle_model" />
+<a id="get_available_models" />
+<a id="logout_provider" />
+<a id="thinking" />
+<a id="set_thinking_level" />
+<a id="cycle_thinking_level" />
+<a id="get_available_thinking_levels" />
+<a id="queue-modes" />
+<a id="set_steering_mode" />
+<a id="set_follow_up_mode" />
+<a id="compaction" />
+<a id="compact" />
+<a id="set_auto_compaction" />
+<a id="retry" />
+<a id="set_auto_retry" />
+<a id="abort_retry" />
+<a id="bash" />
+<a id="bash-2" />
+<a id="abort_bash" />
+<a id="session" />
+<a id="get_session_stats" />
+<a id="export_html" />
+<a id="switch_session" />
+<a id="fork" />
+<a id="clone" />
+<a id="get_fork_messages" />
+<a id="get_entries" />
+<a id="get_tree" />
+<a id="get_last_assistant_text" />
+<a id="set_session_name" />
+<a id="commands-2" />
+<a id="get_commands" />
+<a id="events" />
+<a id="event-types" />
+<a id="agent_start" />
+<a id="agent_end" />
+<a id="turn_start-/-turn_end" />
+<a id="message_start-/-message_end" />
+<a id="message_update-streaming" />
+<a id="tool_execution_start-/-tool_execution_update-/-tool_execution_end" />
+<a id="bash_execution_update" />
+<a id="queue_update" />
+<a id="compaction_start-/-compaction_end" />
+<a id="auto_retry_start-/-auto_retry_end" />
+<a id="summarization_retry_scheduled-/-summarization_retry_attempt_start-/-summarization_retry_finished" />
+<a id="extension_error" />
+<a id="error-handling" />
+<a id="types" />
+<a id="model-2" />
+<a id="usermessage" />
+<a id="assistantmessage" />
+<a id="toolresultmessage" />
+<a id="bashexecutionmessage" />
+<a id="attachment" />
+<a id="extension-ui-protocol" />
+<a id="extension-ui-requests-stdout" />
+<a id="select" />
+<a id="confirm" />
+<a id="input" />
+<a id="editor" />
+<a id="notify" />
+<a id="setstatus" />
+<a id="setwidget" />
+<a id="settitle" />
+<a id="set_editor_text" />
+<a id="extension-ui-responses-stdin" />
+<a id="value-response-select-input-editor" />
+<a id="confirmation-response-confirm" />
+<a id="cancellation-response-any-dialog" />
+<a id="example-interactive-client-node-js" />
+
+These reference sections moved to dedicated pages:
+
+- Commands, events, error handling, and JSON types: [RPC protocol](/rpc/protocol)
+- Extension UI requests, OAuth prompts, and responses: [RPC extension UI protocol](/rpc/extension-ui)
+- Node.js interactive client and `RpcClient` examples: [RPC client examples](/rpc/examples)

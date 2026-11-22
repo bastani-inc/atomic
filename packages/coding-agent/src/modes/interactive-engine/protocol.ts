@@ -177,7 +177,7 @@ export type InteractiveEngineMessage =
 			layout?: TranscriptFrameLayout;
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
-	| { type: "engine_custom_invalidate"; componentId: string }
+	| { type: "engine_custom_invalidate"; componentId: string; evictCache?: true }
 	| {
 			type: "engine_custom_done";
 			componentId: string;
@@ -738,7 +738,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_custom_invalidate":
 			return typeof value.componentId === "string"
-				? { type: value.type, componentId: value.componentId }
+				? value.evictCache === true
+					? { type: value.type, componentId: value.componentId, evictCache: true }
+					: { type: value.type, componentId: value.componentId }
 				: undefined;
 		case "engine_custom_done":
 			return typeof value.componentId === "string"

@@ -1,323 +1,325 @@
+---
+title: "Providers"
+description: "Configure subscriptions, API keys, and provider-specific settings in Atomic."
+---
+
 # Providers
 
-Atomic supports subscription-based providers via OAuth and API-key providers via environment variables or the auth file. Built-in catalogs ship with Atomic; configured and native providers may refresh newer catalogs independently and cache them in `~/.atomic/agent/models-store.json` for offline use.
+Atomic supports subscription providers via OAuth and API-key providers via environment variables or `~/.atomic/agent/auth.json`. Built-in catalogs ship with Atomic; configured and native providers refresh newer catalogs independently and cache them in `~/.atomic/agent/models-store.json` for offline use.
 
 ## On this page and its reference
 
-This page is provider setup: subscriptions, API keys, provider-specific configuration, and local llama.cpp. The exact contracts — provider stop reasons and credential resolution order — live in the [Provider reference](/providers/reference).
+This page covers provider setup: subscriptions, API keys, provider-specific configuration, and local llama.cpp. Provider stop reasons, credential resolution order, and GitHub Copilot SDK error classes live in the [Provider reference](/providers/reference).
 
-## Table of Contents
+Builtin subagents default to `model: "auto"`, which runs your configured default model (the one you last chose with `/model`) at its default thinking level, or the current session's model when no default model is configured. Builtins ship no fixed role models or fallback chains. For explicit child models and fallback lists, see [Subagent reference](/subagents/reference#automatic-model-selection).
+
+## Contents
 
 - [Subscriptions](#subscriptions)
 - [Verify readiness before a session](#verify-readiness-before-a-session)
-- [API Keys](#api-keys)
-- [Auth File](#auth-file)
-- [Provider Specific Config](#provider-specific-config)
+- [API keys](#api-keys)
+- [Auth file](#auth-file)
+- [Provider specific config](#provider-specific-config)
 - [llama.cpp](#llama-cpp)
 - [TypeSafe Jev](#typesafe-jev)
 - [Morph compaction](#morph-compaction)
-- [Stop Reasons](/providers/reference#stop-reasons)
-- [Resolution Order](/providers/reference#resolution-order)
-- [Custom Providers](#custom-providers)
+- [Stop reasons](/providers/reference#stop-reasons)
+- [Resolution order](/providers/reference#resolution-order)
+- [Custom providers](#custom-providers)
 
 ## Subscriptions
 
-Use `/login` in interactive mode, then select a provider:
+Run `/login` in interactive mode, then select a provider:
 
+- OpenRouter
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
-- OpenRouter
 - Kimi Code
-- xAI (Grok/X subscription)
 - Meta (Muse subscription)
+- xAI (Grok/X subscription)
 
-OpenRouter, Atomic's preferred partner, comes first in the `/login` and `/logout` provider lists and in the `/login <provider>` and `/logout <provider>` completions, marked with `✦`. All other providers follow alphabetically. In the lists, the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes).
+OpenRouter, Atomic's preferred partner, appears first in `/login`, `/logout`, and their tab completions, marked with `✦`. All other providers follow alphabetically.
 
-Use `/login <provider>`, such as `/login openrouter` or `/login kimi-coding`, to go directly to a provider. Select subscription or API-key authentication when both are available.
+Run `/login <provider>`, such as `/login openrouter` or `/login kimi-coding`, to open a provider directly. Choose subscription or API-key authentication when both are available.
 
-To sign in from the shell without starting a session, for example over SSH, run `atomic auth login <provider>`. It opens the browser for account sign-in; `--no-browser` uses a device code or another sign-in method instead, and `--api-key` saves an API key. See [Credential Commands](/reference/cli#credential-commands).
+To sign in from the shell without starting a session, run `atomic auth login <provider>`. It opens a browser for account sign-in; pass `--no-browser` for a device code or another non-browser method, or `--api-key` to store an API key. See [Credential commands](/reference/cli#credential-commands).
 
-OpenRouter opens its browser PKCE flow and asks whether to mint a new API key. Complete the browser redirect before returning to Atomic. On remote or headless machines, the browser cannot reach the loopback callback; paste the final redirect URL or authorization code instead. Claude, ChatGPT Codex, and extension providers that set `usesCallbackServer` offer the same fallback.
+OpenRouter opens a browser PKCE flow and asks whether to mint a new API key. On remote or headless machines where the browser cannot reach the local callback, paste the final redirect URL or authorization code instead. Claude, ChatGPT Codex, and extension providers that set `usesCallbackServer` support the same paste fallback.
 
-Kimi Code displays its device URL/code and polls until approval, then refreshes expired tokens automatically.
+Device-code logins (Kimi Code, GitHub Copilot, Meta, and extension providers) display the verification URL and code without opening a browser automatically. Press Enter to open the URL and copy the code, or open it manually and enter the code.
 
-Device-code logins (Kimi Code, GitHub Copilot, Meta, and extension providers) show the URL and code without opening a browser. Press Enter to open the URL and copy the code, or open it yourself and type the code.
+Built-in and extension-provided OAuth work in both direct and isolated sessions. Login finishes as soon as credentials are saved; catalog refresh runs separately in the background.
 
-Built-in and extension-provided OAuth work in both direct and isolated sessions. Login completes once credentials are saved; model-catalog refresh runs separately.
+Pressing Escape or Ctrl+C cancels an in-progress login quietly and leaves previously saved credentials and catalogs untouched. Provider denials, expired device codes, timeouts, network failures, malformed responses, token exchange failures, and storage errors remain visible.
 
-Escape or Ctrl+C quietly cancels the matching login, including immediate/pre-device native aborts, and leaves the previously committed credential and catalog unchanged. Provider denial, device expiry, timeout, browser/network/protocol failure, malformed responses, token exchange, and persistence failures remain visible. Atomic claims success when the provider flow and credential persistence complete; it does not wait for model-catalog or ambient-availability refresh work.
+Use `/logout` to clear stored credentials. Logout immediately invalidates authentication in the active session and removes the provider from both `~/.atomic/agent/auth.json` and any legacy `~/.pi/agent/auth.json`. Environment variables, CLI flags, and `models.json` keys cannot be cleared by Atomic; when one still authenticates the provider, the logout message names that source.
 
-Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source.
+Type `/logout ` to autocomplete providers with stored credentials, or run `/logout kimi-coding` to filter the selector. From the shell, `atomic auth logout <provider>` clears stored credentials and succeeds even when nothing is stored.
 
-Type `/logout ` to autocomplete providers with stored credentials, or use `/logout kimi-coding` to open a filtered selector; press Enter in the selector to remove the credential, or Escape to cancel.
+### Token refresh
 
-`atomic auth logout <provider>` removes stored credentials from the shell in the same way, and succeeds when nothing is stored.
+Atomic refreshes a stored OAuth token when fewer than **five minutes** of validity remain, so long turns do not start with an expiring token. Tokens outside that window are left unchanged.
 
-### Token Refresh
+Concurrent sessions sharing `auth.json`, including subagents, coordinate token refresh rather than rotating the same credential independently. If a refresh reports a timeout, the token exchange keeps running and saves its result when it completes; retry the request instead of signing in again.
 
-Atomic refreshes a stored OAuth token when fewer than **five minutes** of validity remain, so a long turn does not start with a token about to expire. Tokens outside this window are untouched.
+When Atomic exits normally (quitting interactively, `SIGTERM`, ending an `atomic -p` run, or finishing an `atomic auth` command), it waits up to three seconds for an in-flight token exchange to save. If Atomic is killed or crashes mid-refresh, run `/login <provider>` to sign in again.
 
-Concurrent sessions sharing `auth.json`, including subagents, coordinate token refresh rather than rotating the same credential independently. This holds when a session is slow or briefly unresponsive under heavy load. If a refresh reports a timeout, the token exchange keeps running and its result is saved when it arrives. Retry the request instead of signing in again. When Atomic exits normally (quitting an interactive session, `SIGTERM`, the end of an `atomic -p` run, or an `atomic auth` command), it waits up to three seconds for a token exchange still in flight and saves its result. If Atomic is killed or crashes during a token refresh, the provider may already have rotated the token; run `/login <provider>` to sign in again.
+Running sessions pick up `auth.json` changes made by another Atomic window, `atomic auth`, or another process's refresh without restarting. This includes extension-provided OAuth. If a provider rejects a stored login as revoked or expired (such as `invalid_grant`, OpenAI's `refresh_token_expired` or `refresh_token_reused`, or HTTP 401), Atomic checks for a newer saved login first; otherwise it reports the provider name and asks you to run `/login <provider>`.
 
-Running sessions pick up changes to `auth.json` made by another Atomic window, `atomic auth`, or another process's token refresh without restarting. This applies to extension-provided OAuth too. Refresh runs automatically through the shared credential store; a failed refresh is reported as an OAuth error rather than starting a new login flow. If the provider rejects the stored login as revoked or expired (for example `invalid_grant`, OpenAI's `refresh_token_expired` or `refresh_token_reused`, or HTTP 401), Atomic first uses a newer login that another session saved. When there is none, the error names the provider and tells you to run `/login <provider>`, because the provider has revoked or expired that login.
+If a chat request fails with HTTP 401 or a revoked-token error before any response content arrives, Atomic rereads credentials and retries once only if the effective credential changed. Explicit request credentials and runtime API-key overrides still take precedence over `auth.json`.
 
-If a chat request is rejected with HTTP 401 or an invalid/revoked-token error before any response content arrives, Atomic rereads credentials and retries once only if the effective credential changed. It does not repeatedly retry the same rejected token or replay a partially delivered response. Explicit request credentials and runtime API-key overrides still take precedence over the auth file.
+### Verify readiness before a session
 
-### Verify Readiness Before a Session
+Run `atomic auth check --provider <provider>` to verify effective credentials without starting a session. You can pass `--model <model>`, including `provider/model`, when your automation already tracks a model ID.
 
-Run `atomic auth check --provider <provider>` to verify the effective credential a provider would use without starting a session. You can pass `--model <model>` instead, including a `provider/model` ID, when that is the value your automation already has. The command prints `ready`, `not_ready`, or `invalid`; `--json` adds the resolved provider when one is found, credential type, and reason for a non-ready result.
+The command prints `ready`, `not_ready`, or `invalid`. Add `--json` to include the resolved provider, credential type, and non-ready reason.
 
-Checks refresh expired OAuth credentials by default through the ordinary locked `auth.json` path. Use `--no-refresh` for a read-only probe: it neither creates nor mutates an auth file and reads Atomic's primary `~/.atomic/agent/auth.json` plus legacy `~/.pi/agent/auth.json` paths with the normal precedence. Readiness output contains no credential material unless you explicitly ask for `--credentials` with `--provider` or an exact `--model` target. That opt-in treats stdout or the JSON `credentials` field as a credential export; it refuses an OAuth token with less than 30 minutes of life when `--no-refresh` prevents a refresh.
+Checks refresh expired OAuth tokens by default through the locked `auth.json` path. Pass `--no-refresh` for a read-only probe that reads `~/.atomic/agent/auth.json` and legacy `~/.pi/agent/auth.json` without creating or writing files.
+
+Readiness output omits credential values unless you pass `--credentials` with `--provider` or an exact `--model`. That opt-in exports the credential on stdout (or in the JSON `credentials` field) and rejects an OAuth token with fewer than 30 minutes remaining when `--no-refresh` prevents a refresh.
 
 ### OpenAI API or ChatGPT sign-in
 
-Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. The ChatGPT option authenticates the `openai` provider for requests to OpenAI's Responses API; it is separate from `/login openai-codex`, which uses the Codex backend. Choose the provider/model identity appropriate to the account and endpoint you intend to use.
+Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. ChatGPT sign-in authenticates the `openai` provider against OpenAI's Responses API; it is separate from `/login openai-codex`, which uses the Codex backend.
 
-Complete the browser callback, or paste the full callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the final URL from its address bar, including `code`, `state`, and `client_id`, and paste it into Atomic. Atomic creates a global device identity on first use of this sign-in; project settings do not override it. A saved subscription credential does not verify model entitlement or remaining usage.
+Complete the browser callback, or paste the final callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the full address-bar URL (including `code`, `state`, and `client_id`) and paste it into Atomic. Atomic creates a global device identity on first use that project settings do not override. A saved login does not verify model entitlement or quota.
 
-Apps using `@bastani/atomic-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT name hint or Codex browser-login originator. ChatGPT sign-in keeps `Atomic` as its default name.
+Apps calling `@bastani/atomic-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT name hint or Codex login originator. ChatGPT sign-in defaults to `Atomic`.
 
 ### Subscription and API key at the same time
 
-`openai` and `anthropic` hold one credential each, so a subscription login there replaces the API key. To keep both, use the API-key-only providers `openai-api` and `anthropic-api`. They list the same chat models, send requests to the same endpoints, and read `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` unless you save a key with `/login openai-api` or `/login anthropic-api`. They never offer subscription sign-in, and `anthropic-api` ignores `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN`.
+`openai` and `anthropic` store one credential each, so a subscription login replaces a stored API key. To use both simultaneously, configure the API-key-only providers `openai-api` and `anthropic-api`.
 
-For example, sign in with ChatGPT under `openai` and select `openai/gpt-6-sol` for subscription chat, while a subagent pinned to `openai-api/gpt-6-sol` bills the API key.
+Both providers expose the same chat models and endpoints as `openai` and `anthropic`, reading `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` unless you save a key with `/login openai-api` or `/login anthropic-api`. They never offer subscription login, and `anthropic-api` ignores `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN`.
 
-The GPT-6 Luna Decisions classifier (`openai-decisions`) has no login of its own. It uses the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`, and ignores a ChatGPT sign-in. See [Classifier models](/models#use-classifier-models).
+For example, sign in with ChatGPT under `openai` and select `openai/gpt-6-sol` for interactive chat while pinning a subagent to `openai-api/gpt-6-sol` to bill your API key.
 
-OpenAI's image models (`openai-images`, such as `openai-images/gpt-image-2.6-flare`) work the same way: no login of their own, the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in cannot call OpenAI's Images API and is skipped, so with only that sign-in the image models stay unavailable until you save an API key with `/login openai-api` or set `OPENAI_API_KEY`. GPT Image 2.6 models (`gpt-image-2.6-flare`, `gpt-image-2.6-sunburst`) also return SVG (`outputFormat: "svg"`) and animated GIF (`outputFormat: "gif"`, 2-16 frames). SVG needs no extra option: when your account's API requires `svg.model` and the request sets none, Atomic retries once with `gpt-6.1-sol`. OpenAI documents no default authoring model, so that value is one that worked in testing; set `svg: { model }` to choose another, which Atomic always sends as given. SVG authoring takes tens of seconds, so avoid a short `timeoutMs`. Generate images with them from [codemode](/codemode#generate-images) or an [extension](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels).
+The GPT-6 Luna Decisions classifier (`openai-decisions`) has no login of its own. It resolves keys in order: `openai-api`, `openai` (API key only), then `OPENAI_API_KEY`, skipping ChatGPT sign-in. See [Classifier models](/models#use-classifier-models).
+
+OpenAI image models (`openai-images`, such as `openai-images/gpt-image-2.6-flare`) follow the same key order and also skip ChatGPT sign-in. If you only signed in with ChatGPT, save a key via `/login openai-api` or set `OPENAI_API_KEY` to enable image generation.
+
+GPT Image 2.6 models (`gpt-image-2.6-flare` and `gpt-image-2.6-sunburst`) support SVG (`outputFormat: "svg"`) and animated GIF (`outputFormat: "gif"`, 2 to 16 frames). SVG needs no extra option: when your account requires `svg.model` and the request omits it, Atomic retries once with `gpt-6.1-sol`. Pass `svg: { model }` to select a specific authoring model, which Atomic always sends as given. SVG generation takes tens of seconds, so avoid a short `timeoutMs`. Use these models from [codemode](/codemode#generate-images) or an [extension](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels).
 
 ### OpenAI Codex
 
-- Requires ChatGPT Plus or Pro subscription
+- Requires a ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
 
-If the Codex backend reports that an OAuth/auth token was invalidated or revoked, Atomic first checks for credentials saved elsewhere as described above. If the rejection persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential.
+If the Codex backend reports an invalidated or revoked token and no newer login exists, run `/logout`, choose **OpenAI ChatGPT Plus/Pro**, then run `/login` again and retry. Atomic displays these recovery steps with the error and never deletes stored credentials automatically.
 
-For Codex requests, `models.json` headers or per-request SDK headers can override `originator` and `User-Agent`. The transport still supplies the authenticated bearer token and ChatGPT account ID.
+For Codex requests, `models.json` headers or per-request SDK headers can override `originator` and `User-Agent`. Atomic still supplies the authenticated bearer token and ChatGPT account ID.
 
-GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra, GPT-6.1 Sol and GPT-6.1 Terra are compared in one table, covering provider IDs, context windows by sign-in method, Standard, Fast and Ultrafast prices, and reasoning levels: see [OpenAI built-in models](/models/reference#openai-built-in-models). GPT-6 Sol and GPT-6 Luna are selectable as `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai-codex/gpt-6-sol`, and `openai-codex/gpt-6-luna`. Each of these models has a derived `-fast` choice where the table lists one, such as `openai-codex/gpt-6.1-sol-fast`, that sends the base upstream model with `service_tier: priority` and keeps the first-party Codex transport identity described below. For example, `atomic --model openai-codex/gpt-6.1-sol-fast:high` selects priority routing at high effort. Access can still depend on the account, rollout, and minimum client policy even though Atomic lists a model.
+Compare GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra, GPT-6.1 Sol, and GPT-6.1 Terra in [OpenAI built-in models](/models/reference#openai-built-in-models). GPT-6 Sol and GPT-6 Luna are also available as `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai-codex/gpt-6-sol`, and `openai-codex/gpt-6-luna`.
+
+Models that advertise a Fast tier get a derived `-fast` variant, such as `openai-codex/gpt-6.1-sol-fast`, which sends the base upstream model with `service_tier: priority`. For example, `atomic --model openai-codex/gpt-6.1-sol-fast:high` selects priority routing at high effort. Account rollouts and client policies still govern actual access.
 
 Account aliases follow their own authentication method. Fast and Ultrafast choices work with either authentication method when the account supports the requested tier.
 
 #### Fast and Ultrafast tiers
 
-Atomic offers a tier only for the models that advertise it, following Codex's per-model catalog and OpenAI's published API pricing:
+Atomic offers a tier only for models that advertise it in Codex's catalog or OpenAI's published API pricing:
 
-- **Fast** (`service_tier: priority`): every Codex model except GPT-6.1 Terra, and the `openai/*` models listed on OpenAI's [Fast pricing](https://developers.openai.com/api/docs/pricing) tab. For example, `openai/gpt-5-nano`, `openai/gpt-5-pro`, and `openai/o1` have no `-fast` choice.
-- **Ultrafast** (`service_tier: "ultrafast"`): GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra and GPT-6.1 Sol, as `openai/gpt-6.2-astra-ultrafast`, `openai/gpt-6.2-sol-ultrafast`, `openai/gpt-6-astra-ultrafast` and `openai/gpt-6.1-sol-ultrafast` (also under `openai-api/` and `openai-codex/`), plus GPT-5.6 Sol on the OpenAI API, as `openai/gpt-5.6-sol-ultrafast` (also under `openai-api/`). For example, `atomic --model openai-codex/gpt-6-astra-ultrafast:high`. Each keeps the base upstream model, following [Codex's tier-switching protocol](https://github.com/openai/codex/blob/17a9df60e420b58e3edc55efb1bb052e39492bbc/codex-rs/core/tests/suite/agent_websocket.rs#L518-L605). GPT-5.6 Sol Ultrafast is a limited preview, so most accounts get the fallback below.
+- **Fast** (`service_tier: priority`): every Codex model except GPT-6.1 Terra, plus `openai/*` models listed on OpenAI's [Fast pricing](https://developers.openai.com/api/docs/pricing) tab. Models such as `openai/gpt-5-nano`, `openai/gpt-5-pro`, and `openai/o1` have no `-fast` choice.
+- **Ultrafast** (`service_tier: "ultrafast"`): GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra, and GPT-6.1 Sol (`openai/gpt-6.2-astra-ultrafast`, `openai/gpt-6.2-sol-ultrafast`, `openai/gpt-6-astra-ultrafast`, and `openai/gpt-6.1-sol-ultrafast`, also under `openai-api/` and `openai-codex/`), plus `openai/gpt-5.6-sol-ultrafast` (also under `openai-api/`). Each sends the base upstream model with `service_tier: "ultrafast"`. GPT-5.6 Sol Ultrafast is a limited preview.
 
-Listing a choice does not establish that your account has access. Ultrafast needs an eligible plan: Pro $500 or an eligible Enterprise or Edu workspace with ChatGPT sign-in, or Pro $200 for GPT-6.2 Sol. With an API key, it is available at low default rate limits. If the OpenAI API or the Codex backend rejects the tier of a Fast or Ultrafast choice you selected (for example `400 Invalid service_tier argument`), Atomic retries once at the default tier and warns that the choice ran at default instead of failing the turn. Other providers still fail the request. With an OpenAI API key, Atomic also warns when the response reports a slower tier than the one you chose. With ChatGPT sign-in, on `openai/*` or `openai-codex/*`, it does not, because the ChatGPT backend reports `default` for every tier, including Fast and Ultrafast requests it ran at that tier. The warning, for example `ultrafast isn't available for gpt-5.6-sol on this account; ran at default`, appears under the response in interactive sessions, on stderr in print mode, and in the message `diagnostics` in JSON mode.
+Ultrafast requires an eligible plan: Pro $500 or an eligible Enterprise or Edu workspace with ChatGPT sign-in, or Pro $200 for GPT-6.2 Sol. With an API key, it is available at low default rate limits.
 
-A tier the model does not advertise is left out of the request, which then runs at standard processing instead of failing. `flex` is always passed through. With Codex, an explicit `default` sends no tier, as in Codex. With the OpenAI API, `default` is sent as requested.
+If OpenAI or Codex rejects a Fast or Ultrafast tier (such as `400 Invalid service_tier argument`), Atomic retries once at the default tier and warns that the request ran at default. Other providers still fail the request.
 
-Usage is priced at the tier that served the request, using OpenAI's published per-model rates. Fast is usually twice Standard but varies by model: GPT-5.5 is 2.5x and GPT-4o is 1.7x. GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra and GPT-6.1 Sol Ultrafast rates are in [OpenAI built-in models](/models/reference#openai-built-in-models) ([OpenAI API pricing](https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast)). GPT-5.6 Sol Ultrafast has no published rates, so Atomic prices it at six times Standard ($24 input, $120 output). With an API key, if OpenAI reports a Fast request as served at Standard, the usage is priced at Standard; with ChatGPT sign-in it is priced at the tier you chose. With ChatGPT sign-in, [Codex](https://developers.openai.com/codex/speed) counts Fast against included limits at 2.5x and Astra Ultrafast at 8x, and bills purchased credits at 2x and 6x. Atomic's displayed cost uses the API rates.
+With an API key, Atomic also warns if OpenAI reports a slower tier than requested. With ChatGPT sign-in on `openai/*` or `openai-codex/*`, it does not, because the ChatGPT backend reports `default` even when serving Fast or Ultrafast. Warnings appear under the response in interactive mode, on stderr in print mode, and in `diagnostics` in JSON mode.
 
-Pick a fast identity only when the latency reduction is worth the higher usage and price.
+Unadvertised tiers are omitted so requests run at standard processing instead of failing. `flex` is always passed through. An explicit `default` omits the tier on Codex and sends `default` on the OpenAI API.
+
+Usage is priced at the serving tier using OpenAI's published per-model rates. Fast is typically 2x Standard (GPT-5.5 is 2.5x; GPT-4o is 1.7x). Ultrafast rates for GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra, and GPT-6.1 Sol are listed in [OpenAI built-in models](/models/reference#openai-built-in-models) ([OpenAI API pricing](https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast)); GPT-5.6 Sol Ultrafast is priced at 6x Standard ($24 input, $120 output).
+
+With an API key, a Fast request served at Standard is billed at Standard; with ChatGPT sign-in it uses the chosen tier's API rate for displayed cost. On ChatGPT sign-in, [Codex](https://developers.openai.com/codex/speed) counts Fast against included limits at 2.5x and Astra Ultrafast at 8x, and bills purchased credits at 2x and 6x.
 
 ### Fast models
 
-Fast inference is a model choice, not a mode. When a provider enables fast mode through an API parameter (OpenAI and xAI `service_tier`, Anthropic `speed`), Atomic derives a second selectable model whose canonical ID is the base model ID plus `-fast` and that sets the parameter — for example `anthropic/claude-opus-5-fast`. When a provider publishes fast mode as its own model ID (GitHub Copilot), Atomic uses that ID exactly as the provider publishes it, with no derivation. Either way the fast model appears in `/model`, in `atomic --list-models`, alongside its normal sibling, and it is persisted and restored by that exact ID. Select it anywhere you name a model, including with a thinking suffix: `anthropic/claude-opus-5-fast:high`.
+Fast inference is a selectable model ID, not a toggle. When a provider enables fast mode via an API parameter (OpenAI and xAI `service_tier`, Anthropic `speed`), Atomic derives a `<id>-fast` model that sets that parameter, such as `anthropic/claude-opus-5-fast`. When a provider publishes fast models under their own IDs (GitHub Copilot), Atomic exposes those exact IDs without derivation.
 
-Three provider paths derive these variants:
+Fast models appear alongside their normal siblings in `/model` and `atomic --list-models` and work with thinking suffixes such as `anthropic/claude-opus-5-fast:high`.
 
-- First-party OpenAI `openai/*` and OpenAI Codex `openai-codex/*` models that advertise Fast (see [Fast and Ultrafast tiers](#fast-and-ultrafast-tiers)) send the **base** upstream model ID plus the fixed `service_tier: priority`. A renamed provider, proxy, Azure OpenAI, OpenRouter, or generic OpenAI-compatible provider does not receive a synthetic fast variant.
-- First-party xAI `xai/*` models get a fast variant for every Grok model, such as `xai/grok-4.7-fast`. It sends the **base** upstream model ID with xAI's [Priority Processing](https://docs.x.ai/developers/advanced-api-usage/priority-processing) `service_tier: priority`. xAI has no separate `-fast` model IDs for current Grok models. OpenRouter, Vercel AI Gateway, and renamed or proxied xAI-compatible providers do not receive a synthetic fast variant.
-- First-party Anthropic `anthropic/*` exposes [fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) for Claude Opus 5.5, Claude Opus 5, and Claude Opus 4.8: `anthropic/claude-opus-5-5-fast`, `anthropic/claude-opus-5-fast`, and `anthropic/claude-opus-4-8-fast`. Each sends the **base** upstream model ID with `speed: "fast"` and the `fast-mode-2026-02-01` beta header. It works with API keys and Claude subscription logins. Amazon Bedrock, Google Vertex, GitHub Copilot, OpenRouter, and renamed or proxied Anthropic-compatible providers do not receive a synthetic fast variant.
+Three provider paths derive `-fast` variants:
 
-GitHub Copilot publishes fast models as their own IDs in the account's model list. Atomic offers each one under exactly the advertised ID, sends that ID upstream unchanged with no service-tier field, and derives no Copilot `-fast` ID of its own. See [GitHub Copilot](#github-copilot).
+- **OpenAI and Codex** (`openai/*`, `openai-api/*`, `openai-codex/*`): models that advertise Fast (see [Fast and Ultrafast tiers](#fast-and-ultrafast-tiers)) send the base upstream model ID with `service_tier: priority`.
+- **xAI** (`xai/*`): every Grok model gets a `-fast` variant (such as `xai/grok-4.7-fast`) that sends the base upstream model ID with xAI [Priority Processing](https://docs.x.ai/developers/advanced-api-usage/priority-processing) (`service_tier: priority`).
+- **Anthropic** (`anthropic/*`, `anthropic-api/*`): exposes [fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) for `anthropic/claude-opus-5-5-fast`, `anthropic/claude-opus-5-fast`, and `anthropic/claude-opus-4-8-fast`, sending the base model ID with `speed: "fast"` and the `fast-mode-2026-02-01` beta header. Works with both API keys and Claude subscriptions.
 
-The selection Atomic records stays the canonical `-fast` identity even when the outbound request carries the base upstream model ID, so sessions, usage rows, fallback attempts, and subagent labels all keep normal and fast apart. There is no separate `fast` badge anywhere in the UI: the model ID already says it.
+Renamed providers, proxies, Azure, Bedrock, Vertex, OpenRouter, Vercel AI Gateway, generic OpenAI- or Anthropic-compatible providers, and extension-owned stream transports never receive synthetic fast variants. GitHub Copilot advertises its own fast IDs per account; see [GitHub Copilot](#github-copilot).
 
-A fast variant's route owns two request fields: the upstream model ID and the service tier (`speed` for Anthropic). A `before_provider_request` hook may rewrite anything else, but replacing the payload with a non-object or changing either route-owned field is refused with an error naming the model and the remedy, because a model recorded, persisted, and billed as `-fast` must not go out as a different model or at an ordinary tier. Select the normal sibling instead when a request needs different routing. A model without a fast variant keeps unrestricted hook freedom, and an explicit per-request service tier still applies to it without granting fast-model identity.
+Atomic persists and displays the canonical `-fast` ID even when sending the base model ID upstream, so sessions, usage rows, fallbacks, and subagent labels distinguish fast from normal models without a separate UI badge.
 
-Models served by an extension's own stream function, including native provider registrations, do not get automatic fast variants. Their normal models and custom transport remain available.
+A derived fast variant owns two request fields: the upstream model ID and the tier (`service_tier` or Anthropic `speed`). A `before_provider_request` hook may modify other fields, but replacing the payload with a non-object or altering either route-owned field fails with an error. Select the normal sibling when a request needs custom routing.
 
-Fast behavior comes from explicit route metadata attached when the variant is derived, never from the `-fast` or `-ultrafast` suffix. If a provider, a `models.json` custom model, or an extension already defines that exact variant ID, that model wins: it routes exactly as declared, Atomic suppresses the derived duplicate, and startup and `--list-models` name the collision. No synthetic variant is derived for Azure OpenAI, OpenRouter, or generic OpenAI-compatible providers. Ultrafast derivation is restricted to first-party OpenAI and Codex models that advertise the tier; an extension-owned transport does not get it.
+Fast behavior comes from explicit route metadata, never from a `-fast` or `-ultrafast` name suffix. If a provider, `models.json`, or an extension already defines that exact ID, your definition wins, Atomic suppresses the derived duplicate, and startup warns about the collision.
 
-Provider-owned names ending in `-fast` remain ordinary exact IDs. Vercel AI Gateway advertises `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`; OpenRouter advertises `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`. Their catalog prices and routing apply, not Atomic's first-party fast routing. Check the live catalog before selecting one.
+Provider-owned names ending in `-fast` or `-pro` stay ordinary exact IDs. For example, Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`, and OpenRouter publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`. Their own catalog routing and rates apply.
 
-First-party Codex variants keep their exact priority or ultrafast routing across retries and transport changes. Renaming a provider or setting a service tier on a normal model does not grant variant identity.
+Choose fast variants deliberately for subagents, because parallel runs multiply token usage and priority tiers cost more.
 
-Pick fast variants deliberately for subagents: parallel fan-out multiplies provider usage, and priority-tier requests are billed at a higher rate.
-
-Anthropic fast mode delivers up to 2.5x higher output tokens per second at twice the standard token rates, with prompt-caching multipliers applied on top. Atomic prices each response by the speed Anthropic reports in its usage. Fast mode has its own rate limit; when it is exhausted Anthropic returns `429`, which Atomic retries like any other rate limit rather than silently falling back to standard speed. Switching between a fast and a normal Claude model invalidates the prompt cache.
+Anthropic fast mode delivers up to 2.5x higher output throughput at 2x standard token rates (with prompt-cache multipliers on top), billed by the speed Anthropic reports in usage. Exhausted fast-mode rate limits return HTTP 429 and retry normally rather than silently downgrading to standard speed. Switching between fast and normal Claude models invalidates the prompt cache.
 
 ### Claude Pro/Max
 
-Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
+Anthropic subscription auth works with Claude Pro/Max accounts. Third-party usage draws from [extra usage](https://claude.ai/settings/usage) and bills per token rather than against Claude plan limits.
 
-Run `/login anthropic` and choose subscription authentication. **Browser login (default)** uses a local callback and still accepts a pasted redirect URL. Choose **Copy code login (headless)** when your browser runs on another machine: complete sign-in in that browser, then paste the `code#state` value Anthropic displays into Atomic. This method does not need a reachable local callback.
+Run `/login anthropic` and select subscription authentication. **Browser login (default)** uses a local callback on port `53692` (falling back to a free port) and accepts a pasted redirect URL. Choose **Copy code login (headless)** when your browser runs on another machine, then paste the displayed `code#state` value into Atomic.
 
-Browser login tries loopback port `53692` first and uses a free port if it is unavailable. For SSH or container port forwarding, forward `53692` when it is free; otherwise use **Copy code login (headless)** or paste the final redirect URL.
+For gateway-issued Anthropic bearer tokens, set `ANTHROPIC_AUTH_TOKEN` without `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN`. Atomic sends `Authorization: Bearer ...` for normal turns and branch summaries without replacing custom headers or synthesizing `x-api-key`. Empty environment variables do not count as configured; avoid setting both a bearer token and an API key accidentally.
 
-For gateway-issued Anthropic bearer credentials, set `ANTHROPIC_AUTH_TOKEN` without `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN`. A populated bearer token counts as configured Anthropic authentication, so `/model`, saved/default selection, cycling, RPC catalogs, and isolated model pickers keep Anthropic models available. Atomic sends it as `Authorization: Bearer …` for normal turns and branch summaries without replacing caller-supplied custom headers.
+Claude Opus 5 models are included in the Anthropic and Amazon Bedrock catalogs. With bearer-only Anthropic auth, select an exact entry such as `anthropic/claude-opus-5` or `anthropic/claude-opus-5-5` in `/model`; Bedrock uses its catalog inference profile. `xhigh` appears only when the selected entry advertises it.
 
-Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock catalogs. With bearer-only Anthropic auth, select the exact `anthropic/claude-opus-5-*` entry through `/model`; Bedrock uses its catalog-advertised inference profile. `xhigh` appears only when the chosen entry advertises it. Bedrock requests retain adaptive thinking, prompt caching, and AWS validation/error details from the provider runtime.
-
-Claude Fable 5.2 (`anthropic/claude-fable-5-2`, $8 input / $40 output per million tokens, 1M context, 128K output) is also in the Anthropic catalog. Like Fable 5.1 it uses per-message effort and mid-conversation system messages, and its server-side fallback is limited to Claude Opus 5 because Claude Opus 4.8 cannot take per-message effort. Claude Fable 5.2 and Mythos 5.2 on other providers, such as OpenRouter's `anthropic/claude-fable-5.2`, get the same per-message effort support.
-
-`ANTHROPIC_AUTH_TOKEN` is specifically for Anthropic-compatible gateways that require a bearer header. It does not synthesize an API key or `x-api-key`, and callers may still add independent custom headers/base URLs through `models.json` or an extension. Empty environment variables do not count as configured. If token and API-key sources are both configured, normal credential resolution rules apply; avoid setting both accidentally.
+Claude Fable 5.2 (`anthropic/claude-fable-5-2`, $8 input / $40 output per million tokens, 1M context, 128K max output) is included in the Anthropic catalog. Like Fable 5.1, it supports per-message effort and mid-conversation system messages, and restricts server-side fallback to Claude Opus 5 because Claude Opus 4.8 does not accept per-message effort. Mirrors such as OpenRouter's `anthropic/claude-fable-5.2` receive the same per-message effort support.
 
 ### Anthropic workload identity federation
 
-With no Anthropic key, bearer token, or login configured, Atomic uses workload identity federation when `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` are all set. The Anthropic SDK exchanges the identity token for a short-lived access token and refreshes it, re-reading the token file each time, so keep that file fresh in long sessions. `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID` are sent when set.
+When no Anthropic API key, bearer token, or subscription login is configured, Atomic enables workload identity federation if `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, and `ANTHROPIC_IDENTITY_TOKEN_FILE` are all set.
 
-Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. Federation applies only to the `anthropic` provider, not to other Anthropic-compatible providers.
+The Anthropic SDK exchanges the identity token for a short-lived access token and rereads the token file on each refresh, so keep that file updated during long sessions. `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID` are sent when set.
+
+API keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence over federation. Federation applies only to the `anthropic` provider.
 
 ### GitHub Copilot
 
-- Press Enter for github.com, or enter your GitHub Enterprise Server domain
-- A personal access token works either way: save it with `/login github-copilot` → **Use an API key**, or set `COPILOT_GITHUB_TOKEN`. A saved key takes precedence over the environment variable
-- Models come from the bundled `pi-ai` GitHub Copilot catalog plus the models your account's `/models` list offers that the bundled catalog lacks. Once Atomic has read that list with your OAuth login or saved API key, it offers only the models the list contains; see [Which models are shown](#which-models-are-shown)
-- If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+- Press Enter for `github.com`, or enter your GitHub Enterprise Server domain.
+- Personal access tokens also work: store one with `/login github-copilot` (choose **Use an API key**) or set `COPILOT_GITHUB_TOKEN`. A stored key takes precedence over the environment variable.
+- Models come from Atomic's built-in `@bastani/atomic-ai` GitHub Copilot catalog plus models advertised by your account's `/models` endpoint. Once Atomic reads your account list via OAuth or a saved API key, it shows only models in that list; see [Which models are shown](#which-models-are-shown).
+- If Copilot returns "model not supported", enable the model in VS Code under Copilot Chat's model selector.
 
-Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, for example `atomic --model github-copilot/gpt-6.1-sol:high`. Their context windows and reasoning levels are in [OpenAI built-in models](/models/reference#openai-built-in-models). The account's model list still controls availability, so a bundled model does not guarantee that Copilot has enabled it for your account.
+Copilot includes `github-copilot/gpt-6.2-astra`, `github-copilot/gpt-6.2-sol`, `github-copilot/gpt-6.1-sol`, `github-copilot/gpt-6.1-terra`, and `github-copilot/gpt-6-astra`. See [OpenAI built-in models](/models/reference#openai-built-in-models) for context windows and reasoning levels. Account policy still controls actual availability.
 
-Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. When a refresh cannot read the list, for example because the host refuses the token, the models cached before stay. A model found this way:
+Atomic reads your account's `/models` list on every network catalog refresh (at interactive startup, from `/model`, and via `atomic update --models`) and caches it in `models-store.json` for offline and `atomic -p` runs. If a refresh fails, previously cached models remain available.
 
-- keeps the exact ID the account advertises, which is sent upstream unchanged, and is named by the display name the account's list gives it (the ID when the list gives none); `/model` shows that name in the selected model's `Model Name` line, and in a dim column beside the ID when it adds words the ID lacks
-- is marked `discovered: true` in the catalog; its limits, image input, reasoning efforts and adaptive thinking come from the account's list, and `modelOverrides` adjusts them like any other model
-- does not request 24-hour prompt-cache retention, because some Copilot models reject it and the list does not say which; set `compat.supportsLongCacheRetention` in `modelOverrides` for one that accepts it
-- never replaces a bundled entry with the same ID, which keeps its curated metadata
-- is skipped when the account disables its policy, hides it from the model picker, or does not list tool-call support
+Each discovered model:
 
-A Copilot fast model appears only when the account's list advertises its exact ID, and like any discovered model it takes its limits and capabilities from its own entry. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. Each refresh also updates the model lists saved with your OAuth login or saved API key, which decide what it is offered, so a model the refresh finds is offered at once, and models found with another login are not offered to yours. If an SDK session has no cached Copilot catalog and its first prompt cannot run on a local model or configured fallback, it checks the account list once for the exact saved model. `atomic -p` does the same for a missing default from settings, not for a different unavailable model in a resumed conversation. The lookup uses the advertised model only for that session. To update the shared model list, run `atomic update --models`.
+- Keeps its advertised ID unchanged upstream and shows the account's display name in `/model`.
+- Is tagged `discovered: true` with limits, vision settings, and reasoning efforts from the account list (adjustable via `modelOverrides`).
+- Omits 24-hour prompt-cache retention by default; set `compat.supportsLongCacheRetention` in `modelOverrides` if the model accepts it.
+- Never overwrites a built-in entry with the same ID.
+- Is skipped if disabled by policy, hidden from the picker, or lacking tool-call support.
+
+Copilot fast models appear only when advertised by your account's `/models` list and pair with their base model when the entry's `family` field names it. Each refresh saves the model lists alongside your OAuth login or saved API key so accounts never bleed models into each other.
+
+If an SDK session or `atomic -p` run has no cached Copilot catalog and cannot find its saved default model locally, it queries the account list once for that session. Run `atomic update --models` to refresh the shared cached list.
 
 #### Which models are shown
 
-Once Atomic has read your account's model list with your OAuth login or a saved API key, it offers a Copilot model only if that list contains it. Bundled models the list omits are hidden everywhere models are offered: `/model`, `--list-models`, scoped models and model cycling. Discovered models stay. A credential never sees another credential's list, and a provider alias of `github-copilot` registered with `registerProviderAlias` filters by the list its own credential reads, so two accounts can be offered different models.
+After Atomic reads your account's `/models` list with an OAuth login or saved API key, built-in Copilot models absent from that list are hidden across `/model`, `--list-models`, scoped models, and cycling. Discovered models stay visible.
 
-The lists are saved with the credential: for an API key, in `auth.json` beside the key. Saving a different key with `/login` starts without them, and the next network refresh reads the new key's list.
+Each credential keeps its own saved list (stored beside the key in `auth.json`), and provider aliases created with `registerProviderAlias` filter by their own credential's list. Saving a new API key with `/login` clears the previous list until the next network refresh.
 
 Atomic hides nothing on a guess:
 
-- Until a refresh has read the list with the credential, for example an offline first start, the whole bundled catalog and any models cached before are offered.
-- When a refresh cannot read the list (offline, the host refuses the token with a `401`, or a network error), nothing new is hidden. A credential whose list was read earlier keeps the lists it saved.
-- An API key whose list names no usable model keeps showing the whole catalog.
-- Models you define in `models.json` are never hidden.
-- A token that comes from `COPILOT_GITHUB_TOKEN` or `--api-key`, or is saved as an environment variable reference or a command, is not matched with saved lists, so it is offered the whole catalog plus the models the list discovers. To narrow the list, save the token itself with `/login github-copilot` → **Use an API key**.
-- Models discovered for an alias come from the `github-copilot` account's list; an alias is offered the discovered models its own list contains.
+- Before the first successful refresh (such as an offline first start), the entire built-in catalog and any cached models stay visible.
+- If a refresh fails offline or with HTTP 401, nothing new is hidden; credentials with earlier saved lists keep them.
+- An API key whose list returns no usable models falls back to showing the full catalog.
+- Models defined in `models.json` are never hidden.
+- Tokens from `COPILOT_GITHUB_TOKEN`, `--api-key`, env-var references, or shell commands are not paired with saved filter lists; save the token directly via `/login github-copilot` and **Use an API key** to enable per-account filtering.
+- Provider aliases receive discovered models from the `github-copilot` catalog filtered by each alias's own account list.
 
 #### Model families
 
-Copilot serves models from several vendors through one provider. Atomic picks each model's API from its metadata, never from its name: a bundled model uses the API its catalog entry names, and a discovered model uses the first of the Messages, Responses, and Chat Completions endpoints its `supported_endpoints` lists. Endpoints Atomic does not call, such as `/interactions` and `ws:/responses`, are ignored, and an entry that lists only those is skipped.
+Copilot serves models from multiple vendors through one provider. Built-in entries use the API declared in Atomic's catalog; discovered entries use the first endpoint Atomic supports from `supported_endpoints` (Messages, Responses, then Chat Completions). Unsupported endpoints such as `/interactions` and `ws:/responses` are ignored.
 
-| Family | Bundled models | API | Thinking levels | Reasoning on the next turn | Context / max output |
+| Family | Bundled models | API | Thinking levels | Reasoning on next turn | Context / max output |
 | --- | --- | --- | --- | --- | --- |
-| Gemini | `gemini-3.8-flash`, `gemini-4-argon`, `gemini-4-carbon` | Chat Completions | `low`, `medium`, `high` | Copilot's opaque reasoning value is kept and sent back to the same model | 1,000,000 / 64,000; 1,048,576 / 65,536 for Gemini 4 |
-| Kimi | `kimi-k3` | Chat Completions | `low`, `high`, `max` | Readable reasoning, when the model returns it, is sent back to the same model | 1,048,576 / 131,072 |
-| Grok | `grok-4.5`, `grok-4.6`, `grok-4.7` | Responses | `low`, `medium`, `high`; 4.6 and 4.7 add `xhigh` | The encrypted reasoning item is sent back to the same model | 500,000 / 128,000 |
-| Discovered | Any chat model the account lists | From `supported_endpoints` | From the entry's `reasoning_effort` | As for its API | From the entry's limits |
+| Gemini | `gemini-3.8-flash`, `gemini-4-argon`, `gemini-4-carbon`, `gemini-4-hydrogen`, `gemini-4-neon` | Chat Completions | `low`, `medium`, `high` (`gemini-4-hydrogen` and `gemini-4-neon` add `xhigh`) | Opaque reasoning token replayed to the same model | 1,000,000 / 64,000; 1,048,576 / 65,536 for Gemini 4 |
+| Kimi | `kimi-k3` | Chat Completions | `low`, `high`, `max` | Readable reasoning replayed to the same model | 1,048,576 / 1,048,576 |
+| Grok | `grok-4.5`, `grok-4.6`, `grok-4.7` | Responses | `low`, `medium`, `high` (`4.6` and `4.7` add `xhigh`) | Encrypted reasoning item replayed to the same model | 500,000 / 128,000 |
+| Discovered | Any chat model the account lists | From `supported_endpoints` | From `reasoning_effort` | Matches the selected API | From the entry's limits |
 
-For every family:
+Shared behavior across Copilot families:
 
-- Parallel tool calls are accepted, a tool call with no arguments arrives as `{}`, and arguments streamed in pieces are joined before the call runs. Tool call IDs are kept as Copilot sends them; Responses IDs are shortened to a valid `call_id` when they are sent back.
-- Tool schemas are sent strict for the bundled Gemini and Kimi models, and for a discovered model only when its entry lists `structured_outputs`.
-- Reasoning tokens count toward a turn's output tokens, including Gemini's, which Copilot reports outside the completion count.
-- Images are accepted by every bundled model above. A discovered model takes image support from the entry's `vision` flag, and its per-request image count and per-image size from `limits.vision`; Atomic resizes images below that size.
-- Copilot can reject a prompt below the context window because a model may accept fewer prompt tokens than its window. Atomic then compacts the conversation and retries, as for any context overflow.
-- A Chat Completions or Responses turn that ends with no text and no tool call, as Gemini sometimes returns, fails as `empty-response` and is retried.
+- Parallel tool calls work, empty tool arguments normalize to `{}`, and streamed JSON deltas join before execution. Responses tool-call IDs are shortened to valid `call_id` values on replay.
+- Strict tool schemas are enabled for built-in Gemini and Kimi models, and for discovered models whose entry advertises `structured_outputs`.
+- Reasoning tokens count toward output tokens, including for Gemini models.
+- All built-in entries above accept images; discovered models take vision flags and image size/count limits from `vision` and `limits.vision`.
+- Prompts rejected below the nominal context window trigger compaction and retry like any context overflow.
+- Chat Completions and Responses turns that finish with no text and no tool calls fail as `empty-response` and retry.
 
-Which of these models an account can use is up to Copilot, per account and per integration. Run `/login` again or `atomic update --models` after your plan changes.
+Run `/login` again or `atomic update --models` after plan changes.
 
 #### Errors
 
-Atomic types every failed Copilot request, so retries and [model fallback](/settings#retry) follow the failure itself, not the wording of the provider's message. The message starts with what failed, the model, and the code, then what to do, followed by Copilot's own response.
+Atomic classifies every failed Copilot request into a typed error class so retries and [model fallback](/settings#retry) react to the failure cause rather than error text:
 
-Every error carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `providerCode` (Copilot's own error code), `requestId` (Copilot's `x-request-id`), `detail` (a short excerpt of Copilot's response text, which can quote parts of the request) and the underlying `cause`. The extra fields are listed per class.
+- **Immediate fallback (no retry):** unavailable model, exhausted quota, invalid request, or authentication failure.
+- **Retry, then fallback:** rate limit (honors `Retry-After`), service unavailable (408/5xx/529), cut stream, empty response, or unrecognized response.
+- **Compaction (no fallback):** prompt exceeds the model's prompt-token limit (or HTTP 413).
+- **Content filter:** retries or falls back according to `retry.fallbackOnContentFilter`.
 
-| Class | Code | When | Extra fields | Retried on the same model | Falls back to the next model | What to do |
-| --- | --- | --- | --- | --- | --- | --- |
-| `GitHubCopilotModelUnavailableError` | `model-unavailable` | Copilot does not offer the model to this account, this integration, or this API, has no endpoint for it, or does not know it (HTTP 404) | `reason`: `integration`, `not-supported`, `wrong-api`, `no-endpoint`, `not-found` | No | Yes | Pick another model, or run `/login` to refresh the model list |
-| `GitHubCopilotRateLimitError` | `rate-limited` | HTTP 429, or a rate-limit error in the stream; honours `Retry-After` | `retryAfterMs` | Yes | Yes, after retries | Wait for the limit to reset |
-| `GitHubCopilotQuotaExhaustedError` | `quota-exhausted` | HTTP 402, a quota code, or an HTTP 429 that reports a used-up quota (`x-ratelimit-exceeded: quota_exceeded`, or the body `quota exceeded`) | None | No | Yes | Pick another model, or wait for the quota to reset |
-| `GitHubCopilotContentFilterError` | `content-filtered` | A content or policy filter blocked the request (for example HTTP 422 `cyber_policy`) or stopped the response: `content_filter` on Chat Completions, an `incomplete` response with reason `content_filter` on Responses, a `refusal` or `sensitive` stop on Messages | None | Only when `retry.fallbackOnContentFilter` is `false` | Only when `retry.fallbackOnContentFilter` allows it | Rephrase the request or pick another model |
-| `GitHubCopilotPromptTooLargeError` | `prompt-too-large` | The prompt exceeds the model's prompt-token limit, or HTTP 413 | `promptTokens`, `limitTokens` when Copilot names them | No | No; Atomic compacts instead | Run `/compact` or start a new session |
-| `GitHubCopilotInvalidRequestError` | `invalid-request` | Copilot rejected the request, for example a thinking level the model does not list, or an unknown `Copilot-Integration-Id` header | `reason`: `reasoning-effort`, `integration-id`, `rejected` | No | Yes | Pick a supported thinking level, or check `models.json` overrides |
-| `GitHubCopilotAuthenticationError` | `authentication-failed` | HTTP 401 or 403 | None | No | Yes | Run `/login`, or check `COPILOT_GITHUB_TOKEN` |
-| `GitHubCopilotServiceUnavailableError` | `service-unavailable` | HTTP 408, 5xx or 529, or a server error in the stream | None | Yes | Yes, after retries | Retry later |
-| `GitHubCopilotStreamEndedEarlyError` | `stream-ended-early` | The response stopped before its finish reason or final event, for example when the remote side closes the connection mid-stream, or no stream event arrives within [`streamDeadlineMs`](/settings#message-delivery) | `durationMs`, `startedContent` | Yes; one more time at most after a [long attempt](#streams-cut-after-a-long-attempt) | Yes, after retries | Retry; if it keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model |
-| `GitHubCopilotEmptyResponseError` | `empty-response` | The model finished with no text and no tool call | None | Yes | Yes, after retries | Retry |
-| `GitHubCopilotUnrecognizedResponseError` | `unrecognized-response` | An HTTP status, stream error code, or body Atomic does not recognize | `reason`: `unknown-status`, `unknown-error-event`, `malformed-body` | Yes, up to the retry limit | Yes, after retries | Retry, and report it if it persists |
-
-All of them extend `GitHubCopilotError`. The same decisions apply in the main chat and in subagents. An `invalid-request` or `unrecognized-response` whose response text reads as a context overflow is still treated as one.
+For the full 11-class error table, error codes, fields, and SDK helper functions (`getGitHubCopilotError`, `findGitHubCopilotError`, guards, and serialization), see [GitHub Copilot errors](/providers/reference#github-copilot-errors).
 
 #### Streams cut after a long attempt
 
-A `stream-ended-early` error says what the attempt saw, so a cut stream can be reported and compared across attempts. `requestId` is the response's `x-request-id`, `durationMs` is how long the attempt ran before the stream ended, and `startedContent` is whether any stream event, such as a message start, a content block or a delta, had arrived. The message shows the same facts:
+A `stream-ended-early` error reports `requestId` (`x-request-id`), `durationMs`, and `startedContent` (whether any stream event arrived before the cut):
 
 ```text
 GitHub Copilot response stream ended early: claude-opus-5.5 (stream-ended-early). Attempt ran 312.4 s, response started, request ID <id>. If the stream keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model with the fallbackModels setting.
 ```
 
-A response can be cut at about the same point on every attempt, for example during long thinking at a high thinking level or while writing one very large tool call. Retrying then repeats the same wait. Atomic therefore treats an attempt that ran 5 minutes or more before its stream ended early as a long attempt:
+Streams cut during long thinking or very large tool calls often fail at the same point on retry. Atomic treats any attempt that ran **5 minutes or more** before cutting off as a long attempt:
 
-- A long cut gets one more retry on the same model. Cuts after shorter attempts keep the usual [`retry.maxRetries`](/settings#retry) budget.
-- A second long cut, with no successful response in between, stops retrying that model. When `fallbackModels` has another candidate, the turn continues there; a candidate can be the same model with a lower thinking level, such as `github-copilot/claude-opus-5.5:medium`. Otherwise the turn ends with the error and this advice: split the work into smaller steps, lower the thinking effort, or set `fallbackModels`.
-- The partial output of a cut attempt is never replayed. Each retry restarts the turn.
+- A long cut gets at most one more retry on the same model; shorter cuts keep the normal [`retry.maxRetries`](/settings#retry) budget.
+- A second consecutive long cut stops retrying that model and moves to `fallbackModels` (which can include the same model at a lower effort, such as `github-copilot/claude-opus-5.5:medium`), or ends with the error.
+- Partial output from a cut stream is never replayed; every retry restarts the turn.
 
-Messages stream error events follow their provider error type, not a cut-off-stream fallback. A streamed `invalid_request_error` is non-retryable; `rate_limit_error`, `overloaded_error` and `api_error` are retryable. An unknown event type becomes `unrecognized-response`.
+Messages stream error events follow their provider error type (`invalid_request_error` is non-retryable; `rate_limit_error`, `overloaded_error`, and `api_error` are retryable; unknown event types become `unrecognized-response`). Cancelled requests and pre-response connection failures use Atomic's standard network handling.
 
-A cancelled request is never reported as one of these. A connection failure before Copilot answers keeps Atomic's usual network handling.
-
-SDK users can read the typed error from a failed assistant message with `getGitHubCopilotError(message)`, or from any error whose cause chain holds one, or a failed message, with `findGitHubCopilotError(error)`, which returns the error as an instance of its class. The error travels in the message's `diagnostics`, so it survives workers, RPC, and saved sessions; `serializeGitHubCopilotError()` and `deserializeGitHubCopilotError()` convert it explicitly, and `deserializeGitHubCopilotError()` returns `undefined` for a payload whose class name does not go with its code or whose reason that class does not have. Guards such as `isGitHubCopilotError()` and `isGitHubCopilotRateLimitError()` answer whether an error, its cause chain, or a failed message in it holds one, including errors relayed from another process. They return a plain `boolean` and do not narrow the value you pass in, because that value is often the wrapper or the message; call `findGitHubCopilotError()` when you need the instance and its fields. `describeGitHubCopilotModel(model)` returns the capabilities in the table above for one model.
-
-The guards and `findGitHubCopilotError()` reject malformed serialized errors too. Only minimal relays containing `name`, `code` and an optional string `message` can be reconstructed without structured fields; a malformed full payload is never rebuilt with its context discarded.
+For SDK extraction and serialization helpers, see [GitHub Copilot error helpers](/providers/reference#github-copilot-error-helpers).
 
 #### Responses that end without a finish reason
 
-GitHub Copilot sometimes ends a response stream normally without reporting a finish reason; this has been seen with Gemini models. On Chat Completions, a stream that is cut off never sends its final `data: [DONE]` event, so for every Copilot model on Chat Completions Atomic uses that event to tell such a response from a cut-off stream:
+Copilot occasionally ends a Chat Completions stream cleanly without a finish reason (commonly on Gemini models). Because a cut-off stream never sends `data: [DONE]`, Atomic uses `[DONE]` to distinguish normal completion from a cut stream:
 
-- A response whose tool calls are all complete, each with arguments that parse as a JSON object, ends with `toolUse`. A response with text and no tool call ends with `stop`.
-- A response with no text and no tool call is an `empty-response` error, retried like any other.
-- A response with a tool call that may be incomplete, or a stream that ends without `[DONE]`, is still `stream-ended-early`.
+- Complete tool calls with valid JSON object arguments finish as `toolUse`; text without tool calls finishes as `stop`.
+- No text and no tool calls fail as `empty-response` and retry.
+- Incomplete tool calls or streams ending without `[DONE]` fail as `stream-ended-early`.
 
-When Atomic infers the stop reason, the message's `rawStopReason` stays unset and its `diagnostics` hold a `github_copilot_inferred_stop_reason` entry (`GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC`) with the inferred `stopReason`, so `/debug` output and session exports show it. Streams that report a finish reason are handled as before.
+When Atomic infers the stop reason, `rawStopReason` stays unset and `diagnostics` records a `github_copilot_inferred_stop_reason` entry (`GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC`) visible in `/debug` and session exports.
 
 #### Endpoint routing for personal access tokens
 
-OAuth logins get their Copilot host from the token GitHub issues during login. A token saved through `/login` as an API key, or set in `COPILOT_GITHUB_TOKEN`, has no such exchange, so Atomic resolves the host itself, highest precedence first:
+OAuth logins receive their Copilot host from GitHub's token exchange. Raw personal access tokens (saved via `/login` as an API key or set in `COPILOT_GITHUB_TOKEN`) resolve their host in this order:
 
-1. `COPILOT_API_TARGET`, then `GITHUB_COPILOT_BASE_URL` — an explicit host or full URL
-2. the `proxy-ep=` segment embedded in the token
-3. `GITHUB_SERVER_URL` — `<tenant>.ghe.com` routes to `copilot-api.<tenant>.ghe.com`; any other non-`github.com` host routes to `https://api.enterprise.githubcopilot.com`
-4. `https://api.githubcopilot.com`, the public routing hub, which resolves your plan's host server-side
+1. `COPILOT_API_TARGET`, then `GITHUB_COPILOT_BASE_URL` (explicit host or full URL)
+2. The `proxy-ep=` segment embedded in the token
+3. `GITHUB_SERVER_URL`: `<tenant>.ghe.com` routes to `copilot-api.<tenant>.ghe.com`; other non-`github.com` hosts route to `https://api.enterprise.githubcopilot.com`
+4. `https://api.githubcopilot.com` (public routing hub)
 
-A `models.json` provider `baseUrl` for `github-copilot` overrides all of the above. Without a saved API key or `COPILOT_GITHUB_TOKEN`, the provider is left exactly as upstream `pi-ai` defines it.
+A `models.json` `baseUrl` for `github-copilot` overrides all of the above. Without a saved API key or `COPILOT_GITHUB_TOKEN`, the provider uses the default `@bastani/atomic-ai` configuration.
 
-Chat requests authenticated with a raw token, including `github_pat_`, `ghp_`, `gho_`, and `ghu_` tokens from `/login` or `COPILOT_GITHUB_TOKEN`, send `Copilot-Integration-Id: copilot-developer-cli`. A header supplied through `models.json`, `modelOverrides`, or per request takes precedence, including `vscode-chat`. Exchanged OAuth tokens containing `tid=` keep their OAuth headers.
+Raw tokens (`github_pat_`, `ghp_`, `gho_`, `ghu_`) send `Copilot-Integration-Id: copilot-developer-cli` unless overridden by `models.json`, `modelOverrides`, or request headers (such as `vscode-chat`). Exchanged OAuth tokens containing `tid=` keep their OAuth headers.
 
-Business and enterprise tokens sent to the individual host return `421 Misdirected Request`; if you see that, set `COPILOT_API_TARGET` to the host your organization issues.
+Business and enterprise tokens sent to the individual host return `421 Misdirected Request`; set `COPILOT_API_TARGET` to your organization's Copilot host to fix it.
 
 ### xAI (Grok/X subscription)
 
 Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains available through **Use an API key**.
 
-Atomic defaults xAI sessions to `grok-4.7`. GitHub Copilot also exposes Grok 4.7 when the account's model policy enables it. Network-backed catalogs refresh and cache these newer entries independently of the bundled catalog snapshot.
+Atomic defaults xAI sessions to `grok-4.7`. GitHub Copilot also exposes Grok 4.7 when account policy enables it. Network catalogs refresh and cache newer entries independently of the bundled snapshot.
 
-`xai/grok-4.7-fast` and the other `xai/*-fast` choices request xAI Priority Processing for lower time-to-first-token and faster streaming. xAI bills priority at twice the standard token rates, and only when the response confirms the priority tier. When priority capacity is unavailable, xAI serves the request at the default tier and Atomic prices it at the standard rate.
-
-Builtin subagents default to `model: "auto"`, which runs your configured default model (the one you last chose with `/model`) at its default thinking level, or the current session's model when no default model is configured. Builtins ship no fixed role models or fallback chains. For explicit child models and fallback lists, see [Subagent reference](/subagents/reference#automatic-model-selection).
+`xai/grok-4.7-fast` and other `xai/*-fast` choices request xAI Priority Processing for faster time-to-first-token and streaming. xAI bills priority at twice standard token rates only when the response confirms the priority tier; fallback to default processing is priced at standard rates.
 
 ### Meta (Muse subscription)
 
-Run `/login meta`, then select **Sign in with Meta** to open the device authorization flow. The login mints a Model API key that is re-minted automatically about once a day. `META_API_KEY` remains available through **Use an API key**.
+Run `/login meta`, then choose **Sign in with Meta** to start the device authorization flow. The login mints a Model API key that refreshes automatically about once a day. `META_API_KEY` remains available through **Use an API key**.
 
 ### Radius (removed)
 
-Atomic no longer ships the Radius provider: its gateway was operated by pi.dev, and Atomic does not contact pi's services. A `models.json` that configures `radius` or `"oauth": "radius"`, a `defaultProvider` of `radius`, or `--model radius/...` reports that the provider was removed. Remove those entries and pick another provider with `/login` and `/model`. A gateway that speaks the same `pi-messages` protocol can still be added as a custom provider with `"api": "pi-messages"`.
+Atomic removed the `radius` provider. If your `models.json`, `settings.json`, or `--model` flag references `radius` or `"oauth": "radius"`, remove it and pick another provider with `/login` and `/model`. To connect a custom gateway that speaks the same protocol, register it as a custom provider with `"api": "pi-messages"`.
 
 ### OpenRouter
 
 Authenticate with `/login openrouter` or `OPENROUTER_API_KEY`.
 
-With a key, Atomic lists only the OpenRouter chat models that key may use, with the key's context size, max output, and prices. These come from OpenRouter's `/models/user` endpoint and reflect guardrails and provider restrictions set in OpenRouter. Image and classifier models are not filtered.
+With a key configured, Atomic queries OpenRouter's `/models/user` endpoint and lists only the chat models that key can access, with your key's context window, max output, and pricing. Image and classifier models are not filtered.
 
-Atomic refreshes the list in the background at interactive startup, when `/model` opens, after `/login`, and on `atomic update --models`. The last list is saved and used offline, in `atomic -p`, and in RPC mode. If you switch keys outside `/login`, the previous key's list stays until the next refresh. A session saved with a model that the current key does not list still restores.
+Atomic refreshes this list in the background at interactive startup, on `/model`, after `/login`, and via `atomic update --models`, caching it for offline, `atomic -p`, and RPC runs. Switching keys outside `/login` keeps the previous list until the next refresh. Saved sessions still restore models omitted by the current key.
 
-Regional endpoints filter models to their region. To use one, set the base URL in [`models.json`](/models/reference#overriding-built-in-providers):
+To route through a regional endpoint, override `baseUrl` in [`models.json`](/models/reference#overriding-built-in-providers):
 
 ```json
 {
@@ -327,81 +329,78 @@ Regional endpoints filter models to their region. To use one, set the base URL i
 }
 ```
 
-If the base URL rejects the key at `/models/user` or does not have that endpoint, for example a proxy configured as the OpenRouter base URL, Atomic lists every OpenRouter model.
+If `/models/user` rejects the key or does not exist on a custom proxy URL, Atomic falls back to listing all OpenRouter models.
 
-## API Keys
+## API keys
 
-### Environment Variables or Auth File
+### Environment variables or auth file
 
-Use `/login` in interactive mode and select a provider to store an API key in `auth.json`, or set credentials via environment variable:
+Run `/login` to save an API key in `auth.json`, or export an environment variable before starting Atomic:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
 
-After login, open `/model` to use the authenticated cached snapshot immediately. Catalog refresh runs in the background with a 15-second deadline and falls back to cached models if the provider is slow or unavailable.
+After login, `/model` uses the cached catalog immediately while a background refresh runs with a 15-second deadline. If a provider is slow or offline, Atomic keeps the last usable snapshot; see [Catalog freshness and precedence](/models/reference#catalog-freshness-and-precedence).
 
-Logout returns without waiting for catalog refresh. Models can remain available if an environment variable or runtime key still authenticates the provider; remove that source separately. Earlier refreshes cannot undo a later login or logout.
+Logout returns immediately without waiting for catalog refresh. Earlier background refreshes cannot undo a later login or logout. If an environment variable or runtime override still authenticates the provider, remove that source separately.
 
-On remote or headless machines, paste the authorization code or final redirect URL when the login prompt offers manual entry. A completed exchange returns to the editor or shows an error; it does not require deleting `~/.atomic` or migrating existing OAuth credentials.
+| Provider | Environment variable | `auth.json` key |
+| --- | --- | --- |
+| Anthropic | `ANTHROPIC_API_KEY` or bearer-only `ANTHROPIC_AUTH_TOKEN` | `anthropic` |
+| Anthropic (API key only) | `ANTHROPIC_API_KEY` | `anthropic-api` |
+| Ant Ling | `ANT_LING_API_KEY` | `ant-ling` |
+| Azure | `AZURE_OPENAI_API_KEY` | `azure` |
+| OpenAI | `OPENAI_API_KEY` | `openai` |
+| OpenAI (API key only) | `OPENAI_API_KEY` | `openai-api` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
+| NVIDIA NIM | `NVIDIA_API_KEY` | `nvidia` |
+| Google Gemini | `GEMINI_API_KEY` | `google` |
+| Google Vertex AI | `GOOGLE_CLOUD_API_KEY` | `google-vertex` |
+| Mistral | `MISTRAL_API_KEY` | `mistral` |
+| Groq | `GROQ_API_KEY` | `groq` |
+| Cerebras | `CEREBRAS_API_KEY` | `cerebras` |
+| Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`) | `cloudflare-ai-gateway` |
+| Cloudflare Workers AI | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`) | `cloudflare-workers-ai` |
+| xAI | `XAI_API_KEY` | `xai` |
+| OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
+| Vercel AI Gateway | `AI_GATEWAY_API_KEY` | `vercel-ai-gateway` |
+| ZAI | `ZAI_API_KEY` | `zai` |
+| ZAI Coding Plan (China) | `ZAI_CODING_CN_API_KEY` | `zai-coding-cn` |
+| OpenCode Zen | `OPENCODE_API_KEY` | `opencode` |
+| OpenCode Go | `OPENCODE_API_KEY` | `opencode-go` |
+| Hugging Face | `HF_TOKEN` | `huggingface` |
+| TypeSafe Jev | `TYPESAFE_API_KEY` | `typesafe` |
+| Morph | `MORPH_API_KEY` | `morph` |
+| Fireworks | `FIREWORKS_API_KEY` | `fireworks` |
+| Together AI | `TOGETHER_API_KEY` | `together` |
+| Baseten | `BASETEN_API_KEY` | `baseten` |
+| Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
+| Meta | `META_API_KEY` | `meta` |
+| MiniMax | `MINIMAX_API_KEY` | `minimax` |
+| MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
+| Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
+| Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
+| Qwen Token Plan Team | `QWEN_TOKEN_PLAN_TEAM_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan Individual | `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY` | `qwen-token-plan-individual` |
+| Qwen Token Plan Team (China) | `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY` | `qwen-token-plan-cn` |
+| Qwen Token Plan Individual (China) | `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY` | `qwen-token-plan-individual-cn` |
+| Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
+| Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
+| Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
+| Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
 
-Catalog failures preserve the last usable models for each provider. See [catalog freshness and precedence](/models/reference#catalog-freshness-and-precedence).
+Provider notes:
 
-| Provider                           | Environment Variable                                                      | `auth.json` key              |
-| ---------------------------------- | ------------------------------------------------------------------------- | ---------------------------- |
-| Anthropic                          | `ANTHROPIC_API_KEY` or bearer-only `ANTHROPIC_AUTH_TOKEN`                 | `anthropic`                  |
-| Anthropic (API key only)           | `ANTHROPIC_API_KEY`                                                       | `anthropic-api`              |
-| Ant Ling                           | `ANT_LING_API_KEY`                                                        | `ant-ling`                   |
-| Azure                              | `AZURE_OPENAI_API_KEY`                                                    | `azure`                      |
-| OpenAI                             | `OPENAI_API_KEY`                                                          | `openai`                     |
-| OpenAI (API key only)              | `OPENAI_API_KEY`                                                          | `openai-api`                 |
-| DeepSeek                           | `DEEPSEEK_API_KEY`                                                        | `deepseek`                   |
-| NVIDIA NIM                         | `NVIDIA_API_KEY`                                                          | `nvidia`                     |
-| Google Gemini                      | `GEMINI_API_KEY`                                                          | `google`                     |
-| Google Vertex AI                   | `GOOGLE_CLOUD_API_KEY`                                                    | `google-vertex`              |
-| Mistral                            | `MISTRAL_API_KEY`                                                         | `mistral`                    |
-| Groq                               | `GROQ_API_KEY`                                                            | `groq`                       |
-| Cerebras                           | `CEREBRAS_API_KEY`                                                        | `cerebras`                   |
-| Cloudflare AI Gateway              | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`) | `cloudflare-ai-gateway`      |
-| Cloudflare Workers AI              | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`)                          | `cloudflare-workers-ai`      |
-| xAI                                | `XAI_API_KEY`                                                             | `xai`                        |
-| OpenRouter                         | `OPENROUTER_API_KEY`                                                      | `openrouter`                 |
-| Vercel AI Gateway                  | `AI_GATEWAY_API_KEY`                                                      | `vercel-ai-gateway`          |
-| ZAI                                | `ZAI_API_KEY`                                                             | `zai`                        |
-| ZAI Coding Plan (China)            | `ZAI_CODING_CN_API_KEY`                                                   | `zai-coding-cn`              |
-| OpenCode Zen                       | `OPENCODE_API_KEY`                                                        | `opencode`                   |
-| OpenCode Go                        | `OPENCODE_API_KEY`                                                        | `opencode-go`                |
-| Hugging Face                       | `HF_TOKEN`                                                                | `huggingface`                |
-| TypeSafe Jev                       | `TYPESAFE_API_KEY`                                                        | `typesafe`                   |
-| Morph                              | `MORPH_API_KEY`                                                           | `morph`                      |
-| Fireworks                          | `FIREWORKS_API_KEY`                                                       | `fireworks`                  |
-| Together AI                        | `TOGETHER_API_KEY`                                                        | `together`                   |
-| Baseten                            | `BASETEN_API_KEY`                                                         | `baseten`                    |
-| Kimi For Coding                    | `KIMI_API_KEY`                                                            | `kimi-coding`                |
-| Meta                               | `META_API_KEY`                                                            | `meta`                       |
-| MiniMax                            | `MINIMAX_API_KEY`                                                         | `minimax`                    |
-| MiniMax (China)                    | `MINIMAX_CN_API_KEY`                                                      | `minimax-cn`                 |
-| Moonshot AI                        | `MOONSHOT_API_KEY`                                                        | `moonshotai`                 |
-| Moonshot AI (China)                 | `MOONSHOT_API_KEY`                                                        | `moonshotai-cn`                 |
-| Qwen Token Plan Team                | `QWEN_TOKEN_PLAN_TEAM_API_KEY`                                            | `qwen-token-plan`               |
-| Qwen Token Plan Individual          | `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY`                                      | `qwen-token-plan-individual`    |
-| Qwen Token Plan Team (China)        | `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY`                                         | `qwen-token-plan-cn`            |
-| Qwen Token Plan Individual (China)  | `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY`                                   | `qwen-token-plan-individual-cn` |
-| Xiaomi MiMo                         | `XIAOMI_API_KEY`                                                          | `xiaomi`                        |
-| Xiaomi MiMo Token Plan (China)      | `XIAOMI_TOKEN_PLAN_CN_API_KEY`                                            | `xiaomi-token-plan-cn`          |
-| Xiaomi MiMo Token Plan (Amsterdam)  | `XIAOMI_TOKEN_PLAN_AMS_API_KEY`                                           | `xiaomi-token-plan-ams`         |
-| Xiaomi MiMo Token Plan (Singapore)  | `XIAOMI_TOKEN_PLAN_SGP_API_KEY`                                           | `xiaomi-token-plan-sgp`         |
+- **Z.AI and Baseten:** Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`) and also expose multimodal `glm-5.3-flash`. Baseten defaults to its directly selectable `zai-org/GLM-5.3` and also exposes `zai-org/GLM-5.3-Fast` and multimodal `zai-org/GLM-5.3-Flash`; OpenRouter exposes `z-ai/glm-5.3` and `z-ai/glm-5.3-flash`. GLM-5.3 entries support `low`, `high`, and `max` reasoning (not `off`); use `zai-org/GLM-5.2` or `zai/glm-5.2` when disabled reasoning is required.
+- **Qwen Token Plan:** Separate Team (`qwen-token-plan`, `qwen-token-plan-cn`) and Individual (`qwen-token-plan-individual`, `qwen-token-plan-individual-cn`) providers exist per region, all defaulting to `qwen3.8-max`. Set your plan's variable above; `QWEN_TOKEN_PLAN_API_KEY` and `QWEN_TOKEN_PLAN_CN_API_KEY` still work as fallbacks.
+- **Xiaomi MiMo:** Reasoning models on `xiaomi` and `xiaomi-token-plan-*` support only `off` and `high`.
+- **Kimi For Coding:** Uses OpenAI Chat Completions at `https://api.kimi.com/coding/v1`. Include `/v1` when overriding `baseUrl` in `models.json`. Kimi Code models always think, so `off` is not selectable.
 
-Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`), and both direct providers also expose the multimodal `glm-5.3-flash`. Baseten defaults to its directly selectable `zai-org/GLM-5.3` and also exposes `zai-org/GLM-5.3-Fast` and the multimodal `zai-org/GLM-5.3-Flash`; OpenRouter exposes `z-ai/glm-5.3` and `z-ai/glm-5.3-flash`. The full and Flash entries support `low`, `high`, and `max` reasoning; Baseten's Fast entry also supports `off`. Use Baseten's `zai-org/GLM-5.2` or `zai-org/GLM-5.3-Fast` when fully disabled reasoning is required. Qwen Token Plan has separate Team (`qwen-token-plan`, `qwen-token-plan-cn`) and Individual (`qwen-token-plan-individual`, `qwen-token-plan-individual-cn`) providers per region, all defaulting to `qwen3.8-max`. Set the key variable of your plan (`QWEN_TOKEN_PLAN_TEAM_API_KEY`, `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY`, `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY`, or `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY`); the shared `QWEN_TOKEN_PLAN_API_KEY` and `QWEN_TOKEN_PLAN_CN_API_KEY` remain supported as fallbacks. These catalogs follow their upstream providers, so use `--list-models` for the current entries.
+Use `--list-models` to check the latest catalog entries for any provider.
 
-Xiaomi MiMo reasoning models on `xiaomi` and all three `xiaomi-token-plan-*` providers support only `off` (thinking disabled) and `high` (thinking enabled). Use these levels when selecting thinking; Xiaomi does not distinguish intermediate effort levels.
-
-Kimi For Coding (`kimi-coding`) uses OpenAI Chat Completions at `https://api.kimi.com/coding/v1`. If a `models.json` override sets its `baseUrl`, include the `/v1` suffix. Kimi Code models always think, so `off` is not a selectable thinking level.
-
-Use the table above for environment-variable and `auth.json` names.
-
-#### Auth File
+#### Auth file
 
 Store credentials in `~/.atomic/agent/auth.json`:
 
@@ -422,17 +421,15 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "qwen-token-plan-cn": { "type": "api_key", "key": "sk-sp-..." },
   "qwen-token-plan-individual-cn": { "type": "api_key", "key": "sk-sp-..." },
   "xiaomi": { "type": "api_key", "key": "..." },
-  "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
+  "xiaomi-token-plan-cn": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." }
 }
 ```
 
-Qwen Token Plan has a Team (`qwen-token-plan`, `qwen-token-plan-cn`) and an Individual (`qwen-token-plan-individual`, `qwen-token-plan-individual-cn`) provider per region; each exposes only the models documented for its subscription. Store the credential in `auth.json` under the provider you select, or set the per-plan environment variable above.
+Atomic creates `auth.json` with `0600` permissions (owner read/write only). Stored credentials take precedence over environment variables.
 
-The file is created with `0600` permissions (user read/write only). Auth file credentials take priority over environment variables.
-
-API-key credentials may include provider-scoped `env` values. They take precedence over process environment variables while resolving the credential key, provider/model headers, and provider configuration such as Cloudflare account IDs, Azure settings, Vertex project/location, Bedrock settings, cache retention, and `HTTP_PROXY`/`HTTPS_PROXY`:
+API-key entries may also carry a provider-scoped `env` map. Those values override process environment variables while resolving the key, headers, provider settings (Cloudflare, Azure, Vertex, Bedrock), cache retention, and `HTTP_PROXY`/`HTTPS_PROXY`:
 
 ```json
 {
@@ -448,69 +445,66 @@ API-key credentials may include provider-scoped `env` values. They take preceden
 }
 ```
 
-Use this when Atomic should use provider settings different from the project shell environment.
+### Key resolution
 
-### Key Resolution
+The `key` field accepts shell commands, environment interpolation, escapes, and literal values:
 
-The `key` field supports command execution, environment interpolation, and literals:
-
-- **Shell command:** `"!command"` at the start executes the whole value as a command and uses stdout (cached for process lifetime)
+- **Shell command:** `"!command"` executes the command and uses stdout (cached for the process lifetime).
   ```json
   { "type": "api_key", "key": "!security find-generic-password -ws 'anthropic'" }
   { "type": "api_key", "key": "!op read 'op://vault/item/credential'" }
   ```
-- **Environment interpolation:** `"$ENV_VAR"` or `"${ENV_VAR}"` uses the value of the named variable. Interpolation works inside larger literals.
+- **Environment interpolation:** `"$ENV_VAR"` or `"${ENV_VAR}"` reads the variable and works inside larger strings (`${FOO}_BAR` separates `FOO` from literal `_BAR`). Missing variables leave the value unresolved.
   ```json
   { "type": "api_key", "key": "$MY_ANTHROPIC_KEY" }
   { "type": "api_key", "key": "${KEY_PREFIX}_${KEY_SUFFIX}" }
   ```
-  `$FOO_BAR` is the variable `FOO_BAR`; use `${FOO}_BAR` when `BAR` is literal text. Missing environment variables make the value unresolved.
-- **Escapes:** `"$$"` emits a literal `"$"`; `"$!"` emits a literal `"!"` without triggering command execution.
+- **Escapes:** `"$$"` produces a literal `"$"`; `"$!"` produces a literal `"!"` without running a command.
   ```json
   { "type": "api_key", "key": "$$literal-dollar-prefix" }
   { "type": "api_key", "key": "$!literal-bang-prefix" }
   ```
-- **Literal value:** Used directly
+- **Literal value:** Used directly.
   ```json
   { "type": "api_key", "key": "sk-ant-..." }
   { "type": "api_key", "key": "public" }
   ```
 
-Legacy uppercase env-var-like values such as `MY_API_KEY` are migrated to `$MY_API_KEY` on startup only when that environment variable is present during migration; otherwise the value is preserved as a literal. The same explicit `$ENV_VAR` rule and guarded legacy migration apply to custom provider `apiKey` and header values in `models.json`; see [Custom Models](/models). OAuth credentials are also stored here after `/login` and managed automatically.
+Legacy bare uppercase variable names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is present in the environment; otherwise they remain literals. The same syntax applies to `apiKey` and `headers` in `models.json`; see [Custom models](/models). OAuth tokens from `/login` are also stored in `auth.json`.
 
-## Provider Specific Config
+## Provider specific config
 
-The providers below have additional setup, need additional settings, or can use credentials supplied by their platform.
+The providers below need extra settings or support platform-supplied credentials.
 
 ### NVIDIA NIM
 
-NVIDIA's built-in default is `nvidia/nemotron-3.5-super-vl-120b-a12b`. Saved and explicit model choices still take precedence. To select this model explicitly:
+NVIDIA NIM defaults to `nvidia/nemotron-3.5-super-vl-120b-a12b`. Saved and explicit model choices still take precedence. Select it explicitly with:
 
 ```bash
 atomic --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
-Use `--list-models` or `/model` to check the current catalog and replace a missing saved model. A catalog listing does not verify account access or serving availability.
+Use `--list-models` or `/model` to inspect the current catalog. A catalog listing does not verify account access or serving availability.
 
 <a id="azure-openai" />
 
 ### Azure
 
-Use the `azure` provider for OpenAI Responses models and Microsoft Foundry Chat Completions models, including `azure/deepseek-v4-pro`. The provider ID `azure` is the key in `auth.json`, `models.json`, and `settings.json`, and the prefix in model references:
+Use the `azure` provider for OpenAI Responses models and Microsoft Foundry Chat Completions models, including `azure/deepseek-v4-pro`. Use `azure` as the key in `auth.json`, `models.json`, and `settings.json`:
 
 ```bash
 atomic --model azure/deepseek-v4-pro:high
 ```
 
-DeepSeek V4 Pro supports `low`, `medium`, and `high` reasoning effort. Azure OpenAI models keep the `azure-openai-responses` API ID; Chat Completions models use `openai-completions`.
+DeepSeek V4 Pro supports `low`, `medium`, and `high` reasoning effort. Azure OpenAI models use the `azure-openai-responses` API; Microsoft Foundry Chat Completions models use `openai-completions`.
 
 ```bash
 export AZURE_OPENAI_API_KEY=...
 export AZURE_OPENAI_BASE_URL=https://your-resource.openai.azure.com
-# also supported: https://your-resource.cognitiveservices.azure.com
-# Azure Foundry endpoints such as https://your-resource.services.ai.azure.com are supported too
-# root endpoints are auto-normalized to /openai/v1
-# or use resource name instead of base URL
+# Also supported: https://your-resource.cognitiveservices.azure.com
+# and Azure Foundry endpoints such as https://your-resource.services.ai.azure.com
+# Root endpoints auto-normalize to /openai/v1
+# Or set resource name instead of base URL:
 export AZURE_OPENAI_RESOURCE_NAME=your-resource
 
 # Optional
@@ -518,11 +512,11 @@ export AZURE_OPENAI_API_VERSION=2024-02-01
 export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-4=my-gpt4,gpt-4o=my-gpt4o
 ```
 
-`AZURE_OPENAI_API_VERSION` configures Responses requests and defaults to `v1`. Chat Completions uses the normalized `/openai/v1` endpoint.
+`AZURE_OPENAI_API_VERSION` applies to Responses requests and defaults to `v1`. Chat Completions uses the normalized `/openai/v1` endpoint.
 
-Deployment names default to model IDs. Set `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` when your deployments have different names; it applies to both APIs without changing the model ID shown in sessions.
+Deployment names default to model IDs. Set `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` when your Azure deployment names differ; it applies to both APIs without changing the model ID shown in sessions.
 
-Custom Azure deployments in `models.json` or extension registrations default to the Responses API when no API is specified and the model ID is not in the catalog. Set `api: "openai-completions"` at the provider or model level to use Chat Completions, for example for a Foundry model that Atomic does not include. Custom models require a `baseUrl`; `AZURE_OPENAI_BASE_URL` and `AZURE_OPENAI_RESOURCE_NAME` take priority over it when set:
+Custom Azure models in `models.json` or extensions default to `azure-openai-responses` when `api` is omitted and the model ID is not built in. Set `"api": "openai-completions"` at provider or model level for unlisted Foundry Chat Completions models. Custom models require a `baseUrl`, though `AZURE_OPENAI_BASE_URL` and `AZURE_OPENAI_RESOURCE_NAME` override it when set:
 
 ```json
 {
@@ -537,7 +531,7 @@ Custom Azure deployments in `models.json` or extension registrations default to 
 }
 ```
 
-The former provider name `azure-openai-responses` remains accepted in model selections, saved sessions, and SDK lookups. Startup renames that provider in `auth.json`, `settings.json`, and `models.json`, including legacy Pi configuration paths. Existing `azure` entries win on collisions. Project configuration is migrated only after the project is trusted; session files are not rewritten. Use `azure` in new configuration.
+The former provider ID `azure-openai-responses` remains accepted in CLI flags, saved sessions, and SDK lookups. Startup migrates it to `azure` in `auth.json`, `settings.json`, and `models.json` (only after project trust for project files), with existing `azure` entries winning on collision. Use `azure` in new configuration.
 
 ### Amazon Bedrock
 
@@ -556,13 +550,13 @@ export AWS_BEARER_TOKEN_BEDROCK=...
 export AWS_REGION=us-west-2
 ```
 
-Also supports ECS task roles (`AWS_CONTAINER_CREDENTIALS_*`) and IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE`).
+ECS task roles (`AWS_CONTAINER_CREDENTIALS_*`) and IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE`) also work.
 
 ```bash
 atomic --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v1:0
 ```
 
-GPT-6-Astra uses three exact Bedrock IDs:
+GPT-6 Astra uses three Bedrock IDs under the `amazon-bedrock` provider:
 
 ```text
 openai.gpt-6-astra
@@ -570,70 +564,71 @@ global.openai.gpt-6-astra
 us.openai.gpt-6-astra
 ```
 
-Select them under the single `amazon-bedrock` provider. Atomic passes the chosen ID unchanged to Bedrock Converse and sends the selected `low`, `medium`, `high`, `xhigh`, or `max` setting as the OpenAI `reasoning_effort` field. The unprefixed ID is Codex's direct/Mantle entry; `global.` and `us.` are Bedrock Runtime inference profiles. Bedrock does not advertise Astra Fast, so Atomic derives no fast sibling for these models. AWS's public region and pricing pages did not list Astra when this catalog entry was added. Availability can vary by account and region, and Atomic records zero catalog cost until AWS publishes an authoritative rate.
+Atomic passes the chosen ID unchanged to Bedrock Converse and maps `low`, `medium`, `high`, `xhigh`, and `max` to OpenAI's `reasoning_effort` field. `openai.gpt-6-astra` is the direct entry; `global.` and `us.` are Bedrock inference profiles. Bedrock offers no Astra Fast variant.
 
-Other Bedrock GPT models receive the selected thinking level as `reasoning.effort`; `minimal` maps to `low`. GPT-oss uses `reasoning_effort` and maps `minimal` to `low` and `xhigh` or `max` to `high`. For a custom application inference profile, give the model a recognizable GPT name in `models.json` so the reasoning setting is sent.
+Catalog pricing for `global.openai.gpt-6-astra` is $10 input, $1 cache read, $12.50 cache write, and $50 output per million tokens (above 272,000 input tokens: $20 / $2 / $25 / $75). Pricing for `openai.gpt-6-astra` and `us.openai.gpt-6-astra` is $11 / $1.10 / $13.75 / $55 (above 272,000 input tokens: $22 / $2.20 / $27.50 / $82.50). See [OpenAI built-in models](/models/reference#openai-built-in-models). Region and account availability still vary.
 
-Prompt caching is enabled automatically for Claude models whose ID contains a recognizable model name (base models and system-defined inference profiles). For application inference profiles (whose ARNs don't contain the model name), set `AWS_BEDROCK_FORCE_CACHE=1` to enable cache points:
+Other Bedrock GPT models receive thinking effort as `reasoning.effort` (`minimal` maps to `low`). GPT-oss uses `reasoning_effort`, mapping `minimal` to `low` and `xhigh`/`max` to `high`. Give custom application inference profiles a recognizable GPT name in `models.json` so reasoning effort is sent.
+
+Prompt caching turns on automatically for Claude models whose ID includes a recognizable model name. For application inference profiles (whose ARNs omit the model name), set `AWS_BEDROCK_FORCE_CACHE=1`:
 
 ```bash
 export AWS_BEDROCK_FORCE_CACHE=1
 atomic --provider amazon-bedrock --model arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123
 ```
 
-If you are connecting to a Bedrock API proxy, the following environment variables can be used:
+For a Bedrock API proxy, use:
 
 ```bash
-# Set the URL for the Bedrock proxy (standard AWS SDK env var)
+# Proxy URL (standard AWS SDK env var)
 export AWS_ENDPOINT_URL_BEDROCK_RUNTIME=https://my.corp.proxy/bedrock
 
-# Set if your proxy does not require authentication
+# Skip AWS signing when your proxy needs no authentication
 export AWS_BEDROCK_SKIP_AUTH=1
 
-# Set if your proxy only supports HTTP/1.1
+# Force HTTP/1.1 if your proxy does not support HTTP/2
 export AWS_BEDROCK_FORCE_HTTP1=1
 ```
 
 ### Cloudflare AI Gateway
 
-`CLOUDFLARE_API_KEY` can be set via `/login`. The account ID and gateway slug must be set as environment variables.
+Save `CLOUDFLARE_API_KEY` via `/login` or export it alongside your account ID and gateway slug:
 
 ```bash
 export CLOUDFLARE_API_KEY=...           # or use /login
 export CLOUDFLARE_ACCOUNT_ID=...
-export CLOUDFLARE_GATEWAY_ID=...        # create at dash.cloudflare.com → AI → AI Gateway
+export CLOUDFLARE_GATEWAY_ID=...        # create in Cloudflare dashboard under AI / AI Gateway
 atomic --provider cloudflare-ai-gateway --model "claude-sonnet-4-5"
 ```
 
-Routes to OpenAI, Anthropic, and Workers AI through Cloudflare AI Gateway. Workers AI uses the Unified API (`/compat`) and prefixed model IDs (`workers-ai/@cf/...`). OpenAI uses the OpenAI passthrough route (`/openai`) with native OpenAI model IDs such as `gpt-5.1`. Anthropic uses the Anthropic passthrough route (`/anthropic`) with native Anthropic model IDs such as `claude-sonnet-4-5`.
+Cloudflare AI Gateway routes to Workers AI (`/compat` with `workers-ai/@cf/...` IDs), OpenAI (`/openai` with native OpenAI IDs such as `gpt-5.1`), and Anthropic (`/anthropic` with native Anthropic IDs such as `claude-sonnet-4-5`).
 
-AI Gateway authentication uses `CLOUDFLARE_API_KEY` as `cf-aig-authorization`. Upstream authentication can be one of:
+Gateway authentication sends `CLOUDFLARE_API_KEY` in `cf-aig-authorization`. Upstream authentication supports four modes:
 
-| Mode            | Request auth                                          | Upstream auth                                                       |
-| --------------- | ----------------------------------------------------- | ------------------------------------------------------------------- |
-| Workers AI      | Cloudflare token only                                 | Cloudflare-native                                                   |
-| Unified billing | Cloudflare token only                                 | Cloudflare handles upstream auth and deducts credits                |
-| Stored BYOK     | Cloudflare token only                                 | Cloudflare injects provider keys stored in the AI Gateway dashboard |
-| Inline BYOK     | Cloudflare token plus upstream `Authorization` header | The request supplies the upstream provider key                      |
+| Mode | Request auth | Upstream auth |
+| --- | --- | --- |
+| Workers AI | Cloudflare token only | Cloudflare-native |
+| Unified billing | Cloudflare token only | Cloudflare handles upstream auth and deducts credits |
+| Stored BYOK | Cloudflare token only | Cloudflare injects keys stored in the AI Gateway dashboard |
+| Inline BYOK | Cloudflare token plus upstream `Authorization` header | Request supplies the upstream provider key |
 
-For normal Atomic usage, prefer unified billing or stored BYOK. Inline BYOK requires configuring an additional upstream `Authorization` header for the Cloudflare AI Gateway provider, for example via a `models.json` provider/model override.
+Prefer unified billing or stored BYOK. Inline BYOK requires configuring an extra upstream `Authorization` header via a `models.json` override.
 
 #### Workers AI binding (no API token)
 
-When Atomic's engine runs inside a Cloudflare Worker in the gateway's own account, requests can route through the [Workers AI binding](https://developers.cloudflare.com/ai-gateway/usage/workers-ai-binding/) (`env.AI`) instead of HTTPS. Binding calls are pre-authenticated in-account, so this path needs **no `CLOUDFLARE_API_KEY` at all**. Atomic re-exports the transport as `createGatewayBindingFetch` from `@bastani/atomic`.
+When Atomic runs inside a Cloudflare Worker in the gateway's account, requests can use the [Workers AI binding](https://developers.cloudflare.com/ai-gateway/usage/workers-ai-binding/) (`env.AI`) instead of HTTPS. Binding calls are pre-authenticated in-account and need no `CLOUDFLARE_API_KEY` or `CLOUDFLARE_ACCOUNT_ID`. Atomic re-exports the transport as `createGatewayBindingFetch` from `@bastani/atomic`.
 
-Declare the binding and gateway slug. The binding channel carries the account identity, so this route does not need an account ID:
+Declare the binding and gateway slug in `wrangler.toml`:
 
 ```toml
-# wrangler.toml
 [ai]
 binding = "AI"
 
 [vars]
-CLOUDFLARE_GATEWAY_ID = "your-gateway-slug"   # dash.cloudflare.com → AI → AI Gateway
+CLOUDFLARE_GATEWAY_ID = "your-gateway-slug"
 ```
 
-Then register a provider override whose `streamSimple` swaps in the binding transport. The extension must be created where `env` is in scope — an inline extension factory passed to the resource loader does that:
+Register an inline provider override where `env` is in scope so `streamSimple` uses the binding transport:
 
 ```typescript
 import {
@@ -645,8 +640,7 @@ import {
 } from "@bastani/atomic";
 import { streamSimple as anthropicStreamSimple } from "@bastani/atomic-ai/api/anthropic-messages";
 
-// `AI` is the Workers AI binding; `AiGatewayBinding` is the structural type for it,
-// so the snippet needs no `@cloudflare/workers-types` dependency.
+// `AiGatewayBinding` matches the Workers AI binding structurally without `@cloudflare/workers-types`.
 interface Env {
   AI: AiGatewayBinding;
   CLOUDFLARE_GATEWAY_ID: string;
@@ -663,9 +657,7 @@ export default {
           name: "cloudflare-gateway-binding",
           factory: async (pi) => {
             await pi.registerProvider("cloudflare-ai-gateway", {
-              // Placeholder credential: it marks the provider configured and becomes
-              // `cf-aig-authorization: Bearer cloudflare-gateway-binding`. On the plain
-              // binding fetch path, Cloudflare's gateway recognizes and strips it.
+              // Placeholder credential; Cloudflare's gateway recognizes and strips it on binding fetch.
               apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
               api: "anthropic-messages",
               streamSimple: (model, context, options) =>
@@ -691,29 +683,27 @@ export default {
 
     const { session } = await createAgentSession({
       resourceLoader: loader
-      // Pass `model:` with a cloudflare-ai-gateway entry (e.g. claude-sonnet-4-5)
-      // resolved from your ModelRuntime, or leave it out to use the saved default.
     });
-    // ...run the session and return a Response
+    // Run the session and return a Response
   }
 };
 ```
 
-Current Workers AI bindings expose `fetch()`. `createGatewayBindingFetch` forwards each request untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`. `baseUrl` and `gateway` options are ignored. Methods, headers (including the auth sentinel), query strings, non-JSON bodies, request streams, and response streams retain native fetch semantics; Cloudflare's gateway recognizes and strips the sentinel. Bindings that only expose `gateway(id).run(...)` are not supported. Repeat the same pattern with `@bastani/atomic-ai/api/openai-completions` (or `openai-responses`), setting the model `baseUrl` to `${bindingPrefix}/openai` (or `${bindingPrefix}/compat`) for those provider routes.
+`createGatewayBindingFetch` requires a binding with `fetch()` and forwards requests untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`. `baseUrl` and `gateway` options are ignored, and bindings exposing only `gateway(id).run(...)` are not supported. Repeat the same pattern with `@bastani/atomic-ai/api/openai-completions` or `openai-responses`, pointing `baseUrl` at `${bindingPrefix}/openai` or `${bindingPrefix}/compat`.
 
 ### Cloudflare Workers AI
 
-`CLOUDFLARE_API_KEY` can be set via `/login`. `CLOUDFLARE_ACCOUNT_ID` must be set as an environment variable.
+Save `CLOUDFLARE_API_KEY` via `/login` or export it with `CLOUDFLARE_ACCOUNT_ID`:
 
 ```bash
 export CLOUDFLARE_API_KEY=...           # or use /login
 export CLOUDFLARE_ACCOUNT_ID=...
-atomic --provider cloudflare-workers-ai --model "@cf/moonshotai/kimi-k2.6"
+atomic --provider cloudflare-workers-ai --model "@cf/moonshotai/kimi-k2.7-code"
 ```
 
-Atomic automatically sets `x-session-affinity` for [prefix caching](https://developers.cloudflare.com/workers-ai/features/prompt-caching/) discounts.
+Atomic sets `x-session-affinity` automatically for [prefix caching](https://developers.cloudflare.com/workers-ai/features/prompt-caching/).
 
-Workers AI also lists Cloudflare's Clef (`@cf/cloudflare/clef`), Clef Flash (`@cf/cloudflare/clef-flash`), and Clef Omni (`@cf/cloudflare/clef-omni`) and TypeSafe's Jev (`typesafe/jev`, `typesafe/jev-1.14.0`) as classifiers. They use the same `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`. Name the exact ID in `decisionModel`, `structured_output`, or `generateStructuredOutput()`; like other classifiers they do not appear in `/model` or work with `--model`. All of them accept images in `images`: Clef takes up to four PNG, JPEG, or WebP images, and Jev takes PNG or JPEG images. See [Structured decisions](/sdk/structured-decisions).
+Workers AI also includes classifiers using the same credentials: Cloudflare Clef (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni`) and TypeSafe Jev (`typesafe/jev`, `typesafe/jev-1.14.0`). Select them in `decisionModel`, `structured_output`, or `generateStructuredOutput()`; they do not appear in `/model`. Clef takes up to four PNG, JPEG, or WebP images; Jev takes PNG or JPEG images. See [Structured decisions](/sdk/structured-decisions).
 
 ### Google Vertex AI
 
@@ -725,46 +715,56 @@ export GOOGLE_CLOUD_PROJECT=your-project
 export GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
-Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
+Or point `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
 
 ## llama.cpp
 
-For router-mode discovery, load/unload management, and Hugging Face downloads with a local llama.cpp server, see [llama.cpp](/llama-cpp). Configure it with `/login llama.cpp` or `LLAMA_BASE_URL` and manage models with `/llama`.
+For router-mode discovery, load/unload management, and Hugging Face downloads with a local llama.cpp server, see [Local models](/llama-cpp). Configure the server with `/login llama.cpp` or `LLAMA_BASE_URL` and manage models with `/llama`.
 
 ## TypeSafe Jev
 
-`typesafe/jev-latest` and `typesafe/jev-1.14.0` are the built-in TypeSafe classifiers. `jev-latest` follows TypeSafe's latest stable Jev; `jev-1.14.0` pins Jev 1.14. Name one explicitly in `decisionModel`, `structured_output`, or `generateStructuredOutput()` when you want it. An unset or `auto` decision model uses the current chat model; saved credentials do not select a classifier. Jev is never a chat `--model` or `/model` choice. Any other classifier works the same way only when the current model registry lists it. A models.dev listing does not register a classifier. Compaction no longer uses classifiers: a `compactionModel` that names one is reset to `auto`; see [Compaction model](/compaction#compaction-model).
+`typesafe/jev-latest` and `typesafe/jev-1.14.0` are the built-in direct TypeSafe classifiers. `jev-latest` tracks the latest stable Jev release; `jev-1.14.0` pins Jev 1.14.
 
-Both direct TypeSafe classifiers turn on TypeSafe's [long-context](https://docs.typesafe.ai/models.md) and [image](https://docs.typesafe.ai/images.md) previews for every request, so they accept up to 262K tokens and PNG or JPEG images in `images`. Long requests are slower and less accurate than requests within TypeSafe's default 64K. Each image must be 280 to 1568 pixels per side. Atomic adds an `images` field to the state that lists the images in order, so questions can refer to `` `images` `` or `` `images[0]` ``; a state with its own `images` field cannot send images. TypeSafe marks images as a preview whose format and accuracy can change.
+Name a classifier explicitly in `decisionModel`, `structured_output`, or `generateStructuredOutput()`. An unset or `auto` decision model uses the active chat model; saving TypeSafe credentials never switches decisions automatically. Classifiers never appear in `/model` or work with `--model`. Compaction does not use classifiers; a `compactionModel` naming one resets to `auto` (see [Compaction model](/compaction#compaction-model)).
 
-Use `/login typesafe` to save an API key under `typesafe` in `auth.json`, or set `TYPESAFE_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key. `/logout typesafe` removes the saved TypeSafe credential; an environment key remains active until you unset it. Jev appears in `/login` but not `/model`, because it only makes structured decisions. Do not put the key in prompts, decision state, or `settings.json`.
+Both direct TypeSafe classifiers enable TypeSafe's [long-context](https://docs.typesafe.ai/models.md) (up to 262K tokens) and [image](https://docs.typesafe.ai/images.md) previews. Requests above TypeSafe's default 64K window are slower and less accurate. Images must be PNG or JPEG, 280 to 1568 pixels per side. Atomic attaches an `images` array to the state so questions can reference `images` or `images[0]`; a state that already defines `images` cannot send images.
 
-Atomic also registers `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free` as classifiers. Use the corresponding gateway's credentials (`AI_GATEWAY_API_KEY` or `/login vercel-ai-gateway`; `/login opencode` for Zen) and name the exact ID. They do not appear in the chat model selector. Gateway Jev uses its TypeSafe endpoint, not Chat Completions, keeps the gateway's own context limit, and does not accept images. The old `openrouter/~typesafe/jev-latest` ID remains unregistered.
+Save your key with `/login typesafe` or set `TYPESAFE_API_KEY` (stored credentials take precedence). `/logout typesafe` clears the stored key without unsetting environment variables. Do not put keys in prompts, decision state, or `settings.json`.
 
-An explicit `decisionModel` other than `auto` selects that exact registered chat or classifier model for every decision: `structured_output` calls that name no model and `decide()`. An unset or `auto` decision model uses the current chat model. A `structured_output` call can name its own model: an optional exact `model`, then `fallbackModels`, then the current chat model. General `generateStructuredOutput()` calls use only the models they name. Those calls resolve the ID through the current model registry and use the generic classify operation for a registered classifier, including `typesafe/jev-latest`. A catalog entry does not prove that classify is available or entitled.
+Atomic also registers Jev classifiers on gateways:
 
-A decision sends one classify request for a registered classifier and can repair a malformed chat answer up to three times after the initial attempt, all within one structured-decision deadline taken from [`httpIdleTimeoutMs`](/settings#http). Cancel the request to stop sooner; independent provider and enclosing tool-request limits still apply. A `structured_output` or `generateStructuredOutput()` classifier candidate is skipped, not repaired into a free-form value, when the schema is not a finite Choice. Missing credentials, an unavailable provider, an unsupported classify operation, a provider size rejection, a refusal, and a malformed classifier answer switch the decision to the current chat model and advance a general structured-output chain. Cancellation does not. See [structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
+- **OpenRouter:** `openrouter/~typesafe/jev-latest`, `openrouter/typesafe/jev-1.13`, and `openrouter/typesafe/jev-1.14` (262K context, text and image input; uses `OPENROUTER_API_KEY` or `/login openrouter`).
+- **Vercel AI Gateway:** `vercel-ai-gateway/typesafe-ai/jev`, `vercel-ai-gateway/typesafe-ai/jev-1.13.0`, and `vercel-ai-gateway/typesafe-ai/jev-1.14.0` (32K context, text only; uses `AI_GATEWAY_API_KEY` or `/login vercel-ai-gateway`).
+- **OpenCode Zen:** `opencode/jev-1.13` and `opencode/jev-1.13-free` (32K context, text only; uses `OPENCODE_API_KEY` or `/login opencode`).
 
-HTTP 401 means check the key saved through `/login typesafe` or `TYPESAFE_API_KEY`, 422 means check the question/state contract, and 429 or 529 means wait before retrying explicitly. Configured credentials do not verify access or quota. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
+Gateway Jev uses the gateway's classifier endpoint rather than Chat Completions and does not appear in `/model`.
+
+An explicit `decisionModel` other than `auto` applies to `decide()` and `structured_output` calls that omit `model`. A `structured_output` call with its own `model` checks that model, then `fallbackModels`, then the current chat model. `generateStructuredOutput()` uses only the models passed to it.
+
+One decision sends one classify request to a registered classifier or up to three repair attempts to a chat model, all within [`httpIdleTimeoutMs`](/settings#http). Classifier candidates are skipped when the schema is not a finite Choice. Missing credentials, unavailable providers, size rejections, refusals, or malformed classifier answers fall back to the chat model or next candidate; cancellation stops immediately. See [Structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
+
+HTTP 401 indicates an invalid key (`TYPESAFE_API_KEY` or `/login typesafe`), HTTP 422 indicates a question/state contract error, and HTTP 429 or 529 indicates rate limiting or overload. See [TypeSafe's API](https://docs.typesafe.ai/api.md) and [Choice reference](https://docs.typesafe.ai/primitives/choice.md).
 
 ## Morph compaction
 
-Use `/login morph` to save a Morph API key under `morph` in `~/.atomic/agent/auth.json`, or set `MORPH_API_KEY` in Atomic's process environment. Stored credentials take precedence over the environment key. Do not put the key in prompts or `settings.json`.
+Run `/login morph` to store a Morph API key in `~/.atomic/agent/auth.json`, or set `MORPH_API_KEY` (stored credentials take precedence). Do not place keys in prompts or `settings.json`.
 
-Then choose `morph/morph-compactor` through `/settings` → **Compaction model**, or set `"compactionModel": "morph/morph-compactor"` in global settings. Without credentials, the selector marks it as `requires /login morph`. At each compaction Morph receives the whole conversation in context, without thinking, and its output replaces the context; the agent can still recover anything it left out from session history. Choose Morph only if it is permitted to receive your conversation.
+Select `morph/morph-compactor` in `/settings` under **Compaction model**, or set `"compactionModel": "morph/morph-compactor"` in global settings. Without credentials, the selector marks it as `requires /login morph`.
 
-Morph is a compactor, not a chat model. It does not appear in `/model` and is never a `model: "auto"` choice. Missing credentials, HTTP errors, a timeout, or unusable output clear the context instead and show `Compaction model not used (<reason>); context cleared instead`. `/logout morph` removes the saved credential; an environment key remains active until you unset it. See [Context compacted](/compaction#context-compacted).
+During compaction, Morph receives the conversation without thinking blocks and returns a replacement summary; the agent can recover omitted details from session history. Use Morph only if your policy permits sending conversation content to Morph.
 
-## Custom Providers
+Morph is a compactor, not a chat model: it does not appear in `/model` and is never picked by `model: "auto"`. Missing credentials, HTTP errors, timeouts, or unusable output fall back to clearing the context with `Compaction model not used (<reason>); context cleared instead`. `/logout morph` removes the saved credential. See [Context compacted](/compaction#context-compacted).
 
-**Via models.json:** Add Ollama, LM Studio, vLLM, or any provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [Custom models](/models).
+## Custom providers
 
-**Via extensions:** For providers that need custom API implementations or OAuth flows, create an extension. See [Custom providers](/custom-provider) and [examples/extensions/custom-provider-gitlab-duo](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo).
+**Via `models.json`:** Add Ollama, LM Studio, vLLM, or any provider using OpenAI Completions, OpenAI Responses, Anthropic Messages, or Google Generative AI. See [Custom models](/models).
 
-## Stop Reasons
+**Via extensions:** Build custom APIs, dynamic model discovery, or OAuth flows in an extension. See [Custom providers](/custom-provider) and [examples/extensions/custom-provider-gitlab-duo](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo).
 
-Moved to [Provider reference](/providers/reference#stop-reasons).
+## Moved sections
 
-## Resolution Order
+<a id="stop-reasons" />
+<a id="resolution-order" />
 
-Moved to [Provider reference](/providers/reference#resolution-order).
+- [Stop reasons](/providers/reference#stop-reasons)
+- [Resolution order](/providers/reference#resolution-order)
