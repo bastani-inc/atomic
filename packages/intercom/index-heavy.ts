@@ -1554,7 +1554,32 @@ export default function piIntercomExtension(atomic: ExtensionAPI, testOverrides:
   atomic.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
     if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
     const request = payload;
-    request.completion = ensureConnected("background").then((activeClient) => waitForIntercomPeer(activeClient, request));
+    const signal = request.signal;
+    if (signal?.aborted) {
+      request.completion = Promise.resolve(false);
+      return;
+    }
+    const work = ensureConnected("background").then((activeClient) =>
+      signal?.aborted ? false : waitForIntercomPeer(activeClient, request),
+    );
+    request.completion =
+      signal === undefined
+        ? work
+        : new Promise<boolean>((resolve, reject) => {
+            const onAbort = () => resolve(false);
+            signal.addEventListener("abort", onAbort, { once: true });
+            work.then(
+              (result) => {
+                signal.removeEventListener("abort", onAbort);
+                resolve(result);
+              },
+              (error) => {
+                signal.removeEventListener("abort", onAbort);
+                if (signal.aborted) resolve(false);
+                else reject(error);
+              },
+            );
+          });
   });
   atomic.events.on(INTERCOM_INBOX_REPLAY_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
