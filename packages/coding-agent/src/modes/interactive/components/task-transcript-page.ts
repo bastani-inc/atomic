@@ -84,6 +84,7 @@ import type { KeptTaskAction } from "./kept-task.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import type { ParkedTaskRows } from "./parked-rows.ts";
 import { ReleasedWaitCard, releasedWaitLine } from "./released-wait-card.ts";
+import type { ShellOutputLoadState, ShellScrollWindow } from "./shell-viewer-layout.js";
 import { dismissedTasks } from "./task-dismissal.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
@@ -1768,8 +1769,10 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 	private readonly taskId: TaskId;
 	private readonly byteCount: () => bigint;
 	private readonly requestRender: () => void;
+	private readonly scrollbarMode: () => string | undefined;
 	private readonly viewport: ScrollableComponentViewport;
 	private output = new Text("", 0, 0);
+	private loadState: ShellOutputLoadState = "loading";
 	private loading = false;
 	private reloadPending = false;
 	private disposed = false;
@@ -1785,6 +1788,7 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 		this.taskId = taskId;
 		this.byteCount = byteCount;
 		this.requestRender = requestRender;
+		this.scrollbarMode = () => env?.getChatRenderSettings?.()?.fullscreenScrollbar;
 		this.viewport = new ScrollableComponentViewport(env?.keybindings, {
 			wheelScrollLines: () => env?.getChatRenderSettings?.()?.fullscreenWheelScrollLines,
 			scrollbar: () => env?.getChatRenderSettings?.()?.fullscreenScrollbar,
@@ -1792,6 +1796,23 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 			requestRender,
 		});
 		this.viewport.setComponents([this.output]);
+	}
+
+	get outputState(): ShellOutputLoadState {
+		return this.loadState;
+	}
+
+	paintedWindow(): ShellScrollWindow | undefined {
+		const painted = this.viewport.paintedWindow();
+		return painted === undefined
+			? undefined
+			: { firstRow: painted.firstRow, rows: painted.rows, totalRows: painted.totalRows };
+	}
+
+	measureRows(width: number): number {
+		const safeWidth = Math.max(1, Math.floor(width));
+		const contentWidth = this.scrollbarMode() === "always" && safeWidth > 1 ? safeWidth - 1 : safeWidth;
+		return Math.max(1, this.output.render(contentWidth).length);
 	}
 
 	async load(): Promise<void> {
@@ -1809,11 +1830,17 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 			});
 			if (this.disposed) return;
 			const text = page.ok ? page.value.text : page.error.message;
-			this.output = new Text(text.split("\n").map(taskDisplayText).join("\n") || "No output available", 0, 0);
+			const displaySource = text.endsWith("\n") && text.length > 1 ? text.replace(/\r?\n$/, "") : text;
+			const sanitized = displaySource.split("\n").map(taskDisplayText).join("\n");
+			this.loadState = page.ok ? (sanitized === "" ? "empty" : "output") : "error";
+			this.output = new Text(sanitized || "No output available", 0, 0);
 			this.viewport.setComponents([this.output]);
 			this.status = count > tail ? "Earlier output omitted · showing retained 8 KiB tail" : "Retained shell output";
 		} catch (error) {
-			if (!this.disposed) this.status = error instanceof Error ? error.message : String(error);
+			if (!this.disposed) {
+				this.loadState = "error";
+				this.status = error instanceof Error ? error.message : String(error);
+			}
 		} finally {
 			this.loading = false;
 			this.requestRender();

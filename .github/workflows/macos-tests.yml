@@ -1,0 +1,105 @@
+name: macOS tests
+
+# Maintainer-only: no pull-request trigger. It runs chosen root test files on macOS, which test.yml does not cover,
+# against the ref it is dispatched on. See docs/ci.md ("macOS test dispatch").
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Test files to run, separated by spaces, each under test/ and ending in .test.ts
+        required: true
+        type: string
+      project:
+        description: The vitest project the files belong to
+        required: true
+        default: unit
+        type: choice
+        options:
+          - unit
+          - integration
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    if: github.repository == 'bastani-inc/atomic'
+    # The only macOS profile this repository has. Nothing this job does is committed to its cache volume.
+    runs-on: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit]
+    timeout-minutes: 40
+    steps:
+      - name: Check the requested test files
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          set -euo pipefail
+          read -r -a files <<< "$TESTS"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No test files were given"
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            if ! [[ "$file" =~ ^test/[A-Za-z0-9._/-]+\.test\.ts$ ]] || [[ "$file" == *..* ]]; then
+              echo "::error::Not a test file under test/: $file"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        env:
+          MATCHED_KEY: ${{ steps.model-data.outputs.cache-matched-key }}
+        run: |
+          if [ -n "$MATCHED_KEY" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot $MATCHED_KEY"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core run build:bundle
+      - name: Build native bindings
+        run: npm --workspace=@bastani/atomic-natives run build
+      - name: Build @bastani/atomic package
+        working-directory: packages/coding-agent
+        run: npm run build
+      - name: Run the requested tests
+        env:
+          TESTS: ${{ inputs.tests }}
+          PROJECT: ${{ inputs.project }}
+        run: |
+          set -euo pipefail
+          read -r -a files <<< "$TESTS"
+          npx vitest --run --project "$PROJECT" "${files[@]}"
