@@ -1,19 +1,131 @@
 import { formatTokenCount, sliceHead, TASK_MARKS, type TaskMark } from "@bastani/atomic";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatToolCall } from "../shared/formatters.js";
+import {
+	findAsciiCaseInsensitive,
+	isJsWhitespace,
+	matchesAsciiCaseInsensitiveAt,
+	skipHorizontalWhitespaceLines,
+} from "../shared/prompt-text.js";
 import { formatActivityLabel } from "../shared/status-format.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getDisplayItems } from "../shared/utils.js";
 import { getTermWidth, type Theme } from "./render-layout.js";
 
-export function extractOutputTarget(task: string): string | undefined {
-	const writeToMatch = task.match(/\[Write to:(?:[^\S\n]*\n)*([^\]\n]+)\]/i);
-	if (writeToMatch?.[1]?.trim()) return writeToMatch[1].trim();
-	const findingsMatch = task.match(/Write your findings to:\s*(\S+)/i);
-	if (findingsMatch?.[1]?.trim()) return findingsMatch[1].trim();
-	const outputMatch = task.match(/[Oo]utput(?:\s+to)?\s*:\s*(\S+)/i);
-	if (outputMatch?.[1]?.trim()) return outputMatch[1].trim();
+const WRITE_TO_PREFIX = "[write to:";
+const WRITE_FINDINGS_PREFIX = "write your findings to:";
+const SINGLE_OUTPUT_TRAILER_PREFIX = "\n\n---\n**Output:** ";
+const OUTPUT_LABEL_PREFIX = "output";
+
+function matchWriteToTarget(task: string): string | undefined {
+	let searchFrom = 0;
+	let checkedEnd = 0;
+	while (searchFrom < task.length) {
+		const pos = findAsciiCaseInsensitive(task, WRITE_TO_PREFIX, searchFrom);
+		if (pos === -1) return undefined;
+		const i = skipHorizontalWhitespaceLines(task, pos + WRITE_TO_PREFIX.length);
+		if (i >= task.length) return undefined;
+		if (i < checkedEnd) {
+			searchFrom = i;
+			continue;
+		}
+		let k = i;
+		let depth = 1;
+		let firstClose = -1;
+		let balancedClose = -1;
+		while (k < task.length) {
+			const code = task.charCodeAt(k);
+			if (code === 0x0a) break;
+			if (code === 0x5b) {
+				depth++;
+			} else if (code === 0x5d) {
+				if (firstClose === -1) firstClose = k;
+				depth--;
+				if (depth === 0) {
+					balancedClose = k;
+					break;
+				}
+			}
+			k++;
+		}
+		const closeIdx = balancedClose !== -1 ? balancedClose : firstClose;
+		if (closeIdx !== -1) {
+			if (closeIdx > i) {
+				const trimmed = task.slice(i, closeIdx).trim();
+				return trimmed || undefined;
+			}
+			searchFrom = closeIdx + 1;
+		} else {
+			checkedEnd = k;
+			searchFrom = i;
+		}
+	}
 	return undefined;
+}
+
+function scanNonWhitespaceToken(text: string, start: number): string | undefined {
+	let i = start;
+	while (i < text.length && isJsWhitespace(text.charCodeAt(i))) {
+		i++;
+	}
+	if (i >= text.length) return undefined;
+	let end = i;
+	while (end < text.length && !isJsWhitespace(text.charCodeAt(end))) {
+		end++;
+	}
+	return text.slice(i, end);
+}
+
+function matchWriteFindingsTarget(task: string): string | undefined {
+	const pos = findAsciiCaseInsensitive(task, WRITE_FINDINGS_PREFIX, 0);
+	if (pos === -1) return undefined;
+	const afterPrefix = pos + WRITE_FINDINGS_PREFIX.length;
+	// The single-output producer appends `\n\n---\n**Output:** Write your findings to: <path>` on its own line;
+	// keep the full line so paths with spaces (such as Windows drive paths) are not truncated at the first space.
+	if (
+		pos >= SINGLE_OUTPUT_TRAILER_PREFIX.length &&
+		task.startsWith(SINGLE_OUTPUT_TRAILER_PREFIX, pos - SINGLE_OUTPUT_TRAILER_PREFIX.length)
+	) {
+		const nlIdx = task.indexOf("\n", afterPrefix);
+		const lineTarget = task.slice(afterPrefix, nlIdx === -1 ? task.length : nlIdx).trim();
+		if (lineTarget) return lineTarget;
+	}
+	return scanNonWhitespaceToken(task, afterPrefix);
+}
+
+function matchOutputLabelTarget(task: string): string | undefined {
+	let searchFrom = 0;
+	while (searchFrom < task.length) {
+		const pos = findAsciiCaseInsensitive(task, OUTPUT_LABEL_PREFIX, searchFrom);
+		if (pos === -1) return undefined;
+		const afterWord = pos + OUTPUT_LABEL_PREFIX.length;
+		let wsEnd = afterWord;
+		while (wsEnd < task.length && isJsWhitespace(task.charCodeAt(wsEnd))) {
+			wsEnd++;
+		}
+		let colonIdx = wsEnd;
+		let tookTo = false;
+		if (wsEnd > afterWord && matchesAsciiCaseInsensitiveAt(task, "to", wsEnd)) {
+			tookTo = true;
+			colonIdx = wsEnd + 2;
+			while (colonIdx < task.length && isJsWhitespace(task.charCodeAt(colonIdx))) {
+				colonIdx++;
+			}
+		}
+		if (colonIdx < task.length && task.charCodeAt(colonIdx) === 0x3a) {
+			return scanNonWhitespaceToken(task, colonIdx + 1);
+		}
+		if (!tookTo) {
+			searchFrom = wsEnd;
+		} else {
+			searchFrom = colonIdx > wsEnd + 2 ? colonIdx : wsEnd + 1;
+		}
+	}
+	return undefined;
+}
+
+export function extractOutputTarget(task: string): string | undefined {
+	return matchWriteToTarget(task) ?? matchWriteFindingsTarget(task) ?? matchOutputLabelTarget(task);
 }
 
 export function hasEmptyTextOutputWithoutOutputTarget(task: string, output: string): boolean {

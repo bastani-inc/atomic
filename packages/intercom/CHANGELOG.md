@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- The notice shown when an ended subagent is woken by an Intercom message now renders as a compact one-line notice card (`↻ Woke <subagent> for a message from <sender> · result arrives here`) with shortened readable IDs instead of a generic `[intercom_subagent_wake]` box. Press Ctrl+O or click anywhere on the notice to expand full subagent and sender IDs; it renders consistently before and after Intercom finishes loading and when resuming sessions.
+
 ### Fixed
 
 - With multi-node routing, a session answering a sender outside its groups can no longer send a fourth answer after that sender's latest message when the shared database failed to record that message as delivered and it was handed to the session again. Answers the session sent since the message first reached it now count toward that message's 3.
