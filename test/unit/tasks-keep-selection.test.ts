@@ -1278,3 +1278,265 @@ test("clicking a nested shell on the 4th row of a >4-row idle agent panel return
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.match(returnedSelected, /row-2/, "next neighbour below the 4-row idle cap is selected");
 });
+
+test("stopping a nested waited shell that wakes its parent subagent under a new attempt id selects the woken parent instead of skipping it", async () => {
+	for (const evictOld of [false, true]) {
+		const session = { extensionRunner: {} };
+		const alpha1 = waiting(agent("a1", "waiting alpha", 1, "op-alpha"));
+		const gamma = agent("a3", "running gamma", 3, "op-gamma");
+		const alphaShell = shell("s1", "alpha build", 2, "a1");
+		const store = new FakeOwnerTaskStore([alpha1, alphaShell, gamma]);
+		bindOwnerTaskStore(session, store);
+		const bridge = fakeBridge();
+		setAgentViewBridge(session, bridge);
+
+		// Panel order: [a3 (gamma), a1 (waiting alpha), s1 (alpha build)].
+		// Select s1 -> Enter -> stop s1, which wakes alpha under new attempt a1r (op-alpha:resume:1) -> <- returns to panel.
+		let returnedSelected = "";
+		const { ui } = mountUi(async (component, rows, mountIndex) => {
+			if (mountIndex === 1) {
+				component.handleInput(DOWN); // a1
+				component.handleInput(DOWN); // s1
+				assert.match(selectedLine(rows()), /alpha build/);
+				component.handleInput(ENTER);
+			} else if (mountIndex === 2) {
+				await tick();
+				const alpha2 = agent("a1r", "woken alpha", 4, "op-alpha:resume:1");
+				store.set(evictOld ? [done(alphaShell), gamma, alpha2] : [done(alpha1), done(alphaShell), gamma, alpha2]);
+				component.handleInput(LEFT);
+			} else {
+				returnedSelected = selectedLine(rows());
+				component.handleInput(ESC);
+			}
+		});
+		await showAgentPanel(session, ui);
+		assert.match(
+			returnedSelected,
+			/woken alpha/,
+			`evictOld=${evictOld}: woken parent subagent a1r is selected instead of jumping to gamma`,
+		);
+	}
+});
+
+test("returning from fullscreen shell output to a scrolled /tasks picker preserves scroll even when the closing fullscreen mount repaints before unmount", async () => {
+	const session = { extensionRunner: {} };
+	const items: TaskRecord[] = [
+		...Array.from({ length: 14 }, (_, i) =>
+			agent(`a${i + 1}`, `SCROLL-ITEM-${String(i + 1).padStart(2, "0")}`, i + 1),
+		),
+		...Array.from({ length: 4 }, (_, i) => shell(`msh${i + 1}`, `msh${i + 1}`, 20 + i)),
+	];
+	const store = new FakeOwnerTaskStore(items);
+	bindOwnerTaskStore(session, store);
+	const bridge = fakeBridge();
+	setAgentViewBridge(session, bridge);
+
+	let beforeRows: string[] = [];
+	let afterRows: string[] = [];
+	let mountIndex = 0;
+	const ui: TaskInspectorUi = {
+		notify() {},
+		async custom(factory) {
+			mountIndex++;
+			let finish = () => {};
+			const finished = new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+			const component = (await factory(
+				{ requestRender() {}, terminal: { rows: 26, columns: 120 } } as never,
+				theme,
+				getKeybindings() as KeybindingsManager,
+				finish as never,
+			)) as Mounted;
+			const rows = () => plain(component.render(120));
+			if (mountIndex === 1) {
+				// Scroll picker down to shell msh2, then back up 1 to msh3 so msh3 sits in the middle of the scrolled viewport.
+				rows();
+				for (let i = 0; i < 16; i++) {
+					component.handleInput(DOWN);
+					rows();
+				}
+				component.handleInput(UP);
+				beforeRows = rows();
+				assert.match(selectedLine(beforeRows), /msh3\b/, beforeRows.join("\n"));
+				component.handleInput(ENTER);
+			} else if (mountIndex === 2) {
+				await tick();
+				rows(); // paint fullscreen shell output page
+				component.handleInput(LEFT);
+				// Simulate isolated engine repainting the closing fullscreen mount at full terminal height (26 rows) before unmount!
+				component.render(120);
+			} else {
+				afterRows = rows();
+				component.handleInput(ESC);
+			}
+			await finished;
+			component.dispose?.();
+			return undefined as never;
+		},
+	};
+	await openTasks(session, store, ui);
+	assert.deepEqual(
+		afterRows,
+		beforeRows,
+		"picker scroll window must not jump after closing fullscreen mount repaints",
+	);
+});
+
+test("N1/N2: focused agent panel scrolling and idle-panel subagent clicks do zero extra backgroundTasks/taskRecord work on 2,000 tasks", async () => {
+	const count = 2_000;
+	const tasks = Array.from({ length: count }, (_, i) => agent(`a${i}`, `job-${i}`, i + 1, `op-${i}`));
+	const store = new FakeOwnerTaskStore(tasks);
+	const session = { extensionRunner: {} };
+	bindOwnerTaskStore(session, store);
+	const bridge = fakeBridge();
+	setAgentViewBridge(session, bridge);
+
+	let taskRecordReads = 0;
+	const origTaskRecord = store.taskRecord.bind(store);
+	store.taskRecord = (id: TaskId) => {
+		taskRecordReads++;
+		return origTaskRecord(id);
+	};
+
+	let bgReads = 0;
+	const source = ownerTaskViewSource(store);
+	const bgDescriptor = Object.getOwnPropertyDescriptor(source, "backgroundTasks");
+	Object.defineProperty(source, "backgroundTasks", {
+		configurable: true,
+		get() {
+			bgReads++;
+			return bgDescriptor?.get?.call(source) ?? store.backgroundTasks;
+		},
+	});
+
+	// N1: 12 Down presses in focused panel with unchanged panelRevision must read backgroundTasks 0 times during scroll.
+	await showAgentPanel(
+		session,
+		mountUi((component, rows) => {
+			rows();
+			bgReads = 0;
+			for (let i = 0; i < 12; i++) {
+				component.handleInput(DOWN);
+				rows();
+			}
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.equal(bgReads, 0, "scrolling the focused panel must not scan backgroundTasks");
+
+	// N2: Clicking a subagent row in the idle panel with 1,996 hidden rows must not materialize hidden rows or call taskRecord.
+	let widget: Mounted | undefined;
+	disposers.push(
+		bindAgentPanel(
+			session as never,
+			{
+				setWidget(_key: string, content: unknown) {
+					widget = typeof content === "function" ? (content({} as never, {} as never) as Mounted) : undefined;
+				},
+				requestRender() {},
+			} as never,
+			undefined,
+			{ custom: async () => undefined as never },
+		),
+	);
+	const lines = plain(widget!.render(100));
+	const rowIdx = lines.findIndex((line) => line.includes("job-1999"));
+	assert.notEqual(rowIdx, -1, lines.join("\n"));
+	taskRecordReads = 0;
+	widget!.handleMouse?.({
+		type: "click",
+		button: "left",
+		x: 6,
+		y: rowIdx,
+		screenX: 6,
+		screenY: 30 + rowIdx,
+		width: 100,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	});
+	assert.equal(taskRecordReads, 0, "clicking a subagent row in the idle panel must not scan hidden rows");
+	await tick();
+	assert.ok(taskRecordReads <= 4, `panel repaint after click stays O(visible rows), got ${taskRecordReads}`);
+});
+
+test("N3/N4/N5: failed subagent switch rolls back to prior viewed subagent, and engine bridge never sticks on already-shown or main requests", async () => {
+	// N4: Viewing a1 -> open /tasks -> Enter a2 -> openPort(a2) fails (screen stays on a1) -> <- from a1 to main -> /tasks restores a1 (not stale a2).
+	const session = { extensionRunner: {} };
+	const store = new FakeOwnerTaskStore([
+		agent("a1", "first alpha", 1, "op-1"),
+		agent("a2", "second beta", 2, "op-2"),
+		agent("a3", "third gamma", 3, "op-3"),
+	]);
+	bindOwnerTaskStore(session, store);
+	const bridge = fakeBridge();
+	setAgentViewBridge(session, bridge);
+
+	// Enter a1 from /tasks.
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(DOWN);
+			component.handleInput(DOWN); // a1
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	assert.equal(bridge.viewedTaskId(), "a1");
+
+	// Now make switching to a2 fail (bridge stays on a1 instead of changing to a2).
+	const origRequest = bridge.requestView.bind(bridge);
+	bridge.requestView = (taskId, options) => {
+		if (taskId === "a2") return; // simulate failed openPort(a2): viewedTaskId stays a1!
+		origRequest(taskId, options);
+	};
+
+	await openTasks(
+		session,
+		store,
+		mountUi((component) => {
+			component.handleInput(UP); // a2
+			component.handleInput(ENTER);
+		}).ui,
+	);
+	assert.equal(bridge.viewedTaskId(), "a1", "failed open kept screen on a1");
+
+	// Return from a1 to main -> open /tasks: must restore a1, NOT stale failed a2!
+	bridge.show(undefined);
+	let afterBackToMain = "";
+	await openTasks(
+		session,
+		store,
+		mountUi((component, rows) => {
+			afterBackToMain = selectedLine(rows());
+			component.handleInput(ESC);
+		}).ui,
+	);
+	assert.match(afterBackToMain, /first alpha/, "failed switch from a1 to a2 rolls back anchor to a1");
+
+	// N3 & N5: Engine bridge has no stuck `opening` state after already-shown resumed reopen or requestView(undefined).
+	const engineSession = { extensionRunner: {} } as never as AgentSession;
+	const engineStore = new FakeOwnerTaskStore([
+		agent("a1", "first alpha", 1, "op-1"),
+		agent("a2r", "second beta resumed", 4, "op-2:resume:1"),
+	]);
+	bindOwnerTaskStore(engineSession, engineStore);
+	const sent: InteractiveEngineMessage[] = [];
+	const context = { session: engineSession, send: (m: InteractiveEngineMessage) => sent.push(m) } as never;
+	disposers.push(installEngineAgentViewBridge(context));
+	await handleSetViewedAgent({ id: "v1", type: "set_viewed_agent", taskId: "a1" }, context);
+	const engineBridge = (
+		await import("../../packages/coding-agent/src/modes/interactive/agent-view/agent-view-bridge.js")
+	).agentViewBridge(engineSession)!;
+	engineBridge.requestView("a2r" as TaskId);
+	engineBridge.requestView(undefined);
+	assert.equal(
+		engineBridge.viewedTaskId(),
+		"a1",
+		"viewedTaskId stays a1 until host sends set_viewed_agent(undefined)",
+	);
+	assert.equal("viewState" in engineBridge, false, "no engine-side opening state to get stuck");
+});

@@ -5,9 +5,11 @@ import {
 	type AgentPanelItem,
 	type AgentPanelState,
 	agentPanelTaskId,
+	copyPanelItemStableKey,
 	isInterruptedPanelTask,
 	markInterruptedPanelTask,
 	modelHasReasoning,
+	panelItemStableKey,
 } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
@@ -30,7 +32,7 @@ import {
 } from "./nav-keys.ts";
 import { TASK_MARKS, taskMark } from "./task-marks.ts";
 import { taskDisplayText } from "./task-row.js";
-import { keepRowInView, type ListSelectionAnchor, resolveListSelection } from "./task-selection-state.js";
+import { keepRowInView, type ListSelectionAnchor, resolveListEntry } from "./task-selection-state.js";
 
 export type AgentPanelRow = AgentPanelItem;
 export type { AgentPanelState };
@@ -242,6 +244,7 @@ export class AgentPanelModel {
 		);
 		if (elapsedMs === undefined || elapsedMs === row.elapsedMs) return row;
 		const copy = { ...row, elapsedMs };
+		copyPanelItemStableKey(row, copy);
 		if (isInterruptedPanelTask(row)) markInterruptedPanelTask(copy);
 		return this.copyOf(row, sourceClocks === undefined ? copy : bindTaskClock(copy, sourceClocks));
 	}
@@ -249,6 +252,7 @@ export class AgentPanelModel {
 		return this.bases.get(row) ?? row;
 	}
 	private copyOf(base: AgentPanelRow, copy: AgentPanelRow): AgentPanelRow {
+		copyPanelItemStableKey(base, copy);
 		this.bases.set(copy, base);
 		return copy;
 	}
@@ -705,6 +709,7 @@ export function agentPanelKeys(selected: AgentPanelRow | undefined, keybindings?
 
 export class AgentPanelFocus {
 	selectedId: string = AGENT_PANEL_MAIN_ID;
+	private selectedKey?: string;
 	scroll = 0;
 	helpOpen = false;
 	readonly stopConfirm: TwoPressConfirm;
@@ -729,11 +734,16 @@ export class AgentPanelFocus {
 		for (const row of rows) this.paintedFinished.set(row.id, isFinishedPanelRow(row));
 		this.selectionMovedUnseen = false;
 	}
-	update(
-		rows: readonly AgentPanelRow[],
-		resolveAlias?: (id: string, nextOrder: readonly string[]) => string | undefined,
-	): void {
-		const previousOrder = this.rows.map((row) => row.id);
+	private syncSelectedKey(): void {
+		if (this.selectedId === AGENT_PANEL_MAIN_ID) {
+			this.selectedKey = undefined;
+			return;
+		}
+		const row = this.rows.find((candidate) => candidate.id === this.selectedId);
+		if (row !== undefined) this.selectedKey = panelItemStableKey(row);
+	}
+	update(rows: readonly AgentPanelRow[]): void {
+		const previousRows = this.rows;
 		const mainWasShown = this.showMain;
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
 		this.rows = rows.filter((row) => {
@@ -753,23 +763,34 @@ export class AgentPanelFocus {
 		) {
 			this.finishedWhileArmed = undefined;
 		}
-		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !this.rows.some((row) => row.id === this.selectedId)) {
-			const nextOrder = this.rows.map((row) => row.id);
-			this.selectedId =
-				resolveListSelection(this.selectedId, previousOrder, nextOrder, resolveAlias) ?? AGENT_PANEL_MAIN_ID;
-			this.selectionMovedUnseen = true;
-		} else if (this.selectedId === AGENT_PANEL_MAIN_ID && !this.showMain && this.rows.length > 0) {
+		if (this.selectedId !== AGENT_PANEL_MAIN_ID) {
+			const exact = this.rows.find((row) => row.id === this.selectedId);
+			if (exact !== undefined) {
+				this.selectedKey = panelItemStableKey(exact);
+			} else {
+				const resolved = resolveListEntry(
+					this.selectedKey ?? this.selectedId,
+					previousRows.map((row) => panelItemStableKey(row)),
+					this.rows.map((row) => ({ id: row.id, key: panelItemStableKey(row) })),
+				);
+				this.selectedId = resolved?.id ?? AGENT_PANEL_MAIN_ID;
+				this.selectedKey = resolved?.key;
+				this.selectionMovedUnseen = true;
+			}
+		} else if (!this.showMain && this.rows.length > 0) {
 			// The main row left with the last subagent: the selection moves to the first row.
 			this.selectedId = this.rows[0]!.id;
+			this.selectedKey = panelItemStableKey(this.rows[0]!);
 			if (mainWasShown) this.selectionMovedUnseen = true;
 		}
 		this.keepInView();
 	}
-	/** Snapshot the panel's selection, order, and scroll offset before leaving for a nested detail view. */
+	/** Snapshot the panel's stable selection key, order keys, and scroll offset before leaving for a nested detail view. */
 	captureAnchor(id = this.selectedId): ListSelectionAnchor {
+		const row = this.rows.find((candidate) => candidate.id === id);
 		return {
-			selectedId: id,
-			order: this.rows.map((row) => row.id),
+			selectedKey: row === undefined ? id : panelItemStableKey(row),
+			orderKeys: this.rows.map((candidate) => panelItemStableKey(candidate)),
 			scroll: this.scroll,
 		};
 	}
@@ -785,19 +806,19 @@ export class AgentPanelFocus {
 		const row = this.rows.find((candidate) => candidate.id === id);
 		if (row === undefined) return;
 		this.selectedId = id;
+		this.selectedKey = panelItemStableKey(row);
 		this.keepInView();
 		this.actions.open(row);
 	}
-	enter(
-		selectId?: string,
-		returnAnchor?: ListSelectionAnchor,
-		resolveAlias?: (id: string, nextOrder: readonly string[]) => string | undefined,
-	): void {
+	enter(selectId?: string, returnAnchor?: ListSelectionAnchor): void {
 		if (returnAnchor !== undefined) {
-			const nextOrder = this.rows.map((row) => row.id);
-			this.selectedId =
-				resolveListSelection(returnAnchor.selectedId, returnAnchor.order, nextOrder, resolveAlias) ??
-				AGENT_PANEL_MAIN_ID;
+			const resolved = resolveListEntry(
+				returnAnchor.selectedKey,
+				returnAnchor.orderKeys,
+				this.rows.map((row) => ({ id: row.id, key: panelItemStableKey(row) })),
+			);
+			this.selectedId = resolved?.id ?? AGENT_PANEL_MAIN_ID;
+			this.selectedKey = resolved?.key;
 			this.scroll = returnAnchor.scroll;
 			this.keepInView();
 			return;
@@ -805,6 +826,7 @@ export class AgentPanelFocus {
 		this.selectedId = this.rows.some((row) => row.id === selectId)
 			? (selectId as string)
 			: (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
+		this.syncSelectedKey();
 		this.keepInView();
 	}
 	private openMain(): void {
@@ -840,6 +862,7 @@ export class AgentPanelFocus {
 		const ids = this.ids();
 		const index = Math.max(0, ids.indexOf(this.selectedId));
 		this.selectedId = ids[Math.max(0, Math.min(ids.length - 1, index + delta))] ?? AGENT_PANEL_MAIN_ID;
+		this.syncSelectedKey();
 		this.keepInView();
 	}
 	handleInput(data: string, is: (data: string, key: string) => boolean): boolean {
@@ -881,12 +904,14 @@ export class AgentPanelFocus {
 		if (is(data, "home")) {
 			this.selectionMovedUnseen = false;
 			this.selectedId = this.firstId();
+			this.syncSelectedKey();
 			this.scroll = 0;
 			return true;
 		}
 		if (is(data, "end")) {
 			this.selectionMovedUnseen = false;
 			this.selectedId = this.rows.at(-1)?.id ?? AGENT_PANEL_MAIN_ID;
+			this.syncSelectedKey();
 			this.keepInView();
 			return true;
 		}

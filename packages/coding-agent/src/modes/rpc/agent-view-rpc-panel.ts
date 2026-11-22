@@ -1,7 +1,6 @@
 import type { TaskId } from "../../core/tasks/contracts.js";
 import {
 	type AgentViewBridge,
-	type AgentViewBridgeState,
 	agentViewBridge,
 	setAgentViewBridge,
 } from "../interactive/agent-view/agent-view-bridge.ts";
@@ -24,30 +23,13 @@ const engineBridges = new WeakMap<object, EngineAgentViewBridge>();
  * Attach the engine's `AgentViewBridge` to `context.session`: `set_viewed_agent` feeds `viewedTaskId`, and
  * `requestView` sends `engine_view_agent` to the host, whose screen decides. Answers the detach.
  */
-function viewedIdOf(state: AgentViewBridgeState): TaskId | undefined {
-	if (state.kind === "agent") return state.taskId;
-	if (state.kind === "opening") return state.previous;
-	return undefined;
-}
-
 export function installEngineAgentViewBridge(context: EngineAgentViewContext): () => void {
 	const session = context.session;
-	let state: AgentViewBridgeState = { kind: "main" };
+	let viewed: TaskId | undefined;
 	const listeners = new Set<() => void>();
 	const bridge: EngineAgentViewBridge = {
-		viewedTaskId: () => viewedIdOf(state),
-		viewState: () => state,
+		viewedTaskId: () => viewed,
 		requestView: (taskId, options) => {
-			const currentViewed = viewedIdOf(state);
-			if (taskId === undefined) {
-				if (state.kind === "opening" && currentViewed === undefined) state = { kind: "main" };
-			} else if (!(state.kind === "agent" && state.taskId === taskId)) {
-				state = {
-					kind: "opening",
-					taskId,
-					...(currentViewed === undefined ? {} : { previous: currentViewed }),
-				};
-			}
 			const keepScreen = options?.keepScreen === true;
 			// What keeps the screen (`/tasks`) hid the panel; the host waits for it when it opens again as that closes.
 			const panel = keepScreen && taskId !== undefined && agentPanelReturnsOnShow(session);
@@ -69,9 +51,8 @@ export function installEngineAgentViewBridge(context: EngineAgentViewContext): (
 			};
 		},
 		show(taskId) {
-			const previousViewed = viewedIdOf(state);
-			state = taskId === undefined ? { kind: "main" } : { kind: "agent", taskId };
-			if (previousViewed === taskId) return;
+			if (viewed === taskId) return;
+			viewed = taskId;
 			for (const listener of [...listeners]) {
 				try {
 					listener();

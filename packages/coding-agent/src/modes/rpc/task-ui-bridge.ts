@@ -24,8 +24,9 @@ import {
 	clearTasksReturnAnchor,
 	type ListSelectionAnchor,
 	saveTasksReturnAnchor,
-	subagentChildKey,
+	taskStableKey,
 	tasksReturnAnchor,
+	watchPendingAgentReturn,
 } from "../interactive/components/task-selection-state.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
@@ -143,10 +144,17 @@ export async function showTaskInspector(
 	let fullscreen = false;
 	let environment: TaskTranscriptEnvironment | undefined;
 	let pendingChat: TaskId | undefined;
+	let requestedAgentId: TaskId | undefined;
 	const trackReturn = !options.chat && options.source === undefined;
 	const session = options.board ? boardSessions.get(options.board) : undefined;
 	const bridge = session === undefined ? undefined : agentViewBridge(session);
 	const panelTarget = session ?? store;
+	const priorSaved = trackReturn ? tasksReturnAnchor(store) : undefined;
+	const priorViewedId = bridge?.viewedTaskId();
+	const resolveTaskKey = (id: TaskId): string => {
+		const task = latestSubagentAttempt(store.backgroundTasks, id) ?? store.taskRecord?.(id);
+		return task === undefined ? id : taskStableKey(task);
+	};
 	/** The agent panel this view takes the place of: hidden once the view is mounted, back in the step it closes. */
 	const panel = hideAgentPanelFor(panelTarget);
 	const inspector = new TaskInspector(
@@ -165,7 +173,11 @@ export async function showTaskInspector(
 	if (options.board) {
 		inspector.setBoardSource(options.board);
 		// On the single chat screen a subagent opens there, where the main chat was, and /tasks closes.
-		if (bridge !== undefined) inspector.setAgentView((id) => bridge.requestView(id, { keepScreen: true }));
+		if (bridge !== undefined)
+			inspector.setAgentView((id) => {
+				requestedAgentId = id;
+				bridge.requestView(id, { keepScreen: true });
+			});
 
 		const reopenOptions = { board: options.board };
 		inspector.setReopen((id, anchor) => {
@@ -186,33 +198,24 @@ export async function showTaskInspector(
 	} else if (taskId !== undefined) {
 		inspector.open(taskId as TaskId);
 	} else if (trackReturn) {
-		const viewState = bridge?.viewState?.();
-		const viewedId =
-			viewState === undefined ? bridge?.viewedTaskId() : viewState.kind === "main" ? undefined : viewState.taskId;
+		const viewedId = priorViewedId;
 		const listedViewed =
 			viewedId === undefined
 				? undefined
 				: (latestSubagentAttempt(store.backgroundTasks, viewedId) ?? store.taskRecord?.(viewedId));
-		const viewedChildKey = subagentChildKey(listedViewed);
-		const saved = tasksReturnAnchor(store);
-		const sameAsSaved =
-			saved !== undefined &&
-			viewedId !== undefined &&
-			(saved.selectedId === viewedId ||
-				(listedViewed !== undefined && saved.selectedId === listedViewed.ref.taskId) ||
-				(viewedChildKey !== undefined && saved.childKey === viewedChildKey));
+		const viewedKey = listedViewed === undefined ? undefined : taskStableKey(listedViewed);
+		const sameAsSaved = priorSaved !== undefined && viewedKey !== undefined && priorSaved.selectedKey === viewedKey;
 		// Only synthesize a fresh viewed-agent anchor when that subagent is actually present in `store`;
-		// if a resumed viewed attempt was already evicted, keep `saved` so nearest-neighbour fallback uses
+		// if a resumed viewed attempt was already evicted, keep `priorSaved` so nearest-neighbour fallback uses
 		// the departure order instead of an empty order.
-		if (viewedId !== undefined && listedViewed !== undefined && !sameAsSaved) {
+		if (viewedId !== undefined && listedViewed !== undefined && viewedKey !== undefined && !sameAsSaved) {
 			inspector.restoreAnchor({
-				selectedId: listedViewed.ref.taskId,
-				...(viewedChildKey === undefined ? {} : { childKey: viewedChildKey }),
-				order: [],
+				selectedKey: viewedKey,
+				orderKeys: [],
 				scroll: 0,
 			});
-		} else if (saved !== undefined) {
-			inspector.restoreAnchor(saved);
+		} else if (priorSaved !== undefined) {
+			inspector.restoreAnchor(priorSaved);
 		} else {
 			inspector.open(undefined);
 		}
@@ -251,6 +254,8 @@ export async function showTaskInspector(
 						}
 					}
 					// Elapsed times and the stop notice's window advance while the view is shown.
+					const mountFullscreen = fullscreen;
+					let lastFullscreenFrame: string[] | undefined;
 					const tick = setInterval(() => tui.requestRender(), 1000);
 					tick.unref?.();
 					return {
@@ -258,13 +263,26 @@ export async function showTaskInspector(
 						invalidate: () => inspector.invalidate(),
 						render: (width: number) => {
 							const height = Math.max(1, tui.terminal.rows);
-							if (!fullscreen) return inspector.renderPicker(width, height);
+							if (!mountFullscreen) return inspector.renderPicker(width, height);
+							// A closing fullscreen mount that repaints before unmount (after `←` switched
+							// `inspector.fullscreen` back to false) must not render the picker board at full
+							// terminal height, which would clamp `selectionPhase.scroll` down to 0.
+							if (!inspector.fullscreen) {
+								if (lastFullscreenFrame !== undefined) {
+									return Array.from({ length: height }, (_, row) => {
+										const line = truncateToWidth(lastFullscreenFrame![row] ?? "", width);
+										return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+									});
+								}
+								return inspector.renderPicker(width, height);
+							}
 							const lines = inspector.renderViewport(width, height);
 							// Fullscreen detail pages cover all parent chat and prompt cells.
-							return Array.from({ length: height }, (_, row) => {
+							lastFullscreenFrame = Array.from({ length: height }, (_, row) => {
 								const line = truncateToWidth(lines[row] ?? "", width);
 								return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 							});
+							return lastFullscreenFrame;
 						},
 						// A full-screen page draws from the top row, so the click's row is the page's.
 						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
@@ -305,21 +323,33 @@ export async function showTaskInspector(
 		}
 	} finally {
 		if (trackReturn) {
-			if (
-				(inspector.closeReason === "navigated-agent" || inspector.closeReason === "navigated-item") &&
-				inspector.returnAnchor !== undefined
-			) {
-				saveTasksReturnAnchor(store, inspector.returnAnchor);
-			} else {
-				const viewState = bridge?.viewState?.();
-				const settledOnMain =
-					viewState !== undefined ? viewState.kind === "main" : bridge?.viewedTaskId() === undefined;
-				if (settledOnMain) {
-					// Only clear the saved return anchor when dismissing `/tasks` while settled on `main`;
-					// dismissing `/tasks` while viewing a subagent or while a view request is in flight keeps
-					// its departure order & scroll intact.
-					clearTasksReturnAnchor(store);
+			if (inspector.closeReason === "navigated-agent" && inspector.returnAnchor !== undefined) {
+				if (bridge !== undefined && requestedAgentId !== undefined) {
+					const rollback =
+						priorSaved ??
+						(priorViewedId === undefined
+							? undefined
+							: {
+									selectedKey: resolveTaskKey(priorViewedId),
+									orderKeys: inspector.returnAnchor.orderKeys,
+									scroll: inspector.returnAnchor.scroll,
+								});
+					watchPendingAgentReturn(store, bridge, {
+						anchor: inspector.returnAnchor,
+						requestedId: requestedAgentId,
+						resolveKey: resolveTaskKey,
+						...(priorViewedId === undefined ? {} : { fromViewed: priorViewedId }),
+						...(rollback === undefined ? {} : { rollback }),
+					});
+				} else {
+					saveTasksReturnAnchor(store, inspector.returnAnchor);
 				}
+			} else if (inspector.closeReason === "navigated-item" && inspector.returnAnchor !== undefined) {
+				saveTasksReturnAnchor(store, inspector.returnAnchor);
+			} else if (bridge?.viewedTaskId() === undefined) {
+				// Consume the saved return anchor on `main`; if this dismissal consumed a restored anchor while an
+				// earlier view request may still be in flight, keep the watcher so an incoming ack promotes it.
+				clearTasksReturnAnchor(store, { keepPendingWatch: priorSaved !== undefined });
 			}
 		}
 		inspector?.dispose();

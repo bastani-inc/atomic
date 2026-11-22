@@ -12,7 +12,11 @@ import {
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
+import {
+	type AgentPanelAnswerOptions,
+	panelItemStableKey,
+	promptAnswerOptionsOf,
+} from "../../../core/tasks/agent-panel-source.ts";
 import {
 	latestSubagentAttempt,
 	supersededSettledAttempts,
@@ -91,9 +95,10 @@ import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusA
 import {
 	type InspectorCloseReason,
 	keepSpanInView,
+	type ListEntry,
 	type ListSelectionAnchor,
 	type ListSelectionPhase,
-	subagentChildKey,
+	taskStableKey,
 } from "./task-selection-state.js";
 import {
 	TaskAgentTranscriptPage,
@@ -368,6 +373,7 @@ export class TaskInspector implements Component {
 	private readonly modelColumn = new ModelColumn(() => this.requestRender());
 	private boardStale = false;
 	private navigationOrder: string[] = [];
+	private navigationEntries: ListEntry[] = [];
 	private boardBudget = 24;
 	private readonly unsubscribe: () => void;
 	private readonly transcriptEnvironment: () => TaskTranscriptEnvironment | undefined;
@@ -514,6 +520,12 @@ export class TaskInspector implements Component {
 	private readonly store: TaskViewSource;
 	private readonly requestRender: () => void;
 	private readonly close: () => void;
+	private rowEntry(row: TaskBoardRow): ListEntry {
+		return {
+			id: row.id,
+			key: row.kind === "task" ? taskStableKey(row.task) : panelItemStableKey(row.item),
+		};
+	}
 	private currentBoardScroll(): number {
 		return this.selectionPhase.kind === "browsing" ? this.selectionPhase.scroll : this.selectionPhase.anchor.scroll;
 	}
@@ -521,17 +533,17 @@ export class TaskInspector implements Component {
 		if (overrideId === undefined && this.selectionPhase.kind === "away") return this.selectionPhase.anchor;
 		const selectedId = overrideId ?? this.navigation.selectedId;
 		if (selectedId === undefined) return undefined;
-		const task =
-			overrideTask ??
-			this.tasksById.get(selectedId as TaskId) ??
-			this.store.taskRecord?.(selectedId as TaskId) ??
-			this.store.backgroundTasks.find((candidate) => candidate.ref.taskId === selectedId);
-		const childKey =
-			subagentChildKey(task) ?? (overrideId === undefined ? this.navigation.currentChildKey : undefined);
+		let selectedKey: string | undefined;
+		if (overrideTask !== undefined) {
+			selectedKey = taskStableKey(overrideTask);
+		} else {
+			const entry = this.navigationEntries.find((candidate) => candidate.id === selectedId);
+			selectedKey =
+				entry?.key ?? (overrideId === undefined ? this.navigation.currentStableKey : undefined) ?? selectedId;
+		}
 		return {
-			selectedId,
-			...(childKey === undefined ? {} : { childKey }),
-			order: [...this.navigationOrder],
+			selectedKey,
+			orderKeys: this.navigationEntries.map((entry) => entry.key),
 			scroll: this.currentBoardScroll(),
 		};
 	}
@@ -685,9 +697,10 @@ export class TaskInspector implements Component {
 			this.cachedNativeRows?.sections === sections
 				? this.cachedNativeRows.rows.map((row) => row.task)
 				: sections.flatMap((section) => section.tasks);
-		this.navigationOrder = finalRows.map((row) => row.id);
-		if (anchor !== undefined) this.navigation.resolveFromAnchor(tasks, this.navigationOrder, anchor);
-		else this.navigation.update(tasks, this.navigationOrder);
+		this.navigationEntries = finalRows.map((row) => this.rowEntry(row));
+		this.navigationOrder = this.navigationEntries.map((entry) => entry.id);
+		if (anchor !== undefined) this.navigation.resolveFromAnchor(tasks, this.navigationEntries, anchor);
+		else this.navigation.update(tasks, this.navigationEntries);
 		if (this.peekId !== undefined && !finalRows.some((row) => row.id === this.peekId)) this.closePeek();
 
 		const armed = this.navigation.stopConfirm.pending();
@@ -763,24 +776,9 @@ export class TaskInspector implements Component {
 		const view = this.agentView;
 		if (view === undefined || task.kind !== "agent") return false;
 		const baseAnchor = this.selectionPhase.kind === "away" ? this.selectionPhase.anchor : undefined;
-		const childKey = subagentChildKey(task) ?? baseAnchor?.childKey;
-		const targetId = task.ref.taskId;
-		let anchorOrder = baseAnchor?.order ?? [...this.navigationOrder];
-		// If the subagent resumed to a new attempt while in detail, replace its prior attempt id in place
-		// inside the departure order so nearest-neighbour fallback still finds its original neighbours if gone.
-		if (
-			baseAnchor !== undefined &&
-			!anchorOrder.includes(targetId) &&
-			baseAnchor.childKey !== undefined &&
-			baseAnchor.childKey === childKey &&
-			anchorOrder.includes(baseAnchor.selectedId)
-		) {
-			anchorOrder = anchorOrder.map((id) => (id === baseAnchor.selectedId ? targetId : id));
-		}
 		this.returnAnchor = {
-			selectedId: targetId,
-			...(childKey === undefined ? {} : { childKey }),
-			order: anchorOrder,
+			selectedKey: taskStableKey(task),
+			orderKeys: baseAnchor?.orderKeys ?? this.navigationEntries.map((entry) => entry.key),
 			scroll: baseAnchor?.scroll ?? this.currentBoardScroll(),
 		};
 		this.closeReason = "navigated-agent";
@@ -1239,7 +1237,8 @@ export class TaskInspector implements Component {
 		const syncAwayAnchor = () => {
 			if (this.navigation.focus.kind !== "detail" || this.selectionPhase.kind !== "away") return;
 			const nextId = this.navigation.selectedId;
-			if (nextId === undefined || nextId === this.selectionPhase.anchor.selectedId) return;
+			const nextKey = this.navigation.currentStableKey ?? nextId;
+			if (nextId === undefined || nextKey === this.selectionPhase.anchor.selectedKey) return;
 			const moved = this.captureListAnchor(nextId, this.selected());
 			if (moved !== undefined) this.selectionPhase = { kind: "away", anchor: moved };
 		};

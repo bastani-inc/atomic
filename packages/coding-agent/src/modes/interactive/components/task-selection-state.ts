@@ -1,17 +1,22 @@
 import { childOfAttempt } from "../../../core/tasks/completion.js";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import type { AgentViewBridge } from "../agent-view/agent-view-bridge.ts";
+
+/** One selectable list row: its current row `id` and its stable identity `key` across resumes/wakes. */
+export interface ListEntry {
+	readonly id: string;
+	readonly key: string;
+}
 
 /**
  * Snapshot of a task list's selection and viewport when leaving the list for a detail view,
  * shell output, waited shell, stdin sheet, external item view, or single-screen subagent.
  */
 export interface ListSelectionAnchor {
-	/** Stable row id selected when leaving the list (task id or extension item id). */
-	readonly selectedId: string;
-	/** Stable subagent child key when `selectedId` is a subagent attempt, surviving supersession or eviction. */
-	readonly childKey?: string;
-	/** Ordered row ids of the list at the moment of leaving, used for nearest-neighbour fallback if gone. */
-	readonly order: readonly string[];
+	/** Stable identity key of the selected row when leaving (`child:<op>` for subagents, else row id). */
+	readonly selectedKey: string;
+	/** Ordered stable keys of the list at the moment of leaving, used for nearest-neighbour fallback if gone. */
+	readonly orderKeys: readonly string[];
 	/** Viewport scroll offset when leaving, restored and clamped so the resolved selection stays visible. */
 	readonly scroll: number;
 }
@@ -29,76 +34,46 @@ export type ListSelectionPhase =
 /** Why a `/tasks` inspector closed: navigation keeps the return anchor; dismissal clears it. */
 export type InspectorCloseReason = "dismissed" | "navigated-agent" | "navigated-item" | "back-to-caller";
 
-/** Stable subagent child identity of `task`, when it belongs to a launchable subagent. */
-export function subagentChildKey(task: TaskRecord | undefined): string | undefined {
-	if (task?.kind !== "agent" || typeof task.launchOperationId !== "string") return undefined;
-	return childOfAttempt(task);
-}
-
-/**
- * Latest listed attempt of subagent `childKey` present in `order`, or undefined when none is listed.
- */
-export function resolveChildAttemptId(
-	tasks: readonly TaskRecord[],
-	order: readonly string[],
-	childKey: string | undefined,
-): string | undefined {
-	if (childKey === undefined || order.length === 0) return undefined;
-	const listed = new Set(order);
-	let latest: TaskRecord | undefined;
-	for (const task of tasks) {
-		if (!listed.has(task.ref.taskId) || subagentChildKey(task) !== childKey) continue;
-		if (latest === undefined || task.launchOrdinal >= latest.launchOrdinal) latest = task;
+/** Stable identity of a `TaskRecord`: `child:<op>` for launchable subagents (survives resume/wake), else `taskId`. */
+export function taskStableKey(task: TaskRecord): string {
+	if (task.kind === "agent" && typeof task.launchOperationId === "string") {
+		return `child:${childOfAttempt(task)}`;
 	}
-	return latest?.ref.taskId;
+	return task.ref.taskId;
 }
 
 /**
- * When `selected` is gone from `next`, pick its nearest survivor from `previous`:
- * the first surviving item after `selected`, else the last surviving item before it, else `next[0]`.
+ * Resolve which entry in `nextEntries` should be selected for `targetKey`:
+ * 1. Exact stable-key match anywhere in `nextEntries` (survives re-sort and resumed/woken attempts).
+ * 2. Nearest surviving neighbour in `previousKeys` (next key first, else previous key — neighbours match
+ *    woken/resumed attempts automatically because both use stable keys).
+ * 3. First entry in `nextEntries` (or undefined when empty).
  */
-export function nearestSurvivor(
-	previous: readonly string[],
-	next: readonly string[],
-	selected: string | undefined,
-): string | undefined {
-	if (next.length === 0) return undefined;
-	const index = selected === undefined ? -1 : previous.indexOf(selected);
+export function resolveListEntry(
+	targetKey: string | undefined,
+	previousKeys: readonly string[],
+	nextEntries: readonly ListEntry[],
+): ListEntry | undefined {
+	if (nextEntries.length === 0) return undefined;
+	if (targetKey === undefined) return nextEntries[0];
+	const exact = nextEntries.find((entry) => entry.key === targetKey);
+	if (exact !== undefined) return exact;
+	const index = previousKeys.indexOf(targetKey);
 	if (index >= 0) {
-		const survivors = new Set(next);
-		for (let after = index + 1; after < previous.length; after++) {
-			const candidate = previous[after]!;
-			if (survivors.has(candidate)) return candidate;
+		const byKey = new Map<string, ListEntry>();
+		for (const entry of nextEntries) {
+			if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+		}
+		for (let after = index + 1; after < previousKeys.length; after++) {
+			const hit = byKey.get(previousKeys[after]!);
+			if (hit !== undefined) return hit;
 		}
 		for (let before = index - 1; before >= 0; before--) {
-			const candidate = previous[before]!;
-			if (survivors.has(candidate)) return candidate;
+			const hit = byKey.get(previousKeys[before]!);
+			if (hit !== undefined) return hit;
 		}
 	}
-	return next[0];
-}
-
-/**
- * Resolve which row id in `nextOrder` should be selected for `targetId`:
- * 1. Exact id match (survives any re-sort or section move).
- * 2. Alias match (e.g. a resumed or woken subagent attempt with the same child key).
- * 3. Nearest surviving neighbour in `previousOrder` (next item, else previous item).
- * 4. First row in `nextOrder` (or undefined when empty).
- */
-export function resolveListSelection(
-	targetId: string | undefined,
-	previousOrder: readonly string[],
-	nextOrder: readonly string[],
-	resolveAlias?: (id: string, nextOrder: readonly string[]) => string | undefined,
-): string | undefined {
-	if (nextOrder.length === 0) return undefined;
-	if (targetId !== undefined) {
-		if (nextOrder.includes(targetId)) return targetId;
-		const mapped = resolveAlias?.(targetId, nextOrder);
-		if (mapped !== undefined && nextOrder.includes(mapped)) return mapped;
-		return nearestSurvivor(previousOrder, nextOrder, targetId);
-	}
-	return nextOrder[0];
+	return nextEntries[0];
 }
 
 /**
@@ -137,16 +112,89 @@ export function keepRowInView(scroll: number, selIndex: number, room: number, to
 }
 
 /** Per-owner `/tasks` return anchor across inspector disposal (subagent view or external extension view). */
-const tasksReturnAnchors = new WeakMap<object, ListSelectionAnchor>();
+interface TasksReturnSlot {
+	saved?: ListSelectionAnchor;
+	unwatch?: () => void;
+}
+
+const tasksReturnSlots = new WeakMap<object, TasksReturnSlot>();
+
+function returnSlot(owner: object): TasksReturnSlot {
+	let slot = tasksReturnSlots.get(owner);
+	if (slot === undefined) {
+		slot = {};
+		tasksReturnSlots.set(owner, slot);
+	}
+	return slot;
+}
+
+function stopReturnWatch(slot: TasksReturnSlot): void {
+	slot.unwatch?.();
+	slot.unwatch = undefined;
+}
 
 export function saveTasksReturnAnchor(owner: object, anchor: ListSelectionAnchor): void {
-	tasksReturnAnchors.set(owner, anchor);
+	const slot = returnSlot(owner);
+	stopReturnWatch(slot);
+	slot.saved = anchor;
 }
 
 export function tasksReturnAnchor(owner: object): ListSelectionAnchor | undefined {
-	return tasksReturnAnchors.get(owner);
+	return tasksReturnSlots.get(owner)?.saved;
 }
 
-export function clearTasksReturnAnchor(owner: object): void {
-	tasksReturnAnchors.delete(owner);
+/**
+ * Consume the saved return anchor on dismissal (`Esc`/`←`/`Ctrl+C`) on `main`.
+ * If `keepPendingWatch` is true (first dismissal of a restored anchor while an async view request may still
+ * be in flight), keep any active `bridge.subscribe` watcher alive so the anchor promotes if the requested
+ * subagent finishes opening; otherwise cancel any watcher too.
+ */
+export function clearTasksReturnAnchor(owner: object, options: { readonly keepPendingWatch?: boolean } = {}): void {
+	const slot = tasksReturnSlots.get(owner);
+	if (slot === undefined) return;
+	slot.saved = undefined;
+	if (!options.keepPendingWatch) {
+		stopReturnWatch(slot);
+		tasksReturnSlots.delete(owner);
+	}
+}
+
+/**
+ * Watch `bridge` after `/tasks` requested a subagent view (without adding an `opening` state to `AgentViewBridge`):
+ * - If `Esc` consumed `saved` before an isolated engine's `set_viewed_agent(target)` arrived, seeing the
+ *   requested subagent appear restores `saved` (and stops watching).
+ * - If the user was already viewing `fromViewed` and switching to `requested` failed (so the screen stayed on
+ *   `fromViewed` and later returned to `main` without ever showing `requested`), rolls `saved` back to `rollback`.
+ */
+export function watchPendingAgentReturn(
+	owner: object,
+	bridge: AgentViewBridge,
+	params: {
+		readonly anchor: ListSelectionAnchor;
+		readonly requestedId: TaskId;
+		readonly resolveKey: (taskId: TaskId) => string;
+		readonly fromViewed?: TaskId;
+		readonly rollback?: ListSelectionAnchor;
+	},
+): void {
+	const slot = returnSlot(owner);
+	stopReturnWatch(slot);
+	slot.saved = params.anchor;
+	const currentViewed = bridge.viewedTaskId();
+	if (currentViewed !== undefined && params.resolveKey(currentViewed) === params.anchor.selectedKey) {
+		return;
+	}
+	const unwatch = bridge.subscribe(() => {
+		const viewed = bridge.viewedTaskId();
+		if (viewed !== undefined && params.resolveKey(viewed) === params.anchor.selectedKey) {
+			slot.saved = params.anchor;
+			stopReturnWatch(slot);
+			return;
+		}
+		if (viewed === undefined && params.fromViewed !== undefined) {
+			slot.saved = params.rollback;
+			stopReturnWatch(slot);
+		}
+	});
+	slot.unwatch = unwatch;
 }
