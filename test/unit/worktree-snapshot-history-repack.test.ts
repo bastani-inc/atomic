@@ -79,3 +79,30 @@ test("history repacked while it was bundled is bundled again, also once the pack
 		: 0;
 	assert.equal(bundled, 1, "the commits are bundled again");
 });
+
+test("history whose packing setting changed while it was bundled is bundled again once the setting is back", async () => {
+	const { clone } = await sandbox.remoteWithClone();
+	// Text that compresses well: uncompressed its bundle is far over the cap, compressed far under it.
+	sandbox.write(join(clone, "data.txt"), "a line that repeats and compresses well\n".repeat(4096));
+	const commit = await sandbox.commitAll(clone, "data");
+	await sandbox.git(clone, "config", "core.compression", "9");
+	// Compression is turned off just before the commits are bundled: their bundle is over the cap.
+	hooks.beforeBundle = () => {
+		execFileSync("git", ["config", "core.compression", "0"], {
+			cwd: clone,
+			env: { ...process.env, ...sandbox.executable.env },
+			stdio: "ignore",
+		});
+	};
+	const settings = { maxSnapshotBytes: 32 * 1024 };
+	const first = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.equal(hooks.beforeBundle, undefined, "the commits were bundled");
+	assert.equal(first.snapshot.omitted[0]?.reason, "bundle-over-cap");
+
+	// Back at the setting the capture started with, the commits' bundle fits under the cap.
+	await sandbox.git(clone, "config", "core.compression", "9");
+	sandbox.write(join(clone, "edit.txt"), "edit\n");
+	const second = captured(await captureWorktreeSnapshot(clone, { settings }));
+	assert.deepEqual(second.snapshot.omitted, []);
+	assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
+});
