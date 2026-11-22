@@ -43,7 +43,7 @@ A session that runs while an update replaces Atomic keeps the code it already lo
 Two additional rules apply after an in-place update:
 
 - On `/reload`, updated built-in extension bundles load on Windows and under Bun (other platforms keep the bundles loaded at startup). If the running host lacks an export a reloaded built-in extension needs, Atomic fails the load cleanly with `atomic was updated to <version> while this session was running; restart it to keep using the <name> extension.`.
-- Document conversion (`markit-ai`) and other third-party libraries bundled into Atomic's own files are no longer installed as separate dependencies. A session started on an earlier release (such as 0.10.3 or 0.10.4-alpha.1) before an in-place update may need to restart if its code loads one of those removed packages on demand (for example, the first PDF, Office, or EPUB read from 0.10.3, or the first model request in an idle 0.10.3 or 0.10.4-alpha.1 session, which reports a restart message).
+- Document conversion (`markit-ai`) and other third-party libraries bundled into Atomic's own files are no longer installed as separate dependencies. A session started on an earlier release before an in-place update may need to restart if its code loads one of those removed packages on demand (such as the first PDF, Office, or EPUB read from 0.10.3).
 
 Errors in your own extensions, such as a missing dependency, are reported as they are. Sessions started on Atomic 0.10.2 or earlier lack these restart notices, so restart them after any in-place update.
 

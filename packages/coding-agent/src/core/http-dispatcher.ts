@@ -138,17 +138,9 @@ export function applyHttpProxySettings(httpProxy: string | undefined): void {
 	process.env.HTTPS_PROXY ??= proxy;
 }
 
-export interface HttpDispatcherOptions {
-	readonly allowH2: boolean;
-	readonly proxyTunnel: boolean;
-	readonly connectTimeout: number;
-	readonly bodyTimeout: number;
-	readonly headersTimeout: number;
-	readonly clientFactory: (origin: URL, options: object) => EventEmitter;
-	readonly factory: (origin: URL, options: object) => EventEmitter;
-}
-
-export function createHttpDispatcherOptions(timeoutMs: number): HttpDispatcherOptions {
+export function createHttpDispatcherOptions(
+	timeoutMs: number,
+): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
 	return {
 		allowH2: false,
 		// Keep HTTP origins on CONNECT tunnels as they were before Undici 8.7.
@@ -241,11 +233,7 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 	const isBun = typeof process.versions.bun === "string";
 	if (!isBun) {
 		const dispatcher = withUndiciErrorListener(
-			new undici.EnvHttpProxyAgent(
-				createHttpDispatcherOptions(normalizedTimeoutMs) as ConstructorParameters<
-					typeof undici.EnvHttpProxyAgent
-				>[0],
-			),
+			new undici.EnvHttpProxyAgent(createHttpDispatcherOptions(normalizedTimeoutMs)),
 		);
 		undici.setGlobalDispatcher(dispatcher);
 	}
