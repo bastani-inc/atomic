@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
+import { NODE_TS_SOURCE_HOOK } from "../../../test/helpers/node-ts-sources.js";
 import {
 	type CompileCacheStartInput,
 	compileCacheHelperRuntime,
 	compileCacheStartMode,
 	compileCacheWarmMarker,
+	engineCompileCacheResetHeapMb,
+	hostAutoSizedEngineHeap,
 	isCiValue,
 	startsCompileCacheHelper,
 } from "../src/utils/compile-cache.ts";
+import { compileCacheWarmupRuntimes } from "../src/utils/compile-cache-warmup-host.ts";
 
 const tempDirs: string[] = [];
 
@@ -123,10 +128,185 @@ describe("the runtime a compile-cache helper repeats", () => {
 			assert.equal(compileCacheHelperRuntime(execArgv, env), undefined, JSON.stringify({ execArgv, env }));
 		}
 	});
+
+	test("deduplicates warmup helpers when the engine only adds an auto-sized heap flag (#6222)", () => {
+		const own = { execArgv: [], nodeOptions: "" };
+		assert.deepEqual(compileCacheWarmupRuntimes(own, ["--max-old-space-size=16384"]), [own]);
+		assert.deepEqual(compileCacheWarmupRuntimes(own, []), [own]);
+		const explicit = { execArgv: ["--max-old-space-size=4096"], nodeOptions: "" };
+		assert.deepEqual(compileCacheWarmupRuntimes(explicit, ["--max-old-space-size=4096"]), [explicit]);
+		// Non-auto-heap differences still warm engine first, then host.
+		assert.deepEqual(compileCacheWarmupRuntimes(explicit, ["--max-old-space-size=8192"]), [
+			{ execArgv: ["--max-old-space-size=8192"], nodeOptions: "" },
+			explicit,
+		]);
+	});
+});
+
+describe("aligning an auto-sized engine compile-cache tag with the untouched host (#6222)", () => {
+	const baseInput = {
+		runtimeIsBun: false,
+		unsupported: false,
+		alreadyEnabled: false,
+		disabled: false,
+		matchHostTag: true,
+		execArgv: ["--max-old-space-size=16384"] as readonly string[],
+		nodeOptions: undefined as string | undefined,
+	};
+
+	test("detects when the host auto-sized the engine heap without an explicit host heap flag", () => {
+		assert.equal(hostAutoSizedEngineHeap([], undefined, ["--max-old-space-size=16384"]), true);
+		assert.equal(
+			hostAutoSizedEngineHeap(["--max-semi-space-size=16"], "", [
+				"--max-semi-space-size=16",
+				"--max-old-space-size=16384",
+			]),
+			true,
+		);
+		for (const [hostArgv, nodeOptions, engineArgs] of [
+			[[], undefined, []],
+			[["--max-old-space-size=4096"], undefined, ["--max-old-space-size=4096"]],
+			[["--max-old-space-size", "4096"], undefined, ["--max-old-space-size=16384"]],
+			[["--max-heap-size=4096"], undefined, ["--max-old-space-size=16384"]],
+			[["--max-old-space-size-percentage=50"], undefined, ["--max-old-space-size=16384"]],
+			[[], "--max-old-space-size=4096", ["--max-old-space-size=16384"]],
+			[[], undefined, ["--max-old-space-size-percentage=50"]],
+		] as const) {
+			assert.equal(
+				hostAutoSizedEngineHeap(hostArgv, nodeOptions, engineArgs),
+				false,
+				JSON.stringify({ hostArgv, nodeOptions, engineArgs }),
+			);
+		}
+	});
+
+	test("resets the engine heap flag only when matchHostTag is set and cache is neither pre-enabled nor disabled", () => {
+		assert.equal(engineCompileCacheResetHeapMb(baseInput), 16384);
+		const skipped = [
+			{ runtimeIsBun: true },
+			{ unsupported: true },
+			{ alreadyEnabled: true },
+			{ disabled: true },
+			{ matchHostTag: false },
+			{ execArgv: [] },
+			{ execArgv: ["--max-old-space-size=0"] },
+			{ nodeOptions: "--max-old-space-size=4096" },
+			{ nodeOptions: '"--unterminated' },
+		];
+		for (const change of skipped) {
+			assert.equal(engineCompileCacheResetHeapMb({ ...baseInput, ...change }), undefined, JSON.stringify(change));
+		}
+	});
 });
 
 // It starts this runtime as Node; under Bun there is no Node directory to compare with.
 describe.skipIf("bun" in process.versions)("the compile cache's warm marker", () => {
+	test("untouched host and auto-sized engine share one compile-cache directory, accept bytecode, and preserve main and worker heap limits (#6222)", () => {
+		const base = mkdtempSync(join(tmpdir(), "atomic-shared-cache-"));
+		tempDirs.push(base);
+		const compileCacheUrl = new URL("../src/utils/compile-cache.ts", import.meta.url).href;
+		const workerThreadsUrl = new URL("../src/utils/worker-threads.ts", import.meta.url).href;
+		const samplePath = join(base, "sample-cached-module.mjs");
+		writeFileSync(samplePath, "export const value = 42;\n");
+		const workerPath = join(base, "worker-heap-probe.mjs");
+		writeFileSync(
+			workerPath,
+			`import { getHeapStatistics } from "node:v8";
+import { parentPort } from "node:worker_threads";
+parentPort?.postMessage(Math.round(getHeapStatistics().heap_size_limit / 1048576));
+`,
+		);
+		const sampleModuleUrl = pathToFileURL(samplePath).href;
+		const workerModuleUrl = pathToFileURL(workerPath).href;
+		const sharedEnv = {
+			...process.env,
+			TMPDIR: base,
+			TMP: base,
+			TEMP: base,
+			NODE_COMPILE_CACHE: "",
+			NODE_OPTIONS: "",
+		};
+		const hostScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import nodeModule from "node:module";`,
+			`import { cachedDataVersionTag } from "node:v8";`,
+			`const { enablePersistentCompileCache, flushPersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
+			`const tagBefore = cachedDataVersionTag();`,
+			`enablePersistentCompileCache({ interactive: false, build: "test", matchHostTag: false });`,
+			`const tagAfter = cachedDataVersionTag();`,
+			`await import(${JSON.stringify(sampleModuleUrl)});`,
+			`flushPersistentCompileCache();`,
+			`console.log(JSON.stringify({ dir: nodeModule.getCompileCacheDir(), tagBefore, tagAfter }));`,
+		].join("\n");
+		const host = spawnSync(process.execPath, ["--input-type=module", "-e", hostScript], {
+			env: sharedEnv,
+			encoding: "utf8",
+		});
+		assert.equal(host.status, 0, host.stderr);
+		const hostInfo = JSON.parse(host.stdout) as { dir: string; tagBefore: number; tagAfter: number };
+		assert.equal(hostInfo.tagAfter, hostInfo.tagBefore, "host must never mutate its V8 flag tag");
+
+		const engineScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import nodeModule from "node:module";`,
+			`import { cachedDataVersionTag, getHeapStatistics } from "node:v8";`,
+			`const { enablePersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
+			`const { startModuleWorker } = await import(${JSON.stringify(workerThreadsUrl)});`,
+			`enablePersistentCompileCache({ interactive: false, build: "test", matchHostTag: true });`,
+			`await import(${JSON.stringify(sampleModuleUrl)});`,
+			`const worker = startModuleWorker(new URL(${JSON.stringify(workerModuleUrl)}));`,
+			`const workerHeapMb = await new Promise((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); });`,
+			`await worker.terminate();`,
+			`console.log(JSON.stringify({ dir: nodeModule.getCompileCacheDir(), tag: cachedDataVersionTag(), heapMb: Math.round(getHeapStatistics().heap_size_limit / 1048576), workerHeapMb }));`,
+		].join("\n");
+		const engine = spawnSync(
+			process.execPath,
+			["--max-old-space-size=8192", "--input-type=module", "-e", engineScript],
+			{
+				env: { ...sharedEnv, NODE_DEBUG_NATIVE: "compile_cache" },
+				encoding: "utf8",
+			},
+		);
+		assert.equal(engine.status, 0, engine.stderr);
+		const engineInfo = JSON.parse(engine.stdout) as {
+			dir: string;
+			tag: number;
+			heapMb: number;
+			workerHeapMb: number;
+		};
+		assert.equal(engineInfo.tag, hostInfo.tagAfter);
+		assert.equal(engineInfo.dir, hostInfo.dir);
+		assert.ok(engineInfo.heapMb >= 8000, `engine main heap limit must stay raised: ${engineInfo.heapMb}`);
+		assert.ok(
+			engineInfo.workerHeapMb >= 8000,
+			`engine worker heap limit must stay raised: ${engineInfo.workerHeapMb}`,
+		);
+		assert.match(engine.stderr, /sample-cached-module\.mjs was accepted/);
+		assert.doesNotMatch(engine.stderr, /sample-cached-module\.mjs was rejected/);
+	});
+
+	test("does not mutate the V8 flag tag when NODE_COMPILE_CACHE is already enabled (#6222)", () => {
+		const base = mkdtempSync(join(tmpdir(), "atomic-preenabled-cache-"));
+		tempDirs.push(base);
+		const compileCacheUrl = new URL("../src/utils/compile-cache.ts", import.meta.url).href;
+		const script = [
+			NODE_TS_SOURCE_HOOK,
+			`import { cachedDataVersionTag } from "node:v8";`,
+			`const { enablePersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
+			`const before = cachedDataVersionTag();`,
+			`enablePersistentCompileCache({ interactive: false, build: "test", matchHostTag: true });`,
+			`const after = cachedDataVersionTag();`,
+			`console.log(JSON.stringify({ before, after }));`,
+		].join("\n");
+		const result = spawnSync(process.execPath, ["--max-old-space-size=8192", "--input-type=module", "-e", script], {
+			env: { ...process.env, NODE_COMPILE_CACHE: base, NODE_OPTIONS: "" },
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 0, result.stderr);
+		const { before, after } = JSON.parse(result.stdout) as { before: number; after: number };
+		assert.equal(after, before);
+	});
+
 	test("lies in the directory Node itself caches into for the same runtime flags (#6132)", () => {
 		const probe = [
 			"const m = require('node:module');",
