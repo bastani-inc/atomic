@@ -238,6 +238,9 @@ shared_app_dir="binaries/.app"
 rm -rf "$shared_app_dir"
 mkdir -p "$shared_app_dir"
 echo "==> Building shared app bundle..."
+# Stamp the compiled prewarm module before both plain and --bytecode builds so both bundles embed the exact same
+# 30-hex build digest and keep the bytecode cache aligned.
+node scripts/stamp-prewarm-binary.mjs
 # Bun's compiled launcher cannot resolve bare packages from the dynamically loaded CJS sidecar.
 # Bundle pi-tui itself, but keep the import.meta.url-sensitive native loader payload-relative.
 bun build --target=bun --format=cjs --minify-syntax --external mupdf --external=*native-modifiers.js ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
