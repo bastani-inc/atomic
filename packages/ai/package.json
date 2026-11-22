@@ -54,7 +54,8 @@
 			"types": "./dist/utils/*.d.ts",
 			"module": "./dist/_modules/utils/*.js",
 			"browser": "./dist/_modules/utils/*.js",
-			"import": "./dist/utils/*.js"
+			"import": "./dist/utils/*.js",
+			"default": "./dist/utils/*.js"
 		},
 		"./oauth": {
 			"types": "./dist/oauth.d.ts",
@@ -114,7 +115,7 @@
 		"check": "biome check --error-on-warnings . && npm run typecheck",
 		"format": "biome check --write .",
 		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order --isolate=api/openai-codex-responses.js --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256 --compat-noop-exports=_lazy-33R5T6YA.js:init_node --compat-noop-exports=_lazy-344MRX5C.js:init_fs_util,init_memories,init_node,init_skills",
 		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\"",
 		"build:catalog": "npm run generate-models && npm run build:offline"
 	},

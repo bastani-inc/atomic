@@ -1,6 +1,5 @@
-import { realpath } from "node:fs";
 import { dirname, isAbsolute, relative, sep } from "node:path";
-import { promisify } from "node:util";
+import { createBatchedCanonicalizePathAsync } from "../utils/batched-canonical-path.ts";
 import { BUILTIN_PACKAGE_DIR_NAMES } from "./builtin-install-layout.ts";
 import { getAllBuiltinPackageLocations, getBuiltinPackageLocations } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, instantiateExtensions, loadExtensions } from "./extensions/loader.ts";
@@ -19,8 +18,6 @@ import { lifecycleScopeForOwner, sessionLifecycleCreation, sessionLifecycleScope
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalogWith } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
-
-const realpathJs = promisify(realpath);
 
 /** Adds shipped resources without changing the caller's loader or its discovery options. */
 class BuiltinResourceLoader implements ResourceLoader {
@@ -42,7 +39,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 	}
 	private async resolveRealPaths(paths: Iterable<string>): Promise<void> {
 		const unique = [...new Set(paths)];
-		const resolved = await Promise.all(unique.map((path) => realpathJs(path).catch(() => path)));
+		if (unique.length === 0) return;
+		const canonicalize = createBatchedCanonicalizePathAsync();
+		const resolved = await Promise.all(unique.map((path) => canonicalize(path)));
 		unique.forEach((path, index) => {
 			this.realPaths.set(path, resolved[index]!);
 		});
