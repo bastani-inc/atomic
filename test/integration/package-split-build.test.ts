@@ -726,6 +726,7 @@ function compiledPackage(target: string): void {
 	fs.mkdirSync(join(target, "scripts"), { recursive: true });
 	for (const script of ["split-dist.mjs", "split-dist-names.mjs"])
 		fs.copyFileSync(join(packageDir, "scripts", script), join(target, "scripts", script));
+	copyTree(join(packageDir, "in-place-update"), join(target, "in-place-update"));
 	copyTree(dist, join(target, "dist"), (source) => !source.includes(join("dist", "_shared")));
 	const state = join(packageDir, "node_modules", ".cache", "atomic-split-dist");
 	const bundled = Object.keys(
@@ -840,6 +841,41 @@ test(
 		assert.equal(result.status, 0, result.stderr);
 		const missing = [...lazy].filter((path) => !fs.existsSync(join(compiledDist, path)));
 		assert.deepEqual(missing, [], "lazily imported modules without a file after the split");
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a module an earlier release imported on demand keeps its file, also once the package only bundles it",
+	() => {
+		const { nodeModules } = installedLayout();
+		const build = join(dirname(nodeModules), "released-lazy-paths");
+		compiledPackage(build);
+		const split = () => spawnSync(process.execPath, [join(build, "scripts", "split-dist.mjs")], { encoding: "utf8" });
+		// A release that imported a module on demand that this package imports only statically, and bundles.
+		const record = (path: string) =>
+			fs.writeFileSync(
+				join(build, "in-place-update", "0.0.1.json"),
+				JSON.stringify({
+					version: "0.0.1",
+					packages: { "@bastani/atomic": { lazy: { [`@bastani/atomic:dist/${path}`]: ["dist/main.js"] } } },
+				}),
+			);
+		record("core/agent-session.js");
+		const kept = split();
+		assert.equal(kept.status, 0, kept.stderr);
+		assert.ok(
+			fs.existsSync(join(build, "dist", "core", "agent-session.js")),
+			"the module the release imported on demand",
+		);
+		// A module no longer in the package fails the build, which would otherwise leave the release without it.
+		record("core/a-module-this-package-never-had.js");
+		const failed = split();
+		assert.notEqual(failed.status, 0);
+		assert.match(
+			failed.stderr,
+			/0\.0\.1 imports dist\/core\/a-module-this-package-never-had\.js on demand, and no module of this package compiles to it/,
+		);
 	},
 	LAYOUT_TIMEOUT_MS,
 );

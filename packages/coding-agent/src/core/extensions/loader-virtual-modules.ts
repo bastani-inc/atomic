@@ -21,6 +21,7 @@ import {
 } from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { normalizeJitiAliases } from "./jiti-aliases.js";
+import { hasLazyBuiltinSpec } from "./lazy-builtin.js";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath, isSourceBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import {
@@ -1070,7 +1071,11 @@ export async function prepareExtensionEntries(
 ): Promise<void> {
 	if (isBunBinary || isBundledBuild) return;
 	const resident = isCurrentCacheToken(cacheToken) ? extensionCache : undefined;
-	const entries = extensionPaths.filter((entry) => !resident?.has(entry) && isSourceBuiltinExtensionPath(entry));
+	const entries = extensionPaths.filter((entry) => {
+		if (resident?.has(entry) || !isSourceBuiltinExtensionPath(entry)) return false;
+		const label = getBuiltinExtensionEntryLabel(entry);
+		return label === undefined || !hasLazyBuiltinSpec(label);
+	});
 	if (entries.length === 0) return;
 	const cacheDir = await resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (cacheDir === undefined) return;

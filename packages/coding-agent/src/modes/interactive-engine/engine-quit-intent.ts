@@ -6,9 +6,9 @@ import { parseEngineExplicitQuitCommand, serializeInteractiveEngineMessage } fro
 /**
  * Child-side record of whether the host is quitting on purpose.
  *
- * The host stops the engine by closing stdin and then sending SIGTERM, and a host
- * that was itself signalled stops it the same way, so the child cannot infer the cause
- * from how it was stopped. The host announces an explicit quit first and waits for the
+ * The host stops the engine with a signal on Linux and macOS (SIGTERM, or SIGHUP once the
+ * host was itself signalled) and by closing its stdin on Windows, and a host that was itself
+ * signalled stops it the same way, so the child cannot infer the cause from how it was stopped. The host announces an explicit quit first and waits for the
  * acknowledgement, which makes the flag visible before any stop signal can arrive.
  */
 export class EngineQuitIntent {

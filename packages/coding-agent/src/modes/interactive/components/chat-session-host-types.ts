@@ -140,6 +140,8 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	transcriptEndBlock?: () => Component | undefined;
 	/** See `ToolExecutionOptions.keptTaskAction`: what this chat offers for a task a call left running. */
 	keptTaskAction?: (taskId: TaskId) => KeptTaskAction | undefined;
+	/** Where a click on this chat's own `/tasks` hint runs it; see `ToolExecutionOptions.keptTaskRoute`. */
+	keptTaskRoute?: string;
 	/** Custom hosts may retain live task rows; interactive subagent chats use footer-only status. */
 	taskRowsInChat?: boolean;
 	echoedInitialPrompt?: string | (() => string | undefined);
