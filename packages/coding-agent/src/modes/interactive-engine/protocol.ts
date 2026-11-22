@@ -306,6 +306,11 @@ export type InteractiveEngineCommand =
 	 */
 	| { type: "engine_custom_click_settle" | "engine_custom_click_cancel"; componentId: string; clickId: number }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
+	/**
+	 * A click on a hint the engine drew that names a route of the engine's (`componentId`), such as a subagent chat's own
+	 * `/tasks`: the engine runs `command` where the route leads, or nothing. An engine from an earlier version ignores it.
+	 */
+	| { type: "engine_hint_route"; componentId: string; command: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
 	| {
@@ -931,6 +936,8 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		return { type: value.type, componentId: value.componentId, requestId: value.requestId, error: value.error };
 	if (value.type === "engine_custom_dispose" || value.type === "engine_render_dispose")
 		return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_hint_route" && typeof value.command === "string")
+		return { type: value.type, componentId: value.componentId, command: value.command };
 	if (
 		(value.type === "engine_session_picker_select" || value.type === "engine_session_picker_delete") &&
 		typeof value.path === "string"

@@ -15,7 +15,7 @@ import { Text } from "../src/components/text.ts";
 import { keyInputData, matchesKey } from "../src/keys.ts";
 import { type Component, compositeTuiLine, type TuiMouseEvent, type TuiMouseEventResult } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
-import { sliceByColumn, stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "../src/utils.ts";
+import { HINT_OPEN, sliceByColumn, stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from "../src/utils.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 /** A terminal that keeps every write, so a test can tell what reached it. */
@@ -367,13 +367,62 @@ describe("a click on a key hint runs its key", () => {
 		}
 	});
 
+	it("does not run a command hint repainted with another route between press and release", async () => {
+		const { terminal, view, tui } = await mount([slashCommandHint("/tasks to manage", "h-first")]);
+		const commands: (readonly [string, string | undefined])[] = [];
+		tui.setHintCommandHandler((command, route) => commands.push([command, route]));
+		try {
+			terminal.sendInput(press(1, 0));
+			view.lines = [slashCommandHint("/tasks to manage", "h-second")];
+			tui.renderNow();
+			terminal.sendInput(release(1, 0));
+			await terminal.waitForRender();
+			assert.deepStrictEqual(commands, []);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("hands a slash command to the command handler", async () => {
 		const { click, tui } = await mount([clickableHint("/tasks to manage", commandHintAction("/tasks"))]);
-		const commands: string[] = [];
-		tui.setHintCommandHandler((command) => commands.push(command));
+		const commands: (readonly [string, string | undefined])[] = [];
+		tui.setHintCommandHandler((command, route) => commands.push([command, route]));
 		await click(3, 0);
-		assert.deepStrictEqual(commands, ["/tasks"]);
+		assert.deepStrictEqual(commands, [["/tasks", undefined]]);
 		tui.stop();
+	});
+
+	it("hands a slash command with the route its hint names to the command handler", async () => {
+		const { click, tui } = await mount([
+			`${slashCommandHint("/tasks to manage", "e1234")} · ${slashCommandHint("/tasks")}`,
+		]);
+		const commands: (readonly [string, string | undefined])[] = [];
+		tui.setHintCommandHandler((command, route) => commands.push([command, route]));
+		await click(3, 0);
+		await click(22, 0);
+		assert.deepStrictEqual(commands, [
+			["/tasks", "e1234"],
+			["/tasks", undefined],
+		]);
+		tui.stop();
+	});
+});
+
+describe("a slash command hint that names a route", () => {
+	it("reads back as the command and the route", () => {
+		const { line, spans } = readHintSpans(slashCommandHint("/tasks to manage", "h-route-1"));
+		assert.strictEqual(line, "/tasks to manage");
+		assert.deepStrictEqual(spans, [
+			{ start: 0, end: 16, action: { kind: "command", command: "/tasks", route: "h-route-1" } },
+		]);
+	});
+
+	it("is text to a renderer that reads only keys and commands, as Atomic 0.10.3's does", () => {
+		// The payload rule of the 0.10.3 renderer: `k:<key>` presses a key, `c:<command>` runs it, anything else is no action.
+		const marked = slashCommandHint("/tasks to manage", "e-route");
+		const payload = marked.slice(marked.indexOf(HINT_OPEN) + HINT_OPEN.length, marked.indexOf("\x07"));
+		assert.strictEqual(payload, "r:e-route:/tasks");
+		assert.ok(!payload.startsWith("k:") && !payload.startsWith("c:"), payload);
 	});
 });
 

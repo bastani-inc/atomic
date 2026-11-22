@@ -11,6 +11,7 @@ import type {
 	ToolChatEntry,
 } from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
+import { runHintRoute } from "../../packages/coding-agent/src/modes/interactive/components/hint-routes.js";
 import { keptTaskId } from "../../packages/coding-agent/src/modes/interactive/components/kept-task.js";
 import { dismissedTasks } from "../../packages/coding-agent/src/modes/interactive/components/task-dismissal.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
@@ -119,9 +120,11 @@ test("a subagent's chat says /tasks manages a command it launched that keeps run
 	const detailOf = (command: string) => rows[rows.findIndex((row) => row.includes(`Bash(${command})`)) + 1] ?? "";
 	// Its own command is in its /tasks, as the main chat's own command is in the main chat's /tasks.
 	assert.equal(detailOf("npm run build"), "   ⎿  Running in background · /tasks to manage", rows.join("\n"));
-	// Typed into this chat, /tasks opens its own list; a click on a command hint runs the main chat's, so none is drawn.
+	// Typed into this chat, /tasks opens its own list; a click on the hint runs it through this chat's own route.
 	const hint = raw[rows.findIndex((row) => row.includes("Bash(npm run build)")) + 1] ?? "";
-	assert.deepEqual(readHintSpans(hint).spans, []);
+	const [span] = readHintSpans(hint).spans;
+	assert.ok(span?.action.kind === "command" && span.action.route !== undefined, hint);
+	assert.equal(span.action.command, "/tasks");
 	// Its /tasks does not list commands another subagent or the main chat launched.
 	assert.equal(detailOf("npm run lint"), "   ⎿  Running in background", rows.join("\n"));
 	assert.equal(detailOf("npm test"), "   ⎿  Running in background", rows.join("\n"));
@@ -144,11 +147,11 @@ test("a subagent's chat offers /tasks for a command only while its /tasks lists 
 		const index = rows.findIndex((row) => row.includes(`Bash(${command})`)) + 1;
 		return { text: rows[index] ?? "", spans: readHintSpans(raw[index] ?? "").spans.length };
 	};
-	assert.deepEqual(detailOf("npm run build"), { text: "   ⎿  Running in background · /tasks to manage", spans: 0 });
+	assert.deepEqual(detailOf("npm run build"), { text: "   ⎿  Running in background · /tasks to manage", spans: 1 });
 	// The command is not listed yet when its result is drawn, then is.
 	assert.deepEqual(detailOf("npm run e2e"), { text: "   ⎿  Running in background", spans: 0 });
 	tasks.push(shell("shell-late", "npm run e2e", agent));
-	assert.deepEqual(detailOf("npm run e2e"), { text: "   ⎿  Running in background · /tasks to manage", spans: 0 });
+	assert.deepEqual(detailOf("npm run e2e"), { text: "   ⎿  Running in background · /tasks to manage", spans: 1 });
 	// Dismissed from its /tasks, the command is no longer offered there.
 	dismissedTasks(launchedTaskViewSource(source, agent)).add("shell-late" as TaskId);
 	assert.deepEqual(detailOf("npm run e2e"), { text: "   ⎿  Running in background", spans: 0 });
@@ -327,6 +330,70 @@ test("a subagent's task page names /tasks only while typing it there opens the s
 		"   ⎿  Running in background",
 	);
 	readOnly.page.dispose();
+});
+
+test("a click on a subagent's /tasks hint opens its own list while its chat takes typing, and nothing after", async () => {
+	initTheme("dark");
+	const tasks = [
+		{ ...taskRecord(agent), agentName: "worker" },
+		shell("shell-own", "npm run build", agent),
+		shell("shell-sibling", "npm run lint", "agent-2" as TaskId),
+	];
+	let readOnly: string | undefined;
+	const source = transcriptOnlySource({
+		tasks,
+		ownerTasks: tasks,
+		readTaskTranscript: () => ({
+			ok: true,
+			value: { messages: transcript([{ callId: "call-own", command: "npm run build", taskId: "shell-own" }]) },
+		}),
+		followTaskTranscript: () => undefined,
+		sendTaskMessage: async () => {},
+		taskReadOnlyReason: () => readOnly,
+	});
+	const env = taskTranscriptEnvironment({
+		keybindings: new KeybindingsManager(),
+		createChat: (options) => new ChatSessionHost(options),
+	});
+	const page = new TaskAgentTranscriptPage(source, agent, env, () => {});
+	await page.load();
+	const routeOf = (rows: readonly string[]) => {
+		const row = rows[plain(rows).findIndex((line) => line.includes("Bash(npm run build)")) + 1] ?? "";
+		const action = readHintSpans(row).spans[0]?.action;
+		return action?.kind === "command" ? action.route : undefined;
+	};
+	const route = routeOf(page.renderView(100, 30));
+	assert.ok(route);
+
+	// The chat has stopped taking typing since the hint was drawn: a click on it opens nothing, here or in the main chat.
+	readOnly = "This subagent is no longer kept.";
+	assert.equal(runHintRoute(route, "/tasks"), false);
+	assert.doesNotMatch(plain(page.render(100, 24)).join("\n"), /npm run lint|shell-own/);
+	// Only /tasks runs there.
+	readOnly = undefined;
+	assert.equal(runHintRoute(route, "/model"), false);
+
+	assert.equal(runHintRoute(route, "/tasks"), true);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const list = plain(page.render(100, 24)).join("\n");
+	assert.match(list, /npm run build/);
+	assert.doesNotMatch(list, /npm run lint/);
+
+	// A page that is gone leaves its route leading nowhere.
+	page.dispose();
+	assert.equal(runHintRoute(route, "/tasks"), false);
+});
+
+test("without colour a subagent's /tasks hint is text, as the main chat's hints are", async () => {
+	initTheme("dark");
+	process.env.NO_COLOR = "1";
+	const tasks = [{ ...taskRecord(agent), agentName: "worker" }, shell("shell-own", "npm run build", agent)];
+	const { page } = await subagentChat(tasks, [{ callId: "call-own", command: "npm run build", taskId: "shell-own" }]);
+	const raw = page.renderView(100, 30);
+	const row = plain(raw).findIndex((line) => line.includes("Bash(npm run build)")) + 1;
+	assert.equal(plain(raw)[row], "   ⎿  Running in background · /tasks to manage");
+	assert.deepEqual(readHintSpans(raw[row] ?? "").spans, []);
+	page.dispose();
 });
 
 test("a subagent's chat reads its task list as often for many background commands as for one", async () => {
