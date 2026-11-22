@@ -86,6 +86,7 @@ import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
+  presenceBoundAfterClaim,
   readSharedStorageSetting,
   resolveMultiNodeStartup,
   SHARED_STORAGE_UNAVAILABLE_REASON,
@@ -389,6 +390,9 @@ class IntercomBroker {
    * send, so a broker that idles out having served no session leaves no durable state in the agent directory. A broker
    * that does serve one reads what its predecessors recorded, so a retried send is still deduplicated across restarts.
    */
+  /** #5607: the store of asks for away sessions, once opened: it keeps the multi-node id hand-overs too. */
+  private awayAsks: AwayAsks | undefined;
+
   private openDeliveredMessages(): DeliveredMessageCache {
     if (this.deliveredMessageCache !== undefined) return this.deliveredMessageCache;
     // Kept in memory once the directory this broker created is gone: it never creates a removed directory again.
@@ -400,8 +404,10 @@ class IntercomBroker {
     // #4751: what waits for away sessions is kept with the same lifetime as the delivered-message authority.
     try {
       // #4829: live asks are written to it too, with their peers' return addresses, so they outlive this broker.
+      const awayAsks = new AwayAsks(durable ? getBrokerAwayAsksPath() : undefined);
+      this.awayAsks = awayAsks;
       this.pendingQuestions.useAwayStore(
-        new AwayAsks(durable ? getBrokerAwayAsksPath() : undefined),
+        awayAsks,
         (sessionId) =>
           this.sessions.get(sessionId)?.registrationReturnAddress ?? this.sessionIdReclaim.retiredReturnAddress(sessionId),
       );
@@ -893,6 +899,7 @@ class IntercomBroker {
     grant?: SessionIdGrant,
     awaits?: string,
     recovery?: string,
+    presenceBoundMs?: number,
   ): void {
         let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -1102,6 +1109,7 @@ class IntercomBroker {
           grant,
           awaits,
           recovery,
+          presenceBoundMs,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS once the store can open, and by ENDED_QUEUE_TOTAL_WAIT_MS in all).
@@ -1285,12 +1293,14 @@ class IntercomBroker {
           // #5607: a client that takes ids back is told which id it awaits; a hand-over it presents takes one.
           const takesIdHandoff = clientMessage.takesIdHandoff === true;
           const idHandoff = typeof clientMessage.idHandoff === "string" ? clientMessage.idHandoff : undefined;
+          const claimProgress = { extendedMs: 0 };
           void multiNode
             .claimSessionId(
               preferred,
               returnAddress,
               JSON.stringify(["return", returnAddress, normalizeGroup(home)]),
               idHandoff,
+              claimProgress,
             )
             .then((claimed) => {
               this.claimingSessionIds.delete(socket);
@@ -1339,6 +1349,8 @@ class IntercomBroker {
                 // fresh one.
                 awaited ? preferred : undefined,
                 !awaited ? undefined : claimed.status === "held" ? claimed.recovery : claimed.unanswered.recovery,
+                // The claim and the presence wait together stay within the client's registration wait.
+                presenceBoundAfterClaim(claimProgress.extendedMs),
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
@@ -2157,6 +2169,24 @@ class IntercomBroker {
               instanceKey: SOCKET_PATH,
               // A machine id saved for it goes into this broker's Intercom directory only, never a removed one again.
               hostIdentity: (await this.hostIdentity()) ?? null,
+              // #5607: a hand-over presented after this broker restarted still takes back what it was given for. Kept
+              // with the asks for away sessions, which the first registration opens, before any hand-over, and written
+              // there only while that directory is still this broker's.
+              handoffs: () => {
+                const awayAsks = this.awayAsks;
+                return awayAsks === undefined
+                  ? undefined
+                  : {
+                      take: (holder, keepMs) => {
+                        if (!this.holdsIntercomDirectory()) throw new Error("its Intercom directory was removed");
+                        return awayAsks.takeIdHandoffs(holder, keepMs);
+                      },
+                      put: (holder, changes) => {
+                        if (!this.holdsIntercomDirectory()) throw new Error("its Intercom directory was removed");
+                        awayAsks.putIdHandoffs(holder, changes);
+                      },
+                    };
+              },
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,

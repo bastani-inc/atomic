@@ -43,7 +43,9 @@ A project entry without `command`, `url`, or `type` overrides only `enabled`, `e
 
 Both files use a top-level `mcpServers` object. Keep personal servers and credentials in the user-level file. `ATOMIC_CODING_AGENT_DIR` relocates the Atomic agent directory.
 
-Stdio servers use `command`, `args`, `env`, and `cwd`. `command` is one executable, not a shell command string. A `command` with a path runs as written; one named without a path is looked up in the absolute directories on `PATH` from `env`, and on Windows first in `cwd` when that lies outside the project folder; the project folder counts only when `PATH` names it. A `command` found nowhere fails with `spawn <command> ENOENT`. Relative `cwd` values resolve against the session directory.
+Stdio servers use `command`, `args`, `env`, and `cwd`. `command` is one executable, not a shell command string. A `command` with a path runs as written; one named without a path is looked up in the absolute directories on `PATH` from `env`, and on Windows first in `cwd` when that lies outside the project folder (the project folder counts only when `PATH` names it).
+
+On Windows, variables in `env` (such as `PATH`) replace inherited variables case-insensitively (for example overriding `Path`) both when locating `command` and inside the spawned server. A `command` found nowhere fails with `spawn <command> ENOENT`. Relative `cwd` values resolve against the session directory.
 
 HTTP servers use `url`, optional `headers`, and optional `oauth`. For bearer authentication:
 
@@ -80,7 +82,9 @@ Installed [packages](/packages/authoring#mcp-servers) and extensions can contrib
 
 ## Manage servers
 
-`/mcp` opens a server manager with connection state, tool count, exposure, and source, even while startup connections are pending. Select a server to inspect tools and connection details, sign in or out, reconnect, enable or disable it, or change exposure. Servers that need attention appear first. Enable, disable, and reconnect run in the background; the manager updates live and you can keep navigating or close it while they finish. The manager's lists work like Atomic's other pickers: ↑↓ select, Enter opens, Esc goes back, and a list longer than one screen has a search box where typing filters it.
+`/mcp` is the single slash command for managing MCP servers. Run `/mcp` to open the server manager with connection state, tool count, exposure, and source, even while startup connections are still pending.
+
+Select a server to inspect tools and details, sign in or out, reconnect, enable or disable it, or change exposure. Servers needing attention appear first. Enable, disable, and reconnect run in the background while the manager updates live, so you can keep navigating or close it. Use `↑`/`↓` to select, `Enter` to open, `Esc` to go back, and type to filter lists longer than one screen.
 
 | Command | Action |
 | --- | --- |
@@ -89,13 +93,15 @@ Installed [packages](/packages/authoring#mcp-servers) and extensions can contrib
 | `/mcp logout [server]` | Remove stored OAuth credentials. |
 | `/mcp reconnect [server]` | Reconnect a server and refresh its tools. |
 
-Command completion suggests actions and eligible server names. When a server name is omitted, Atomic selects an eligible server when the choice is unambiguous; otherwise it asks you to choose. Session login requires an interactive UI. Shell login opens the browser without starting a session; authenticate before unattended work.
+Command completion suggests subcommands and eligible server names. When a server name is omitted, Atomic selects an eligible server if only one matches; otherwise it asks you to choose. Session login requires an interactive UI; run `atomic mcp login` in your shell before unattended work.
 
-Enabled servers connect in the background when a session starts. The first prompt waits up to 10 seconds for servers with `direct` tools. Codemode, tool search, and resource calls wait for the servers they need. A dropped connection reconnects on the next call. Changes announced by a server update the available tools; withdrawn tools become unreachable. When you resume a session, the MCP tools it was using stay available while their servers reconnect, and the system prompt keeps each server's summary: a call to one of the tools waits for its server and runs only if the server still offers the same tool. This holds for a server still defined in the same place (global or project `mcp.json`, or an extension) with the same command and working directory, or the same URL scheme, host, port and path; a changed argument, such as a token, or URL query does not count as a change. Tools of a server that does not reconnect, needs a sign-in, or changed them are removed or updated with the next request.
+Enabled servers connect in the background at session startup. The first prompt waits up to 10 seconds for servers with `direct` tools, while codemode, tool search, and resource calls wait for the servers they need. Dropped connections reconnect on the next call, and server-announced tool changes take effect automatically.
+
+When you resume a session, its previously used MCP tools stay available and keep their system-prompt summaries while servers reconnect, provided the server stays defined in the same scope with the same command and `cwd` (or same URL scheme, host, port, and path; argument and query changes do not invalidate it). Calls wait for reconnect and run only if the tool still exists. Tools from servers that fail to reconnect, require sign-in, or withdrew them update on the next turn.
 
 ### Shell commands
 
-Shell commands use file-configured servers and do not load extensions:
+Shell commands operate on file-configured servers and do not load extensions:
 
 ```sh
 atomic mcp add <server> [options] -- <command> [args...]
@@ -106,9 +112,11 @@ atomic mcp login <server> [-l] [--timeout <seconds>]
 atomic mcp logout <server> [-l]
 ```
 
-`add` replaces an existing entry of the same name. `add` and `remove` accept `--local` (`-l`) for the project file. `login` and `logout` accept `-l` to require that the server is defined in the project's file; without it they find the server in either file. For stdio, use repeatable `--env KEY=VALUE` and `--cwd`. For HTTP, use repeatable `--header KEY=VALUE`, `--bearer-token-env-var NAME`, and `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, or `--oauth-client-name`. Both transports accept `--exposure` and `--description`. Run `atomic mcp --help` for usage.
+`add` replaces an existing entry with the same name. `add` and `remove` accept `--local` (`-l`) to write `.atomic/mcp.json`; `login` and `logout` accept `-l` to require a project-defined server (otherwise they search both files).
 
-`list` connects to enabled servers and reports state, tools, and errors; it exits with status 1 for invalid configuration or an enabled server that is not connected. `--json` produces a machine-readable report. Login gives up after 300 seconds by default; `--timeout` limits the whole sign-in, including requests to the authorization server, but not the MCP server request timeout. A running session uses new credentials on its next turn.
+For stdio servers, pass repeatable `--env KEY=VALUE` and `--cwd`. For HTTP servers, pass repeatable `--header KEY=VALUE`, `--bearer-token-env-var NAME`, and `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, or `--oauth-client-name`. Both transports accept `--exposure` and `--description`. Passing `--help` or `-h` after `--` (for example `atomic mcp add srv -- cmd --help`) or as the value of a value-taking flag passes through to the command or option instead of printing MCP help. Run `atomic mcp --help` for full usage.
+
+`list` connects to enabled servers and reports state, tools, and errors, exiting `1` on invalid config or any disconnected enabled server. Pass `--json` for machine-readable output. `login` times out after 300 seconds by default (`--timeout` caps the entire sign-in, including authorization-server requests, not MCP server request timeouts). Running sessions pick up new credentials on their next turn.
 
 Resource-capable servers show "offers resources" rather than resource counts. In `--json` output, `resources: true` indicates resource support; resource and template counts are not included. Use the resource tools below to list them on demand.
 
@@ -224,7 +232,9 @@ An HTTP server can use your current provider login token instead of MCP OAuth:
 { "mcpServers": { "gateway": { "url": "https://gateway.example/mcp", "auth": { "provider": "openrouter" } } } }
 ```
 
-Atomic reads the current token for every request and does not copy it into MCP credential storage. If the token is missing or rejected, run `/login <provider>` and retry the MCP call. `atomic mcp list` also sends the provider token, refreshing an expired login, and its sign-in hint for such a server names `/login <provider>`. `atomic mcp login` and `atomic mcp logout` do not apply to these servers; they point to `atomic auth login <provider>` and `atomic auth logout <provider>`, which work like `/login` and `/logout` in Atomic.
+Atomic reads the current token for every request and does not copy it into MCP credential storage. If the token is missing or rejected, run `/login <provider>` and retry the MCP call.
+
+`atomic mcp list` also sends the provider token, refreshing an expired login, and its sign-in hint names `/login <provider>`. `atomic mcp login` and `atomic mcp logout` do not apply to these servers; they point to `atomic auth login <provider>` and `atomic auth logout <provider>`.
 
 Because the credential goes to the configured server, provider-token authentication has these limits:
 
@@ -250,4 +260,4 @@ Tools use `mcp__<server>__<tool>` names and default to `codemode` exposure. The 
 
 ## Local documentation
 
-This guide is available at `docs/mcp-servers.md` under Atomic's installation root in npm and binary installations. The session's documentation instructions provide the absolute docs directory.
+This guide ships at `docs/mcp-servers.md` under Atomic's installation root in npm and binary installations.

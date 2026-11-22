@@ -14,8 +14,10 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
 	process.env.ATOMIC_WEB_ACCESS_HEAVY_IMPORTED = "1";
 }
 import { registerWebSearchFeatures } from "./web-search-features.js";
+import { registerWebAccessMessageRenderers } from "./message-renderers.js";
 
 export default async function (pi: ExtensionAPI) {
+	registerWebAccessMessageRenderers(pi);
 	const storage = createResultStorage();
 	const { deleteResult, getAllResults } = storage;
 	const initConfig = await loadConfigForExtensionInit();

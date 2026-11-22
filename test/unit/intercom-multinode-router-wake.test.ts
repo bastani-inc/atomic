@@ -4,6 +4,7 @@ import type net from "node:net";
 import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { AwayAsks } from "../../packages/intercom/broker/away-asks.js";
 import { UNAUTHORIZED_REPLY_REASON } from "../../packages/intercom/broker/delivery-failure-reason.js";
 import {
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -11,9 +12,13 @@ import {
 	MultiNodeRouter,
 	type MultiNodeRouterOptions,
 	PRESENCE_REGISTRATION_BOUND_MS,
+	presenceBoundAfterClaim,
 	RESERVED_ID_HOLD_MS,
 	type ReservationOptions,
+	type SavedHandoff,
+	type SavedHandoffStore,
 	SESSION_ID_CLAIM_BOUND_MS,
+	SESSION_ID_CLAIM_PROGRESS_CAP_MS,
 	SESSION_ID_OWNER_SAFE_MS,
 	type SessionIdClaim,
 	type SessionIdGrant,
@@ -213,7 +218,7 @@ async function startNode(
 		/** #5607: the broker's host and process, as its membership records them. */
 		readonly process?: Pick<
 			MultiNodeRouterOptions,
-			"hostIdentity" | "instanceKey" | "pid" | "isProcessAlive" | "home"
+			"hostIdentity" | "instanceKey" | "pid" | "isProcessAlive" | "home" | "handoffs"
 		>;
 	} = {},
 ): Promise<Node> {
@@ -2556,6 +2561,8 @@ describe("a row queued for an offline session that registered meanwhile (#5607)"
 describe("one live registration per Intercom id across brokers (#5607)", () => {
 	// The wall clock alone moves a session's id window on: its elapsed time is the larger of the two clocks'.
 	const ADVANCE = ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] as const;
+	/** A remote shared database's round trip, as the slow-store integration suites take it: four of them pass the claim's bound. */
+	const SLOW_DATABASE_ANSWER_MS = 700;
 
 	/** Another registration of `original`'s session: the same id and return address, a connection of its own. */
 	function twinOf(original: BrokerConnectedSession, name = "twin"): BrokerConnectedSession {
@@ -2641,12 +2648,14 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 	 * registered again on `here` under a fresh id while it awaits the one it asked for.
 	 */
 	/** `homes`: each broker keeps its durable state under a home of its own, as installed brokers do (#4997). */
-	async function awaitingWhileStopped(homes = false) {
+	async function awaitingWhileStopped(homes = false, handoffs?: () => SavedHandoffStore) {
 		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
 		const shared = await cluster();
 		const [stopped, here] = [
 			await startNode(shared, homes ? { process: { home: "stopped-home" } } : {}),
-			await startNode(shared, homes ? { process: { home: "here-home" } } : {}),
+			await startNode(shared, {
+				process: { ...(homes ? { home: "here-home" } : {}), ...(handoffs === undefined ? {} : { handoffs }) },
+			}),
 		];
 		const live = session("live");
 		await registeredOn(stopped, live);
@@ -3393,6 +3402,167 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			return found;
 		});
 		assert.equal(outcome.routeUnavailable, true, JSON.stringify(outcome));
+	});
+
+	/** The away-ask store of one broker directory, which every broker of it keeps its hand-overs in. */
+	function directoryStore(away = new AwayAsks()): {
+		readonly away: AwayAsks;
+		readonly handoffs: () => SavedHandoffStore;
+	} {
+		return {
+			away,
+			handoffs: () => ({
+				take: (holder, keepMs) => away.takeIdHandoffs(holder, keepMs),
+				put: (holder, changes) => away.putIdHandoffs(holder, changes),
+			}),
+		};
+	}
+
+	/** A hand-over an earlier broker kept in `store` for `live`'s session, `at` the given time. */
+	function keptBefore(store: ReturnType<typeof directoryStore>, live: BrokerConnectedSession, at: number) {
+		const kept = {
+			identity: deliveryTargetIdentity(live),
+			handoff: randomUUID(),
+			id: live.info.id,
+			alias: randomUUID(),
+			recovery: randomUUID(),
+			at,
+		};
+		store.away.takeIdHandoffs("earlier-broker", KNOWN_SESSION_RETENTION_MS);
+		store.away.putIdHandoffs("earlier-broker", [[kept.identity, kept]]);
+		return kept;
+	}
+
+	test.each([
+		["after its hold lapsed", RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS],
+		["while its id was still held", 0],
+	])(
+		"a hand-over presented after its broker restarted %s takes the fresh id back as an alias, as it does without the restart (#5607)",
+		async (_when, wait) => {
+			vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+			const store = directoryStore();
+			const { shared, here, live, fresh } = await awaitingWhileStopped(false, store.handoffs);
+			await untilMovedBack(here, fresh);
+			const handoff = here.handoffs[0]!.handoff;
+			await vi.advanceTimersByTimeAsync(wait);
+
+			// The broker restarts before the session presents its hand-over: what it kept in memory went with it, and it gave
+			// its ids up as it closed.
+			await here.router.close();
+			const restarted = await startNode(shared, { process: { handoffs: store.handoffs } });
+			const claim = await restarted.router.claimSessionId(
+				live.info.id,
+				fresh.registrationReturnAddress!,
+				deliveryTargetIdentity(fresh),
+				handoff,
+			);
+
+			assert.ok(claim.status === "granted", JSON.stringify(claim));
+			assert.equal(claim.grant.alias, fresh.info.id, "the fresh id comes back as its alias");
+			assert.notEqual(claim.grant.recovery, undefined);
+		},
+	);
+
+	test("a session's hand-over is written once its broker gives it, and never dropped while its hold lapses (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+		const store = directoryStore();
+		const written: (readonly [string, SavedHandoff | undefined])[] = [];
+		const recording = (): SavedHandoffStore => {
+			const inner = store.handoffs();
+			return {
+				take: (holder, keepMs) => inner.take(holder, keepMs),
+				put: (holder, changes) => {
+					written.push(...changes);
+					inner.put(holder, changes);
+				},
+			};
+		};
+		const { here, fresh } = await awaitingWhileStopped(false, recording);
+		await untilMovedBack(here, fresh);
+		const identity = deliveryTargetIdentity(fresh);
+		assert.equal(written.at(-1)?.[0], identity);
+		assert.equal(written.at(-1)?.[1]?.handoff, here.handoffs[0]!.handoff, "written as it is given");
+
+		await vi.advanceTimersByTimeAsync(RESERVED_ID_HOLD_MS + BROKER_LEASE_RENEW_INTERVAL_MS);
+
+		const forIdentity = written.filter(([key]) => key === identity);
+		assert.ok(forIdentity.length >= 2, "written again as it lapsed");
+		assert.ok(
+			forIdentity.every(([, kept]) => kept?.handoff === here.handoffs[0]!.handoff),
+			"never written without it",
+		);
+	});
+
+	test("a hand-over a broker that stopped while a registration presenting it was taking the held id kept is still honoured by the next broker (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+		const store = directoryStore();
+		const { shared, here, live, fresh } = await awaitingWhileStopped(false, store.handoffs);
+		await untilMovedBack(here, fresh);
+		const handoff = here.handoffs[0]!.handoff;
+
+		// The broker stops while the shared database has not answered the registration's claim of the held id.
+		vi.spyOn(here.state.knownSessions, "bind").mockReturnValue(new Promise(() => {}));
+		void here.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		await here.router.close();
+		const restarted = await startNode(shared, { process: { handoffs: store.handoffs } });
+		const claim = await restarted.router.claimSessionId(
+			live.info.id,
+			fresh.registrationReturnAddress!,
+			deliveryTargetIdentity(fresh),
+			handoff,
+		);
+
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.alias, fresh.info.id);
+	});
+
+	test("a kept hand-over older than a lapsed hand-over is kept gives nothing back after a restart (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+		const shared = await cluster();
+		const live = session("live");
+		const store = directoryStore();
+		const kept = keptBefore(store, live, Date.now() - KNOWN_SESSION_RETENTION_MS - 1);
+		const restarted = await startNode(shared, { process: { handoffs: store.handoffs } });
+
+		const claim = await restarted.router.claimSessionId(
+			live.info.id,
+			live.registrationReturnAddress!,
+			kept.identity,
+			kept.handoff,
+		);
+
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.alias, undefined);
+	});
+
+	test("a kept hand-over whose time is ahead of the clock ages from when a broker took it, across restarts (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE, "performance"] });
+		const shared = await cluster();
+		const live = session("live");
+		const store = directoryStore();
+		const kept = keptBefore(store, live, Date.now() + 2 * KNOWN_SESSION_RETENTION_MS);
+		// A broker takes it over, and stops.
+		const first = await startNode(shared, { process: { handoffs: store.handoffs } });
+		await first.router.claimSessionId(randomUUID(), "another-session", "another-identity", randomUUID());
+		await first.router.close();
+		vi.setSystemTime(Date.now() + KNOWN_SESSION_RETENTION_MS + 1);
+
+		const next = await startNode(shared, { process: { handoffs: store.handoffs } });
+		const claim = await next.router.claimSessionId(
+			live.info.id,
+			live.registrationReturnAddress!,
+			kept.identity,
+			kept.handoff,
+		);
+
+		assert.ok(claim.status === "granted", JSON.stringify(claim));
+		assert.equal(claim.grant.alias, undefined, "kept no longer than a lapsed hand-over is");
 	});
 
 	test("a hand-over presented after its hold lapsed whose claim goes unanswered and is not kept leaves the session awaiting its id, and the move back keeps the fresh id (#5607)", async () => {
@@ -4216,6 +4386,272 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.notEqual(fromElsewhere.status, "granted", "a broker on another host cannot tell its process has exited");
 		const fromHere = await here.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
 		assert.equal(fromHere.status, "granted");
+	});
+
+	const FAKE_TIMERS = ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] as const;
+	/** Which clocks fake timers move with them: `performance`, `Date`, both, or neither. */
+	const FAKE_CLOCKS = {
+		performance: ["performance"],
+		date: ["Date"],
+		both: ["performance", "Date"],
+		neither: [],
+	} as const;
+	type FakeClocks = keyof typeof FAKE_CLOCKS;
+
+	/**
+	 * `live` registered on a broker of this host that then exited (its pid names no process), and another broker of this
+	 * host whose shared database answers each of the claim's calls after `latencies(call)` ms, in the order they are made.
+	 */
+	async function claimAfterExitWithSlowDatabase(
+		latencies: (call: "bind" | "read" | "retireBroker", nth: number) => number,
+		/** A broker on another host, running, registers the session and takes its id once the exited broker's are given up. */
+		contended = false,
+		/** The clocks the fake timers move besides themselves: a test may fake either, both or neither. */
+		clocks: FakeClocks = "performance",
+		/**
+		 * With neither clock faked: both read as when the claim started, but the wall clock reads one millisecond on from
+		 * when the exited broker's membership is read, as a real clock can tick between two steps and not the next.
+		 */
+		wallTicksOnRead = false,
+	) {
+		vi.useFakeTimers({ toFake: [...FAKE_TIMERS, ...FAKE_CLOCKS[clocks]] });
+		const shared = await cluster();
+		const EXITED = 2_000_000_004;
+		const isProcessAlive = (pid: number) => pid !== EXITED;
+		const exited = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "first-socket", pid: EXITED, isProcessAlive },
+		});
+		const live = session("live");
+		await registeredOn(exited, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
+		});
+		const calls = { bind: 0, read: 0, retireBroker: 0 };
+		let wallTick = 0;
+		const slowly =
+			<A extends unknown[], R>(call: keyof typeof calls, answer: (...args: A) => Promise<R>) =>
+			(...args: A): Promise<R> =>
+				new Promise<R>((resolve, reject) => {
+					setTimeout(
+						() => {
+							if (call === "read" && wallTicksOnRead) wallTick = 1;
+							answer(...args).then(resolve, reject);
+						},
+						latencies(call, calls[call]++),
+					);
+				});
+		const knownSessions = here.state.knownSessions;
+		const owners = knownSessions.owners!;
+		const twin = twinOf(live);
+		const contender = contended
+			? await startNode(shared, {
+					process: { hostIdentity: "another-host", instanceKey: "first-socket", isProcessAlive: () => true },
+				})
+			: undefined;
+		const realRetire = owners.retireBroker.bind(owners);
+		const [bind, read, retireBroker] = [
+			slowly("bind", knownSessions.bind.bind(knownSessions)),
+			slowly("read", here.state.leases.read.bind(here.state.leases)),
+			slowly("retireBroker", async (brokerId: string) => {
+				await realRetire(brokerId);
+				const taken = await contender?.router.claimSessionId(twin.info.id, twin.registrationReturnAddress!);
+				assert.ok(taken === undefined || taken.status === "granted", JSON.stringify(taken));
+			}),
+		];
+		vi.spyOn(knownSessions, "bind").mockImplementation(bind);
+		vi.spyOn(here.state.leases, "read").mockImplementation(read);
+		vi.spyOn(owners, "retireBroker").mockImplementation(retireBroker);
+		let answered: SessionIdClaim | undefined;
+		const progress = { extendedMs: 0 };
+		if (wallTicksOnRead) {
+			const wall = Date.now();
+			const monotonic = performance.now();
+			vi.spyOn(Date, "now").mockImplementation(() => wall + wallTick);
+			vi.spyOn(performance, "now").mockReturnValue(monotonic);
+		}
+		void here.router
+			.claimSessionId(twin.info.id, twin.registrationReturnAddress!, undefined, undefined, progress)
+			.then((claim) => {
+				answered = claim;
+			});
+		return { calls, progress, answer: () => answered };
+	}
+
+	test.each(["performance", "date", "both"] as const)(
+		"a session whose broker on this host exited gets its id back on another broker of this host while each answer of the shared database takes 700 ms, timed by %s (#5607)",
+		async (clocks) => {
+			// Binding the id (held by the exited broker), reading that broker's membership, giving its ids up and binding again
+			// take four round trips, more than the claim's bound in all.
+			const { answer, progress } = await claimAfterExitWithSlowDatabase(
+				() => SLOW_DATABASE_ANSWER_MS,
+				false,
+				clocks,
+			);
+
+			await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+
+			assert.equal(answer()?.status, "granted", JSON.stringify(answer()));
+			// The registration's presence wait gives back what the claim took past its bound: four round trips less the bound.
+			assert.equal(progress.extendedMs, 4 * SLOW_DATABASE_ANSWER_MS - SESSION_ID_CLAIM_BOUND_MS);
+		},
+	);
+
+	test.each(["performance", "date", "both", "neither"] as const)(
+		"a claim that keeps giving an exited broker's ids up answers within its cap in all, and binds nothing more, timed by %s (#5607)",
+		async (clocks) => {
+			// Each step answers just inside the bound the step before it earned, so only the cap ends the claim.
+			const step = SESSION_ID_CLAIM_BOUND_MS - 100;
+			const { calls, answer, progress } = await claimAfterExitWithSlowDatabase(
+				(call, nth) => (call === "bind" && nth === 0 ? 0 : step),
+				false,
+				clocks,
+			);
+
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+
+			assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
+			assert.equal(
+				progress.extendedMs,
+				SESSION_ID_CLAIM_PROGRESS_CAP_MS - SESSION_ID_CLAIM_BOUND_MS,
+				"the presence wait gives back what the claim took past its bound",
+			);
+			await vi.advanceTimersByTimeAsync(4 * step);
+			assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
+		},
+	);
+
+	test("a claim timed by neither clock keeps to its cap when the wall clock ticks once between two of its steps and not after (#5607)", async () => {
+		const step = SESSION_ID_CLAIM_BOUND_MS - 100;
+		const { calls, answer, progress } = await claimAfterExitWithSlowDatabase(
+			(call, nth) => (call === "bind" && nth === 0 ? 0 : step),
+			false,
+			"neither",
+			true,
+		);
+
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS - 1);
+		assert.equal(answer(), undefined, "giving the exited broker's ids up earned the claim a bound of its own");
+		await vi.advanceTimersByTimeAsync(1);
+
+		assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
+		assert.equal(progress.extendedMs, SESSION_ID_CLAIM_PROGRESS_CAP_MS - SESSION_ID_CLAIM_BOUND_MS);
+		await vi.advanceTimersByTimeAsync(4 * step);
+		assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
+	});
+
+	test.each(["performance", "date", "both"] as const)(
+		"a claim whose id a live broker took once the exited broker's ids were given up is answered held at once, not tried again past its bound, timed by %s (#5607)",
+		async (clocks) => {
+			const { calls, answer } = await claimAfterExitWithSlowDatabase(() => SLOW_DATABASE_ANSWER_MS, true, clocks);
+
+			await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+
+			assert.equal(answer()?.status, "held", JSON.stringify(answer()));
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+			assert.equal(calls.bind, 2, "no bind after the one the exited broker's ids were given up for");
+		},
+	);
+
+	test("a claim whose id a live broker took early once the exited broker's ids were given up is waited for within its own bound, not the one it had earned (#5607)", async () => {
+		// The exited broker's ids are given up 2.2 s in; the live broker took the id meanwhile, and the bind after the first
+		// retry never answers.
+		const { calls, answer, progress } = await claimAfterExitWithSlowDatabase(
+			(call, nth) => (call === "bind" ? [100, 100, 60_000][nth]! : call === "read" ? 1_000 : 1_000),
+			true,
+		);
+
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+
+		assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
+		assert.equal(calls.bind, 3);
+		assert.equal(progress.extendedMs, 0, "nothing past the bound");
+	});
+
+	test("a broker that stalls past the claim's bound while it reads an exited owner's membership moves the claim on no more (#5607)", async () => {
+		const shared = await cluster();
+		const EXITED = 2_000_000_005;
+		const isProcessAlive = (pid: number) => pid !== EXITED;
+		const exited = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "first-socket", pid: EXITED, isProcessAlive },
+		});
+		const live = session("live");
+		await registeredOn(exited, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
+		});
+		const leases = here.state.leases;
+		const realRead = leases.read.bind(leases);
+		vi.spyOn(leases, "read").mockImplementation(async (...args: Parameters<typeof realRead>) => {
+			stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS);
+			return realRead(...args);
+		});
+		const bind = vi.spyOn(here.state.knownSessions, "bind");
+		const twin = twinOf(live);
+		const progress = { extendedMs: 0 };
+
+		const claim = await here.router.claimSessionId(
+			twin.info.id,
+			twin.registrationReturnAddress!,
+			undefined,
+			undefined,
+			progress,
+		);
+
+		assert.notEqual(claim.status, "granted", JSON.stringify(claim));
+		assert.equal(bind.mock.calls.length, 1, "no bind after the stall");
+		assert.equal(progress.extendedMs, 0, "a stalled broker takes nothing off the presence wait");
+	});
+
+	test("a claim answered within its bound after giving an exited broker's ids up takes nothing off the presence wait (#5607)", async () => {
+		// Four round trips of 600 ms fit in the bound.
+		const { answer, progress } = await claimAfterExitWithSlowDatabase(() => 600);
+
+		await vi.advanceTimersByTimeAsync(4 * 600 + 100);
+
+		assert.equal(answer()?.status, "granted", JSON.stringify(answer()));
+		assert.equal(progress.extendedMs, 0);
+	});
+
+	test("a live owner's id is still answered within the claim's bound while each answer of the shared database takes 700 ms (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "performance"] });
+		const shared = await cluster();
+		// The broker that owns the id runs, on another host: no step of the claim can give its ids up.
+		const owner = await startNode(shared, {
+			process: { hostIdentity: "another-host", instanceKey: "first-socket", isProcessAlive: () => true },
+		});
+		const live = session("live");
+		await registeredOn(owner, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive: () => true },
+		});
+		const knownSessions = here.state.knownSessions;
+		const realBind = knownSessions.bind.bind(knownSessions);
+		vi.spyOn(knownSessions, "bind").mockImplementation(
+			(...args: Parameters<typeof realBind>) =>
+				new Promise((resolve, reject) => {
+					setTimeout(() => realBind(...args).then(resolve, reject), SLOW_DATABASE_ANSWER_MS);
+				}),
+		);
+		const twin = twinOf(live);
+		let answered: SessionIdClaim | undefined;
+		const progress = { extendedMs: 0 };
+		void here.router
+			.claimSessionId(twin.info.id, twin.registrationReturnAddress!, undefined, undefined, progress)
+			.then((claim) => {
+				answered = claim;
+			});
+
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+
+		assert.ok(answered !== undefined && answered.status !== "granted", JSON.stringify(answered));
+		assert.equal(progress.extendedMs, 0, "the registration keeps its whole presence wait");
+	});
+
+	test("the presence wait gives back only what an id claim gave itself past its bound, so both stay within the client's wait", () => {
+		assert.equal(presenceBoundAfterClaim(0), 5_000);
+		assert.equal(presenceBoundAfterClaim(1_100), 3_900);
+		assert.equal(presenceBoundAfterClaim(2_500), 2_500);
+		assert.equal(presenceBoundAfterClaim(6_500), 2_500);
 	});
 
 	test("a broker paused past the stale age disconnects its session once the store answers it again, and the registration that took the id keeps it (#5607)", async () => {

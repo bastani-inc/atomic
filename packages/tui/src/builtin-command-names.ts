@@ -31,10 +31,10 @@ export const CORE_COMMAND_NAMES = [
 export const BUNDLED_COMMAND_NAMES = [
 	"agents",
 	"mcp",
-	"mcp-auth",
 	"curator",
 	"google-account",
 	"search",
 	"websearch",
 	"intercom",
+	"llama",
 ] as const;

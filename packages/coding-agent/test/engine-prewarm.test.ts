@@ -9,8 +9,11 @@ import {
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG,
 	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
+	PREWARM_HOST_ARGUMENTS_MAX_LENGTH,
 	type PrewarmLaunchBasis,
+	prewarmHostArguments,
 	prewarmInteractiveEngine,
 	sameEngineLaunch,
 	shouldPrewarmInteractiveEngine,
@@ -41,9 +44,13 @@ function writeEngineScript(): string {
 	const jsonl = new URL("../src/modes/rpc/jsonl.ts", import.meta.url).href;
 	writeFileSync(
 		path,
-		`import { writeFileSync } from "node:fs";\n` +
-			`writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));\n` +
-			`writeFileSync(${JSON.stringify(join(dir, "prewarm-argv"))}, JSON.stringify(process.argv.slice(2)));\n` +
+		`import { renameSync, writeFileSync } from "node:fs";\n` +
+			`import { dirname, join } from "node:path";\n` +
+			`import { fileURLToPath } from "node:url";\n` +
+			`const dir = dirname(fileURLToPath(import.meta.url));\n` +
+			`const publish = (name, text) => { const target = join(dir, name); writeFileSync(target + ".tmp", text); renameSync(target + ".tmp", target); };\n` +
+			`publish("prewarm-argv", JSON.stringify(process.argv.slice(2)));\n` +
+			`publish("pid", String(process.pid));\n` +
 			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
 			"const args = await readPrewarmedEngineArgs();\n" +
@@ -152,15 +159,23 @@ describe("adopting a prewarmed engine child", () => {
 		detached: false,
 	});
 
-	test("tells a child prewarmed for a --no-session host, at its start, that it opens no session database", async () => {
+	test("tells a child prewarmed for a --no-session host, at its start, that it opens no session database, and gives it its host's arguments", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-prewarm-"));
 		tempDirs.push(dir);
 		const script = join(dir, "engine.mjs");
 		writeFileSync(
 			script,
-			`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(join(dir, "argv"))}, JSON.stringify(process.argv.slice(2)));\nprocess.stdin.resume();\n`,
+			`import { renameSync, writeFileSync } from "node:fs";\n` +
+				`import { dirname, join } from "node:path";\n` +
+				`import { fileURLToPath } from "node:url";\n` +
+				`const target = join(dirname(fileURLToPath(import.meta.url)), "argv");\n` +
+				`writeFileSync(target + ".tmp", JSON.stringify(process.argv.slice(2)));\n` +
+				`renameSync(target + ".tmp", target);\n` +
+				`process.stdin.resume();\n`,
 		);
 		const argvFile = join(dir, "argv");
+		/** The flags a child was started with, the one that carries the host's arguments by its name. */
+		const flagsOf = (argv: string[]) => argv.map((arg) => arg.replace(/=.*$/s, ""));
 		const startedArgv = async (hostArgs: string[], basis?: PrewarmLaunchBasis): Promise<string[]> => {
 			prewarmInteractiveEngine(hostArgs, { host: terminal, launch: standIn(script), basis });
 			await vi.waitFor(() => assert.ok(existsSync(argvFile)), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
@@ -169,22 +184,38 @@ describe("adopting a prewarmed engine child", () => {
 			rmSync(argvFile);
 			return argv;
 		};
-		assert.deepEqual(await startedArgv(["--no-session"]), [
+		const DEFAULT_MODEL_API = INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG;
+		assert.deepEqual(flagsOf(await startedArgv(["--no-session"])), [
 			"--internal-engine-prewarm",
 			"--internal-engine-prewarm-no-database",
+			DEFAULT_MODEL_API,
 		]);
-		assert.deepEqual(await startedArgv([]), ["--internal-engine-prewarm"]);
-		// The engine reads the no-database marker as its second argument; the cache flag comes after it.
+		assert.deepEqual(flagsOf(await startedArgv([])), ["--internal-engine-prewarm", DEFAULT_MODEL_API]);
+		// The engine reads the no-database marker as its second argument; the other flags come after it.
 		assert.deepEqual(
-			await startedArgv(["--no-session"], "derived"),
+			flagsOf(await startedArgv(["--no-session"], "derived")),
 			process.platform === "win32"
-				? ["--internal-engine-prewarm", "--internal-engine-prewarm-no-database"]
+				? ["--internal-engine-prewarm", "--internal-engine-prewarm-no-database", DEFAULT_MODEL_API]
 				: [
 						"--internal-engine-prewarm",
 						"--internal-engine-prewarm-no-database",
 						"--internal-engine-prewarm-write-cache",
+						DEFAULT_MODEL_API,
 					],
 		);
+		// The child is given the host's arguments, whatever they are, to read as the command line reads them.
+		for (const hostArgs of [
+			[],
+			["--model", "gpt-5"],
+			["--approve", "--", "- summarize this", "--model"],
+			["--approve", "-n", "review", 'fix the failing test with "quotes", ünïcödé and \\ back\\slashes', "@src/a.ts"],
+		])
+			assert.deepEqual(prewarmHostArguments(await startedArgv(hostArgs)), hostArgs, hostArgs.join(" "));
+		// Not arguments too long to pass on: that child loads nothing before its host takes it over.
+		const longMessage = "x".repeat(PREWARM_HOST_ARGUMENTS_MAX_LENGTH);
+		const argv = await startedArgv(["--approve", longMessage]);
+		assert.deepEqual(argv, ["--internal-engine-prewarm"]);
+		assert.equal(prewarmHostArguments(argv), undefined);
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
@@ -198,9 +229,12 @@ describe("adopting a prewarmed engine child", () => {
 		assert.ok(child, "the prewarmed child is adopted");
 		children.push(child);
 		assert.deepEqual(bases, ["unchanged"]);
-		assert.deepEqual(JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")), [
-			INTERACTIVE_ENGINE_PREWARM_FLAG,
-		]);
+		const argv = JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")) as string[];
+		assert.deepEqual(
+			argv.map((arg) => arg.replace(/=.*$/s, "")),
+			[INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG],
+		);
+		assert.deepEqual(prewarmHostArguments(argv), []);
 		assert.equal(child.pid, pid);
 		const output = readLines(child, 2);
 		child.stdin!.write('{"id":"1"}\n');
@@ -218,10 +252,16 @@ describe("adopting a prewarmed engine child", () => {
 		assert.deepEqual(bases, ["derived"]);
 		// Off Windows its host waits for its exit, so it writes its compile cache before that if it can.
 		assert.deepEqual(
-			JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")),
+			(JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")) as string[]).map((arg) =>
+				arg.replace(/=.*$/s, ""),
+			),
 			process.platform === "win32"
-				? [INTERACTIVE_ENGINE_PREWARM_FLAG]
-				: [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG],
+				? [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG]
+				: [
+						INTERACTIVE_ENGINE_PREWARM_FLAG,
+						INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
+						INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG,
+					],
 		);
 	});
 

@@ -575,6 +575,21 @@ function text(result: SubagentToolResult): string {
 	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
 
+function extractRunningTaskId(message: string): string | undefined {
+	const prefix = "already running as task ";
+	let searchFrom = 0;
+	while (searchFrom < message.length) {
+		const start = message.indexOf(prefix, searchFrom);
+		if (start === -1) return undefined;
+		const idStart = start + prefix.length;
+		const end = message.indexOf(";", idStart);
+		if (end === -1) return undefined;
+		if (end > idStart) return message.slice(idStart, end);
+		searchFrom = end + 1;
+	}
+	return undefined;
+}
+
 function transcript(record: SubagentChildRecord): string {
 	assert.ok(record.childSessionFile);
 	return readFileSync(record.childSessionFile, "utf8");
@@ -1225,7 +1240,13 @@ test("two resumes of one paused child at once: one resumes it, the other is refu
 	);
 	const refused = answers.filter((answer) => answer?.isError === true);
 	assert.equal(refused.length, 1, answers.map((answer) => (answer ? text(answer) : "none")).join("\n"));
-	assert.match(text(refused[0]!), /already running as task .*; pause or quit it first/);
+	const refusedMessage = text(refused[0]!);
+	const refusedTaskId = extractRunningTaskId(refusedMessage);
+	assert.ok(
+		refusedTaskId !== undefined &&
+			refusedMessage.includes(`already running as task ${refusedTaskId}; pause or quit it first`),
+		refusedMessage,
+	);
 	assert.equal(
 		h.runs.filter((run) => readsOf(run).includes("first note") || readsOf(run).includes("second note")).length,
 		1,
@@ -6181,7 +6202,7 @@ for (const ownerless of [false, true]) {
 			assert.equal(h.latest(childId)?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
 			// Reopening the owner's view still sees the old durable row. It must not hide the admitted task.
 			bindSubagentChildCards(h.ctx);
-			const newTaskId = /already running as task ([^;]+);/.exec(text(result))?.[1];
+			const newTaskId = extractRunningTaskId(text(result));
 			assert.ok(newTaskId);
 			const byTask = await h.call({ action: "resume", id: newTaskId });
 			assert.equal(text(byTask), text(result), "the task ID is addressable before its first durable record");

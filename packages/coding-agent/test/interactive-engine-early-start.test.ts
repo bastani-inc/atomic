@@ -255,14 +255,18 @@ test("an engine that ends after it started, while the host was still creating it
 	engine.script = join(root, "engine.mjs");
 	writeFileSync(
 		engine.script,
-		`import { writeFileSync } from "node:fs";
+		`import { renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const ended = join(dirname(fileURLToPath(import.meta.url)), "engine-ending");
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 send({ type: "engine_ready", protocolVersion: ${INTERACTIVE_ENGINE_PROTOCOL_VERSION}, pid: process.pid });
 send({ type: "engine_bound" });
 // It ends once the host has read both lines.
 process.stdout.write("", () =>
 	setTimeout(() => {
-		writeFileSync(${JSON.stringify(ended)}, String(process.pid));
+		writeFileSync(ended + ".tmp", String(process.pid));
+		renameSync(ended + ".tmp", ended);
 		process.kill(process.pid, "SIGKILL");
 	}, 1000),
 );
