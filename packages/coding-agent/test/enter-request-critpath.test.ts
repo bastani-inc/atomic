@@ -74,7 +74,7 @@ describe("PR 1 enter-to-request critical path", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-prewarm-default-"));
 		try {
 			// Missing settings.json is a silent no-op.
-			await assert.doesNotReject(() => prewarmDefaultModelApi(dir));
+			await assert.doesNotReject(() => prewarmDefaultModelApi(dir, dir));
 
 			let warmed = 0;
 			let otherWarmed = 0;
@@ -111,13 +111,13 @@ describe("PR 1 enter-to-request critical path", () => {
 					},
 				}),
 			);
-			await prewarmDefaultModelApi(dir);
+			await prewarmDefaultModelApi(dir, dir);
 			assert.equal(warmed, 1);
 			assert.equal(otherWarmed, 0);
 
 			// Corrupt settings.json is swallowed cleanly.
 			writeFileSync(join(dir, "settings.json"), "{invalid json");
-			await assert.doesNotReject(() => prewarmDefaultModelApi(dir));
+			await assert.doesNotReject(() => prewarmDefaultModelApi(dir, dir));
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -132,10 +132,15 @@ if (heapArgs.length > 0) {
 			// once its host has taken it over: then it starts its session at once and writes the cache as it exits.
 			if (prewarmedEngine)
 				void Promise.all([loaded, prewarm!]).then(([[, mainModule], module]) => {
-					const flag = (module as { INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG?: string })
-						.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
+					const flags = module as {
+						INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG?: string;
+						INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG?: string;
+					};
+					const flag = flags.INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG;
 					if (!adopted && flag !== undefined && args.includes(flag)) flushPersistentCompileCache();
-					if (!adopted) {
+					// Only for a session whose model the settings' default decides: the host's arguments name no other.
+					const apiFlag = flags.INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG;
+					if (!adopted && apiFlag !== undefined && args.includes(apiFlag)) {
 						const prewarmApi = (mainModule as { prewarmDefaultModelApi?: () => Promise<void> })
 							.prewarmDefaultModelApi;
 						if (typeof prewarmApi === "function") void prewarmApi().catch(() => {});

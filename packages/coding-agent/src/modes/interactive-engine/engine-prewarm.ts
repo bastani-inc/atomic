@@ -127,6 +127,27 @@ export function interactiveEngineClientOptions(cwd: string): {
 export const INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-write-cache`;
 
 /**
+ * Follows {@link INTERACTIVE_ENGINE_PREWARM_FLAG} for a prewarmed child whose host's arguments leave the session's
+ * model to the settings' default: the child may load the API implementation of that model while it waits. Read by
+ * `cli.ts` from this module's namespace, as {@link INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG} is; an earlier version
+ * ignores it.
+ */
+export const INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG = `${INTERACTIVE_ENGINE_PREWARM_FLAG}-default-model-api`;
+
+/** Arguments that change neither the session's model, the session, nor the extensions that load. */
+const ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
+	"--offline",
+	"--no-mcp",
+	"--verbose",
+	"--debug",
+	"--no-session",
+	"--approve",
+	"-a",
+	"--no-approve",
+	"-na",
+]);
+
+/**
  * How a prewarmed engine's launch compares with the one a host prewarmed before it gave the prewarm the environment
  * `main()` derives from the arguments and the global settings: `"unchanged"` when that environment added nothing, so
  * such a host would have run the prewarmed engine too, and `"derived"` when it added something, so such a host would
@@ -214,6 +235,9 @@ export function prewarmInteractiveEngine(args: readonly string[], options: Prewa
 			INTERACTIVE_ENGINE_PREWARM_FLAG,
 			...(args.includes("--no-session") ? [PREWARM_NO_DATABASE] : []),
 			...(writeCache ? [INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG] : []),
+			...(args.every((arg) => ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg))
+				? [INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG]
+				: []),
 		];
 		child = spawn(launch.command, [...launch.args, ...prewarmArgs], {
 			cwd: launch.cwd,

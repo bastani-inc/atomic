@@ -9,6 +9,7 @@ import {
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG,
 	INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
 	type PrewarmLaunchBasis,
 	prewarmInteractiveEngine,
@@ -172,19 +173,45 @@ describe("adopting a prewarmed engine child", () => {
 		assert.deepEqual(await startedArgv(["--no-session"]), [
 			"--internal-engine-prewarm",
 			"--internal-engine-prewarm-no-database",
+			"--internal-engine-prewarm-default-model-api",
 		]);
-		assert.deepEqual(await startedArgv([]), ["--internal-engine-prewarm"]);
-		// The engine reads the no-database marker as its second argument; the cache flag comes after it.
+		assert.deepEqual(await startedArgv([]), [
+			"--internal-engine-prewarm",
+			"--internal-engine-prewarm-default-model-api",
+		]);
+		// The engine reads the no-database marker as its second argument; the other flags come after it.
 		assert.deepEqual(
 			await startedArgv(["--no-session"], "derived"),
 			process.platform === "win32"
-				? ["--internal-engine-prewarm", "--internal-engine-prewarm-no-database"]
+				? [
+						"--internal-engine-prewarm",
+						"--internal-engine-prewarm-no-database",
+						"--internal-engine-prewarm-default-model-api",
+					]
 				: [
 						"--internal-engine-prewarm",
 						"--internal-engine-prewarm-no-database",
 						"--internal-engine-prewarm-write-cache",
+						"--internal-engine-prewarm-default-model-api",
 					],
 		);
+		// A host whose arguments may name another model, another session or another extension than the settings choose
+		// does not let its child load the settings' default model's api.
+		for (const hostArgs of [
+			["--model", "gpt-5"],
+			["--provider", "openai"],
+			["--models", "openai/*"],
+			["-c"],
+			["--resume"],
+			["--session", "id"],
+			["--extension", "./proxy.ts"],
+			["--approve", "-e", "./proxy.ts"],
+		])
+			assert.deepEqual(await startedArgv(hostArgs), ["--internal-engine-prewarm"], hostArgs.join(" "));
+		assert.deepEqual(await startedArgv(["--offline", "--no-mcp", "--approve"]), [
+			"--internal-engine-prewarm",
+			"--internal-engine-prewarm-default-model-api",
+		]);
 	});
 
 	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
@@ -200,6 +227,7 @@ describe("adopting a prewarmed engine child", () => {
 		assert.deepEqual(bases, ["unchanged"]);
 		assert.deepEqual(JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")), [
 			INTERACTIVE_ENGINE_PREWARM_FLAG,
+			INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG,
 		]);
 		assert.equal(child.pid, pid);
 		const output = readLines(child, 2);
@@ -220,8 +248,12 @@ describe("adopting a prewarmed engine child", () => {
 		assert.deepEqual(
 			JSON.parse(readFileSync(join(script, "..", "prewarm-argv"), "utf8")),
 			process.platform === "win32"
-				? [INTERACTIVE_ENGINE_PREWARM_FLAG]
-				: [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG],
+				? [INTERACTIVE_ENGINE_PREWARM_FLAG, INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG]
+				: [
+						INTERACTIVE_ENGINE_PREWARM_FLAG,
+						INTERACTIVE_ENGINE_PREWARM_WRITE_CACHE_FLAG,
+						INTERACTIVE_ENGINE_PREWARM_DEFAULT_MODEL_API_FLAG,
+					],
 		);
 	});
 

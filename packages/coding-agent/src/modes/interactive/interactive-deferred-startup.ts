@@ -115,7 +115,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 			await this.retryDeferredModelRestore(this.startupNoticesContainer);
 			if (!runsInteractiveEngine(this.runtimeHost) && !this.promptTurnWorkingLoaderActive) {
 				setImmediate(() => {
-					if (!this.isShuttingDown) void prewarmModelApi(this.session.model);
+					if (!this.isShuttingDown) void prewarmModelApi(this.session.model, this.session.modelRuntime);
 				});
 			}
 		} finally {

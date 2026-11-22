@@ -592,7 +592,7 @@ async function constructAgentSession(
 	}
 
 	if (!deferStart && model) {
-		void prewarmModelApi(model);
+		void prewarmModelApi(model, modelRuntime);
 	}
 
 	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
