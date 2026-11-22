@@ -29,6 +29,7 @@ import {
 } from "./errors.ts";
 import {
 	type GitRunOptions,
+	gitEnvironment,
 	gitText,
 	installedGitUnavailable,
 	nulFields,
@@ -1175,14 +1176,23 @@ interface RepositoryConfig {
 	readonly eol: string | null;
 	/**
 	 * The settings Git packs a bundle with, as a hash: `pack.*` (such as `pack.compression` or `pack.window`),
-	 * `core.compression` and `core.bigFileThreshold`. They change a bundle's size without changing the packs.
+	 * `core.compression` and `core.bigFileThreshold`, which change a bundle's size without changing the packs, and
+	 * `core.attributesFile` and `attr.tree`, which say where the attributes that turn delta compression off come from.
 	 */
 	readonly packing: string;
+	/** `core.attributesFile`, the user's attributes file, when set. */
+	readonly attributesFile: string | null;
 }
 
 /** Whether the setting `key`, as `git config` names it, is one Git packs a bundle with. */
 function isPackingSetting(key: string): boolean {
-	return key.startsWith("pack.") || key === "core.compression" || key === "core.bigfilethreshold";
+	return (
+		key.startsWith("pack.") ||
+		key === "core.compression" ||
+		key === "core.bigfilethreshold" ||
+		key === "core.attributesfile" ||
+		key === "attr.tree"
+	);
 }
 
 export async function readRepositoryConfig(root: string, signal?: AbortSignal): Promise<RepositoryConfig> {
@@ -1191,7 +1201,7 @@ export async function readRepositoryConfig(root: string, signal?: AbortSignal): 
 			"config",
 			"-z",
 			"--get-regexp",
-			"^(remote\\..+\\.url|core\\.(autocrlf|eol|compression|bigfilethreshold)|pack\\..+)$",
+			"^(remote\\..+\\.url|core\\.(autocrlf|eol|compression|bigfilethreshold|attributesfile)|pack\\..+|attr\\.tree)$",
 		],
 		{ cwd: root, signal, allowExitCodes: [1] },
 	);
@@ -1199,16 +1209,19 @@ export async function readRepositoryConfig(root: string, signal?: AbortSignal): 
 	const packing: string[] = [];
 	let autocrlf: string | null = null;
 	let eol: string | null = null;
+	let attributesFile: string | null = null;
 	for (const field of nulFields(stdout)) {
 		const newline = field.indexOf("\n");
 		const key = newline < 0 ? field : field.slice(0, newline);
 		const value = newline < 0 ? "" : field.slice(newline + 1);
 		if (key === "core.autocrlf") autocrlf = value;
 		else if (key === "core.eol") eol = value;
-		else if (isPackingSetting(key)) packing.push(field);
-		else remotes.push(redactUrlCredentials(value));
+		else if (isPackingSetting(key)) {
+			packing.push(field);
+			if (key === "core.attributesfile") attributesFile = value;
+		} else remotes.push(redactUrlCredentials(value));
 	}
-	return { remotes, autocrlf, eol, packing: sha256Hex(packing.join("\0")) };
+	return { remotes, autocrlf, eol, packing: sha256Hex(packing.join("\0")), attributesFile };
 }
 
 const FILTER_ATTRIBUTE = /^(?!\s*#).*?(?:^|\s)filter=(\S+)/gm;
@@ -1251,15 +1264,21 @@ type HistoryOmission = Extract<
 
 /**
  * The unpushed commits a capture of each checkout in this process last left out, by checkout root: the hash of their
- * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs and
- * packing settings the commits were bundled with ({@link packingOf}). Which of those commits add or modify a
- * deny-listed path follows from the list alone, and the size of their bundle from the list, the packs and the settings,
- * so a later capture of the same list records the same omission without checking and bundling the commits again, which
- * takes seconds for a long history no remote has.
+ * exact list (`fingerprint`), the omission recorded for it, and for a bundle over the cap, the repository's packs,
+ * packing settings and attributes the commits were bundled with ({@link packingOf}). Which of those commits add or
+ * modify a deny-listed path follows from the list alone, and the size of their bundle from the list, the packs, the
+ * settings and the attributes, so a later capture of the same list records the same omission without checking and
+ * bundling the commits again, which takes seconds for a long history no remote has.
  */
 const leftOutHistory = new Map<
 	string,
-	{ readonly fingerprint: string; readonly omission: HistoryOmission; readonly packs: string | undefined }
+	{
+		readonly fingerprint: string;
+		readonly omission: HistoryOmission;
+		readonly packs: string | undefined;
+		/** The attributes files `packs` covers ({@link attributesFilesOf}). */
+		readonly attributes: readonly string[];
+	}
 >();
 
 /**
@@ -1280,14 +1299,9 @@ const ALTERNATES_DEPTH = 5;
  * loose until a repack packs them, and objects written later are no part of the commits' bundle.
  */
 async function packsOf(gitDir: string): Promise<string | undefined> {
-	let objects: string;
-	try {
-		// A linked worktree's Git directory names the repository's own, which holds the objects.
-		objects = join(resolve(gitDir, (await readFile(join(gitDir, "commondir"), "utf8")).trim()), "objects");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
-		objects = join(gitDir, "objects");
-	}
+	const common = await commonDirOf(gitDir);
+	if (common === undefined) return undefined;
+	const objects = join(common, "objects");
 	const listed: string[] = [];
 	const visited = new Set<string>();
 	const visit = async (directory: string, depth: number): Promise<boolean> => {
@@ -1319,12 +1333,152 @@ async function packsOf(gitDir: string): Promise<string | undefined> {
 }
 
 /**
- * The repository's packs ({@link packsOf}) and its packing settings `packing` ({@link RepositoryConfig.packing}) as
- * one hash; undefined when the packs cannot be read.
+ * The Git directory of the repository whose checkout has the Git directory `gitDir`: a linked worktree's names the
+ * repository's own, which holds the objects and `info`. Undefined when that cannot be read.
  */
-async function packingOf(gitDir: string, packing: string): Promise<string | undefined> {
-	const packs = await packsOf(gitDir);
-	return packs === undefined ? undefined : sha256Hex(`${packs}\n${packing}`);
+async function commonDirOf(gitDir: string): Promise<string | undefined> {
+	try {
+		return resolve(gitDir, (await readFile(join(gitDir, "commondir"), "utf8")).trim());
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? gitDir : undefined;
+	}
+}
+
+/**
+ * The repository's packs ({@link packsOf}), its packing settings `packing` ({@link RepositoryConfig.packing}) and the
+ * contents of the attributes files `attributes` ({@link attributesFilesOf}) as one hash; undefined when the packs
+ * cannot be read.
+ */
+async function packingOf(gitDir: string, packing: string, attributes: readonly string[]): Promise<string | undefined> {
+	return packingKey(await packingRead(gitDir, attributes), packing, attributes);
+}
+
+/** The repository's packs ({@link packsOf}) and the contents of the files `files` ({@link contentsOf}), read once. */
+interface PackingRead {
+	readonly packs: string | undefined;
+	readonly contents: ReadonlyMap<string, string | undefined>;
+}
+
+async function packingRead(gitDir: string, files: readonly string[]): Promise<PackingRead> {
+	const [packs, contents] = await Promise.all([packsOf(gitDir), contentsOf(files)]);
+	return { packs, contents };
+}
+
+/**
+ * {@link packingOf} from what `read` read, for the packing settings `packing` and the attributes files `attributes`, a
+ * part of the files it read; undefined when the packs or any of those files could not be read.
+ */
+function packingKey(read: PackingRead, packing: string, attributes: readonly string[]): string | undefined {
+	const contents = attributes.map((file) => read.contents.get(file));
+	if (read.packs === undefined || contents.includes(undefined)) return undefined;
+	return sha256Hex(`${read.packs}\n${packing}\n${sha256Hex(JSON.stringify([attributes, contents]))}`);
+}
+
+/** How many attributes files {@link contentsOf} reads at once, well under any limit of open files. */
+const ATTRIBUTES_READS = 16;
+
+/** Why a file cannot be read that is the file's own: missing, a directory, or not readable to the user. */
+const UNREADABLE_FILE = new Set(["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"]);
+
+/**
+ * The contents of each of the files `files`, as a hash, {@link ATTRIBUTES_READS} at a time. A file Git cannot read
+ * either counts as the reason it cannot; undefined for one that could not be read for another reason, such as too
+ * many open files, which says nothing about the file.
+ */
+async function contentsOf(files: readonly string[]): Promise<Map<string, string | undefined>> {
+	const contents = new Map<string, string | undefined>();
+	let next = 0;
+	const reader = async () => {
+		for (let file = files[next++]; file !== undefined; file = files[next++]) {
+			try {
+				contents.set(file, sha256Hex(await readFile(file)));
+			} catch (error) {
+				const { code } = error as NodeJS.ErrnoException;
+				contents.set(file, code !== undefined && UNREADABLE_FILE.has(code) ? `!${code}` : undefined);
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(ATTRIBUTES_READS, files.length) }, reader));
+	return contents;
+}
+
+/** The system's attributes file, once Git told it in this process; null when it has none or did not tell. */
+let systemAttributes: string | null | undefined;
+
+/**
+ * The system's attributes file, as Git 2.42 and later tell it (`git var GIT_ATTR_SYSTEM`), asked once per process;
+ * null when Git reads none (`GIT_ATTR_NOSYSTEM`) or is older.
+ */
+async function systemAttributesFile(root: string, signal?: AbortSignal): Promise<string | null> {
+	if (systemAttributes !== undefined) return systemAttributes;
+	try {
+		const { exitCode, stdout } = await runGit(["var", "GIT_ATTR_SYSTEM"], {
+			cwd: root,
+			signal,
+			allowExitCodes: [1, 128, 129],
+		});
+		systemAttributes = exitCode === 0 ? stdout.toString("utf8").trim() || null : null;
+	} catch (error) {
+		signal?.throwIfAborted();
+		if (isWorkspaceSnapshotError(error) || isGitUnavailableError(error)) throw error;
+		return null;
+	}
+	return systemAttributes;
+}
+
+/**
+ * The attributes files Git reads to pack the files and trees the unpushed commits change, in `directories` of the
+ * checkout at `root` (whose Git directory is `gitDir`): whether the `delta` attribute turns delta compression off for
+ * them changes a bundle's size many times over. They are the `.gitattributes` of each of those directories, wherever
+ * it comes from, `info/attributes`, the user's file (`core.attributesFile`, `attributesFile`, or the default under the
+ * home or `XDG_CONFIG_HOME` directory, in every place Git can take it from) and the system's, once Git told it
+ * ({@link systemAttributesFile}).
+ */
+async function attributesFilesOf(
+	root: string,
+	gitDir: string,
+	directories: readonly string[],
+	attributesFile: string | null,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	const env = await gitEnvironment(signal);
+	// Windows takes a variable's name in any case; the copy of the environment Git is given keeps the case it was set in.
+	const variable = (name: string): string | undefined =>
+		(process.platform === "win32"
+			? Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1]
+			: env[name]) || undefined;
+	const homeDrive = variable("HOMEDRIVE");
+	const homePath = variable("HOMEPATH");
+	const homes = [
+		variable("HOME"),
+		...(process.platform === "win32"
+			? [homeDrive && homePath ? `${homeDrive}${homePath}` : undefined, variable("USERPROFILE")]
+			: []),
+	].filter((home): home is string => home !== undefined);
+	const xdg = variable("XDG_CONFIG_HOME");
+	let user: string[];
+	if (attributesFile === null) {
+		user = [
+			...(xdg ? [join(xdg, "git", "attributes")] : []),
+			...homes.map((home) => join(home, ".config", "git", "attributes")),
+		];
+	} else if (attributesFile.startsWith("~/") || attributesFile.startsWith("~\\")) {
+		user = homes.map((home) => join(home, attributesFile.slice(2)));
+	} else if (attributesFile.startsWith("~") || attributesFile.startsWith("%(prefix)")) {
+		// Another user's home or Git's installation: the setting itself is in the packing settings.
+		user = [];
+	} else {
+		user = [resolve(root, attributesFile)];
+	}
+	const common = (await commonDirOf(gitDir)) ?? gitDir;
+	const files = new Set([
+		...directories.map((directory) => join(root, directory, ".gitattributes")),
+		join(gitDir, "info", "attributes"),
+		join(common, "info", "attributes"),
+		...user,
+		...(systemAttributes ? [systemAttributes] : []),
+	]);
+	return [...files].sort();
 }
 
 /** The repository's packing settings as they are now ({@link RepositoryConfig.packing}); undefined when unreadable. */
@@ -1357,34 +1511,51 @@ async function stillLeftOut(
 
 const COMMIT_TOKEN = /^([0-9a-f]{40}|[0-9a-f]{64})(?: \(from [0-9a-f]+\))?$/;
 
-/** Commits of `commits` that add or modify a deny-listed path, with those paths. */
+/**
+ * The commits of `commits` that add or modify a deny-listed path, with those paths (`denied`), and the directories of
+ * every path the commits change, the root (`""`) among them (`directories`).
+ */
 async function deniedHistory(
 	root: string,
 	commits: readonly string[],
 	signal?: AbortSignal,
-): Promise<{ readonly commits: string[]; readonly paths: string[] }> {
+): Promise<{
+	readonly denied: { readonly commits: string[]; readonly paths: string[] };
+	readonly directories: string[];
+}> {
 	const known = new Set(commits);
 	const { stdout } = await runGit(
-		["diff-tree", "--stdin", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=ACMRT", "--root", "-m"],
+		["diff-tree", "--stdin", "-r", "-z", "--name-status", "--no-renames", "--diff-filter=ACDMRT", "--root", "-m"],
 		{ cwd: root, signal, input: `${commits.join("\n")}\n` },
 	);
 	const deniedCommits = new Set<string>();
 	const paths = new Set<string>();
+	const directories = new Set([""]);
 	let current: string | undefined;
+	// Each change is its status, then its path; a commit's own line comes where a status would.
+	let status: string | undefined;
 	for (const token of nulFields(stdout)) {
-		const commit = COMMIT_TOKEN.exec(token)?.[1];
-		if (commit !== undefined && known.has(commit)) {
-			current = commit;
+		if (status === undefined) {
+			const commit = COMMIT_TOKEN.exec(token)?.[1];
+			if (commit !== undefined && known.has(commit)) current = commit;
+			else status = token;
 			continue;
 		}
-		if (current !== undefined && isDeniedSnapshotPath(token)) {
+		const deleted = status === "D";
+		status = undefined;
+		if (current === undefined) continue;
+		for (let slash = token.indexOf("/"); slash >= 0; slash = token.indexOf("/", slash + 1)) {
+			directories.add(token.slice(0, slash));
+		}
+		// Deleting a deny-listed path adds nothing to the history.
+		if (!deleted && isDeniedSnapshotPath(token)) {
 			deniedCommits.add(current);
 			paths.add(token);
 		}
 	}
 	return {
-		commits: commits.filter((commit) => deniedCommits.has(commit)),
-		paths: [...paths].sort(),
+		denied: { commits: commits.filter((commit) => deniedCommits.has(commit)), paths: [...paths].sort() },
+		directories: [...directories].sort(),
 	};
 }
 
@@ -1492,10 +1663,12 @@ async function historyStillLeftOut(
 		const remembered = leftOutHistory.get(root);
 		// What this process last left out for exactly these commits, for either reason, says which of them are denied.
 		if (remembered?.fingerprint === fingerprint) return sameDenial(remembered.omission, omission);
-		const denied = await deniedHistory(root, unpushed, signal);
-		const now: HistoryOmission = { reason: "unpushed-history-denied", ...denied };
+		const { denied } = await deniedHistory(root, unpushed, signal);
+		const now: HistoryOmission = { reason: "unpushed-history-denied", commits: denied.commits, paths: denied.paths };
 		// Remembered as captureHistory remembers it, which a capture of these commits then takes as it is.
-		if (denied.commits.length > 0) leftOutHistory.set(root, { fingerprint, omission: now, packs: undefined });
+		if (denied.commits.length > 0) {
+			leftOutHistory.set(root, { fingerprint, omission: now, packs: undefined, attributes: [] });
+		}
 		return sameDenial(now, omission);
 	}
 	return (
@@ -1526,7 +1699,7 @@ async function captureHistory(
 	checkout: Checkout,
 	gitDir: string,
 	settings: WorktreeSnapshotSettings,
-	packing: string,
+	config: RepositoryConfig,
 	previous: WorktreeSnapshot | undefined,
 	scratch: string,
 	signal?: AbortSignal,
@@ -1542,27 +1715,43 @@ async function captureHistory(
 	const remembered = leftOutHistory.get(root);
 	if (
 		remembered?.fingerprint === fingerprint &&
-		(await stillLeftOut(remembered.omission, remembered.packs, () => packingOf(gitDir, packing), settings))
+		(await stillLeftOut(
+			remembered.omission,
+			remembered.packs,
+			() => packingOf(gitDir, config.packing, remembered.attributes),
+			settings,
+		))
 	) {
 		return { bundle: null, omitted: [remembered.omission] };
 	}
-	const leaveOut = (omission: HistoryOmission, packs?: string): HistoryCapture => {
-		leftOutHistory.set(root, { fingerprint, omission, packs });
+	const leaveOut = (omission: HistoryOmission, packs?: string, attributes: readonly string[] = []): HistoryCapture => {
+		leftOutHistory.set(root, { fingerprint, omission, packs, attributes });
 		return { bundle: null, omitted: [omission] };
 	};
-	const denied = await deniedHistory(root, unpushed, signal);
-	if (denied.commits.length > 0) return leaveOut({ reason: "unpushed-history-denied", ...denied });
-	const packs = await packingOf(gitDir, packing);
+	const { denied, directories } = await deniedHistory(root, unpushed, signal);
+	if (denied.commits.length > 0) {
+		return leaveOut({ reason: "unpushed-history-denied", commits: denied.commits, paths: denied.paths });
+	}
+	const attributes = await attributesFilesOf(root, gitDir, directories, config.attributesFile, signal);
+	const packs = await packingOf(gitDir, config.packing, attributes);
 	const file = join(scratch, "history.bundle");
 	await bundlePinned(root, head, boundary, file, signal);
 	const data = await verifiedBundle(root, head, unpushed, file, signal);
 	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
 	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
-		// The size is kept for the packs and settings only when they are the same after bundling as before it.
+		const omission: HistoryOmission = { reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength };
+		// The system's attributes file, which Git names once per process, is watched from then on: from the first bundle
+		// over the cap, which read it before Git named it, its contents after bundling.
+		const system = await systemAttributesFile(root, signal);
+		const watched = system === null || attributes.includes(system) ? attributes : [...attributes, system].sort();
+		// The size is kept for the packs, settings and attributes only when they are the same after bundling as before,
+		// all read once, last.
 		const now = await packingSettingsNow(root, signal);
-		const bundledFrom = now !== undefined && packs === (await packingOf(gitDir, now)) ? packs : undefined;
-		return leaveOut({ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }, bundledFrom);
+		if (now === undefined) return leaveOut(omission);
+		const after = await packingRead(gitDir, watched);
+		if (packs === undefined || packs !== packingKey(after, now, attributes)) return leaveOut(omission);
+		return leaveOut(omission, packingKey(after, now, watched), watched);
 	}
 	const blob = snapshotBlob(data);
 	return { bundle: { blob: blob.hash, bytes: data.byteLength, commits: unpushed }, omitted: [], blob };
@@ -1775,7 +1964,7 @@ async function captureCheckout(
 			checkout,
 			capture.gitDir,
 			settings,
-			config.packing,
+			config,
 			previous,
 			scratch,
 			signal,
