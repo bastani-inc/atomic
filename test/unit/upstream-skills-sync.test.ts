@@ -28,18 +28,71 @@ const liteparseSkill = join(subagentSkills, "liteparse");
 const agentDesktopSkill = join(subagentSkills, "agent-desktop");
 
 // run-llama/llamaparse-agent-skills `main` at 2dcef7c62417bd2ec4671fce4621bb1e8cce48d0
-// ships exactly these two files under `skills/liteparse/`, both tracked as 100644.
+// ships exactly these two files under `skills/liteparse/`, both tracked as 100644; the
+// hashes are those of Atomic's adapted copies.
 const liteparseTree: ReadonlyArray<readonly [path: string, sha256: string]> = [
 	["SKILL.md", "b29e84f059c9b8848feaf8963f8212d8ce4d8d4a54b0ce2be55561b4f8b5cb02"],
-	["scripts/search.py", "72d960a0600ebcef1252c558159c5fa6b9e7ee23baad36a07ca878dd42cc9bfd"],
+	["scripts/search.py", "1083ec9446aec0fe827c1d42d01364201d89eac6ca2b95b4a7aacb3c609865d4"],
 ];
-// Reversing Atomic's two documented adaptations must reproduce the canonical upstream
-// SKILL.md byte-for-byte, which proves no undocumented local drift exists.
+// Reversing Atomic's documented adaptations must reproduce each canonical upstream
+// file byte-for-byte, which proves no undocumented local drift exists.
 const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: string]> = [
 	["# LiteParse\n", "# Effective LiteParse\n"],
 	["\nscripts/search.py /tmp/doc.txt", "\n./.claude/skills/effective-liteparse/scripts/search.py /tmp/doc.txt"],
 ];
 const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
+// search.py writes UTF-8 to a pipe in Windows' ANSI code page, cuts the file into chunks at
+// line ends (a character split between two 64 KiB blocks failed to decode), numbers each
+// match by its line in the whole file, and asks bm25s for no more matches than a chunk has
+// lines (it raised for a chunk, or a document, with fewer lines than -k).
+const liteparseSearchAdaptations: ReadonlyArray<readonly [atomic: string, canonical: string]> = [
+	[
+		"import asyncio\nimport codecs\nimport io\nimport sys\nfrom typing import TypedDict, cast\n",
+		"import asyncio\nfrom typing import TypedDict, cast\n",
+	],
+	[
+		'\ndef _expand(corpus: list[LineRecord], match: LineRecord, n: int, first_line: int) -> str:\n    idx = match["index"]\n',
+		'\ndef _expand(corpus: list[LineRecord], match: LineRecord, n: int) -> str:\n    idx = match["index"]\n',
+	],
+	[
+		'    end = min(len(corpus) - 1, idx + n)\n    # Atomic: numbered by the line in the whole file, not in the chunk.\n    return f"Lines {first_line + start} - {first_line + end}\\n\\n\\n" + "\\n".join(\n        [c["content"] for c in corpus[start : end + 1]]\n',
+		'    end = min(len(corpus) - 1, idx + n)\n    return f"Lines {start} - {end}\\n\\n\\n" + "\\n".join(\n        [c["content"] for c in corpus[start : end + 1]]\n',
+	],
+	[
+		"def _retrieve(\n    corpus: list[LineRecord], query: str, top_k: int | None, expand: int = 0, first_line: int = 0\n) -> list[tuple[str, float]]:\n",
+		"def _retrieve(\n    corpus: list[LineRecord], query: str, top_k: int | None, expand: int = 0\n) -> list[tuple[str, float]]:\n",
+	],
+	[
+		"    query_tokens = bm25s.tokenize(query)\n    # Atomic: bm25s refuses to return more matches than the chunk has lines.\n    docs, scores = retriever.retrieve(query_tokens, k=min(top_k or 10, len(corpus)))\n\n",
+		"    query_tokens = bm25s.tokenize(query)\n    docs, scores = retriever.retrieve(query_tokens, k=top_k or 10)\n\n",
+	],
+	[
+		"    for doc, score in zip(docs[0].tolist(), scores[0].tolist()):\n        window = _expand(corpus, doc, expand, first_line) if expand > 0 else [doc]\n        results.append((cast(str, window), score))\n",
+		"    for doc, score in zip(docs[0].tolist(), scores[0].tolist()):\n        window = _expand(corpus, doc, expand) if expand > 0 else [doc]\n        results.append((cast(str, window), score))\n",
+	],
+	[
+		"def _chunk_and_retrieve(\n    content: str, query: str, top_k: int | None, expand_n: int, first_line: int\n) -> list[tuple[str, float]]:\n    corpus = _chunk(content)\n    return _retrieve(corpus, query, top_k, expand_n, first_line)\n\n",
+		"def _chunk_and_retrieve(\n    content: str, query: str, top_k: int | None, expand_n: int\n) -> list[tuple[str, float]]:\n    corpus = _chunk(content)\n    return _retrieve(corpus, query, top_k, expand_n)\n\n",
+	],
+	[
+		"async def process_chunk(\n    content: str, query: str, top_k: int | None, expand_n: int, first_line: int\n) -> list[tuple[str, float]]:\n",
+		"async def process_chunk(\n    content: bytes, query: str, top_k: int | None, expand_n: int\n) -> list[tuple[str, float]]:\n",
+	],
+	[
+		"        _chunk_and_retrieve,\n        content,\n        query,\n",
+		'        _chunk_and_retrieve,\n        content.decode("utf-8"),\n        query,\n',
+	],
+	["        expand_n,\n        first_line,\n    )\n", "        expand_n,\n    )\n"],
+	[
+		'            # read 64KB chunks\n            # Atomic: a chunk ends at the last line end of its block (the last chunk at the end of the file), so no\n            # character or line is cut in two, and carries the number of its first line in the whole file. A file of\n            # one block is one chunk, as before.\n            first_line = 0\n            pending: list[bytes] = []  # the start of a line not ended yet, from earlier blocks\n            block = await f.read(65536)\n            while block:\n                following = await f.read(65536)\n                cut = block.rfind(b"\\n") + 1 if following else len(block)\n                if cut:\n                    content = b"".join([*pending, block[:cut]]).decode("utf-8")\n                    pending = [block[cut:]]\n                    tasks.append(\n                        tg.create_task(process_chunk(content, query, top_k, expand_n or 5, first_line))\n                    )\n                    first_line += len(content.splitlines())\n                else:\n                    pending.append(block)\n                block = following\n    results = [task.result() for task in tasks]\n',
+		"            # read 64KB chunks\n            while chunk := await f.read(65536):\n                tasks.append(\n                    tg.create_task(process_chunk(chunk, query, top_k, expand_n or 5))\n                )\n    results = [task.result() for task in tasks]\n",
+	],
+	[
+		'if __name__ == "__main__":\n    # Atomic: matches are read from a pipe as UTF-8, but on Windows Python before 3.15 writes to a pipe in the ANSI\n    # code page, such as cp1252, which has no separator line and lacks most characters: write UTF-8 unless the stream\n    # already does.\n    for stream in (sys.stdout, sys.stderr):\n        if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":\n            stream.reconfigure(encoding="utf-8", errors="backslashreplace")\n    main()\n',
+		'if __name__ == "__main__":\n    main()\n',
+	],
+];
+const liteparseCanonicalSearchSha256 = "72d960a0600ebcef1252c558159c5fa6b9e7ee23baad36a07ca878dd42cc9bfd";
 
 // vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.3.1 (tree
 // ef953179861334f07a7ec948f1d34401de17b9b0) is a discovery stub; its references are
@@ -636,17 +689,22 @@ describe("synced upstream skill trees", () => {
 		for (const [path, expected] of liteparseTree) {
 			assertLiteParseContent(join(liteparseSkill, path), expected, path);
 		}
-		// Reversing both documented adaptations must reproduce upstream's SKILL.md exactly.
-		let canonical = canonicalText(readFileSync(join(liteparseSkill, "SKILL.md")));
-		for (const [atomic, upstream] of liteparseAdaptations) {
-			assert.ok(canonical.includes(atomic), `lost documented Atomic adaptation: ${JSON.stringify(atomic)}`);
-			canonical = canonical.replace(atomic, upstream);
+		// Reversing the documented adaptations must reproduce upstream's files exactly.
+		for (const [path, adaptations, upstreamSha256] of [
+			["SKILL.md", liteparseAdaptations, liteparseCanonicalSkillSha256],
+			["scripts/search.py", liteparseSearchAdaptations, liteparseCanonicalSearchSha256],
+		] as const) {
+			let canonical = canonicalText(readFileSync(join(liteparseSkill, path)));
+			for (const [atomic, upstream] of adaptations) {
+				assert.ok(canonical.includes(atomic), `lost documented Atomic adaptation: ${JSON.stringify(atomic)}`);
+				canonical = canonical.replace(atomic, () => upstream);
+			}
+			assert.equal(
+				sha256(canonical),
+				upstreamSha256,
+				`LiteParse ${path} diverges from upstream beyond its documented adaptations`,
+			);
 		}
-		assert.equal(
-			sha256(canonical),
-			liteparseCanonicalSkillSha256,
-			"LiteParse diverges from upstream beyond its two documented adaptations",
-		);
 		assert.doesNotMatch(readFileSync(join(liteparseSkill, "SKILL.md"), "utf8"), /effective-liteparse/u);
 	});
 
