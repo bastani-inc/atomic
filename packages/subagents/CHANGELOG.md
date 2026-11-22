@@ -26,6 +26,7 @@
 - `skill-creator`'s review viewer no longer saves over feedback it did not show. A `feedback.json` it cannot read, or partly cannot, is kept as `feedback.json.corrupt-<time>` and the page says so before your next save replaces it; one it cannot read at all is never saved over. A tab opened before another tab or program saved feedback refuses to save over it and asks you to reload. One tab's saves are sent one at a time, in order; from Submit All Reviews until you close the done dialog every save keeps the review complete, and the dialog shows only once the review is saved; and a save that fails says so instead of showing "Saved".
 - `skill-creator`'s review viewer starts when the previous iteration's `feedback.json`, or a run's `eval_metadata.json` or `grading.json`, cannot be read, instead of failing: the page says which feedback it could not read. It also runs with its standard output captured in place, as by `runpy`.
 - `skill-creator`'s `package_skill.py` gives the `.skill` file its name only once it is complete: a failure or Ctrl+C leaves an earlier `.skill` file as it was and no partial file, a replaced file keeps its permissions, and a `.skill` file written inside the skill folder no longer contains itself.
+- A user agent in `~/.atomic/agent/agents/` now wins over an agent of the same name in `~/.agents/` or legacy `~/.pi/agent/agents/`, as `.atomic/agents/` already does in a project. Before, the agent in `~/.agents/` or `~/.pi/agent/agents/` ran instead.
 
 ## [0.10.3] - 2026-11-21
 
