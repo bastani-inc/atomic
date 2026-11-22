@@ -33,9 +33,9 @@ const lazyMultiNode = new Set([openBrokerStatePath, endedChildQueueStorePath]);
 /**
  * #6133: the one package the broker may load at runtime. Asked by its parent on Windows, the broker reads its own
  * creation time through Atomic's native module as it announces itself, so the parent can tell it from a later process
- * given its pid. The module ships beside the broker in every layout (npm, Bun and standalone archives), unlike the host
- * package, and the broker loads it only then, inside a `try`: where it cannot be loaded the broker announces itself as
- * before and starts all the same.
+ * given its pid; its socket lock judges a holder by the same reader. The module ships beside the broker in every layout
+ * (npm, Bun and standalone archives), unlike the host package, and the broker loads it only there, inside a `try`: where
+ * it cannot be loaded the broker announces itself as before, judges a lock holder by its pid, and starts all the same.
  */
 const startAnnouncementPath = join(repoRoot, "packages/intercom/broker/start-announcement.ts");
 const allowedExternal = (entry: GraphViolation) =>

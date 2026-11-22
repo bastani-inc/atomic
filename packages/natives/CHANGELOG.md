@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `terminateProcessCreatedAt(pid, created, descendants)` takes a process as one `pid` started only while the parent id its own handle reports is its parent's and the kernel's order of process starts puts it after that parent. It compared creation times on the system clock, so a clock set back, or two processes created within one tick, could end an older process that had nothing to do with `pid`. On a Windows that does not report that order (before Windows 10), only `pid` itself ends.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Added
