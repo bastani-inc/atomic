@@ -313,3 +313,31 @@ test(
 	},
 	CHILD_TIMEOUT_MS,
 );
+
+test("a load on demand names its feature when a guarded import inside it says to restart", async () => {
+	const { loadOnDemand, UpdatedInstallError } = await import(join(SOURCE, "utils/updated-install.ts"));
+	const cause = new Error("the update's code failed");
+	// As the build's call-site guard rejects (`scripts/in-place-update-gate.mjs`), naming only the module it loaded.
+	const restart = Object.assign(
+		new Error(
+			"atomic was updated to 0.10.91 while this session was running; restart it to keep using this feature.",
+			{ cause },
+		),
+		{
+			[Symbol.for("atomic.on-demand-restart.v1")]: {
+				application: "atomic",
+				updatedTo: "0.10.91",
+				feature: "this feature",
+			},
+		},
+	);
+	const error = await loadOnDemand("document conversion", async () => {
+		throw restart;
+	}).catch((failure: unknown) => failure);
+	assert.ok(error instanceof UpdatedInstallError);
+	assert.equal(
+		error.message,
+		"atomic was updated to 0.10.91 while this session was running; restart it to keep using document conversion.\nthe update's code failed",
+	);
+	assert.equal(error.cause, cause);
+});
