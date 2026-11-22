@@ -83,6 +83,20 @@ export default (pi) => {
 	});
 };`;
 
+/**
+ * The text of `file`, or "" while it is missing or its writer still holds it open: Windows refuses to open a file for
+ * reading with EBUSY while PowerShell's Set-Content writes it.
+ */
+function writtenText(file: string): string {
+	try {
+		return readTextSync(file, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "EBUSY") return "";
+		throw error;
+	}
+}
+
 interface ShutdownRecord {
 	readonly pid: number;
 	readonly reason: string;
@@ -229,10 +243,13 @@ async function endSession(
 			assert.ok(await stillRuns(groupChildProcess), "the extension started its process");
 		}
 		if (options.execGrandchild || options.execLeftover || options.execLeftoverTree) {
-			while (!(fileExistsSync(execChild) && readTextSync(execChild, "utf8") !== "") && Date.now() < deadline)
+			let written = writtenText(execChild);
+			while (written === "" && Date.now() < deadline) {
 				await sleep(RECORD_POLL_MS);
+				written = writtenText(execChild);
+			}
 			// The command, and so the process it started, is running: the pid names that process.
-			execChildProcess = await recordProcess(Number(readTextSync(execChild, "utf8")));
+			execChildProcess = await recordProcess(Number(written));
 			assert.ok(await stillRuns(execChildProcess), "the command started its process");
 			if (options.execLeftoverTree) {
 				while (!fileExistsSync(`${execChild}.done`) && Date.now() < deadline) await sleep(RECORD_POLL_MS);
