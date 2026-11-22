@@ -11,11 +11,19 @@ What reads them:
 
 - The build's split (`scripts/split-dist.mjs`) keeps every file a recorded release imports on demand at its path, and
   fails when no module of the package compiles to one any more.
+- The split also makes each such file that the package neither imports statically nor loads as it starts a gate
+  (`scripts/in-place-update-gate.mjs`): it asks which release the process runs, through a module every process of each
+  recorded release loaded (`running`), and tells a process of an earlier release to restart before any of this build's
+  code loads. Where this build writes no file at such a module's path, it writes an empty stub there, so that Node
+  still resolves the path and gives that process the module it holds.
 - `test/unit/in-place-update-releases.test.ts` checks the built packages against every record, in both directions: a
   file such a process loads after the update names only exports of the earlier copies it may hold, through the exports
   maps it read, and what the earlier release loads on demand is still there with the exports it had.
-- The release workflow runs the same check on the packed release, against every record and the latest version
-  published before it.
+- `scripts/in-place-update-e2e.mjs` installs each recorded release from npm, starts a process of it, updates it in place
+  to the packed build and imports every file the release imports on demand: each loads or says to restart, and
+  `/export` says to restart. `test/integration/in-place-update-e2e.test.ts` runs it on the build.
+- The release workflow runs both on the packed release, and fails when the latest version published before it is not
+  recorded.
 
 `allowed.json` lists, by release, the package subpaths this build may import although that release's exports map
 lacks them, each with why no process of that release meets them. The test fails once nothing imports one any more.

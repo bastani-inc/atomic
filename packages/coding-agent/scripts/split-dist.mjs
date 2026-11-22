@@ -31,6 +31,13 @@ import { fileURLToPath } from "node:url";
 import { transform } from "esbuild";
 import { rolldown } from "rolldown";
 import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } from "./split-dist-names.mjs";
+import {
+	GATE_FILE_MARK,
+	gatedImplementation,
+	gateSource,
+	RELEASE_MODULE_STUB,
+	releaseVersionModules,
+} from "./in-place-update-gate.mjs";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
@@ -244,15 +251,21 @@ const STATE_FILE = join(STATE_DIRECTORY, "state.json");
 /** The compiled entries, saved before the split overwrites them, and the compiled bundled modules it removed. */
 const COMPILED_ENTRIES = join(STATE_DIRECTORY, "compiled");
 const digest = (content) => createHash("sha256").update(content).digest("hex");
-/** @type {{ entries: Record<string, string> }} */
+/** @type {{ entries: Record<string, string>, gateFiles?: Record<string, string> }} */
 const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : { entries: {} };
+// The files beside the gates an earlier split wrote (see `in-place-update-gate.mjs`) go first, each while it still holds
+// what that split wrote: a stub can stand where the compiler writes a module this split bundles and removes.
+for (const [path, written] of Object.entries(state.gateFiles ?? {})) {
+	const file = join(dist, path);
+	if (existsSync(file) && digest(readFileSync(file)) === written) rmSync(file);
+}
 /** Whether `dist/<entry>.js` is still what an earlier split wrote there, rather than compiled code. */
 const writtenBySplit = (entry) => {
 	const file = join(dist, `${entry}.js`);
 	return state.entries[entry] !== undefined && existsSync(file) && state.entries[entry] === digest(readFileSync(file));
 };
-/** Whether `source` is a split's output rather than compiled code. */
-const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`);
+/** Whether `source` is a split's output rather than compiled code: a file importing shared files, a gate or a stub. */
+const splitOutput = (source) => source.includes(`/${SHARED_DIRECTORY}/`) || source.startsWith(GATE_FILE_MARK);
 /** Puts back `dist/<path>` and its map where an earlier split removed them. */
 const restoreCompiled = (path) => {
 	const saved = join(COMPILED_ENTRIES, path);
@@ -364,8 +377,10 @@ if (!existsSync(RELEASE_RECORDS))
 const releasedLazyTargets = new Set();
 /** The shared files a recorded release imports on demand, with the names it exported: see `compatSharedFiles`. */
 const releasedSharedTargets = [];
-for (const file of readdirSync(RELEASE_RECORDS).filter((name) => /^\d.*\.json$/.test(name))) {
-	const record = JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8"));
+const releaseRecords = readdirSync(RELEASE_RECORDS)
+	.filter((name) => /^\d.*\.json$/.test(name))
+	.map((file) => JSON.parse(readFileSync(join(RELEASE_RECORDS, file), "utf8")));
+for (const record of releaseRecords) {
 	const atomic = record.packages["@bastani/atomic"];
 	for (const key of Object.keys(atomic?.lazy ?? {})) {
 		const prefix = "@bastani/atomic:dist/";
@@ -899,16 +914,72 @@ const sharedOutputs = sharedChunks
 for (const { path, contents } of compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY)) {
 	writeFileSync(join(dist, path), contents);
 }
+
+// Each module a recorded release imports on demand by its path becomes a gate, with its code beside it, unless this
+// package imports it statically (a file importing it would wait on the gate) or loads it as it starts, as an earlier
+// release did too, before an update can land. The gates ask for the release a process runs through the modules of
+// `releaseVersionModules`, with stubs where this build writes none. See `in-place-update-gate.mjs`.
+// The files the package keeps: the compiled files of the modules the split bundled go below.
+const distFiles = readdirSync(dist, { recursive: true })
+	.map((file) => String(file).split(sep).join("/"))
+	.filter((file) => file.endsWith(".js") && !file.startsWith("builtin/") && !removedSet.has(file));
+const staticallyImported = new Set();
+for (const path of distFiles)
+	for (const match of readFileSync(join(dist, path), "utf8").matchAll(
+		/^(?:import|export)\b[^;]*?\bfrom\s*"(\.{1,2}\/[^"]+)"|^import\s*"(\.{1,2}\/[^"]+)"/gm,
+	))
+		staticallyImported.add(relativeImport(path, match[1] ?? match[2]));
+const loadedAtStart = new Set([
+	...[...readFileSync(join(dist, "cli.js"), "utf8").matchAll(/\bimport\(\s*"\.\/([^"]+)"\s*\)/g)].map((match) => match[1]),
+	"index.js",
+	"modes/interactive/interactive-mode.js",
+	"modes/print-mode.js",
+	"modes/rpc/rpc-mode.js",
+	"core/extensions/loader-virtual-modules.js",
+]);
+const entryExports = new Map(
+	generated.output.filter((item) => item.type === "chunk" && item.isEntry).map((item) => [item.fileName, item.exports]),
+);
+const gated = [...releasedLazyTargets].filter(
+	(path) => entryExports.has(path) && !staticallyImported.has(path) && !loadedAtStart.has(path),
+);
+// What this build leaves in `dist`: its files, but the compiled modules the split bundled, removed below.
+const { probes, stubs } = releaseVersionModules(
+	releaseRecords,
+	(path) => existsSync(join(dist, path)) && !removedSet.has(path),
+);
+const buildVersion = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version;
+const gateFiles = {};
+const emptyMap = (file) => `${JSON.stringify({ version: 3, file, sources: [], names: [], mappings: "" })}\n`;
+const writeGateFile = (path, contents) => {
+	writeFileSync(join(dist, path), contents);
+	gateFiles[path] = digest(contents);
+};
+for (const path of gated) {
+	const implementation = gatedImplementation(path);
+	if (existsSync(join(dist, implementation)) || distFiles.includes(implementation))
+		throw new Error(`split-dist: dist/${implementation}, where the gate of dist/${path} puts its code, is taken`);
+	const base = path.slice(path.lastIndexOf("/") + 1);
+	const implementationBase = implementation.slice(implementation.lastIndexOf("/") + 1);
+	const code = readFileSync(join(dist, path), "utf8").replace(
+		`//# sourceMappingURL=${base}.map`,
+		`//# sourceMappingURL=${implementationBase}.map`,
+	);
+	writeGateFile(implementation, code);
+	const map = join(dist, `${path}.map`);
+	writeGateFile(
+		`${implementation}.map`,
+		existsSync(map)
+			? `${JSON.stringify({ ...JSON.parse(readFileSync(map, "utf8")), file: implementationBase })}\n`
+			: emptyMap(implementationBase),
+	);
+	const gate = `${gateSource({ path, exports: entryExports.get(path), probes, version: buildVersion })}//# sourceMappingURL=${base}.map\n`;
+	writeFileSync(join(dist, path), gate);
+	writeFileSync(map, emptyMap(base));
+}
 writeFileSync(
 	join(dist, "THIRD_PARTY_NOTICES.md"),
 	`# Third-party notices\n\nThe shared files in \`dist/${SHARED_DIRECTORY}/\` include code from these packages.\n\n${notices.join("\n")}`,
-);
-mkdirSync(STATE_DIRECTORY, { recursive: true });
-writeFileSync(
-	STATE_FILE,
-	JSON.stringify({
-		entries: Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, digest(readFileSync(join(dist, `${entry}.js`)))])),
-	}),
 );
 
 // Each removed file is saved first, so a later split without a fresh compile still bundles it.
@@ -926,7 +997,10 @@ for (const path of removedModules) removeCompiled(path);
 
 // A compiled file nothing loads, that imports a removed one (a module of the standalone binary's own entry, an unused
 // module), could not load either: it goes too, and so on, so that every file the package keeps finds what it imports.
-const written = new Set(outputFiles.map((file) => toPosix(relative(dist, file.path))));
+const written = new Set([
+	...outputFiles.map((file) => toPosix(relative(dist, file.path))),
+	...Object.keys(gateFiles),
+]);
 const leftovers = () =>
 	readdirSync(dist, { recursive: true })
 		.map((file) => String(file).split(sep).join("/"))
@@ -945,6 +1019,23 @@ for (let changed = true; changed; ) {
 		changed = true;
 	}
 }
+
+// The stubs go in last: one can stand where the compiler wrote a module this split bundles, whose compiled file it
+// removed above.
+for (const path of stubs) {
+	mkdirSync(dirname(join(dist, path)), { recursive: true });
+	const base = path.slice(path.lastIndexOf("/") + 1);
+	writeGateFile(path, `${RELEASE_MODULE_STUB}//# sourceMappingURL=${base}.map\n`);
+	writeGateFile(`${path}.map`, emptyMap(base));
+}
+mkdirSync(STATE_DIRECTORY, { recursive: true });
+writeFileSync(
+	STATE_FILE,
+	JSON.stringify({
+		entries: Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, digest(readFileSync(join(dist, `${entry}.js`)))])),
+		gateFiles,
+	}),
+);
 
 const chunkOutputs = generated.output.filter((item) => item.type === "chunk");
 console.log(

@@ -16,8 +16,10 @@
 // `record` writes a release's record: for the application and the packages of its own it depends on, each package's
 // exports map, each JavaScript file's export names, the files its code loads on demand, the files the CLI loads at start
 // and the files every running process has loaded. `check` lists what a build breaks for a process of each recorded
-// release, and `release` does it for a packed release in the release workflow, also against the latest release published
-// before it. `packages/coding-agent/in-place-update/` holds the records (see its README.md).
+// release, and `release` does it for a packed release in the release workflow, which also fails when the latest release
+// published before it is not recorded: the build's gates recognize a process of a recorded release only
+// (`packages/coding-agent/scripts/in-place-update-gate.mjs`). `packages/coding-agent/in-place-update/` holds the records
+// (see its README.md).
 //
 // Usage:
 //   node scripts/in-place-update-exports.mjs record <package-dir>...       (prints the record; the application first)
@@ -695,8 +697,14 @@ function main(argv) {
 			const dirs = unpackRelease(tarballs, into);
 			const { records, allowed } = readRecords(recordsDir);
 			const previous = previousRelease(version);
-			if (previous !== undefined && !records.some((record) => record.version === previous))
-				records.push(recordRelease(downloadRelease(previous, into)));
+			// The build tells a process of each recorded release to restart before it loads code on demand
+			// (packages/coding-agent/scripts/in-place-update-gate.mjs); one of an unrecorded release it cannot recognize.
+			if (previous !== undefined && !records.some((record) => record.version === previous)) {
+				console.error(
+					`${previous} is not recorded in ${recordsDir}: record it (node scripts/in-place-update-exports.mjs record --published ${previous}) and build again`,
+				);
+				return 1;
+			}
 			return report(records, allowed, dirs) ? 0 : 1;
 		} finally {
 			rmSync(into, { recursive: true, force: true });

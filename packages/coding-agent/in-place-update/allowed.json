@@ -1,5 +1,5 @@
 {
 	"0.10.3": {
-		"@bastani/atomic-codemode/node-options": "Only the shared files that @bastani/atomic/rpc-entry loads import it, so only a running 0.10.3 program that imports @bastani/atomic/rpc-entry for the first time after the update meets it. Atomic's own code does not import that entry."
+		"@bastani/atomic-codemode/node-options": "A running 0.10.3 process reaches it only through a module it imports on demand that is a gate, which tells it to restart first, or through @bastani/atomic/rpc-entry, when a 0.10.3 program imports that entry for the first time after the update; the SDK guide says to restart then. Atomic's own code does not import that entry."
 	}
 }

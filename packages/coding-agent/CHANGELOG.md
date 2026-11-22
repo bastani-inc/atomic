@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A session that started on 0.10.3, 0.10.4-alpha.1 or 0.10.4-alpha.2 and keeps running after an in-place update (`npm install -g`, `bun add -g`) now says `atomic was updated to <version> while this session was running; restart it to keep using <feature>.` when it first uses a feature whose code loads on demand, such as `/export`, `/tree`, `/fork`, task views, session storage or MCP. `/export` failed with `Missing built-in command description: /mcp-auth` or `Package subpath './node-options' is not defined by "exports"`, and other features could fail or misbehave against the code the session had already loaded. Such a feature works again after a restart.
+
 ## [0.10.4-alpha.2] - 2026-11-22
 
 ### Changed
