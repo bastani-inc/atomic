@@ -263,6 +263,11 @@ const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>(
  * broker took them, even once that sender's connection is gone: nobody waits on them any more.
  */
 const detachedSends = new WeakSet<SendClientMessage>();
+/**
+ * Broker-retargeted wake sends: resolve strictly to this registered session ID (never falling back to mutable display
+ * names or failing #2603 prefix revalidation) while preserving `logicalTarget` for delivery-cache and outbox signatures.
+ */
+const retargetedTargetIds = new WeakMap<SendClientMessage, string>();
 
 /**
  * #5999: deliver `clientMessage` as its sender was when it was first received, whether or not it is still connected.
@@ -271,6 +276,34 @@ const detachedSends = new WeakSet<SendClientMessage>();
 export function detachSend(clientMessage: SendClientMessage, sender?: BrokerConnectedSession): void {
   detachedSends.add(clientMessage);
   if (sender !== undefined) sendersAtReceipt.set(clientMessage, sender);
+}
+
+/**
+ * Create a broker-internal copy of `clientMessage` routed strictly to `targetSessionId` while preserving its original
+ * `logicalTarget` (so delivery-cache/outbox signatures and failure reports stay unchanged) and any detached sender state.
+ */
+export function retargetSendToSessionId(
+	clientMessage: SendClientMessage,
+	targetSessionId: string,
+	messageOverride?: Message,
+): SendClientMessage {
+	const logicalTarget =
+		typeof clientMessage.logicalTarget === "string"
+			? clientMessage.logicalTarget
+			: typeof clientMessage.to === "string"
+				? clientMessage.to
+				: undefined;
+	const retargeted: SendClientMessage = {
+		...clientMessage,
+		to: targetSessionId,
+		...(logicalTarget === undefined ? {} : { logicalTarget }),
+		...(messageOverride === undefined ? {} : { message: messageOverride }),
+	};
+	const sender = sendersAtReceipt.get(clientMessage);
+	if (detachedSends.has(clientMessage)) detachSend(retargeted, sender);
+	else if (sender !== undefined) sendersAtReceipt.set(retargeted, sender);
+	retargetedTargetIds.set(retargeted, targetSessionId);
+	return retargeted;
 }
 
 /**
@@ -453,9 +486,13 @@ export function handleBrokerSend(
   // Exact-id targeting always resolves against the full pool so a cross-group id
   // is caught by the defense-in-depth group check below. Only a broker-authorized
   // supervisor frame or an exact recorded reply may resolve across groups.
+	const retargetedSessionId = retargetedTargetIds.get(clientMessage);
 	const plainSend =
 		!supervisorSend && message.replyTo === undefined && !requirePendingReply && expectedRecipientId === undefined;
-	const exactIdTarget = sessions.get(trimmedTo) ?? (plainSend ? sessionAliases.get(sessions)?.(trimmedTo) : undefined);
+	const exactIdTarget =
+		retargetedSessionId !== undefined
+			? sessions.get(retargetedSessionId)
+			: (sessions.get(trimmedTo) ?? (plainSend ? sessionAliases.get(sessions)?.(trimmedTo) : undefined));
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
 	(info) => reachesSession(fromSession, info) ||
       (supervisorSend && info.id === fromSession.supervisorId) ||
@@ -501,6 +538,7 @@ export function handleBrokerSend(
   // Unauthorized exact transport targets stay out of prefix diagnostics so a
   // formerly visible UUID cannot disclose a hidden peer's current name.
   if (
+    retargetedSessionId === undefined &&
     originalSelector !== trimmedTo &&
     exactIdTarget !== undefined &&
     candidates.some((candidate) => candidate.id === exactIdTarget.info.id)
@@ -528,24 +566,33 @@ export function handleBrokerSend(
       return;
     }
   }
-  const visibleResolution = exactIdTarget
-    ? ({ kind: "resolved", session: exactIdTarget.info } as const)
-    : resolveSessionTarget(candidates, trimmedTo);
-  const returnPathResolution =
-    visibleResolution.kind === "not_found" && returnPathCandidates.length > 0
-      ? resolveSessionTarget(returnPathCandidates, trimmedTo)
-      : undefined;
-  const nameOrIdResolution =
-    returnPathResolution !== undefined && returnPathResolution.kind !== "not_found" ? returnPathResolution : visibleResolution;
-  // #3760: a host session id (a resumed session's or a restored subagent's own session id) reaches the one
-  // visible session it registered, under the same group visibility as names.
-  const resolution = nameOrIdResolution.kind === "not_found"
-    ? resolveSessionTargetByHostSessionId(
-        candidates,
-        trimmedTo,
-        (info) => sessions.get(info.id)?.registrationReturnAddress,
-      )
-    : nameOrIdResolution;
+  const resolution =
+    retargetedSessionId !== undefined
+      ? exactIdTarget !== undefined
+        ? ({ kind: "resolved", session: exactIdTarget.info } as const)
+        : ({ kind: "not_found" } as const)
+      : (() => {
+          const visibleResolution = exactIdTarget
+            ? ({ kind: "resolved", session: exactIdTarget.info } as const)
+            : resolveSessionTarget(candidates, trimmedTo);
+          const returnPathResolution =
+            visibleResolution.kind === "not_found" && returnPathCandidates.length > 0
+              ? resolveSessionTarget(returnPathCandidates, trimmedTo)
+              : undefined;
+          const nameOrIdResolution =
+            returnPathResolution !== undefined && returnPathResolution.kind !== "not_found"
+              ? returnPathResolution
+              : visibleResolution;
+          // #3760: a host session id (a resumed session's or a restored subagent's own session id) reaches the one
+          // visible session it registered, under the same group visibility as names.
+          return nameOrIdResolution.kind === "not_found"
+            ? resolveSessionTargetByHostSessionId(
+                candidates,
+                trimmedTo,
+                (info) => sessions.get(info.id)?.registrationReturnAddress,
+              )
+            : nameOrIdResolution;
+        })();
   // #4751: a reply to an ask whose asker is closed (a top-level session that may resume) is held for it, once, and
   // delivered when it registers again; the replier learns that it is held. With multi-node routing, the shared outbox
   // queues it for the offline asker instead.
@@ -579,6 +626,7 @@ export function handleBrokerSend(
     return;
   }
   if (
+    retargetedSessionId === undefined &&
     routeRemote !== undefined &&
     resolution.kind === "not_found" &&
     !visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())
@@ -1069,6 +1117,7 @@ export function handleBrokerSend(
 		return;
 	}
 	if (
+		retargetedSessionId === undefined &&
 		resolution.kind === "not_found" &&
 		!supervisorSend &&
 		!requirePendingReply &&
