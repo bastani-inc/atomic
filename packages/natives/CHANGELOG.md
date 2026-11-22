@@ -2,22 +2,24 @@
 
 ## [Unreleased]
 
+## [0.10.4-alpha.2] - 2026-11-22
+
 ### Breaking Changes
 
-- Removed `blockRangeAt` (`BlockRange`, `BlockRangeOptions`) and its bundled `tree-sitter` language grammars, which have had no caller since 0.9.72 replaced hashline editing with exact-text editing.
+- Removed `blockRangeAt` (`BlockRange`, `BlockRangeOptions`) and its bundled `tree-sitter` language grammars, which have had no caller since 0.9.72 replaced hashline editing with exact-text editing ([#6381](https://github.com/bastani-inc/atomic/pull/6381)).
 
 ### Added
 
-- `nativeVersion()`: the Atomic release the native module was built for (`0.0.0` from a source checkout).
+- `nativeVersion()`: the Atomic release the native module was built for (`0.0.0` from a source checkout) ([#6319](https://github.com/bastani-inc/atomic/pull/6319)).
 
 ### Changed
 
-- Removing the unused `tree-sitter` grammars, dropping the unused `tokio` `net` feature, and compiling release builds with `codegen-units = 1` cuts the native module by about 72–74% (on Linux x64 glibc/musl from 18.2–18.4 MiB to 4.7 MiB unpacked and 3.6 MiB to 2.0 MiB compressed; on Windows x64 from 18.3 MiB to 5.2 MiB unpacked and 3.6 MiB to 2.1 MiB compressed) with no regression in search, glob, lock, or process-tree performance.
-- `processCreationTime(pid)` also reads a process's start on macOS, also of a process another user owns, to the microsecond, as 100-nanosecond intervals since 1601 like the Windows creation time. It still answers `null` on Linux.
+- Removing the unused `tree-sitter` grammars and unused network dependencies cuts the native module by about 72 to 74% (on Linux x64 glibc and musl from 18.2 to 18.4 MiB to 4.7 MiB unpacked and 3.6 MiB to 2.0 MiB compressed; on Windows x64 from 18.3 MiB to 5.2 MiB unpacked and 3.6 MiB to 2.1 MiB compressed) with no regression in search, glob, lock or process-tree performance ([#6381](https://github.com/bastani-inc/atomic/pull/6381)).
+- `processCreationTime(pid)` also reads a process's start on macOS, also of a process another user owns, to the microsecond, as 100-nanosecond intervals since 1601 like the Windows creation time. It still answers `null` on Linux ([#6394](https://github.com/bastani-inc/atomic/pull/6394)).
 
 ### Fixed
 
-- `terminateProcessCreatedAt(pid, created, descendants)` takes a process as one `pid` started only while the parent id its own handle reports is its parent's and the kernel's order of process starts puts it after that parent. It compared creation times on the system clock, so a clock set back, or two processes created within one tick, could end an older process that had nothing to do with `pid`. On a Windows that does not report that order (before Windows 10), only `pid` itself ends.
+- `terminateProcessCreatedAt(pid, created, descendants)` takes a process as one `pid` started only while the parent id its own handle reports is its parent's and the kernel's order of process starts puts it after that parent. It compared creation times on the system clock, so a clock set back, or two processes created within one tick, could end an older process that had nothing to do with `pid`. On a Windows that does not report that order (before Windows 10), only `pid` itself ends ([#6288](https://github.com/bastani-inc/atomic/pull/6288)).
 
 ## [0.10.4-alpha.1] - 2026-11-22
 
