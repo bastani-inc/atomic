@@ -710,6 +710,12 @@ export interface NativeTerminationResult {
   graceMs: number
 }
 
+/**
+ * The Atomic release this native module was built for (`0.0.0` from a source checkout). Atomic refuses to run a
+ * release with the native module of another one, which a broken installation, or an update while it runs, leaves.
+ */
+export declare function nativeVersion(): string
+
 export interface OmittedRange {
   start: string
   end: string

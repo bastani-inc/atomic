@@ -184,7 +184,7 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
-import { assertNativeModuleAvailable, NativeModuleUnavailableError } from "./utils/native-module.ts";
+import { NativeModuleUnavailableError, nativeModuleProblem, nativeModuleUnavailable } from "./utils/native-module.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -1373,9 +1373,9 @@ export async function main(argv: string[], options?: MainOptions) {
 	time("createRuntimeFactory");
 	// A session cannot run without the native module: say why it cannot load and stop, before the session opens (which
 	// loads it) and before the interactive host starts its engine.
-	try {
-		assertNativeModuleAvailable();
-	} catch (error) {
+	const nativeProblem = nativeModuleProblem();
+	if (nativeProblem !== undefined) {
+		const error = await nativeModuleUnavailable(nativeProblem).catch((failure: unknown) => failure);
 		if (!(error instanceof NativeModuleUnavailableError)) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${error.message}`));

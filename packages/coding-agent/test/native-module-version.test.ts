@@ -10,7 +10,7 @@ const fixture = vi.hoisted(() => ({
 	loadError: undefined as Error | undefined,
 }));
 
-/** `assertNativeModuleAvailable` of a process in `fixture`'s state, freshly loaded; its error, if it throws one. */
+/** Whether a process in `fixture`'s state, freshly loaded, can run its native module; the error saying why not. */
 async function check(state: Partial<typeof fixture>): Promise<Error | undefined> {
 	Object.assign(fixture, {
 		running: "0.10.5",
@@ -25,7 +25,7 @@ async function check(state: Partial<typeof fixture>): Promise<Error | undefined>
 		...(await importOriginal<typeof import("../src/config.js")>()),
 		VERSION: fixture.running,
 		isBunBinary: fixture.binary,
-		detectInstallChange: () =>
+		detectInstallChangeAsync: async () =>
 			fixture.installed === undefined
 				? { kind: "removed" }
 				: fixture.installed === fixture.running
@@ -46,14 +46,14 @@ async function check(state: Partial<typeof fixture>): Promise<Error | undefined>
 			},
 		};
 	});
-	const { assertNativeModuleAvailable, NativeModuleUnavailableError } = await import("../src/utils/native-module.ts");
-	try {
-		assertNativeModuleAvailable();
-		return undefined;
-	} catch (error) {
-		assert.ok(error instanceof NativeModuleUnavailableError, String(error));
-		return error;
-	}
+	const { nativeModuleProblem, nativeModuleUnavailable, NativeModuleUnavailableError } = await import(
+		"../src/utils/native-module.ts"
+	);
+	const problem = nativeModuleProblem();
+	if (problem === undefined) return undefined;
+	const error = await nativeModuleUnavailable(problem).catch((failure: unknown) => failure);
+	assert.ok(error instanceof NativeModuleUnavailableError, String(error));
+	return error;
 }
 
 const own = (version: string) => ({ nativeVersion: () => version });
