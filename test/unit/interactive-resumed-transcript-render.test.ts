@@ -1375,6 +1375,147 @@ test("a compaction while the reader is above the end keeps the saved lines they 
 	inPlace([95, 96]);
 });
 
+const STORE_WAIT_MS = 5_000;
+
+async function drainSettled(pending: readonly Promise<unknown>[]): Promise<void> {
+	for (let settled = 0; settled < pending.length; ) {
+		const batch = pending.slice(settled);
+		settled = pending.length;
+		await Promise.all(batch);
+	}
+}
+
+async function assertParkedSavedLineAcrossCompaction(
+	host: "in-process" | "isolated",
+	compaction: "keeps" | "retires",
+	options: { readonly delayDiscoveryAfterScroll?: boolean } = {},
+): Promise<void> {
+	const root = await mkdtemp(join(tmpdir(), "atomic-parked-read-"));
+	const manager = await SessionManager.create(root, join(root, "sessions"));
+	const ids: string[] = [];
+	const assistant = { api: "openai-completions", provider: "scripted", model: "scripted", stopReason: "stop" };
+	const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 };
+	for (let turn = 0; turn < 100; turn++) {
+		const prompt = [{ type: "text", text: `Turn ${turn}: check the loader` }];
+		ids.push(await manager.appendMessage({ role: "user", content: prompt, timestamp: turn } as Message));
+		const reply = [{ type: "text", text: `Answer ${turn}\n\nline one\n\nline two` }];
+		const cost = { ...usage, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		const message = { role: "assistant", ...assistant, usage: cost, content: reply, timestamp: turn };
+		ids.push(await manager.appendMessage(message as Message));
+	}
+	const answer = ids[2 * 95 + 1]!;
+	const scope = manager.chatRecordScope();
+	assert.ok(scope, "the session keeps reader-only records");
+	const line = {
+		kind: "line",
+		level: "error",
+		text: "Error: Retry failed after 3 attempts: SAVED-AFTER-95",
+	} as const;
+	await scope.store.append(scope.owner, answer, line);
+	const pair = await createEngineHostPair({
+		sessionManager: manager,
+		hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
+	});
+	const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
+	const terminal = new RecordingTerminal();
+	terminal.columns = COLUMNS;
+	terminal.rows = ROWS;
+	const inProcess = { ...runtimeHostFor(session.sessionManager), session } as AgentSessionRuntime;
+	const mode = new InteractiveMode(host === "isolated" ? (pair.runtime as AgentSessionRuntime) : inProcess, {
+		terminal,
+	});
+	mode.isInitialized = true;
+	const tui = mode.ui as unknown as TuiAltScreen;
+	const transcript = new ScrollView(mode.documentContainer, { follow: "end", primary: true });
+	mode.transcriptScrollView = transcript;
+	tui.setLayoutRoot(transcript);
+	releaseStartupChatOutput(mode);
+	tui.start();
+	const unsubscribe = session.subscribe((event) => void mode.handleEvent(event as AgentSessionEvent));
+	// The line's read is held, as a slow store holds it, until the compaction has redrawn the chat.
+	const store = mode.sessionManager.chatRecordScope()!.store;
+	const discoveryGate = options.delayDiscoveryAfterScroll ? Promise.withResolvers<void>() : undefined;
+	// Each store discovery probe, settled once it has returned, whatever it returned.
+	const hasChecks: Promise<unknown>[] = [];
+	const has = store.has.bind(store);
+	store.has = (owner) => {
+		const result = discoveryGate ? discoveryGate.promise.then(() => has(owner)) : has(owner);
+		hasChecks.push(result.catch(() => undefined));
+		return result;
+	};
+	const held = Promise.withResolvers<void>();
+	let reads = 0;
+	// Each held read, settled once it has returned, whatever it returned.
+	const heldReads: Promise<unknown>[] = [];
+	const read = store.read.bind(store);
+	store.read = async (owner, anchors) => {
+		if (!anchors.includes(answer)) return read(owner, anchors);
+		reads++;
+		const result = held.promise.then(() => read(owner, anchors));
+		heldReads.push(result.catch(() => undefined));
+		return result;
+	};
+	try {
+		mode.renderInitialMessages();
+		await fillIn(mode, 100);
+		let screen = await settle(tui, () => true);
+		for (let i = 0; i < 80 && !screen.some((row) => row.includes("Answer 95")); i++) {
+			transcript.scrollBy(-3);
+			screen = await settle(tui, () => true);
+		}
+		assert.ok(screen.some((row) => row.includes("Answer 95")) && !transcript.isFollowingEnd, screen.join("\n"));
+		if (discoveryGate) {
+			assert.equal(reads, 0, "no saved-line read starts before store discovery completes");
+			discoveryGate.resolve();
+		}
+		// However long store discovery takes, wait for it to return and for the scheduled repaint to start the read.
+		await drainSettled(hasChecks);
+		await vi.waitFor(() => assert.equal(reads, 1, "the line of answer 95 is being read"), {
+			timeout: STORE_WAIT_MS,
+		});
+		const kept = compaction === "keeps" ? ids[2 * 94]! : null;
+		await pair.engine.sessionManager.appendCompaction("new context", kept, 100, CLEARED);
+		const result = { ...CLEARED, compactedText: "new context", firstKeptEntryId: kept, tokensBefore: 100 };
+		const end = { type: "compaction_end", reason: "manual", aborted: false, willRetry: false, result };
+		if (host === "isolated") pair.engineOutput(end);
+		else await mode.handleEvent(end as AgentSessionEvent);
+		await vi.waitFor(() => assert.match(mode.chatContainer.render(COLUMNS).join("\n"), /Context cleared/), {
+			timeout: STORE_WAIT_MS,
+		});
+		tui.renderNow();
+		assert.ok(
+			plainScreen(tui).some((row) => row.includes("Answer 95")),
+			"the reader keeps the reply",
+		);
+		await nextTurn();
+		held.resolve();
+		// However long the store takes, the line is drawn once every held read returns.
+		await drainSettled(heldReads);
+		await nextTurn();
+		screen = await settle(tui, (rows) => rows.some((row) => row.includes("SAVED-AFTER-95")));
+		const document = mode.documentContainer.render(COLUMNS).map((row) => stripTerminalSequences(row));
+		const at = (text: string) => document.findIndex((row) => row.includes(text));
+		assert.equal(document.filter((row) => row.includes("SAVED-AFTER-95")).length, 1, document.join("\n"));
+		assert.ok(at("Answer 95") < at("SAVED-AFTER-95") && at("SAVED-AFTER-95") < at("Turn 96: check"));
+		if (compaction === "retires") {
+			// The line joined the page of retired rows: it leaves with them.
+			transcript.scrollToEnd();
+			await settle(tui, (rows) => rows.some((row) => row.includes("Context cleared")));
+			assert.doesNotMatch(
+				stripTerminalSequences(mode.chatContainer.render(COLUMNS).join("\n")),
+				/Answer 95|SAVED-AFTER-95/,
+			);
+		}
+	} finally {
+		discoveryGate?.resolve();
+		held.resolve();
+		unsubscribe();
+		tui.stop();
+		await pair.cleanup();
+		await rm(root, { force: true, recursive: true, maxRetries: 5 });
+	}
+}
+
 test.each([
 	["in-process", "keeps"],
 	["in-process", "retires"],
@@ -1383,107 +1524,17 @@ test.each([
 ] as const)(
 	"on the %s host, a saved line still being read when a compaction %s the reply the reader is on is drawn after that reply (#5593)",
 	async (host, compaction) => {
-		const root = await mkdtemp(join(tmpdir(), "atomic-parked-read-"));
-		const manager = await SessionManager.create(root, join(root, "sessions"));
-		const ids: string[] = [];
-		const assistant = { api: "openai-completions", provider: "scripted", model: "scripted", stopReason: "stop" };
-		const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 };
-		for (let turn = 0; turn < 100; turn++) {
-			const prompt = [{ type: "text", text: `Turn ${turn}: check the loader` }];
-			ids.push(await manager.appendMessage({ role: "user", content: prompt, timestamp: turn } as Message));
-			const reply = [{ type: "text", text: `Answer ${turn}\n\nline one\n\nline two` }];
-			const cost = { ...usage, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-			const message = { role: "assistant", ...assistant, usage: cost, content: reply, timestamp: turn };
-			ids.push(await manager.appendMessage(message as Message));
-		}
-		const answer = ids[2 * 95 + 1]!;
-		const scope = manager.chatRecordScope();
-		assert.ok(scope, "the session keeps reader-only records");
-		const line = {
-			kind: "line",
-			level: "error",
-			text: "Error: Retry failed after 3 attempts: SAVED-AFTER-95",
-		} as const;
-		await scope.store.append(scope.owner, answer, line);
-		const pair = await createEngineHostPair({
-			sessionManager: manager,
-			hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
-		});
-		const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
-		const terminal = new RecordingTerminal();
-		terminal.columns = COLUMNS;
-		terminal.rows = ROWS;
-		const inProcess = { ...runtimeHostFor(session.sessionManager), session } as AgentSessionRuntime;
-		const mode = new InteractiveMode(host === "isolated" ? (pair.runtime as AgentSessionRuntime) : inProcess, {
-			terminal,
-		});
-		mode.isInitialized = true;
-		const tui = mode.ui as unknown as TuiAltScreen;
-		const transcript = new ScrollView(mode.documentContainer, { follow: "end", primary: true });
-		mode.transcriptScrollView = transcript;
-		tui.setLayoutRoot(transcript);
-		releaseStartupChatOutput(mode);
-		tui.start();
-		const unsubscribe = session.subscribe((event) => void mode.handleEvent(event as AgentSessionEvent));
-		// The line's read is held, as a slow store holds it, until the compaction has redrawn the chat.
-		const store = mode.sessionManager.chatRecordScope()!.store;
-		const held = Promise.withResolvers<void>();
-		let reads = 0;
-		// Each held read, settled once it has returned, whatever it returned.
-		const heldReads: Promise<unknown>[] = [];
-		const read = store.read.bind(store);
-		store.read = async (owner, anchors) => {
-			if (!anchors.includes(answer)) return read(owner, anchors);
-			reads++;
-			const result = held.promise.then(() => read(owner, anchors));
-			heldReads.push(result.catch(() => undefined));
-			return result;
-		};
-		try {
-			mode.renderInitialMessages();
-			await fillIn(mode, 100);
-			let screen = await settle(tui, () => true);
-			for (let i = 0; i < 80 && !screen.some((row) => row.includes("Answer 95")); i++) {
-				transcript.scrollBy(-3);
-				screen = await settle(tui, () => true);
-			}
-			assert.ok(screen.some((row) => row.includes("Answer 95")) && !transcript.isFollowingEnd, screen.join("\n"));
-			assert.equal(reads, 1, "the line of answer 95 is being read");
-			const kept = compaction === "keeps" ? ids[2 * 94]! : null;
-			await pair.engine.sessionManager.appendCompaction("new context", kept, 100, CLEARED);
-			const result = { ...CLEARED, compactedText: "new context", firstKeptEntryId: kept, tokensBefore: 100 };
-			const end = { type: "compaction_end", reason: "manual", aborted: false, willRetry: false, result };
-			if (host === "isolated") pair.engineOutput(end);
-			else await mode.handleEvent(end as AgentSessionEvent);
-			await vi.waitFor(() => assert.match(mode.chatContainer.render(COLUMNS).join("\n"), /Context cleared/));
-			tui.renderNow();
-			assert.ok(
-				plainScreen(tui).some((row) => row.includes("Answer 95")),
-				"the reader keeps the reply",
-			);
-			held.resolve();
-			// However long the store takes, the line is drawn once its read returns.
-			await Promise.all(heldReads);
-			screen = await settle(tui, (rows) => rows.some((row) => row.includes("SAVED-AFTER-95")));
-			const document = mode.documentContainer.render(COLUMNS).map((row) => stripTerminalSequences(row));
-			const at = (text: string) => document.findIndex((row) => row.includes(text));
-			assert.equal(document.filter((row) => row.includes("SAVED-AFTER-95")).length, 1, document.join("\n"));
-			assert.ok(at("Answer 95") < at("SAVED-AFTER-95") && at("SAVED-AFTER-95") < at("Turn 96: check"));
-			if (compaction === "retires") {
-				// The line joined the page of retired rows: it leaves with them.
-				transcript.scrollToEnd();
-				await settle(tui, (rows) => rows.some((row) => row.includes("Context cleared")));
-				assert.doesNotMatch(
-					stripTerminalSequences(mode.chatContainer.render(COLUMNS).join("\n")),
-					/Answer 95|SAVED-AFTER-95/,
-				);
-			}
-		} finally {
-			unsubscribe();
-			tui.stop();
-			await pair.cleanup();
-			await rm(root, { force: true, recursive: true, maxRetries: 5 });
-		}
+		await assertParkedSavedLineAcrossCompaction(host, compaction);
+	},
+);
+
+test.each([
+	["in-process", "retires"],
+	["isolated", "retires"],
+] as const)(
+	"on the %s host, a saved line whose store discovery finishes after scrolling still starts its read and is drawn after a compaction %s the reply (#5593)",
+	async (host, compaction) => {
+		await assertParkedSavedLineAcrossCompaction(host, compaction, { delayDiscoveryAfterScroll: true });
 	},
 );
 

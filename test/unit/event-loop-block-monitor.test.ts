@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { Readable } from "node:stream";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	eventLoopBlockLogPath,
 	eventLoopBlockThresholdMs,
@@ -83,6 +84,151 @@ beforeEach(() => {
 });
 afterEach(() => removeTempDirectory(temp));
 
+type PipeName = "stdout" | "stderr";
+type PipeError = { readonly pipe: PipeName; readonly error: unknown };
+type TwoPhaseChild = {
+	readonly stdout: ByteStream | null;
+	readonly stderr: ByteStream | null;
+	readonly exited: Promise<number>;
+	kill(): void;
+};
+type WaitOutcome =
+	| { readonly kind: "exited"; readonly exitCode: number }
+	| { readonly kind: "spawn-error"; readonly error: unknown }
+	| { readonly kind: "pipe-error"; readonly pipeError: PipeError }
+	| { readonly kind: "timeout"; readonly phase: "loading" | "running" };
+
+function readPipe(
+	stream: ByteStream | null,
+	onText: (text: string) => void,
+	onError: (error: unknown) => void,
+): { readonly done: Promise<void>; cancel(): void } {
+	if (!stream) return { done: Promise.resolve(), cancel: () => {} };
+	const reader = decodeStream(stream).getReader();
+	let cancelled = false;
+	let finished = false;
+	const done = (async () => {
+		try {
+			for (;;) {
+				const { done: eof, value } = await reader.read();
+				if (eof) break;
+				if (!cancelled) onText(value);
+			}
+		} catch (error) {
+			if (!cancelled) onError(error);
+		} finally {
+			finished = true;
+			reader.releaseLock();
+		}
+	})();
+	return {
+		done,
+		cancel: () => {
+			cancelled = true;
+			if (!finished) void reader.cancel().catch(() => {});
+		},
+	};
+}
+
+function pipeReadError(pipeError: PipeError, stderr: string): Error {
+	const detail = pipeError.error instanceof Error ? pipeError.error.message : String(pipeError.error);
+	return new Error(`the child's ${pipeError.pipe} pipe errored (${detail}):\n${stderr}`, { cause: pipeError.error });
+}
+
+/**
+ * Waits for `child` under two separate time budgets: `loadTimeoutMs` before `loadedMarker` appears on stdout, then
+ * `runTimeoutMs` until exit. Pipe read errors settle deterministically without leaving unhandled rejections.
+ */
+async function collectTwoPhaseChild(
+	child: TwoPhaseChild,
+	options: { readonly loadedMarker: string; readonly loadTimeoutMs: number; readonly runTimeoutMs: number },
+): Promise<{ stdout: string; stderr: string }> {
+	let stdout = "";
+	let stderr = "";
+	let loaded = false;
+	let exited = false;
+	let settled = false;
+	let firstPipeError: PipeError | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const { promise: wait, resolve: resolveWait } = Promise.withResolvers<WaitOutcome>();
+
+	const settle = (outcome: WaitOutcome): void => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		timer = undefined;
+		resolveWait(outcome);
+	};
+
+	const recordPipeError = (pipe: PipeName, error: unknown): void => {
+		if (firstPipeError === undefined) firstPipeError = { pipe, error };
+		settle({ kind: "pipe-error", pipeError: firstPipeError });
+		(pipe === "stdout" ? stderrReader : stdoutReader).cancel();
+	};
+
+	void child.exited.then(
+		(exitCode) => {
+			exited = true;
+			settle({ kind: "exited", exitCode });
+		},
+		(error) => {
+			exited = true;
+			settle({ kind: "spawn-error", error });
+		},
+	);
+
+	const stdoutReader = readPipe(
+		child.stdout,
+		(text) => {
+			stdout += text;
+			if (!loaded && stdout.includes(options.loadedMarker)) {
+				loaded = true;
+				if (!settled) {
+					clearTimeout(timer);
+					timer = setTimeout(() => settle({ kind: "timeout", phase: "running" }), options.runTimeoutMs);
+				}
+			}
+		},
+		(error) => recordPipeError("stdout", error),
+	);
+	const stderrReader = readPipe(
+		child.stderr,
+		(text) => {
+			stderr += text;
+		},
+		(error) => recordPipeError("stderr", error),
+	);
+	timer = setTimeout(() => settle({ kind: "timeout", phase: "loading" }), options.loadTimeoutMs);
+
+	const outcome = await wait;
+	const stopReaders = async (): Promise<void> => {
+		stdoutReader.cancel();
+		stderrReader.cancel();
+		await Promise.all([stdoutReader.done, stderrReader.done]);
+	};
+
+	if (outcome.kind === "timeout" || outcome.kind === "pipe-error") {
+		if (!exited) child.kill();
+		await child.exited.catch(() => {});
+		await stopReaders();
+		if (outcome.kind === "pipe-error") throw pipeReadError(outcome.pipeError, stderr);
+		assert.fail(
+			outcome.phase === "loading"
+				? `the child did not load within ${options.loadTimeoutMs} ms:\n${stderr}`
+				: `the child loaded, then did not finish within ${options.runTimeoutMs} ms:\n${stderr}`,
+		);
+	}
+	if (outcome.kind === "spawn-error") {
+		await stopReaders();
+		throw outcome.error;
+	}
+
+	await Promise.all([stdoutReader.done, stderrReader.done]);
+	if (firstPipeError !== undefined) throw pipeReadError(firstPipeError, stderr);
+	assert.equal(outcome.exitCode, 0, `the child failed:\n${stderr}`);
+	return { stdout, stderr };
+}
+
 /**
  * Runs the fixture in `runtime` and returns its report and what it wrote to stderr. Loading and running are bounded
  * apart: loading slows with the machine, while a child that loaded and then does not finish its work in time is stuck.
@@ -108,45 +254,11 @@ async function runChild(
 			stderr: "pipe",
 		},
 	);
-	const startedAt = performance.now();
-	let loadedAt: number | undefined;
-	let stdout = "";
-	let stderr = "";
-	const read = async (stream: ByteStream | null, take: (text: string) => void) => {
-		if (stream) for await (const text of decodeStream(stream)) take(text);
-	};
-	const reading = Promise.all([
-		read(child.stdout, (text) => {
-			stdout += text;
-			if (loadedAt === undefined && stdout.includes(LOADED)) loadedAt = performance.now();
-		}),
-		read(child.stderr, (text) => {
-			stderr += text;
-		}),
-	]);
-	const stuck = await new Promise<"loading" | "running" | undefined>((resolve) => {
-		const watch = setInterval(() => {
-			const now = performance.now();
-			if (loadedAt === undefined && now - startedAt > CHILD_LOAD_TIMEOUT_MS) resolve("loading");
-			else if (loadedAt !== undefined && now - loadedAt > CHILD_RUN_TIMEOUT_MS) resolve("running");
-		}, 50);
-		void child.exited.then(
-			() => resolve(undefined),
-			() => resolve(undefined),
-		);
-		void reading.finally(() => clearInterval(watch));
+	const { stdout, stderr } = await collectTwoPhaseChild(child, {
+		loadedMarker: LOADED,
+		loadTimeoutMs: CHILD_LOAD_TIMEOUT_MS,
+		runTimeoutMs: CHILD_RUN_TIMEOUT_MS,
 	});
-	if (stuck !== undefined) {
-		child.kill();
-		await child.exited.catch(() => {});
-		assert.fail(
-			stuck === "loading"
-				? `the child did not load within ${CHILD_LOAD_TIMEOUT_MS} ms:\n${stderr}`
-				: `the child loaded, then did not finish within ${CHILD_RUN_TIMEOUT_MS} ms:\n${stderr}`,
-		);
-	}
-	await reading;
-	assert.equal(await child.exited, 0, `the child failed:\n${stderr}`);
 	const line = stdout
 		.trim()
 		.split("\n")
@@ -368,4 +480,223 @@ test("a relative log path resolves against the directory Atomic starts in", () =
 		eventLoopBlockLogPath({ ATOMIC_EVENT_LOOP_BLOCK_LOG: join("logs", "blocks.jsonl") }, base),
 		join(base, "logs", "blocks.jsonl"),
 	);
+});
+
+/** Node reports a rejection left unhandled once the turn that left it has run its microtasks. */
+const flushUnhandledRejections = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+async function withoutUnhandledRejections(body: () => Promise<void>): Promise<void> {
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		await body();
+		await flushUnhandledRejections();
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+}
+
+function createFakePipe() {
+	const encoder = new TextEncoder();
+	let controller!: ReadableStreamDefaultController<Uint8Array<ArrayBufferLike>>;
+	const stream: ByteStream = new ReadableStream({
+		start(c) {
+			controller = c;
+		},
+	});
+	return {
+		stream,
+		write: (text: string) => controller.enqueue(encoder.encode(text)),
+		close: () => controller.close(),
+		error: (err: Error) => controller.error(err),
+	};
+}
+
+type FakePipe = ReturnType<typeof createFakePipe>;
+
+function startFakeChild(options?: {
+	stdout?: ByteStream | null;
+	stderr?: ByteStream | null;
+	onKill?: (resolveExit: (code: number) => void, pipes: { stdout: FakePipe; stderr: FakePipe }) => void;
+	loadTimeoutMs?: number;
+	runTimeoutMs?: number;
+}) {
+	const stdout = createFakePipe();
+	const stderr = createFakePipe();
+	const { promise: exited, resolve: resolveExit, reject: rejectExit } = Promise.withResolvers<number>();
+	let killed = 0;
+	const run = collectTwoPhaseChild(
+		{
+			stdout: options?.stdout === undefined ? stdout.stream : options.stdout,
+			stderr: options?.stderr === undefined ? stderr.stream : options.stderr,
+			exited,
+			kill: () => {
+				killed++;
+				if (options?.onKill) options.onKill(resolveExit, { stdout, stderr });
+				else resolveExit(143);
+			},
+		},
+		{
+			loadedMarker: LOADED,
+			loadTimeoutMs: options?.loadTimeoutMs ?? 60_000,
+			runTimeoutMs: options?.runTimeoutMs ?? 60_000,
+		},
+	);
+	return {
+		stdout,
+		stderr,
+		run,
+		resolveExit,
+		rejectExit,
+		get killed() {
+			return killed;
+		},
+	};
+}
+
+function expectPipeRejection(run: Promise<unknown>, pipe: PipeName, cause: Error, stderrMatch?: RegExp): Promise<void> {
+	return assert.rejects(run, (error: Error) => {
+		assert.ok(error.message.includes(`${pipe} pipe errored (${cause.message})`), error.message);
+		if (stderrMatch) assert.match(error.message, stderrMatch);
+		assert.equal(error.cause, cause);
+		return true;
+	});
+}
+
+const useFakeTimeouts = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+describe("two-phase child helper pipe error handling (#6423)", () => {
+	afterEach(() => vi.useRealTimers());
+
+	test("surfaces a stdout pipe error while the child is running, kills it, and leaves no unhandled rejection (#6423)", async () => {
+		await withoutUnhandledRejections(async () => {
+			const child = startFakeChild();
+			const injected = new Error("injected stdout EPIPE");
+			const failure = expectPipeRejection(child.run, "stdout", injected, /partial stderr/);
+			child.stderr.write("partial stderr\n");
+			await flushUnhandledRejections();
+			child.stdout.error(injected);
+			await failure;
+			assert.equal(child.killed, 1);
+		});
+	});
+
+	for (const closeStderr of [true, false]) {
+		test(
+			closeStderr
+				? "surfaces a stdout pipe error during post-exit drain without killing or leaving an unhandled rejection (#6423)"
+				: "surfaces a post-exit stdout pipe error without hanging when stderr stays open (#6423)",
+			async () => {
+				await withoutUnhandledRejections(async () => {
+					const child = startFakeChild({ onKill: () => {} });
+					const injected = new Error(closeStderr ? "post-exit stdout EPIPE" : "post-exit open-stderr EPIPE");
+					const failure = expectPipeRejection(child.run, "stdout", injected);
+					child.resolveExit(0);
+					await flushUnhandledRejections();
+					child.stdout.error(injected);
+					if (closeStderr) child.stderr.close();
+					await failure;
+					assert.equal(child.killed, 0);
+				});
+			},
+		);
+	}
+
+	test("surfaces a stderr pipe error and absorbs a second pipe error without an unhandled rejection (#6423)", async () => {
+		await withoutUnhandledRejections(async () => {
+			const child = startFakeChild();
+			const stderrErr = new Error("injected stderr EIO");
+			const failure = expectPipeRejection(child.run, "stderr", stderrErr);
+			await flushUnhandledRejections();
+			child.stderr.error(stderrErr);
+			child.stdout.error(new Error("injected secondary stdout EPIPE"));
+			await failure;
+		});
+	});
+
+	test("leaves no unhandled rejection when a pipe errors during timeout teardown (#6423)", async () => {
+		useFakeTimeouts();
+		await withoutUnhandledRejections(async () => {
+			const child = startFakeChild({
+				loadTimeoutMs: 1_000,
+				runTimeoutMs: 500,
+				onKill: (resolveExit, pipes) => {
+					pipes.stdout.error(new Error("pipe broken during kill"));
+					setImmediate(() => resolveExit(143));
+				},
+			});
+			const failure = assert.rejects(child.run, /the child did not load within 1000 ms/);
+			await vi.advanceTimersByTimeAsync(1_000);
+			await failure;
+			assert.equal(vi.getTimerCount(), 0);
+		});
+	});
+
+	test("keeps the phase timeout active even when both pipes reach EOF before the child exits (#6423)", async () => {
+		useFakeTimeouts();
+		const child = startFakeChild({ loadTimeoutMs: 10_000, runTimeoutMs: 500 });
+		const failure = assert.rejects(child.run, /the child loaded, then did not finish within 500 ms/);
+		child.stdout.write(LOADED.slice(0, 12));
+		child.stdout.write(`${LOADED.slice(12)}\n`);
+		child.stdout.close();
+		child.stderr.close();
+		await flushUnhandledRejections();
+		await vi.advanceTimersByTimeAsync(500);
+		await failure;
+		assert.equal(child.killed, 1);
+		assert.equal(vi.getTimerCount(), 0);
+	});
+
+	test("does not arm a phase-2 timer when the loaded marker drains after the child has already exited (#6423)", async () => {
+		useFakeTimeouts();
+		const child = startFakeChild({
+			loadTimeoutMs: 10_000,
+			runTimeoutMs: 5_000,
+			onKill: () => assert.fail("should not kill a child that already exited"),
+		});
+		child.resolveExit(0);
+		await flushUnhandledRejections();
+		child.stdout.write(`${LOADED}\n{"ok":true}\n`);
+		child.stdout.close();
+		child.stderr.close();
+		assert.match((await child.run).stdout, /\{"ok":true\}/);
+		assert.equal(vi.getTimerCount(), 0);
+	});
+
+	test("propagates a spawn error, stops readers, and leaves no unhandled rejection (#6423)", async () => {
+		useFakeTimeouts();
+		await withoutUnhandledRejections(async () => {
+			const child = startFakeChild({
+				loadTimeoutMs: 10_000,
+				runTimeoutMs: 5_000,
+				onKill: () => assert.fail("should not kill a child that failed to spawn"),
+			});
+			const spawnErr = Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
+			const failure = assert.rejects(child.run, (error: unknown) => error === spawnErr);
+			await flushUnhandledRejections();
+			child.rejectExit(spawnErr);
+			await failure;
+			assert.equal(vi.getTimerCount(), 0);
+		});
+	});
+
+	test("surfaces a destroyed Node Readable.toWeb pipe error without an uncaught error or unhandled rejection (#6423)", async () => {
+		await withoutUnhandledRejections(async () => {
+			const nodeStdout = new Readable({ read() {} });
+			const nodeStderr = new Readable({ read() {} });
+			const child = startFakeChild({
+				stdout: Readable.toWeb(nodeStdout) as unknown as ByteStream,
+				stderr: Readable.toWeb(nodeStderr) as unknown as ByteStream,
+			});
+			const injected = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+			const failure = expectPipeRejection(child.run, "stdout", injected);
+			await flushUnhandledRejections();
+			nodeStdout.push(`${LOADED}\n`);
+			nodeStdout.destroy(injected);
+			await failure;
+			assert.equal(child.killed, 1);
+		});
+	});
 });

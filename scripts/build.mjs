@@ -192,6 +192,7 @@ export const BUILD_STEPS = [
 		inputs: [
 			"packages/coding-agent/src",
 			"packages/coding-agent/scripts",
+			"packages/coding-agent/in-place-update",
 			"packages/coding-agent/package.json",
 			"packages/coding-agent/tsconfig.build.json",
 			"packages/subagents",

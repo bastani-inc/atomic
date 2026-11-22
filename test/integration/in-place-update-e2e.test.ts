@@ -56,6 +56,28 @@ afterAll(async () => {
 }, CLEANUP_TIMEOUT_MS);
 
 describe("a running process of a recorded release, updated in place to this build", () => {
+	test(
+		"the release check passes on the packed build for every recorded release, including 0.10.4",
+		() => {
+			// `0.10.5-0` sits directly above `0.10.4` in semver (below `0.10.5-alpha.1` and `0.10.5`), so the release
+			// check always resolves `0.10.4` as the previous published release and verifies every recorded release.
+			const result = spawnSyncCollect(
+				[
+					process.execPath,
+					join(ROOT, "scripts/in-place-update-exports.mjs"),
+					"release",
+					"0.10.5-0",
+					RECORDS,
+					tarballs,
+				],
+				{ cwd: ROOT, timeout: PACK_TIMEOUT_MS },
+			);
+			assert.equal(result.exitCode, 0, result.stderr.toString());
+			assert.match(result.stdout.toString(), /An in-place update from 0\.10\.4 breaks nothing\./);
+		},
+		PACK_TIMEOUT_MS,
+	);
+
 	test.each(records.map((record) => [record.version, record] as const))(
 		"from %s loads each module it imports on demand or says to restart, and its core modules load",
 		async (_version, record) => {
