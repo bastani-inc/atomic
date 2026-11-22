@@ -1,10 +1,16 @@
+import type { Provider } from "@bastani/atomic-ai";
 import { withDefaultBuiltinExtensions } from "../extensions/default-builtins.js";
 import type { Theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
-import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
-import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import {
+	clearExtensionCache,
+	createExtensionRuntime,
+	getExtensionRuntimeEventBus,
+	setExtensionRuntimeEventBus,
+} from "./extensions/loader.ts";
+import type { InlineExtension, LoadExtensionsResult, ProviderConfig } from "./extensions/types.ts";
 import type { LegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata } from "./package-manager.ts";
@@ -16,9 +22,14 @@ import {
 	updateThemesFromPathsAsync,
 } from "./resource-loader-assets.ts";
 import { clonePackageSources, mergeInheritedStrings } from "./resource-loader-helpers.ts";
+import type { DeferredStartupSettingsSnapshot } from "./resource-loader-internals.ts";
 import { normalizeExtensionPaths, recordExtensionSourceInfo } from "./resource-loader-package-resources.ts";
 import { mergeResourcePaths } from "./resource-loader-paths.ts";
-import { loadProjectTrustExtensions, reloadDefaultResourceLoader } from "./resource-loader-reload.ts";
+import {
+	loadProjectTrustExtensions,
+	reloadDefaultResourceLoader,
+	reloadDefaultResourceLoaderWithPreloaded,
+} from "./resource-loader-reload.ts";
 import type {
 	DefaultResourceLoaderInheritanceSnapshot,
 	DefaultResourceLoaderOptions,
@@ -28,7 +39,9 @@ import type {
 	ResourceLoaderReloadOptions,
 	ResourceLoaderReloadTransaction,
 } from "./resource-loader-types.ts";
+import type { AtomicBuiltin } from "./sdk-types.ts";
 import { lifecycleScopeForOwner, sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
+import { trackSessionWork } from "./session-lifecycle-work.ts";
 import { type PackageSource, SettingsManager } from "./settings-manager.ts";
 import { emptySkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
@@ -97,6 +110,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private lastPromptPaths: string[];
 	private lastThemePaths: string[];
 	private loaded: boolean;
+	private deferredInitialLoad: boolean;
+	private deferredInitialSettings?: DeferredStartupSettingsSnapshot;
 	private loadOptions?: ResourceLoaderReloadOptions;
 
 	constructor(options: DefaultResourceLoaderOptions) {
@@ -190,6 +205,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.lastPromptPaths = [];
 		this.lastThemePaths = [];
 		this.loaded = false;
+		this.deferredInitialLoad = false;
 		this.touchInternalFieldsForSplit();
 	}
 
@@ -381,6 +397,177 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return candidate;
 	}
 
+	/** @internal Whether this loader's builtin policy already satisfies `builtins`. */
+	coversBuiltinSelection(builtins: Partial<Record<AtomicBuiltin, boolean>> | undefined): boolean {
+		if (!builtins) return true;
+		for (const [name, value] of Object.entries(builtins)) {
+			if (value === false && !this.disabledBuiltinExtensions.has(name)) return false;
+			if (value === true && (this.noExtensions || this.disabledBuiltinExtensions.has(name))) return false;
+		}
+		return true;
+	}
+
+	/** @internal Whether this loader is eligible for in-place deferred startup completion. */
+	canCompleteDeferredStartup(): boolean {
+		return (
+			this.deferredInitialLoad && this.deferredInitialSettings !== undefined && this.extensionsOverride === undefined
+		);
+	}
+
+	/** @internal Settings and trust snapshot captured at the initial deferred load. */
+	getDeferredInitialSettingsSnapshot(): DeferredStartupSettingsSnapshot | undefined {
+		return this.deferredInitialSettings;
+	}
+
+	/**
+	 * @internal Prepare an in-place deferred startup completion reusing `preloadedExtensions` without clearing the
+	 * extension module cache. Call `rollback()` if the completion aborts before committing.
+	 */
+	async prepareDeferredStartupCompletion(
+		settingsManager: SettingsManager,
+		preloadedExtensions: LoadExtensionsResult,
+	): Promise<
+		ResourceLoaderReloadTransaction & { rollback(): void; readonly unregisteredProviders: ReadonlySet<string> }
+	> {
+		const runtime = preloadedExtensions.runtime;
+		const previousEventBus = getExtensionRuntimeEventBus(runtime);
+		const previousPendingProviderCount = runtime.pendingProviderRegistrations.length;
+		const previousRegisterProvider = runtime.registerProvider;
+		const previousUnregisterProvider = runtime.unregisterProvider;
+		const previousFlagValues = new Map(runtime.flagValues);
+		const previousExplicitFlagNames = runtime.explicitFlagNames ? new Set(runtime.explicitFlagNames) : undefined;
+		const previousFlagOwners = runtime.flagOwners ? new Map(runtime.flagOwners) : undefined;
+		const previousFlagOwnerOrigins = runtime.flagOwnerOrigins ? new Map(runtime.flagOwnerOrigins) : undefined;
+		const previousCanRegisterResource = runtime.canRegisterResource;
+		const previousSourceInfos = preloadedExtensions.extensions.map((extension) => ({
+			extension,
+			sourceInfo: extension.sourceInfo,
+			commands: [...extension.commands.entries()].map(([name, cmd]) => [name, cmd.sourceInfo] as const),
+			tools: [...extension.tools.entries()].map(([name, tool]) => [name, tool.sourceInfo] as const),
+		}));
+
+		const restoreRuntimeCallbacks = () => {
+			setExtensionRuntimeEventBus(runtime, previousEventBus);
+			runtime.registerProvider = previousRegisterProvider;
+			runtime.unregisterProvider = previousUnregisterProvider;
+		};
+		const restorePreloaded = () => {
+			restoreRuntimeCallbacks();
+			runtime.pendingProviderRegistrations.length = previousPendingProviderCount;
+			runtime.flagValues.clear();
+			for (const [key, value] of previousFlagValues) runtime.flagValues.set(key, value);
+			if (previousExplicitFlagNames) runtime.explicitFlagNames = new Set(previousExplicitFlagNames);
+			else delete runtime.explicitFlagNames;
+			if (previousFlagOwners) runtime.flagOwners = new Map(previousFlagOwners);
+			else delete runtime.flagOwners;
+			if (previousFlagOwnerOrigins) runtime.flagOwnerOrigins = new Map(previousFlagOwnerOrigins);
+			else delete runtime.flagOwnerOrigins;
+			runtime.canRegisterResource = previousCanRegisterResource;
+			for (const snapshot of previousSourceInfos) {
+				snapshot.extension.sourceInfo = snapshot.sourceInfo;
+				for (const [name, sourceInfo] of snapshot.commands) {
+					const command = snapshot.extension.commands.get(name);
+					if (command) command.sourceInfo = sourceInfo;
+				}
+				for (const [name, sourceInfo] of snapshot.tools) {
+					const tool = snapshot.extension.tools.get(name);
+					if (tool) tool.sourceInfo = sourceInfo;
+				}
+			}
+		};
+
+		// Stage provider registrations made during newcomer factory execution so a pre-commit abort never mutates the
+		// live ModelRuntime; commit publishes them transactionally.
+		const unregisteredProviders = new Set<string>();
+		runtime.registerProvider = ((
+			nameOrProvider: Provider | string,
+			configOrPath?: ProviderConfig | string,
+			extensionPath?: string,
+		) => {
+			if (typeof nameOrProvider === "string") {
+				unregisteredProviders.delete(nameOrProvider);
+				runtime.pendingProviderRegistrations.push({
+					name: nameOrProvider,
+					config: configOrPath as ProviderConfig,
+					extensionPath: extensionPath ?? "",
+				});
+			} else {
+				unregisteredProviders.delete(nameOrProvider.id);
+				runtime.pendingProviderRegistrations.push({
+					provider: nameOrProvider,
+					extensionPath: typeof configOrPath === "string" ? configOrPath : (extensionPath ?? ""),
+				});
+			}
+		}) as typeof runtime.registerProvider;
+		runtime.unregisterProvider = (name) => {
+			unregisteredProviders.add(name);
+			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter(
+				(entry) => ("provider" in entry ? entry.provider.id : entry.name) !== name,
+			);
+		};
+
+		const eventBusTransaction = createStagedEventBus(previousEventBus);
+		const candidate = this.createCandidate(settingsManager, eventBusTransaction.bus);
+		sessionLifecycleScopes.set(candidate, lifecycleScopeForOwner(this));
+		try {
+			await trackSessionWork(runtime, () =>
+				sessionLifecycleCreation.run({ scope: lifecycleScopeForOwner(this), claimed: true }, async () => {
+					await reloadDefaultResourceLoaderWithPreloaded(candidate, preloadedExtensions, {
+						useLoadedSettings: true,
+					});
+					candidate.loadOptions = undefined;
+					lifecycleScopeForOwner(candidate.getExtensions().runtime);
+				}),
+			);
+		} catch (error) {
+			restorePreloaded();
+			throw error;
+		}
+		// Keep the shared live runtime pointing at the live bus and live provider callbacks; staged subscriptions and
+		// provider registrations commit atomically below.
+		restoreRuntimeCallbacks();
+
+		let activeEventBusCommit: ReturnType<typeof eventBusTransaction.prepareCommit> | undefined;
+		let committed = false;
+		const rollback = () => {
+			if (committed) return;
+			activeEventBusCommit?.rollback();
+			activeEventBusCommit = undefined;
+			restorePreloaded();
+		};
+		const prepareCommit = () => {
+			const eventBusCommit = eventBusTransaction.prepareCommit();
+			activeEventBusCommit = eventBusCommit;
+			let settled = false;
+			return {
+				commit: () => {
+					if (settled) return;
+					settled = true;
+					committed = true;
+					activeEventBusCommit = undefined;
+					eventBusCommit.commit();
+					this.loadOptions = undefined;
+					this.publishCandidate(candidate);
+				},
+				rollback: () => {
+					if (settled) return;
+					settled = true;
+					activeEventBusCommit = undefined;
+					eventBusCommit.rollback();
+					restorePreloaded();
+				},
+			};
+		};
+		return {
+			loader: candidate,
+			activate: (liveSettingsManager) => candidate.replaceSettingsManager(liveSettingsManager),
+			prepareCommit,
+			commit: () => prepareCommit().commit(),
+			rollback,
+			unregisteredProviders,
+		};
+	}
+
 	async prepareReload(
 		settingsManager: SettingsManager,
 		options?: ResourceLoaderReloadOptions,
@@ -456,6 +643,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.lastPromptPaths = candidate.lastPromptPaths;
 		this.lastThemePaths = candidate.lastThemePaths;
 		this.loaded = candidate.loaded;
+		this.deferredInitialLoad = candidate.deferredInitialLoad;
+		this.deferredInitialSettings = candidate.deferredInitialSettings;
 	}
 
 	private touchInternalFieldsForSplit(): void {
@@ -473,6 +662,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		void this.extensionPromptSourceInfos;
 		void this.extensionThemeSourceInfos;
 		void this.loaded;
+		void this.deferredInitialLoad;
+		void this.deferredInitialSettings;
 	}
 }
 

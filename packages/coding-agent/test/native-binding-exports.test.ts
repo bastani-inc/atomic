@@ -44,6 +44,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"holdProcessDescendants",
 	"invalidateFsScanCache",
 	"killSupervisedProcessTrees",
+	"nativeVersion",
 	"pendingStdinInput",
 	"processCreationTime",
 	"removeWindowsFileOlderThan",

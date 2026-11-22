@@ -68,6 +68,8 @@ const STILL_WRITING_MS = 1_500;
 
 /** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
 const LIVE_HOLDER_OBSERVATION_MS = 300;
+/** Far above taking a free lock (milliseconds), which a holder that is gone leaves it as. */
+const REUSED_PID_TAKEOVER_MS = 10_000;
 
 /** Windows releases a dead broker's inherited log handle a moment after the process exits. */
 const CLEANUP_RETRIES = { maxRetries: 20, retryDelay: 50 } as const;
@@ -833,5 +835,25 @@ describe("socket replacement lock (#3505)", () => {
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
 		release();
 		assert.equal(fileExistsSync(path), false);
+	});
+
+	// macOS has no start of a process another can read without starting a process, so a holder there is judged by its
+	// pid alone, as before.
+	const startReadable = process.platform === "darwin" ? test.skip : test;
+	startReadable("a holder whose pid was given to a later process is taken over, not waited for", async () => {
+		const path = lockPath();
+		// The broker that took this generation died holding it, and its pid now names a live process that started later:
+		// this one, whose start is not the one recorded. Windows gives the pid of an exited process to another within
+		// seconds.
+		const generation = `${path}.gen1`;
+		makeDirectorySync(generation);
+		writeTextSync(join(generation, "owner"), `${process.pid}\n1\n${hostIdentity()}\n`);
+
+		const release = await Promise.race([
+			acquireSocketReplacementLock(path),
+			sleep(REUSED_PID_TAKEOVER_MS).then(() => undefined),
+		]);
+		assert.ok(release !== undefined, "a broker starting now waits for a holder that is gone");
+		release();
 	});
 });
