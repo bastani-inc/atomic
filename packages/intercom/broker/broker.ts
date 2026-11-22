@@ -233,6 +233,16 @@ async function acquireSocketLockWithin(budgetMs: number): Promise<SocketReplacem
   ]);
 }
 
+/** A directory's device, inode and creation time, or undefined when it is gone: a directory created again differs. */
+function directoryIdentity(path: string): string | undefined {
+  try {
+    const stats = statSync(path, { bigint: true });
+    return stats.isDirectory() ? `${stats.dev}:${stats.ino}:${stats.birthtimeNs}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
   process.exit(0);
@@ -376,31 +386,43 @@ class IntercomBroker {
   private boundSocketInode: number | undefined;
   private lastConnectionAt = performance.now();
   private deliveredMessageCache: DeliveredMessageCache | undefined;
+  /** The Intercom directory this broker created as it started (`directoryIdentity`): its state goes there only. */
+  private readonly intercomDirectory: string | undefined;
   /**
    * #4727: the durable delivered-message authority is opened when the first session registers, before that session can
    * send, so a broker that idles out having served no session leaves no durable state in the agent directory. A broker
    * that does serve one reads what its predecessors recorded, so a retried send is still deduplicated across restarts.
    */
   private openDeliveredMessages(): DeliveredMessageCache {
+    if (this.deliveredMessageCache !== undefined) return this.deliveredMessageCache;
+    // Kept in memory once the directory this broker created is gone: it never creates a removed directory again.
+    const durable = this.holdsIntercomDirectory();
     // #4751: what waits for away sessions is kept with the same lifetime as the delivered-message authority.
-    if (this.deliveredMessageCache === undefined) {
-      try {
-        // #4829: live asks are written to it too, with their peers' return addresses, so they outlive this broker.
-        this.pendingQuestions.useAwayStore(
-          new AwayAsks(getBrokerAwayAsksPath()),
-          (sessionId) =>
-            this.sessions.get(sessionId)?.registrationReturnAddress ?? this.sessionIdReclaim.retiredReturnAddress(sessionId),
-        );
-      } catch (error) {
-        console.error(`Intercom broker keeps away asks in memory only: ${error instanceof Error ? error.message : String(error)}`);
-      }
+    try {
+      // #4829: live asks are written to it too, with their peers' return addresses, so they outlive this broker.
+      this.pendingQuestions.useAwayStore(
+        new AwayAsks(durable ? getBrokerAwayAsksPath() : undefined),
+        (sessionId) =>
+          this.sessions.get(sessionId)?.registrationReturnAddress ?? this.sessionIdReclaim.retiredReturnAddress(sessionId),
+      );
+    } catch (error) {
+      console.error(`Intercom broker keeps away asks in memory only: ${error instanceof Error ? error.message : String(error)}`);
     }
-    this.deliveredMessageCache ??= new DeliveredMessageCache(
+    this.deliveredMessageCache = new DeliveredMessageCache(
       DELIVERED_MESSAGE_TTL_MS,
       DELIVERED_MESSAGE_MAX_ENTRIES,
-      getBrokerDeliveredMessagesPath(),
+      durable ? getBrokerDeliveredMessagesPath() : undefined,
     );
     return this.deliveredMessageCache;
+  }
+
+  /**
+   * Whether the Intercom directory is still the one this broker created as it started. Once it was removed (the agent
+   * directory was deleted while this broker ran), or created again by the next broker a live session started, this
+   * broker writes nothing there: it never creates the directory again, and never writes into another broker's.
+   */
+  private holdsIntercomDirectory(): boolean {
+    return this.intercomDirectory !== undefined && directoryIdentity(INTERCOM_DIR) === this.intercomDirectory;
   }
 
   private get deliveredMessages(): DeliveredMessageCache {
@@ -485,6 +507,7 @@ class IntercomBroker {
     resolveSessionAliasesWith(this.sessions, (sessionId) => this.multiNode?.localAliasTarget(sessionId));
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
+    this.intercomDirectory = directoryIdentity(INTERCOM_DIR);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
     // #5095: a reply that never reached its asker after its recipient ended fails the ask then, once.
@@ -2377,6 +2400,8 @@ class IntercomBroker {
     let store: EndedChildQueueStore | undefined;
     if (this.sharedStorageSetting === undefined) {
       const { openLocalEndedChildQueueStore } = await loadEndedChildQueueStore();
+      // Checked at once before the store creates its file: the directory may have gone while its code loaded.
+      if (!this.holdsIntercomDirectory()) throw new Error("its Intercom directory was removed");
       store = await openLocalEndedChildQueueStore(getBrokerEndedChildQueuePath(), this.instanceId, retire, continuity);
     } else {
       await this.multiNodeFirstAttempt;
@@ -2385,10 +2410,11 @@ class IntercomBroker {
       if (router === undefined || open === undefined) return undefined;
       store = await open({ home: router.durableHome, holder: router.brokerId, retire, ...continuity });
     }
-    if (retire) rmSync(marker, { force: true });
+    if (retire && this.holdsIntercomDirectory()) rmSync(marker, { force: true });
     // This broker holds the store now: recorded at once, without the store's write lock, so the next broker can tell it
     // replaced this one (a write to the store can wait on another process's lock, or fail).
     try {
+      if (!this.holdsIntercomDirectory()) throw new Error("its Intercom directory was removed");
       writeFileSync(this.endedQueueHolderRecord(), JSON.stringify({ storeId: store.id, pid: String(process.pid) }), {
         mode: 0o600,
       });
@@ -2439,7 +2465,7 @@ class IntercomBroker {
   }
 
   private recordCleanExit(): void {
-    if (!this.endedQueue.durable) return;
+    if (!this.endedQueue.durable || !this.holdsIntercomDirectory()) return;
     try {
       writeFileSync(
         this.endedQueueCleanExitMarker(),
@@ -2462,6 +2488,8 @@ class IntercomBroker {
    * told what an earlier broker's store kept was lost; the next broker that opens the store drops it.
    */
   private retireEndedQueueStore(): void {
+    // A directory removed while this broker ran held nothing to retire, and one created since is another broker's.
+    if (!this.holdsIntercomDirectory()) return;
     try {
       writeFileSync(this.endedQueueRetiredMarker(), "retired\n", { mode: 0o600 });
     } catch (error) {
@@ -3286,6 +3314,9 @@ class IntercomBroker {
       this.recordCleanExit();
       process.exit(0);
     }
+    // A broker whose Intercom directory was removed, or created again by a later broker, leaves it alone: it takes no
+    // lock there, and process.exit closes its socket's fd without unlinking the path.
+    if (!this.holdsIntercomDirectory()) process.exit(0);
     // Node unlinks a Unix socket path on server.close() even after a successor rebound that path. The close happens
     // only under the socket lock every starting broker holds until it listens, and only while the pid file and the
     // socket inode are still this broker's (#5040); otherwise process.exit closes the fd without unlinking the path.
