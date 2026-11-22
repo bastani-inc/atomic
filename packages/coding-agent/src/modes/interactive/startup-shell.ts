@@ -17,7 +17,7 @@
  */
 import {
 	isKeyRelease,
-	type ProcessTerminal,
+	ProcessTerminal,
 	Spacer,
 	setKeybindings,
 	Text,
@@ -275,7 +275,8 @@ class StartupShell {
 
 	/**
 	 * Output written before the session's interface is ready belongs on the screen the user sees: the first console
-	 * message, error or uncaught failure ends the early editor before it is written. A signal that ends the process
+	 * message, error, write to standard error or to standard output (other than the terminal's own output) or uncaught
+	 * failure ends the early editor before it is written. A signal that ends the process
 	 * (SIGINT, SIGTERM, SIGHUP from outside) also ends it first, so the terminal is given back as it was found.
 	 */
 	private guardOutput(): () => void {
@@ -299,6 +300,14 @@ class StartupShell {
 			return stderrWrite.apply(process.stderr, args);
 		}) as typeof process.stderr.write;
 		process.stderr.write = stderrWrapper;
+		const stdoutWrite = process.stdout.write;
+		const stdoutWrapper = ((...args: Parameters<typeof process.stdout.write>) => {
+			// The editor's own frames, and whatever the terminal writes for it, are what it shows; anything else is output
+			// that would be drawn on its screen and lost with it.
+			if (!ProcessTerminal.isWritingOwnOutput()) abort();
+			return stdoutWrite.apply(process.stdout, args);
+		}) as typeof process.stdout.write;
+		process.stdout.write = stdoutWrapper;
 		process.on("uncaughtExceptionMonitor", abort);
 		const signals: NodeJS.Signals[] =
 			process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -322,6 +331,7 @@ class StartupShell {
 			for (const [index, name] of consoleMethods.entries())
 				if (console[name] === wrappers[index]) console[name] = originals[index]!;
 			if (process.stderr.write === stderrWrapper) process.stderr.write = stderrWrite;
+			if (process.stdout.write === stdoutWrapper) process.stdout.write = stdoutWrite;
 			process.off("uncaughtExceptionMonitor", abort);
 		};
 	}

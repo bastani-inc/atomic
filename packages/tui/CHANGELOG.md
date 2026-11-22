@@ -8,6 +8,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 - `slashCommandHint(text, route)` and `commandHintAction(command, route)` take an optional route: a click on the hint hands the command to the `setHintCommandHandler` handler with that route as its second argument, so the handler can run it where the hint was drawn. A renderer from an earlier version draws a routed hint as text.
 - `Editor.setTextAsTyped(text)` puts text in the prompt as `setText` does and starts the completion lookup that typing its last character would start: at once, or when the editor gets a provider if the prompt still holds that text and cursor ([#6297](https://github.com/bastani-inc/atomic/pull/6297))
+- `ProcessTerminal.isWritingOwnOutput()` tells whether a process terminal is writing its own output to standard output right now (a frame, a query, a mode it sets), so a wrapper of `process.stdout.write` can tell that output apart from what other code writes ([#6344](https://github.com/bastani-inc/atomic/pull/6344))
 
 ### Fixed
 
