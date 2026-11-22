@@ -114,7 +114,7 @@
 		"check": "biome check --error-on-warnings . && npm run typecheck",
 		"format": "biome check --write .",
 		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --inline=typebox",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256",
 		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\"",
 		"build:catalog": "npm run generate-models && npm run build:offline"
 	},

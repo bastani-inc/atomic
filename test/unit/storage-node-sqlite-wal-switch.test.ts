@@ -125,7 +125,8 @@ function sqliteFailure(fields: Record<string, unknown>): Error {
 function failWalSwitches(failures: number, errcode = SQLITE_IOERR_TRUNCATE): () => number {
 	let attempts = 0;
 	const failed = (sql: string) => {
-		if (!sql.startsWith("PRAGMA journal_mode")) return false;
+		// The switch, alone or in the script that also sets the connection's other PRAGMAs.
+		if (!sql.includes("PRAGMA journal_mode")) return false;
 		attempts += 1;
 		return attempts <= failures;
 	};

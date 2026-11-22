@@ -3,13 +3,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
-import { schemaBatch } from "../../packages/coding-agent/src/core/storage/migrations.js";
 import {
 	openNodeSqliteDatabase,
 	wrapNodeSqliteDatabase,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { ConnectionRequest } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { statementBatch } from "../../packages/coding-agent/src/core/storage/statement-sequence.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { interceptConnectionRequests, requestSql } from "../helpers/sqlite-connection-requests.js";
 
@@ -115,7 +115,7 @@ test("a batch's writes stop at the first that fails, and nothing after it is wri
 	const { database } = await databaseFile();
 	let failure: unknown;
 	await database.transaction(async (tx) => {
-		await schemaBatch(
+		await statementBatch(
 			tx,
 			["CREATE TABLE first (x INTEGER)", "CREATE TABLE first (x INTEGER)", "CREATE TABLE after_failure (x INTEGER)"],
 			[],
@@ -138,7 +138,7 @@ test("a batch that fails reports its first failing write, though a read sent beh
 	await database.exec("CREATE TABLE present (x INTEGER)");
 	await assert.rejects(
 		database.transaction((tx) =>
-			schemaBatch(
+			statementBatch(
 				tx,
 				["CREATE TABLE present (x INTEGER)"],
 				[() => tx.get("SELECT x FROM missing"), () => tx.get("SELECT 1 AS one")],
@@ -154,7 +154,7 @@ test("a batch's reads see what its writes did, and wait for the thread once with
 	let waits = 0;
 	const [count, columns] = await database.transaction(async (tx) => {
 		requests.reset();
-		const values = await schemaBatch(
+		const values = await statementBatch(
 			tx,
 			[
 				"CREATE TABLE items (value TEXT); CREATE TABLE other (x INTEGER)",

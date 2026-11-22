@@ -8,13 +8,10 @@ import type {
 } from "../storage/database.js";
 import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
-import {
-	applyStorageMigrations,
-	type SchemaWrite,
-	schemaBatch,
-	withShortSchemaLockWaits,
-} from "../storage/migrations.js";
+import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
+import { statementBatch } from "../storage/statement-batches.js";
+import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -1035,7 +1032,7 @@ function blobChunkWrites(
 	t: SnapshotIndexTables,
 	dialect: StorageDialect,
 	[column, trigger]: readonly [boolean, boolean],
-): SchemaWrite[] {
+): BatchWrite[] {
 	return [
 		!column && `ALTER TABLE ${t.blobs} ADD COLUMN chunks ${dialect.types.int} NOT NULL DEFAULT 0`,
 		!trigger && dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs, true),
@@ -1052,12 +1049,12 @@ async function addBlobChunks(
 	t: SnapshotIndexTables,
 	dialect: StorageDialect,
 ): Promise<void> {
-	const found = await schemaBatch(
+	const found = await statementBatch(
 		transaction,
 		[chunkTableDefinition(t.blobChunks, dialect)],
 		blobChunkProbes(transaction, t, dialect),
 	);
-	await schemaBatch(transaction, blobChunkWrites(t, dialect, found), []);
+	await statementBatch(transaction, blobChunkWrites(t, dialect, found), []);
 }
 
 /**
@@ -1074,14 +1071,14 @@ async function createSnapshotIndexTables(
 	const strict = dialect.tableOptions;
 	const keyed = dialect.withoutRowidTableOptions;
 	const ageColumn = dialect.columnExists(t.blobs, "created_at");
-	const [age] = await schemaBatch(
+	const [age] = await statementBatch(
 		transaction,
 		[
 			`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash ${text} PRIMARY KEY, bytes ${int} NOT NULL, data ${blob} NOT NULL, created_at ${int} NOT NULL DEFAULT (${dialect.nowSeconds}))${strict}`,
 		],
 		[() => transaction.get<SqliteRow & { default_value: SqliteValue }>(ageColumn.sql, ...ageColumn.params)],
 	);
-	const [column, trigger, ...refColumns] = await schemaBatch(
+	const [column, trigger, ...refColumns] = await statementBatch(
 		transaction,
 		[
 			// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
@@ -1107,7 +1104,7 @@ async function createSnapshotIndexTables(
 		],
 		[...blobChunkProbes(transaction, t, dialect), ...sessionRefColumnProbes(transaction, t, dialect)],
 	);
-	await schemaBatch(
+	await statementBatch(
 		transaction,
 		[
 			...blobChunkWrites(t, dialect, [column, trigger]),
@@ -1127,7 +1124,7 @@ function blobMaintenanceIndexes(t: SnapshotIndexTables): string[] {
 }
 
 async function addBlobMaintenanceIndexes(transaction: SqliteExecutor, t: SnapshotIndexTables): Promise<void> {
-	await schemaBatch(transaction, blobMaintenanceIndexes(t), []);
+	await statementBatch(transaction, blobMaintenanceIndexes(t), []);
 }
 
 /** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
@@ -1151,7 +1148,7 @@ function sessionRefColumnWrites(
 	prefix: string,
 	dialect: StorageDialect,
 	found: readonly boolean[],
-): SchemaWrite[] {
+): BatchWrite[] {
 	const { int, text } = dialect.types;
 	const types: Record<(typeof SESSION_REF_COLUMNS)[number], string> = {
 		prev_seq: int,
@@ -1181,8 +1178,8 @@ async function addSessionRefColumns(
 	prefix: string,
 	dialect: StorageDialect,
 ): Promise<void> {
-	const found = await schemaBatch(transaction, [], sessionRefColumnProbes(transaction, t, dialect));
-	await schemaBatch(transaction, sessionRefColumnWrites(t, prefix, dialect, found), []);
+	const found = await statementBatch(transaction, [], sessionRefColumnProbes(transaction, t, dialect));
+	await statementBatch(transaction, sessionRefColumnWrites(t, prefix, dialect, found), []);
 }
 
 /** Replaces a source's progress row: `sources` has no triggers or references, so this upsert is what a REPLACE did. */
@@ -1205,7 +1202,7 @@ async function installSource(
 			source.triggers.map((trigger) => trigger.name),
 		));
 	const withholds = withholdsVersion(dialect, source);
-	const [installed] = await schemaBatch(
+	const [installed] = await statementBatch(
 		transaction,
 		[
 			...(detached
@@ -1239,7 +1236,7 @@ async function installSource(
 			: [],
 	);
 	if (source.version === undefined || !withholds) return;
-	await schemaBatch(
+	await statementBatch(
 		transaction,
 		[
 			Number(installed?.watermark) === 0
@@ -1317,7 +1314,7 @@ async function readSourceStates(
 					params: [...signatures, ...markers].flatMap((check) => [check.trigger, check.text]).concat(names),
 				};
 	// Read together: the progress rows do not depend on the objects.
-	const [objectRows, progressRows] = await schemaBatch(
+	const [objectRows, progressRows] = await statementBatch(
 		executor,
 		[],
 		[
@@ -1859,7 +1856,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			// before 0.9.88 would install again its way under it (#5558).
 			const publish = withholds && state.installed;
 			if (from >= progress.watermark) {
-				if (publish) await schemaBatch(transaction, [publishVersion(t, source)], []);
+				if (publish) await statementBatch(transaction, [publishVersion(t, source)], []);
 				return true;
 			}
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
@@ -1899,7 +1896,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
 			const done = upper >= progress.watermark;
 			// Both progress rows reach the watermark: builds 0.9.88 and 0.9.89 may trust the index now (#5558).
-			if (done && publish) await schemaBatch(transaction, [publishVersion(t, source)], []);
+			if (done && publish) await statementBatch(transaction, [publishVersion(t, source)], []);
 			return done;
 		});
 	}
