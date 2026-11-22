@@ -220,6 +220,36 @@ test("a turn that ends while the capture queued for earlier turns runs gets a ca
 	assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:c.txt`), "third");
 });
 
+test("a turn that commits and ends while a capture runs records a snapshot of the commit it made", async () => {
+	const { clone, sessions } = await checkoutWithSessions(3);
+	const [first, second, third] = sessions;
+	const release = Promise.withResolvers<void>();
+	captures.held = { roots: new Set([clone]), until: release.promise };
+	sandbox.write(join(clone, "a.txt"), "first\n");
+	const turns: Promise<void>[] = [first!.recorder.recordTurn(wrote(join(clone, "a.txt")))];
+	let committed = "";
+	try {
+		await vi.waitFor(() => assert.equal(captures.calls, 1), { interval: 5 });
+		// One turn ends and queues a capture, which it looked the checkout up for before the next turn's commit.
+		sandbox.write(join(clone, "b.txt"), "second\n");
+		turns.push(second!.recorder.recordTurn(wrote(join(clone, "b.txt"))));
+		await vi.waitFor(() => assert.equal(captures.entered, 2), { interval: 5 });
+		// The next commits its work, as `git commit` through bash does, and ends while the first capture still runs.
+		sandbox.write(join(clone, "c.txt"), "third\n");
+		committed = (await sandbox.commitAll(clone, "third's work")).trim();
+		turns.push(third!.recorder.recordTurn(wrote(join(clone, "c.txt"))));
+		await vi.waitFor(() => assert.equal(captures.entered, 3), { interval: 5 });
+	} finally {
+		release.resolve();
+		await Promise.all(turns);
+	}
+	for (const session of [second, third]) {
+		const snapshot = session!.manager.getLatestWorktreeSnapshots().get(clone);
+		assert.ok(snapshot);
+		assert.equal(snapshot.head, committed, "the snapshot names the commit, so a restore keeps it");
+	}
+});
+
 test("a capture that runs far longer than captures do no longer holds the turns queued behind it", async () => {
 	const { clone, sessions } = await checkoutWithSessions(2);
 	const [first, second] = sessions;

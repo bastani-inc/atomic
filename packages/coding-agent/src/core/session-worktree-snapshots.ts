@@ -237,9 +237,19 @@ export class SessionWorktreeSnapshotRecorder {
 						const result =
 							located === undefined
 								? await captureWorktreeSnapshot(root, { settings, previous, blobs })
-								: await sharedCheckoutCapture(blobs, root, settings, wroteBy, previous, (startedAt) =>
-										// Every turn this capture serves wrote before it started; a scan that started later holds those writes.
-										captureLocatedCheckout(checkout, { settings, previous, blobs }, startedAt),
+								: await sharedCheckoutCapture(
+										blobs,
+										root,
+										settings,
+										wroteBy,
+										previous,
+										(startedAt, lookUpAgain) =>
+											// Every turn this capture serves wrote before it started; a scan that started later holds those writes.
+											// One queued behind another starts after this lookup and after other turns' writes, a commit among
+											// them, so it looks the checkout up again.
+											lookUpAgain
+												? captureCheckoutAgain(root, { settings, previous, blobs }, startedAt)
+												: captureLocatedCheckout(checkout, { settings, previous, blobs }, startedAt),
 									);
 						located = undefined;
 						captureMs = Math.floor(performance.now() - started);
@@ -365,16 +375,27 @@ function capturesOf<T>(maps: WeakMap<SnapshotBlobStore, Map<string, T>>, blobs: 
 	return map;
 }
 
+/** {@link captureLocatedCheckout} of the checkout at `root` as a lookup finds it now: its HEAD may have moved since. */
+async function captureCheckoutAgain(
+	root: string,
+	options: Parameters<typeof captureLocatedCheckout>[1],
+	wroteBy: number,
+): Promise<WorktreeSnapshotCapture> {
+	const checkout = await locateCheckout(root);
+	if (checkout instanceof Error) return { status: "unavailable", reason: checkout };
+	return captureLocatedCheckout(checkout, options, wroteBy);
+}
+
 /**
  * Captures the checkout at `root` from the session's own earlier snapshot of it, `previous`, for a turn whose writes
  * ended at `wroteBy`, sharing the work with every session of this process that captures it into the same blob table
  * under the same settings from the same snapshot, as a parent and its fresh subagents do. A session's first capture of a
  * checkout records it from its commit, never from another session's snapshot, whose history is not this session's. A
  * capture that started after the turn's writes serves the turn as it is. When the one running started before, the turn
- * waits for the next one, which starts when the running one ends and serves every turn that ends before then: captures
- * of one checkout that run side by side slow each other down, on Windows several times over. A turn waits for at most
- * the capture running when it ended and one more; a running capture that takes far longer than captures do
- * ({@link queuedCaptureWaitMs}) no longer holds the next one.
+ * waits for the next one, which starts when the running one ends, looks the checkout up again and serves every turn
+ * that ends before then: captures of one checkout that run side by side slow each other down, on Windows several times
+ * over. A turn waits for at most the capture running when it ended and one more; a running capture that takes far
+ * longer than captures do ({@link queuedCaptureWaitMs}) no longer holds the next one.
  */
 async function sharedCheckoutCapture(
 	blobs: SnapshotBlobStore,
@@ -382,15 +403,15 @@ async function sharedCheckoutCapture(
 	settings: WorktreeSnapshotSettings,
 	wroteBy: number,
 	previous: WorktreeSnapshot | undefined,
-	capture: (startedAt: number) => Promise<WorktreeSnapshotCapture>,
+	capture: (startedAt: number, lookUpAgain: boolean) => Promise<WorktreeSnapshotCapture>,
 ): Promise<WorktreeSnapshotCapture> {
 	const running = capturesOf(runningCaptures, blobs);
 	const queued = capturesOf(queuedCaptures, blobs);
 	const key = JSON.stringify([resolve(root), settings, previous?.id ?? null]);
-	const start = (): CheckoutCapture => {
+	const start = (lookUpAgain: boolean): CheckoutCapture => {
 		const startedAt = nextCaptureTick();
 		const startedMs = performance.now();
-		const current: CheckoutCapture = { startedAt, startedMs, result: capture(startedAt) };
+		const current: CheckoutCapture = { startedAt, startedMs, result: capture(startedAt, lookUpAgain) };
 		running.set(key, current);
 		const forget = () => {
 			if (running.get(key) === current) running.delete(key);
@@ -410,7 +431,7 @@ async function sharedCheckoutCapture(
 				started = true;
 				clearTimeout(wait);
 				if (queued.get(key) === next) queued.delete(key);
-				start().result.then(resolveNext, rejectNext);
+				start(true).result.then(resolveNext, rejectNext);
 			};
 			const wait = setTimeout(begin, Math.max(0, ahead.startedMs + queuedCaptureWaitMs() - performance.now()));
 			wait.unref?.();
@@ -422,7 +443,7 @@ async function sharedCheckoutCapture(
 	let failed: Promise<WorktreeSnapshotCapture> | undefined;
 	for (;;) {
 		const flight = running.get(key);
-		if (flight === undefined || flight.result === failed) return await start().result;
+		if (flight === undefined || flight.result === failed) return await start(false).result;
 		// A capture that started after the turn's writes serves it; one that started before does not, and the turn
 		// waits for the next one.
 		const shared = flight.startedAt < wroteBy ? (queued.get(key) ?? queue(flight)) : flight.result;
