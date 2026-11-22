@@ -1,6 +1,7 @@
 import { Type } from "@bastani/atomic-ai";
 import { Text } from "@bastani/atomic-tui";
 import { APP_NAME, getEnvValue } from "../../../config.js";
+import { renderDormantIntercomWakeMessage } from "../../../modes/interactive/components/dormant-builtin-messages.js";
 import type { SessionEntry } from "../../session-manager.ts";
 import type { WaitPolicy } from "../../tasks/contracts.js";
 import type { LazyBuiltinController, LazyBuiltinSpec } from "../lazy-builtin.js";
@@ -90,6 +91,8 @@ function projectTrusted(ctx: ExtensionContext): boolean {
 		return false;
 	}
 }
+
+const ENDED_CHILD_WAKE_MESSAGE_TYPE = "intercom_subagent_wake";
 
 function hasIntercomHistory(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
@@ -783,6 +786,12 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			execute: (...args) => controller.executeTool("intercom", args),
 			renderCall: (...args) => renderCallFallback(controller, "intercom", args),
 			renderResult: (...args) => renderResultFallback(controller, "intercom", args),
+		});
+
+		pi.registerMessageRenderer(ENDED_CHILD_WAKE_MESSAGE_TYPE, (message, options, theme) => {
+			const loaded = controller.active?.captured.messageRenderers.get(ENDED_CHILD_WAKE_MESSAGE_TYPE);
+			if (loaded) return loaded(message, options, theme);
+			return renderDormantIntercomWakeMessage(message, options, theme);
 		});
 
 		pi.registerMessageRenderer("intercom_message", (message, options, theme) => {

@@ -47,7 +47,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { isExpandable } from "./interactive-mode-helpers.ts";
-import { showRestartExtensionErrors } from "./interactive-session-runtime.ts";
+import { showRestartExtensionErrors, watchSessionRenderers } from "./interactive-session-runtime.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleReloadCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -99,6 +99,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		this.setupAutocompleteProvider();
 		const runner = this.session.extensionRunner;
 		this.setupExtensionShortcuts(runner);
+		watchSessionRenderers(this, this.session, runner);
 		this.rebuildChatFromMessages({ resetStartupDisclosure: true });
 		dismissReloadBox(this.editor as Component);
 		const savedImplicitProjectTrust = await this.maybeSaveImplicitProjectTrustAfterReload();
