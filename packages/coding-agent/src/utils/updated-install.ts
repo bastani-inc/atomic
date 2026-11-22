@@ -140,11 +140,48 @@ export function updatedInstallMessage(
 }
 
 /**
+ * What the restart error of an import guarded at its call site carries (the build appends that guard to each file of
+ * the package that loads a module on demand: `scripts/in-place-update-gate.mjs`): the application, the release the
+ * update installed, and the feature it could name there.
+ */
+interface CallSiteRestart {
+	readonly application: string;
+	readonly updatedTo: string;
+	readonly feature: string;
+}
+
+const CALL_SITE_RESTART = Symbol.for("atomic.on-demand-restart.v1");
+
+/** What `error` carries as a call-site guard's restart error; undefined for any other error. */
+function callSiteRestart(error: unknown): CallSiteRestart | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const restart = (error as { [CALL_SITE_RESTART]?: Partial<CallSiteRestart> })[CALL_SITE_RESTART];
+	return typeof restart?.application === "string" &&
+		typeof restart.updatedTo === "string" &&
+		typeof restart.feature === "string"
+		? { application: restart.application, updatedTo: restart.updatedTo, feature: restart.feature }
+		: undefined;
+}
+
+/**
  * The {@link UpdatedInstallError} a failed on-demand load of `feature` becomes when it failed because an update replaced
- * the installation under this process; undefined when it failed for any other reason.
+ * the installation under this process; undefined when it failed for any other reason. A call-site guard inside the
+ * load already said so; the message then names `feature`, which the guard could only name by the module it loaded.
  */
 export async function updatedInstallError(error: unknown, feature: string): Promise<UpdatedInstallError | undefined> {
 	if (error instanceof UpdatedInstallError) return error;
+	const restart = callSiteRestart(error);
+	if (restart !== undefined) {
+		const cause = (error as Error).cause ?? error;
+		const failure = (cause as ModuleLoadError).message;
+		// The runtime's own error follows, as for a module that failed to load here.
+		const text = `${restart.application} was updated to ${restart.updatedTo} while this session was running; restart it to keep using ${feature}.`;
+		return new UpdatedInstallError(
+			typeof failure === "string" && failure !== "" ? `${text}\n${failure}` : text,
+			feature,
+			cause,
+		);
+	}
 	if (!isInstallationLoadFailure(error)) return undefined;
 	const message = updatedInstallMessage(error, feature, await detectInstallChangeAsync());
 	return message === undefined ? undefined : new UpdatedInstallError(message, feature, error);
