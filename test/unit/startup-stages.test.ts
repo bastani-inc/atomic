@@ -93,7 +93,10 @@ describe("startup stages", () => {
 		() => {
 			const natural = runChild("natural");
 			const staged = runChild("staged");
-			assert.ok(natural.order.length > 100, "the session's modules ran");
+			assert.ok(
+				natural.order.length >= 20 && natural.order.some((url) => url.endsWith("/dist/main.js")),
+				"the session's modules ran",
+			);
 			assert.deepEqual(staged.order, natural.order);
 			assert.equal(new Set(staged.order).size, staged.order.length, "no module ran twice");
 			// Loading the entry modules alone gives a timer no turn until every module has run; the stages do.

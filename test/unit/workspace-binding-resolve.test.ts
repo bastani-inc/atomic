@@ -1713,6 +1713,44 @@ describe("interrupted worktree additions (#3109)", () => {
 		},
 	);
 
+	test.skipIf(process.platform === "win32")(
+		"a bind whose adder cannot be recorded fails before git adds anything, however fast that git is (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "unrecordable-late");
+			writeFileSync(join(realpathSync(join(repo, ".git")), "atomic-worktree-adders"), "in the way\n");
+			const path = autoWorktree(repo, "feat/unrecorded-late");
+			const error = await withInjectedGit(dirs.root, { FAKE_GIT_MODE: "add-outlives-stop" }, () =>
+				rejection(resolveWorkspace(workspace({ repo, branch: "feat/unrecorded-late" }))),
+			);
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "filesystem-failed");
+			assert.equal(error.fields.operation, "record the git adding");
+			assert.equal(existsSync(path), false, "git added nothing");
+			assert.doesNotMatch(git(repo, "worktree", "list", "--porcelain"), /unrecorded-late/);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a git whose adder's record cannot be written once it started is stopped, and a later bind repairs what it left (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "unwritable-record");
+			const path = autoWorktree(repo, "feat/unwritable-record");
+			// The record's directory can be made, so git starts; the record itself cannot replace a directory.
+			const record = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
+			mkdirSync(record, { recursive: true });
+			writeFileSync(join(record, "in-the-way"), "");
+			const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/unwritable-record" })));
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "filesystem-failed");
+			assert.equal(error.fields.operation, "record the git adding");
+
+			rmSync(record, { recursive: true });
+			const binding = await resolveWorkspace(workspace({ repo, branch: "feat/unwritable-record" }));
+			assert.equal(binding.worktree, realpathSync(path));
+			assert.equal(git(binding.worktree, "branch", "--show-current"), "feat/unwritable-record");
+		},
+	);
+
 	test("binds a worktree the user locked for another reason and leaves it locked (#3109)", async () => {
 		const repo = createRepository(dirs.root, "user-locked");
 		const path = join(dirs.root, "removable", "feat-user");

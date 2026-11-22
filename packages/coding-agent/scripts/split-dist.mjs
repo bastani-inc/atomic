@@ -28,8 +28,9 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build, transform } from "esbuild";
-import { compatSharedFiles, sharedFileName } from "./split-dist-names.mjs";
+import { transform } from "esbuild";
+import { rolldown } from "rolldown";
+import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } from "./split-dist-names.mjs";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(packageDir, "dist");
@@ -405,7 +406,7 @@ for (const entry of Object.keys(state.entries)) {
 	}
 }
 
-/** Each bundled entry's compiled code with its compiled source map inlined, by its path in `dist`. */
+/** Each bundled entry's compiled code and map file path, by its path in `dist`. */
 const compiledEntries = new Map();
 for (const entry of SPLIT_ENTRIES) {
 	restoreCompiled(`${entry}.js`);
@@ -421,7 +422,7 @@ for (const entry of SPLIT_ENTRIES) {
 	} else if (!existsSync(saved)) {
 		throw staleSplit(`${entry}.js`);
 	}
-	compiledEntries.set(file, inlineSourceMap(readFileSync(saved, "utf8"), `${saved}.map`));
+	compiledEntries.set(file, { code: readFileSync(saved, "utf8"), mapFile: `${saved}.map` });
 }
 
 /** `source` with the source map in `mapFile`, if there is one, inlined in place of its `sourceMappingURL` comment. */
@@ -433,101 +434,318 @@ function inlineSourceMap(source, mapFile) {
 	);
 }
 
-const result = await build({
-	absWorkingDir: packageDir,
-	entryPoints: Object.fromEntries(SPLIT_ENTRIES.map((entry) => [entry, join(dist, `${entry}.js`)])),
-	outdir: dist,
-	write: false,
-	allowOverwrite: true,
-	bundle: true,
-	splitting: true,
-	format: "esm",
+const owners = new Set(OWNER_ENTRIES.map((entry) => `${entry}.js`));
+const ownerEntryIds = OWNER_ENTRIES.map((entry) => join(dist, `${entry}.js`));
+// Keep `cli.js` (parsed by write-startup-files/stages), `rpc-entry.js` (executable shebang), and `OWNER_ENTRIES`
+// (external singletons whose code stays in their own files across releases) as direct inline entries. Every other
+// `SPLIT_ENTRIES` entry is loaded through a 1-line virtual facade (`\0entry:<entry>`) so Rolldown places the module
+// itself into its shared group and never merges shared chunks into an entry path or adds synthetic exports to it.
+const directEntryNames = new Set(["cli", "rpc-entry", ...OWNER_ENTRIES]);
+const VIRTUAL_ENTRY_PREFIX = "\0atomic-entry:";
+const VIRTUAL_COMPAT_PREFIX = "\0atomic-compat:";
+const virtualEntryTargets = new Set(SPLIT_ENTRIES.filter((entry) => !directEntryNames.has(entry)).map((entry) => `${entry}.js`));
+const entryFilesByName = Object.fromEntries(
+	SPLIT_ENTRIES.map((entry) => [
+		entry,
+		directEntryNames.has(entry) ? join(dist, `${entry}.js`) : `${VIRTUAL_ENTRY_PREFIX}${entry}`,
+	]),
+);
+const inlineEntryIds = new Set([...directEntryNames].map((entry) => join(dist, `${entry}.js`)));
+const toPosix = (value) => value.split(sep).join("/");
+const normalizeId = (id) => (id.startsWith("\0") ? id : id.split("?")[0]);
+const relFromPackage = (id) => {
+	const rel = toPosix(relative(packageDir, id));
+	const nm = rel.lastIndexOf("node_modules/");
+	return nm === -1 ? rel : rel.slice(nm);
+};
+const isInDist = (id) => id.startsWith(dist + sep);
+
+/** @type {Map<string, string>} */
+let groups = new Map();
+/** @type {Array<{ text: string, location?: { file?: string } }>} */
+const bundleWarnings = [];
+/** @type {Map<string, Set<string>>} */
+const nodeModulesExternalImports = new Map();
+/** @type {Set<string>} */
+const allBundledIds = new Set();
+/** @type {Set<string>} */
+const emittedDynamicNodeModules = new Set();
+const releasedSharedStems = new Set(
+	releasedSharedTargets
+		.map(({ path }) => new RegExp(`^${SHARED_DIRECTORY}/([^/]+)-[A-Z2-7]{8}\\.js$`).exec(path)?.[1])
+		.filter((stem) => stem !== undefined),
+);
+
+const bundle = await rolldown({
+	cwd: packageDir,
+	input: entryFilesByName,
 	platform: "node",
-	target: "node22",
-	keepNames: true,
-	// A bundled CommonJS dependency's `require` of a built-in module needs a `require` in the module scope.
-	banner: {
-		js: 'import { createRequire as __atomicCreateRequire } from "node:module";\nconst require = __atomicCreateRequire(import.meta.url);',
+	treeshake: { moduleSideEffects: true },
+	preserveEntrySignatures: "allow-extension",
+	onLog(level, log) {
+		if (log.code === "CIRCULAR_DEPENDENCY" || log.code === "INEFFECTIVE_DYNAMIC_IMPORT") return;
+		if (level === "warn") {
+			bundleWarnings.push({
+				text: log.message ?? String(log),
+				location: { file: log.id ? relFromPackage(normalizeId(log.id)) : undefined },
+			});
+		}
 	},
-	sourcemap: "linked",
-	sourcesContent: false,
-	chunkNames: `${SHARED_DIRECTORY}/[name]-[hash]`,
-	metafile: true,
-	logLevel: "warning",
 	plugins: [
 		{
 			name: "dist-module-url",
-			setup(context) {
-				// A module a compiled public entry loads is imported from its compiled file, not bundled.
-				// An owner module is imported from its own entry file, never bundled into another file.
-				const owners = new Set(OWNER_ENTRIES.map((entry) => `${entry}.js`));
-				// Every package but an inlined one stays external, its subpaths included.
-				context.onResolve({ filter: /^[^./]/ }, ({ path, kind }) =>
-					kind === "entry-point" || isAbsolute(path) || INLINED_PACKAGES.includes(packageOf(path))
-						? undefined
-						: { path, external: true },
-				);
-				context.onResolve({ filter: /^\.{1,2}\// }, ({ path, resolveDir, kind }) => {
-					if (kind === "entry-point") return undefined;
-					const target = relative(dist, join(resolveDir, path)).split(sep).join("/");
-					if (compiledModules.has(target) || owners.has(target)) return { path: `${DIST_PATH_MARK}${target}`, external: true };
-					// A module an earlier split removed is bundled from its saved copy.
-					const file = join(dist, target);
-					return !existsSync(file) && existsSync(join(COMPILED_ENTRIES, target)) ? { path: file } : undefined;
-				});
-				context.onLoad({ filter: /\.js$/ }, async ({ path }) => {
-					if (/[\\/]node_modules[\\/]undici[\\/]index\.js$/.test(path)) {
-						// undici/index.js checks `typeof __filename !== "undefined"` to decide whether to append
-						// caller frames to failed fetch errors via `appendFetchStackTrace`; in an ESM chunk
-						// `__filename` is undefined unless defined here, which otherwise strips all caller frames.
-						return {
-							contents: `'use strict';\nconst __filename = "node_modules/undici/index.js";\n${readFileSync(path, "utf8")}`,
-							loader: "js",
-							resolveDir: dirname(path),
-						};
+			buildStart() {
+				// Emit a Rolldown facade chunk for any bundled `threadModules` module (such as
+				// `utils/compile-cache-warmup-host.js`) that a recorded earlier release imports on demand from
+				// `dist/_shared/`. Keeping its code in its startup group (`p0-cli`) and emitting a facade ensures
+				// the compat file shares the exact same bundled module singleton without adding a file open at startup.
+				for (const path of threadModules) {
+					const stem = path.slice(path.lastIndexOf("/") + 1).replace(/\.js$/, "");
+					if (!releasedSharedStems.has(stem)) continue;
+					const full = join(dist, path);
+					if (existsSync(full) || existsSync(join(COMPILED_ENTRIES, path))) {
+						this.emitFile({
+							type: "chunk",
+							id: `${VIRTUAL_COMPAT_PREFIX}${path}`,
+							name: stem,
+							preserveSignature: "allow-extension",
+						});
 					}
-					if (!path.startsWith(dist + sep)) return undefined;
-					const saved = join(COMPILED_ENTRIES, relative(dist, path));
-					const entry =
-						compiledEntries.get(path) ??
-						(existsSync(path) ? undefined : inlineSourceMap(readFileSync(saved, "utf8"), `${saved}.map`));
-					const source = entry ?? readFileSync(path, "utf8");
-					if (!source.includes("import.meta")) return entry === undefined ? undefined : { contents: entry, loader: "js" };
-					// The compiled file's own map, inlined, so the transformed code still maps to its TypeScript source.
-					const withMap = entry ?? inlineSourceMap(source, `${path}.map`);
-					const options = {
-						loader: "js",
-						format: "esm",
-						target: "esnext",
-						sourcefile: path,
-						sourcemap: "inline",
-						define: { [META_URL]: META_URL_SYMBOL },
+				}
+			},
+			async resolveId(source, importer, extra) {
+				if (source.startsWith(VIRTUAL_ENTRY_PREFIX) || source.startsWith(VIRTUAL_COMPAT_PREFIX)) return source;
+				if (!importer) return null;
+				if (importer.startsWith(VIRTUAL_ENTRY_PREFIX) || importer.startsWith(VIRTUAL_COMPAT_PREFIX)) return source;
+				const cleanImporter = normalizeId(importer);
+				const recordNodeModuleExternal = (specifier) => {
+					if (/(?:^|\/)node_modules\//.test(toPosix(cleanImporter))) {
+						let set = nodeModulesExternalImports.get(cleanImporter);
+						if (!set) {
+							set = new Set();
+							nodeModulesExternalImports.set(cleanImporter, set);
+						}
+						set.add(specifier);
+					}
+				};
+				if (/^\.{1,2}\//.test(source)) {
+					if (!isInDist(cleanImporter)) {
+						if (extra.kind === "dynamic-import") {
+							const resolved = await this.resolve(source, importer, { ...extra, skipSelf: true });
+							if (resolved && !resolved.external && !emittedDynamicNodeModules.has(resolved.id)) {
+								emittedDynamicNodeModules.add(resolved.id);
+								this.emitFile({ type: "chunk", id: resolved.id, preserveSignature: "allow-extension" });
+							}
+							return resolved;
+						}
+						return null;
+					}
+					const target = toPosix(relative(dist, join(dirname(cleanImporter), source)));
+					if (compiledModules.has(target) || owners.has(target)) {
+						return { id: `${DIST_PATH_MARK}${target}`, external: true };
+					}
+					// Keep dynamic `import("./...")` calls targeting a split entry pointing at that entry's own path
+					// (e.g. `cli.js` dynamically importing `utils/startup-stages.js`, `main.js`, `startup-shell.js`,
+					// `http-dispatcher.js`, etc.) so `write-startup-files.mjs`, `write-startup-stages.mjs`, and
+					// lazy-loaded entries preserve their exact dynamic import boundary.
+					if (extra.kind === "dynamic-import" && virtualEntryTargets.has(target)) {
+						return `${VIRTUAL_ENTRY_PREFIX}${target.slice(0, -3)}`;
+					}
+					const file = join(dist, target);
+					if (!existsSync(file) && existsSync(join(COMPILED_ENTRIES, target))) return file;
+					return null;
+				}
+				if (isAbsolute(source)) return null;
+				if (isBuiltin(source)) return { id: source, external: true };
+				if (INLINED_PACKAGES.includes(packageOf(source))) {
+					if (extra.kind === "dynamic-import") {
+						const resolved = await this.resolve(source, importer, { ...extra, skipSelf: true });
+						if (resolved && !resolved.external && !emittedDynamicNodeModules.has(resolved.id)) {
+							emittedDynamicNodeModules.add(resolved.id);
+							this.emitFile({ type: "chunk", id: resolved.id, preserveSignature: "allow-extension" });
+						}
+						return resolved;
+					}
+					return null;
+				}
+				recordNodeModuleExternal(source);
+				return { id: source, external: true };
+			},
+			async load(rawId) {
+				if (rawId.startsWith(VIRTUAL_ENTRY_PREFIX)) {
+					const entry = rawId.slice(VIRTUAL_ENTRY_PREFIX.length);
+					const target = join(dist, `${entry}.js`);
+					const code = compiledEntries.get(target)?.code ?? "";
+					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
+					const spec = JSON.stringify(target);
+					return {
+						code: hasDefault
+							? `export * from ${spec};\nexport { default } from ${spec};\n`
+							: `export * from ${spec};\n`,
+						map: null,
 					};
-					// Token-aware: a mention in a comment is not a use (minifying whitespace drops every comment, which a plain
-					// transform keeps inside an object literal). Any meta property but `url` stops the build.
-					const probe = (await transform(withMap, { ...options, sourcemap: false, minifyWhitespace: true })).code;
-					if (probe.includes("import.meta")) throw new Error(`split-dist: ${relative(dist, path)} uses import.meta beyond import.meta.url`);
-					if (!probe.includes(META_URL_SYMBOL)) return entry === undefined ? undefined : { contents: entry, loader: "js" };
-					const url = relative(dist, path).split(sep).map(encodeURIComponent).join("/");
-					const transformed = await transform(withMap, {
-						...options,
-						banner: `const ${META_URL_SYMBOL} = new URL(${JSON.stringify(`${DIST_PATH_MARK}${url}`)}, import.meta.url).href;`,
-					});
-					return { contents: transformed.code, loader: "js", resolveDir: dirname(path) };
+				}
+				if (rawId.startsWith(VIRTUAL_COMPAT_PREFIX)) {
+					const path = rawId.slice(VIRTUAL_COMPAT_PREFIX.length);
+					const target = join(dist, path);
+					const code = compiledSource(path);
+					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
+					const spec = JSON.stringify(target);
+					return {
+						code: hasDefault
+							? `export * from ${spec};\nexport { default } from ${spec};\n`
+							: `export * from ${spec};\n`,
+						map: null,
+					};
+				}
+				const id = normalizeId(rawId);
+				if (/[\\/]node_modules[\\/]undici[\\/]index\.js$/.test(id)) {
+					// undici/index.js checks `typeof __filename !== "undefined"` to decide whether to append
+					// caller frames to failed fetch errors via `appendFetchStackTrace`; in an ESM chunk
+					// `__filename` is undefined unless defined here, which otherwise strips all caller frames.
+					return {
+						code: `'use strict';\nconst __filename = "node_modules/undici/index.js";\n${readFileSync(id, "utf8")}`,
+						map: null,
+					};
+				}
+				if (!isInDist(id) || !id.endsWith(".js")) return null;
+				const entry = compiledEntries.get(id);
+				let code;
+				let mapFile;
+				if (entry !== undefined) {
+					code = entry.code;
+					mapFile = entry.mapFile;
+				} else if (existsSync(id)) {
+					code = readFileSync(id, "utf8");
+					mapFile = `${id}.map`;
+				} else {
+					const saved = join(COMPILED_ENTRIES, relative(dist, id));
+					if (!existsSync(saved)) return null;
+					code = readFileSync(saved, "utf8");
+					mapFile = `${saved}.map`;
+				}
+				if (!code.includes("import.meta")) {
+					return { code, map: existsSync(mapFile) ? JSON.parse(readFileSync(mapFile, "utf8")) : null };
+				}
+				const withMap = inlineSourceMap(code, mapFile);
+				const options = {
+					loader: "js",
+					format: "esm",
+					target: "esnext",
+					sourcefile: id,
+					define: { [META_URL]: META_URL_SYMBOL },
+				};
+				// Token-aware: a mention in a comment is not a use. Any meta property but `url` stops the build.
+				const probe = (await transform(withMap, { ...options, sourcemap: false, minifyWhitespace: true })).code;
+				if (probe.includes("import.meta")) {
+					throw new Error(`split-dist: ${toPosix(relative(dist, id))} uses import.meta beyond import.meta.url`);
+				}
+				if (!probe.includes(META_URL_SYMBOL)) {
+					return { code, map: existsSync(mapFile) ? JSON.parse(readFileSync(mapFile, "utf8")) : null };
+				}
+				const url = relative(dist, id).split(sep).map(encodeURIComponent).join("/");
+				const transformed = await transform(withMap, {
+					...options,
+					sourcemap: "external",
+					banner: `const ${META_URL_SYMBOL} = new URL(${JSON.stringify(`${DIST_PATH_MARK}${url}`)}, import.meta.url).href;`,
 				});
+				return { code: transformed.code, map: JSON.parse(transformed.map) };
+			},
+			buildEnd() {
+				const moduleIds = [...this.getModuleIds()].map(normalizeId).filter((id) => !id.startsWith("\0"));
+				for (const id of moduleIds) allBundledIds.add(id);
+				const staticDepsOf = (id) => {
+					const info = this.getModuleInfo(id);
+					if (!info) return [];
+					const deps = [];
+					for (const rawDep of info.importedIds) {
+						const dep = normalizeId(rawDep);
+						if (dep.startsWith("\0")) continue;
+						if (dep.startsWith(DIST_PATH_MARK)) {
+							const target = dep.slice(DIST_PATH_MARK.length);
+							if (owners.has(target)) deps.push(join(dist, target));
+							continue;
+						}
+						deps.push(dep);
+					}
+					return deps;
+				};
+				const entryIfPresent = (names) =>
+					names.filter((name) => SPLIT_ENTRIES.includes(name)).map((name) => join(dist, `${name}.js`));
+				groups = assignStartupGroups(
+					moduleIds,
+					inlineEntryIds,
+					ownerEntryIds,
+					{
+						cli: entryIfPresent(["cli"]),
+						prewarm: entryIfPresent(["modes/interactive-engine/engine-prewarm"]),
+						elig: entryIfPresent(["modes/interactive/startup-shell-eligibility"]),
+						shell: entryIfPresent(["modes/interactive/startup-shell"]),
+						stages: entryIfPresent(["utils/startup-stages"]),
+						http: entryIfPresent(["core/http-dispatcher"]),
+						settingsStartup: entryIfPresent(["cli/settings-startup"]),
+						main: entryIfPresent(["main"]),
+						modeInteractive: entryIfPresent(["modes/interactive/interactive-mode"]),
+						modeRpc: entryIfPresent(["modes/rpc/rpc-mode"]),
+						sdk: entryIfPresent(["index", "rpc-entry"]),
+					},
+					staticDepsOf,
+				);
 			},
 		},
 	],
 });
+
+const formatSharedChunkFileName = (chunk) => {
+	const realIds = chunk.moduleIds.map(normalizeId).filter((id) => !id.startsWith("\0"));
+	const relInputs = Object.fromEntries(realIds.map((id) => [relFromPackage(id), {}]));
+	let filename;
+	if (realIds.length === 0) {
+		// Synthetic runtime helper chunk (e.g. rolldown:runtime) or empty re-export facade: hash module id/facade
+		// plus sorted exports so new helpers produce a fresh filename and never collide with an earlier release.
+		const facade = chunk.facadeModuleId?.startsWith(VIRTUAL_COMPAT_PREFIX)
+			? `dist/${chunk.facadeModuleId.slice(VIRTUAL_COMPAT_PREFIX.length)}`
+			: chunk.facadeModuleId
+				? relFromPackage(normalizeId(chunk.facadeModuleId))
+				: undefined;
+		const first = facade ? `entry:${facade}` : `runtime:${[...chunk.moduleIds].sort()[0] ?? chunk.name}`;
+		const stem = chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+		filename = `${stem}-${groupName(`${first}\0${[...chunk.exports].sort().join(",")}`)}.js`;
+	} else {
+		const groupNames = new Set(realIds.map((id) => groups.get(id)).filter((g) => g !== undefined));
+		const stem = groupNames.size === 1 ? [...groupNames][0] : chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+		const entryPoint = chunk.facadeModuleId ? relFromPackage(normalizeId(chunk.facadeModuleId)) : undefined;
+		filename = sharedFileName(stem, { inputs: relInputs, exports: chunk.exports, entryPoint }, chunk.name);
+	}
+	return `${SHARED_DIRECTORY}/${filename}`;
+};
+
+const generated = await bundle.generate({
+	format: "esm",
+	entryFileNames: (chunk) => (chunk.name in entryFilesByName ? "[name].js" : formatSharedChunkFileName(chunk)),
+	chunkFileNames: formatSharedChunkFileName,
+	keepNames: true,
+	sourcemap: true,
+	sourcemapExcludeSources: true,
+	minifyInternalExports: false,
+	codeSplitting: {
+		groups: [
+			{
+				name: (id) => groups.get(normalizeId(id)) ?? null,
+				debugName: "startup tiers",
+				includeDependenciesRecursively: false,
+			},
+		],
+	},
+});
+await bundle.close();
 
 // Each file is written whole before it takes its name. Shared files of earlier builds stay: a process started from
 // them may still load one. A fresh build, as a release's, has none.
 // On the main thread, a module is either compiled or bundled, never both: the compiled modules' code stays out of the
 // bundle, and every module a compiled module imports is compiled too or an entry whose file the bundle writes.
 const bundledModules = new Set(
-	Object.keys(result.metafile.inputs)
-		.filter((input) => input.startsWith("dist/"))
-		.map((input) => input.slice("dist/".length)),
+	[...allBundledIds].filter(isInDist).map((id) => toPosix(relative(dist, id))),
 );
 for (const path of compiledModules)
 	if (bundledModules.has(path)) throw new Error(`split-dist: ${path} is both a compiled file and bundled`);
@@ -569,15 +787,19 @@ for (const path of new Set([...bundledModules, ...compiledModules, ...threadModu
 // The packages bundled in are the inlined ones, and each one's own dependencies are bundled too: a dependency left
 // external would resolve from the shared file, not from the package that depends on it.
 const inlined = new Map();
-for (const input of Object.keys(result.metafile.inputs)) {
+for (const rawId of allBundledIds) {
+	const input = toPosix(rawId);
 	const match = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(input.replace(/.*\/node_modules\//, "node_modules/"));
 	if (!match) continue;
 	if (!INLINED_PACKAGES.includes(match[1])) throw new Error(`split-dist: ${input} is bundled, but ${match[1]} is not inlined`);
-	inlined.set(match[1], join(packageDir, input.slice(0, input.lastIndexOf(`node_modules/${match[1]}/`) + `node_modules/${match[1]}`.length)));
+	inlined.set(
+		match[1],
+		rawId.slice(0, rawId.lastIndexOf(`${sep}node_modules${sep}${match[1].replace("/", sep)}${sep}`) + `${sep}node_modules${sep}${match[1].replace("/", sep)}`.length),
+	);
 }
 // The bundle cannot follow an import or require of a computed name. In an inlined package that would run, it would
 // resolve from the shared file at run time: only the ones known never to run are allowed.
-for (const warning of result.warnings) {
+for (const warning of bundleWarnings) {
 	const file = warning.location?.file ?? "";
 	if (!/(?:^|\/)node_modules\//.test(file) || !/will not be bundled|cannot be analyzed/i.test(warning.text)) continue;
 	if (!Object.keys(UNFOLLOWED_INLINED_IMPORTS).some((suffix) => file.endsWith(suffix)))
@@ -586,12 +808,10 @@ for (const warning of result.warnings) {
 // What an inlined package's bundled code imports is bundled too, or one of the few packages that stay external: an
 // external import would resolve from the shared file, not from the package that made it. A dependency its bundled code
 // never imports (markit-ai's command line's) does not count.
-for (const [input, { imports }] of Object.entries(result.metafile.inputs)) {
-	if (!/(?:^|\/)node_modules\//.test(input)) continue;
-	for (const { path, external } of imports) {
-		if (!external || path.startsWith("<") || isBuiltin(path) || INLINED_PACKAGE_EXTERNALS.includes(packageOf(path)))
-			continue;
-		throw new Error(`split-dist: ${input} imports ${path}, which is neither inlined nor allowed to stay external`);
+for (const [input, externals] of nodeModulesExternalImports) {
+	for (const path of externals) {
+		if (path.startsWith("<") || isBuiltin(path) || INLINED_PACKAGE_EXTERNALS.includes(packageOf(path))) continue;
+		throw new Error(`split-dist: ${relFromPackage(input)} imports ${path}, which is neither inlined nor allowed to stay external`);
 	}
 }
 const notices = [];
@@ -608,32 +828,50 @@ for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1)
 	notices.push(`## ${name} ${manifest.version}\n\n${license}${notice}\n`);
 }
 
-// Each shared file is named by its first module and its exports (see `split-dist-names.mjs`).
-const renames = new Map();
-for (const [output, meta] of Object.entries(result.metafile.outputs)) {
-	const match = /^(.*\/)?([^/]+)-([A-Z2-7]{8})\.js$/.exec(output);
-	if (!output.startsWith(`dist/${SHARED_DIRECTORY}/`) || match === null) continue;
-	const renamed = sharedFileName(match[2], meta, output);
-	if ([...renames.values()].includes(renamed)) throw new Error(`split-dist: two shared files would be named ${renamed}`);
-	renames.set(`${match[2]}-${match[3]}.js`, renamed);
-}
-/** `text` matched literally in a regular expression. */
-const literally = (text) => text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-const contentNames = renames.size > 0 ? new RegExp([...renames.keys()].map(literally).join("|"), "g") : undefined;
-const outputFiles = result.outputFiles.map((file) => {
-	const base = file.path.slice(file.path.lastIndexOf(sep) + 1);
-	const renamedBase = renames.get(base) ?? renames.get(base.replace(/\.map$/, ""))?.concat(".map");
-	const path = renamedBase === undefined ? file.path : join(dirname(file.path), renamedBase);
-	let text = contentNames === undefined ? file.text : file.text.replace(contentNames, (name) => renames.get(name) ?? name);
-	if (path.endsWith(".js")) {
-		const from = relative(dist, dirname(path)).split(sep).join("/");
-		text = text.replace(new RegExp(`"${DIST_PATH_MARK}([^"]+)"`, "g"), (_, target) => {
+const outputFiles = [];
+const emittedMaps = new Set(
+	generated.output.filter((item) => item.type === "asset" && item.fileName.endsWith(".js.map")).map((item) => item.fileName),
+);
+for (const item of generated.output) {
+	const path = join(dist, item.fileName);
+	let contents = item.type === "chunk" ? item.code : item.source;
+	if (item.type === "chunk" && typeof contents === "string") {
+		const from = toPosix(relative(dist, dirname(path)));
+		contents = contents.replace(new RegExp(`"${DIST_PATH_MARK}([^"]+)"`, "g"), (_, target) => {
 			const local = posix.relative(from, target);
 			return JSON.stringify(local.startsWith(".") ? local : `./${local}`);
 		});
+		if (contents.includes(DIST_PATH_MARK)) {
+			throw new Error(`split-dist: ${item.fileName} retained an unrewritten ${DIST_PATH_MARK} path`);
+		}
+		// Synthetic runtime chunks (e.g. rolldown:runtime) and thin virtual facade entries emit no source map; write an
+		// empty valid v3 map beside every emitted `.js` chunk lacking one and link it with `sourceMappingURL` so
+		// pre-split `tsc` maps for facade entries are overwritten instead of shipped stale in `dist/`.
+		if (item.fileName.endsWith(".js") && !emittedMaps.has(`${item.fileName}.map`)) {
+			const base = item.fileName.slice(item.fileName.lastIndexOf("/") + 1);
+			if (!contents.includes("//# sourceMappingURL=")) {
+				contents = `${contents.endsWith("\n") ? contents : `${contents}\n`}//# sourceMappingURL=${base}.map\n`;
+			}
+			outputFiles.push({
+				path: `${path}.map`,
+				contents: `${JSON.stringify({ version: 3, file: base, sources: [], names: [], mappings: "" })}\n`,
+			});
+		}
 	}
-	return { path, contents: text };
-});
+	outputFiles.push({ path, contents });
+}
+
+// Verify generated chunk names are unique and startup chunks contain no lazy document-converter modules.
+const seenOutputPaths = new Set();
+for (const file of outputFiles) {
+	if (seenOutputPaths.has(file.path)) throw new Error(`split-dist: duplicate output ${toPosix(relative(dist, file.path))}`);
+	seenOutputPaths.add(file.path);
+}
+for (const item of generated.output) {
+	if (item.type !== "chunk" || !item.fileName.startsWith(`${SHARED_DIRECTORY}/startup-`)) continue;
+	const markitMod = item.moduleIds.find((id) => toPosix(id).includes("/node_modules/markit-ai/"));
+	if (markitMod) throw new Error(`split-dist: startup chunk ${item.fileName} pulled in lazy module ${markitMod}`);
+}
 
 // Shared files first and the entries last, so an entry never names a shared file not written yet.
 const entryFiles = new Set(SPLIT_ENTRIES.flatMap((entry) => [join(dist, `${entry}.js`), join(dist, `${entry}.js.map`)]));
@@ -645,14 +883,22 @@ for (const file of ordered) {
 }
 for (const entry of ["cli", "rpc-entry"]) chmodSync(join(dist, `${entry}.js`), 0o755);
 // A shared file a recorded release imports on demand that this split no longer writes, as when the module it holds
-// changed its exports: a process of that release still imports it by that name, so it stays, naming this build's
-// shared file of the same module.
-const sharedOutputs = Object.entries(result.metafile.outputs).flatMap(([output, meta]) => {
-	const match = new RegExp(`^dist/${SHARED_DIRECTORY}/([^/]+)-([A-Z2-7]{8})\\.js$`).exec(output);
-	return match === null ? [] : [{ file: renames.get(`${match[1]}-${match[2]}.js`) ?? `${match[1]}-${match[2]}.js`, stem: match[1], exports: meta.exports }];
+// changed its exports or bundler layout: a process of that release still imports it by that name, so it stays, naming
+// this build's file of the same module.
+const sharedChunks = generated.output.flatMap((item) => {
+	if (item.type !== "chunk") return [];
+	const match = new RegExp(`^${SHARED_DIRECTORY}/([^/]+)-([A-Z2-7]{8})\\.js$`).exec(item.fileName);
+	return match === null
+		? []
+		: [{ file: `${match[1]}-${match[2]}.js`, stem: match[1], exports: item.exports, isEntry: item.isEntry }];
 });
-for (const { path, contents } of compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY))
+const sharedEntryStems = new Set(sharedChunks.filter((c) => c.isEntry).map((c) => c.stem));
+const sharedOutputs = sharedChunks
+	.filter((c) => c.isEntry || !sharedEntryStems.has(c.stem))
+	.map(({ file, stem, exports }) => ({ file, stem, exports }));
+for (const { path, contents } of compatSharedFiles(releasedSharedTargets, sharedOutputs, SHARED_DIRECTORY)) {
 	writeFileSync(join(dist, path), contents);
+}
 writeFileSync(
 	join(dist, "THIRD_PARTY_NOTICES.md"),
 	`# Third-party notices\n\nThe shared files in \`dist/${SHARED_DIRECTORY}/\` include code from these packages.\n\n${notices.join("\n")}`,
@@ -680,7 +926,7 @@ for (const path of removedModules) removeCompiled(path);
 
 // A compiled file nothing loads, that imports a removed one (a module of the standalone binary's own entry, an unused
 // module), could not load either: it goes too, and so on, so that every file the package keeps finds what it imports.
-const written = new Set(outputFiles.map((file) => relative(dist, file.path).split(sep).join("/")));
+const written = new Set(outputFiles.map((file) => toPosix(relative(dist, file.path))));
 const leftovers = () =>
 	readdirSync(dist, { recursive: true })
 		.map((file) => String(file).split(sep).join("/"))
@@ -700,7 +946,7 @@ for (let changed = true; changed; ) {
 	}
 }
 
-const outputs = Object.keys(result.metafile.outputs).filter((output) => output.endsWith(".js"));
+const chunkOutputs = generated.output.filter((item) => item.type === "chunk");
 console.log(
-	`split-dist: ${Object.keys(result.metafile.inputs).length} modules into ${SPLIT_ENTRIES.length} entries and ${outputs.length - SPLIT_ENTRIES.length} shared files; ${removedModules.length} compiled files removed, ${unloadable.length} more that could not load`,
+	`split-dist: ${allBundledIds.size} modules into ${SPLIT_ENTRIES.length} entries and ${chunkOutputs.length - SPLIT_ENTRIES.length} shared files; ${removedModules.length} compiled files removed, ${unloadable.length} more that could not load`,
 );
