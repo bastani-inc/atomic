@@ -17,6 +17,7 @@ import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/sett
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AgentViewSwitcher } from "./agent-view/agent-view-switcher.ts";
@@ -901,7 +902,25 @@ export class InteractiveModeBase {
 		// Declared by the queueing mixin, which a host that never queues may not load.
 		const disposeSteeringRecovery =
 			typeof this.attachSteeringEngineRecovery === "function" ? this.attachSteeringEngineRecovery() : () => {};
+		// Restore interrupted running subagents in the replacement engine without replaying deliveries or prompting.
+		const disposePostCrashRecovery =
+			runtimeHost instanceof IsolatedInteractiveRuntime
+				? runtimeHost.onEngineRecovered((replaced) => {
+						if (!replaced || this.isShuttingDown) return;
+						const session = this.session;
+						const generation = runtimeHost.getEngineGeneration();
+						void runtimeHost.startPendingRecoveryRestore("resume").catch(() => {
+							if (
+								this.session !== session ||
+								this.isShuttingDown ||
+								runtimeHost.getEngineGeneration() !== generation
+							)
+								return;
+						});
+					})
+				: () => {};
 		this.disposeInteractiveEngineHost = () => {
+			disposePostCrashRecovery();
 			disposeSteeringRecovery();
 			disposeEngineHost();
 		};

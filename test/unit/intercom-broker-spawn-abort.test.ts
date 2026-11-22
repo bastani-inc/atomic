@@ -19,7 +19,6 @@ import {
 	type RecordedProcess,
 	recordProcess,
 	signalRecordedProcess,
-	stillRuns,
 	waitUntilGone,
 } from "../helpers/recorded-process.js";
 import { sleep } from "../helpers/runtime.ts";
@@ -188,32 +187,26 @@ test("a broker start waiting for another spawner's broker stops when aborted (#4
 	assert.deepEqual(readdirSync(getIntercomDirPath()), ["broker.spawn.lock"]);
 });
 
-// Windows launches a custom broker command through the hidden launcher, which hides the pid this test records.
-const directSpawnTest = process.platform === "win32" ? test.skip : test;
+test("an upgrade disposed after it stopped the older broker stops a replacement that never starts (#4727)", async () => {
+	const markerPath = join(agentDir, "..", "replacement.pid");
+	const controller = new AbortController();
+	await startOlderBroker(() => controller.abort(new Error("session disposed")));
 
-directSpawnTest(
-	"an upgrade disposed after it stopped the older broker stops a replacement that never starts (#4727)",
-	async () => {
-		const markerPath = join(agentDir, "..", "replacement.pid");
-		const controller = new AbortController();
-		await startOlderBroker(() => controller.abort(new Error("session disposed")));
+	const upgrade = upgradeBroker(
+		process.execPath,
+		neverReadyBrokerCommand(markerPath),
+		NEVER_READY_TIMEOUT_MS,
+		undefined,
+		undefined,
+		undefined,
+		controller.signal,
+	);
+	const replacement = await recordedProcess(markerPath, upgrade);
+	cleanups.push(() => killIfStillRunning(replacement));
 
-		const upgrade = upgradeBroker(
-			process.execPath,
-			neverReadyBrokerCommand(markerPath),
-			NEVER_READY_TIMEOUT_MS,
-			undefined,
-			undefined,
-			undefined,
-			controller.signal,
-		);
-		const replacement = await recordedProcess(markerPath, upgrade);
-		cleanups.push(() => killIfStillRunning(replacement));
-
-		await assert.rejects(upgrade);
-		assert.equal(await gone(replacement), true, "the replacement broker is still starting after the upgrade settled");
-	},
-);
+	await assert.rejects(upgrade);
+	assert.equal(await gone(replacement), true, "the replacement broker is still starting after the upgrade settled");
+});
 
 test("an upgrade waiting for another spawner's lock stops when aborted (#4727)", async () => {
 	mkdirSync(getIntercomDirPath(), { recursive: true });
@@ -229,7 +222,7 @@ test("an upgrade waiting for another spawner's lock stops when aborted (#4727)",
 	assert.ok(performance.now() - started < ABORTED_WAIT_BOUND_MS, "the aborted upgrade kept waiting for the lock");
 });
 
-directSpawnTest("a disposed start stops the broker a wrapper command runs as its own child (#4727)", async () => {
+test("a disposed start stops the broker a wrapper command runs as its own child (#4727)", async () => {
 	const markerPath = join(agentDir, "..", "wrapped-broker.pid");
 	// The wrapper runs the "broker" as a child, without exec, as a shell or launcher script may.
 	const brokerScript = `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, String(process.pid)); setInterval(() => {}, 1000);`;
@@ -250,7 +243,7 @@ directSpawnTest("a disposed start stops the broker a wrapper command runs as its
 	assert.equal(await gone(broker), true, "the wrapped broker is still running after the start settled");
 });
 
-directSpawnTest("a disposed start stops waiting for a broker that never listens, and stops that broker", async () => {
+test("a disposed start stops waiting for a broker that never listens, and stops that broker", async () => {
 	const markerPath = join(agentDir, "..", "hung-broker.pid");
 	const controller = new AbortController();
 	const start = spawnBrokerIfNeeded(
@@ -405,16 +398,16 @@ for (const witness of ["none", "other"] as const) {
 }
 
 windowsLauncherTest(
-	"a disposed start leaves running a broker that announced no creation time (#6133)",
+	"a disposed start stops its directly spawned broker even when the broker announces no creation time (#6133)",
 	async () => {
 		const markerPath = join(agentDir, "..", "witnessless-broker.pid");
-		// An older broker, or one that could not load the native module, announces only its token and pid.
+		// Direct spawn reads the broker's own process creation time from its handle instead of relying on broker.starting.
 		const broker = await abandonAnnouncedStart(
 			markerPath,
 			announcedNeverReadyBrokerCommand(markerPath, { witness: "none" }),
 		);
 
-		assert.equal(await stillRuns(broker), true, "the disposed start stopped a broker it could not identify");
+		assert.equal(await gone(broker), true, "the disposed start left its directly spawned broker running");
 	},
 	2 * READY_TIMEOUT_MS,
 );
