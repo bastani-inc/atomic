@@ -240,7 +240,7 @@ describe("unpushed history over the cap, packed under other settings", () => {
 		assert.deepEqual(second.snapshot.bundle?.commits, [commit]);
 	});
 
-	test("other settings, such as a remote added, keep the commits left out without bundling them again", async () => {
+	test("settings that do not change a bundle, such as core.hooksPath, keep the commits left out without bundling them again", async () => {
 		const { clone } = await cloneWithUnpushedData();
 		const trace = sandbox.traceGitProcesses();
 		const settings = { maxSnapshotBytes: SMALL_CAP };
@@ -250,6 +250,8 @@ describe("unpushed history over the cap, packed under other settings", () => {
 
 		await sandbox.git(clone, "remote", "add", "mirror", "https://example.com/mirror.git");
 		await sandbox.git(clone, "config", "user.name", "Someone Else");
+		await sandbox.git(clone, "config", "core.hooksPath", ".husky/_");
+		await sandbox.git(clone, "config", "core.fsmonitor", "false");
 		sandbox.write(join(clone, "edit.txt"), "edit\n");
 		const second = captured(await captureWorktreeSnapshot(clone, { settings }));
 		assert.equal(historyOmissions(second.snapshot.omitted)[0]?.reason, "bundle-over-cap");

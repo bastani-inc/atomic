@@ -1106,18 +1106,27 @@ interface RepositoryConfig {
 	readonly autocrlf: string | null;
 	readonly eol: string | null;
 	/**
-	 * The settings Git packs a bundle with, `pack.*` and `core.*` (such as `pack.compression`, `pack.window` or
-	 * `core.bigFileThreshold`), as a hash: they change a bundle's size without changing the packs.
+	 * The settings Git packs a bundle with, as a hash: `pack.*` (such as `pack.compression` or `pack.window`),
+	 * `core.compression` and `core.bigFileThreshold`. They change a bundle's size without changing the packs.
 	 */
 	readonly packing: string;
 }
 
+/** Whether the setting `key`, as `git config` names it, is one Git packs a bundle with. */
+function isPackingSetting(key: string): boolean {
+	return key.startsWith("pack.") || key === "core.compression" || key === "core.bigfilethreshold";
+}
+
 export async function readRepositoryConfig(root: string, signal?: AbortSignal): Promise<RepositoryConfig> {
-	const { stdout } = await runGit(["config", "-z", "--get-regexp", "^(remote\\..+\\.url|(core|pack)\\..+)$"], {
-		cwd: root,
-		signal,
-		allowExitCodes: [1],
-	});
+	const { stdout } = await runGit(
+		[
+			"config",
+			"-z",
+			"--get-regexp",
+			"^(remote\\..+\\.url|core\\.(autocrlf|eol|compression|bigfilethreshold)|pack\\..+)$",
+		],
+		{ cwd: root, signal, allowExitCodes: [1] },
+	);
 	const remotes: string[] = [];
 	const packing: string[] = [];
 	let autocrlf: string | null = null;
@@ -1126,13 +1135,10 @@ export async function readRepositoryConfig(root: string, signal?: AbortSignal): 
 		const newline = field.indexOf("\n");
 		const key = newline < 0 ? field : field.slice(0, newline);
 		const value = newline < 0 ? "" : field.slice(newline + 1);
-		if (key.startsWith("remote.")) {
-			remotes.push(redactUrlCredentials(value));
-			continue;
-		}
-		packing.push(field);
 		if (key === "core.autocrlf") autocrlf = value;
 		else if (key === "core.eol") eol = value;
+		else if (isPackingSetting(key)) packing.push(field);
+		else remotes.push(redactUrlCredentials(value));
 	}
 	return { remotes, autocrlf, eol, packing: sha256Hex(packing.join("\0")) };
 }
