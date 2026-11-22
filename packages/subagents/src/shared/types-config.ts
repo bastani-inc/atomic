@@ -157,6 +157,8 @@ export interface RunSyncOptions {
 	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** Results of calls the child was already told are still running: read in one notice with its next turn. */
 	resumeLateToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
+	/** By call id, the entry that issued each late result's call, when the caller already read the history back to it. */
+	resumeLateToolResultCalls?: ReadonlyMap<string, string>;
 	/** Notices of finished background tasks held for the child: each delivered as a notice with its next turn. */
 	resumeNotices?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildHeldNotice[];
 	/** Why the child runs again, when Atomic says so rather than a message: read with its turn, never as a message. */
