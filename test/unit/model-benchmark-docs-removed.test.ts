@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "vitest";
 import { getDocsPath } from "../../packages/coding-agent/src/config.js";
 import { buildSystemPrompt } from "../../packages/coding-agent/src/core/system-prompt.js";
 import { moduleDir } from "../helpers/runtime.js";
+import { stripSystemPromptEnvironmentPaths } from "../helpers/system-prompt-paths.js";
 
 const ROOT = join(moduleDir(import.meta.url), "..", "..");
 
@@ -99,8 +101,27 @@ test("nothing reads or links to the removed model benchmark docs", () => {
 });
 
 test("the system prompt sends no one to benchmark docs or sites", () => {
-	const prompt = buildSystemPrompt({ cwd: ROOT, selectedTools: ["read", "bash"] });
-	for (const reference of REMOVED_REFERENCES) assert.equal(prompt.includes(reference), false, reference);
-	assert.doesNotMatch(prompt, /benchmark/i);
-	assert.doesNotMatch(prompt, /model choice/);
+	const check = (cwd: string, agentDir?: string) => {
+		const prompt = stripSystemPromptEnvironmentPaths(buildSystemPrompt({ cwd, selectedTools: ["read", "bash"] }), {
+			cwd,
+			agentDir,
+		});
+		for (const reference of REMOVED_REFERENCES) assert.equal(prompt.includes(reference), false, reference);
+		assert.doesNotMatch(prompt, /benchmark/i);
+		assert.doesNotMatch(prompt, /model choice/);
+	};
+	check(ROOT);
+
+	const seededRoot = mkdtempSync(join(tmpdir(), "atomic-benchmark-evals.md-"));
+	const seededAgentDir = join(seededRoot, "agent");
+	mkdirSync(seededAgentDir, { recursive: true });
+	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+	process.env.ATOMIC_CODING_AGENT_DIR = seededAgentDir;
+	try {
+		check(seededRoot, seededAgentDir);
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		rmSync(seededRoot, { recursive: true, force: true });
+	}
 });
