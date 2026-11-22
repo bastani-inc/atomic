@@ -129,7 +129,7 @@ test("alt+w after a list update that moved the selection opens no other subagent
 		inspector.handleInput(ALT_W);
 		await settle();
 		const shown = screen();
-		assert.doesNotMatch(shown, /Transcript · bash/, `no shell opened: ${shown}`);
+		assert.doesNotMatch(shown, /^ {2}shell$/m, `no shell opened: ${shown}`);
 		assert.doesNotMatch(shown, /output of beta-shell/, shown);
 		inspector.handleInput(ALT_W);
 		await settle();
