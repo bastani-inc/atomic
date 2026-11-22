@@ -3071,7 +3071,14 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
 		const otherGrant = await otherClaim;
 		assert.ok(otherGrant.status === "granted" && otherGrant.grant.alias === undefined, JSON.stringify(otherGrant));
-		const otherRegistered = registeredOn(here, other, otherGrant.grant);
+		// Registered as the broker registers a top-level session: its name is offered as a reservation it may consume.
+		here.sessions.set(other.info.id, other);
+		const otherRegistered = here.router.sessionRegistered(
+			other,
+			{ childName: other.info.name!, groups: new Set([CREW]) },
+			undefined,
+			otherGrant.grant,
+		);
 		await vi.advanceTimersByTimeAsync(PRESENCE_REGISTRATION_BOUND_MS);
 		await otherRegistered;
 		const reply = (from: BrokerConnectedSession) => {

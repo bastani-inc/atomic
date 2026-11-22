@@ -1977,7 +1977,8 @@ export class MultiNodeRouter {
 		const entry: PresenceEntry = {};
 		const presented = grant?.recovery ?? reclaim?.recovery ?? recovery;
 		if (presented !== undefined) entry.presented = presented;
-		if (consumed?.childName !== undefined) entry.releasedChild = true;
+		// The registration of a released subagent its owner authorized has the asks parked for it moved to it (`rebindParked`).
+		if (consumed?.childName !== undefined && consumed.authorizedBy !== undefined) entry.releasedChild = true;
 		// An unanswered claim's registration awaits the id only once its binding write did not keep it (below).
 		if (
 			awaits !== undefined &&
