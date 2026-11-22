@@ -20,8 +20,8 @@ interface Answer {
 }
 
 /**
- * An SDK process running from an installation of release `running` (this checkout's build, whose native module is
- * of the source checkout, `0.0.0`). Once it has loaded the SDK, `meanwhile` may change the installation; then it opens
+ * An SDK process running from an installation of release `running`, depending on its native module of that release
+ * (this checkout's build, whose native module is of the source checkout, `0.0.0`). Once it has loaded the SDK, `meanwhile` may change the installation; then it opens
  * a session, the first time it needs the native module, and reports how that went.
  */
 async function openSessionAfter(running: string, meanwhile: (setVersion: (version: string) => void) => void) {
@@ -30,9 +30,14 @@ async function openSessionAfter(running: string, meanwhile: (setVersion: (versio
 		const installed = join(root, "installed");
 		prepareInstalledPackage(PACKAGE, installed);
 		const manifest = join(installed, "package.json");
+		// A release stamps its version and the release of the native module it depends on.
 		const setVersion = (version: string) => {
-			const pkg = JSON.parse(readFileSync(manifest, "utf8")) as { version: string };
-			writeFileSync(manifest, JSON.stringify({ ...pkg, version }));
+			const pkg = JSON.parse(readFileSync(manifest, "utf8")) as {
+				version: string;
+				dependencies: Record<string, string>;
+			};
+			const dependencies = { ...pkg.dependencies, "@bastani/atomic-natives": version };
+			writeFileSync(manifest, JSON.stringify({ ...pkg, version, dependencies }));
 		};
 		setVersion(running);
 		const sdk = pathToFileURL(join(PACKAGE, "dist/index.js")).href;
