@@ -150,6 +150,7 @@ const ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
 	"--no-prompt-templates",
 	"-np",
 	"--no-themes",
+	"--use-theme",
 	"--no-context-files",
 	"-nc",
 	"--no-tools",
@@ -173,13 +174,15 @@ const VALUE_ARGUMENTS_KEEPING_DEFAULT_MODEL = new Set([
 	"--system-prompt",
 	"--append-system-prompt",
 	"--name",
+	"-n",
 ]);
 
 /** Whether a host started with `args` leaves the session's model to the settings' default, in a new session. */
 function argumentsKeepDefaultModel(args: readonly string[]): boolean {
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]!;
-		if (ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg)) continue;
+		// A first message or a file to attach: never the value of an option, as any other option stops the scan.
+		if (!arg.startsWith("-") || ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg)) continue;
 		if (VALUE_ARGUMENTS_KEEPING_DEFAULT_MODEL.has(arg) && index + 1 < args.length) {
 			index++;
 			continue;

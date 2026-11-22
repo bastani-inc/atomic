@@ -211,6 +211,8 @@ describe("adopting a prewarmed engine child", () => {
 		for (const hostArgs of [
 			["--offline", "--no-mcp", "--approve"],
 			["--thinking", "high", "--tools", "read,bash", "--no-skills", "--no-themes", "--no-prompt-templates"],
+			// A first message and files to attach to it, after the options, still leave the model to the settings.
+			["--approve", "-n", "review", "fix the failing test", "@src/a.ts"],
 		])
 			assert.deepEqual(
 				await startedArgv(hostArgs),
