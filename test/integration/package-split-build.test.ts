@@ -8,11 +8,12 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import JSZip from "jszip";
 import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
-import { moduleDir } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
@@ -181,7 +182,12 @@ test(
 		const missing: string[] = [];
 		for (const path of paths) {
 			if (!/^dist\/.*\.m?js$/.test(path) || path.startsWith("dist/builtin/")) continue;
-			const source = fs.readFileSync(join(packageDir, path), "utf8");
+			// Comment lines are not code: a bundled dependency's documentation may name an import.
+			const source = fs
+				.readFileSync(join(packageDir, path), "utf8")
+				.split("\n")
+				.filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line))
+				.join("\n");
 			for (const match of source.matchAll(
 				/(?:^|\n)\s*(?:import|export)\b[^;]*?\bfrom\s*["'](\.{1,2}\/[^"']+)["']|(?:^|\n)\s*import\s*["'](\.{1,2}\/[^"']+)["']|\bimport\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g,
 			)) {
@@ -283,6 +289,247 @@ test(
 		const [line] = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
 		// The keyword the registered grammar finds is colored on its own.
 		assert.match(line ?? "", /probekw\u001b\[39m plain/, JSON.stringify(line));
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+/** A one-page PDF drawing `content` with `fonts` (resource name to font dictionary), written by hand. */
+function pdfWith(content: string, fonts: Record<string, string>): string {
+	const objects: string[] = [
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"",
+		`<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+	];
+	const fontRefs: string[] = [];
+	for (const [name, dictionary] of Object.entries(fonts)) {
+		objects.push(dictionary);
+		fontRefs.push(`/${name} ${objects.length} 0 R`);
+	}
+	objects[2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << ${fontRefs.join(" ")} >> >> >>`;
+	let pdf = "%PDF-1.4\n";
+	const offsets = objects.map((object, index) => {
+		const offset = pdf.length;
+		pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+		return offset;
+	});
+	const xref = pdf.length;
+	pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+	for (const offset of offsets) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+	return `${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+}
+
+const HELVETICA = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+/** A one-page PDF whose page says `text`. */
+function onePagePdf(text: string): string {
+	return pdfWith(`BT /F1 18 Tf 72 700 Td (${text}) Tj ET`, { F1: HELVETICA });
+}
+
+/** A DOCX whose document body is `body`, written by hand. */
+async function docxWith(body: string): Promise<Uint8Array> {
+	const zip = new JSZip();
+	zip.file(
+		"[Content_Types].xml",
+		`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+	);
+	zip.file(
+		"_rels/.rels",
+		`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+	);
+	zip.file(
+		"word/document.xml",
+		`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`,
+	);
+	return zip.generateAsync({ type: "uint8array" });
+}
+
+/**
+ * Documents and the text a read gives for each. The last four need the converter's dependencies at the versions a
+ * fresh install resolves (MuPDF 1.28.6 keeps the text state across a TJ array and maps a subset Symbol font; mammoth
+ * 1.13 reads custom XML and moved paragraphs): the bundle must not fall behind them.
+ */
+const DOCUMENTS: { name: string; content: () => string | Promise<Uint8Array>; texts: string[] }[] = [
+	{
+		name: "sample.docx",
+		content: () => docxWith("<w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p>"),
+		texts: ["Hello DOCX"],
+	},
+	{ name: "sample.pdf", content: () => onePagePdf("Hello PDF"), texts: ["Hello PDF"] },
+	{
+		name: "text-state.pdf",
+		content: () =>
+			pdfWith(
+				"BT /F1 18 Tf 72 700 Td [(Hello) -200 2 Tc (World) 0 Tc (Again)] TJ ET BT /F1 18 Tf 72 650 Td (Second line) Tj ET",
+				{ F1: HELVETICA },
+			),
+		texts: ["Hello WorldAgain", "Second line"],
+	},
+	{
+		name: "subset-symbol.pdf",
+		content: () =>
+			pdfWith("BT /F1 18 Tf 72 700 Td (abgd) Tj ET BT /F2 18 Tf 72 650 Td (Plain text) Tj ET", {
+				F1: "<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+Symbol >>",
+				F2: HELVETICA,
+			}),
+		texts: ["αβγδ", "Plain text"],
+	},
+	{
+		name: "custom-xml.docx",
+		content: () =>
+			docxWith(
+				'<w:p><w:r><w:t>Before</w:t></w:r></w:p><w:customXml w:element="clause"><w:p><w:r><w:t>Inside custom XML block</w:t></w:r></w:p></w:customXml><w:p><w:customXml w:element="name"><w:r><w:t>inline custom</w:t></w:r></w:customXml><w:r><w:t> after</w:t></w:r></w:p>',
+			),
+		texts: ["Before", "Inside custom XML block", "inline custom after"],
+	},
+	{
+		name: "moved.docx",
+		content: () =>
+			docxWith(
+				'<w:p><w:r><w:t>Kept</w:t></w:r></w:p><w:p><w:moveTo w:id="1" w:author="a"><w:r><w:t>Moved paragraph text</w:t></w:r></w:moveTo></w:p>',
+			),
+		texts: ["Kept", "Moved paragraph text"],
+	},
+];
+
+test(
+	"documents convert with the document converter bundled into the shared files, loading only mupdf from node_modules",
+	async () => {
+		const { atomic } = installedLayout();
+		const documents = fs.mkdtempSync(join(layoutRoot ?? os.tmpdir(), "documents "));
+		for (const { name, content } of DOCUMENTS) fs.writeFileSync(join(documents, name), await content());
+		const probeFile = join(documents, "probe.mjs");
+		fs.writeFileSync(
+			probeFile,
+			`const packages = new Set();
+			if (!process.versions.bun) {
+				const { registerHooks } = await import("node:module");
+				registerHooks({ load(url, context, next) {
+					const match = /\\/node_modules\\/((?:@[^/]+\\/)?[^/]+)\\//.exec(decodeURIComponent(url).replaceAll("\\\\", "/"));
+					if (match) packages.add(match[1]);
+					return next(url, context);
+				} });
+			}
+			const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
+			const before = new Set(packages);
+			const read = createReadToolDefinition(${JSON.stringify(documents)});
+			const text = [];
+			for (const path of ${JSON.stringify(DOCUMENTS.map(({ name }) => name))}) {
+				const result = await read.execute("read", { path }, undefined, undefined, {});
+				text.push(result.content.map((item) => item.text ?? "").join("\\n"));
+			}
+			console.log(JSON.stringify({ text, loaded: [...packages].filter((name) => !before.has(name)) }));`,
+		);
+		for (const runtime of [process.execPath, bunExecutable()]) {
+			const probe = spawnSync(runtime, [probeFile], { encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS });
+			assert.equal(probe.status, 0, `${runtime}: ${probe.stderr}`);
+			const { text, loaded } = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "{}") as {
+				text: string[];
+				loaded: string[];
+			};
+			for (const [index, { name, texts }] of DOCUMENTS.entries()) {
+				for (const expected of texts)
+					assert.ok(text[index]?.includes(expected), `${runtime} ${name}: ${text[index]}`);
+			}
+			// Node reports what loads from node_modules; Bun has no load hooks.
+			if (runtime === process.execPath) assert.deepEqual(loaded, ["mupdf"]);
+		}
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"a session whose document converter an update removed while it ran asks for a restart when it reads a document",
+	() => {
+		const { atomic } = installedLayout("updated under a running session");
+		const shared = join(atomic, "dist", "_shared");
+		const converter = fs
+			.readdirSync(shared)
+			.filter((name) => name.endsWith(".js"))
+			.filter((name) =>
+				(JSON.parse(fs.readFileSync(join(shared, `${name}.map`), "utf8")) as { sources: string[] }).sources.some(
+					(source) => source.endsWith("/markit-ai/dist/markit.js"),
+				),
+			);
+		assert.equal(converter.length, 1, converter.join(", "));
+		const converterFile = join(shared, converter[0] as string);
+		const manifestFile = join(atomic, "package.json");
+		const manifest = fs.readFileSync(manifestFile, "utf8");
+		const documents = fs.mkdtempSync(join(layoutRoot ?? os.tmpdir(), "documents "));
+		fs.writeFileSync(join(documents, "sample.pdf"), onePagePdf("Hello PDF"));
+		fs.writeFileSync(join(documents, "notes.txt"), "plain text still reads");
+		// What an in-place update does to a running session: the session has loaded Atomic, then the package's files are
+		// replaced, the converter's file is not among them, and the package names a new version; or, without the update,
+		// only the file is gone.
+		const probe = (updated: boolean) => `import { renameSync, writeFileSync } from "node:fs";
+			const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
+			const read = createReadToolDefinition(${JSON.stringify(documents)});
+			renameSync(${JSON.stringify(converterFile)}, ${JSON.stringify(`${converterFile}.gone`)});
+			${updated ? `writeFileSync(${JSON.stringify(manifestFile)}, ${JSON.stringify(manifest.replace(/"version": "[^"]+"/, '"version": "0.0.1"'))});` : ""}
+			const text = [];
+			try {
+				for (const path of ["sample.pdf", "sample.pdf", "notes.txt"]) {
+					const result = await read.execute("read", { path }, undefined, undefined, {});
+					text.push(result.content.map((item) => item.text ?? "").join("\\n"));
+				}
+			} finally {
+				renameSync(${JSON.stringify(`${converterFile}.gone`)}, ${JSON.stringify(converterFile)});
+				writeFileSync(${JSON.stringify(manifestFile)}, ${JSON.stringify(manifest)});
+			}
+			console.log(JSON.stringify(text));`;
+		const restart =
+			"atomic was updated to 0.0.1 while this session was running; restart it to keep using document conversion.";
+		for (const updated of [true, false]) {
+			const probeFile = join(documents, `probe-${updated ? "updated" : "unchanged"}.mjs`);
+			fs.writeFileSync(probeFile, probe(updated));
+			for (const runtime of [process.execPath, bunExecutable()]) {
+				const result = spawnSync(runtime, [probeFile], { encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS });
+				assert.equal(result.status, 0, `${runtime}: ${result.stderr}`);
+				const [first, second, plain] = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+				for (const text of [first, second]) {
+					if (updated) assert.ok(text?.includes(restart), `${runtime}: ${text}`);
+					else assert.ok(!text?.includes("restart"), `${runtime}: ${text}`);
+				}
+				assert.match(plain ?? "", /plain text still reads/, runtime);
+			}
+		}
+	},
+	LAYOUT_TIMEOUT_MS,
+);
+
+test(
+	"starting Atomic loads none of the document converter's modules",
+	() => {
+		const { atomic } = installedLayout();
+		const probe = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module";
+				const shared = new Set();
+				registerHooks({ load(url, context, next) { if (url.includes("/_shared/")) shared.add(url); return next(url, context); } });
+				await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "main.js")).href)});
+				console.log(JSON.stringify([...shared]));`,
+			],
+			{ encoding: "utf8", timeout: LAYOUT_TIMEOUT_MS },
+		);
+		assert.equal(probe.status, 0, probe.stderr);
+		const loaded = JSON.parse(probe.stdout.trim().split("\n").at(-1) ?? "[]") as string[];
+		assert.ok(loaded.length > 0, "the CLI's modules load from shared files");
+		for (const url of loaded) {
+			const file = fileURLToPath(url);
+			const map = JSON.parse(fs.readFileSync(`${file}.map`, "utf8")) as { sources: string[] };
+			assert.deepEqual(
+				map.sources.filter((source) => source.includes("/markit-ai/")),
+				[],
+				`${relative(atomic, file)} holds the document converter`,
+			);
+		}
+		const notices = fs.readFileSync(join(atomic, "dist", "THIRD_PARTY_NOTICES.md"), "utf8");
+		assert.match(notices, /^## markit-ai \S+$/m);
+		// isarray states its license only in its README.
+		assert.match(notices, /^## isarray \S+\n\n[\s\S]*?Permission is hereby granted/m);
 	},
 	LAYOUT_TIMEOUT_MS,
 );

@@ -4,7 +4,7 @@
 
 Keep interactive, exploratory, and conversation-led work in the parent session. For multi-step work, coordinate children from the parent session with codemode. Every subagent runs in the background, and `subagent({ action: "wait", id })` waits when the next step needs a child's result.
 
-See the [subagents guide](../coding-agent/docs/subagents.md), [custom subagents](../coding-agent/docs/subagents/authoring.md), and [subagent reference](../coding-agent/docs/subagents/reference.md) for full documentation.
+See the [subagents guide](https://docs.bastani.ai/subagents), [custom subagents](https://docs.bastani.ai/subagents/authoring), and [subagent reference](https://docs.bastani.ai/subagents/reference) for full documentation.
 
 ## Setup
 
@@ -105,7 +105,7 @@ There is no generic `reviewer` or `planner` builtin. Pick the specialist whose a
 
 ## Changing a builtin agent's model
 
-Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. `auto` runs your configured default model (the model last picked with `/model`) at its default thinking level, or the launching session's model when no default model is configured. See [automatic model selection](../coding-agent/docs/subagents/reference.md#automatic-model-selection).
+Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. `auto` runs your configured default model (the model last picked with `/model`) at its default thinking level, or the launching session's model when no default model is configured. See [automatic model selection](https://docs.bastani.ai/subagents/reference#automatic-model-selection).
 
 For a single call, pass `model`:
 
@@ -159,7 +159,7 @@ subagent({ action: "quit", id: taskId })
 
 `action: "wait"` uses the owner's agent wait budget (default 30 seconds) unless `budgetMs` overrides it, and pressing `Esc` ends the wait immediately. Ending a wait releases the caller without stopping the child. Legacy calls that pass `wait` on a launch still run in the background. SDK callers without a task owner keep their direct execution path, which waits for the child.
 
-See [background tasks](../coding-agent/docs/background-tasks.md) for shell examples, output retention, keyboard controls, and session lifetimes.
+See [background tasks](https://docs.bastani.ai/background-tasks) for shell examples, output retention, keyboard controls, and session lifetimes.
 
 ## Recommended orchestration loop
 
@@ -189,7 +189,7 @@ Do not ask for clarification when the only conflict is review-only/no-edit versu
 
 In parallel runs, blocking `contact_supervisor` requests wait only in the requesting child. The supervisor replies through `intercom({ action: "reply", message: "..." })`, and that same child continues with its original context and run identity while siblings keep working. A parent's `subagent({ action: "wait" })` yields when a child asks so the parent can respond without cancelling any child or worktree. Only a single child run directly by an SDK host without a task owner ends with a terminal `[TASK_CONTEXT]` fresh-child handoff when its blocking parent ask is claimed.
 
-Children launched in one parallel set (or with the same explicit `group`) also share an Intercom group and coordinate peer-to-peer as the default topology. Siblings call `intercom({ action: "list" })` and use `send` or `ask` directly to pass file paths, claim files or test suites, reuse reproductions, or challenge findings with evidence. Each sibling still returns its own result. For large parallel runs, organize swarms into named team groups; see [scaling a swarm](../coding-agent/docs/subagents.md#scaling-a-swarm).
+Children launched in one parallel set (or with the same explicit `group`) also share an Intercom group and coordinate peer-to-peer as the default topology. Siblings call `intercom({ action: "list" })` and use `send` or `ask` directly to pass file paths, claim files or test suites, reuse reproductions, or challenge findings with evidence. Each sibling still returns its own result. For large parallel runs, organize swarms into named team groups; see [scaling a swarm](https://docs.bastani.ai/subagents#scaling-a-swarm).
 
 Parent-side Atomic can also deliver grouped completion results and needs-attention notices over Intercom. Check connection status with `intercom({ action: "status" })`, or customize bridge behavior under `intercomBridge` in configuration below.
 
@@ -318,7 +318,7 @@ extensions: /abs/path/to/ext-a.ts, /abs/path/to/ext-b.ts
 
 ## Skills
 
-Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) directories are also read for compatibility, with `.atomic` taking precedence. See [skills](../coding-agent/docs/skills.md) for discovery and project-trust rules.
+Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) directories are also read for compatibility, with `.atomic` taking precedence. See [skills](https://docs.bastani.ai/skills) for discovery and project-trust rules.
 
 Override or disable skills per launch:
 
@@ -452,7 +452,7 @@ subagent({ action: "quit", id: "<child-id>" })
 subagent({ action: "quit", all: true })
 ```
 
-`status` lists the children this session launched that remain in this process, formatted as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, followed by the failure or interruption cause when applicable. Children launched by other sessions are not listed. A child that fails to start within `sessionStartTimeoutMs` (default 5 minutes) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch`, or `event-loop`); see [subagent start timeouts](../coding-agent/docs/subagents.md#subagent-start-timeouts).
+`status` lists the children this session launched that remain in this process, formatted as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, followed by the failure or interruption cause when applicable. Children launched by other sessions are not listed. A child that fails to start within `sessionStartTimeoutMs` (default 5 minutes) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch`, or `event-loop`); see [subagent start timeouts](https://docs.bastani.ai/subagents#subagent-start-timeouts).
 
 `pause` stops a child and holds its queued messages until `resume`. `quit` stops a running or paused child gracefully while keeping it resumable. `resume` reopens the child's saved session under the same ID and Intercom name. Paused, quit, and interrupted children receive `message` once as their next prompt before continuing; completed and failed children receive `message` as a fresh turn. Omitting `message` prompts any resumable child to continue where it left off. Permanently cancelled children and children reported gone after a restart cannot be resumed and require a fresh launch. Calling removed `kill` or `interrupt` returns:
 
