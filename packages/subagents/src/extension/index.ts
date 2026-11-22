@@ -5,7 +5,6 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	initTheme,
-	isInteractiveEngineRestarted,
 	keyHintIfBound,
 	publishExtensionContextEffect,
 	type SessionEntry,
@@ -517,7 +516,7 @@ export default function registerSubagentExtension(atomic: ExtensionAPI): void {
 				});
 				await Promise.all([committed, started]);
 				if (opened) void holdRunningSubagentChildren(atomic.events, ctx).catch(() => undefined);
-				if (opened && !isInteractiveEngineRestarted())
+				if (opened && !event.engineRestart)
 					void resumeAwaitingSubagentChildren(
 						executorDeps,
 						ctx,

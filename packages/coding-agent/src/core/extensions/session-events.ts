@@ -34,6 +34,8 @@ export interface SessionStartEvent {
 	reason: "startup" | "reload" | "new" | "resume" | "fork";
 	/** Previously active session ID. Present for "new", "resume", and "fork". */
 	previousSessionId?: string;
+	/** True when an isolated engine child replaced one that crashed, rather than a user startup or `/resume`. */
+	readonly engineRestart?: true;
 }
 
 /** Why a session's interrupted-work recovery is running. */
