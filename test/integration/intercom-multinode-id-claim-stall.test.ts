@@ -8,6 +8,7 @@ import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client
 import {
 	PRESENCE_REGISTRATION_BOUND_MS,
 	SESSION_ID_CLAIM_BOUND_MS,
+	SESSION_ID_CLAIM_PROGRESS_CAP_MS,
 } from "../../packages/intercom/broker/multinode-router.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
@@ -32,16 +33,16 @@ const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { stallableIdClaims: true, park
 /** Spawning a real broker process is the structural cost of this suite. */
 const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTIONS);
 /**
- * The broker stops running for this long right after the database wrote the id: far longer than the claim may wait, and
- * short enough that a broker that decides once it runs again still registers the session well within its client's own
- * wait.
- */
-const BROKER_STALL_MS = 8_200;
-/**
  * A registration that waits out both its claim and its presence bound leaves its client this much of its wait for
  * everything else: the broker's store I/O, message handling and IPC, which take far longer on a loaded runner.
  */
 const REAL_WORK_HEADROOM_MS = 2_000;
+/**
+ * The broker stops running for this long right after the database wrote the id: far longer than the claim may wait, even
+ * when it moves its deadline on (`SESSION_ID_CLAIM_PROGRESS_CAP_MS`), and short enough that a broker that decides once it
+ * runs again still has the real work's headroom left of its client's own wait.
+ */
+const BROKER_STALL_MS = BROKER_CONNECT_TIMEOUT_MS - REAL_WORK_HEADROOM_MS;
 /** A claim stalled just past its own bound, so that it gives up on its deadline when the broker runs again. */
 const PAST_CLAIM_BOUND_STALL_MS = SESSION_ID_CLAIM_BOUND_MS + 100;
 /**
@@ -202,6 +203,10 @@ test(
 		const observer = await harness.connect("b", unique("observer"));
 		const original = await harness.connect("a", unique("returning"));
 		const id = await leaveAway(original, observer);
+		assert.ok(
+			BROKER_STALL_MS > SESSION_ID_CLAIM_PROGRESS_CAP_MS,
+			"the broker stalls past every deadline of the claim",
+		);
 		harness.stallIdClaim(original.returnAddress, BROKER_STALL_MS);
 
 		// The client waits as long as a real session's does.

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { type QueuedDeliveryChange, QueuedDeliveryRelay } from "../src/core/queued-message-delivery.ts";
@@ -57,6 +58,7 @@ async function engineLines(relay: QueuedDeliveryRelay | undefined) {
 	await binding.rebindSession();
 	return {
 		binding,
+		harness,
 		lines,
 		session: harness.session,
 		/** A turn holding in its tool round takes `text`, queued meanwhile, at its next turn boundary. */
@@ -119,6 +121,46 @@ describe("the lines an engine writes about the queued messages its main session 
 		await engine.deliver("later one");
 		assert.deepEqual(changes(engine.lines), []);
 	});
+
+	test("carry a prompt's origin send id on user message_start only inside atomicQueuedDeliveries for hosts that asked", async () => {
+		const engine = await engineLines(new QueuedDeliveryRelay());
+		engine.harness.setResponses([fauxAssistantMessage("ok")]);
+		await engine.session.prompt("tagged prompt", { originSendId: "send-origin-1" });
+		await waitFor("the run to settle", () => engine.lines.some((line) => line.type === "agent_settled"));
+
+		const userStarts = engine.lines.filter(
+			(line) =>
+				line.type === "message_start" &&
+				typeof line.message === "object" &&
+				line.message !== null &&
+				(line.message as { role?: string }).role === "user",
+		);
+		assert.equal(userStarts.length, 1);
+		assert.deepEqual(userStarts[0]?.atomicQueuedDeliveries, { origin: "send-origin-1" });
+		assert.equal("originSendId" in (userStarts[0] ?? {}), false, "origin id must not leak as a top-level event key");
+		assert.equal("origin" in (userStarts[0] ?? {}), false, "origin id must not leak as a top-level event key");
+		// message_end does not repeat origin.
+		const userEnds = engine.lines.filter(
+			(line) =>
+				line.type === "message_end" &&
+				typeof line.message === "object" &&
+				line.message !== null &&
+				(line.message as { role?: string }).role === "user",
+		);
+		assert.equal(userEnds.length, 1);
+		assert.equal("atomicQueuedDeliveries" in (userEnds[0] ?? {}), false);
+
+		// A raw RPC client / host that did not ask for queuedDeliveries receives zero origin fields on the wire.
+		const rawEngine = await engineLines(undefined);
+		rawEngine.harness.setResponses([fauxAssistantMessage("ok")]);
+		await rawEngine.session.prompt("raw tagged prompt", { originSendId: "send-origin-raw" });
+		await waitFor("raw run to settle", () => rawEngine.lines.some((line) => line.type === "agent_settled"));
+		assert.deepEqual(changes(rawEngine.lines), []);
+		for (const line of rawEngine.lines) {
+			assert.equal("originSendId" in line, false);
+			assert.equal("origin" in line, false);
+		}
+	});
 });
 
 describe("a host's client reading an engine's lines", () => {
@@ -178,5 +220,92 @@ process.stdin.resume();
 		assert.deepEqual(received, [{ taken: [{ lane: "steer", text: "later one" }] }]);
 		// The tool update written before it reaches its listeners first, with the queue it was sent with.
 		assert.deepEqual(order, ["session_info_changed", "tool_execution_update", "change", "queue_update"]);
+	});
+
+	test("strips origin send id off message_start before public listeners see it and forwards originSendId on prompt", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-echo-origin-wire-"));
+		dirs.push(dir);
+		const path = join(dir, "engine.mjs");
+		writeFileSync(
+			path,
+			`import { createInterface } from "node:readline";
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+send({ type: "engine_ready", protocolVersion: 4, pid: process.pid });
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+	const cmd = JSON.parse(line);
+	if (cmd.type === "prompt") {
+		send({ type: "response", id: cmd.id, command: "prompt", success: true, data: { disposition: "started" } });
+		send({
+			type: "message_start",
+			message: { role: "user", content: [{ type: "text", text: cmd.message }], timestamp: 1 },
+			...(typeof cmd.originSendId === "string" ? { atomicQueuedDeliveries: { origin: cmd.originSendId } } : {}),
+		});
+	}
+});
+`,
+		);
+		const client = new RpcClient({ cliPath: path, interactiveEngine: { onDiagnostic: () => {} } });
+		cleanups.push(() => client.stop());
+		const events: RpcEvent[] = [];
+		const received: QueuedDeliveryChange[] = [];
+		client.onQueuedDeliveryChange((change) => received.push(change));
+		client.onEvent((event) => events.push(event));
+		await client.start();
+
+		const disposition = await client.prompt("hello", undefined, "steer", undefined, "send-wire-42");
+		assert.equal(disposition, "started");
+		await waitFor("message_start", () => events.some((event) => event.type === "message_start"));
+
+		const start = events.find((event) => event.type === "message_start");
+		assert.ok(start);
+		assert.deepEqual(Object.keys(start).sort(), ["message", "type"], "public event has no private keys");
+		assert.deepEqual(received, [{ origin: "send-wire-42" }]);
+
+		// Mixed-version: a prompt without originSendId (as an older host sends) produces no origin change.
+		const disposition2 = await client.prompt("plain", undefined, "steer");
+		assert.equal(disposition2, "started");
+		await waitFor(
+			"second message_start",
+			() => events.filter((event) => event.type === "message_start").length === 2,
+		);
+		assert.deepEqual(received, [{ origin: "send-wire-42" }]);
+	});
+
+	test("accepts responses from an older engine that ignores originSendId and omits origin on message_start", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-echo-origin-old-engine-"));
+		dirs.push(dir);
+		const path = join(dir, "old-engine.mjs");
+		writeFileSync(
+			path,
+			`import { createInterface } from "node:readline";
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+send({ type: "engine_ready", protocolVersion: 4, pid: process.pid });
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+	const cmd = JSON.parse(line);
+	if (cmd.type === "prompt") {
+		// Simulates a 0.10.3/0.10.4 engine: ignores cmd.originSendId and emits no origin on message_start.
+		send({ type: "response", id: cmd.id, command: "prompt", success: true, data: { disposition: "started" } });
+		send({
+			type: "message_start",
+			message: { role: "user", content: [{ type: "text", text: cmd.message }], timestamp: 1 },
+		});
+	}
+});
+`,
+		);
+		const client = new RpcClient({ cliPath: path, interactiveEngine: { onDiagnostic: () => {} } });
+		cleanups.push(() => client.stop());
+		const events: RpcEvent[] = [];
+		const received: QueuedDeliveryChange[] = [];
+		client.onQueuedDeliveryChange((change) => received.push(change));
+		client.onEvent((event) => events.push(event));
+		await client.start();
+
+		const disposition = await client.prompt("hello", undefined, "steer", undefined, "send-from-new-host");
+		assert.equal(disposition, "started");
+		await waitFor("message_start", () => events.some((event) => event.type === "message_start"));
+		assert.deepEqual(received, []);
 	});
 });

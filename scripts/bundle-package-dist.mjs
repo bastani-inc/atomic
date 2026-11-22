@@ -46,6 +46,7 @@ import {
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { codeStringLiteral } from "../packages/coding-agent/scripts/code-string-literal.mjs";
 
 /** Where a package with an exports map keeps its compiled modules for bundlers, below `dist`. */
 export const MODULES_DIRECTORY = "_modules";
@@ -484,9 +485,10 @@ export async function bundlePackageDist(packageDir, options = {}) {
 						const named = exps.filter((name) => name !== "default");
 						const lines = [];
 						if (named.length > 0)
-							lines.push(`export { ${named.join(", ")} } from ${JSON.stringify(virtualTarget)};`);
-						if (exps.includes("default")) lines.push(`export { default } from ${JSON.stringify(virtualTarget)};`);
-						if (lines.length === 0) lines.push(`import ${JSON.stringify(virtualTarget)}; export {};`);
+							lines.push(`export { ${named.join(", ")} } from ${codeStringLiteral(virtualTarget)};`);
+						if (exps.includes("default"))
+							lines.push(`export { default } from ${codeStringLiteral(virtualTarget)};`);
+						if (lines.length === 0) lines.push(`import ${codeStringLiteral(virtualTarget)}; export {};`);
 						return { code: `${lines.join("\n")}\n`, map: null };
 					}
 					const code = sources.get(normalizeId(id));
@@ -516,7 +518,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 					const transformed = await esbuild.transform(withMap, {
 						...options,
 						sourcemap: "external",
-						banner: `const ${MODULE_URL} = ${JSON.stringify(`${MODULE_URL_MARKER}${toPosix(relative(dist, normalizeId(id)))}`)};`,
+						banner: `const ${MODULE_URL} = ${codeStringLiteral(`${MODULE_URL_MARKER}${toPosix(relative(dist, normalizeId(id)))}`)};`,
 					});
 					return { code: transformed.code, map: JSON.parse(transformed.map) };
 				},
@@ -782,7 +784,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			const fromDir = dirname(path);
 			contents = contents.replace(new RegExp(`"${MODULE_URL_MARKER}([^"]*)"`, "g"), (_, rel) => {
 				const target = relative(fromDir, join(dist, rel)).split(sep).map(encodeURIComponent).join("/");
-				return `new URL(${JSON.stringify(target.startsWith(".") ? target : `./${target}`)}, import.meta.url).href`;
+				return `new URL(${codeStringLiteral(target.startsWith(".") ? target : `./${target}`)}, import.meta.url).href`;
 			});
 			if (contents.includes(MODULE_URL_MARKER)) {
 				throw new Error(`bundle-package-dist: ${item.fileName} names a module URL the build could not replace`);
@@ -803,10 +805,10 @@ export async function bundlePackageDist(packageDir, options = {}) {
 				const namedExports = item.exports.filter((name) => name !== "default").sort();
 				const shimLines = [];
 				if (namedExports.length > 0) {
-					shimLines.push(`export { ${namedExports.join(", ")} } from ${JSON.stringify(`./${item.fileName}`)};`);
+					shimLines.push(`export { ${namedExports.join(", ")} } from ${codeStringLiteral(`./${item.fileName}`)};`);
 				}
 				if (item.exports.includes("default")) {
-					shimLines.push(`export { default } from ${JSON.stringify(`./${item.fileName}`)};`);
+					shimLines.push(`export { default } from ${codeStringLiteral(`./${item.fileName}`)};`);
 				}
 				for (const name of compatNames) {
 					shimLines.push(`export function ${name}() {}`);

@@ -349,6 +349,24 @@ export interface SessionSnapshotCut {
 	 */
 	readonly seqs: readonly number[];
 }
+/**
+ * Per-axis provenance of the active branch's latest setting entry (`model_change` or `thinking_level_change`) in a
+ * {@link SessionResume} window:
+ * - `"held"`: the latest on-branch entry of that axis is at `seq` and appears on the returned branch/state.
+ * - `"none"`: the active branch has no entry of that axis anywhere in the session up to this leaf.
+ * - `"not-held"`: the resume plan or store did not retain this axis for the pre-window prefix.
+ */
+export type SessionResumeRetainedSetting =
+	| { readonly status: "held"; readonly seq: number }
+	| { readonly status: "none" }
+	| { readonly status: "not-held" };
+
+/** Per-axis latest-setting retention provenance carried by a {@link SessionResume}. */
+export interface SessionResumeRetainedSettings {
+	readonly model: SessionResumeRetainedSetting;
+	readonly thinkingLevel: SessionResumeRetainedSetting;
+}
+
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
 	readonly lastSeq: number;
@@ -366,6 +384,12 @@ export interface SessionResume {
 		readonly positions: readonly { seq: number; onBranch: boolean }[];
 		readonly aliases: Readonly<Record<string, SessionChildAliases>>;
 	};
+	/**
+	 * Per-axis retention provenance for the active branch's latest `model_change` and `thinking_level_change` entries.
+	 * Optional for older or custom stores; when absent, the manager preserves pre-existing retention assumptions, and
+	 * only an explicit `"not-held"` (or contradictory provenance) reports an axis as not held.
+	 */
+	readonly retainedSettings?: SessionResumeRetainedSettings;
 }
 
 export interface SessionSummary {

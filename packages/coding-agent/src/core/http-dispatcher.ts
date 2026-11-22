@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { isIP } from "node:net";
 import * as nodeHttpProxy from "@bastani/atomic-ai/utils/node-http-proxy";
 import * as tlsCertificate from "@bastani/atomic-ai/utils/tls-certificate";
 import * as undici from "undici";
@@ -170,6 +171,12 @@ function createUndiciClient(origin: string | URL, options: object): undici.Dispa
 	return withUndiciErrorListener(new undici.Client(origin, options as undici.Client.Options));
 }
 
+function isIpServerName(servername: unknown): boolean {
+	if (typeof servername !== "string" || servername.length === 0) return false;
+	const bare = servername.startsWith("[") && servername.endsWith("]") ? servername.slice(1, -1) : servername;
+	return isIP(bare) !== 0;
+}
+
 /**
  * The client a proxy agent builds for the proxy itself, with the connector that reaches the proxy: an error that
  * connector fails with, such as a certificate the proxy showed, is the proxy's, not the endpoint's, which the proxy never
@@ -178,11 +185,18 @@ function createUndiciClient(origin: string | URL, options: object): undici.Dispa
 function createUndiciProxyClient(proxy: string | URL, options: object): undici.Dispatcher {
 	const { connect } = options as undici.Client.Options;
 	if (typeof connect !== "function") return createUndiciClient(proxy, options);
-	const connectToProxy: undici.buildConnector.connector = (connectOptions, callback) =>
-		connect(connectOptions, (...result) => {
+	const connectToProxy: undici.buildConnector.connector = (connectOptions, callback) => {
+		// Undici's ProxyAgent sets `servername` to the proxy URL's hostname even for IP literals (with brackets kept
+		// for IPv6), which sends a forbidden RFC 6066 IP SNI on IPv4 and breaks IPv6 certificate verification.
+		const sanitized =
+			connectOptions.protocol === "https:" && isIpServerName(connectOptions.servername)
+				? { ...connectOptions, servername: undefined }
+				: connectOptions;
+		return connect(sanitized, (...result) => {
 			if (result[0] !== null) proxyFailures.recordProxyConnectionFailure?.(result[0], proxy);
 			callback(...result);
 		});
+	};
 	return createUndiciClient(proxy, { ...options, connect: connectToProxy });
 }
 

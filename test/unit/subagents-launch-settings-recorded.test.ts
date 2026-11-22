@@ -283,3 +283,57 @@ test("a later launch that does not know its leaf's position or level keeps none 
 		"saved",
 	);
 });
+
+test("a child opened with a partial session whose model axis is not-held records its launch model before its first request", async () => {
+	const cwd = root();
+	const backingStore = new MemorySessionStore();
+	const session = await sessionRecording(cwd, "openai/child-model", "high", backingStore);
+	await session.appendCompaction("cleared", null, 300, {
+		strategy: "verbatim-lines",
+		form: "cleared",
+		promptVersion: 7,
+		parameters: { query: "clear" },
+		stats: {
+			linesBefore: 1,
+			linesDeleted: 1,
+			linesKept: 0,
+			rangeCount: 0,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+	});
+	await session.appendMessage({ role: "user", content: "in window", timestamp: 2 });
+
+	const baseReadResume = backingStore.readResume.bind(backingStore);
+	const omitModelStore = Object.assign(Object.create(backingStore) as MemorySessionStore, {
+		readResume: async (...args: Parameters<MemorySessionStore["readResume"]>) => {
+			const resume = await baseReadResume(...args);
+			const modelInBranch = resume.branch.some((row) => row.entry.type === "model_change");
+			return {
+				...resume,
+				state: resume.state.filter((row) => row.entry.type !== "model_change"),
+				retainedSettings: {
+					model: modelInBranch ? resume.retainedSettings!.model : ({ status: "not-held" } as const),
+					thinkingLevel: resume.retainedSettings!.thinkingLevel,
+				},
+			};
+		},
+	});
+	const partial = await SessionManager.open(omitModelStore, session.getSessionId(), cwd, { history: "tail" });
+	assert.equal(partial.getLatestBranchSettingsWithProvenance().model.status, "not-held");
+
+	const child = await launch(cwd, partial, "openai/child-model", "high", { resumeSession: true });
+	await child.launched;
+	// Because model was not-held, launchSettingsWrite recorded openai/child-model in the held tail (no extra write for
+	// thinkingLevel, which was already held and matched "high").
+	const afterLaunch = await SessionManager.open(omitModelStore, session.getSessionId(), cwd, { history: "tail" });
+	assert.equal(afterLaunch.getLatestBranchSettingsWithProvenance().model.status, "found");
+	const full = await backingStore.load(session.getSessionId());
+	const modelChanges = full.entries.filter((entry) => entry.type === "model_change");
+	const thinkingChanges = full.entries.filter((entry) => entry.type === "thinking_level_change");
+	assert.equal(modelChanges.length, 2, "wrote one new model_change for the not-held model axis");
+	assert.equal(thinkingChanges.length, 1, "wrote no thinking_level_change because thinking was held and matched");
+	child.gate.resolve();
+	assert.equal((await child.running.promise).status, "ok");
+});
