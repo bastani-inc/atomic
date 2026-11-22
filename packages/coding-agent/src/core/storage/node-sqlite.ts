@@ -35,7 +35,6 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
-	SqliteStatement,
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
@@ -87,7 +86,12 @@ import {
 	type SequenceRequest,
 	ThreadConnection,
 } from "./node-sqlite-thread.js";
-import { offerSequences, type SqliteSequence } from "./statement-sequence.js";
+import {
+	MAX_SEQUENCE_REQUEST_STATEMENTS,
+	offerSequences,
+	type SequencedStatement,
+	type SqliteSequence,
+} from "./statement-sequence.js";
 import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** Loaded at the first degradation only, so opening a database does not load debug output. */
@@ -1090,8 +1094,6 @@ const LOCK_RELEASE_RETRY_MS = 16;
 const LOCK_RELEASE_RETRY_ATTEMPTS = 1_000;
 /** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
-/** Most statements one sequence request carries, so a message to the connection's thread stays small. */
-const MAX_SEQUENCE_REQUEST_STATEMENTS = 256;
 /**
  * Default for how long a group commit runs its members before it commits them and takes the lock again for the
  * rest: a batch of cheap transactions in a process starved of CPU still lets other processes' writers in between.
@@ -1368,8 +1370,8 @@ function sendable(value: SqliteValue): SqliteValue {
 	return new Uint8Array(value);
 }
 
-function sendableStatement({ sql, params }: SqliteStatement): SqliteStatement {
-	return { sql, params: params.map(sendable) };
+function sendableStatement({ sql, params, script }: SequencedStatement): SequencedStatement {
+	return { sql, params: params.map(sendable), ...(script === true ? { script } : {}) };
 }
 
 /** The index of the first text parameter holding NUL, which no statement may bind, or -1. */
@@ -1423,6 +1425,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private tail: Promise<void> = Promise.resolve();
 	/** Operations queued on this connection so far; a batch's `position` is the one that commits it. */
 	private enqueued = 0;
+	/**
+	 * The latest single statement queued on a connection thread: its `position`, and `sent`, which settles once its
+	 * request is on its way to the thread. A statement queued directly behind it is sent then (see `enqueueStatement`).
+	 */
+	private lastStatement?: { readonly position: number; readonly sent: Promise<void> };
 	/** Batches whose commit has not started, in order; the last one takes new transactions while it is open. */
 	private readonly waitingBatches: PendingBatch[] = [];
 	private closing = false;
@@ -1494,7 +1501,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 	supportsJsonbExtract(): Promise<boolean> {
 		// Bun on macOS loads the system SQLite. Its functions need not match the build-time version.
-		this.jsonbExtract ??= this.enqueueStatement(() => this.executor.checkJsonbExtract()).catch(() => {
+		this.jsonbExtract ??= this.enqueueStatement(() => this.executor.checkJsonbExtract(), true).catch(() => {
 			// A schema lock can also prevent preparation. Don't remember it as a missing function.
 			this.jsonbExtract = undefined;
 			return false;
@@ -1845,7 +1852,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			let taken = false;
 			let repeated = 0;
 			for (let first = true; !taken || first; first = false) {
-				const batch: SqliteStatement[] = [];
+				const batch: SequencedStatement[] = [];
 				while (!taken && batch.length < MAX_SEQUENCE_REQUEST_STATEMENTS) {
 					const next = pending.next();
 					if (next.done === true) {
@@ -1897,41 +1904,79 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return result;
 	}
 
-	/** A statement queued after open transactions runs after them, so later transactions start a new batch. */
-	private enqueueStatement<T>(operation: () => Promise<T>): Promise<T> {
+	/**
+	 * A statement queued after open transactions runs after them, so later transactions start a new batch. A `single`
+	 * statement, one request to a connection thread, queued directly behind another is sent as soon as that one has
+	 * been sent rather than once it is answered: the thread runs requests in the order they arrive, so it runs the two
+	 * in the same order, but statements read together cost one wait for the thread instead of one each, which on a
+	 * loaded machine is most of what they cost. Anything else still waits until everything queued before it settled.
+	 */
+	private enqueueStatement<T>(operation: () => Promise<T>, single = false): Promise<T> {
 		const last = this.waitingBatches.at(-1);
 		if (last !== undefined) last.open = false;
-		return this.enqueue(operation);
+		if (!single || !(this.connection instanceof ThreadConnection) || this.closing) return this.enqueue(operation);
+		const previous = this.lastStatement;
+		const start = previous !== undefined && previous.position === this.enqueued ? previous.sent : this.tail;
+		this.enqueued += 1;
+		let markSent!: () => void;
+		const sent = new Promise<void>((resolve) => {
+			markSent = resolve;
+		});
+		const result = start.then(() => {
+			try {
+				return operation();
+			} finally {
+				markSent();
+			}
+		});
+		this.lastStatement = { position: this.enqueued, sent };
+		// Answered after every statement sent before it: the thread answers in the order it was sent.
+		this.tail = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
 	}
 
 	exec(sql: string): Promise<void> {
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "exec", sql }, false, () => this.executor.exec(sql)),
+		return this.enqueueStatement(
+			() => this.besideHolds(made, { kind: "exec", sql }, false, () => this.executor.exec(sql)),
+			true,
 		);
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "run", sql, params: bound }, true, () => this.executor.run(sql, ...bound)),
+		return this.enqueueStatement(
+			() =>
+				this.besideHolds(made, { kind: "run", sql, params: bound }, true, () => this.executor.run(sql, ...bound)),
+			true,
 		);
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "get", sql, params: bound }, true, () => this.executor.get<T>(sql, ...bound)),
+		return this.enqueueStatement(
+			() =>
+				this.besideHolds(made, { kind: "get", sql, params: bound }, true, () =>
+					this.executor.get<T>(sql, ...bound),
+				),
+			true,
 		);
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
 		const bound = snapshotParams(params);
 		const made = this.holdScope();
-		return this.enqueueStatement(() =>
-			this.besideHolds(made, { kind: "all", sql, params: bound }, true, () => this.executor.all<T>(sql, ...bound)),
+		return this.enqueueStatement(
+			() =>
+				this.besideHolds(made, { kind: "all", sql, params: bound }, true, () =>
+					this.executor.all<T>(sql, ...bound),
+				),
+			true,
 		);
 	}
 
