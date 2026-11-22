@@ -139,6 +139,7 @@ import {
 	promptForMissingSessionCwd,
 	refreshSessionStorage,
 	SessionSelectorConflictError,
+	sessionStorageWouldMove,
 	startupResumeDiagnostics,
 	validateForkFlags,
 	validateImportFlags,
@@ -184,7 +185,7 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
-import { assertNativeModuleAvailable, NativeModuleUnavailableError } from "./utils/native-module.ts";
+import { NativeModuleUnavailableError, nativeModuleProblem, nativeModuleUnavailable } from "./utils/native-module.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -782,6 +783,11 @@ export async function main(argv: string[], options?: MainOptions) {
 	// build that waits for it starts then (#5693).
 	const { promise: startupTrustDecided, resolve: settleStartupTrust } = Promise.withResolvers<void>();
 	let startupRuntime: AgentSessionRuntime | undefined;
+	// Settles once the startup's own runtime creation has done everything that decides what its isolated engine is
+	// started with and finds in the session, so the engine can start while the host creates the rest of its runtime.
+	const { promise: engineInputsFinal, resolve: settleEngineInputs } = Promise.withResolvers<void>();
+	// The startup session whose engine started with its store: the step that finishes its storage keeps that store.
+	let storeKeptForEngine: SessionManager | undefined;
 	// A startup that decides its folder's trust before it opens the session prepares that folder's services first, with
 	// only the extensions that can decide it, and binds them to the session it then opens there, so the extensions load
 	// once (#5693). A session it opens in another folder gets that folder's own extensions; the ones that decided are
@@ -860,6 +866,22 @@ export async function main(argv: string[], options?: MainOptions) {
 		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
 			projectTrusted: initialProjectTrusted,
 		});
+		// An isolated host's startup session: its engine can start now, unless the step that finishes the session's
+		// storage would still write what the engine reads when it opens the session (its name, or a move to another store).
+		if (
+			isolateInteractiveHost &&
+			sessionStartEvent === undefined &&
+			!decideBeforeOpen &&
+			openedSessionManager !== undefined &&
+			storeKeptForEngine === undefined &&
+			parsed.name === undefined &&
+			!(await sessionStorageWouldMove(openedSessionManager, parsed, runtimeSettingsManager, sessionStorage).catch(
+				() => true,
+			))
+		) {
+			storeKeptForEngine = openedSessionManager;
+			settleEngineInputs();
+		}
 		let existingSession!: ReturnType<SessionManager["buildSessionContext"]>;
 		if (openedSessionManager) existingSession = openedSessionManager.buildSessionContext();
 		const deferStartupTrust =
@@ -940,7 +962,11 @@ export async function main(argv: string[], options?: MainOptions) {
 		const finalizeStartupStorage = async () => {
 			// A decision made before the session opened chose its store; the binding below finishes it.
 			if (sessionStartEvent !== undefined || storageFinalized || !sessionManager) return;
-			const store = await refreshSessionStorage(sessionManager, parsed, runtimeSettingsManager, sessionStorage);
+			// An engine that started with the session's store keeps it there.
+			const store =
+				storeKeptForEngine === sessionManager
+					? undefined
+					: await refreshSessionStorage(sessionManager, parsed, runtimeSettingsManager, sessionStorage);
 			if (store && startupSession) {
 				ownedSessionManagerStores.delete(sessionManager);
 				ownedSessionStores.set(startupSession, store);
@@ -1373,9 +1399,9 @@ export async function main(argv: string[], options?: MainOptions) {
 	time("createRuntimeFactory");
 	// A session cannot run without the native module: say why it cannot load and stop, before the session opens (which
 	// loads it) and before the interactive host starts its engine.
-	try {
-		assertNativeModuleAvailable();
-	} catch (error) {
+	const nativeProblem = nativeModuleProblem();
+	if (nativeProblem !== undefined) {
+		const error = await nativeModuleUnavailable(nativeProblem).catch((failure: unknown) => failure);
 		if (!(error instanceof NativeModuleUnavailableError)) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${error.message}`));
@@ -1584,6 +1610,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				cwd: sessionManager.getCwd(),
 				extensionsCanDecide: await extensionsCanDecideTrust,
 			},
+		engineInputsFinal,
 	);
 	endTimingSpan(runtimeCreationSpan);
 	markLifecycleTiming("runtime-created");

@@ -26,6 +26,7 @@ import {
 import { hostname } from "os";
 import { basename, dirname, join } from "path";
 import { renameWithRetry, renameWithRetryAsync } from "./rename-retry.js";
+import { windowsProcessCreationTime } from "./start-announcement.js";
 
 /**
  * A parked file is renamed, read and removed at once, so one parked longer than this was left by a process that
@@ -360,7 +361,14 @@ export function pidOf(content: string | undefined): number | undefined {
   return Number.isFinite(pid) ? pid : undefined;
 }
 
+/**
+ * When process `pid` started, as a lock records its holder: its `/proc` start on Linux, its creation time on Windows,
+ * which gives the pid of an exited process to another within seconds, so a pid alone names a holder only while it runs.
+ * Undefined elsewhere, or where it cannot be read, so the holder's pid decides alone. Holders of earlier versions record
+ * none on Windows, and earlier versions read none there, so either judges the other by its pid, as before.
+ */
 export function processStart(pid: number): string | undefined {
+  if (process.platform === "win32") return windowsProcessCreationTime(pid);
   if (process.platform !== "linux") return undefined;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
@@ -374,6 +382,7 @@ export function processStart(pid: number): string | undefined {
 }
 
 export async function processStartAsync(pid: number): Promise<string | undefined> {
+  if (process.platform === "win32") return windowsProcessCreationTime(pid);
   if (process.platform !== "linux") return undefined;
   try {
     const statText = await readFile(`/proc/${pid}/stat`, "utf-8");

@@ -901,6 +901,10 @@ jobs:
             const root = await Bun.file("packages/natives/package.json").json();
             const actual = Object.keys(root.optionalDependencies ?? {});
             if (actual.length !== 8 || actual.some((name) => !expected.has(name) || root.optionalDependencies[name] !== process.env.VERSION)) throw new Error("native optionalDependencies must be the eight exact-version platform packages");'
+      - name: Check in-place updates from earlier releases
+        env:
+          VERSION: ${{ needs.integrity.outputs.version }}
+        run: node scripts/in-place-update-exports.mjs release "$VERSION" packages/coding-agent/in-place-update npm-packages
       - name: Upload GitHub release assets
         uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
