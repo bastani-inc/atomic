@@ -237,7 +237,11 @@ describe("stale lock file removal (#5132)", () => {
 		assert.equal(isAbandoned(path, `${process.pid}\n${ownStart ?? ""}\n`), false);
 		assert.equal(isAbandoned(path, `${UNSIGNALLABLE_PID}\n`), false, "a live process this user may not signal");
 		assert.equal(isAbandoned(path, "2147483646\n"), true);
-		assert.equal(isAbandoned(path, `${process.pid}\nanother start\n`), ownStart !== undefined);
+		// A start in the form this platform records, of another process: on Windows and macOS a count, one before this
+		// process's own (a start in another form proves nothing there).
+		const anotherStart =
+			ownStart !== undefined && /^\d+$/u.test(ownStart) ? String(BigInt(ownStart) - 1n) : "another start";
+		assert.equal(isAbandoned(path, `${process.pid}\n${anotherStart}\n`), ownStart !== undefined);
 	});
 });
 
