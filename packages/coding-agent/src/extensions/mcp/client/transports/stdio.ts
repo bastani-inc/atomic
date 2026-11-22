@@ -33,32 +33,53 @@ const liveProcessGroups = new Set<number>();
 let exitHookInstalled = false;
 
 /**
- * Ends `child` and the processes it started. Resolves once the kill command that does it on Windows has finished, or
- * failed to start; at once elsewhere.
+ * Ends `child` and the processes it started. On Windows, returns a promise that resolves once the kill command has
+ * finished or failed to start; `undefined` when no kill command was started (elsewhere, already exited, or when
+ * starting the kill command threw synchronously and the direct handle kill ran instead).
  */
-function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
+function killProcessTree(
+	child: ChildProcess,
+	signal: NodeJS.Signals,
+	onSettled?: () => void,
+): Promise<void> | undefined {
 	const pid = child.pid;
 	if (process.platform === "win32" && pid !== undefined) {
-		if (child.exitCode !== null) return Promise.resolve();
+		if (child.exitCode !== null || child.signalCode !== null) return undefined;
 		// Windows has no graceful signals, and cross-spawn runs `.cmd` shims through cmd.exe; killing only
 		// that would leave the server running. The kill command runs in the system directory, so it never keeps the
 		// folder Atomic runs in, the project's, in use.
 		const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
-		return new Promise((resolve) => {
+		try {
 			const kill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
 				cwd: systemRoot,
 				stdio: "ignore",
 				windowsHide: true,
 			});
-			kill.once("error", () => resolve());
-			kill.once("exit", () => resolve());
-		});
+			return new Promise((resolve) => {
+				let settled = false;
+				const finish = (fallback: boolean) => {
+					if (settled) return;
+					settled = true;
+					onSettled?.();
+					if (fallback && child.exitCode === null && child.signalCode === null) {
+						try {
+							child.kill(signal);
+						} catch {}
+					}
+					resolve();
+				};
+				kill.once("error", () => finish(true));
+				kill.once("exit", (code) => finish(code !== 0));
+			});
+		} catch {
+			// Starting taskkill failed synchronously; fall through to killing the direct child handle.
+		}
 	}
 	if (USE_PROCESS_GROUPS && pid !== undefined) {
 		try {
 			// Negative pid: the whole group, so wrappers like `npx` or `uvx` do not leave the server behind.
 			process.kill(-pid, signal);
-			return Promise.resolve();
+			return undefined;
 		} catch {
 			// The group is gone or was never created; fall back to the direct child.
 		}
@@ -66,7 +87,7 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): Promise<v
 	try {
 		child.kill(signal);
 	} catch {}
-	return Promise.resolve();
+	return undefined;
 }
 
 function installExitHook(): void {
@@ -444,15 +465,26 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		}
 		// Shutdown per the spec: close stdin and let the server exit, then SIGTERM, then SIGKILL.
 		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
-		/** The kill commands this close started, which it waits for once the server has closed. */
-		const kills: Promise<void>[] = [];
-		const kill = (signal: NodeJS.Signals) => kills.push(killProcessTree(child, signal));
+		/** The kill commands this close started that are still running, waited for once the server has closed. */
+		const kills = new Set<Promise<void>>();
+		const kill = (signal: NodeJS.Signals) => {
+			let settled = false;
+			const pending = killProcessTree(child, signal, () => {
+				settled = true;
+				if (pending !== undefined) kills.delete(pending);
+			});
+			if (pending !== undefined && !settled) kills.add(pending);
+		};
 		await new Promise<void>((resolve) => {
 			const timers: ReturnType<typeof setTimeout>[] = [];
 			child.once("close", () => {
 				for (const timer of timers) clearTimeout(timer);
 				// Children of the server that ignored stdin closing would otherwise outlive it.
 				kill("SIGTERM");
+				if (kills.size === 0) {
+					resolve();
+					return;
+				}
 				// A kill command still finishing ends the rest of the server's processes: wait for it, as long as the
 				// server itself was given after SIGTERM, and no longer.
 				const bound = setTimeout(resolve, closeTimeoutMs);

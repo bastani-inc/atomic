@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as atomicHost from "@bastani/atomic";
 import { hostCommandEnvironment } from "./host-command-environment.js";
-import { processCreationTimeOf } from "./start-announcement.js";
+import { processCreationTimeOf, recognisedProcessStart } from "./start-announcement.js";
 
 /**
  * A broker process found by its pid, told apart from a later process the OS gives the same pid (#6133). Windows gives
@@ -202,8 +202,10 @@ export function laterProcessProbe(
 		() => {},
 	);
 	return () => {
-		if (broker !== undefined && !later && !reading && broker.started !== undefined) {
-			const { pid, started } = broker;
+		// A start in a form this reader does not recognise is read as none recorded: it proves nothing either way.
+		const started = recognisedProcessStart(broker?.started);
+		if (broker !== undefined && !later && !reading && started !== undefined) {
+			const { pid } = broker;
 			reading = true;
 			void readCurrentStart(pid).then(
 				(current) => {
@@ -352,7 +354,9 @@ const UNANSWERED_BROKER_STOP_WAIT_MS = 5_000;
  * - Linux: with SIGTERM while the pid's start token is still `broker.started`, read just before the signal.
  * - macOS: with SIGTERM to the pid, as before, unless its start, read again just before, shows another process.
  */
-export async function endUnansweredBroker(broker: BrokerProcess): Promise<void> {
+export async function endUnansweredBroker(found: BrokerProcess): Promise<void> {
+	// A start in a form this reader does not recognise is ended as one never read.
+	const broker: BrokerProcess = { ...found, started: recognisedProcessStart(found.started) };
 	if (process.platform === "win32") {
 		if (broker.started === undefined) return;
 		if (broker.wroteBrokerPid !== "yes" && broker.wroteBrokerPid !== "unavailable") return;

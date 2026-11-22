@@ -11,7 +11,6 @@ import {
 	openSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -21,6 +20,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { removeFixtureTree } from "../../../test/helpers/fixture-removal.js";
 import { isGone, recordProcess, signalRecordedProcess, waitUntilGone } from "../../../test/helpers/recorded-process.js";
+import { renameWithRetry } from "../../../test/helpers/rename-retry.js";
 import {
 	copiesOutputToLog,
 	LOG_TAIL_BYTES,
@@ -859,7 +859,7 @@ describe("running a logged process (#4588)", () => {
 				controller.abort(reason);
 				await assert.rejects(pending, (error: unknown) => error === reason);
 				assert.equal(await isGone(sleeper), true, "the sleep holding a file in the step's directory has ended");
-				renameSync(work, path("work-moved"));
+				await renameWithRetry(work, path("work-moved"));
 			} finally {
 				await signalRecordedProcess(sleeper);
 			}
