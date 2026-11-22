@@ -15,6 +15,7 @@ const { getBrokerSocketPath } = await import("../../packages/intercom/broker/pat
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { requestBrokerShutdown } = await import("../../packages/intercom/broker/broker-stop.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
 const { UNCERTAIN_RECEIPT_REASON } = await import("../../packages/intercom/broker/recipient-receipts.js");
 const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_FAILED, DEPARTURE_ASKS_TO_IT_TAKEN } =
@@ -542,6 +543,42 @@ async function releasedSubagentAsks(label: string, options: { departure?: "handl
 }
 
 /** The owner is back, and restores its subagent under its own session. */
+/**
+ * Runs `step`, a send to `target` or a wait for what it brings: one that fails says how long it ran, what the broker
+ * reports (its sessions, the recipients it is restoring and the sends it holds for them), how `lister`'s connection sees
+ * the sessions, and what `received` holds, so a failure on a loaded runner can be told apart from a send nothing routes.
+ */
+async function explained<T>(
+	step: () => Promise<T>,
+	observed: { readonly lister: Client; readonly received: readonly Message[]; readonly target: string },
+): Promise<T> {
+	const started = performance.now();
+	try {
+		return await step();
+	} catch (error) {
+		const elapsedMs = Math.round(performance.now() - started);
+		const unreadable = (read: Error) => `(unreadable: ${read.message})`;
+		const [broker, sessions] = await Promise.all([
+			queryIntercomBroker(brokerFixture.agentDir).catch(unreadable),
+			observed.lister
+				.listSessions()
+				.then((listed) =>
+					listed.map(({ id, name, replyCapability }) => ({
+						id,
+						name,
+						replyCapability,
+						target: id === observed.target,
+					})),
+				)
+				.catch(unreadable),
+		]);
+		const received = observed.received.map(({ id, replyTo, replyError }) => ({ id, replyTo, replyError }));
+		if (error instanceof Error)
+			error.message = `${error.message}\nafter ${elapsedMs} ms; broker: ${JSON.stringify(broker)}; sessions: ${JSON.stringify(sessions)}; received: ${JSON.stringify(received)}`;
+		throw error;
+	}
+}
+
 async function restoreSubagent(owner: { name: string; returnAddress: string; ownerToken: string }, child: Peer) {
 	const ownerBack = await connect(owner.name, owner);
 	return connect(child.name, {
@@ -644,15 +681,24 @@ test(
 		const recipientBack = await reconnect(recipient);
 		const childBack = await restoreSubagent(owner, child);
 		const replyId = randomUUID();
-		const replied = await recipientBack.client.send(child.id, {
-			messageId: replyId,
-			text: "port 8080",
-			replyTo: questionId,
-			requirePendingReply: true,
-			expectedRecipientId: child.id,
-		});
+		const observed = { lister: recipientBack.client, received: childBack.received, target: child.id };
+		const replied = await explained(
+			() =>
+				recipientBack.client.send(child.id, {
+					messageId: replyId,
+					text: "port 8080",
+					replyTo: questionId,
+					requirePendingReply: true,
+					expectedRecipientId: child.id,
+				}),
+			observed,
+		);
 		assert.equal(replied.delivered, true, replied.reason);
-		await vi.waitFor(() => assert.deepEqual(outcomes(childBack, questionId), [{ id: replyId, failed: false }]), WAIT);
+		await explained(
+			() =>
+				vi.waitFor(() => assert.deepEqual(outcomes(childBack, questionId), [{ id: replyId, failed: false }]), WAIT),
+			observed,
+		);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
