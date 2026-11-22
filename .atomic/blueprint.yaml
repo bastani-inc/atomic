@@ -20,7 +20,7 @@ maintenance:
 knowledge:
   - name: lint
     contents: |
-      Run `npm run check`: biome, the `bun check` typecheck passes, the published-shrinkwrap check and the interactive event-loop check.
+      Run `npm run check`: biome, the `bun check` typecheck passes and the interactive event-loop check.
       It needs Bun >= 1.4.5 on PATH. `npm run typecheck` runs the typecheck passes alone, and
       `npm run format` applies biome's formatting. If a direct Git commit cannot find `prek`,
       use `PATH="$PWD/node_modules/.bin:$PATH" git commit ...` so the installed hook finds the local binary.

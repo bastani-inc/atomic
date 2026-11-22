@@ -361,6 +361,18 @@ runTest(
 const PACKED_NODE_CONSUMER_TIMEOUT_MS = 480_000;
 
 /** This host's napi target, as the platform package of `@bastani/atomic-natives` names it. */
+/** The platform package suffix napi-rs gives each of the native module's Rust targets. */
+const NAPI_TARGET_PLATFORM_PACKAGE_SUFFIX: Record<string, string> = {
+	"x86_64-pc-windows-msvc": "win32-x64-msvc",
+	"aarch64-pc-windows-msvc": "win32-arm64-msvc",
+	"x86_64-apple-darwin": "darwin-x64",
+	"aarch64-apple-darwin": "darwin-arm64",
+	"x86_64-unknown-linux-gnu": "linux-x64-gnu",
+	"aarch64-unknown-linux-gnu": "linux-arm64-gnu",
+	"x86_64-unknown-linux-musl": "linux-x64-musl",
+	"aarch64-unknown-linux-musl": "linux-arm64-musl",
+};
+
 function hostNativeTarget(): string {
 	if (process.platform === "win32") return `win32-${process.arch}-msvc`;
 	if (process.platform !== "linux") return `${process.platform}-${process.arch}`;
@@ -455,12 +467,17 @@ function packClosure(npmCli: string): PackedClosure {
 	const nativesManifest = JSON.parse(fs.readFileSync(join(nativesDir, "package.json"), "utf8")) as {
 		version: string;
 		files: string[];
+		napi: { targets: string[] };
 	};
-	const published = JSON.parse(fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8")) as {
-		packages: Record<string, { optionalDependencies?: Record<string, string> }>;
-	};
-	const optionalDependencies = published.packages["node_modules/@bastani/atomic-natives"]?.optionalDependencies;
-	assert.ok(optionalDependencies, "the published shrinkwrap lists the platform packages of @bastani/atomic-natives");
+	// As publish.yml's `napi prepublish` writes them: each platform package at the release's exact version.
+	const optionalDependencies = Object.fromEntries(
+		nativesManifest.napi.targets.map((target) => [
+			`@bastani/atomic-natives-${NAPI_TARGET_PLATFORM_PACKAGE_SUFFIX[target]}`,
+			nativesManifest.version,
+		]),
+	);
+	assert.equal(Object.keys(optionalDependencies).length, 8);
+	assert.ok(!Object.keys(optionalDependencies).some((name) => name.endsWith("-undefined")));
 	const nativesStage = join(packedRoot, "natives-package");
 	for (const file of [...nativesManifest.files, "LICENSE"]) {
 		fs.mkdirSync(join(nativesStage, file, ".."), { recursive: true });
@@ -532,10 +549,7 @@ runTest(
 			`[packed-node-consumer] npm cache: isolated=${isolatedCache}; reused=${npmCache}\n`,
 		);
 		consumerEnv.npm_config_cache = npmCache;
-		// Local tarball manifests lack the registry's _hasShrinkwrap marker. Seed
-		// npm's root lock so this consumer uses the published dependency pins too.
-		const publishedShrinkwrap = fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8");
-		fs.writeFileSync(join(consumer, "npm-shrinkwrap.json"), publishedShrinkwrap);
+		// Atomic publishes no shrinkwrap: like a user's install, this one resolves each published range itself.
 		execute(
 			[
 				npmCli,
@@ -565,10 +579,15 @@ runTest(
 		]) {
 			assert.ok(fs.realpathSync(join(installed, name)).startsWith(fs.realpathSync(consumer)));
 		}
-		const shrinkwrap = fs.readFileSync(join(installed, "atomic", "npm-shrinkwrap.json"), "utf8");
-		assert.equal(shrinkwrap, publishedShrinkwrap, "the packed shrinkwrap must match the consumer's lock seed");
-		assert.ok(!shrinkwrap.includes(repoRoot));
-		assert.doesNotMatch(shrinkwrap, /"(?:link|resolved)"\s*:\s*(?:true|"(?:file:|\.\.\/|packages\/))/);
+		assert.ok(
+			!fs.existsSync(join(installed, "atomic", "npm-shrinkwrap.json")),
+			"the package publishes no shrinkwrap",
+		);
+		assert.deepEqual(
+			fs.readdirSync(installed).filter((name) => name.startsWith("atomic-natives-")),
+			[`atomic-natives-${target}`],
+			"only the host's platform package is installed",
+		);
 		assert.ok(!fs.readdirSync(join(installed, "atomic-natives", "native")).some((name) => name.endsWith(".node")));
 		assert.ok(fs.existsSync(join(installed, `atomic-natives-${target}`, `atomic_natives.${target}.node`)));
 		const fixtures = [
@@ -622,7 +641,6 @@ runTest(
 		const consumer = join(packedRoot!, "consumer-without-optional");
 		fs.mkdirSync(consumer);
 		fs.writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
-		fs.copyFileSync(join(packageDir, "npm-shrinkwrap.json"), join(consumer, "npm-shrinkwrap.json"));
 		const env = consumerProfileEnv(consumer, npmCache);
 		runNodeLogged(
 			[
