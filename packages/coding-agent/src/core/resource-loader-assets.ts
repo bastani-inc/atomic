@@ -13,17 +13,59 @@ import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs, resolveResourcePath } from "./resource-loader-paths.ts";
 import { findSourceInfoForPath, getDefaultSourceInfoForPath } from "./resource-loader-source-info.ts";
-import { buildSkillCatalogWith, decorateSkillDiagnostics, resolveSkillCatalogPaths } from "./skill-catalog.ts";
+import {
+	buildSkillCatalogWith,
+	decorateSkillDiagnostics,
+	resolveSkillCatalogPaths,
+	type SkillCatalog,
+} from "./skill-catalog.ts";
 import type { LoadSkillsResult, Skill } from "./skills.ts";
 import { loadSkillsAsync } from "./skills-async.ts";
+import type { SourceInfo } from "./source-info.ts";
 
 const RESOURCE_LOAD_YIELD_AFTER_MS = 8;
 
-async function applySkillsResult(
+export interface LoadedSkillsStage {
+	readonly skillPaths: string[];
+	readonly skillsResult: LoadSkillsResult;
+	readonly sourcedSkills: Skill[];
+}
+
+export interface PreparedSkillsCommit {
+	readonly lastSkillPaths: string[];
+	readonly skills: Skill[];
+	readonly skillCatalog: SkillCatalog;
+	readonly skillDiagnostics: ResourceDiagnostic[];
+}
+
+export async function loadSkillsStageAsync(
 	loader: DefaultResourceLoader,
-	skillsResult: LoadSkillsResult,
+	skillPaths: string[],
 	metadataByPath?: Map<string, PathMetadata>,
-): Promise<void> {
+): Promise<LoadedSkillsStage> {
+	const state = resourceInternals(loader);
+	const skillsResult =
+		state.noSkills && skillPaths.length === 0
+			? { skills: [], candidates: [], diagnostics: [] }
+			: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
+	const sourcedSkills = await Promise.all(
+		skillsResult.skills.map(async (skill) => ({
+			...skill,
+			sourceInfo:
+				(await findSourceInfoForPath(loader, skill.filePath, state.extensionSkillSourceInfos, metadataByPath)) ??
+				skill.sourceInfo ??
+				(await getDefaultSourceInfoForPath(loader, skill.filePath)),
+		})),
+	);
+	return { skillPaths, skillsResult, sourcedSkills };
+}
+
+export async function prepareSkillsCommitAsync(
+	loader: DefaultResourceLoader,
+	stage: LoadedSkillsStage,
+	metadataByPath?: Map<string, PathMetadata>,
+	missingSkillPaths: readonly string[] = [],
+): Promise<PreparedSkillsCommit> {
 	const state = resourceInternals(loader);
 	const withSourceInfo = async (skill: Skill): Promise<Skill> => ({
 		...skill,
@@ -33,19 +75,24 @@ async function applySkillsResult(
 			(await getDefaultSourceInfoForPath(loader, skill.filePath)),
 	});
 	const sourcedResult = {
-		skills: await Promise.all(skillsResult.skills.map(withSourceInfo)),
-		diagnostics: skillsResult.diagnostics,
+		skills: stage.sourcedSkills,
+		diagnostics: stage.skillsResult.diagnostics,
 	};
 	const resolvedSkills = state.skillsOverride ? state.skillsOverride(sourcedResult) : sourcedResult;
 	const skills = await Promise.all(resolvedSkills.skills.map(withSourceInfo));
 	const retainedNames = new Set(skills.map((skill) => skill.name));
-	const candidates = (await Promise.all(skillsResult.candidates.map(withSourceInfo))).filter((skill) =>
+	const candidates = (await Promise.all(stage.skillsResult.candidates.map(withSourceInfo))).filter((skill) =>
 		retainedNames.has(skill.name),
 	);
 	const realPathOf = await resolveSkillCatalogPaths([...candidates, ...skills], resolvedSkills.diagnostics);
-	state.skills = skills;
-	state.skillCatalog = buildSkillCatalogWith(candidates, state.skills, realPathOf);
-	state.skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, state.skillCatalog, realPathOf);
+	const skillCatalog = buildSkillCatalogWith(candidates, skills, realPathOf);
+	const skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, skillCatalog, realPathOf);
+	for (const resolved of missingSkillPaths) {
+		if (!skillDiagnostics.some((d) => d.path === resolved)) {
+			skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: resolved });
+		}
+	}
+	return { lastSkillPaths: stage.skillPaths, skills, skillCatalog, skillDiagnostics };
 }
 
 export async function updateSkillsFromPathsAsync(
@@ -54,37 +101,37 @@ export async function updateSkillsFromPathsAsync(
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const skillsResult =
-		state.noSkills && skillPaths.length === 0
-			? { skills: [], candidates: [], diagnostics: [] }
-			: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
-	await applySkillsResult(loader, skillsResult, metadataByPath);
+	const stage = await loadSkillsStageAsync(loader, skillPaths, metadataByPath);
+	const commit = await prepareSkillsCommitAsync(loader, stage, metadataByPath);
+	state.skills = commit.skills;
+	state.skillCatalog = commit.skillCatalog;
+	state.skillDiagnostics = commit.skillDiagnostics;
 }
 
-async function applyPromptsResult(
-	loader: DefaultResourceLoader,
-	promptsResult: { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] },
-	metadataByPath?: Map<string, PathMetadata>,
-): Promise<void> {
-	const state = resourceInternals(loader);
-	const resolvedPrompts = state.promptsOverride ? state.promptsOverride(promptsResult) : promptsResult;
-	state.prompts = await Promise.all(
-		resolvedPrompts.prompts.map(async (prompt) => ({
-			...prompt,
-			sourceInfo:
-				(await findSourceInfoForPath(loader, prompt.filePath, state.extensionPromptSourceInfos, metadataByPath)) ??
-				prompt.sourceInfo ??
-				(await getDefaultSourceInfoForPath(loader, prompt.filePath)),
-		})),
-	);
-	state.promptDiagnostics = resolvedPrompts.diagnostics;
+export interface LoadedPromptsStage {
+	readonly promptPaths: string[];
+	readonly loadedDiagnostics: ResourceDiagnostic[];
+	readonly sourcedPrompts: PromptTemplate[];
+	readonly deduped: {
+		prompts: PromptTemplate[];
+		diagnostics: ResourceDiagnostic[];
+		overlaps: ResourceOverlap[];
+	};
 }
 
-export async function updatePromptsFromPathsAsync(
+export interface PreparedPromptsCommit {
+	readonly lastPromptPaths: string[];
+	readonly promptSourceInfos: Array<readonly [string, SourceInfo]>;
+	readonly promptOverlaps: ResourceOverlap[];
+	readonly prompts: PromptTemplate[];
+	readonly promptDiagnostics: ResourceDiagnostic[];
+}
+
+export async function loadPromptsStageAsync(
 	loader: DefaultResourceLoader,
 	promptPaths: string[],
 	metadataByPath?: Map<string, PathMetadata>,
-): Promise<void> {
+): Promise<LoadedPromptsStage> {
 	const state = resourceInternals(loader);
 	const loaded =
 		state.noPromptTemplates && promptPaths.length === 0
@@ -104,28 +151,108 @@ export async function updatePromptsFromPathsAsync(
 				(await getDefaultSourceInfoForPath(loader, prompt.filePath)),
 		})),
 	);
-	for (const prompt of sourcedPrompts) {
-		if (prompt.sourceInfo) state.extensionPromptSourceInfos.set(prompt.filePath, prompt.sourceInfo);
-	}
 	const deduped = dedupePrompts(sourcedPrompts);
-	state.extensionsResult.overlaps ??= [];
-	const overlaps = state.extensionsResult.overlaps;
-	const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
-	overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...deduped.overlaps);
-	await applyPromptsResult(
-		loader,
-		{ prompts: deduped.prompts, diagnostics: [...loaded.diagnostics, ...deduped.diagnostics] },
-		metadataByPath,
-	);
+	return { promptPaths, loadedDiagnostics: loaded.diagnostics, sourcedPrompts, deduped };
 }
 
-async function applyThemesResult(
+export async function preparePromptsCommitAsync(
 	loader: DefaultResourceLoader,
-	themesResult: { themes: Theme[]; diagnostics: ResourceDiagnostic[] },
+	stage: LoadedPromptsStage,
+	metadataByPath?: Map<string, PathMetadata>,
+	missingPromptPaths: readonly string[] = [],
+): Promise<PreparedPromptsCommit> {
+	const state = resourceInternals(loader);
+	const localPromptSourceInfos = new Map(state.extensionPromptSourceInfos);
+	const promptSourceInfos: Array<readonly [string, SourceInfo]> = [];
+	for (const prompt of stage.sourcedPrompts) {
+		if (prompt.sourceInfo) {
+			localPromptSourceInfos.set(prompt.filePath, prompt.sourceInfo);
+			promptSourceInfos.push([prompt.filePath, prompt.sourceInfo]);
+		}
+	}
+	const promptsResult = {
+		prompts: stage.deduped.prompts,
+		diagnostics: [...stage.loadedDiagnostics, ...stage.deduped.diagnostics],
+	};
+	const resolvedPrompts = state.promptsOverride ? state.promptsOverride(promptsResult) : promptsResult;
+	const prompts = await Promise.all(
+		resolvedPrompts.prompts.map(async (prompt) => ({
+			...prompt,
+			sourceInfo:
+				(await findSourceInfoForPath(loader, prompt.filePath, localPromptSourceInfos, metadataByPath)) ??
+				prompt.sourceInfo ??
+				(await getDefaultSourceInfoForPath(loader, prompt.filePath)),
+		})),
+	);
+	const promptDiagnostics = [...resolvedPrompts.diagnostics];
+	for (const resolved of missingPromptPaths) {
+		if (!promptDiagnostics.some((d) => d.path === resolved)) {
+			promptDiagnostics.push({
+				type: "error",
+				message: "Prompt template path does not exist",
+				path: resolved,
+			});
+		}
+	}
+	return {
+		lastPromptPaths: stage.promptPaths,
+		promptSourceInfos,
+		promptOverlaps: stage.deduped.overlaps,
+		prompts,
+		promptDiagnostics,
+	};
+}
+
+export async function updatePromptsFromPathsAsync(
+	loader: DefaultResourceLoader,
+	promptPaths: string[],
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const resolvedThemes = state.themesOverride ? state.themesOverride(themesResult) : themesResult;
+	const stage = await loadPromptsStageAsync(loader, promptPaths, metadataByPath);
+	const commit = await preparePromptsCommitAsync(loader, stage, metadataByPath);
+	for (const [filePath, info] of commit.promptSourceInfos) {
+		state.extensionPromptSourceInfos.set(filePath, info);
+	}
+	state.extensionsResult.overlaps ??= [];
+	const overlaps = state.extensionsResult.overlaps;
+	const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
+	overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...commit.promptOverlaps);
+	state.prompts = commit.prompts;
+	state.promptDiagnostics = commit.promptDiagnostics;
+}
+
+export interface LoadedThemesStage {
+	readonly themePaths: string[];
+	readonly themesResult: { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
+}
+
+export interface PreparedThemesCommit {
+	readonly lastThemePaths: string[];
+	readonly themes: Theme[];
+	readonly themeDiagnostics: ResourceDiagnostic[];
+}
+
+export async function loadThemesStageAsync(
+	loader: DefaultResourceLoader,
+	themePaths: string[],
+): Promise<LoadedThemesStage> {
+	const state = resourceInternals(loader);
+	const themesResult =
+		state.noThemes && themePaths.length === 0
+			? { themes: [], diagnostics: [] }
+			: loadAndDedupeThemes(await loadThemesAsync(loader, themePaths, false));
+	return { themePaths, themesResult };
+}
+
+export async function prepareThemesCommitAsync(
+	loader: DefaultResourceLoader,
+	stage: LoadedThemesStage,
+	metadataByPath?: Map<string, PathMetadata>,
+	missingThemePaths: readonly string[] = [],
+): Promise<PreparedThemesCommit> {
+	const state = resourceInternals(loader);
+	const resolvedThemes = state.themesOverride ? state.themesOverride(stage.themesResult) : stage.themesResult;
 	for (const theme of resolvedThemes.themes) {
 		const sourcePath = theme.sourcePath;
 		theme.sourceInfo = sourcePath
@@ -134,8 +261,17 @@ async function applyThemesResult(
 				(await getDefaultSourceInfoForPath(loader, sourcePath)))
 			: theme.sourceInfo;
 	}
-	state.themes = [...resolvedThemes.themes];
-	state.themeDiagnostics = resolvedThemes.diagnostics;
+	const themeDiagnostics = [...resolvedThemes.diagnostics];
+	for (const resolved of missingThemePaths) {
+		if (!themeDiagnostics.some((d) => d.path === resolved)) {
+			themeDiagnostics.push({ type: "error", message: "Theme path does not exist", path: resolved });
+		}
+	}
+	return {
+		lastThemePaths: stage.themePaths,
+		themes: [...resolvedThemes.themes],
+		themeDiagnostics,
+	};
 }
 
 export async function updateThemesFromPathsAsync(
@@ -144,11 +280,10 @@ export async function updateThemesFromPathsAsync(
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const themesResult =
-		state.noThemes && themePaths.length === 0
-			? { themes: [], diagnostics: [] }
-			: loadAndDedupeThemes(await loadThemesAsync(loader, themePaths, false));
-	await applyThemesResult(loader, themesResult, metadataByPath);
+	const stage = await loadThemesStageAsync(loader, themePaths);
+	const commit = await prepareThemesCommitAsync(loader, stage, metadataByPath);
+	state.themes = commit.themes;
+	state.themeDiagnostics = commit.themeDiagnostics;
 }
 
 function loadAndDedupeThemes(loaded: { themes: Theme[]; diagnostics: ResourceDiagnostic[] }): {

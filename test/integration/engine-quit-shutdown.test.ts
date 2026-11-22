@@ -36,6 +36,18 @@ const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
  * Far shorter than the minute a session's close waits for a handler without that bound.
  */
 const BOUNDED_SHUTDOWN_MS = 6 * ENGINE_SHUTDOWN_GRACE_MS;
+/**
+ * The quit's own work after the grace period on a loaded runner: ending what the session started, then the exit. The
+ * quit is measured from the start of the host's shutdown phase, by its own clock, so a runner too starved to read the
+ * typed `/quit` for a while does not count against it.
+ */
+const QUIT_EXIT_HEADROOM_MS = 3 * ENGINE_SHUTDOWN_GRACE_MS;
+/**
+ * Evidence that a run was starved: the host's event loop held for this long at once. A starved engine can take longer
+ * than its grace period to exit after its handlers finished, and the host then ends it, as it should, before it writes
+ * the record it writes as it exits.
+ */
+const STARVED_HOST_BLOCK_MS = 2_000;
 
 /** How long a Windows test's processes run when nothing ends them: bounded, well past any test. */
 const WINDOWS_FIXTURE_SECONDS = 120;
@@ -322,10 +334,30 @@ test(
 			],
 			"the handler ran once, in the engine",
 		);
-		assert.ok(delayOf(ended.records, "engine", "shutdown"), "the engine wrote its shutdown record");
+		console.info(`After quitting, ${engineEnding(ended)}.`);
 	},
 	CLI_TIMEOUT_MS + 10_000,
 );
+
+/**
+ * How the engine ended after its handlers finished: it exited itself and wrote its shutdown record, or, only on a
+ * starved run, the host ended it after its grace period. Anything else fails.
+ */
+function engineEnding(ended: EndedSession): string {
+	if (delayOf(ended.records, "engine", "shutdown")) return "the engine exited itself and wrote its shutdown record";
+	const longestHostBlock = Math.max(
+		0,
+		...ended.records.flatMap((record) =>
+			record.type === "block" && record.role === "host" ? [record.durationMs] : [],
+		),
+	);
+	const hostShutdown = delayOf(ended.records, "host", "shutdown");
+	assert.ok(
+		longestHostBlock >= STARVED_HOST_BLOCK_MS && (hostShutdown?.durationMs ?? 0) >= ENGINE_SHUTDOWN_GRACE_MS,
+		`the engine wrote no shutdown record on a run that was not starved (longest host block ${longestHostBlock} ms, host shutdown ${hostShutdown?.durationMs} ms)`,
+	);
+	return `the host ended the starved engine after its grace period (longest host block ${longestHostBlock} ms, host shutdown ${hostShutdown?.durationMs} ms)`;
+}
 
 // Windows delivers neither signal to a process: closing its console ends it at once.
 describe.skipIf(process.platform === "win32")("a host signal", () => {
@@ -430,8 +462,12 @@ describe("the in-process host", () => {
 			assert.equal(ended.exit.timedOut, false, ended.screen);
 			assert.equal(ended.exit.exitCode, 0, ended.screen);
 			assert.deepEqual(ended.calls, [{ pid: ended.enginePid, reason: "quit", finished: false }]);
-			const exitMs = ended.exitedAt - quitSentAt;
-			assert.ok(exitMs < BOUNDED_SHUTDOWN_MS, `quitting took ${Math.round(exitMs)} ms`);
+			const hostShutdown = delayOf(ended.records, "host", "shutdown");
+			assert.ok(hostShutdown, "the host wrote its shutdown record");
+			assert.ok(
+				hostShutdown.durationMs < ENGINE_SHUTDOWN_GRACE_MS + QUIT_EXIT_HEADROOM_MS,
+				`quitting took ${hostShutdown.durationMs} ms from the start of the host's shutdown, ${Math.round(ended.exitedAt - quitSentAt)} ms from the typed /quit`,
+			);
 		},
 		CLI_TIMEOUT_MS + 10_000,
 	);

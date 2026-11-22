@@ -893,7 +893,6 @@ module.exports.WindowsTemporaryFile = nativeBinding.WindowsTemporaryFile
 module.exports.AdmissionRefusalKind = nativeBinding.AdmissionRefusalKind
 module.exports.AgentStatus = nativeBinding.AgentStatus
 module.exports.AgentTaskKind = nativeBinding.AgentTaskKind
-module.exports.blockRangeAt = nativeBinding.blockRangeAt
 module.exports.CancelCause = nativeBinding.CancelCause
 module.exports.CommandOutputSink = nativeBinding.CommandOutputSink
 module.exports.CommandTaskKind = nativeBinding.CommandTaskKind
