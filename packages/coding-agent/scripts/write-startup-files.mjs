@@ -57,7 +57,14 @@ if (process.argv[2] !== "--trace") {
 	// What `cli.js` imports for an interactive session, from the files it names (the split moves some of those modules
 	// into shared files), then what the session loads before its first frame: the host module map an extension sees,
 	// the extension loader and the bundled packages' extensions.
-	for (const entry of [...cliImports(), "index.js", "core/extensions/loader-virtual-modules.js"]) await load(entry);
+	for (const entry of [
+		...cliImports(),
+		"modes/interactive/interactive-mode.js",
+		"modes/rpc/rpc-mode.js",
+		"index.js",
+		"core/extensions/loader-virtual-modules.js",
+	])
+		await load(entry);
 	await (await load("core/extensions/loader-host-modules.js")).getVirtualModules();
 	await import("jiti");
 	const builtin = join(dist, "builtin");

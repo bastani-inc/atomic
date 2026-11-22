@@ -32,7 +32,8 @@ import { CustomEditor } from "./components/custom-editor.ts";
 import { isPhysicalCtrlC } from "./interactive-key-identity.ts";
 import { createFullscreenTui, createProcessTerminal } from "./interactive-tui.ts";
 import type { StartupShellPlan } from "./startup-shell-eligibility.ts";
-import { getEditorTheme, initTheme, theme } from "./theme/theme.js";
+import { getEditorTheme } from "./theme/editor-theme.ts";
+import { initTheme, theme } from "./theme/global-theme.ts";
 
 export type StartupShellState = "painting" | "holding" | "handedOver" | "aborted" | "quitting";
 

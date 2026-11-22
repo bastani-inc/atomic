@@ -1,52 +1,53 @@
 /// <reference path="./highlight-js.d.ts" />
-import hljs from "highlight.js/lib/core.js";
-import bash from "highlight.js/lib/languages/bash.js";
-import c from "highlight.js/lib/languages/c.js";
-import cpp from "highlight.js/lib/languages/cpp.js";
-import csharp from "highlight.js/lib/languages/csharp.js";
-import dart from "highlight.js/lib/languages/dart.js";
-import go from "highlight.js/lib/languages/go.js";
-import groovy from "highlight.js/lib/languages/groovy.js";
-import java from "highlight.js/lib/languages/java.js";
-import javascript from "highlight.js/lib/languages/javascript.js";
-import kotlin from "highlight.js/lib/languages/kotlin.js";
-import lua from "highlight.js/lib/languages/lua.js";
-import nix from "highlight.js/lib/languages/nix.js";
-import perl from "highlight.js/lib/languages/perl.js";
-import php from "highlight.js/lib/languages/php.js";
-import python from "highlight.js/lib/languages/python.js";
-import ruby from "highlight.js/lib/languages/ruby.js";
-import rust from "highlight.js/lib/languages/rust.js";
-import scala from "highlight.js/lib/languages/scala.js";
-import swift from "highlight.js/lib/languages/swift.js";
-import typescript from "highlight.js/lib/languages/typescript.js";
 import { decodeHtmlEntityAt } from "./html.ts";
+import { createModuleRequire } from "./module-require.js";
 
-const eagerLanguages = {
-	python,
-	java,
-	go,
-	javascript,
-	cpp,
-	typescript,
-	php,
-	ruby,
-	c,
-	csharp,
-	nix,
-	bash,
-	rust,
-	scala,
-	kotlin,
-	swift,
-	dart,
-	groovy,
-	perl,
-	lua,
-};
+type HighlightCore = typeof import("highlight.js/lib/core.js").default;
+type HighlightLanguageFactory = typeof import("highlight.js/lib/languages/bash.js").default;
 
-for (const [name, language] of Object.entries(eagerLanguages)) {
-	hljs.registerLanguage(name, language);
+const EAGER_LANGUAGE_SPECIFIERS: readonly (readonly [string, string])[] = [
+	["python", "highlight.js/lib/languages/python.js"],
+	["java", "highlight.js/lib/languages/java.js"],
+	["go", "highlight.js/lib/languages/go.js"],
+	["javascript", "highlight.js/lib/languages/javascript.js"],
+	["cpp", "highlight.js/lib/languages/cpp.js"],
+	["typescript", "highlight.js/lib/languages/typescript.js"],
+	["php", "highlight.js/lib/languages/php.js"],
+	["ruby", "highlight.js/lib/languages/ruby.js"],
+	["c", "highlight.js/lib/languages/c.js"],
+	["csharp", "highlight.js/lib/languages/csharp.js"],
+	["nix", "highlight.js/lib/languages/nix.js"],
+	["bash", "highlight.js/lib/languages/bash.js"],
+	["rust", "highlight.js/lib/languages/rust.js"],
+	["scala", "highlight.js/lib/languages/scala.js"],
+	["kotlin", "highlight.js/lib/languages/kotlin.js"],
+	["swift", "highlight.js/lib/languages/swift.js"],
+	["dart", "highlight.js/lib/languages/dart.js"],
+	["groovy", "highlight.js/lib/languages/groovy.js"],
+	["perl", "highlight.js/lib/languages/perl.js"],
+	["lua", "highlight.js/lib/languages/lua.js"],
+];
+
+let hljsCore: HighlightCore | undefined;
+
+/** Used by standalone binary entry (`bun/cli.ts`) to supply the bundled highlight.js instance. */
+export function registerBundledHighlightCore(core: HighlightCore): void {
+	hljsCore = core;
+}
+
+function getHighlightCore(): HighlightCore {
+	if (hljsCore !== undefined) return hljsCore;
+	const req = createModuleRequire(import.meta.url);
+	const loaded = req("highlight.js/lib/core.js") as HighlightCore & { default?: HighlightCore };
+	const core = loaded.default ?? loaded;
+	for (const [name, specifier] of EAGER_LANGUAGE_SPECIFIERS) {
+		if (!core.getLanguage(name)) {
+			const mod = req(specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
+			core.registerLanguage(name, mod.default ?? mod);
+		}
+	}
+	hljsCore = core;
+	return core;
 }
 
 let allLanguagesPromise: Promise<void> | undefined;
@@ -56,7 +57,13 @@ export function loadAllHighlightLanguages(): Promise<void> {
 		allLanguagesPromise = new Promise((resolve) => {
 			setImmediate(() => {
 				void import("highlight.js/lib/index.js").then(
-					() => resolve(),
+					(mod) => {
+						const loaded = (mod as { default?: HighlightCore }).default ?? (mod as unknown as HighlightCore);
+						if (hljsCore === undefined && typeof loaded?.highlight === "function") {
+							hljsCore = loaded;
+						}
+						resolve();
+					},
 					() => {
 						// Eager languages and plaintext fallback remain available.
 						resolve();
@@ -204,6 +211,7 @@ export function renderHighlightedHtml(html: string, theme: HighlightTheme = {}):
 }
 
 export function highlight(code: string, options: HighlightOptions = {}): string {
+	const hljs = getHighlightCore();
 	const html = options.language
 		? hljs.highlight(code, {
 				language: options.language,
@@ -214,7 +222,7 @@ export function highlight(code: string, options: HighlightOptions = {}): string 
 }
 
 export function supportsLanguage(name: string): boolean {
-	return hljs.getLanguage(name) !== undefined;
+	return getHighlightCore().getLanguage(name) !== undefined;
 }
 
 /**
@@ -222,5 +230,5 @@ export function supportsLanguage(name: string): boolean {
  * code that embeds another language, such as HTML in a JavaScript template literal.
  */
 export function getHighlightLanguageCount(): number {
-	return hljs.listLanguages().length;
+	return getHighlightCore().listLanguages().length;
 }
