@@ -5,6 +5,7 @@
 ### Changed
 
 - In a subagent's chat on its page in a task list, a click on `/tasks to manage` under a command the subagent started opens the subagent's own task list, as typing `/tasks` there does. It works only while the chat takes what you type. Without colour the hint is text, as the main chat's hints are.
+- On Node 22, an interactive host and its isolated engine now share one V8 compile-cache directory instead of writing two separate caches, and the Windows compile-cache warmup runs one helper instead of two.
 
 ### Fixed
 
@@ -45,7 +46,6 @@
 - A worktree snapshot capture no longer runs Git to list the files staged in your index despite an ignore rule while the index and `HEAD` are as they were at an earlier capture in the same Atomic process, so each turn that changes files starts one Git process fewer. Where Git does not trust file modes, as on Windows by default, a capture that records a change also no longer asks Git whether the previous snapshot's tree exists once it has read that tree. On Windows each Git process takes about 30 ms to start.
 - An npm or Bun install of Atomic writes about 2,090 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 3,880 files and 71 MB unpacked with them, 1,790 files and 43 MB now).
 - Installing Atomic writes about 1,600 fewer files and 9 MB less: Atomic's converter for PDF, Office and EPUB files (`markit-ai`) is now part of Atomic's own files, so an install no longer adds that package and the packages only it depends on. The converter now uses MuPDF 1.28.6 and mammoth 1.13, which read more of some PDF and Word documents, as a Bun install already did. A session that was running while Atomic was updated in place from an earlier version fails its first PDF, Office or EPUB read after the update until you restart it.
-- On Node 22, an interactive host and its isolated engine now share one V8 compile-cache directory instead of writing two separate caches, and the Windows compile-cache warmup runs one helper instead of two.
 
 ### Fixed
 

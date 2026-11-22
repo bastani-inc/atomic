@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
+import { NODE_TS_SOURCE_HOOK } from "../../../test/helpers/node-ts-sources.js";
 import {
 	type CompileCacheStartInput,
 	compileCacheHelperRuntime,
@@ -187,8 +189,10 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 	test("host and engine share one compile-cache directory and accept each other's bytecode (#6222)", () => {
 		const base = mkdtempSync(join(tmpdir(), "atomic-shared-cache-"));
 		tempDirs.push(base);
-		const compileCacheUrl = new URL("../dist/utils/compile-cache.js", import.meta.url).href;
-		const sampleModuleUrl = new URL("../dist/cli/settings-startup.js", import.meta.url).href;
+		const compileCacheUrl = new URL("../src/utils/compile-cache.ts", import.meta.url).href;
+		const samplePath = join(base, "sample-cached-module.mjs");
+		writeFileSync(samplePath, "export const value = 42;\n");
+		const sampleModuleUrl = pathToFileURL(samplePath).href;
 		const sharedEnv = {
 			...process.env,
 			TMPDIR: base,
@@ -198,9 +202,10 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 			NODE_OPTIONS: "",
 		};
 		const hostScript = [
+			NODE_TS_SOURCE_HOOK,
 			`import nodeModule from "node:module";`,
 			`import { cachedDataVersionTag, getHeapStatistics } from "node:v8";`,
-			`import { enablePersistentCompileCache, flushPersistentCompileCache } from ${JSON.stringify(compileCacheUrl)};`,
+			`const { enablePersistentCompileCache, flushPersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
 			`enablePersistentCompileCache({ interactive: false, build: "test", sharedHeapFlags: ["--max-old-space-size=8192"] });`,
 			`await import(${JSON.stringify(sampleModuleUrl)});`,
 			`flushPersistentCompileCache();`,
@@ -233,17 +238,18 @@ describe.skipIf("bun" in process.versions)("the compile cache's warm marker", ()
 		assert.equal(hostInfo.tag, engineInfo.tag);
 		assert.equal(hostInfo.dir, engineInfo.dir);
 		assert.ok(engineInfo.heapMb >= 8000, `engine heap limit must stay raised: ${engineInfo.heapMb}`);
-		assert.match(engine.stderr, /settings-startup\.js was accepted/);
-		assert.doesNotMatch(engine.stderr, /settings-startup\.js was rejected/);
+		assert.match(engine.stderr, /sample-cached-module\.mjs was accepted/);
+		assert.doesNotMatch(engine.stderr, /sample-cached-module\.mjs was rejected/);
 	});
 
 	test("does not mutate the V8 flag tag when NODE_COMPILE_CACHE is already enabled (#6222)", () => {
 		const base = mkdtempSync(join(tmpdir(), "atomic-preenabled-cache-"));
 		tempDirs.push(base);
-		const compileCacheUrl = new URL("../dist/utils/compile-cache.js", import.meta.url).href;
+		const compileCacheUrl = new URL("../src/utils/compile-cache.ts", import.meta.url).href;
 		const script = [
+			NODE_TS_SOURCE_HOOK,
 			`import { cachedDataVersionTag } from "node:v8";`,
-			`import { enablePersistentCompileCache } from ${JSON.stringify(compileCacheUrl)};`,
+			`const { enablePersistentCompileCache } = await import(${JSON.stringify(compileCacheUrl)});`,
 			`const before = cachedDataVersionTag();`,
 			`enablePersistentCompileCache({ interactive: false, build: "test", sharedHeapFlags: ["--max-old-space-size=8192"] });`,
 			`const after = cachedDataVersionTag();`,
