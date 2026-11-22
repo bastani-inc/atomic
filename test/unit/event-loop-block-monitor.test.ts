@@ -23,16 +23,12 @@ const THRESHOLD_MS = 200;
 const LONG_BLOCK_MS = 1_000;
 const SHORT_BLOCK_MS = 20;
 /**
- * The long block of the tests that tell it apart from the session phase's own delays. On a loaded machine the scheduler
- * alone kept the event loop from turning for up to 1.2 s in that phase, so this block is well past that.
+ * How much longer than the fixture's own timer saw the session phase's longest delay its record may say it was: the
+ * monitor's and the fixture's timers run in the same turns, milliseconds apart. A long block counted in the session
+ * phase makes it a second longer (#5520). A loaded machine's scheduler can hold the event loop in that phase for longer
+ * than the block, so the record is compared with what the fixture saw there rather than with a fixed bound.
  */
-const PHASED_LONG_BLOCK_MS = 3_000;
-/**
- * Phase attribution distinguishes the injected long block from the session phase's own delays, a loaded machine's
- * scheduler included, not idle scheduler lag from the reporting threshold. The midpoint leaves equal headroom around
- * the two (#5520).
- */
-const SESSION_PHASE_MAX_MS = (PHASED_LONG_BLOCK_MS + SHORT_BLOCK_MS) / 2;
+const SESSION_DELAY_SLACK_MS = 50;
 const SETTLE_MS = 500;
 /** Structural: each child compiles the monitor and the fixture, through jiti on Node; a loaded runner took over 20 s. */
 const CHILD_TIMEOUT_MS = 60_000;
@@ -49,6 +45,8 @@ interface ChildReport {
 	readonly created: readonly string[];
 	/** The longest the fixture's event loop went without a turn around its brief block, by the fixture's own timer. */
 	readonly briefBlockGapMs: number;
+	/** The longest the fixture's event loop went without a turn in the session phase, by the fixture's own timer. */
+	readonly sessionGapMs: number;
 }
 
 interface LogRecord {
@@ -75,11 +73,10 @@ function runChild(
 	runtime: (typeof RUNTIMES)[number],
 	env: Record<string, string | undefined>,
 	mode = "blocks",
-	longBlockMs = LONG_BLOCK_MS,
 ): { report: ChildReport | undefined; stderr: string } {
 	const [executable, ...preload] = runtime.command();
 	const result = spawnSyncCollect(
-		[executable, ...preload, FIXTURE, String(longBlockMs), String(SHORT_BLOCK_MS), String(SETTLE_MS), mode],
+		[executable, ...preload, FIXTURE, String(LONG_BLOCK_MS), String(SHORT_BLOCK_MS), String(SETTLE_MS), mode],
 		{
 			cwd: ROOT,
 			env: {
@@ -120,12 +117,10 @@ for (const runtime of RUNTIMES) {
 			"records a long block once, with a stack through the function that held the loop, and not a brief one",
 			() => {
 				const log = join(temp, "blocks.jsonl");
-				const { report, stderr } = runChild(
-					runtime,
-					{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
-					"blocks",
-					PHASED_LONG_BLOCK_MS,
-				);
+				const { report, stderr } = runChild(runtime, {
+					ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS),
+					ATOMIC_EVENT_LOOP_BLOCK_LOG: log,
+				});
 				assert.equal(report?.started, true);
 				const records = readLog(log);
 				const [start] = records;
@@ -143,8 +138,8 @@ for (const runtime of RUNTIMES) {
 					long[0]?.hotFrames?.some((entry) => entry.frame.startsWith("holdTheEventLoopForLong ")),
 					`the hot frames do not name the function: ${JSON.stringify(long[0]?.hotFrames)}`,
 				);
-				// A loaded machine's scheduler can hold the loop past the threshold while the brief block runs, and then the
-				// monitor rightly records that block: the brief block is never recorded when the loop turned in time.
+				// A loaded machine's scheduler can hold the loop past the threshold while the brief block runs, and the monitor
+				// then rightly records it: the brief block is never recorded when the loop turned in time.
 				if ((report?.briefBlockGapMs ?? Number.POSITIVE_INFINITY) < THRESHOLD_MS)
 					assert.deepEqual(blocksNaming(records, "holdTheEventLoopBriefly"), []);
 
@@ -154,9 +149,12 @@ for (const runtime of RUNTIMES) {
 					["startup", "session", "shutdown"],
 				);
 				const [startup, session] = delays;
-				assert.ok((startup?.maxMs ?? 0) >= PHASED_LONG_BLOCK_MS * 0.9, `startup max ${startup?.maxMs} ms`);
+				assert.ok((startup?.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup?.maxMs} ms`);
 				assert.ok((session?.ticks ?? 0) > 0);
-				assert.ok((session?.maxMs ?? Infinity) < SESSION_PHASE_MAX_MS, `session max ${session?.maxMs} ms`);
+				assert.ok(
+					(session?.maxMs ?? Infinity) <= (report?.sessionGapMs ?? 0) + SESSION_DELAY_SLACK_MS,
+					`session max ${session?.maxMs} ms, the fixture's longest gap ${report?.sessionGapMs} ms`,
+				);
 				assert.doesNotMatch(stderr, /debugger/i);
 			},
 			CHILD_TEST_TIMEOUT_MS,
@@ -170,7 +168,6 @@ for (const runtime of RUNTIMES) {
 					runtime,
 					{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
 					"phase-inside-block",
-					PHASED_LONG_BLOCK_MS,
 				);
 				assert.equal(report?.started, true);
 				const records = readLog(log);
@@ -184,8 +181,11 @@ for (const runtime of RUNTIMES) {
 					blockEnd <= Date.parse(session.at) + 1,
 					`the long block ends ${blockEnd - Date.parse(session.at)} ms into the session`,
 				);
-				assert.ok((startup.maxMs ?? 0) >= PHASED_LONG_BLOCK_MS * 0.9, `startup max ${startup.maxMs} ms`);
-				assert.ok((session.maxMs ?? Infinity) < SESSION_PHASE_MAX_MS, `session max ${session.maxMs} ms`);
+				assert.ok((startup.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup.maxMs} ms`);
+				assert.ok(
+					(session.maxMs ?? Infinity) <= (report?.sessionGapMs ?? 0) + SESSION_DELAY_SLACK_MS,
+					`session max ${session.maxMs} ms, the fixture's longest gap ${report?.sessionGapMs} ms`,
+				);
 			},
 			CHILD_TEST_TIMEOUT_MS,
 		);

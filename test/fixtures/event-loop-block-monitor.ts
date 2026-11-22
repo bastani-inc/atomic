@@ -63,10 +63,18 @@ hook?.enable();
 const started = startEventLoopMonitor("host");
 hook?.disable();
 
+let sessionTurns: { stop(): number } | undefined;
+/** Ends the startup phase once, and from then on times the session phase's turns. */
+function startSession(): void {
+	if (sessionTurns) return;
+	markEventLoopStartupComplete();
+	sessionTurns = watchTurns();
+}
+
 await settle(Number(settleMs));
 holdTheEventLoopForLong(Number(longBlockMs));
 if (mode === "exit-inside-block") process.exit(0);
-if (mode === "phase-inside-block") markEventLoopStartupComplete();
+if (mode === "phase-inside-block") startSession();
 if (mode === "anonymous") {
 	await settle(Number(settleMs));
 	// An anonymous function holds the loop across several statements, so its samples land on different lines.
@@ -86,8 +94,9 @@ const aroundBriefBlock = watchTurns();
 holdTheEventLoopBriefly(Number(shortBlockMs));
 await settle(Number(settleMs));
 const briefBlockGapMs = aroundBriefBlock.stop();
-markEventLoopStartupComplete();
+startSession();
 await settle(Number(settleMs));
+const sessionGapMs = sessionTurns?.stop();
 markEventLoopShutdown();
 await settle(Number(settleMs));
-console.log(JSON.stringify({ started, created, briefBlockGapMs }));
+console.log(JSON.stringify({ started, created, briefBlockGapMs, sessionGapMs }));
