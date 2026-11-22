@@ -7,6 +7,11 @@ import { afterEach, describe, it, vi } from "vitest";
 import { NODE_TS_SOURCE_HOOK } from "../../../test/helpers/node-ts-sources.js";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import {
+	armPostStartupHighlightWarmup,
+	onPostStartupTimerFired,
+	stopPostStartupHighlightWarmup,
+} from "../src/modes/interactive/post-startup-highlight.ts";
 import * as syntaxHighlight from "../src/utils/syntax-highlight.ts";
 
 const PREWARM_SYMBOL = Symbol.for("@bastani/atomic-ai/api-prewarm");
@@ -17,20 +22,30 @@ function createInprocRunHarness(options: {
 	promptGate: Promise<void>;
 	promptThrows?: Error;
 	initialSubmission?: { text: string; draft?: { text: string; cursorLine: number; cursorCol: number } };
+	deferredStartupPending?: boolean;
+	initialMessages?: string[];
+	onPrompt?: (text: string, emit: (event: Record<string, unknown>) => void, turnIndex: number) => Promise<void>;
 }) {
 	const ui = {
 		invalidate: vi.fn(),
 		requestRender: vi.fn(),
 		terminal: { setProgress: vi.fn() },
 	};
+	const listeners = new Set<(event: Record<string, unknown>) => void>();
+	const emitEvent = (event: Record<string, unknown>) => {
+		for (const listener of [...listeners]) listener(event);
+	};
+	let turnIndex = 0;
 	const mode: Record<string, unknown> = {
-		options: {},
+		options: {
+			...(options.initialMessages ? { initialMessages: options.initialMessages } : {}),
+		},
 		runtimeHost: { modelFallbackMessage: undefined },
 		version: "0.0.0",
 		isInitialized: false,
 		isShuttingDown: false,
 		postStartupTimer: undefined,
-		deferredStartupPending: true,
+		deferredStartupPending: options.deferredStartupPending ?? true,
 		deferredStartupPromise: undefined,
 		promptTurnWorkingLoaderActive: false,
 		promptTurn: undefined,
@@ -70,10 +85,19 @@ function createInprocRunHarness(options: {
 			isStreaming: false,
 			model: undefined,
 			modelRuntime: { getError: () => undefined, getWarning: () => undefined },
-			subscribe: vi.fn(() => () => {}),
+			subscribe: vi.fn((listener: (event: Record<string, unknown>) => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			}),
 			resumeQueuedMessages: vi.fn().mockResolvedValue(undefined),
 			_tryExecuteExtensionCommand: vi.fn().mockResolvedValue(false),
-			prompt: vi.fn(async (_text: string, promptOpts?: { preflightResult?: (ok: boolean, d?: string) => void }) => {
+			prompt: vi.fn(async (text: string, promptOpts?: { preflightResult?: (ok: boolean, d?: string) => void }) => {
+				const currentTurn = ++turnIndex;
+				if (options.onPrompt) {
+					await options.onPrompt(text, emitEvent, currentTurn);
+					promptOpts?.preflightResult?.(true, "started");
+					return;
+				}
 				await options.promptGate;
 				if (options.promptThrows) {
 					promptOpts?.preflightResult?.(false);
@@ -114,7 +138,7 @@ function createInprocRunHarness(options: {
 		runUserPromptTurn: InteractiveMode.prototype.runUserPromptTurn,
 		stop: InteractiveMode.prototype.stop,
 	};
-	return { mode, ui };
+	return { mode, ui, emitEvent };
 }
 
 afterEach(() => {
@@ -345,5 +369,160 @@ describe("in-process cold startup highlight scheduling and API prewarm", () => {
 			env: { ...process.env, NODE_OPTIONS: "" },
 		});
 		assert.equal(res.status, 0, `child failed:\nstdout: ${res.stdout}\nstderr: ${res.stderr}`);
+	});
+
+	it("starts background highlight warmup during a long 3s streaming first turn once assistant streaming begins, so +2s YAML blocks highlight live", async () => {
+		vi.useFakeTimers();
+		const loadHighlightSpy = vi.spyOn(syntaxHighlight, "loadAllHighlightLanguages").mockResolvedValue();
+		const deferredGate = Promise.withResolvers<void>();
+		const longTurnEnd = Promise.withResolvers<void>();
+		const { mode, ui, emitEvent } = createInprocRunHarness({
+			deferredStartupGate: deferredGate.promise,
+			promptGate: longTurnEnd.promise,
+			initialSubmission: { text: "show yaml" },
+			onPrompt: async (_text, emit) => {
+				emit({ type: "agent_start" });
+				await new Promise((r) => setTimeout(r, 100));
+				// Provider request has left and assistant streaming starts at +700ms (100ms after deferred startup).
+				emit({ type: "message_start", message: { role: "assistant", content: [] } });
+				// Long multi-step turn stays streaming for 3s (YAML arrives around +2s).
+				await longTurnEnd.promise;
+			},
+		});
+
+		void InteractiveMode.prototype.run.call(mode as unknown as InteractiveMode);
+		// Cold deferred startup still in progress past 500ms -> warmup stays gated.
+		await vi.advanceTimersByTimeAsync(600);
+		assert.equal(loadHighlightSpy.mock.calls.length, 0, "must not run while deferred startup is active");
+
+		// Finish deferred startup at 600ms; before assistant message_start (+700ms) warmup still waits.
+		deferredGate.resolve();
+		await vi.advanceTimersByTimeAsync(50);
+		assert.equal(
+			loadHighlightSpy.mock.calls.length,
+			0,
+			"must not run before first provider request starts streaming",
+		);
+
+		// Advance to +2000ms (still mid-turn — longTurnEnd has NOT resolved!).
+		await vi.advanceTimersByTimeAsync(1350);
+		assert.equal(
+			loadHighlightSpy.mock.calls.length,
+			1,
+			"background highlight warmup must start during a long streaming turn before +2s",
+		);
+		assert.ok(ui.invalidate.mock.calls.length >= 1);
+		assert.ok(ui.requestRender.mock.calls.length >= 1);
+
+		// End the 3s turn and shut down cleanly.
+		emitEvent({ type: "agent_end" });
+		longTurnEnd.resolve();
+		await vi.advanceTimersByTimeAsync(100);
+		mode.isShuttingDown = true;
+		InteractiveMode.prototype.stop.call(mode as unknown as InteractiveMode);
+	});
+
+	it("loads background highlight grammars by turn 3 across 10 back-to-back turns with 80ms gaps on both in-process and isolated hosts (including when turn 1 crosses 500ms)", async () => {
+		vi.useFakeTimers();
+		for (const deferredStartupPending of [true, false]) {
+			for (const turn1DurationMs of [200, 550]) {
+				const loadHighlightSpy = vi.spyOn(syntaxHighlight, "loadAllHighlightLanguages").mockResolvedValue();
+				let loadedAtTurn = 0;
+				let activeTurn = 0;
+				loadHighlightSpy.mockImplementation(async () => {
+					if (loadedAtTurn === 0) loadedAtTurn = activeTurn;
+				});
+				const deferredGate = Promise.withResolvers<void>();
+				const { mode } = createInprocRunHarness({
+					deferredStartupGate: deferredGate.promise,
+					promptGate: Promise.resolve(),
+					deferredStartupPending,
+					onPrompt: async (_text, _emit, turnIdx) => {
+						activeTurn = turnIdx;
+						// Turn 1 takes turn1DurationMs (either <500ms or >500ms so waiting_for_gate is entered),
+						// subsequent turns take 200ms with 80ms gaps (worst case: no streaming events emitted).
+						await new Promise((r) => setTimeout(r, turnIdx === 1 ? turn1DurationMs : 200));
+					},
+				});
+				// Feed 10 turns separated by 80ms gaps via a custom getUserInput loop.
+				let nextTurnToFeed = 1;
+				mode.getUserInput = async () => {
+					if (nextTurnToFeed > 10) return new Promise(() => {});
+					const idx = nextTurnToFeed++;
+					if (idx > 1) await new Promise((r) => setTimeout(r, 80));
+					return { text: `turn ${idx}` };
+				};
+
+				void InteractiveMode.prototype.run.call(mode as unknown as InteractiveMode);
+				// Resolve deferred startup quickly (50ms) so turn 1 runs right away.
+				await vi.advanceTimersByTimeAsync(50);
+				deferredGate.resolve();
+				// Advance through all 10 back-to-back turns.
+				await vi.advanceTimersByTimeAsync(3500);
+
+				assert.equal(
+					loadHighlightSpy.mock.calls.length,
+					1,
+					`back-to-back turns must not starve highlight warmup (deferred=${deferredStartupPending}, t1=${turn1DurationMs})`,
+				);
+				assert.ok(
+					loadedAtTurn >= 1 && loadedAtTurn <= 3,
+					`expected warmup loaded by turn 3, got turn ${loadedAtTurn} (deferred=${deferredStartupPending}, t1=${turn1DurationMs})`,
+				);
+
+				mode.isShuttingDown = true;
+				InteractiveMode.prototype.stop.call(mode as unknown as InteractiveMode);
+				loadHighlightSpy.mockRestore();
+			}
+		}
+	});
+
+	it("enforces a hard max-deferral cap when the first provider request takes a long time to answer", async () => {
+		vi.useFakeTimers();
+		const loadHighlightSpy = vi.spyOn(syntaxHighlight, "loadAllHighlightLanguages").mockResolvedValue();
+		const deferredGate = Promise.withResolvers<void>();
+		const neverResolves = new Promise<void>(() => {});
+		const { mode } = createInprocRunHarness({
+			deferredStartupGate: deferredGate.promise,
+			promptGate: neverResolves,
+			initialSubmission: { text: "slow provider" },
+		});
+
+		void InteractiveMode.prototype.run.call(mode as unknown as InteractiveMode);
+		// Cold deferred startup finishes at 600ms, then provider stalls silently for >2s.
+		await vi.advanceTimersByTimeAsync(600);
+		assert.equal(loadHighlightSpy.mock.calls.length, 0);
+		deferredGate.resolve();
+		await vi.advanceTimersByTimeAsync(200);
+		assert.equal(loadHighlightSpy.mock.calls.length, 0, "must still wait briefly after deferred startup");
+
+		// Advance past 500ms + hard max-deferral cap (total <= 1800ms after init) -> MUST fire!
+		await vi.advanceTimersByTimeAsync(1100);
+		assert.equal(
+			loadHighlightSpy.mock.calls.length,
+			1,
+			"hard max-deferral cap must fire even if the first turn never emits streaming events",
+		);
+
+		mode.isShuttingDown = true;
+		InteractiveMode.prototype.stop.call(mode as unknown as InteractiveMode);
+	});
+
+	it("does not invoke the warmup runner when stop() is called synchronously before its microtask drains", async () => {
+		const runner = vi.fn();
+		const host = {
+			isShuttingDown: false,
+			deferredStartupPending: false,
+			deferredStartupPromise: undefined,
+		};
+		armPostStartupHighlightWarmup(host, runner);
+		// Triggers startBackgroundWarmup(), which schedules runner() on a microtask.
+		onPostStartupTimerFired(host);
+		// Synchronous stop() before microtasks flush must abort and prevent runner() from running.
+		host.isShuttingDown = true;
+		stopPostStartupHighlightWarmup(host);
+		await Promise.resolve();
+		await Promise.resolve();
+		assert.equal(runner.mock.calls.length, 0, "runner must not execute after synchronous stop()");
 	});
 });
