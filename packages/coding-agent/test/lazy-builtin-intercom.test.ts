@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import intercomEagerFactory from "../../../packages/intercom/index.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getMandatoryBuiltinExtensionPaths } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.js";
-import { hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
+import { createLazyBuiltinFactory, hasLazyBuiltinSpec } from "../src/core/extensions/lazy-builtin.js";
+import { intercomLazyBuiltinSpec } from "../src/core/extensions/lazy-builtins/intercom.js";
 import { loadExtensionFromFactory, loadExtensions } from "../src/core/extensions/loader.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
@@ -207,5 +208,96 @@ describe("lazy builtin intercom", () => {
 		bus.emit("intercom:format-released-reply", fmtReq);
 		assert.equal(fmtReq.result?.ok, true);
 		assert.equal(fmtReq.result?.formatted?.content[0]?.text, "**Reply from peer-1:**\nlooks good");
+	});
+
+	test("untrusted folder startup join survives agent_end and joins after a single 3s delay without a second 3s wait", async () => {
+		const savedEnv = {
+			orch: process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET,
+			name: process.env.ATOMIC_SUBAGENT_INTERCOM_SESSION_NAME,
+			join: process.env.ATOMIC_INTERCOM_JOIN_AT_STARTUP,
+		};
+		delete process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET;
+		delete process.env.ATOMIC_SUBAGENT_INTERCOM_SESSION_NAME;
+		delete process.env.ATOMIC_INTERCOM_JOIN_AT_STARTUP;
+		vi.useFakeTimers();
+		try {
+			const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-intercom-join-"));
+			tempDirs.push(dir);
+			let implJoinCalls = 0;
+			let implLoadCount = 0;
+			const factory = createLazyBuiltinFactory(intercomLazyBuiltinSpec, async () => {
+				implLoadCount += 1;
+				return (pi) => {
+					pi.events.on("intercom:startup-join", (payload) => {
+						implJoinCalls += 1;
+						(payload as { completion?: Promise<void> }).completion = Promise.resolve();
+					});
+				};
+			});
+			const bus = createEventBus();
+			const runtime = createExtensionRuntime();
+			const ext = await loadExtensionFromFactory(factory, dir, bus, runtime, "builtin:intercom");
+			const runner = new ExtensionRunner(
+				[ext],
+				runtime,
+				dir,
+				SessionManager.inMemory(dir),
+				new ModelRegistry(AuthStorage.inMemory()),
+			);
+			runner.bindCore(
+				{
+					sendMessage: () => {},
+					sendMessages: () => {},
+					sendUserMessage: () => {},
+					appendEntry: async () => {},
+					setSessionName: async () => {},
+					getSessionName: () => undefined,
+					setLabel: async () => {},
+					getActiveTools: () => ["intercom"],
+					getAllTools: () => [],
+					setActiveTools: () => {},
+					refreshTools: () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => "off",
+					setThinkingLevel: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					getScopedModels: () => [],
+					isIdle: () => true,
+					// Untrusted folder!
+					isProjectTrusted: () => false,
+					getSignal: () => undefined,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: () => {},
+					getSystemPrompt: () => "",
+				},
+			);
+			runner.setUIContext(runner.getUIContext(), "tui", false);
+			await runner.emit({ type: "session_start", reason: "startup" });
+			assert.equal(implLoadCount, 0);
+
+			// First prompt runs and completes before the 3s timer fires (agent_end clears active agentStart).
+			await runner.emit({ type: "agent_start" });
+			await runner.emit({ type: "agent_end", messages: [] });
+			assert.equal(implLoadCount, 0);
+
+			// At 3s, dormantJoin fires, activates Intercom once, and dispatches intercom:startup-join immediately.
+			await vi.advanceTimersByTimeAsync(3_100);
+			assert.equal(implLoadCount, 1);
+			assert.equal(implJoinCalls, 1);
+		} finally {
+			vi.useRealTimers();
+			if (savedEnv.orch === undefined) delete process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET;
+			else process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET = savedEnv.orch;
+			if (savedEnv.name === undefined) delete process.env.ATOMIC_SUBAGENT_INTERCOM_SESSION_NAME;
+			else process.env.ATOMIC_SUBAGENT_INTERCOM_SESSION_NAME = savedEnv.name;
+			if (savedEnv.join === undefined) delete process.env.ATOMIC_INTERCOM_JOIN_AT_STARTUP;
+			else process.env.ATOMIC_INTERCOM_JOIN_AT_STARTUP = savedEnv.join;
+		}
 	});
 });

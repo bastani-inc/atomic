@@ -19,6 +19,7 @@ const STARTUP_JOIN_DELAY_MS = 3_000;
 const STARTUP_JOIN_RETRIES = 5;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 const INTERCOM_JOIN_AT_STARTUP_ENV = "ATOMIC_INTERCOM_JOIN_AT_STARTUP";
+const INTERCOM_STARTUP_JOIN_EVENT = "intercom:startup-join";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -34,6 +35,7 @@ const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restoring-child
 const RELEASED_REPLY_FORMAT_EVENT = "intercom:format-released-reply";
 
 const INTERCEPTED_BUS_EVENTS: readonly string[] = [
+	INTERCOM_STARTUP_JOIN_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 	SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT,
@@ -537,27 +539,53 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 			ctx: ExtensionContext;
 		};
 		let dormantJoin: DormantStartupJoin | null = null;
+		let everSawAgentStart = false;
 		const cancelDormantJoin = (): void => {
 			if (dormantJoin?.timer) clearTimeout(dormantJoin.timer);
 			dormantJoin = null;
 		};
-		controller.onDormantShutdown(cancelDormantJoin);
+		controller.onDormantShutdown(() => {
+			cancelDormantJoin();
+			everSawAgentStart = false;
+		});
+
+		const triggerImplStartupJoin = async (ctx: ExtensionContext): Promise<void> => {
+			const handle = await controller.activate(ctx, { background: true });
+			handle.assertCurrent();
+			const request: { completion?: Promise<void> } = {};
+			await controller.dispatchBusEvent(INTERCOM_STARTUP_JOIN_EVENT, request);
+			if (!request.completion) throw new Error("Intercom cannot join at startup");
+			await request.completion;
+		};
 
 		const scheduleDormantStartupJoin = (ctx: ExtensionContext, attempt = 0, startupSettled = false): void => {
 			cancelDormantJoin();
-			const entry: DormantStartupJoin = { timer: null, waitingForTrust: false, settled: startupSettled, ctx };
+			const entry: DormantStartupJoin = {
+				timer: null,
+				waitingForTrust: false,
+				settled: startupSettled || everSawAgentStart,
+				ctx,
+			};
 			dormantJoin = entry;
 			entry.timer = setTimeout(
 				() => {
 					entry.timer = null;
 					if (dormantJoin !== entry || !controller.isCurrentLease()) return;
-					if (!entry.settled && !projectTrusted(ctx)) {
+					if (!entry.settled && !everSawAgentStart && !projectTrusted(ctx)) {
 						if (attempt < STARTUP_JOIN_RETRIES) scheduleDormantStartupJoin(ctx, attempt + 1);
 						if (dormantJoin) dormantJoin.waitingForTrust = true;
 						return;
 					}
-					dormantJoin = null;
-					void controller.activate(ctx, { background: true }).catch(() => {});
+					triggerImplStartupJoin(ctx).then(
+						() => {
+							if (dormantJoin === entry) dormantJoin = null;
+						},
+						() => {
+							if (dormantJoin !== entry || !controller.isCurrentLease()) return;
+							if (attempt >= STARTUP_JOIN_RETRIES) dormantJoin = null;
+							else scheduleDormantStartupJoin(ctx, attempt + 1, entry.settled || everSawAgentStart);
+						},
+					);
 				},
 				attempt === 0 ? STARTUP_JOIN_DELAY_MS : reconnectDelayMs(attempt - 1),
 			);
@@ -566,6 +594,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 
 		controller.onSessionStart(async (_event, ctx) => {
 			cancelDormantJoin();
+			everSawAgentStart = false;
 			const typedIdentity = ctx.subagentPolicy?.intercom;
 			if (typedIdentity) {
 				if (typedIdentity.sessionName && typeof pi.setSessionName === "function") {
@@ -601,6 +630,7 @@ export const intercomLazyBuiltinSpec: LazyBuiltinSpec = {
 		});
 
 		controller.onAgentStart(() => {
+			everSawAgentStart = true;
 			const pending = dormantJoin;
 			if (pending && !pending.settled && controller.isCurrentLease()) {
 				if (pending.waitingForTrust) scheduleDormantStartupJoin(pending.ctx, 0, true);
