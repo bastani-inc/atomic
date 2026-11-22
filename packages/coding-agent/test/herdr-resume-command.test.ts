@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { test, vi } from "vitest";
 import { APP_NAME } from "../src/config.js";
@@ -14,7 +14,13 @@ import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
-import { arg, FAKE_HERDR_CHILD_TIMEOUT_MS, fakeHerdr } from "./helpers/herdr.js";
+import {
+	arg,
+	FAKE_HERDR_CHILD_TIMEOUT_MS,
+	FAKE_HERDR_EXPLICIT_TIMEOUT_MS,
+	FAKE_HERDR_WAIT_MS,
+	fakeHerdr,
+} from "./helpers/herdr.js";
 
 type FakeHerdr = Awaited<ReturnType<typeof fakeHerdr>>;
 
@@ -345,10 +351,9 @@ test("an older Herdr's rejection is remembered for the next session in the pane 
 	}
 });
 
-const HANG_TIMEOUT_MS = 1500;
 for (const [failure, body, failedCalls, timeoutMs] of [
 	["rejected", REJECT_FIRST_TWO, 2, FAKE_HERDR_CHILD_TIMEOUT_MS],
-	["timed-out", HANG_FIRST, 1, HANG_TIMEOUT_MS],
+	["timed-out", HANG_FIRST, 1, FAKE_HERDR_EXPLICIT_TIMEOUT_MS],
 ] as const) {
 	test(`a ${failure} first report retries the resume argv with the identity on the next report (#3492)`, async () => {
 		const fake = await fakeHerdr(body);
@@ -356,7 +361,16 @@ for (const [failure, body, failedCalls, timeoutMs] of [
 		const runner = await startReporter(fake, session, [], timeoutMs);
 		try {
 			await runner.emit({ type: "session_start" });
-			await runner.emit({ type: "agent_start" });
+			if (failure === "timed-out") {
+				await fake.waitForStarted(1);
+				await vi.waitFor(() => assert.equal(existsSync(join(fake.dir, "call-0")), true), {
+					timeout: FAKE_HERDR_WAIT_MS,
+				});
+				await runner.emit({ type: "agent_start" });
+				fake.expireInFlight(FAKE_HERDR_EXPLICIT_TIMEOUT_MS);
+			} else {
+				await runner.emit({ type: "agent_start" });
+			}
 			await fake.waitFor(failedCalls === 2 ? 3 : 1);
 			await runner.emit({ type: "agent_settled" });
 			await fake.waitFor(failedCalls === 2 ? 4 : 2);

@@ -759,8 +759,14 @@ class ProxyHopHttpsAgent extends HttpsProxyAgent<string> {
 /**
  * The agent for a plain HTTP endpoint through the proxy, which carries the request on its connection to the proxy: every
  * failure of that connection is the proxy's, including an https proxy's certificate, refused after `connect` returns.
+ * Sets `servername` for a non-IP https proxy host so SNI-routed proxies select the right certificate on Node.js too.
  */
 class ProxyHopHttpAgent extends HttpProxyAgent<string> {
+	constructor(...args: ConstructorParameters<typeof HttpProxyAgent<string>>) {
+		super(...args);
+		if (this.proxy.protocol === "https:") this.connectOpts = withServerName(this.connectOpts);
+	}
+
 	override async connect(...args: Parameters<HttpProxyAgent<string>["connect"]>): Promise<Socket> {
 		let socket: Socket;
 		try {
