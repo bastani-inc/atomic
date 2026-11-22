@@ -277,7 +277,9 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		await modelRuntime.whenRegistrationRefreshesSettled();
 		return settledHandles();
 	};
-	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions };
+	const pendingRefreshes = () =>
+		(modelRuntime as unknown as { registrationRefreshes: Set<Promise<unknown>> }).registrationRefreshes.size;
+	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions, pendingRefreshes };
 }
 
 /**
@@ -308,6 +310,7 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 			listeners: h.subscriptions(),
 			stores: asyncContextStores(),
 		};
+		const probePending = h.pendingRefreshes();
 		await h.settled();
 		const probeAfterRefreshes = asyncContextStores();
 		await wave(AGENTS_PER_WAVE);
@@ -318,7 +321,7 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 		const probeEndRefreshes = asyncContextStores();
 		appendFileSync(
 			join(process.cwd(), ".probe-idle.log"),
-			`PROBE stores first=${afterFirst.stores} firstAfterRefreshes=${probeAfterRefreshes} endPlain=${probeEndPlain} endAfterRefreshes=${probeEndRefreshes} node=${process.version}\n`,
+			`PROBE pendingAtFirst=${probePending} stores first=${afterFirst.stores} firstAfterRefreshes=${probeAfterRefreshes} endPlain=${probeEndPlain} endAfterRefreshes=${probeEndRefreshes} node=${process.version}\n`,
 		);
 
 		assert.equal(released.length, AGENTS_PER_WAVE * 3);
