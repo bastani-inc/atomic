@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Installed builtin extensions (`intercom`, `subagents`, `mcp`, `web-access`) now load natively under Node and Bun without loading `jiti`, resolving extension aliases, or eagerly importing unused host virtual modules (`@bastani/atomic-telemetry`, `@bastani/atomic-ai/oauth`, `@bastani/atomic-ai/models`), reducing startup module-loading overhead on both the interactive host and isolated engine.
+
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Breaking Changes
