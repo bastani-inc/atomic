@@ -51,6 +51,8 @@ const BROKER_WAIT_MS = 60_000;
  * starts PowerShell, which can take about 20 s on a loaded machine.
  */
 const BROKER_SCENARIO_TIMEOUT_MS = 180_000;
+/** How long a status that came back without the peer count waits before it is asked again. */
+const STATUS_RETRY_INTERVAL_MS = 200;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -313,14 +315,24 @@ describe("brokers sharing a SQLite selection", () => {
 					} as never,
 				);
 				assert.ok(tool);
-				const status = await tool.execute("status", { action: "status" }, undefined, undefined, {
-					sessionManager: { getSessionId: () => "atomic-session" },
-					hasUI: false,
-				});
-				assert.equal(status.isError, false, status.content[0]?.text);
-				assert.match(
-					status.content[0]?.text ?? "",
-					/Multi-node routing: on \(adapter sqlite, prefix t_\), 1 peer broker live/,
+				const statusTool = tool;
+				// The broker reads its live peers from the shared database within a 2 s bound, and a peer counts as live while
+				// it renewed its lease within 30 s. On a loaded machine either can miss, and the line then shows no peer count
+				// for that call. The status is asked again until a call has it.
+				const status = await vi.waitFor(
+					async () => {
+						const answered = await statusTool.execute("status", { action: "status" }, undefined, undefined, {
+							sessionManager: { getSessionId: () => "atomic-session" },
+							hasUI: false,
+						});
+						assert.equal(answered.isError, false, answered.content[0]?.text);
+						assert.match(
+							answered.content[0]?.text ?? "",
+							/Multi-node routing: on \(adapter sqlite, prefix t_\), 1 peer broker live/,
+						);
+						return answered;
+					},
+					{ timeout: BROKER_WAIT_MS, interval: STATUS_RETRY_INTERVAL_MS },
 				);
 				assert.equal(status.details?.multiNode?.status, "on");
 			} finally {

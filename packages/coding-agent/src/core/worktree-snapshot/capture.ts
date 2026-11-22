@@ -633,14 +633,61 @@ async function ignoredStagedOutsideSeed(
 }
 
 /**
- * The files staged as additions to HEAD in each user's index this process listed, by index path: the hash of the
- * index's bytes and the HEAD they were listed against, the listing, which follows from those two alone, and whether it
- * holds a submodule.
+ * The files staged as additions to HEAD in the user's indexes this process listed last, by index path: the index's
+ * bytes ({@link stagedAdditionsKey}) and the HEAD they were listed against, the listing, which follows from those two
+ * alone, and whether it holds a submodule. At most {@link STAGED_ADDITIONS_INDEXES} indexes, the one listed or used
+ * longest ago dropped first, and only listings of at most {@link STAGED_ADDITIONS_KEPT} files.
  */
 const stagedAdditions = new Map<
 	string,
 	{ readonly key: string; readonly added: readonly string[]; readonly submodules: boolean }
 >();
+
+/** The most user indexes whose staged additions a process keeps. */
+const STAGED_ADDITIONS_INDEXES = 16;
+/** The most staged additions a process keeps for one index: a longer listing is made again by each capture. */
+const STAGED_ADDITIONS_KEPT = 4096;
+
+/**
+ * What a listing of the staged additions of the index with these `size` and last `oidBytes` bytes (`trailer`), or all
+ * of whose `bytes` were read, is kept for, against HEAD `head`. Git ends an index with the hash of all the bytes before
+ * it, so its size and that hash change with any of them; an index without one (`index.skipHash` writes zeros) is
+ * known by the hash of all its bytes instead, and undefined says those must be read.
+ */
+function stagedAdditionsKey(
+	head: string,
+	index: { readonly size: number; readonly trailer: Buffer } | { readonly bytes: Buffer } | null,
+): string | undefined {
+	if (index === null) return `none\0${head}`;
+	const trailer = "bytes" in index ? index.bytes.subarray(-objectIdBytes(head)) : index.trailer;
+	const size = "bytes" in index ? index.bytes.byteLength : index.size;
+	if (size > trailer.byteLength && trailer.some((byte) => byte !== 0)) {
+		return `${size}\0${trailer.toString("hex")}\0${head}`;
+	}
+	return "bytes" in index ? `${sha256Hex(index.bytes)}\0${head}` : undefined;
+}
+
+/** The size and last `length` bytes of the file at `path`, read through one handle; null when there is none. */
+async function fileTrailer(
+	path: string,
+	length: number,
+): Promise<{ readonly size: number; readonly trailer: Buffer } | null> {
+	let file: FileHandle;
+	try {
+		file = await open(path, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw unreadablePathError(path, error);
+	}
+	try {
+		const { size } = await file.stat();
+		const trailer = Buffer.alloc(Math.min(size, length));
+		await file.read(trailer, 0, trailer.byteLength, size - trailer.byteLength);
+		return { size, trailer };
+	} finally {
+		await file.close();
+	}
+}
 
 /** The command that lists the files staged in an index as additions to `head`. */
 function stagedAdditionsCommand(head: string, raw: boolean): string[] {
@@ -658,9 +705,10 @@ function stagedAdditionsCommand(head: string, raw: boolean): string[] {
 /**
  * Files staged in the user's index at `userIndexPath` as additions to HEAD that an ignore rule matches (`git add -f`):
  * the staged additions, then the ignore rules on those paths alone. The additions are listed again only when the
- * index's bytes or HEAD changed since the last listing, and then from a copy, in `scratch`, of exactly the bytes the
- * listing is kept for: the user's index can change meanwhile. Whether Git lists a staged submodule follows its
- * `ignore` setting, which the index does not hold, so while the index stages one the additions are listed every time.
+ * index's bytes or HEAD changed since the last listing ({@link stagedAdditionsKey}: the index's last bytes, read
+ * alone, tell), and then from a copy, in `scratch`, of exactly the bytes the listing is kept for: the user's index can
+ * change meanwhile. Whether Git lists a staged submodule follows its `ignore` setting, which the index does not hold,
+ * so while the index stages one the additions are listed every time.
  */
 async function ignoredAdditionsToHead(
 	checkout: Checkout,
@@ -669,16 +717,29 @@ async function ignoredAdditionsToHead(
 	signal?: AbortSignal,
 ): Promise<string[]> {
 	const { root, head } = checkout;
-	let bytes: Buffer | null;
-	try {
-		bytes = await readFile(userIndexPath);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
-		bytes = null;
+	const readBytes = async (): Promise<Buffer | null> => {
+		try {
+			return await readFile(userIndexPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+			return null;
+		}
+	};
+	let bytes: Buffer | null | undefined;
+	let key = stagedAdditionsKey(head, await fileTrailer(userIndexPath, objectIdBytes(head)));
+	if (key === undefined) {
+		bytes = await readBytes();
+		key = stagedAdditionsKey(head, bytes === null ? null : { bytes });
 	}
-	const key = `${bytes === null ? "none" : sha256Hex(bytes)}\0${head}`;
 	let listed = stagedAdditions.get(userIndexPath);
-	if (listed?.key !== key) {
+	if (listed !== undefined && listed.key === key) {
+		// Used now: the index listed or used longest ago is the one dropped.
+		stagedAdditions.delete(userIndexPath);
+		stagedAdditions.set(userIndexPath, listed);
+	} else {
+		// The listing is kept for the bytes it is made from, which can be newer than the last bytes read above.
+		if (bytes === undefined) bytes = await readBytes();
+		const listedKey = stagedAdditionsKey(head, bytes === null ? null : { bytes })!;
 		// A checkout without an index lists from an absent copy, as Git lists from its absent index: nothing.
 		const copy = join(scratch, "user-index");
 		if (bytes !== null) await writeFile(copy, bytes);
@@ -693,8 +754,15 @@ async function ignoredAdditionsToHead(
 			if (fields[index]!.slice(1).split(" ")[1] === "160000") submodules = true;
 			added.push(fields[index + 1]!);
 		}
-		listed = { key, added, submodules };
-		stagedAdditions.set(userIndexPath, listed);
+		listed = { key: listedKey, added, submodules };
+		stagedAdditions.delete(userIndexPath);
+		if (added.length <= STAGED_ADDITIONS_KEPT) {
+			stagedAdditions.set(userIndexPath, listed);
+			for (const kept of stagedAdditions.keys()) {
+				if (stagedAdditions.size <= STAGED_ADDITIONS_INDEXES) break;
+				stagedAdditions.delete(kept);
+			}
+		}
 	}
 	const added = listed.submodules
 		? nulFields((await runGit(stagedAdditionsCommand(head, false), { cwd: root, signal })).stdout)
