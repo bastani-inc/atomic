@@ -34,7 +34,7 @@ export function markNavigationView(view: Component, navigation: boolean): void {
 	else navigationViews.delete(view);
 }
 
-function isNavigationView(component: Component): boolean {
+export function isNavigationView(component: Component): boolean {
 	return navigationViews.has(component);
 }
 

@@ -504,6 +504,16 @@ class IntercomBroker {
   /** Why multi-node routing is off or unavailable, for `broker_status` and the log. */
   private multiNodeReason: string | undefined = NO_SHARED_STORAGE_REASON;
   private multiNodeFirstAttempt: Promise<void> = Promise.resolve();
+  /** Sends held while `multiNodeStatus === "starting"`, drained synchronously in FIFO order when startup settles. */
+  private readonly pendingMultiNodeSends: Array<{
+    request: RemoteSendRequest;
+    settled: boolean;
+    bound?: NodeJS.Timeout;
+  }> = [];
+  /** In-place replacement target when a timed-out local send during `starting` synchronously re-enters as remote. */
+  private activeStartingFallback:
+    | { readonly entry: { request: RemoteSendRequest; settled: boolean; bound?: NodeJS.Timeout }; replaced: boolean }
+    | undefined;
   private shuttingDown = false;
   /** Held from before this broker writes its pid file until it listens or gives up starting. */
   private releaseStartupLock: () => void = () => {};
@@ -2114,22 +2124,40 @@ class IntercomBroker {
     }
     if (this.multiNodeStatus === "starting") {
       if (request.localTarget === undefined) {
-        void this.multiNodeFirstAttempt.then(() => this.routeRemoteSend(request));
+        if (this.activeStartingFallback !== undefined) {
+          this.activeStartingFallback.entry.request = request;
+          this.activeStartingFallback.entry.settled = false;
+          this.activeStartingFallback.entry.bound = undefined;
+          this.activeStartingFallback.replaced = true;
+          return;
+        }
+        this.pendingMultiNodeSends.push({ request, settled: false });
         return;
       }
       // A send to a session on this broker waits for the first opening at most as long as the router's own retry
       // lookup would, then is delivered locally; whichever comes second does nothing, so it is answered once.
-      let answered = false;
-      const bound = setTimeout(() => {
-        answered = true;
-        request.notFound();
+      const pending: { request: RemoteSendRequest; settled: boolean; bound?: NodeJS.Timeout } = {
+        request,
+        settled: false,
+      };
+      pending.bound = setTimeout(() => {
+        if (pending.settled) return;
+        pending.settled = true;
+        const fallback = { entry: pending, replaced: false };
+        const previous = this.activeStartingFallback;
+        this.activeStartingFallback = fallback;
+        try {
+          request.notFound();
+        } finally {
+          this.activeStartingFallback = previous;
+        }
+        if (!fallback.replaced) {
+          const index = this.pendingMultiNodeSends.indexOf(pending);
+          if (index !== -1) this.pendingMultiNodeSends.splice(index, 1);
+        }
       }, LOCAL_RETRY_LOOKUP_BOUND_MS);
-      void this.multiNodeFirstAttempt.then(() => {
-        if (answered) return;
-        answered = true;
-        clearTimeout(bound);
-        this.routeRemoteSend(request);
-      });
+      pending.bound.unref?.();
+      this.pendingMultiNodeSends.push(pending);
       return;
     }
     writeMessageIfOpen(request.socket, {
@@ -2178,6 +2206,13 @@ class IntercomBroker {
     });
     const settle = (status: "on" | "off" | "unavailable"): void => {
       this.multiNodeStatus = status;
+      const queued = this.pendingMultiNodeSends.splice(0);
+      for (const pending of queued) {
+        if (pending.settled) continue;
+        pending.settled = true;
+        if (pending.bound !== undefined) clearTimeout(pending.bound);
+        this.routeRemoteSend(pending.request);
+      }
       settleFirstAttempt();
     };
     const report = (error: unknown): void => {
@@ -2208,8 +2243,9 @@ class IntercomBroker {
         try {
           const opened = await opener.openIntercomBrokerState(source);
           this.openSharedEndedQueue = opened.state.openEndedChildQueue;
+          let router: MultiNodeRouter;
           try {
-            this.multiNode = await MultiNodeRouter.start({
+            router = await MultiNodeRouter.start({
               ...opened,
               // #4997: the same across this broker's restarts on this host, as its away-ask store is.
               home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
@@ -2262,7 +2298,7 @@ class IntercomBroker {
           // here; mirror the ones still in force so other brokers hold sends for them too. Releases and owner
           // departures from now on reach the router behind these reserves.
           for (const reservation of this.restoringRecipients.active()) {
-            this.multiNode.restoringReserved(
+            router.restoringReserved(
               reservation.capability,
               reservation.ownerSessionId,
               reservation.childName,
@@ -2272,15 +2308,16 @@ class IntercomBroker {
               { wake: reservation.wake },
             );
             if (reservation.gone !== undefined) {
-              this.multiNode.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
+              router.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
             }
           }
           // #4997: the asks a crashed or stopped broker left here between two top-level sessions move to the shared
           // state, as an away session's do, since either session may come back on another broker.
           // The away store opens with the delivered-message authority, at the first registration otherwise.
           this.openDeliveredMessages();
-          void this.multiNode.publishAwayRoutes(this.pendingQuestions.movableDormant());
-          if (this.shuttingDown) await this.multiNode.close().catch(() => {});
+          void router.publishAwayRoutes(this.pendingQuestions.movableDormant());
+          if (this.shuttingDown) await router.close().catch(() => {});
+          this.multiNode = router;
           this.multiNodeReason = undefined;
           const { adapter, prefix } = describeSharedStorage(setting);
           console.error(`Intercom multi-node routing is on (adapter ${adapter}, prefix ${prefix ?? "none"})`);
