@@ -7,7 +7,6 @@
 - On Linux and macOS, an extension's `pi.exec` command still running when Atomic is stopped with `SIGTERM` or `SIGHUP` and then killed before its shutdown finishes now ends with the processes it started, as when Atomic is killed outright. A session that finished shutting down just as Atomic was killed left them running.
 - Resuming or going back in a session kept in a database (SQLite, libSQL or PostgreSQL) no longer fails with a `SyntaxError`, or takes an extension's text for one of Atomic's lists, when an extension's custom entry has text that looks like JSON under `owner`, `tasks` or `groups`, such as `"[draft"`: the session reads that text as text, as a session kept in JSONL files does.
 
-
 ## [0.10.4-alpha.1] - 2026-11-22
 
 ### Breaking Changes
