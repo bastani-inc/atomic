@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
+import type { Stats } from "node:fs";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, it, vi } from "vitest";
 import {
@@ -19,15 +20,64 @@ interface SpawnCall {
 	readonly options: SpawnOptions;
 }
 
+interface VirtualWindowsFs {
+	readonly dirs: Set<string>;
+	readonly realpaths: Map<string, string>;
+	readonly symlinks: Set<string>;
+	readonly realpathHangs?: Set<string>;
+}
+
 const hooks = vi.hoisted(() => ({
 	spawnCalls: [] as SpawnCall[],
+	fsCalls: [] as string[],
 	spawnOverride: undefined as
 		| ((command: string, args: readonly string[], options: SpawnOptions) => ChildProcess)
 		| undefined,
 	crossSpawnOverride: undefined as
 		| ((command: string, args: readonly string[], options: SpawnOptions) => ChildProcess)
 		| undefined,
+	virtualFs: undefined as VirtualWindowsFs | undefined,
+	tmpdirOverride: undefined as string | undefined,
 }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const stat = (async (path: Parameters<typeof actual.stat>[0]) => {
+		const vfs = hooks.virtualFs;
+		if (!vfs) return actual.stat(path);
+		const key = String(path);
+		hooks.fsCalls.push(`stat:${key}`);
+		if (vfs.dirs.has(key)) return { isDirectory: () => true } as Stats;
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	}) as typeof actual.stat;
+	const lstat = (async (path: Parameters<typeof actual.lstat>[0]) => {
+		const vfs = hooks.virtualFs;
+		if (!vfs) return actual.lstat(path);
+		const key = String(path);
+		hooks.fsCalls.push(`lstat:${key}`);
+		if (vfs.symlinks.has(key)) return { isDirectory: () => false, isSymbolicLink: () => true } as Stats;
+		if (vfs.dirs.has(key)) return { isDirectory: () => true, isSymbolicLink: () => false } as Stats;
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	}) as typeof actual.lstat;
+	const realpath = ((path: Parameters<typeof actual.realpath>[0]) => {
+		const vfs = hooks.virtualFs;
+		if (!vfs) return actual.realpath(path);
+		const key = String(path);
+		hooks.fsCalls.push(`realpath:${key}`);
+		if (vfs.realpathHangs?.has(key)) return new Promise<string>(() => {});
+		const mapped = vfs.realpaths.get(key);
+		if (mapped !== undefined) return Promise.resolve(mapped);
+		if (vfs.dirs.has(key)) return Promise.resolve(key);
+		return Promise.reject(Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" }));
+	}) as typeof actual.realpath;
+	return { ...actual, stat, lstat, realpath, default: { ...actual, stat, lstat, realpath } };
+});
+
+vi.mock("node:os", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:os")>();
+	const tmpdir = () => hooks.tmpdirOverride ?? actual.tmpdir();
+	return { ...actual, tmpdir, default: { ...actual, tmpdir } };
+});
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -84,6 +134,9 @@ function createFakeChild(options?: {
 }
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const originalCwd = process.cwd;
+const savedSystemRoot = process.env.SystemRoot;
+const savedWindir = process.env.windir;
 const recordedServers: RecordedProcess[] = [];
 
 async function importWindowsStdioTransport() {
@@ -96,9 +149,17 @@ async function importWindowsStdioTransport() {
 afterEach(async () => {
 	vi.useRealTimers();
 	hooks.spawnCalls.length = 0;
+	hooks.fsCalls.length = 0;
 	hooks.spawnOverride = undefined;
 	hooks.crossSpawnOverride = undefined;
+	hooks.virtualFs = undefined;
+	hooks.tmpdirOverride = undefined;
 	Object.defineProperty(process, "platform", originalPlatform);
+	process.cwd = originalCwd;
+	if (savedSystemRoot === undefined) delete process.env.SystemRoot;
+	else process.env.SystemRoot = savedSystemRoot;
+	if (savedWindir === undefined) delete process.env.windir;
+	else process.env.windir = savedWindir;
 	vi.resetModules();
 	for (const server of recordedServers.splice(0)) {
 		await signalRecordedProcess(server);
@@ -316,6 +377,232 @@ describe("StdioTransport Windows killProcessTree failure and bound handling", ()
 		await vi.advanceTimersByTimeAsync(1);
 		assert.equal(resolved, true);
 		await closing;
+	});
+
+	it("never runs taskkill inside an external junction pointing into the project folder", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		hooks.virtualFs = {
+			dirs: new Set(["C:\\repo\\project", "C:\\temp\\win-junc", "C:\\Windows"]),
+			symlinks: new Set(["C:\\temp\\win-junc"]),
+			realpaths: new Map([
+				["C:\\repo\\project", "C:\\repo\\project"],
+				["C:\\temp\\win-junc", "C:\\repo\\project\\fake-win"],
+				["C:\\Windows", "C:\\Windows"],
+			]),
+		};
+		hooks.tmpdirOverride = "C:\\Users\\tester\\AppData\\Local\\Temp";
+		process.cwd = () => "C:\\repo\\project";
+		process.env.SystemRoot = "C:\\temp\\win-junc";
+		process.env.windir = "C:\\temp\\win-junc";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "C:\\repo\\project",
+			projectCwd: "C:\\repo\\project",
+			closeTimeoutMs: 50,
+		});
+		await transport.start();
+		await transport.close();
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\Windows");
+	});
+
+	it("refreshes the taskkill working directory when process.cwd() or SystemRoot changes between start() and close()", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		hooks.virtualFs = {
+			dirs: new Set(["C:\\repo\\project", "D:\\AltWindows", "C:\\Windows"]),
+			symlinks: new Set(),
+			realpaths: new Map([
+				["C:\\repo\\project", "C:\\repo\\project"],
+				["D:\\AltWindows", "D:\\AltWindows"],
+				["C:\\Windows", "C:\\Windows"],
+			]),
+		};
+		hooks.tmpdirOverride = "C:\\Users\\tester\\AppData\\Local\\Temp";
+		process.cwd = () => "C:\\repo\\project";
+		process.env.SystemRoot = "D:\\AltWindows";
+		process.env.windir = "D:\\AltWindows";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "C:\\repo\\project",
+			projectCwd: "C:\\repo\\project",
+			closeTimeoutMs: 50,
+		});
+		await transport.start();
+
+		// Move process.cwd() into D:\AltWindows before closing so the cached D:\AltWindows is now the project folder!
+		process.cwd = () => "D:\\AltWindows";
+		await transport.close();
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\Windows");
+	});
+
+	it("falls back to cwd drive root and avoids both process.cwd() and projectCwd for taskkill", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		hooks.virtualFs = {
+			dirs: new Set(["D:\\other", "D:\\proj", "D:\\proj\\fake-win", "D:\\"]),
+			symlinks: new Set(),
+			realpaths: new Map([
+				["D:\\other", "D:\\other"],
+				["D:\\proj", "D:\\proj"],
+				["D:\\proj\\fake-win", "D:\\proj\\fake-win"],
+				["D:\\", "D:\\"],
+			]),
+		};
+		hooks.tmpdirOverride = "relative-tmp";
+		process.cwd = () => "D:\\other";
+		process.env.SystemRoot = "D:\\proj\\fake-win";
+		process.env.windir = "D:\\proj\\fake-win";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "D:\\proj",
+			projectCwd: "D:\\proj",
+			closeTimeoutMs: 50,
+		});
+		await transport.start();
+		await transport.close();
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "D:\\");
+	});
+
+	it("does not probe kill-command directories during start() and handles a retargeted/deleted SystemRoot junction at close()", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		const dirs = new Set(["C:\\repo\\project", "C:\\temp\\junc-win", "C:\\temp\\win-1", "C:\\temp\\win-2"]);
+		const realpaths = new Map([
+			["C:\\repo\\project", "C:\\repo\\project"],
+			["C:\\temp\\junc-win", "C:\\temp\\win-1"],
+			["C:\\temp\\win-1", "C:\\temp\\win-1"],
+			["C:\\temp\\win-2", "C:\\temp\\win-2"],
+		]);
+		hooks.virtualFs = { dirs, symlinks: new Set(["C:\\temp\\junc-win"]), realpaths };
+		hooks.tmpdirOverride = "C:\\Users\\tester\\AppData\\Local\\Temp";
+		process.cwd = () => "C:\\repo\\project";
+		process.env.SystemRoot = "C:\\temp\\junc-win";
+		process.env.windir = "C:\\temp\\junc-win";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "C:\\repo\\project",
+			projectCwd: "C:\\repo\\project",
+			closeTimeoutMs: 50,
+		});
+		await transport.start();
+		assert.deepEqual(hooks.fsCalls, [], "start() performs no kill-cwd filesystem probes");
+
+		// Retarget junction from win-1 to win-2 and delete win-1 before close().
+		realpaths.set("C:\\temp\\junc-win", "C:\\temp\\win-2");
+		dirs.delete("C:\\temp\\win-1");
+		realpaths.delete("C:\\temp\\win-1");
+
+		await transport.close();
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\temp\\win-2");
+	});
+
+	it("bounds hung UNC process.cwd() realpath during close() and still selects C:\\Windows without stalling", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		hooks.virtualFs = {
+			dirs: new Set(["\\\\hung-server\\share\\project", "C:\\Windows"]),
+			symlinks: new Set(),
+			realpaths: new Map([["C:\\Windows", "C:\\Windows"]]),
+			realpathHangs: new Set(["\\\\hung-server\\share\\project"]),
+		};
+		process.cwd = () => "\\\\hung-server\\share\\project";
+		process.env.SystemRoot = "C:\\Windows";
+		process.env.windir = "C:\\Windows";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "\\\\hung-server\\share\\project",
+			projectCwd: "\\\\hung-server\\share\\project",
+			closeTimeoutMs: 120,
+		});
+		await transport.start();
+		assert.deepEqual(hooks.fsCalls, [], "start() does not hang on UNC realpath");
+
+		const startedAt = Date.now();
+		await transport.close();
+		const elapsedMs = Date.now() - startedAt;
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\Windows");
+		assert.ok(elapsedMs < 1_000, `close() took ${elapsedMs}ms under hung UNC realpath`);
 	});
 
 	it.skipIf(process.platform !== "win32")(
