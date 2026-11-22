@@ -1129,26 +1129,37 @@ export class MultiNodeRouter {
 						};
 		const owner = this.newOwner(reserved?.token);
 		if (reserved !== undefined) this.consumingTokens.add(reserved.token);
-		// Past `deadline` the claim decides nothing more. A claim that found the id owned by a broker of this host that has
-		// exited moves it on with each step that gives that broker's ids up and binds the id again, within
-		// SESSION_ID_CLAIM_PROGRESS_CAP_MS in all (`progress.extendedMs` says by how much). Waiting for a live owner never
-		// moves it.
+		// Past `deadline` (ms after the claim started) the claim decides nothing more. A claim that found the id owned by a
+		// broker of this host that has exited moves it on with each step that gives that broker's ids up and binds the id
+		// again, within SESSION_ID_CLAIM_PROGRESS_CAP_MS in all (`progress.extendedMs` says by how much). Waiting for a live
+		// owner never moves it, and takes it back to the claim's own bound. Time is read on both clocks (`elapsedSince`),
+		// and the cap has a timer of its own, so the claim keeps to it whichever clock its timers follow.
 		let expired = false;
-		const started = performance.now();
-		const retryDeadline = started + SESSION_ID_CLAIM_BOUND_MS;
+		const started = clockMark();
+		const elapsed = () => elapsedSince(started);
+		const retryDeadline = SESSION_ID_CLAIM_BOUND_MS;
 		let deadline = retryDeadline;
 		let extended = false;
 		let bound: ReturnType<typeof setTimeout> | undefined;
+		let cap: ReturnType<typeof setTimeout> | undefined;
 		let giveUp: (() => void) | undefined;
+		// When the claim gave up, ms after it started, by the timer that ended it: the clocks a timer follows may not be
+		// the ones `elapsed` reads.
+		let gaveUpAt: number | undefined;
 		const arm = (ms: number) => {
 			clearTimeout(bound);
-			bound = setTimeout(() => giveUp?.(), ms);
+			const at = deadline;
+			bound = setTimeout(() => {
+				gaveUpAt ??= at;
+				giveUp?.();
+			}, ms);
 			bound.unref?.();
 		};
 		const progressed = () => {
-			if (expired) return;
-			const now = performance.now();
-			const next = Math.min(started + SESSION_ID_CLAIM_PROGRESS_CAP_MS, Math.max(deadline, now + SESSION_ID_CLAIM_BOUND_MS));
+			const now = elapsed();
+			// A broker that stalled past the claim's bound before its timer could fire moves it on no more.
+			if (expired || now >= deadline) return;
+			const next = Math.min(SESSION_ID_CLAIM_PROGRESS_CAP_MS, Math.max(deadline, now + SESSION_ID_CLAIM_BOUND_MS));
 			if (next <= deadline) return;
 			deadline = next;
 			extended = true;
@@ -1176,17 +1187,22 @@ export class MultiNodeRouter {
 				if (!retired && !expired && (await this.retireIfExitedHere(result.ownerBroker, progressed))) {
 					retired = true;
 					// A broker that stalled through the check does not try again past the claim's bound.
-					if (expired || performance.now() >= deadline) return { status: "held" };
+					if (expired || elapsed() >= deadline) return { status: "held" };
 					progressed();
 					continue;
 				}
 				// A live owner (or one that took the id once the exited broker's ids were given up) is waited for within the
 				// claim's own bound only.
 				const wait = SESSION_ID_OWNER_RETRY_MS[Math.min(attempt, SESSION_ID_OWNER_RETRY_MS.length - 1)]!;
-				if (expired || performance.now() + wait >= retryDeadline) return { status: "held" };
+				const now = elapsed();
+				if (expired || now + wait >= retryDeadline) return { status: "held" };
+				if (deadline > retryDeadline) {
+					deadline = retryDeadline;
+					arm(Math.max(0, retryDeadline - now));
+				}
 				await new Promise<void>((resolve) => setTimeout(resolve, wait).unref());
 				// A broker that stalled through the wait does not try again past the claim's bound.
-				if (expired || performance.now() >= retryDeadline) return { status: "held" };
+				if (expired || elapsed() >= retryDeadline) return { status: "held" };
 			}
 		})();
 		try {
@@ -1201,6 +1217,11 @@ export class MultiNodeRouter {
 						});
 					};
 					arm(SESSION_ID_CLAIM_BOUND_MS);
+					cap = setTimeout(() => {
+						gaveUpAt ??= SESSION_ID_CLAIM_PROGRESS_CAP_MS;
+						giveUp?.();
+					}, SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+					cap.unref?.();
 				}),
 			]);
 			// An attempt in flight decides nothing more: the registration's binding write does (`reclaimOrBind`).
@@ -1229,10 +1250,11 @@ export class MultiNodeRouter {
 			return lapsed === undefined ? { status: "refused" } : { status: "held", recovery: lapsed.recovery };
 		} finally {
 			clearTimeout(bound);
+			clearTimeout(cap);
 			// What the claim took past its own bound because it gave an exited broker's ids up, and only that: a claim answered
 			// within its bound, or late for any other reason (a stalled broker), takes nothing off the presence wait.
 			if (progress !== undefined && extended)
-				progress.extendedMs = Math.max(0, Math.min(deadline, performance.now()) - retryDeadline);
+				progress.extendedMs = Math.max(0, (gaveUpAt ?? Math.min(deadline, elapsed())) - retryDeadline);
 			// A held token stays in use until the registration that took it is registered here, which its broker does as
 			// it reads this answer.
 			if (reserved !== undefined) setImmediate(() => this.consumingTokens.delete(reserved.token));

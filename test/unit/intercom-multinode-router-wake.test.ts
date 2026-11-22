@@ -4222,6 +4222,16 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		assert.equal(fromHere.status, "granted");
 	});
 
+	const FAKE_TIMERS = ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] as const;
+	/** Which clocks fake timers move with them: `performance`, `Date`, both, or neither. */
+	const FAKE_CLOCKS = {
+		performance: ["performance"],
+		date: ["Date"],
+		both: ["performance", "Date"],
+		neither: [],
+	} as const;
+	type FakeClocks = keyof typeof FAKE_CLOCKS;
+
 	/**
 	 * `live` registered on a broker of this host that then exited (its pid names no process), and another broker of this
 	 * host whose shared database answers each of the claim's calls after `latencies(call)` ms, in the order they are made.
@@ -4230,8 +4240,10 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		latencies: (call: "bind" | "read" | "retireBroker", nth: number) => number,
 		/** A broker on another host, running, registers the session and takes its id once the exited broker's are given up. */
 		contended = false,
+		/** The clocks the fake timers move besides themselves: a test may fake either, both or neither. */
+		clocks: FakeClocks = "performance",
 	) {
-		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "performance"] });
+		vi.useFakeTimers({ toFake: [...FAKE_TIMERS, ...FAKE_CLOCKS[clocks]] });
 		const shared = await cluster();
 		const EXITED = 2_000_000_004;
 		const isProcessAlive = (pid: number) => pid !== EXITED;
@@ -4281,40 +4293,110 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		return { calls, progress, answer: () => answered };
 	}
 
-	test("a session whose broker on this host exited gets its id back on another broker of this host while each answer of the shared database takes 700 ms (#5607)", async () => {
-		// Binding the id (held by the exited broker), reading that broker's membership, giving its ids up and binding again
-		// take four round trips, more than the claim's bound in all.
-		const { answer, progress } = await claimAfterExitWithSlowDatabase(() => SLOW_DATABASE_ANSWER_MS);
+	test.each(["performance", "date", "both"] as const)(
+		"a session whose broker on this host exited gets its id back on another broker of this host while each answer of the shared database takes 700 ms, timed by %s (#5607)",
+		async (clocks) => {
+			// Binding the id (held by the exited broker), reading that broker's membership, giving its ids up and binding again
+			// take four round trips, more than the claim's bound in all.
+			const { answer, progress } = await claimAfterExitWithSlowDatabase(
+				() => SLOW_DATABASE_ANSWER_MS,
+				false,
+				clocks,
+			);
 
-		await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+			await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
 
-		assert.equal(answer()?.status, "granted", JSON.stringify(answer()));
-		// The registration's presence wait gives back what the claim took past its bound: four round trips less the bound.
-		assert.equal(progress.extendedMs, 4 * SLOW_DATABASE_ANSWER_MS - SESSION_ID_CLAIM_BOUND_MS);
-	});
+			assert.equal(answer()?.status, "granted", JSON.stringify(answer()));
+			// The registration's presence wait gives back what the claim took past its bound: four round trips less the bound.
+			assert.equal(progress.extendedMs, 4 * SLOW_DATABASE_ANSWER_MS - SESSION_ID_CLAIM_BOUND_MS);
+		},
+	);
 
-	test("a claim that keeps giving an exited broker's ids up answers within its cap in all, and binds nothing more (#5607)", async () => {
-		// Each step answers just inside the bound the step before it earned, so only the cap ends the claim.
-		const step = SESSION_ID_CLAIM_BOUND_MS - 100;
-		const { calls, answer } = await claimAfterExitWithSlowDatabase((call, nth) =>
-			call === "bind" && nth === 0 ? 0 : step,
+	test.each(["performance", "date", "both", "neither"] as const)(
+		"a claim that keeps giving an exited broker's ids up answers within its cap in all, and binds nothing more, timed by %s (#5607)",
+		async (clocks) => {
+			// Each step answers just inside the bound the step before it earned, so only the cap ends the claim.
+			const step = SESSION_ID_CLAIM_BOUND_MS - 100;
+			const { calls, answer, progress } = await claimAfterExitWithSlowDatabase(
+				(call, nth) => (call === "bind" && nth === 0 ? 0 : step),
+				false,
+				clocks,
+			);
+
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+
+			assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
+			assert.equal(
+				progress.extendedMs,
+				SESSION_ID_CLAIM_PROGRESS_CAP_MS - SESSION_ID_CLAIM_BOUND_MS,
+				"the presence wait gives back what the claim took past its bound",
+			);
+			await vi.advanceTimersByTimeAsync(4 * step);
+			assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
+		},
+	);
+
+	test.each(["performance", "date", "both"] as const)(
+		"a claim whose id a live broker took once the exited broker's ids were given up is answered held at once, not tried again past its bound, timed by %s (#5607)",
+		async (clocks) => {
+			const { calls, answer } = await claimAfterExitWithSlowDatabase(() => SLOW_DATABASE_ANSWER_MS, true, clocks);
+
+			await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+
+			assert.equal(answer()?.status, "held", JSON.stringify(answer()));
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+			assert.equal(calls.bind, 2, "no bind after the one the exited broker's ids were given up for");
+		},
+	);
+
+	test("a claim whose id a live broker took early once the exited broker's ids were given up is waited for within its own bound, not the one it had earned (#5607)", async () => {
+		// The exited broker's ids are given up 2.2 s in; the live broker took the id meanwhile, and the bind after the first
+		// retry never answers.
+		const { calls, answer, progress } = await claimAfterExitWithSlowDatabase(
+			(call, nth) => (call === "bind" ? [100, 100, 60_000][nth]! : call === "read" ? 1_000 : 1_000),
+			true,
 		);
 
-		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
 
 		assert.equal(answer()?.status, "unanswered", JSON.stringify(answer()));
-		await vi.advanceTimersByTimeAsync(4 * step);
-		assert.equal(calls.bind, 2, "the second bind went out before the cap, and nothing after it");
+		assert.equal(calls.bind, 3);
+		assert.equal(progress.extendedMs, 0, "nothing past the bound");
 	});
 
-	test("a claim whose id a live broker took once the exited broker's ids were given up is answered held at once, not tried again past its bound (#5607)", async () => {
-		const { calls, answer } = await claimAfterExitWithSlowDatabase(() => SLOW_DATABASE_ANSWER_MS, true);
+	test("a broker that stalls past the claim's bound while it reads an exited owner's membership moves the claim on no more (#5607)", async () => {
+		const shared = await cluster();
+		const EXITED = 2_000_000_005;
+		const isProcessAlive = (pid: number) => pid !== EXITED;
+		const exited = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "first-socket", pid: EXITED, isProcessAlive },
+		});
+		const live = session("live");
+		await registeredOn(exited, live);
+		const here = await startNode(shared, {
+			process: { hostIdentity: "this-host", instanceKey: "second-socket", isProcessAlive },
+		});
+		const leases = here.state.leases;
+		const realRead = leases.read.bind(leases);
+		vi.spyOn(leases, "read").mockImplementation(async (...args: Parameters<typeof realRead>) => {
+			stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS);
+			return realRead(...args);
+		});
+		const bind = vi.spyOn(here.state.knownSessions, "bind");
+		const twin = twinOf(live);
+		const progress = { extendedMs: 0 };
 
-		await vi.advanceTimersByTimeAsync(4 * SLOW_DATABASE_ANSWER_MS + 100);
+		const claim = await here.router.claimSessionId(
+			twin.info.id,
+			twin.registrationReturnAddress!,
+			undefined,
+			undefined,
+			progress,
+		);
 
-		assert.equal(answer()?.status, "held", JSON.stringify(answer()));
-		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_PROGRESS_CAP_MS);
-		assert.equal(calls.bind, 2, "no bind after the one the exited broker's ids were given up for");
+		assert.notEqual(claim.status, "granted", JSON.stringify(claim));
+		assert.equal(bind.mock.calls.length, 1, "no bind after the stall");
+		assert.equal(progress.extendedMs, 0, "a stalled broker takes nothing off the presence wait");
 	});
 
 	test("a claim answered within its bound after giving an exited broker's ids up takes nothing off the presence wait (#5607)", async () => {
