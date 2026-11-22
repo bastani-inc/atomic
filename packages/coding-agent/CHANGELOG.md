@@ -38,6 +38,7 @@
 - Built-in Web Access now registers its tools, commands, and shortcuts from a static description at startup and loads the 4.9 MB Web Access bundle only on first tool, command, or shortcut use.
 - Built-in Subagents now registers its tool, `/agents` command, argument validation, and message renderers from a static description at startup and loads the 1.9 MB Subagents bundle on first use or when resuming a session with existing subagent history.
 - Built-in MCP now registers `/mcp` and its MCP contribution consumer statically at startup and loads the MCP extension only when `mcp.json` exists, an extension registers an MCP server, a resumed session has recorded MCP tools, or `/mcp` is invoked.
+- Built-in Codemode now defers loading its rich result renderer and syntax highlighter until first script execution or when resuming a TUI session with existing `codemode` history, keeping the tool definition and headless engine startup lighter.
 
 ### Fixed
 
