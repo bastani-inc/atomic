@@ -138,10 +138,19 @@ describe("model-fallback-failures linear-time refusal classification", () => {
 	test("completes in linear time on adversarial refusal-prefix repetitions", () => {
 		const cases: readonly [name: string, input: string][] = [
 			["finish_reason repeated", "finish_reason ".repeat(QUADRATIC_REPS)],
+			["finish_reason repeated with later-line match", `${"finish_reason ".repeat(QUADRATIC_REPS)}\nother`],
 			["flagged for possible repeated", "flagged for possible ".repeat(QUADRATIC_REPS)],
 			["safety repeated", "safety ".repeat(QUADRATIC_REPS)],
+			[
+				"safety repeated with later-line refused (kills uncached stage-2 scan)",
+				`${"safety ".repeat(QUADRATIC_REPS)}\nrefused`,
+			],
 			["refuse repeated", "refuse ".repeat(QUADRATIC_REPS)],
 			["provider refuse repeated (cubic)", "provider x refuse ".repeat(CUBIC_REPS)],
+			[
+				"provider refuse repeated with later-line prompt (kills uncached stage-3 scan)",
+				`${"provider x refuse ".repeat(CUBIC_REPS)}\nprompt`,
+			],
 			["tool repeated", "tool ".repeat(QUADRATIC_REPS)],
 		];
 		for (const [name, input] of cases) {
@@ -278,6 +287,22 @@ describe("tool-block-families linear-time footer parsing", () => {
 			theme: identityTheme,
 		});
 		assert.equal(bashBg?.status, "shell-running");
+
+		const findNested = builtinToolBlockPresentation({
+			toolName: "find",
+			args: { pattern: "*.ts" },
+			result: {
+				content: [{ type: "text", text: "a.ts\n\n[outer notice\n\n[inner notice]" }],
+				isError: false,
+			},
+			expanded: false,
+			isPartial: false,
+			cwd: "/tmp",
+			executionStarted: true,
+			argsComplete: true,
+			theme: identityTheme,
+		});
+		assert.equal(findNested?.details?.render(80).join("\n").includes("1 match"), true);
 	});
 });
 
@@ -349,6 +374,7 @@ describe("credential-redaction, overflow, ansi, working-status, intercom, scrub,
 		);
 		assert.equal(workedVerb("Thinking…"), "Thought");
 		assert.equal(workedVerb("Re-indexing files"), "Re-indexed");
+		assert.equal(workedVerb("inginging'inging"), "Inginging'inged");
 
 		const longWs = `${" ".repeat(LONG_QUADRATIC_REPS)}x`;
 		assert.match(
