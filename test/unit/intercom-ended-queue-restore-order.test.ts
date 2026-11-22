@@ -3,6 +3,7 @@ import type net from "node:net";
 import { afterEach, test, vi } from "vitest";
 import {
 	DurableEndedQueue,
+	ENDED_QUEUE_LOAD_WAIT_MS,
 	ENDED_QUEUE_OPEN_WAIT_MS,
 	type RestoredEndedQueues,
 	shouldHoldSendForEndedQueueRestore,
@@ -311,11 +312,15 @@ test("does not hold live sends to non-subagent peers during target identificatio
 	assert.equal(shouldHoldSendForEndedQueueRestore(queue, "peer-session", sender, sessions, aliasTarget), false);
 	assert.equal(
 		shouldHoldSendForEndedQueueRestore(queue, "other-group-peer", sender, sessions, aliasTarget),
-		true,
-		"hidden peer in another group does not bypass target identification",
+		false,
+		"non-subagent peer in another group is never held during target identification",
+	);
+	assert.equal(
+		shouldHoldSendForEndedQueueRestore(queue, "unregistered-subagent", sender, sessions, aliasTarget),
+		false,
+		"unknown/unregistered target passes dispatchSend during target identification",
 	);
 	for (const addressing of [
-		keptName,
 		keptChild.info.id,
 		"12345678",
 		"renamed-kept-worker",
@@ -323,12 +328,11 @@ test("does not hold live sends to non-subagent peers during target identificatio
 		"alias-for-kept",
 		cleanName,
 		cleanChild.info.id,
-		"unregistered-subagent",
 	]) {
 		assert.equal(
 			shouldHoldSendForEndedQueueRestore(queue, addressing, sender, sessions, aliasTarget),
 			true,
-			`identifying_targets must hold ${addressing}`,
+			`identifying_targets must hold visible live subagent addressed as ${addressing}`,
 		);
 	}
 
@@ -366,21 +370,25 @@ test("does not hold live sends to non-subagent peers during target identificatio
 	assert.equal(shouldHoldSendForEndedQueueRestore(queue, keptChild.info.id, sender, sessions, aliasTarget), false);
 });
 
-test("preserves FIFO order between a wake send deferred during loading and a later live send after the subagent registers", async () => {
+test("preserves FIFO order between a wake send deferred during target identification and a later live send after the subagent registers", async () => {
 	const keptName = "subagent-worker-kept-1";
 	const cleanName = "subagent-worker-clean-1";
+	const targetsGate = deferred<string[]>();
 	const loadGate = deferred<void>();
-	cleanups.unshift(() => loadGate.resolve());
+	cleanups.unshift(() => {
+		targetsGate.resolve([keptName]);
+		loadGate.resolve();
+	});
 	const { queue } = createQueue(async () =>
 		stubStore({
-			targets: async () => [keptName],
+			targets: () => targetsGate.promise,
 			load: async () => {
 				await loadGate.promise;
 			},
 		}),
 	);
 	await queue.decide(() => {});
-	await vi.waitFor(() => assert.equal(queue.restorePhase, "loading"));
+	assert.equal(queue.restorePhase, "identifying_targets");
 
 	const sender = connectedSession({ id: "sender-1", name: "sender" });
 	const sessions = new Map<string, BrokerConnectedSession>([[sender.info.id, sender]]);
@@ -401,11 +409,11 @@ test("preserves FIFO order between a wake send deferred during loading and a lat
 		}
 	};
 
-	// First send: wake send while `cleanName` is not live yet (deferred during `loading`, marking `cleanName` pending).
+	// First send: wake send while `cleanName` is not live yet (deferred during `identifying_targets`).
 	dispatch(cleanName, "first-wake", true);
 	assert.deepEqual(delivered, []);
 
-	// `cleanName` now registers with a new session ID while `store.load()` is still running.
+	// `cleanName` now registers with a new session ID while `store.targets()` is still in flight.
 	const cleanChild = connectedSession({
 		id: "99999999-aaaa-bbbb-cccc-dddddddddddd",
 		name: cleanName,
@@ -418,8 +426,9 @@ test("preserves FIFO order between a wake send deferred during loading and a lat
 	dispatch(cleanChild.info.id, "second-live", false);
 	assert.deepEqual(delivered, [], "second send waits behind earlier deferred wake send");
 
-	loadGate.resolve();
-	await queue.untilLoaded();
+	// Once `store.targets()` resolves (without waiting for `store.load()`), both clean sends deliver in FIFO order!
+	targetsGate.resolve([keptName]);
+	await vi.waitFor(() => assert.equal(queue.restorePhase, "loading"));
 	assert.deepEqual(delivered, ["first-wake", "second-live"]);
 });
 
@@ -481,4 +490,310 @@ test("drains deferred sends once without hanging when store.targets(), store.loa
 		assert.equal(queue.loaded, true);
 		assert.deepEqual(ran, ["after-open-timeout"]);
 	}
+});
+
+test("bounds the entire restore (targets + load) to one ENDED_QUEUE_LOAD_WAIT_MS and releases held sends past it", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	cleanups.push(() => {
+		vi.useRealTimers();
+	});
+
+	// 1. store.targets() hangs past ENDED_QUEUE_LOAD_WAIT_MS
+	{
+		const child = "subagent-worker-hang-targets-1";
+		const targetsGate = deferred<string[]>();
+		const loadGate = deferred<void>();
+		cleanups.unshift(() => {
+			targetsGate.resolve([child]);
+			loadGate.resolve();
+		});
+		const { queue } = createQueue(async () =>
+			stubStore({
+				targets: () => targetsGate.promise,
+				load: async (page) => {
+					await loadGate.promise;
+					page?.([row(1, "k1", child, "late-kept")]);
+				},
+			}),
+		);
+		const restoredTexts: string[] = [];
+		await queue.decide((restored) => {
+			for (const q of restored.queues) {
+				for (const entry of q.sends) {
+					restoredTexts.push((entry.held.clientMessage.message as { content: { text: string } }).content.text);
+				}
+			}
+		});
+		assert.equal(queue.restorePhase, "identifying_targets");
+		const ran: string[] = [];
+		queue.whenRestored(() => ran.push("released-at-bound"));
+
+		await vi.advanceTimersByTimeAsync(ENDED_QUEUE_LOAD_WAIT_MS - 1);
+		assert.equal(queue.restorePhase, "identifying_targets");
+		assert.deepEqual(ran, []);
+
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(queue.restorePhase, "ready");
+		assert.equal(queue.loaded, true);
+		assert.equal(queue.holds(child), false);
+		assert.deepEqual(ran, ["released-at-bound"]);
+
+		// Late targets() + load() completion still restores kept rows without re-entering loading.
+		targetsGate.resolve([child]);
+		loadGate.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(restoredTexts, ["late-kept"]);
+		assert.equal(queue.restorePhase, "ready");
+		assert.equal(queue.holds(child), false);
+	}
+
+	// 2. ONE shared bound across targets() + load(): 2 s in targets() leaves 3 s for load()
+	{
+		const child = "subagent-worker-hang-load-1";
+		const targetsGate = deferred<string[]>();
+		const loadGate = deferred<void>();
+		cleanups.unshift(() => {
+			targetsGate.resolve([child]);
+			loadGate.resolve();
+		});
+		const { queue } = createQueue(async () =>
+			stubStore({
+				targets: () => targetsGate.promise,
+				load: () => loadGate.promise,
+			}),
+		);
+		await queue.decide(() => {});
+		const ran: string[] = [];
+		queue.whenRestored(() => ran.push("released-from-loading"));
+
+		await vi.advanceTimersByTimeAsync(2_000);
+		targetsGate.resolve([child]);
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(queue.restorePhase, "loading");
+		// Re-defer after transition to loading, as dispatchSend does for a pending target.
+		queue.whenRestored(() => ran.push("still-pending-in-loading"));
+
+		await vi.advanceTimersByTimeAsync(ENDED_QUEUE_LOAD_WAIT_MS - 2_000 - 1);
+		assert.equal(queue.restorePhase, "loading");
+
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(queue.restorePhase, "ready");
+		assert.equal(queue.loaded, true);
+		assert.deepEqual(ran, ["released-from-loading", "still-pending-in-loading"]);
+	}
+});
+
+test("during identifying_targets, never holds remote peers, missing sessions, alias/return-path peers, or peers colliding with invisible cross-group subagents", async () => {
+	const targetsGate = deferred<string[]>();
+	const loadGate = deferred<void>();
+	cleanups.unshift(() => {
+		targetsGate.resolve(["subagent-worker-kept-1"]);
+		loadGate.resolve();
+	});
+	const { queue } = createQueue(async () =>
+		stubStore({
+			targets: () => targetsGate.promise,
+			load: () => loadGate.promise,
+		}),
+	);
+	await queue.decide(() => {});
+	assert.equal(queue.restorePhase, "identifying_targets");
+
+	const sender = connectedSession({ id: "aaaaaaaa-1111-2222-3333-444444444444", name: "sender", groups: ["team-a"] });
+	const localPeer = connectedSession({
+		id: "bbbbbbbb-1111-2222-3333-444444444444",
+		name: "shared-name",
+		groups: ["team-a"],
+		returnAddress: "host-local-peer",
+	});
+	const returnPathPeer = connectedSession({
+		id: "cccccccc-1111-2222-3333-444444444444",
+		name: "return-path-peer",
+		groups: ["team-b"],
+		returnAddress: "host-return-peer",
+	});
+	const invisibleSubagent = connectedSession({
+		id: "dddddddd-1111-2222-3333-444444444444",
+		name: "shared-name",
+		registrationName: "shared-name",
+		groups: ["team-b"],
+		supervisorId: "owner-b",
+		returnAddress: "host-invisible-subagent",
+	});
+	const visibleSubagent = connectedSession({
+		id: "eeeeeeee-1111-2222-3333-444444444444",
+		name: "visible-worker",
+		registrationName: "subagent-worker-kept-1",
+		groups: ["team-a"],
+		supervisorId: "owner-a",
+		returnAddress: "host-visible-subagent",
+	});
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[sender.info.id, sender],
+		[localPeer.info.id, localPeer],
+		[returnPathPeer.info.id, returnPathPeer],
+		[invisibleSubagent.info.id, invisibleSubagent],
+		[visibleSubagent.info.id, visibleSubagent],
+	]);
+	const aliasTarget = (target: string) => (target === "alias-for-local-peer" ? localPeer : undefined);
+
+	// None of these may be held during identifying_targets:
+	for (const [label, target] of [
+		["live peer exact ID", localPeer.info.id],
+		["live peer 8-hex prefix", "bbbbbbbb"],
+		["live peer host ID", "host-local-peer"],
+		["live peer multi-node alias", "alias-for-local-peer"],
+		["live peer colliding with invisible cross-group subagent", "shared-name"],
+		["cross-group return-path peer by name", "return-path-peer"],
+		["cross-group return-path peer by exact ID", returnPathPeer.info.id],
+		["cross-group return-path peer by host ID", "host-return-peer"],
+		["invisible cross-group subagent by exact ID", invisibleSubagent.info.id],
+		["invisible cross-group subagent by prefix", "dddddddd"],
+		["remote peer on another broker", "ffffffff-1111-2222-3333-444444444444"],
+		["missing session", "no-such-session"],
+	] as const) {
+		assert.equal(
+			shouldHoldSendForEndedQueueRestore(queue, target, sender, sessions, aliasTarget),
+			false,
+			`identifying_targets must not hold ${label} (${target})`,
+		);
+	}
+
+	// A visible live subagent IS held during identifying_targets (across every addressing form).
+	for (const addressing of [visibleSubagent.info.id, "eeeeeeee", "visible-worker", "host-visible-subagent"]) {
+		assert.equal(
+			shouldHoldSendForEndedQueueRestore(queue, addressing, sender, sessions, aliasTarget),
+			true,
+			`identifying_targets must hold visible live subagent addressed as ${addressing}`,
+		);
+	}
+});
+
+test("during loading, clean subagents never mutate pending or stall live sends even if store.load() hangs", async () => {
+	const keptName = "subagent-worker-kept-1";
+	const cleanName = "subagent-worker-clean-1";
+	const loadGate = deferred<void>();
+	cleanups.unshift(() => loadGate.resolve());
+	const { queue } = createQueue(async () =>
+		stubStore({
+			targets: async () => [keptName],
+			load: () => loadGate.promise,
+		}),
+	);
+	await queue.decide(() => {});
+	await vi.waitFor(() => assert.equal(queue.restorePhase, "loading"));
+
+	// A wake send to a clean subagent during loading must NOT mutate pending or defer behind a hung store.load().
+	const ran: string[] = [];
+	const deferredWake = queue.deferForTarget(cleanName, () => ran.push("deferred"));
+	assert.equal(deferredWake, false, "non-pending clean subagent must not wait on store.load()");
+	assert.equal(queue.holds(cleanName), false, "deferForTarget must never mutate pending");
+	const sender = connectedSession({ id: "sender-1", name: "sender" });
+	const cleanChild = connectedSession({
+		id: "99999999-aaaa-bbbb-cccc-dddddddddddd",
+		name: cleanName,
+		registrationName: cleanName,
+		supervisorId: "owner-1",
+		returnAddress: "host-clean-1",
+	});
+	const sessions = new Map<string, BrokerConnectedSession>([
+		[sender.info.id, sender],
+		[cleanChild.info.id, cleanChild],
+	]);
+	assert.equal(shouldHoldSendForEndedQueueRestore(queue, cleanChild.info.id, sender, sessions), false);
+	assert.equal(shouldHoldSendForEndedQueueRestore(queue, cleanName, sender, sessions), false);
+	assert.equal(shouldHoldSendForEndedQueueRestore(queue, "host-clean-1", sender, sessions), false);
+});
+
+test("resolves host-ID / alias targets canonically so a later live send to a new session ID never overtakes an earlier wake send", async () => {
+	const keptName = "subagent-worker-kept-1";
+	const targetsGate = deferred<string[]>();
+	const loadGate = deferred<void>();
+	cleanups.unshift(() => {
+		targetsGate.resolve([keptName, "host-kept-1"]);
+		loadGate.resolve();
+	});
+	const { queue } = createQueue(async () =>
+		stubStore({
+			targets: () => targetsGate.promise,
+			load: async (page) => {
+				await loadGate.promise;
+				page?.([row(1, "k1", keptName, "kept 0")]);
+			},
+		}),
+	);
+
+	const delivered: string[] = [];
+	await queue.decide((restored) => {
+		for (const q of restored.queues) {
+			for (const entry of q.sends) {
+				delivered.push((entry.held.clientMessage.message as { content: { text: string } }).content.text);
+			}
+		}
+	});
+	assert.equal(queue.restorePhase, "identifying_targets");
+
+	const sender = connectedSession({ id: "sender-1", name: "sender" });
+	const sessions = new Map<string, BrokerConnectedSession>([[sender.info.id, sender]]);
+	const dispatch = (target: string, text: string, wake: boolean): void => {
+		if (shouldHoldSendForEndedQueueRestore(queue, target, sender, sessions)) {
+			queue.whenRestored(() => dispatch(target, text, wake));
+			return;
+		}
+		const liveTarget = [...sessions.values()].find(
+			(s) => s.info.id === target || s.info.name === target || s.registrationReturnAddress === target,
+		);
+		if (liveTarget !== undefined) {
+			delivered.push(text);
+			return;
+		}
+		if (wake && queue.restorePhase === "identifying_targets") {
+			queue.whenRestored(() => dispatch(target, text, wake));
+		}
+	};
+
+	// Wake send #1 addressed by host ID during identifying_targets, before cleanChild registers.
+	dispatch("host-clean-1", "first-wake-by-host-id", true);
+	const cleanChild = connectedSession({
+		id: "88888888-aaaa-bbbb-cccc-dddddddddddd",
+		name: "subagent-clean",
+		registrationName: "subagent-clean",
+		supervisorId: "owner-1",
+		returnAddress: "host-clean-1",
+	});
+	sessions.set(cleanChild.info.id, cleanChild);
+
+	// Live send #2 addressed by new session ID while still in identifying_targets.
+	dispatch(cleanChild.info.id, "second-live-by-new-id", false);
+	assert.deepEqual(delivered, []);
+
+	// Once targets() resolves (cleanChild is NOT in pending), both clean sends drain immediately in FIFO order!
+	targetsGate.resolve([keptName, "host-kept-1"]);
+	await vi.waitFor(() => assert.equal(queue.restorePhase, "loading"));
+	assert.deepEqual(delivered, ["first-wake-by-host-id", "second-live-by-new-id"]);
+
+	// Kept subagent: wake send by host ID during loading, then registers with new session ID, then live send by new ID.
+	const keptDelivered: string[] = [];
+	const dispatchKept = (target: string, text: string): void => {
+		if (shouldHoldSendForEndedQueueRestore(queue, target, sender, sessions)) {
+			queue.whenRestored(() => dispatchKept(target, text));
+			return;
+		}
+		keptDelivered.push(text);
+	};
+	dispatchKept("host-kept-1", "kept-after-1-by-host");
+	const keptChild = connectedSession({
+		id: "77777777-aaaa-bbbb-cccc-dddddddddddd",
+		name: "renamed-kept",
+		registrationName: "different-reg-name",
+		supervisorId: "owner-1",
+		returnAddress: "host-kept-1",
+	});
+	sessions.set(keptChild.info.id, keptChild);
+	dispatchKept(keptChild.info.id, "kept-after-2-by-new-id");
+	assert.deepEqual(keptDelivered, [], "new session ID resolves via host-kept-1 in pending");
+
+	loadGate.resolve();
+	await queue.untilLoaded();
+	assert.deepEqual(keptDelivered, ["kept-after-1-by-host", "kept-after-2-by-new-id"]);
 });

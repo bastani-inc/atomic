@@ -183,88 +183,103 @@ type RestoreState =
 	| { readonly phase: "idle" }
 	| { readonly phase: "deciding"; readonly deferred: Array<() => void> }
 	| { readonly phase: "identifying_targets"; readonly deferred: Array<() => void> }
-	| { readonly phase: "loading"; readonly pending: Set<string>; readonly deferred: Array<() => void> }
+	| { readonly phase: "loading"; readonly pending: ReadonlySet<string>; readonly deferred: Array<() => void> }
 	| { readonly phase: "ready" };
 
-const UUID_PREFIX_PATTERN = /^[0-9a-f]{8}$/i;
-
-function targetMatchesSession(
-	trimmed: string,
-	lower: string,
+function isSessionInRestoredSet(
+	queue: Pick<DurableEndedQueue, "holds">,
 	session: BrokerConnectedSession,
-	localAliasTarget?: (target: string) => BrokerConnectedSession | undefined,
 ): boolean {
-	if (session.info.id === trimmed) return true;
-	if (session.info.name?.trim().toLowerCase() === lower) return true;
-	if (session.registrationName?.trim().toLowerCase() === lower) return true;
-	if (UUID_PREFIX_PATTERN.test(trimmed) && session.info.id.toLowerCase().startsWith(lower)) return true;
-	if (session.registrationReturnAddress === trimmed) return true;
-	if (localAliasTarget?.(trimmed) === session) return true;
+	if (session.supervisorId === undefined) return false;
+	if (session.registrationName !== undefined && queue.holds(session.registrationName)) return true;
+	if (session.registrationReturnAddress !== undefined && queue.holds(session.registrationReturnAddress)) return true;
+	if (queue.holds(session.info.id)) return true;
 	return false;
+}
+
+export interface RestoreHoldLookupOptions {
+	/** Multi-node alias resolver (`localAliasTarget`), when multi-node routing is active. */
+	readonly localAliasTarget?: (target: string) => BrokerConnectedSession | undefined;
+	/** Additional sessions the sender can reach across groups (e.g. return paths or open ask reply routes). */
+	readonly extraReachable?: readonly BrokerConnectedSession[];
 }
 
 /**
  * Whether a send to `target` from `sender` must wait for the durable ended-subagent queue's restoration barrier:
  * - `idle` / `ready`: never waits.
- * - `deciding` / `identifying_targets`: kept targets are not known yet; live sends that unambiguously resolve to a
- *   non-subagent session (`supervisorId === undefined`) proceed immediately, while sends to live subagents or
- *   unresolved targets wait and are re-evaluated once `store.targets()` resolves.
- * - `loading`: waits if `target` is pending directly or could match a live subagent whose `registrationName` is
- *   pending (including by new session ID, 8-hex UUID prefix, mutable name, host session ID, or alias).
+ * - `deciding` / `identifying_targets`: kept targets are not known yet; only sends that resolve to a visible live
+ *   local subagent (`supervisorId !== undefined`) wait and are re-evaluated once `store.targets()` resolves. Unknown,
+ *   missing, remote, invisible cross-group, and non-subagent peer sends pass immediately.
+ * - `loading`: waits only if `target` resolves to a visible live local subagent in the immutable restored set
+ *   (matched canonically by `registrationName`, `registrationReturnAddress`, or `info.id`), or if `target` does not
+ *   resolve to a live local session and is literally in the restored set.
  */
 export function shouldHoldSendForEndedQueueRestore(
 	queue: Pick<DurableEndedQueue, "restorePhase" | "holds" | "hasPendingTargets">,
 	target: string,
 	sender: BrokerConnectedSession | undefined,
 	sessions: ReadonlyMap<string, BrokerConnectedSession>,
-	localAliasTarget?: (target: string) => BrokerConnectedSession | undefined,
+	options?: RestoreHoldLookupOptions | ((target: string) => BrokerConnectedSession | undefined),
 ): boolean {
 	const phase = queue.restorePhase;
 	if (phase === "idle" || phase === "ready") return false;
 	const trimmed = target.trim();
 	if (trimmed.length === 0) return false;
-	const lower = trimmed.toLowerCase();
-	if (phase === "deciding" || phase === "identifying_targets") {
-		const exact = sessions.get(trimmed);
-		if (exact !== undefined) return exact.supervisorId !== undefined;
+	const localAliasTarget = typeof options === "function" ? options : options?.localAliasTarget;
+	const extraReachable = typeof options === "function" ? undefined : options?.extraReachable;
+
+	const senderCanReach = (session: BrokerConnectedSession): boolean => {
+		if (sender === undefined) return false;
+		if (reachesSession(sender, session.info)) return true;
+		if (extraReachable !== undefined && extraReachable.includes(session)) return true;
+		return false;
+	};
+
+	const holdResolved = (session: BrokerConnectedSession): boolean => {
+		if (session.supervisorId === undefined || !senderCanReach(session)) return false;
+		if (phase === "deciding" || phase === "identifying_targets") return true;
+		return isSessionInRestoredSet(queue, session);
+	};
+
+	const exact = sessions.get(trimmed);
+	if (exact !== undefined) return holdResolved(exact);
+
+	const aliased = localAliasTarget?.(trimmed);
+	if (aliased !== undefined) return holdResolved(aliased);
+
+	if (sender !== undefined) {
+		const visibleInfos: SessionInfo[] = [];
+		const visibleIds = new Set<string>();
 		for (const session of sessions.values()) {
-			if (session.supervisorId !== undefined && targetMatchesSession(trimmed, lower, session, localAliasTarget)) {
-				return true;
+			if (!isAgentRecipient(session.info) || !reachesSession(sender, session.info)) continue;
+			visibleInfos.push(session.info);
+			visibleIds.add(session.info.id);
+		}
+		let resolved = resolveSessionTarget(visibleInfos, trimmed);
+		if (resolved.kind === "not_found" && extraReachable !== undefined && extraReachable.length > 0) {
+			const extraInfos = extraReachable
+				.map((session) => session.info)
+				.filter((info) => isAgentRecipient(info) && !visibleIds.has(info.id));
+			if (extraInfos.length > 0) {
+				const extraRes = resolveSessionTarget(extraInfos, trimmed);
+				if (extraRes.kind !== "not_found") resolved = extraRes;
 			}
 		}
-		if (sender !== undefined) {
-			const visible = Array.from(sessions.values(), (session) => session.info).filter(
-				(info) => isAgentRecipient(info) && reachesSession(sender, info),
+		if (resolved.kind === "not_found") {
+			resolved = resolveSessionTargetByHostSessionId(
+				visibleInfos,
+				trimmed,
+				(info) => sessions.get(info.id)?.registrationReturnAddress,
 			);
-			const byNameOrPrefix = resolveSessionTarget(visible, trimmed);
-			const resolved =
-				byNameOrPrefix.kind === "not_found"
-					? resolveSessionTargetByHostSessionId(
-							visible,
-							trimmed,
-							(info) => sessions.get(info.id)?.registrationReturnAddress,
-						)
-					: byNameOrPrefix;
-			if (resolved.kind === "resolved") {
-				const live = sessions.get(resolved.session.id);
-				if (live !== undefined && live.supervisorId === undefined) return false;
-			}
 		}
-		return true;
-	}
-	if (!queue.hasPendingTargets) return false;
-	if (queue.holds(trimmed)) return true;
-	for (const session of sessions.values()) {
-		if (
-			session.supervisorId !== undefined &&
-			session.registrationName !== undefined &&
-			queue.holds(session.registrationName) &&
-			targetMatchesSession(trimmed, lower, session, localAliasTarget)
-		) {
-			return true;
+		if (resolved.kind === "resolved") {
+			const live = sessions.get(resolved.session.id);
+			if (live !== undefined) return holdResolved(live);
 		}
 	}
-	return false;
+
+	if (phase === "deciding" || phase === "identifying_targets") return false;
+	return queue.hasPendingTargets && queue.holds(trimmed);
 }
 
 export class DurableEndedQueue {
@@ -272,6 +287,7 @@ export class DurableEndedQueue {
 	private deciding: Promise<void> | undefined;
 	private loading: Promise<void> | undefined;
 	private restoreState: RestoreState = { phase: "idle" };
+	private restoreTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly early = new Map<string, EarlyOutcome | undefined>();
 	/** Failures kept for senders that were not connected, by the sender's return address (or session id). */
 	private readonly kept = new Map<string, Map<string, KeptFailure>>();
@@ -381,16 +397,30 @@ export class DurableEndedQueue {
 			}
 			this.journalBudget(store);
 			this.restoreState = { phase: "identifying_targets", deferred: this.restoreState.deferred };
+			// One bound covers both `store.targets()` and `store.load()`: past ENDED_QUEUE_LOAD_WAIT_MS, fall back to
+			// ready and release every held send so a slow or hung store never causes client send timeouts.
+			const restoreTimer = setTimeout(() => {
+				if (this.restoreTimer === restoreTimer) this.restoreTimer = undefined;
+				if (this.restoreState.phase === "identifying_targets" || this.restoreState.phase === "loading") {
+					this.host.log(
+						`Intercom broker stopped holding sends for subagents that ended after ${ENDED_QUEUE_LOAD_WAIT_MS} ms while reading their store`,
+					);
+					transitionToReady();
+				}
+			}, ENDED_QUEUE_LOAD_WAIT_MS);
+			restoreTimer.unref();
+			this.restoreTimer = restoreTimer;
 			resolveDecided();
 			let snapshot: RestoredEndedQueues | undefined;
 			try {
 				const targets = await store.targets();
-				const identifyingDeferred =
-					this.restoreState.phase === "identifying_targets" ? this.restoreState.deferred : [];
-				this.restoreState = { phase: "loading", pending: new Set(targets), deferred: [] };
-				// Re-evaluate sends deferred while targets were unknown: unrelated sends proceed before `store.load()`
-				// reads bodies, while sends to pending subagents re-enter the `loading` queue in FIFO order.
-				for (const deferred of identifyingDeferred) deferred();
+				if (this.restoreState.phase === "identifying_targets") {
+					const identifyingDeferred = this.restoreState.deferred;
+					this.restoreState = { phase: "loading", pending: new Set(targets), deferred: [] };
+					// Re-evaluate sends deferred while targets were unknown: unrelated sends proceed before `store.load()`
+					// reads bodies, while sends to pending subagents re-enter the `loading` queue in FIFO order.
+					for (const deferred of identifyingDeferred) deferred();
+				}
 				const restored = this.restoration();
 				const { budget } = await store.load((rows) => restored.add(rows));
 				snapshot = { ...restored.result(), budget };
@@ -399,6 +429,8 @@ export class DurableEndedQueue {
 					`Intercom broker could not read the messages kept for subagents that ended: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+			clearTimeout(restoreTimer);
+			if (this.restoreTimer === restoreTimer) this.restoreTimer = undefined;
 			transitionToReady(snapshot === undefined ? undefined : () => restore(snapshot));
 		})();
 		this.deciding = decided;
@@ -430,14 +462,14 @@ export class DurableEndedQueue {
 	}
 
 	/**
-	 * Defers `send` in the unified FIFO restoration queue until restoration finishes, marking `target` pending while
-	 * `store.load()` runs so a subsequent send to `target` (after it registers) cannot overtake this one. Returns
-	 * `false` when restoration is already complete (`idle` / `ready`), without calling `send`.
+	 * Defers `send` in the unified FIFO restoration queue while targets are still being decided/identified, or during
+	 * `loading` only when `target` is already in the immutable restored target set. Never mutates `pending`. Returns
+	 * `false` when the send should proceed immediately without waiting.
 	 */
 	deferForTarget(target: string, send: () => void): boolean {
 		const state = this.restoreState;
 		if (state.phase === "idle" || state.phase === "ready") return false;
-		if (state.phase === "loading") state.pending.add(target.trim().toLowerCase());
+		if (state.phase === "loading" && !state.pending.has(target.trim().toLowerCase())) return false;
 		state.deferred.push(send);
 		return true;
 	}
@@ -687,6 +719,10 @@ export class DurableEndedQueue {
 
 	/** Every write so far is done, and the store is closed. */
 	async close(): Promise<void> {
+		if (this.restoreTimer !== undefined) {
+			clearTimeout(this.restoreTimer);
+			this.restoreTimer = undefined;
+		}
 		await this.store?.close().catch(() => {});
 	}
 }
