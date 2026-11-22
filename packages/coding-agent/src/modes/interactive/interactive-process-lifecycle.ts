@@ -73,7 +73,10 @@ const probeSessionEndedAt = new WeakMap<HostEnding, number>();
 const probeLostAt = new WeakMap<HostEnding, number>();
 function probeLog(line: string): void {
 	try {
-		appendFileSync(join(tmpdir(), "atomic-notice-latency.log"), `PROBE pid=${process.pid} ${line}\n`);
+		appendFileSync(
+			process.env.ATOMIC_NOTICE_PROBE_LOG ?? join(tmpdir(), "atomic-notice-latency.log"),
+			`PROBE pid=${process.pid} ${line}\n`,
+		);
 	} catch {}
 }
 
@@ -121,6 +124,9 @@ function terminalEnded(mode: InteractiveModeBase, notice: TerminalEndNotice): vo
 	const ending = hostEnding(mode);
 	if (notice.kind === "console-closed") {
 		if (ending.consoleClosed) return;
+		probeLog(
+			`notice terminalLost=${ending.terminalLost} sinceLossMs=${Math.round(performance.now() - (probeLostAt.get(ending) ?? 0))}`,
+		);
 		const endedAt = probeSessionEndedAt.get(ending);
 		if (endedAt !== undefined) {
 			probeLog(`notice-after-dispose latencyMs=${Math.round(performance.now() - endedAt)}`);
@@ -317,6 +323,9 @@ InteractiveModeBase.prototype.shutdown = async function (
 			await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 			if (!ending.terminalLost) stopTerminal(this);
 		}
+		probeLog(
+			`dispose-done consoleClosed=${ending.consoleClosed} terminalLost=${ending.terminalLost} sinceLossMs=${Math.round(performance.now() - (probeLostAt.get(ending) ?? 0))}`,
+		);
 		if (ending.terminalLost && process.platform === "win32" && !ending.consoleClosed && !ending.lostExitDeciding) {
 			probeSessionEndedAt.set(ending, performance.now());
 			probeLog(
