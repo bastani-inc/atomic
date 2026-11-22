@@ -478,6 +478,13 @@ function attemptStopped(signals: AttemptSignals): { readonly stopped: Promise<vo
 
 /** The model and thinking level a child's session records last on its branch. */
 function recordedSettings(sessionManager: SessionManager): { model?: string; thinking?: string } {
+	if (typeof sessionManager.getLatestBranchSettingsWithProvenance === "function") {
+		const { model, thinkingLevel } = sessionManager.getLatestBranchSettingsWithProvenance();
+		return {
+			...(model.status === "found" ? { model: `${model.entry.provider}/${model.entry.modelId}` } : {}),
+			...(thinkingLevel.status === "found" ? { thinking: thinkingLevel.entry.thinkingLevel } : {}),
+		};
+	}
 	if (typeof sessionManager.getLatestBranchSettings === "function") {
 		const { model, thinkingLevel } = sessionManager.getLatestBranchSettings();
 		return {

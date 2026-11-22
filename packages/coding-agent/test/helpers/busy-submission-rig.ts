@@ -150,6 +150,8 @@ export interface RigOptions {
 	models?: FauxModelDefinition[];
 	backgroundSessions?: number;
 	stallEventLoop?: boolean;
+	/** Isolated wiring only: false simulates an older engine that omits origin send ids on relayed user messages. */
+	echoOrigin?: boolean;
 }
 
 export async function createRig(wiring: Wiring, load: Load, options: RigOptions): Promise<Rig> {
@@ -168,6 +170,7 @@ export async function createRig(wiring: Wiring, load: Load, options: RigOptions)
 			tools: options.tools,
 			settings: options.settings,
 			models: options.models,
+			echoOrigin: options.echoOrigin,
 		});
 		if (load === "loaded") pair.setLag({ toEngineMs: PIPE_LAG_MS, toHostMs: PIPE_LAG_MS });
 		engine = pair.engine;

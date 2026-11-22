@@ -286,6 +286,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		typed?: string,
 		rawText?: string,
 		receiptId?: string,
+		originSendId?: string,
 	): Promise<void>;
 	_queueFollowUp(
 		text: string,
@@ -293,6 +294,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		typed?: string,
 		rawText?: string,
 		receiptId?: string,
+		originSendId?: string,
 	): Promise<void>;
 	_throwIfExtensionCommand(text: string): void;
 	sendCustomMessage<T = unknown>(

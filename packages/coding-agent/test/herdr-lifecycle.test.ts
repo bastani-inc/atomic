@@ -14,7 +14,13 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
-import { arg, fakeHerdr, resumeArgs } from "./helpers/herdr.js";
+import {
+	arg,
+	FAKE_HERDR_CHILD_TIMEOUT_MS,
+	FAKE_HERDR_EXPLICIT_TIMEOUT_MS,
+	fakeHerdr,
+	resumeArgs,
+} from "./helpers/herdr.js";
 import { createFauxStreamFn, createHarnessWithExtensions, fauxModel } from "./test-harness.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
@@ -26,7 +32,7 @@ test("shared reporter ignores child shutdown and keeps reporting for its parent"
 	const runtime = createExtensionRuntime();
 
 	const extension = await loadExtensionFromFactory(
-		createHerdrExtension({ env: fake.env, enabled: () => true }),
+		createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 		fake.dir,
 		createEventBus(),
 		runtime,
@@ -72,7 +78,7 @@ test("shared reporter accepts activity only from the first eligible session", as
 	const runtime = createExtensionRuntime();
 
 	const extension = await loadExtensionFromFactory(
-		createHerdrExtension({ env: fake.env, enabled: () => true }),
+		createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 		fake.dir,
 		createEventBus(),
 		runtime,
@@ -145,7 +151,7 @@ test("real compaction and continued prompts retain pane authority until quit", a
 			},
 		],
 		extensionFactories: [
-			createHerdrExtension({ env: fake.env, enabled: () => true }),
+			createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 			(atomic) => {
 				atomic.on("session_start", () => {
 					lifecycle.push("start");
@@ -199,13 +205,13 @@ test("child shutdown cannot cancel a parent claim waiting for a timed-out predec
 		fake.environment,
 		{ id: "predecessor" },
 		{
-			timeoutMs: 1500,
+			timeoutMs: FAKE_HERDR_EXPLICIT_TIMEOUT_MS,
 			diagnostic: (value) => diagnostics.push(value),
 		},
 	);
 	const runtime = createExtensionRuntime();
 	const extension = await loadExtensionFromFactory(
-		createHerdrExtension({ env: fake.env, enabled: () => true }),
+		createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS }),
 		fake.dir,
 		createEventBus(),
 		runtime,
@@ -222,8 +228,10 @@ test("child shutdown cannot cancel a parent claim waiting for a timed-out predec
 	);
 	try {
 		reportPaneActivity(previous, { state: "working", reason: "executing" });
+		await fake.waitForStarted(1);
 		const starting = parent.emit({ type: "session_start" });
 		await child.emit({ type: "session_shutdown", reason: "quit" });
+		fake.expireInFlight(FAKE_HERDR_EXPLICIT_TIMEOUT_MS);
 		await starting;
 		await fake.waitFor(1); // parent idle (hung predecessor report has no end)
 		await parent.emit({ type: "agent_start" });
@@ -278,7 +286,7 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 	const fake = await fakeHerdr();
 	try {
 		const extensionsResult = await createTestExtensionsResult(
-			[createHerdrExtension({ env: fake.env, enabled: () => true })],
+			[createHerdrExtension({ env: fake.env, enabled: () => true, timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS })],
 			fake.dir,
 		);
 		const resourceLoader = await withMandatoryResourceLoader(
@@ -401,7 +409,12 @@ if (args.includes("working")) {
 	const runtime = createExtensionRuntime();
 
 	const extension = await loadExtensionFromFactory(
-		createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 }),
+		createHerdrExtension({
+			env: fake.env,
+			enabled: () => true,
+			clock: () => 100,
+			timeoutMs: FAKE_HERDR_CHILD_TIMEOUT_MS,
+		}),
 		fake.dir,
 		createEventBus(),
 		runtime,
