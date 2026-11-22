@@ -1,10 +1,10 @@
 import { forwardReleaseObservation } from "./broker/released-child-receipts.js";
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
-import { Type } from "@bastani/atomic-ai";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderContactSupervisorCall, renderIntercomCall, renderIntercomToolResult } from "./result-renderers.js";
 import { renderIntercomCustomMessage } from "./ui/inline-message.js";
+import { ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage } from "./ui/wake-notice.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
@@ -50,8 +50,15 @@ import {
 import type { SessionInfo } from "./types.js";
 import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
 import { intercomScriptAccess } from "./codemode-access.js";
-import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
-import { RETURN_PATH_TOOL_NOTE } from "./group.js";
+import {
+	CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+	CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+	CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+	createContactSupervisorToolParameters,
+	createIntercomToolParameters,
+	INTERCOM_TOOL_DESCRIPTION,
+	INTERCOM_TOOL_PROMPT_SNIPPET,
+} from "./tool-metadata.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import { closeFinishedChildAsks } from "./finished-asks.js";
 import { OutboundAsks } from "./outbound-asks.js";
@@ -517,13 +524,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
         detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
         detachmentRequiresReady: true,
         label: "Contact Supervisor",
-        description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
-        promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
-        parameters: Type.Object({
-          reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
-          message: Type.Optional(Type.String()),
-          interview: Type.Optional(Type.Unknown()),
-        }),
+        description: CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+        promptSnippet: CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+        promptGuidelines: CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+        parameters: createContactSupervisorToolParameters(),
         execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
         renderCall: renderContactSupervisorCall,
         renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
@@ -965,43 +969,9 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		detachable: (params) => intercomCallMayDetach(params) && heavyReplyWaitMayDetach("intercom", params),
 		detachmentRequiresReady: true,
 		label: "Intercom",
-		description: `Send a message to another local agent session running on this machine.
-Use this to communicate findings, request help, or coordinate work with other sessions.
-Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
-For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this session launched) or \`subagents:<runId>/*\` (those of one run); each recipient gets its own direct send, the result lists every recipient's outcome, a glob matching no session is an error naming close names, a name glob (\`*\` included) matching more than one session needs \`broadcast: true\` (without it the send is refused with the list of matches; \`subagents:\` targets broadcast without it), and patterns never reach outside your groups.
-${ASK_DESCRIPTION}
-For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
-Usage:
-  intercom({ action: "list" })                    → List sessions in your group
-  intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
-  intercom({ action: "join", group: "name" })     → Join or create a named group
-  intercom({ action: "leave" })                   → Return to your resolved home group
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
-  intercom({ action: "send", to: "subagent-worker-*", message: "...", broadcast: true }) → Send to every matching session
-  intercom({ action: "send", to: "subagents:*", message: "..." })   → Send to every subagent you launched
-${ASK_USAGE}
-  intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
-  intercom({ action: "pending" })                                      → List unresolved inbound asks and your pending asks
-  intercom({ action: "status" })                  → Show connection status and your group
-
-"default" is the shared group; "true" and "auto" are reserved for subagent auto-groups. Joining does not grant cross-group access; contact_supervisor remains the only cross-group path.`,
-		promptSnippet: `Use to coordinate with other local agent sessions in your intercom group. ${ASK_PROMPT_SNIPPET} Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.`,
-		parameters: Type.Object({
-			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', 'cancel', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, or unique 8-hex session UUID prefix. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target (for 'send', 'ask', or targeted 'reply')" })),
-			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
-			broadcast: Type.Optional(Type.Boolean({ description: "For 'send' to a session-name glob: true to reach every match. Without it, a glob that matches more than one session is refused with the list of matches. `subagents:` targets broadcast without it." })),
-			attachments: Type.Optional(Type.Array(Type.Object({
-				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
-				name: Type.String(),
-				content: Type.String(),
-				language: Type.Optional(Type.String()),
-			}))),
-			wait: Type.Optional(askWaitSchema),
-			askId: Type.Optional(askIdSchema),
-			replyTo: Type.Optional(Type.String({ description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender. With 'cancel', closes that ask sent to you without replying" })),
-			group: Type.Optional(Type.String({ description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group." })),
-		}),
+		description: INTERCOM_TOOL_DESCRIPTION,
+		promptSnippet: INTERCOM_TOOL_PROMPT_SNIPPET,
+		parameters: createIntercomToolParameters(),
 		execute: (...args) => {
 			const invocationLease = activeLease;
 			return executeHeavyTool((ctx) => {
@@ -1013,6 +983,7 @@ ${ASK_USAGE}
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 		renderCall: renderIntercomCall,
 	});
+	pi.registerMessageRenderer?.(ENDED_CHILD_WAKE_MESSAGE_TYPE, renderIntercomWakeMessage);
 	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
 	pi.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
@@ -1040,34 +1011,10 @@ ${ASK_USAGE}
 			detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
 			detachmentRequiresReady: true,
 			label: "Contact Supervisor",
-			description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
-			promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",
-			promptGuidelines: [
-				"Use contact_supervisor with reason='need_decision' when a subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision before continuing.",
-				"Use contact_supervisor with reason='interview_request' when the child needs multiple structured answers from the supervisor in one blocking exchange.",
-				"Use contact_supervisor with reason='progress_update' only for meaningful progress or unexpected discoveries that change the plan.",
-				"Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
-			],
-			parameters: Type.Object({
-				reason: Type.String({
-					enum: ["need_decision", "progress_update", "interview_request"],
-					description: "Contact reason: 'need_decision' waits for a reply; 'interview_request' sends structured questions and waits for a reply; 'progress_update' sends a non-blocking update",
-				}),
-				message: Type.Optional(Type.String({
-					description: "Decision request, optional interview note, or meaningful progress update for the supervisor",
-				})),
-				interview: Type.Optional(Type.Object({
-					title: Type.Optional(Type.String()),
-					description: Type.Optional(Type.String()),
-					questions: Type.Array(Type.Object({
-						id: Type.String(),
-						type: Type.String({ description: "Question type: single, multi, text, image, or info" }),
-						question: Type.String(),
-						options: Type.Optional(Type.Array(Type.Unknown())),
-						context: Type.Optional(Type.String()),
-					})),
-				}, { description: "Structured interview request for reason='interview_request'" })),
-			}),
+			description: CONTACT_SUPERVISOR_TOOL_DESCRIPTION,
+			promptSnippet: CONTACT_SUPERVISOR_TOOL_PROMPT_SNIPPET,
+			promptGuidelines: CONTACT_SUPERVISOR_TOOL_PROMPT_GUIDELINES,
+			parameters: createContactSupervisorToolParameters(),
 			execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
 			renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
 			renderCall: renderContactSupervisorCall,

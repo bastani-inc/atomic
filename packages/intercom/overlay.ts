@@ -97,7 +97,7 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
   });
 
   pi.registerShortcut("alt+m", {
-    description: "Open session intercom",
+    description: "Open session intercom overlay",
     handler: async (ctx) => openIntercomOverlay(ctx),
   });
 }

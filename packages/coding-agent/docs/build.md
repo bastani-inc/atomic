@@ -13,18 +13,18 @@ New to Atomic? Start with the [Quickstart](/quickstart). To look up an exact con
 
 Work down this list and stop at the first mechanism that solves your problem.
 
-1. [Prompt templates](/prompt-templates) — reusable prompts that expand from a slash command. No code.
-2. [Skills](/skills) — on-demand instructions the agent loads when a task matches. Markdown plus optional scripts.
-3. [Subagents](/subagents) — delegate a focused, bounded task to a child agent.
-4. [Intercom](/intercom) — coordinate several sessions on one machine.
-5. [Orchestration](/orchestration) — use codemode to launch children, check results, and pick up after an interruption.
-6. [Extensions](/extensions) — TypeScript that adds tools, commands, events, and custom UI when nothing lighter fits.
-7. [Atomic packages](/packages) — bundle and distribute the result.
+1. [Prompt templates](/prompt-templates). Expand reusable Markdown prompts from a slash command without writing code.
+2. [Skills](/skills). Provide on-demand instructions and optional scripts that the agent loads when a task matches.
+3. [Subagents](/subagents). Delegate a focused, bounded task to a child agent.
+4. [Intercom](/intercom). Coordinate sessions on the same machine or across machines sharing a database.
+5. [Orchestration](/orchestration). Use codemode to launch children, check results, and pick up after an interruption.
+6. [Extensions](/extensions). Write TypeScript that adds tools, commands, events, and custom UI when nothing lighter fits.
+7. [Atomic packages](/packages). Bundle and distribute your extensions, skills, prompt templates, themes, subagents, MCP servers, or storage adapters.
 
 ## Change the model layer
 
-- [Custom models](/models) — add model entries for a supported provider API.
-- [Custom providers](/custom-provider) — implement a provider API or OAuth flow Atomic does not ship.
+- [Custom models](/models). Add model entries for a supported provider API.
+- [Custom providers](/custom-provider). Implement a provider API or OAuth flow that Atomic does not ship.
 
 ## Customization
 
@@ -34,8 +34,8 @@ Use [Themes](/themes) to restyle the terminal with a built-in or custom theme.
 
 [Programmatic use](/programmatic) compares JSON mode, RPC, and the SDK, and links each one to its protocol or API reference.
 
-
-- [SDK](/sdk) - embed Atomic in Node.js applications.
-- [RPC mode](/rpc) - integrate over stdin/stdout JSONL.
-- [JSON event stream mode](/json) - print mode with structured events.
-- [TUI components](/tui) - build custom terminal UI for extensions.
+- [SDK](/sdk). Embed Atomic in Node.js applications.
+- [RPC mode](/rpc). Integrate over stdin and stdout JSONL.
+- [JSON event stream mode](/json). Run print mode with structured events.
+- [TUI components](/tui). Build custom terminal UI for extensions.
+- [Libraries](/libraries). Use Atomic's AI, TUI, agent core, codemode, schema, and telemetry packages directly.

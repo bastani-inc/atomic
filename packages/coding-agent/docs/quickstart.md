@@ -1,3 +1,8 @@
+---
+title: "Quickstart"
+description: "Install Atomic, authenticate a provider, run your first session, and add project instructions."
+---
+
 # Quickstart
 
 **Outcome:** Atomic is installed, authenticated, and has completed a real task in your repository.
@@ -6,10 +11,10 @@
 
 Follow these four pages in order for full setup instructions, or use the quick commands below:
 
-1. **[Install Atomic](/getting-started/installation)** — package manager or self-contained release archive.
-2. **[Authenticate](/getting-started/authentication)** — subscription login (`/login`) or API key.
-3. **[Run your first session](/getting-started/first-session)** — run a task, inspect tools, and delegate to subagents.
-4. **[Add project instructions](/getting-started/project-instructions)** — define repository conventions in `AGENTS.md`.
+1. **[Install Atomic](/getting-started/installation).** Choose a package manager or the self-contained release archive.
+2. **[Authenticate](/getting-started/authentication).** Sign in with a subscription (`/login`) or export an API key.
+3. **[Run your first session](/getting-started/first-session).** Complete a task, inspect tool calls, and delegate work to subagents.
+4. **[Add project instructions](/getting-started/project-instructions).** Define repository conventions in `AGENTS.md`.
 
 ## Prerequisites
 
@@ -99,8 +104,8 @@ List the top-level directories in this repository and say what each one holds.
 ```
 
 - Use `/tasks` to inspect background subagents and shells.
-- Use `/skill:<name>` to invoke a reusable skill directly (see [Top skills](/getting-started/first-session#top-skills-to-invoke-directly)).
-- Workflows are now skills: pass an older workflow file to Atomic to convert it into a skill, or see [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
+- Use `/skill:<name>` to invoke a reusable skill directly. See [Top skills](/getting-started/first-session#top-skills-to-invoke-directly).
+- Workflows are now skills. Give Atomic an older workflow file to convert it into a skill, or see [Migrating workflows](/orchestration/migrating-workflows) and [Delegate a larger task](/getting-started/first-session#delegate-a-larger-task).
 - See [First session](/getting-started/first-session#first-session-2) for the full walkthrough and [default tools](/getting-started/first-session#default-tools-and-prompts).
 
 ## Give Atomic project instructions
@@ -118,7 +123,7 @@ atomic @README.md "Summarize this"
 atomic @src/app.ts @src/app.test.ts "Review these together"
 ```
 
-Paste images with `Cmd+V` (macOS) or `Ctrl+V` (`Alt+V` on Windows), or drag images into supported terminals. Inside tmux on macOS, use `Ctrl+V`. When the clipboard holds both text and an image, `Ctrl+V` prefers the image; `Cmd+V` depends on the terminal.
+Paste images with `Cmd+V` on macOS, `Ctrl+V` on Linux or inside tmux on macOS, and `Alt+V` or `Ctrl+V` on Windows. You can also drag images into supported terminals. When the clipboard holds both text and an image, `Ctrl+V` prefers the image; `Cmd+V` depends on the terminal.
 
 ### Run shell commands
 
@@ -130,9 +135,10 @@ Prefix a command in the editor with `!` to run it and attach its output to the m
 
 ### Switch models
 
-- `/model` or `Ctrl+L` — pick a model.
-- `Shift+Tab` — cycle thinking level.
-- `Ctrl+P` / `Shift+Ctrl+P` — cycle scoped models.
+- `/model` or `Ctrl+L`: pick a model.
+- `Shift+Tab`: cycle the thinking level.
+- `Ctrl+P`: cycle forward through scoped models.
+- `Shift+Ctrl+P` (`Alt+P` on Windows and WSL): cycle backward through scoped models.
 
 ### Continue later
 
@@ -162,14 +168,14 @@ Use `--mode json` for a JSON event stream or `--mode rpc` for stdin/stdout proce
 
 ## Next steps
 
-- [Interactive use](/usage) — slash commands, shortcuts, and message queueing.
-- [Orchestration](/orchestration) — combine codemode, subagents, and skills for multi-step work.
-- [Skills](/skills) — reusable procedures invoked with `/skill:<name>`.
-- [Providers](/providers) — provider setup and authentication.
-- [Settings](/settings) — global and project configuration.
-- [Keybindings](/keybindings) — shortcuts and remapping.
-- [Atomic Packages](/packages) — install shared extensions, skills, prompts, and themes.
-- [Security](/security) — project trust, tool permissions, and vulnerability reporting. Read before trusting a project or installing third-party packages.
-- [Containerization](/containerization) — run Atomic in an isolated environment.
+- **[Interactive use](/usage).** Learn slash commands, shortcuts, and message queueing.
+- **[Orchestration](/orchestration).** Combine codemode, subagents, and skills for multi-step work.
+- **[Skills](/skills).** Run reusable procedures with `/skill:<name>`.
+- **[Providers](/providers).** Configure provider logins, API keys, and cloud endpoints.
+- **[Settings](/settings).** Configure global and project preferences.
+- **[Keybindings](/keybindings).** Review default shortcuts and remap keys.
+- **[Atomic packages](/packages).** Install shared extensions, skills, prompts, and themes.
+- **[Security](/security).** Read project trust, tool permissions, and vulnerability reporting rules before trusting a project or installing third-party packages.
+- **[Containerization](/containerization).** Run Atomic in an isolated environment.
 
-Platform guides: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Terminal setup](/terminal-setup), [Shell aliases](/shell-aliases).
+Platform guides: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Terminal setup](/terminal-setup), and [Shell aliases](/shell-aliases).

@@ -1,128 +1,102 @@
 ---
 title: "Intercom"
-description: "Direct messaging between Atomic sessions, on one machine or across machines that share storage"
+description: "Direct and broadcast messaging between Atomic sessions, on one machine or across machines that share storage"
 ---
-
-> Atomic sessions can talk to each other. Press ALT+M to message another session, or ask the agent to coordinate with a peer.
 
 # Intercom
 
-Atomic bundles `@bastani/intercom` for direct 1:1 messaging between sessions on the same machine, or on several machines that share a storage database. Send context, findings, or requests yourself, or let agents coordinate. No separate install is needed.
+Atomic bundles `@bastani/intercom` for direct and broadcast messaging between sessions on the same machine, or across several machines that share a storage database. You can send context, findings, or requests yourself, or let agents coordinate directly. No separate install is required.
 
-The extension registers commands and tools at startup. An interactive session joins Intercom in the background a few seconds after it starts, so every other session in its group can list it and message it before it uses Intercom itself; starting the session does not wait for this. Print (`-p`), JSON, RPC and SDK sessions join when you or the model first use Intercom, or when they launch a subagent with Intercom. So do interactive sessions when joining at startup is off. It is off when `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` is set, or when `joinAtStartup` is `false` in Intercom's [configuration](/intercom/reference#configuration) and `ATOMIC_INTERCOM_JOIN_AT_STARTUP` is not `1`. A subagent launched with Intercom joins as soon as its session starts, so sessions in its group can list it and steer it right away. Its group is the group of the session that launched it, unless the launch passes `group`.
+The extension registers commands and tools at startup. An interactive session joins Intercom in the background a few seconds after it starts, so other sessions in its group can list and message it before it uses Intercom itself. Starting the session does not wait for this connection.
+
+Print (`-p`), JSON, RPC, and SDK sessions join when you or the model first use Intercom, or when they launch a subagent with Intercom. Interactive sessions do the same when startup join is off, either because `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` is set or because `joinAtStartup` is `false` in Intercom's [configuration](/intercom/reference#configuration) without `ATOMIC_INTERCOM_JOIN_AT_STARTUP=1`. A subagent launched with Intercom joins as soon as its session starts and inherits the launching session's group unless the launch sets `group`.
 
 **Key capabilities:**
-- **Session messaging** - `send`, `ask` (never blocks; the reply arrives as a message), `reply`, `pending`, `cancel`, `list`, `groups`, and `status` via the `intercom` tool
-- **Runtime groups** - Add or remove named memberships without restarting; joined sessions keep their broker IDs and later subagents inherit the most recently joined membership
-- **Session and group discovery** - List connected sessions or every available group, including session counts and membership markers
-- **Host-set reach** - An SDK host can give a session its own group and the other groups it may reach, enforced by the broker (see [Reach policies](/intercom/reference#reach-policies))
-- **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
-- **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
-- **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
-- **Run notifications** - Subagents deliver run results and control notices to a parent session over Intercom
-- **Bundled skill** - `/skill:intercom` provides planner-worker, group, and escalation-handling patterns
+
+- **Session messaging.** Call `send`, `ask`, `reply`, `pending`, `cancel`, `list`, `groups`, and `status` through the `intercom` tool. Calls to `ask` never block; late replies arrive as messages.
+- **Runtime groups.** Add or remove named memberships without restarting. Joined sessions keep their broker IDs, and later subagents inherit the most recently joined membership.
+- **Session and group discovery.** List connected sessions or every available group with session counts and membership markers.
+- **Host-set reach.** An SDK host can assign a session a home group and reachable groups, enforced by the broker ([Reach policies](/intercom/reference#reach-policies)).
+- **Keyboard overlay.** Press ALT+M or run `/intercom` to pick a session and compose a message.
+- **Attachments.** Share `file`, `snippet`, and `context` payloads between sessions.
+- **Subagent escalation.** Delegated children receive a `contact_supervisor` tool for decisions, structured interviews, and progress updates.
+- **Run notifications.** Subagents deliver run results and control notices to their parent session over Intercom.
+- **Bundled skill.** Run `/skill:intercom` for planner-worker, group, broadcast, and escalation patterns.
 
 **Example use cases:**
-- Planner–worker splits across two terminals
-- Research → implementation context handoffs
-- Supervisor decisions and structured interviews for delegated subagents
-- Pair debugging between sessions
+
+- Planner and worker splits across two terminals.
+- Research to implementation context handoffs.
+- Supervisor decisions and structured interviews for delegated subagents.
+- Peer-to-peer coordination across parallel subagents.
+- Pair debugging between sessions.
 
 ## Where to go next
 
-Intercom coordinates several Atomic sessions on one machine, or across machines that share storage. Read this page for the quick start and the coordination patterns, then continue:
+Read this page for the quick start, coordination patterns, and supervisor escalation. Then continue to:
 
-- [Intercom operations](/intercom/operations) covers connection states, delivery, notifications, shortcuts, and recovery.
-- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) explains how sessions on different machines message each other through shared storage.
-- [Intercom reference](/intercom/reference) — the `intercom` tool contract and every intercom setting.
+- [Intercom operations](/intercom/operations) for connection states, delivery behavior, notifications, shortcuts, and recovery.
+- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) for multi-machine messaging through shared storage.
+- [Intercom reference](/intercom/reference) for the `intercom` tool contract, error classes, and every Intercom setting.
 
-## Table of Contents
+## Quick start
 
-- [Quick Start](#quick-start)
-  - [From the Keyboard](#from-the-keyboard)
-  - [From the Agent](#from-the-agent)
-  - [Receiving Messages](#receiving-messages)
-- [How Connection Works](/intercom/operations#how-connection-works)
-- [The intercom Tool](/intercom/reference#the-intercom-tool)
-  - [Actions](/intercom/reference#actions)
-  - [Targeting Sessions](/intercom/reference#targeting-sessions)
-  - [send vs ask vs reply](/intercom/reference#send-vs-ask-vs-reply)
-  - [Attachments](/intercom/reference#attachments)
-- [Coordination Patterns](#coordination-patterns)
-- [Subagent Escalation: contact_supervisor](#subagent-escalation-contact_supervisor)
-  - [When the Tool Appears](#when-the-tool-appears)
-  - [The Three Reasons](#the-three-reasons)
-  - [What the Supervisor Sees](#what-the-supervisor-sees)
-  - [Structured Interview Replies](#structured-interview-replies)
-- [Subagent Notifications](/intercom/operations#subagent-notifications)
-  - [Subagent Control Notices](/intercom/operations#subagent-control-notices)
-  - [Delivery Ordering](/intercom/operations#delivery-ordering)
-- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines)
-- [Mixed versions](#mixed-versions)
-- [Configuration](/intercom/reference#configuration)
-- [Keyboard Shortcuts](/intercom/operations#keyboard-shortcuts)
-- [How It Works](/intercom/operations#how-it-works)
-- [Intercom vs Shared-Room Messengers](#intercom-vs-shared-room-messengers)
-- [Limitations](/intercom/operations#limitations)
-- [Related Docs](#related-docs)
-
-## Quick Start
-
-### From the Keyboard
+### From the keyboard
 
 Press **ALT+M** or run `/intercom` to open the session list overlay:
 
-1. **Select a session** — Use arrow keys to pick a target session
-2. **Compose message** — Write your message in the compose overlay
-3. **Send** — Enter Send · Escape Cancel
+1. **Select a session.** Use arrow keys to choose a target session.
+2. **Compose a message.** Type your message in the compose overlay.
+3. **Send.** Press Enter to send or Escape to cancel.
 
 Sent messages are recorded in session history and confirmed with a notification.
 
-### From the Agent
+### From the agent
 
-The agent can list sessions and send messages using the `intercom` tool. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan:
+Agents list sessions and exchange messages through the `intercom` tool. Tool calls and results render as compact transcript rows so message flows stay easy to scan:
 
 ```typescript
 // List active sessions
 intercom({ action: "list" })
-// → **Current session** (groups: default):
-// → - `20d43841-1111-4222-8333-123456789abc` [self, idle] ~/projects/api (claude-sonnet-4) name: executor
-// → **Other visible sessions:**
-// → - `6332faab-1111-4222-8333-123456789abc` [same cwd, thinking] ~/projects/api (claude-sonnet-4) name: research
+// Output:
+// **Current session** (groups: default):
+// - `20d43841-1111-4222-8333-123456789abc` [self, idle] ~/projects/api (claude-sonnet-4) name: executor
+// **Other visible sessions:**
+// - `6332faab-1111-4222-8333-123456789abc` [same cwd, thinking] ~/projects/api (claude-sonnet-4) name: research
 
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
-// → Message sent to research
+// Output: Message sent to research
 
-// Send one update to every matching session (broadcast: true), or to every subagent you launched
+// Broadcast to matching sessions (requires broadcast: true) or to all launched subagents
 intercom({ action: "send", to: "subagent-worker-*", message: "Scope changed: skip the migration", broadcast: true })
 intercom({ action: "send", to: "subagents:*", message: "Stop and report what you have" })
-// → Each recipient's outcome is listed: delivered, queued, or not delivered with the reason
+// Output lists each recipient's outcome: delivered, queued, or not delivered with the reason
 
-// The full session ID printed by list is also a valid target
+// Full session IDs printed by list are also valid targets
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
-// → A quick reply comes back inline. Otherwise: Ask 4c4d8427-… delivered to research (busy: running bash).
-//   The reply arrives later as a message starting "Reply to your ask 4c4d8427-… from research".
+// Quick replies return inline. Otherwise:
+// Ask 4c4d8427-... delivered to research (busy: running bash).
+// The reply arrives later as a message starting "Reply to your ask 4c4d8427-... from research".
 
-// Ask without waiting at all, or wait up to a budget, as with bash
+// Ask without waiting, or wait up to a budget (same shape as bash)
 intercom({ action: "ask", to: "research", message: "Any blockers?", wait: { kind: "background" } })
 intercom({ action: "ask", to: "research", message: "Any blockers?", wait: { kind: "foreground", budgetMs: 60000 } })
 
-// Your pending asks, and cancelling one
+// Inspect pending asks, cancel an outbound ask, or close an inbound ask without replying
 intercom({ action: "pending" })
 intercom({ action: "cancel", askId: "4c4d8427" })
-// Close an ask sent to you that you will not answer; nothing is sent to its sender
 intercom({ action: "cancel", replyTo: "9f2c1e07" })
 
 // Check connection status
 intercom({ action: "status" })
-// → Connected: Yes, Session ID: abc12345-1111-4222-8333-123456789abc, Active sessions: 3
+// Output: Connected: Yes, Session ID: abc12345-1111-4222-8333-123456789abc, Active sessions: 3
 
-// Send with attachments (code snippets, files, or context)
+// Send with attachments (file, snippet, or context)
 intercom({
   action: "send",
   to: "worker",
-  message: "Here's the fix:",
+  message: "Here is the fix:",
   attachments: [{
     type: "snippet",
     name: "auth.ts",
@@ -132,123 +106,94 @@ intercom({
 })
 ```
 
-### Receiving Messages
+### Receiving messages
 
-When a message arrives, it appears inline in your chat with the sender's info and a reply hint:
+Incoming messages appear inline in chat with the sender's details and a reply hint:
 
-```
+```text
 **From research** (~/projects/api)
 
 To reply, use the intercom tool: intercom({ action: "reply", message: "..." })
 
-Found the issue — UserService.validate() doesn't check for null input.
+Found the issue: UserService.validate() does not check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients never need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. The recipient saves each message to its session as soon as it arrives, and the sender sees `delivered` only after that save. If the recipient closes or crashes before it shows a saved message, resuming that session with `atomic --session <id>` or `/resume` shows the message then, once, in arrival order, if its sender is still connected. A message from a sender that is gone is added once, in full, to the session history without starting a turn, and the recovery notice says the sender is gone. A reply already returned inline to an `ask`, or a message the recipient refused, is not shown again when the session reopens. If Intercom cannot be reached when the session reopens, or the sender is a background subagent that was relaunched but has not reconnected yet, the message is deferred: it starts no turn, the notice says so, and the next reopen of the session decides again. Sessions started with `--no-session` are not saved, so their messages are not recovered. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Atomic session history.
+The reply hint is enabled by default and points to `intercom({ action: "reply", ... })`, so recipients rarely need raw sender or `replyTo` IDs. Idle recipients start a new turn immediately; busy interactive recipients receive the message when they go idle. Attachment content is included in the model-visible body, and messages are stored in Atomic session history.
 
-Working subagents handle incoming `send` and `ask` messages in the same task and session, according to the sender's `delivery` option:
+The recipient saves each message to its session as soon as it arrives, and the sender sees `delivered` only after that save succeeds. If the recipient closes or crashes before showing a saved message, resuming it with `atomic --session <id>` or `/resume` replays unread messages once in arrival order when the sender is still connected.
+
+Messages from a sender that is gone are recorded once in full without starting a turn. Messages whose sender cannot be checked yet, such as when Intercom is unreachable or a relaunched subagent has not reconnected, are deferred until the next reopen. Sessions started with `--no-session` are not saved, so their unread messages cannot be recovered.
+
+Working subagents handle incoming `send` and `ask` messages in the same task and session according to the sender's `delivery` option:
 
 | `delivery` | When a busy recipient gets it | Use it for |
-|---|---|---|
-| `"steer"` (default) | After its current tool calls finish. Its work is never cancelled. | Ordinary coordination, findings, and updates |
-| `"followUp"` | Only after it finishes and stops | Low-priority notes, or anything meant for "after you're done" |
-| `"interrupt"` | Immediately. Its current model call or cancellable tool call is cancelled, then the message is handled next. | An urgent correction or a stop order |
+| --- | --- | --- |
+| `"steer"` (default) | After its current tool calls finish. Current work is not cancelled. | Ordinary coordination, findings, and updates |
+| `"followUp"` | After the recipient finishes and stops. | Low-priority notes or follow-up tasks |
+| `"interrupt"` | Immediately. Current model call or cancellable tool call is cancelled, then the message runs next. | Urgent corrections or stop orders |
 
-The sender chooses `delivery` for each message; override the default by urgency. It applies to every sender, including peers, the supervisor, and you. An idle recipient starts a turn for any mode.
+Any sender can set `delivery` per message, including peers, the supervisor, and you. An idle recipient starts a turn for any mode. For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec changed", delivery: "interrupt" })` cancels the worker's current tool call. Tools that ignore cancellation finish first, and completed side effects are not undone.
 
-For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec changed", delivery: "interrupt" })` stops the worker's current tool call. With `"interrupt"`, tools that ignore cancellation finish first, and completed side effects are not undone or replayed.
+Messages from one sender always reach the recipient in arrival order, whether admitted immediately, queued for idle, or replayed on resume. Startup messages join the original subagent task, and asks keep their reply threads. Subagent `pause` and `quit`, owner cancellation, host stop, and permanently cancelled children take precedence over later messages.
 
-This works for every child. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Messages from one sender always reach the recipient in the order they arrived, whichever way each is admitted: at once, after the recipient goes idle, or on resume. A message admitted at once is written after any earlier message from the same sender that was still waiting for the recipient to go idle. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children take precedence over later input. Use an exact child name or full session ID from `intercom list`.
+Sending or asking a subagent that completed or failed resumes it automatically. The call returns at once with the message queued, the launching session resumes the subagent, and the subagent receives the message first. A paused or quit subagent is not resumed automatically; its messages wait with no time limit until the launching session continues it.
 
-A `send` or `ask` to a subagent that already completed or failed resumes it: the call returns at once with the message queued, the session that launched the subagent resumes it, and the subagent gets the message first. A subagent that was paused or quit is not resumed: the message waits, with no time limit, until its launching session continues it. A reply to an `ask` arrives later as a message. Queued messages survive an Intercom broker restart, including a crash or a machine restart, and still reach the subagent once each, in order. If the message can no longer reach the subagent, because the subagent is cancelled or gone, or the session that launched it ends, or stays away for 7 days in a row, the sender gets one delivery failure for that message instead; send it again if it is still needed. See [Messages that resume a finished subagent](/intercom/reference#messages-that-resume-a-finished-subagent).
+Queued messages survive broker restarts and deliver once in order. If delivery becomes impossible because the subagent was cancelled, the launching session ended, or the launching session stayed away for 7 days in a row, the sender gets one delivery failure. See [Messages that resume a finished subagent](/intercom/reference#messages-that-resume-a-finished-subagent).
 
-A busy non-interactive recipient that is not an admitted subagent can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
+A busy non-interactive recipient that is not an admitted subagent can refuse a message without interrupting its work. A `delivered` receipt means the recipient saved the message, not that its model accepted it. Refusals keep the reply thread: an `ask` receives a failed-ask message (or an inline error while waiting), and a `send` delivers an **Intercom delivery failed** notice with a `Sent:` timestamp without triggering a standalone turn.
 
-Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. An interactive session whose tool selection leaves out `intercom` does not join at startup.
+Atomic enables `intercom` by default, subject to tool allowlists, exclusions, and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when you need it. An interactive session whose tool selection omits `intercom` does not join at startup. SDK hosts can disable the package completely with `builtins: { intercom: false }`, and reload does not restore it. `contact_supervisor` remains subagent-only.
 
-## How Connection Works
+## Coordination patterns
 
-Moved to [Intercom operations](/intercom/operations#how-connection-works).
+A common pattern splits a task between two terminal sessions: one holds the plan and review scope, while the other edits code. Start Atomic in both terminals and name them with `/name`:
 
-### Troubleshooting initialization
-
-Moved to [Intercom operations](/intercom/operations#troubleshooting-initialization).
-
-## The intercom Tool
-
-Moved to [Intercom reference](/intercom/reference#the-intercom-tool).
-
-### Actions
-
-Moved to [Intercom reference](/intercom/reference#actions).
-
-### Targeting Sessions
-
-Moved to [Intercom reference](/intercom/reference#targeting-sessions).
-
-### Groups
-
-Moved to [Intercom reference](/intercom/reference#groups).
-
-### send vs ask vs reply
-
-Moved to [Intercom reference](/intercom/reference#send-vs-ask-vs-reply).
-
-### Attachments
-
-Moved to [Intercom reference](/intercom/reference#attachments).
-
-## Coordination Patterns
-
-The most natural use of Intercom is splitting a task between two sessions — one holds the big picture, the other does the hands-on work. Open two terminals, start Atomic in each, and name them so they can find each other:
-
-```
+```text
 # Terminal 1                    # Terminal 2
 /name planner                   /name worker
 ```
 
-Verify they see each other with `intercom({ action: "list" })`, then coordinate:
+Confirm both sessions appear in `intercom({ action: "list" })`, then coordinate:
 
 ```typescript
 // Planner delegates with send (fire-and-forget)
 intercom({
   action: "send",
   to: "worker",
-  message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts, src/api/types.ts. Ask if anything's unclear."
+  message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts, src/api/types.ts. Ask if anything is unclear."
 })
 
-// Worker hits an ambiguity — asks, and keeps working on what it can
+// Worker hits an ambiguity, asks, and continues unblocked work
 intercom({
   action: "ask",
   to: "planner",
-  message: "Should retry apply to all endpoints or just idempotent ones? Also, max retry count and backoff strategy?"
+  message: "Should retry apply to all endpoints or only idempotent ones? Also, max retry count and backoff strategy?"
 })
-// → If the planner answers within the wait, the reply comes back inline.
-// → Otherwise the ask stays pending, and the answer arrives later as a message:
-//   Reply to your ask 4c4d8427-… from planner
-//   Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
+// If planner replies within the wait budget, the answer returns inline.
+// Otherwise the ask stays pending and arrives later as a message:
+// Reply to your ask 4c4d8427-... from planner
+// Only GET/PUT/DELETE, never POST. Max 3 retries, exponential backoff starting at 100ms.
 ```
 
 | Pattern | Action | Why |
-|---------|--------|-----|
-| **Task delegation** | Planner uses `send` | Fire-and-forget. Planner doesn't need to wait for an ack. |
-| **Clarification request** | Worker uses `ask` | Worker needs the answer to proceed. It keeps working on what it can; the reply arrives as a message. |
-| **Discovery escalation** | Worker uses `ask` | Worker needs approval before changing course. |
-| **Completion report** | Worker uses `ask` | Planner might have follow-up instructions or the next task. |
-| **Peer handoff** | Sibling uses `send` | A locator, researcher, or debugger passes paths, evidence, or a reproduction straight to the sibling that needs it. |
-| **Peer challenge** | Sibling uses `ask` | One reviewer or worker questions another's finding with evidence; each still returns its own verdict. |
-| **Ownership claim** | Sibling uses `send` | Parallel writers divide files or serialize a shared suite, build, or migration. |
-
+| --- | --- | --- |
+| **Task delegation** | Planner uses `send` | Fire-and-forget. Planner does not need to wait for an answer. |
+| **Clarification request** | Worker uses `ask` | Worker needs an answer to proceed. It keeps working on unblocked tasks until the reply arrives. |
+| **Discovery escalation** | Worker uses `ask` | Worker requests approval before changing direction. |
+| **Completion report** | Worker uses `ask` | Planner may have follow-up instructions or the next task. |
+| **Peer handoff** | Sibling uses `send` | A researcher or debugger passes file paths, evidence, or a reproduction straight to the sibling that needs it. |
+| **Peer challenge** | Sibling uses `ask` | One reviewer or worker challenges another's finding with evidence while each still returns its own verdict. |
+| **Ownership claim** | Sibling uses `send` | Parallel writers divide file ownership or serialize a shared build, test suite, or migration. |
 | **Broadcast** | Sibling uses `send` to a group pattern | One agent shares a confirmed finding with every live sibling at once. |
 
-Peer-to-peer (swarm) is the default. There are no limits on communication between agents; it is encouraged whenever you need to. Subagents launched together share an Intercom group, so they list each other and message directly to debate, connect, learn, and self-organize. The supervisor is not a message relay: routing through it adds latency, drops detail, and fills its context. `contact_supervisor` is only for supervisor decisions. See [Peer coordination](/subagents#peer-coordination) for an example.
+Peer-to-peer coordination is the default for subagent swarms. Subagents launched together share an Intercom group, so they list each other and coordinate directly without routing messages through the supervisor. Routing peer exchanges through the supervisor adds latency, drops detail, and fills supervisor context. Reserve `contact_supervisor` for supervisor decisions. See [Peer coordination](/subagents#peer-coordination).
 
-Swarm size scales with the task. For very complex work, or when you ask for heavy parallelism, hundreds or thousands of agents can self-organize into teams (named groups, nested subagent sets) and coordinate peer-to-peer like an organization. Intercom groups have no member limit. See [Scaling a swarm](/subagents#scaling-a-swarm) for the settings that bound swarm size.
+Swarm size scales with the task. For large parallel tasks, hundreds or thousands of agents can organize into named groups and coordinate peer-to-peer. Intercom groups have no member limit. See [Scaling a swarm](/subagents#scaling-a-swarm) for the concurrency settings that bound active subagents.
 
-The bundled `intercom` skill (`/skill:intercom`) has copy-paste ready patterns for planner-worker delegation, status checks, natural replies, broadcasting to multiple workers, attachments, handling subagent escalations on the orchestrator side, and peer coordination between subagents.
+The bundled `/skill:intercom` skill contains ready-to-use patterns for planner-worker delegation, broadcasts, attachments, supervisor escalations, and peer coordination.
 
-**Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
+Add this snippet to your project's `AGENTS.md` to guide when agents should coordinate across sessions:
 
 ```xml
 <intercom>
@@ -262,31 +207,33 @@ Coordinate with other local Atomic sessions on related codebases. Use `/skill:in
 </intercom>
 ```
 
-## Subagent Escalation: contact_supervisor
+## Subagent escalation: contact_supervisor
 
-When Atomic's [subagent runtime](/subagents) admits a delegated child, the child session gets a subagent-only `contact_supervisor` tool in addition to the regular `intercom` tool. Normal sessions never see `contact_supervisor`.
+When Atomic's [subagent runtime](/subagents) launches a delegated child with supervisor coordination enabled, that child receives the subagent-only `contact_supervisor` tool alongside `intercom`. Normal sessions never see `contact_supervisor`.
 
-### When the Tool Appears
+### When the tool appears
 
-The tool appears only in a delegated child whose parent granted supervisor coordination. Otherwise the child receives only ordinary `intercom`. Supervisor identity is supplied by the runtime, not environment variables.
+`contact_supervisor` appears only in a delegated child whose parent granted supervisor coordination. Otherwise the child receives only `intercom`. Supervisor identity is injected by the runtime, not environment variables.
 
-A parent-targeted `contact_supervisor` request waits in its original child execution; an `intercom` ask to the parent returns at delivery and its reply arrives as a message. A parent's `subagent({ action: "wait" })` may end so the parent can reply, but active and queued siblings retain their identities and execution capacity. Sends and progress updates never wait for a reply. Only a single child that an SDK session without a task host runs directly ends with a fresh-child handoff when its blocking parent request is claimed.
+In normal task-host runs, both single-child and parallel launches run in the background. A `contact_supervisor` request waits in the requesting child and continues in that same child when the supervisor replies, while an `intercom` `ask` returns at delivery and delivers its reply later as a message.
+
+A parent's `subagent({ action: "wait" })` call may yield so the parent can reply without cancelling active or queued siblings. Sends and progress updates never block. Only a direct single-child launch in an SDK session without a task host ends with a `[TASK_CONTEXT]` fresh-child handoff when its blocking parent request is claimed.
 
 | Parameter | Type | Description |
-|-----------|------|-------------|
+| --- | --- | --- |
 | `reason` | string | `"need_decision"` (blocking), `"interview_request"` (blocking structured questions), or `"progress_update"` (fire-and-forget) |
 | `message` | string | The decision request, optional interview note, or progress update |
 | `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }` |
 
-### The Three Reasons
+### The three reasons
 
-| Reason | Behavior | Use When |
-|--------|----------|----------|
-| `need_decision` | In parallel, waits for the supervisor's correlated reply and continues in the same child; single-child launches retain the claimed fresh-child handoff | The subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision |
-| `interview_request` | In parallel, waits for structured supervisor answers in the same child; single-child launches retain the claimed fresh-child handoff | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
-| `progress_update` | Fire-and-forget update to the supervisor; does not end the child | Meaningful progress or unexpected discoveries that change the plan |
+| Reason | Behavior | Use when |
+| --- | --- | --- |
+| `need_decision` | In normal task-host runs, both single and parallel, waits for the supervisor's correlated reply and continues in the same child. In an SDK session without a task host, a direct single-child launch ends with a claimed `[TASK_CONTEXT]` fresh-child handoff. | The subagent is blocked, uncertain, needs approval, or faces a product, API, or scope decision. |
+| `interview_request` | In normal task-host runs, both single and parallel, waits for structured supervisor answers and continues in the same child. In an SDK session without a task host, a direct single-child launch ends with a claimed `[TASK_CONTEXT]` fresh-child handoff. | The subagent needs multiple machine-readable answers from the supervisor in one exchange. |
+| `progress_update` | Fire-and-forget update to the supervisor. Does not wait or end the child. | Meaningful progress or unexpected discoveries change the plan. |
 
-Do not use `contact_supervisor` for routine completion handoffs; return the final subagent result normally. Parallel requests wait without cancelling the batch. A claimed single-child blocking request ends that child and gives the parent a fresh-start handoff.
+Do not use `contact_supervisor` for routine completion handoffs; return the final subagent result normally.
 
 ```typescript
 // Blocked subagent asks for guidance
@@ -294,24 +241,22 @@ contact_supervisor({
   reason: "need_decision",
   message: "The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?"
 })
-// → In parallel: the supervisor replies through Intercom; this child continues with the answer.
-// → Single-child claimed handoff: parent receives [TASK_CONTEXT] for a fresh child.
+// Normal task-host run (single or parallel): the supervisor replies through Intercom and this child continues.
+// Direct single-child SDK launch without a task host: parent receives [TASK_CONTEXT] for a fresh child.
 
 // Fire-and-forget progress update
 contact_supervisor({
   reason: "progress_update",
   message: "Discovered the bug is in the retry wrapper, not the API client. Fixing the wrapper will also close issue #42."
 })
-// → Progress update sent to supervisor planner
+// Output: Progress update sent to supervisor planner
 ```
 
-### What the Supervisor Sees
+### What the supervisor sees
 
-For a parallel child, the supervisor receives the question with its child/run identity and a reply hint. Answer through `intercom({ action: "reply", message: "..." })`; if several questions are pending, use `pending` and the exact `replyTo`. The answer returns as the requesting child's tool result. Do not launch a replacement child to answer it.
+In normal task-host runs, both single and parallel, the supervisor receives the question with child and run identity plus a reply hint. Answer through `intercom({ action: "reply", message: "..." })`. If several questions are pending, run `intercom({ action: "pending" })` and pass the exact `replyTo`. The answer returns as the child's tool result; do not launch a replacement child to answer it.
 
-Single-child claimed handoffs instead include terminal run metadata, ordered attachments, the original delegated task, and an explicit fresh-start `[TASK_CONTEXT]` call. That legacy single-child path still requires a new run identity for follow-up work.
-
-For a single-child claimed handoff, the fresh-start instruction has this form:
+In an SDK session without a task host, a claimed direct single-child handoff instead delivers terminal run metadata, ordered attachments, the original delegated task, and a fresh-start `[TASK_CONTEXT]` call:
 
 ```text
 Subagent yielded for parent input (worker, child 1).
@@ -326,9 +271,9 @@ subagent({
 })
 ```
 
-### Structured Interview Replies
+### Structured interview replies
 
-`interview_request` questions use the shape `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info` (`info` questions are context-only and need no response):
+`interview_request` questions use the shape `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info` (`info` questions provide context only and need no response):
 
 ```typescript
 contact_supervisor({
@@ -344,7 +289,7 @@ contact_supervisor({
 })
 ```
 
-In parallel, questions arrive without reordering or rewriting. The supervisor can reply with plain or fenced JSON using this stable shape, which keeps answers tied to question IDs:
+In normal task-host runs, questions arrive without reordering or rewriting. The supervisor can reply with plain or fenced JSON using this shape to tie answers to question IDs:
 
 ```json
 {
@@ -355,57 +300,51 @@ In parallel, questions arrive without reordering or rewriting. The supervisor ca
 }
 ```
 
-The parallel child's tool result preserves the raw reply text and includes `details.structuredReply` when the answer matches the expected question IDs and options. A single-child claimed handoff instead carries the structured questions into its fresh task context and does not create an Intercom reply.
-
-## Subagent Notifications
-
-Moved to [Intercom operations](/intercom/operations#subagent-notifications).
-
-### Subagent Control Notices
-
-Moved to [Intercom operations](/intercom/operations#subagent-control-notices).
-
-### Delivery Ordering
-
-Moved to [Intercom operations](/intercom/operations#delivery-ordering).
+The child's tool result preserves the raw reply text and populates `details.structuredReply` when the answer matches the expected question IDs and options. In an SDK session without a task host, a direct single-child handoff instead carries the structured questions into its fresh task context and does not create an Intercom reply.
 
 ## Mixed versions
 
-Atomic 0.10.0 removed workflows, and with them workflow stage targets (`workflow:<rootRunId>/...`), stage routes and workflow invocation groups. The Intercom protocol range is unchanged, so sessions of 0.9.x and 0.10.0 keep exchanging sends, asks and replies through whichever broker is running.
+Atomic 0.10.0 removed workflows and `workflow:<rootRunId>/...` stage targets, which now return `Session not found`. Sessions of 0.9.x and 0.10.0+ still exchange ordinary sends, asks, and replies through whichever broker is running. See [Mixed versions and workflows](/intercom/operations#mixed-versions-and-workflows) for details.
 
-0.9.x workflows keep running while a 0.10.0 broker is running, and it never closes a 0.9.x session's connection over a workflow request. It acknowledges a run's stage routes without creating them, so the run starts its stages. A started stage is an ordinary session in its run's `workflow:<runId>` group, reached by its ID or name from that group; join it to reach the stage. Messages sent to a stage that has not started are not queued for it: a `workflow:<rootRunId>/...` target gets the answer any unknown name gets, `Session not found`. A `workflow:` group is an ordinary group on a 0.10.0 broker. A 0.10.0 session on a 0.9.x broker sends no workflow request, and answers a `workflow:` target itself, as an unknown name. See [Mixed versions and workflows](/intercom/operations#mixed-versions-and-workflows) for every request and its answer.
-
-## Configuration
-
-Moved to [Intercom reference](/intercom/reference#configuration).
-
-## Keyboard Shortcuts
-
-Moved to [Intercom operations](/intercom/operations#keyboard-shortcuts).
-
-## How It Works
-
-Moved to [Intercom operations](/intercom/operations#how-it-works).
-
-## Intercom vs Shared-Room Messengers
+## Intercom vs shared-room messengers
 
 | Aspect | Intercom | Shared-room messengers |
-|--------|----------|------------------------|
-| **Model** | Direct 1:1 messaging | Shared chat room |
-| **Primary use** | User orchestrating sessions | Autonomous agent swarms |
-| **Discovery** | Broker-based (real-time) | File-based registry |
-| **Messages** | Private, session-to-session | Broadcast to all agents |
-| **Persistence** | In Atomic session history | Shared coordination files |
+| --- | --- | --- |
+| **Model** | Direct messaging and group-scoped broadcasts | Shared broadcast channel or room |
+| **Primary use** | Coordinating your own sessions, supervisor escalation, and peer-to-peer agent swarms on one machine or across shared storage | Swarms that read and append to one shared public feed |
+| **Discovery** | Real-time broker registry, local or backed by shared storage | Shared room or file-based registry |
+| **Messages** | Targeted 1:1 messages, ask/reply threads, and pattern broadcasts within groups | Public broadcasts visible to every room member |
+| **Persistence** | Stored in each participant's Atomic session history | Shared room transcript or coordination files |
 
-Use a shared-room messenger for multi-agent swarms working on one shared task. Use Intercom when you want to manually coordinate your own sessions or have one agent reach out to another specific session.
+Use Intercom for coordinating your own sessions and for peer-to-peer agent swarms that benefit from targeted delivery, ask/reply threads, and group isolation. Use a shared-room messenger only when every participant should read and append to a single public feed.
 
-## Limitations
-
-Moved to [Intercom operations](/intercom/operations#limitations).
-
-## Related Docs
+## Related docs
 
 - [Subagents](/subagents) for delegated child runs, supervisor coordination, and result delivery.
 - [Orchestration](/orchestration) for multi-step tasks and child completion notices.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.
-- [Usage](/usage) for environment variables and the bundled-extension overview.
+- [Environment variables](/environment-variables) for Intercom environment variables.
+- [Interactive use](/usage) for interactive commands and the bundled-extension overview.
+
+## Moved sections
+
+<a id="how-connection-works" />
+<a id="troubleshooting-initialization" />
+<a id="subagent-notifications" />
+<a id="subagent-control-notices" />
+<a id="delivery-ordering" />
+<a id="keyboard-shortcuts" />
+<a id="how-it-works" />
+<a id="limitations" />
+
+- **Intercom operations:** [How Connection Works](/intercom/operations#how-connection-works), [Troubleshooting initialization](/intercom/operations#troubleshooting-initialization), [Subagent Notifications](/intercom/operations#subagent-notifications), [Subagent Control Notices](/intercom/operations#subagent-control-notices), [Delivery Ordering](/intercom/operations#delivery-ordering), [Keyboard Shortcuts](/intercom/operations#keyboard-shortcuts), [How It Works](/intercom/operations#how-it-works), [Limitations](/intercom/operations#limitations).
+
+<a id="the-intercom-tool" />
+<a id="actions" />
+<a id="targeting-sessions" />
+<a id="groups" />
+<a id="send-vs-ask-vs-reply" />
+<a id="attachments" />
+<a id="configuration" />
+
+- **Intercom reference:** [The intercom tool](/intercom/reference#the-intercom-tool), [Actions](/intercom/reference#actions), [Targeting sessions](/intercom/reference#targeting-sessions), [Groups](/intercom/reference#groups), [send vs ask vs reply](/intercom/reference#send-vs-ask-vs-reply), [Attachments](/intercom/reference#attachments), [Configuration](/intercom/reference#configuration).
