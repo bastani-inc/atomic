@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { redactUrlCredentials } from "../../../../core/error-contract.ts";
 import { redactCredentialShapes } from "../../../../utils/credential-redaction.js";
 
@@ -174,11 +175,30 @@ function stripTrailingEquals(value: string): string {
 	return value.slice(0, end);
 }
 
-function expandSecretVariants(secret: string, rawOut: Set<string>, pctOut: Set<string>): void {
+function escapeNonAsciiJson(innerJson: string, upperHex: boolean): string {
+	let out = "";
+	let copied = 0;
+	for (let i = 0; i < innerJson.length; i++) {
+		const code = innerJson.charCodeAt(i);
+		if (code > 0x7f) {
+			const hex = code.toString(16).padStart(4, "0");
+			out += `${innerJson.slice(copied, i)}\\u${upperHex ? hex.toUpperCase() : hex}`;
+			copied = i + 1;
+		}
+	}
+	return copied === 0 ? innerJson : out + innerJson.slice(copied);
+}
+
+function addSingleSecretVariants(secret: string, rawOut: Set<string>, pctOut: Set<string>): void {
 	rawOut.add(secret);
 
 	const jsonInner = JSON.stringify(secret).slice(1, -1);
-	if (jsonInner !== secret) rawOut.add(jsonInner);
+	if (jsonInner !== secret) {
+		rawOut.add(jsonInner);
+		// Double JSON-escaped inner string (e.g. JSON embedded inside a JSON string).
+		const doubleJsonInner = JSON.stringify(jsonInner).slice(1, -1);
+		if (doubleJsonInner !== jsonInner) rawOut.add(doubleJsonInner);
+	}
 	if (jsonInner.includes("&") || jsonInner.includes("<") || jsonInner.includes(">") || jsonInner.includes("/")) {
 		rawOut.add(goJsonEscape(jsonInner, false, false));
 		rawOut.add(goJsonEscape(jsonInner, true, false));
@@ -186,6 +206,12 @@ function expandSecretVariants(secret: string, rawOut: Set<string>, pctOut: Set<s
 			rawOut.add(goJsonEscape(jsonInner, false, true));
 			rawOut.add(goJsonEscape(jsonInner, true, true));
 		}
+	}
+	// ASCII-only JSON escaping (e.g. Python `json.dumps(..., ensure_ascii=True)` -> `\u00e9` / `\u00E9`).
+	const asciiJsonLower = escapeNonAsciiJson(jsonInner, false);
+	if (asciiJsonLower !== jsonInner) {
+		rawOut.add(asciiJsonLower);
+		rawOut.add(escapeNonAsciiJson(jsonInner, true));
 	}
 
 	if (
@@ -225,11 +251,28 @@ function expandSecretVariants(secret: string, rawOut: Set<string>, pctOut: Set<s
 		if (rfc.includes("%20")) pctOut.add(rfc.replaceAll("%20", "+"));
 		const formEncoded = new URLSearchParams([["v", secret]]).toString().slice(2);
 		pctOut.add(formEncoded);
-		if (uriEncoded !== secret) {
-			pctOut.add(encodeURIComponent(uriEncoded));
-			pctOut.add(rfc3986Encode(rfc));
-		}
+		// Gate each double-encoding independently so `!`-prefixed secrets (where encodeURIComponent === secret) still register `%2521...`.
+		if (uriEncoded !== secret) pctOut.add(encodeURIComponent(uriEncoded));
+		if (rfc !== secret) pctOut.add(rfc3986Encode(rfc));
+		if (formEncoded !== secret) pctOut.add(encodeURIComponent(formEncoded));
 	} catch {}
+}
+
+function expandSecretVariants(secret: string, rawOut: Set<string>, pctOut: Set<string>): void {
+	addSingleSecretVariants(secret, rawOut, pctOut);
+	let hasNonAscii = false;
+	for (let i = 0; i < secret.length; i++) {
+		if (secret.charCodeAt(i) > 0x7f) {
+			hasNonAscii = true;
+			break;
+		}
+	}
+	if (hasNonAscii) {
+		const nfc = secret.normalize("NFC");
+		if (nfc !== secret) addSingleSecretVariants(nfc, rawOut, pctOut);
+		const nfd = secret.normalize("NFD");
+		if (nfd !== secret && nfd !== nfc) addSingleSecretVariants(nfd, rawOut, pctOut);
+	}
 }
 
 function mergeEndSortedIntervals(maxLengths: Int32Array): { start: number; end: number }[] {
@@ -279,28 +322,44 @@ function maskSegment(segment: string, rawAc: AhoCorasick | undefined, pctAc: Aho
 }
 
 /**
- * Mask a segment while enforcing an original-coordinate cap: emits only raw characters at indices `< cap`,
- * plus `[redacted]` for every match starting `< cap` (even if the match extends into lookahead `>= cap`).
+ * Mask a segment across its full lookahead while returning the exact prefix boundary in the masked output
+ * corresponding to original index `cap` (including any `[redacted]` token of a match starting `< cap` that straddles `cap`).
  */
-function maskSegmentWithCap(
+function maskSegmentWithCapInfo(
 	segment: string,
 	rawAc: AhoCorasick | undefined,
 	pctAc: AhoCorasick | undefined,
 	cap: number,
-): string {
+): { readonly full: string; readonly prefixEnd: number } {
 	const limit = Math.min(Math.max(0, cap), segment.length);
-	if (limit === 0) return "";
+	if (!segment) return { full: "", prefixEnd: 0 };
 	const merged = mergeEndSortedIntervals(combinedMatchLengths(segment, rawAc, pctAc));
+	if (merged.length === 0) return { full: segment, prefixEnd: limit };
 	const parts: string[] = [];
 	let cursor = 0;
+	let outLen = 0;
+	let prefixEnd = -1;
 	for (const interval of merged) {
-		if (interval.start >= limit) break;
-		if (interval.start > cursor) parts.push(segment.slice(cursor, interval.start));
+		if (prefixEnd === -1 && interval.start >= limit) {
+			prefixEnd = outLen + (limit - cursor);
+		}
+		if (interval.start > cursor) {
+			const chunk = segment.slice(cursor, interval.start);
+			parts.push(chunk);
+			outLen += chunk.length;
+		}
 		parts.push(REDACTED);
-		cursor = interval.end < limit ? interval.end : limit;
+		outLen += REDACTED.length;
+		if (prefixEnd === -1 && interval.end >= limit) {
+			prefixEnd = outLen;
+		}
+		cursor = interval.end;
 	}
-	if (cursor < limit) parts.push(segment.slice(cursor, limit));
-	return parts.join("");
+	if (prefixEnd === -1) {
+		prefixEnd = outLen + Math.max(0, limit - cursor);
+	}
+	if (cursor < segment.length) parts.push(segment.slice(cursor));
+	return { full: parts.join(""), prefixEnd };
 }
 
 /**
@@ -362,36 +421,62 @@ export class SecretMaskRegistry {
 	}
 
 	/**
+	 * Mask `text` across its full lookahead while returning `{ full, prefixEnd }` where `prefixEnd`
+	 * is the exact index in `full` corresponding to original index `maxOriginalChars`.
+	 */
+	maskWithOriginalCapInfo(
+		text: string,
+		maxOriginalChars: number,
+	): { readonly full: string; readonly prefixEnd: number } {
+		const limit = Math.min(Math.max(0, maxOriginalChars), text.length);
+		if (!text || limit === 0) return { full: text, prefixEnd: 0 };
+		if (this.empty) return { full: text, prefixEnd: limit };
+		this.ensureCompiled();
+		if (!text.includes(REDACTED)) {
+			return maskSegmentWithCapInfo(text, this.rawAc, this.pctAc, limit);
+		}
+		const parts: string[] = [];
+		let origOffset = 0;
+		let outLen = 0;
+		let prefixEnd = -1;
+		const segments = text.split(REDACTED);
+		for (let i = 0; i < segments.length; i++) {
+			const segment = segments[i]!;
+			if (prefixEnd === -1 && origOffset + segment.length >= limit) {
+				const { full, prefixEnd: segPrefixEnd } = maskSegmentWithCapInfo(
+					segment,
+					this.rawAc,
+					this.pctAc,
+					limit - origOffset,
+				);
+				prefixEnd = outLen + segPrefixEnd;
+				parts.push(full);
+				outLen += full.length;
+			} else {
+				const masked = maskSegment(segment, this.rawAc, this.pctAc);
+				parts.push(masked);
+				outLen += masked.length;
+			}
+			origOffset += segment.length;
+			if (i + 1 < segments.length) {
+				if (prefixEnd === -1 && origOffset >= limit) prefixEnd = outLen;
+				parts.push(REDACTED);
+				outLen += REDACTED.length;
+				origOffset += REDACTED.length;
+				if (prefixEnd === -1 && origOffset >= limit) prefixEnd = outLen;
+			}
+		}
+		if (prefixEnd === -1) prefixEnd = outLen;
+		return { full: parts.join(""), prefixEnd };
+	}
+
+	/**
 	 * Mask `text` (read with lookahead past `maxOriginalChars`) while emitting NO raw characters whose
 	 * original index is `>= maxOriginalChars` (eliminating lookahead-shrinkage tail-prefix leaks).
 	 */
 	maskWithOriginalCap(text: string, maxOriginalChars: number): string {
-		if (!text || maxOriginalChars <= 0) return "";
-		if (this.empty) return text.length <= maxOriginalChars ? text : text.slice(0, maxOriginalChars);
-		this.ensureCompiled();
-		if (!text.includes(REDACTED)) {
-			return maskSegmentWithCap(text, this.rawAc, this.pctAc, maxOriginalChars);
-		}
-		const parts: string[] = [];
-		let offset = 0;
-		const segments = text.split(REDACTED);
-		for (let i = 0; i < segments.length; i++) {
-			const segment = segments[i]!;
-			if (offset >= maxOriginalChars) break;
-			const remaining = maxOriginalChars - offset;
-			if (segment.length <= remaining) {
-				parts.push(maskSegment(segment, this.rawAc, this.pctAc));
-			} else {
-				parts.push(maskSegmentWithCap(segment, this.rawAc, this.pctAc, remaining));
-				break;
-			}
-			offset += segment.length;
-			if (i + 1 < segments.length && offset < maxOriginalChars) {
-				parts.push(REDACTED);
-				offset += REDACTED.length;
-			}
-		}
-		return parts.join("");
+		const { full, prefixEnd } = this.maskWithOriginalCapInfo(text, maxOriginalChars);
+		return full.slice(0, prefixEnd);
 	}
 }
 
@@ -471,13 +556,173 @@ export function extractHeaderSecrets(name: string, value: string | null | undefi
 	return extractAuthorizationSecrets(value);
 }
 
-/** Whether a header or env var name explicitly indicates credential/session material. */
-export function isSensitiveKeyName(name: string): boolean {
+/** Standard non-secret HTTP headers that never carry credentials. */
+export const NON_SECRET_HTTP_HEADERS: ReadonlySet<string> = new Set([
+	"accept",
+	"accept-encoding",
+	"accept-language",
+	"cache-control",
+	"content-type",
+	"mcp-protocol-version",
+	"origin",
+	"pragma",
+	"referer",
+	"user-agent",
+	"x-env",
+	"x-environment",
+	"x-tenant",
+	"x-region",
+	"x-team",
+	"x-app",
+	"x-client",
+	"x-request-id",
+	"x-correlation-id",
+	"x-trace-id",
+	"x-forwarded-for",
+	"x-forwarded-proto",
+	"x-forwarded-host",
+]);
+
+const SENSITIVE_KEY_TOKENS = new Set([
+	"authorization",
+	"authenticate",
+	"auth",
+	"oauth",
+	"token",
+	"tokens",
+	"accesstoken",
+	"refreshtoken",
+	"idtoken",
+	"authtoken",
+	"secret",
+	"secrets",
+	"clientsecret",
+	"key",
+	"keys",
+	"apikey",
+	"privkey",
+	"privatekey",
+	"pass",
+	"password",
+	"passwd",
+	"passphrase",
+	"pwd",
+	"cred",
+	"creds",
+	"credential",
+	"credentials",
+	"cookie",
+	"cookies",
+	"session",
+	"sessionid",
+	"jsessionid",
+	"phpsessid",
+	"sessid",
+	"sid",
+	"sig",
+	"sign",
+	"signature",
+	"signing",
+	"pat",
+	"jwt",
+	"bearer",
+	"private",
+	"cert",
+	"certificate",
+]);
+
+/** Split snake_case, kebab-case, camelCase, PascalCase, acronym, and letter/digit boundaries into lowercase tokens. */
+function splitKeyTokens(name: string): string[] {
+	const tokens: string[] = [];
+	let start = -1;
+	for (let i = 0; i < name.length; i++) {
+		const c = name.charCodeAt(i);
+		const isUpper = c >= 65 && c <= 90;
+		const isLower = c >= 97 && c <= 122;
+		const isDigit = c >= 48 && c <= 57;
+		const isAlpha = isUpper || isLower;
+		if (!isAlpha && !isDigit) {
+			if (start >= 0) {
+				tokens.push(name.slice(start, i).toLowerCase());
+				start = -1;
+			}
+			continue;
+		}
+		if (start < 0) {
+			start = i;
+			continue;
+		}
+		const prev = name.charCodeAt(i - 1);
+		const prevIsUpper = prev >= 65 && prev <= 90;
+		const prevIsLower = prev >= 97 && prev <= 122;
+		const prevIsDigit = prev >= 48 && prev <= 57;
+		const prevIsAlpha = prevIsUpper || prevIsLower;
+		if ((prevIsAlpha && isDigit) || (prevIsDigit && isAlpha)) {
+			tokens.push(name.slice(start, i).toLowerCase());
+			start = i;
+		} else if (isUpper && prevIsLower) {
+			tokens.push(name.slice(start, i).toLowerCase());
+			start = i;
+		} else if (isUpper && prevIsUpper && i + 1 < name.length) {
+			const next = name.charCodeAt(i + 1);
+			if (next >= 97 && next <= 122) {
+				tokens.push(name.slice(start, i).toLowerCase());
+				start = i;
+			}
+		}
+	}
+	if (start >= 0) {
+		tokens.push(name.slice(start).toLowerCase());
+	}
+	return tokens;
+}
+
+const UNAMBIGUOUS_CREDENTIAL_SUFFIXES = [
+	"token",
+	"secret",
+	"password",
+	"passwd",
+	"passphrase",
+	"pwd",
+	"apikey",
+	"cookie",
+	"credential",
+	"credentials",
+	"creds",
+	"authorization",
+	"bearer",
+	"session",
+	"sessionid",
+	"jwt",
+	"secretkey",
+	"accesskey",
+	"privatekey",
+	"signingkey",
+	"hmackey",
+	"masterkey",
+	"sessionkey",
+	"signature",
+	"cert",
+] as const;
+
+function hasUnambiguousCredentialSuffix(lower: string): boolean {
+	for (const suffix of UNAMBIGUOUS_CREDENTIAL_SUFFIXES) {
+		if (lower.endsWith(suffix)) return true;
+	}
+	return false;
+}
+
+/**
+ * Whether a header, env var, JSON field, or query key indicates credential/session material for masking.
+ * Matches substring stems so glued keys (`PGPASSWORD`, `MYTOKEN`, `DBPASSWORD`, `APITOKEN`, `SECRETKEY`,
+ * `ACCESSKEY`, `USERCOOKIE`, etc.) are always collected into the masking registry.
+ */
+export function isSensitiveKeyNameForMasking(name: string): boolean {
 	const lower = name.toLowerCase();
 	return (
 		lower === "authorization" ||
 		lower === "proxy-authorization" ||
-		lower === "cookie" ||
+		lower.includes("cookie") ||
 		lower.includes("token") ||
 		lower.includes("secret") ||
 		lower.includes("key") ||
@@ -497,15 +742,197 @@ export function isSensitiveKeyName(name: string): boolean {
 }
 
 /**
- * Whether an unlabelled value looks like an opaque credential/token rather than a plain diagnostic word
- * such as `"staging"`, `"json"`, `"error"`, `"localhost"`, or `"8080"`.
+ * Whether a URL query key or display-config header name indicates credential/session material for display hiding.
+ * Matches whole delimiter-separated tokens plus unambiguous credential suffixes so `path`, `design`, `bypass_cache`,
+ * and `authuser` remain visible while glued keys such as `PGPASSWORD` and `MYTOKEN` are hidden.
  */
-export function looksLikeSecretValue(value: string): boolean {
+export function isSensitiveKeyNameForDisplay(name: string): boolean {
+	const lower = name.toLowerCase();
+	if (hasUnambiguousCredentialSuffix(lower)) return true;
+	for (const token of splitKeyTokens(name)) {
+		if (SENSITIVE_KEY_TOKENS.has(token) || hasUnambiguousCredentialSuffix(token)) return true;
+	}
+	return false;
+}
+
+function shannonEntropy(value: string): number {
+	if (value.length === 0) return 0;
+	const counts = new Map<number, number>();
+	for (let i = 0; i < value.length; i++) {
+		const code = value.charCodeAt(i);
+		counts.set(code, (counts.get(code) ?? 0) + 1);
+	}
+	let entropy = 0;
+	for (const count of counts.values()) {
+		const p = count / value.length;
+		entropy -= p * Math.log2(p);
+	}
+	return entropy;
+}
+
+function isHexToken(value: string): boolean {
+	if (value.length < 16) return false;
+	let hasHexAlpha = false;
+	for (let i = 0; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		if ((c >= 65 && c <= 70) || (c >= 97 && c <= 102)) hasHexAlpha = true;
+		else if (!(c >= 48 && c <= 57)) return false;
+	}
+	return hasHexAlpha;
+}
+
+function isEnvTemplatePlaceholder(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length < 2) return false;
+	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return true;
+	if (matchesAsciiInsensitive(trimmed, 0, "$env:")) return true;
+	if (trimmed.charCodeAt(0) === 36) {
+		const first = trimmed.charCodeAt(1);
+		if (!((first >= 65 && first <= 90) || (first >= 97 && first <= 122) || first === 95)) return false;
+		for (let i = 2; i < trimmed.length; i++) {
+			if (!isAsciiAlphaNumOrUnderscore(trimmed.charCodeAt(i))) return false;
+		}
+		return true;
+	}
+	return false;
+}
+
+function isDateOrTimestamp(value: string): boolean {
+	if (value.length < 10 || value.length > 35) return false;
+	const isDigitAt = (idx: number) => {
+		const c = value.charCodeAt(idx);
+		return c >= 48 && c <= 57;
+	};
+	if (!(isDigitAt(0) && isDigitAt(1) && isDigitAt(2) && isDigitAt(3))) return false;
+	const sep = value.charCodeAt(4);
+	if (sep !== 45 && sep !== 47) return false;
+	if (!(isDigitAt(5) && isDigitAt(6) && value.charCodeAt(7) === sep && isDigitAt(8) && isDigitAt(9))) return false;
+	if (value.length === 10) return true;
+	const t = value.charCodeAt(10);
+	if (t !== 84 && t !== 116) return false;
+	for (let i = 11; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		const ok =
+			(c >= 48 && c <= 57) ||
+			c === 58 || // :
+			c === 46 || // .
+			c === 90 || // Z
+			c === 122 || // z
+			c === 43 || // +
+			c === 45; // -
+		if (!ok) return false;
+	}
+	return true;
+}
+
+function isVersionString(value: string): boolean {
+	let i = value.charCodeAt(0) === 118 || value.charCodeAt(0) === 86 ? 1 : 0;
+	if (i >= value.length) return false;
+	let dots = 0;
+	let digitsInPart = 0;
+	for (; i < value.length; i++) {
+		const c = value.charCodeAt(i);
+		if (c >= 48 && c <= 57) {
+			digitsInPart++;
+			continue;
+		}
+		if (c === 46) {
+			if (digitsInPart === 0) return false;
+			dots++;
+			digitsInPart = 0;
+			continue;
+		}
+		if (c === 45 && dots >= 1 && digitsInPart > 0) {
+			const restLen = value.length - (i + 1);
+			if (restLen <= 0 || restLen > 16) return false;
+			for (let j = i + 1; j < value.length; j++) {
+				const r = value.charCodeAt(j);
+				const ok = (r >= 97 && r <= 122) || (r >= 48 && r <= 57) || r === 46 || r === 45;
+				if (!ok) return false;
+			}
+			return true;
+		}
+		return false;
+	}
+	return dots >= 1 && digitsInPart > 0;
+}
+
+function isSimplePath(value: string): boolean {
+	if (value.charCodeAt(0) !== 47) return false;
+	let segStart = 1;
+	for (let i = 1; i <= value.length; i++) {
+		const isEnd = i === value.length;
+		const c = isEnd ? 47 : value.charCodeAt(i);
+		if (c === 47) {
+			const seg = value.slice(segStart, i);
+			if (seg.length >= 16) {
+				if (isHexToken(seg)) return false;
+				let hasUpper = false;
+				let hasDigit = false;
+				for (let j = 0; j < seg.length; j++) {
+					const s = seg.charCodeAt(j);
+					if (s >= 65 && s <= 90) hasUpper = true;
+					else if (s >= 48 && s <= 57) hasDigit = true;
+				}
+				if (hasUpper && hasDigit && shannonEntropy(seg) >= 3.5) return false;
+			}
+			segStart = i + 1;
+			continue;
+		}
+		const ok =
+			(c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 45 || c === 95 || c === 46;
+		if (!ok) return false;
+	}
+	return true;
+}
+
+function isBenignKebabOrSnakeSlug(value: string): boolean {
+	let hasDelim = false;
+	let hasWord = false;
+	let segStart = 0;
+	for (let i = 0; i <= value.length; i++) {
+		const isEnd = i === value.length;
+		const c = isEnd ? 45 : value.charCodeAt(i);
+		if (c === 45 || c === 95) {
+			if (!isEnd) hasDelim = true;
+			const segLen = i - segStart;
+			if (segLen > 0) {
+				let allLower = true;
+				let allDigit = true;
+				for (let j = segStart; j < i; j++) {
+					const s = value.charCodeAt(j);
+					if (!(s >= 97 && s <= 122)) allLower = false;
+					if (!(s >= 48 && s <= 57)) allDigit = false;
+				}
+				if (allLower) {
+					if (segLen >= 16 && isHexToken(value.slice(segStart, i))) return false;
+					if (segLen >= 2) hasWord = true;
+				} else if (allDigit) {
+					if (segLen > 4) return false;
+				} else if (segLen > 4) {
+					return false;
+				}
+			}
+			segStart = i + 1;
+			continue;
+		}
+		if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57))) return false;
+	}
+	return hasDelim && hasWord;
+}
+
+/**
+ * Whether a configured header, env, or query value should be collected into the masking registry.
+ * Strictly a superset of the original value rule: catches auth schemes, 16+ char hex tokens, and
+ * any 8+ char value containing mixed case, digits, or symbols (skipping short values, plain words, and pure digits).
+ */
+export function isSecretValueForMasking(value: string): boolean {
 	const trimmed = value.trim();
 	if (trimmed.length < 8) return false;
 	if (matchesAsciiInsensitive(trimmed, 0, "bearer ") || matchesAsciiInsensitive(trimmed, 0, "bearer\t")) return true;
 	if (matchesAsciiInsensitive(trimmed, 0, "basic ") || matchesAsciiInsensitive(trimmed, 0, "basic\t")) return true;
 	if (trimmed.includes(" ") || trimmed.includes("\n")) return false;
+	if (isHexToken(trimmed)) return true;
 	let hasUpper = false;
 	let hasLower = false;
 	let hasDigit = false;
@@ -521,6 +948,114 @@ export function looksLikeSecretValue(value: string): boolean {
 	if (!hasUpper && !hasDigit && !hasSymbol) return false;
 	if (!hasUpper && !hasLower && !hasSymbol) return false;
 	return (hasUpper && hasLower) || hasDigit || hasSymbol;
+}
+
+export interface SecretCollectionInput {
+	readonly url?: URL;
+	readonly headers?: Readonly<Record<string, string>>;
+	readonly nonSecretHeaders?: ReadonlySet<string>;
+	readonly env?: Readonly<Record<string, string>>;
+	readonly nonSecretEnv?: ReadonlySet<string>;
+}
+
+/**
+ * Collect secret values from a transport's URL, headers, and environment variables for error/log masking.
+ */
+export function collectSecretsForMasking(input: SecretCollectionInput): string[] {
+	const secrets: string[] = [];
+	if (input.url) {
+		if (input.url.password) secrets.push(input.url.password);
+		for (const [key, value] of input.url.searchParams.entries()) {
+			if (!value) continue;
+			if (
+				SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
+				isSensitiveKeyNameForMasking(key) ||
+				isSecretValueForMasking(value)
+			) {
+				secrets.push(value);
+			}
+		}
+	}
+	if (input.headers) {
+		for (const [name, value] of Object.entries(input.headers)) {
+			if (input.nonSecretHeaders?.has(name.toLowerCase())) continue;
+			if (isSensitiveKeyNameForMasking(name) || isSecretValueForMasking(value)) {
+				secrets.push(...extractHeaderSecrets(name, value));
+			}
+		}
+	}
+	if (input.env) {
+		for (const [name, value] of Object.entries(input.env)) {
+			if (input.nonSecretEnv?.has(name.toUpperCase())) continue;
+			if (isSensitiveKeyNameForMasking(name) || isSecretValueForMasking(value)) {
+				secrets.push(...extractAuthorizationSecrets(value));
+			}
+		}
+	}
+	return secrets;
+}
+
+/**
+ * Whether an unlabelled URL query value looks like an opaque secret in transport display (`atomic mcp list`, `/mcp`)
+ * rather than a benign display parameter such as `us-east-1`, `acme-corp`, `2025-11-25`, `my_project`, `AcmeCorp`,
+ * `/workspace/app`, or `${TENANT_ID}`.
+ */
+export function isLikelySecretForDisplay(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length < 8) return false;
+	if (matchesAsciiInsensitive(trimmed, 0, "bearer ") || matchesAsciiInsensitive(trimmed, 0, "bearer\t")) return true;
+	if (matchesAsciiInsensitive(trimmed, 0, "basic ") || matchesAsciiInsensitive(trimmed, 0, "basic\t")) return true;
+	if (isEnvTemplatePlaceholder(trimmed)) return false;
+	if (trimmed.includes(" ") || trimmed.includes("\n")) return false;
+	if (
+		isDateOrTimestamp(trimmed) ||
+		isVersionString(trimmed) ||
+		isSimplePath(trimmed) ||
+		isBenignKebabOrSnakeSlug(trimmed)
+	) {
+		return false;
+	}
+	if (isHexToken(trimmed)) return true;
+	let hasUpper = false;
+	let hasLower = false;
+	let hasDigit = false;
+	let hasOther = false;
+	for (let i = 0; i < trimmed.length; i++) {
+		const c = trimmed.charCodeAt(i);
+		if (c >= 65 && c <= 90) hasUpper = true;
+		else if (c >= 97 && c <= 122) hasLower = true;
+		else if (c >= 48 && c <= 57) hasDigit = true;
+		else hasOther = true;
+	}
+	// Plain ASCII words (lowercase, uppercase, CamelCase/PascalCase) and pure digits are not display secrets.
+	if (!hasDigit && !hasOther) return false;
+	if (!hasUpper && !hasLower && !hasOther) return false;
+	const classes = (hasUpper ? 1 : 0) + (hasLower ? 1 : 0) + (hasDigit ? 1 : 0) + (hasOther ? 1 : 0);
+	const entropy = shannonEntropy(trimmed);
+	if (trimmed.length >= 16 && classes >= 2 && (hasUpper || hasDigit) && entropy >= 3.3) return true;
+	if (trimmed.length >= 10 && classes >= 4 && entropy >= 3.0) return true;
+	if (trimmed.length >= 10 && classes >= 3 && entropy >= 3.4) return true;
+	return false;
+}
+
+/** Collect declared secret values from an HTTP server config for display-URL scrubbing without hiding benign params. */
+export function collectDeclaredDisplaySecrets(
+	headers?: Readonly<Record<string, string>>,
+	clientSecret?: string,
+): string[] {
+	const secrets: string[] = [];
+	if (clientSecret && !isEnvTemplatePlaceholder(clientSecret)) secrets.push(clientSecret);
+	if (headers) {
+		for (const [name, value] of Object.entries(headers)) {
+			if (NON_SECRET_HTTP_HEADERS.has(name.toLowerCase()) || isEnvTemplatePlaceholder(value)) continue;
+			if (isSensitiveKeyNameForDisplay(name) || isLikelySecretForDisplay(value)) {
+				for (const extracted of extractHeaderSecrets(name, value)) {
+					if (!isEnvTemplatePlaceholder(extracted)) secrets.push(extracted);
+				}
+			}
+		}
+	}
+	return secrets;
 }
 
 /**
@@ -560,14 +1095,39 @@ export function redactUrlForDisplay(rawUrl: string): string {
 	return safe;
 }
 
+/** Explicit secret query parameter names stripped from OAuth authorization URLs (never substring heuristics). */
+const AUTHORIZATION_URL_SECRET_PARAMS = new Set([
+	"client_secret",
+	"client-secret",
+	"clientsecret",
+	"access_token",
+	"access-token",
+	"accesstoken",
+	"refresh_token",
+	"refresh-token",
+	"refreshtoken",
+	"id_token",
+	"id-token",
+	"idtoken",
+	"api_key",
+	"api-key",
+	"apikey",
+	"password",
+	"passwd",
+	"pwd",
+]);
+
 /**
  * Format a server URL for transport display (`atomic mcp list`, `/mcp`):
- * strip userinfo and fragment, preserve benign query parameters (such as `?tenant=acme`),
- * and omit only query parameters with sensitive names or credential-like values.
+ * strip userinfo and fragment, preserve benign query parameters (such as `?region=us-east-1`,
+ * `?tenant=acme-corp`, `?version=2025-11-25`, `?workspace=my_project`, `?org=AcmeCorp`,
+ * `?path=/workspace/app`, `?tenant=${TENANT_ID}`), and omit only query parameters with sensitive
+ * whole-token names, registered secrets, or high-entropy credential-like values.
  */
-export function redactUrlForTransportDisplay(rawUrl: string): string {
+export function redactUrlForTransportDisplay(rawUrl: string, secrets: Iterable<string | undefined> = []): string {
 	if (!URL.canParse(rawUrl)) return redactUrlForDisplay(rawUrl);
 	const parsed = new URL(rawUrl);
+	const registry = new SecretMaskRegistry(secrets);
 	let changed = false;
 	if (parsed.username || parsed.password) {
 		parsed.username = "";
@@ -579,17 +1139,23 @@ export function redactUrlForTransportDisplay(rawUrl: string): string {
 		changed = true;
 	}
 	const keysToDelete: string[] = [];
+	const updates: [string, string][] = [];
 	for (const [key, value] of parsed.searchParams.entries()) {
 		if (
 			SENSITIVE_QUERY_PARAM_NAMES.has(key.toLowerCase()) ||
-			isSensitiveKeyName(key) ||
-			looksLikeSecretValue(value)
+			isSensitiveKeyNameForDisplay(key) ||
+			(!registry.empty && registry.mask(value) !== value) ||
+			isLikelySecretForDisplay(value)
 		) {
 			keysToDelete.push(key);
+			continue;
 		}
+		const stripped = redactUrlCredentials(value, "text");
+		if (stripped !== value) updates.push([key, stripped]);
 	}
-	if (keysToDelete.length > 0) {
+	if (keysToDelete.length > 0 || updates.length > 0) {
 		for (const key of keysToDelete) parsed.searchParams.delete(key);
+		for (const [key, value] of updates) parsed.searchParams.set(key, value);
 		changed = true;
 	}
 	return changed ? parsed.href : rawUrl;
@@ -597,13 +1163,19 @@ export function redactUrlForTransportDisplay(rawUrl: string): string {
 
 /**
  * Prepare an OAuth authorization URL for display, copy, or browser open:
- * keep the full query intact (so PKCE/OAuth sign-in always works) while stripping only
- * URL userinfo (including inside URL-valued parameters) and any `client_secret` query parameter.
+ * keep the full query intact (including legitimate provider parameters like `token_access_type`,
+ * `authuser`, `auth_type`, `path`, `bypass_cache`, `design`) while stripping only URL userinfo
+ * (including single- or double-encoded nested userinfo inside query params), explicit secret parameter
+ * names, and any query parameter whose value contains a registered secret.
  */
-export function redactAuthorizationUrlForDisplay(input: string | URL): string {
+export function redactAuthorizationUrlForDisplay(
+	input: string | URL,
+	secrets: Iterable<string | undefined> = [],
+): string {
 	const raw = typeof input === "string" ? input : input.href;
-	if (!URL.canParse(raw)) return redactUrlCredentials(raw, "text");
+	if (!URL.canParse(raw)) return redactOAuthErrorText(raw, secrets);
 	const url = new URL(raw);
+	const registry = new SecretMaskRegistry(secrets);
 	let changed = false;
 	if (url.username || url.password) {
 		url.username = "";
@@ -613,12 +1185,18 @@ export function redactAuthorizationUrlForDisplay(input: string | URL): string {
 	const keysToDelete: string[] = [];
 	const updates: [string, string][] = [];
 	for (const [key, value] of url.searchParams.entries()) {
-		if (key.toLowerCase() === "client_secret") {
+		const lowerKey = key.toLowerCase();
+		if (
+			AUTHORIZATION_URL_SECRET_PARAMS.has(lowerKey) ||
+			hasUnambiguousCredentialSuffix(lowerKey) ||
+			(!registry.empty && registry.mask(value) !== value)
+		) {
 			keysToDelete.push(key);
-		} else if (value.includes("://") && value.includes("@")) {
-			const stripped = stripUrlUserinfoAndHash(value);
-			if (stripped !== value) updates.push([key, stripped]);
+			continue;
 		}
+		// Strip raw, single-encoded (`%3A%2F%2F...%40`), and double-encoded (`%253A%252F%252F...%2540`) nested URL userinfo.
+		const stripped = redactUrlCredentials(value, "text");
+		if (stripped !== value) updates.push([key, stripped]);
 	}
 	if (keysToDelete.length > 0 || updates.length > 0) {
 		for (const key of keysToDelete) url.searchParams.delete(key);
@@ -1226,8 +1804,8 @@ function redactOAuthStructuredCredentials(text: string): string {
 }
 
 function chooseFreshPlaceholderPrefix(text: string): string {
-	for (let counter = 0; ; counter++) {
-		const prefix = `ATOMICPRX${counter}P`;
+	for (;;) {
+		const prefix = `ATOMICPRX${randomBytes(8).toString("hex").toUpperCase()}P`;
 		if (!text.includes(prefix)) return prefix;
 	}
 }
@@ -1330,9 +1908,31 @@ export function redactOAuthErrorText(text: string, secrets: Iterable<string | un
 	return redactRemainingCredentialShapes(afterOAuth);
 }
 
+function clipRedactedPrefix(redactedHead: string, redactedFull: string): string {
+	if (redactedFull.startsWith(redactedHead)) return redactedHead;
+	let lcp = 0;
+	const minLen = Math.min(redactedHead.length, redactedFull.length);
+	while (lcp < minLen && redactedHead.charCodeAt(lcp) === redactedFull.charCodeAt(lcp)) {
+		lcp++;
+	}
+	// If a shape match (e.g. an unknown JWT) started at `s <= lcp` before the cap and extended into lookahead,
+	// `redactedFull` emitted `[redacted]` covering `lcp`. Clip right after that sentinel so zero lookahead bytes
+	// and zero partial secret prefix survive.
+	const searchStart = Math.max(0, lcp - REDACTED.length + 1);
+	for (let j = searchStart; j <= lcp; j++) {
+		if (redactedFull.startsWith(REDACTED, j)) {
+			return redactedFull.slice(0, j + REDACTED.length);
+		}
+	}
+	// Otherwise a deletion/shortening redaction (such as raw or percent-encoded URL userinfo straddling the cap)
+	// diverged at `lcp`; clip right at the divergence point so zero characters of the unredacted prefix survive.
+	return redactedHead.slice(0, lcp);
+}
+
 /**
  * Mask a response body read with lookahead past `maxOriginalChars`, guaranteeing NO raw characters
- * from indices `>= maxOriginalChars` are ever emitted even if earlier redactions shrink the output.
+ * from indices `>= maxOriginalChars` are ever emitted even if earlier redactions shrink the output,
+ * AND catching unknown shape matches (such as server-minted JWTs) straddling `maxOriginalChars`.
  */
 export function redactOAuthErrorTextCapped(
 	rawBody: string,
@@ -1340,11 +1940,26 @@ export function redactOAuthErrorTextCapped(
 	maxOriginalChars: number,
 ): string {
 	if (!rawBody || maxOriginalChars <= 0) return "";
+	if (rawBody.length <= maxOriginalChars) {
+		return redactOAuthErrorText(rawBody, secrets);
+	}
 	const registry = new SecretMaskRegistry(secrets);
-	const maskedPrefix = registry.maskWithOriginalCap(rawBody, maxOriginalChars);
-	const afterOAuth = redactOAuthStructuredCredentials(maskedPrefix);
-	const result = redactRemainingCredentialShapes(afterOAuth);
-	return result.length > maxOriginalChars ? result.slice(0, maxOriginalChars) : result;
+	const { full: exactFull, prefixEnd } = registry.maskWithOriginalCapInfo(rawBody, maxOriginalChars);
+	const exactHead = exactFull.slice(0, prefixEnd);
+	const shapeHead = redactRemainingCredentialShapes(redactOAuthStructuredCredentials(exactHead));
+	const shapeFull = redactRemainingCredentialShapes(redactOAuthStructuredCredentials(exactFull));
+	return clipRedactedPrefix(shapeHead, shapeFull);
+}
+
+/** Scrub a `fetch` rejection while preserving `TypeError`, `DOMException`, and error `.code` without retaining raw `.cause`. */
+export function scrubFetchError(error: unknown, secrets: Iterable<string | undefined> = []): Error {
+	const message = redactOAuthErrorText(error instanceof Error ? error.message : String(error), secrets);
+	if (error instanceof TypeError) return new TypeError(message);
+	if (error instanceof DOMException) return new DOMException(message, error.name);
+	const scrubbed = new Error(message);
+	const code = (error as { code?: unknown } | undefined)?.code;
+	if (typeof code === "string") Object.assign(scrubbed, { code });
+	return scrubbed;
 }
 
 /** Recursively scrub string values inside structured error data (bounded depth). */

@@ -10,13 +10,7 @@ import {
 	helperLaunchAsync,
 	missingHelperOptions,
 } from "../../../../utils/helper-command.ts";
-import {
-	extractAuthorizationSecrets,
-	isSensitiveKeyName,
-	looksLikeSecretValue,
-	redactOAuthErrorText,
-	scrubUnknownErrorData,
-} from "../oauth/redact.js";
+import { collectSecretsForMasking, redactOAuthErrorText, scrubUnknownErrorData } from "../oauth/redact.js";
 import { isJsonRpcResponse, type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
 import { JsonRpcLineReader } from "./lines.js";
 import { type McpTransport, TransportEvents } from "./transport.js";
@@ -305,20 +299,22 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			maxStderrBytes: this.options.maxStderrBytes,
 			onStderr: this.options.onStderr,
 			onMessage: (message) => this.emitMessage(this.scrubIncomingMessage(message)),
-			onError: (error) => this.emitError(error),
+			onError: (error) => {
+				const message = redactOAuthErrorText(
+					error instanceof Error ? error.message : String(error),
+					this.activeSecrets(),
+				);
+				this.emitError(new Error(message));
+			},
 		});
 	}
 
 	/** Configured secret `env` values that must be scrubbed from stderr, errors, and logs. */
 	activeSecrets(): string[] {
-		const secrets: string[] = [];
-		for (const [name, value] of Object.entries(this.options.env ?? {})) {
-			if (NON_SECRET_STDIO_ENV_VARS.has(name.toUpperCase())) continue;
-			if (isSensitiveKeyName(name) || looksLikeSecretValue(value)) {
-				secrets.push(...extractAuthorizationSecrets(value));
-			}
-		}
-		return secrets;
+		return collectSecretsForMasking({
+			env: this.options.env,
+			nonSecretEnv: NON_SECRET_STDIO_ENV_VARS,
+		});
 	}
 
 	private scrubIncomingMessage(message: JsonRpcMessage): JsonRpcMessage {
