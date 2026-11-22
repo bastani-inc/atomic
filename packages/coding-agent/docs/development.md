@@ -88,9 +88,9 @@ For a startup problem, report your OS, terminal, installation method, and Atomic
 <a id="testing"></a>
 <a id="installed-package-smoke-test"></a>
 
-## Deterministic installs
+## Dependency versions
 
-Package-manager installs use Atomic's published shrinkwrap.
+Each package Atomic publishes pins its own dependencies to exact versions. Atomic publishes no shrinkwrap, so npm, pnpm and Bun resolve the dependencies of those packages when you install, and an install can get newer releases of them than the release was tested with. The [release archive](/getting-started/installation#release-archive) is built from the exact dependency tree the release was tested with.
 
 ## Release security boundary
 
