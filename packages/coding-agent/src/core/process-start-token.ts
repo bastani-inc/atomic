@@ -182,6 +182,10 @@ let nativeReader: CreationTimeReader | null | undefined;
 /** The native module's `processCreationTime`, or null where the module or that binding (added in #5141) is missing. */
 function nativeCreationTime(): CreationTimeReader | null {
 	if (nativeReader === undefined) {
+		if (!NATIVE_WINDOWS_HOST) {
+			nativeReader = null;
+			return null;
+		}
 		try {
 			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
 				processCreationTime?: CreationTimeReader;

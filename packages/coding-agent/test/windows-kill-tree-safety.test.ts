@@ -17,6 +17,7 @@ import {
 	stillRuns,
 	waitUntilGone,
 } from "../../../test/helpers/recorded-process.js";
+import { bunExecutable, spawnProcess } from "../../../test/helpers/runtime.js";
 import { GitSandbox, gitConfigPath } from "../../../test/helpers/worktree-snapshot.js";
 
 /** Controls fake native containment / descendant holding / creation-time termination for cross-platform unit tests. */
@@ -114,6 +115,27 @@ vi.mock("../src/core/process-tree-containment.ts", async (importOriginal) => {
 				},
 			};
 		},
+		containProcessTreeAllowingBreakaway: (pid: number) => {
+			if (!fakes.interceptContainment) return actual.containProcessTreeAllowingBreakaway(pid);
+			if (!fakes.containAvailable) return undefined;
+			const tree = { pid, active: 0, terminated: 0, released: 0, closed: 0 };
+			fakes.containedTrees.push(tree);
+			return {
+				terminate: () => {
+					tree.terminated++;
+					tree.active = 0;
+					return true;
+				},
+				activeProcesses: () => tree.active,
+				release: () => {
+					tree.released++;
+					return true;
+				},
+				close: () => {
+					tree.closed++;
+				},
+			};
+		},
 		holdProcessDescendants: (pid: number) => {
 			if (!fakes.interceptHold) return actual.holdProcessDescendants(pid);
 			fakes.holdCalls.push(pid);
@@ -178,7 +200,9 @@ const {
 } = await import("../src/utils/shell.js");
 const { terminateRpcClientProcess } = await import("../src/modes/rpc/rpc-client-process.js");
 const { buildLockPath, settleOtherBuilds } = await import("../src/core/resume/blueprint/build-lock.ts");
-const { processStartToken } = await import("../src/core/process-start-token.js");
+const { nativeProcessCreationTime, processStartToken } = await import("../src/core/process-start-token.js");
+const { getPowerShellConfig } = await import("../src/utils/shell.js");
+const { resolveGit } = await import("../src/utils/tools-manager.ts");
 const { runWorkspaceProcess } = await import("../src/core/workspace/process.ts");
 const { runGit, setWorktreeSnapshotGit } = await import("../src/core/worktree-snapshot/git.ts");
 const { renameWithRetry } = await import("../src/core/rename-retry.ts");
@@ -388,6 +412,15 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	test.skipIf(process.platform === "win32")(
+		"nativeProcessCreationTime reports unavailable (undefined) on non-Windows hosts even when process.platform is spoofed",
+		() => {
+			fakePlatform("win32");
+			fakes.interceptStartToken = false;
+			assert.equal(nativeProcessCreationTime(process.pid), undefined);
+		},
+	);
 
 	test.skipIf(process.platform === "win32")(
 		"worktree-snapshot runGit stopCommand uses holdProcessDescendants when containProcessTree is unavailable and never spawns taskkill",
@@ -738,5 +771,120 @@ if (role === "leaf") {
 		assert.equal(await waitUntilGone(childRec, GONE_MS), true, "tracked parent's child ended");
 		await exited(parent);
 		assert.deepEqual(fakes.taskkillRuns, [], "killTrackedDetachedChildren never spawned taskkill on native Windows");
+	});
+
+	/** C# helper that starts a process with CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW. */
+	const BREAKAWAY_HELPER_CS = `using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AtomicWorkspaceBreakaway {
+	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+	struct StartupInfo {
+		public int cb; public string reserved; public string desktop; public string title;
+		public int x; public int y; public int width; public int height; public int columns; public int rows;
+		public int fillAttribute; public int flags; public short showWindow; public short reserved2Size;
+		public IntPtr reserved2; public IntPtr input; public IntPtr output; public IntPtr error;
+	}
+	[StructLayout(LayoutKind.Sequential)]
+	struct ProcessInformation { public IntPtr process; public IntPtr thread; public int processId; public int threadId; }
+	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+	static extern bool CreateProcessW(string application, StringBuilder commandLine, IntPtr processAttributes,
+		IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string directory,
+		ref StartupInfo startup, out ProcessInformation information);
+	[DllImport("kernel32.dll")]
+	static extern bool CloseHandle(IntPtr handle);
+	public static int Start(string commandLine) {
+		StartupInfo startup = new StartupInfo();
+		startup.cb = Marshal.SizeOf(typeof(StartupInfo));
+		ProcessInformation information;
+		const uint CreateBreakawayFromJob = 0x01000000, CreateNoWindow = 0x08000000;
+		if (!CreateProcessW(null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false,
+				CreateBreakawayFromJob | CreateNoWindow, IntPtr.Zero, null, ref startup, out information))
+			return -Marshal.GetLastWin32Error();
+		CloseHandle(information.thread);
+		CloseHandle(information.process);
+		return information.processId;
+	}
+}
+`;
+
+	test("runWorkspaceProcess allows a descendant that explicitly breaks away (CREATE_BREAKAWAY_FROM_JOB) to start and survive after completion and host exit", async () => {
+		const dir = makeTempDir("atomic-win-workspace-breakaway-");
+		const csFile = join(dir, "breakaway.cs");
+		const pidFile = join(dir, "breakaway.pid");
+		const errFile = join(dir, "breakaway.err");
+		const targetScript = join(dir, "target.cjs");
+		writeFileSync(csFile, BREAKAWAY_HELPER_CS);
+		writeFileSync(
+			targetScript,
+			`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
+		);
+		const ps = getPowerShellConfig();
+		const psWord = (value: string) => `'${value.replace(/'/g, "''")}'`;
+		const cmdLine = `"${process.execPath}" "${targetScript}" "${pidFile}"`;
+		const psCommand = `Add-Type -Path ${psWord(csFile)}; $id = [AtomicWorkspaceBreakaway]::Start(${psWord(cmdLine)}); if ($id -le 0) { Set-Content -NoNewline -Path ${psWord(errFile)} -Value (-$id); exit 1 }`;
+
+		// Run runWorkspaceProcess inside a child Bun process that exits once the command finishes,
+		// verifying the breakaway descendant starts without error 5 and outlives both the command and host exit.
+		const processModule = new URL("../src/core/workspace/process.ts", import.meta.url).href;
+		const runner = `const { runWorkspaceProcess } = await import(${JSON.stringify(processModule)});
+const outcome = await runWorkspaceProcess({
+	path: ${JSON.stringify(ps.shell)},
+	args: ${JSON.stringify([...ps.args, psCommand])},
+	cwd: ${JSON.stringify(tmpdir())},
+	env: process.env,
+});
+process.exit(outcome.kind === "exited" ? (outcome.status ?? 1) : 2);`;
+		const host = spawnProcess([bunExecutable(), "--eval", runner], { stdout: "ignore", stderr: "inherit" });
+		const exitCode = await Promise.race([
+			host.exited,
+			new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25_000)),
+		]);
+		if (exitCode === "pending") host.kill();
+
+		assert.equal(
+			existsSync(errFile),
+			false,
+			existsSync(errFile)
+				? `CREATE_BREAKAWAY_FROM_JOB failed with Win32 error ${readFileSync(errFile, "utf8")}`
+				: "",
+		);
+		assert.equal(exitCode, 0, "workspace command succeeded when spawning a breakaway descendant");
+		const survivor = await waitForPidFile(pidFile);
+		assert.equal(await waitUntilGone(survivor, NOT_ENDED_MS), false, "breakaway descendant survived host exit");
+	});
+
+	test("runWorkspaceProcess lets Git's builtin fsmonitor daemon (core.fsmonitor=true) start and stay running after git completes", async () => {
+		const git = await resolveGit();
+		const dir = makeTempDir("atomic-win-workspace-fsmonitor-");
+		const repo = join(dir, "repo");
+		mkdirSync(repo);
+		const gitEnv = { ...process.env, ...git.env };
+		const runGitCmd = (args: readonly string[]) =>
+			runWorkspaceProcess({ path: git.path, args, cwd: repo, env: gitEnv });
+
+		const init = await runGitCmd(["init", "-q"]);
+		assert.equal(init.kind, "exited");
+		assert.equal(init.status, 0);
+		writeFileSync(join(repo, "file.txt"), "hello\n");
+
+		try {
+			const status = await runGitCmd(["-c", "core.fsmonitor=true", "status", "--porcelain"]);
+			assert.equal(status.kind, "exited");
+			assert.equal(status.status, 0, `git status failed: ${status.stderr}`);
+
+			// Check that fsmonitor--daemon is still running after the workspace command completed.
+			const daemonStatus = await runGitCmd(["fsmonitor--daemon", "status"]);
+			assert.equal(daemonStatus.kind, "exited");
+			assert.equal(
+				daemonStatus.status,
+				0,
+				`fsmonitor daemon was killed or failed to start: ${daemonStatus.stdout} ${daemonStatus.stderr}`,
+			);
+			assert.match(daemonStatus.stdout, /watching/i);
+		} finally {
+			// Always stop the daemon so it releases the temp repository directory before afterEach removes it.
+			await runGitCmd(["fsmonitor--daemon", "stop"]).catch(() => {});
+		}
 	});
 });

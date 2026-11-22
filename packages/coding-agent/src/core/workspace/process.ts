@@ -127,7 +127,7 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 		});
 		const tree =
 			!OWN_PROCESS_GROUP && child.pid !== undefined
-				? processTreeContainment.containProcessTree(child.pid)
+				? processTreeContainment.containProcessTreeAllowingBreakaway?.(child.pid)
 				: undefined;
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];

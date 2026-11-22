@@ -10,9 +10,14 @@ export interface ProcessTreeContainment {
 
 type ContainProcessTree = (pid: number) => ProcessTreeContainment | null;
 
+/** Whether the loaded native addon was built for Windows (its Windows process-tree calls exist only there). */
+const NATIVE_WINDOWS_HOST = process.platform === "win32";
+
 let nativeContain: ContainProcessTree | null | undefined;
+let nativeContainAllowingBreakaway: ContainProcessTree | null | undefined;
 
 function containFunction(): ContainProcessTree | null {
+	if (!NATIVE_WINDOWS_HOST) return null;
 	if (nativeContain === undefined) {
 		try {
 			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
@@ -26,10 +31,38 @@ function containFunction(): ContainProcessTree | null {
 	return nativeContain;
 }
 
+function containAllowingBreakawayFunction(): ContainProcessTree | null {
+	if (!NATIVE_WINDOWS_HOST) return null;
+	if (nativeContainAllowingBreakaway === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				containProcessTreeAllowingBreakaway?: ContainProcessTree;
+			};
+			nativeContainAllowingBreakaway = binding.containProcessTreeAllowingBreakaway ?? null;
+		} catch {
+			nativeContainAllowingBreakaway = null;
+		}
+	}
+	return nativeContainAllowingBreakaway;
+}
+
 export function containProcessTree(pid: number): ProcessTreeContainment | undefined {
 	if (process.platform !== "win32") return undefined;
 	try {
 		return containFunction()?.(pid) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Like {@link containProcessTree}, but sets `JOB_OBJECT_LIMIT_BREAKAWAY_OK` so descendants that explicitly request
+ * `CREATE_BREAKAWAY_FROM_JOB` can start and outlive the command, while non-breakaway descendants remain contained.
+ */
+export function containProcessTreeAllowingBreakaway(pid: number): ProcessTreeContainment | undefined {
+	if (process.platform !== "win32") return undefined;
+	try {
+		return containAllowingBreakawayFunction()?.(pid) ?? undefined;
 	} catch {
 		return undefined;
 	}
@@ -49,9 +82,6 @@ export interface HeldProcessDescendants {
 }
 
 type HoldProcessDescendants = (pid: number) => HeldProcessDescendants | null;
-
-/** Whether the loaded native addon was built for Windows (its Windows process-tree calls exist only there). */
-const NATIVE_WINDOWS_HOST = process.platform === "win32";
 
 let nativeHoldDescendants: HoldProcessDescendants | null | undefined;
 
