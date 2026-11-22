@@ -217,6 +217,7 @@ type LifecycleEventSnapshot = {
 type ActiveLifecycleState = {
 	turnStart: LifecycleEventSnapshot | null;
 	agentStart: LifecycleEventSnapshot | null;
+	pendingMessages: LifecycleEventSnapshot[];
 	activeTools: Map<string, LifecycleEventSnapshot>;
 	modelSelect: LifecycleEventSnapshot | null;
 };
@@ -361,6 +362,37 @@ function createStaticRecordingApi(pi: ExtensionAPI, surface: StaticSurfaceSets):
 	});
 }
 
+const dispatchedShutdowns = new WeakSet<CapturedLazyBuiltin>();
+
+async function dispatchCapturedShutdownOnce(
+	captured: CapturedLazyBuiltin,
+	event: unknown,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (dispatchedShutdowns.has(captured)) return;
+	dispatchedShutdowns.add(captured);
+	try {
+		await dispatchCapturedHandlers(captured, "session_shutdown", event, ctx);
+	} finally {
+		disposeCapturedResources(captured);
+	}
+}
+
+const FENCED_ACTION_PROPS: ReadonlySet<string | symbol> = new Set([
+	"sendMessage",
+	"sendMessages",
+	"sendUserMessage",
+	"appendEntry",
+	"setSessionName",
+	"setLabel",
+	"setActiveTools",
+	"setModel",
+	"setThinkingLevel",
+	"registerProvider",
+	"registerProviderAlias",
+	"unregisterProvider",
+]);
+
 function createCaptureProxy(
 	pi: ExtensionAPI,
 	captured: CapturedLazyBuiltin,
@@ -368,12 +400,15 @@ function createCaptureProxy(
 	managedEvents: ReadonlySet<string>,
 	interceptedBusEvents: ReadonlySet<string>,
 	interceptsMcpContributions: boolean,
+	assertLease: () => void,
 ): ExtensionAPI {
 	const eventsProxy: EventBus = {
 		emit(channel, data) {
+			assertLease();
 			pi.events.emit(channel, data);
 		},
 		on(channel, handler) {
+			assertLease();
 			const list = captured.eventHandlers.get(channel) ?? [];
 			list.push(handler);
 			captured.eventHandlers.set(channel, list);
@@ -399,6 +434,7 @@ function createCaptureProxy(
 			if (prop === "events") return eventsProxy;
 			if (prop === "registerTool") {
 				return (tool: ToolDefinition) => {
+					assertLease();
 					captured.tools.set(tool.name, tool);
 					if (shouldForwardRegistrationToHost(surface.tools.has(tool.name))) {
 						target.registerTool(tool);
@@ -407,6 +443,7 @@ function createCaptureProxy(
 			}
 			if (prop === "registerCommand") {
 				return (name: string, options: CapturedCommand) => {
+					assertLease();
 					captured.commands.set(name, options);
 					if (shouldForwardRegistrationToHost(surface.commands.has(name))) {
 						target.registerCommand(name, options);
@@ -415,6 +452,7 @@ function createCaptureProxy(
 			}
 			if (prop === "registerShortcut") {
 				return (shortcut: KeyId, options: CapturedShortcut) => {
+					assertLease();
 					captured.shortcuts.set(shortcut, options);
 					if (shouldForwardRegistrationToHost(surface.shortcuts.has(shortcut))) {
 						target.registerShortcut(shortcut, options);
@@ -423,6 +461,7 @@ function createCaptureProxy(
 			}
 			if (prop === "registerFlag") {
 				return (name: string, options: CapturedFlag) => {
+					assertLease();
 					captured.flags.set(name, options);
 					if (shouldForwardRegistrationToHost(surface.flags.has(name))) {
 						target.registerFlag(name, options);
@@ -431,6 +470,7 @@ function createCaptureProxy(
 			}
 			if (prop === "registerMessageRenderer") {
 				return <T>(customType: string, renderer: MessageRenderer<T>) => {
+					assertLease();
 					captured.messageRenderers.set(customType, renderer as MessageRenderer);
 					if (shouldForwardRegistrationToHost(surface.messageRenderers.has(customType))) {
 						target.registerMessageRenderer(customType, renderer);
@@ -439,6 +479,7 @@ function createCaptureProxy(
 			}
 			if (prop === "registerEntryRenderer") {
 				return <T>(customType: string, renderer: EntryRenderer<T>) => {
+					assertLease();
 					captured.entryRenderers.set(customType, renderer as EntryRenderer);
 					if (shouldForwardRegistrationToHost(surface.entryRenderers.has(customType))) {
 						target.registerEntryRenderer(customType, renderer);
@@ -447,12 +488,15 @@ function createCaptureProxy(
 			}
 			if (prop === "registerToolRenderer") {
 				return (resolver: ToolRendererResolver) => {
+					assertLease();
+					// Captured on the active lease only; the lazy wrapper's single delegating
+					// toolRenderer routes to active.captured.toolRenderers without leaking failed attempts.
 					captured.toolRenderers.push(resolver);
-					target.registerToolRenderer(resolver);
 				};
 			}
 			if (prop === "registerAgentPanelSource") {
 				return (source: AgentPanelSource) => {
+					assertLease();
 					const reg = target.registerAgentPanelSource(source);
 					captured.disposables.push(() => reg.dispose());
 					return reg;
@@ -460,6 +504,7 @@ function createCaptureProxy(
 			}
 			if (prop === "onMcpServerContributionsChanged" && target.onMcpServerContributionsChanged) {
 				return (listener: () => void) => {
+					assertLease();
 					if (interceptsMcpContributions) {
 						captured.mcpContributionListeners.push(listener);
 						return () => {
@@ -474,6 +519,7 @@ function createCaptureProxy(
 			}
 			if (prop === "on") {
 				return (event: string, handler: HandlerFn) => {
+					assertLease();
 					const list = captured.handlers.get(event) ?? [];
 					list.push(handler);
 					captured.handlers.set(event, list);
@@ -494,7 +540,16 @@ function createCaptureProxy(
 				};
 			}
 			const value = Reflect.get(target, prop, target);
-			return typeof value === "function" ? value.bind(target) : value;
+			if (typeof value === "function") {
+				if (FENCED_ACTION_PROPS.has(prop)) {
+					return (...args: unknown[]) => {
+						assertLease();
+						return Reflect.apply(value, target, args);
+					};
+				}
+				return value.bind(target);
+			}
+			return value;
 		},
 	});
 }
@@ -524,6 +579,7 @@ export function createLazyBuiltinFactory(
 		const activeLifecycle: ActiveLifecycleState = {
 			turnStart: null,
 			agentStart: null,
+			pendingMessages: [],
 			activeTools: new Map(),
 			modelSelect: null,
 		};
@@ -572,6 +628,7 @@ export function createLazyBuiltinFactory(
 		const resetActiveLifecycle = (): void => {
 			activeLifecycle.turnStart = null;
 			activeLifecycle.agentStart = null;
+			activeLifecycle.pendingMessages.length = 0;
 			activeLifecycle.activeTools.clear();
 			activeLifecycle.modelSelect = null;
 		};
@@ -581,11 +638,16 @@ export function createLazyBuiltinFactory(
 			lease: LazyLease,
 			onReplay?: (ctx: ExtensionContext) => void,
 			publishOnComplete?: LazyBuiltinHandle,
+			runPostReplayHooks?: () => Promise<void>,
 		): Promise<void> => {
 			for (;;) {
 				assertLease(lease);
 				const snapshot = sessionSnapshot;
 				if (!snapshot || snapshot.lease !== lease || replayedGeneration === snapshot.generation) {
+					if (runPostReplayHooks) {
+						await runPostReplayHooks();
+						assertLease(lease);
+					}
 					if (publishOnComplete) loaded = { lease, handle: publishOnComplete };
 					return;
 				}
@@ -593,6 +655,7 @@ export function createLazyBuiltinFactory(
 					turnStart: activeLifecycle.turnStart,
 					modelSelect: activeLifecycle.modelSelect,
 					agentStart: activeLifecycle.agentStart,
+					pendingMessages: activeLifecycle.pendingMessages.splice(0),
 					activeTools: [...activeLifecycle.activeTools.values()],
 				};
 				onReplay?.(snapshot.ctx);
@@ -615,12 +678,21 @@ export function createLazyBuiltinFactory(
 					await dispatchCapturedHandlers(captured, "agent_start", active.agentStart.event, active.agentStart.ctx);
 				}
 				if (!isSnapshotCurrent(snapshot, lease)) continue;
+				for (const pendingMessage of active.pendingMessages) {
+					await dispatchCapturedHandlers(captured, "message_start", pendingMessage.event, pendingMessage.ctx);
+					if (!isSnapshotCurrent(snapshot, lease)) break;
+				}
+				if (!isSnapshotCurrent(snapshot, lease)) continue;
 				for (const activeTool of active.activeTools) {
 					await dispatchCapturedHandlers(captured, "tool_execution_start", activeTool.event, activeTool.ctx);
 					if (!isSnapshotCurrent(snapshot, lease)) break;
 				}
 				if (!isSnapshotCurrent(snapshot, lease)) continue;
 				replayedGeneration = snapshot.generation;
+				if (runPostReplayHooks) {
+					await runPostReplayHooks();
+					assertLease(lease);
+				}
 				if (publishOnComplete) loaded = { lease, handle: publishOnComplete };
 				return;
 			}
@@ -631,10 +703,15 @@ export function createLazyBuiltinFactory(
 			lease: LazyLease,
 			onReplay?: (ctx: ExtensionContext) => void,
 			publishOnComplete?: LazyBuiltinHandle,
+			runPostReplayHooks?: () => Promise<void>,
 		): Promise<void> => {
 			await waitForPriorCleanup(lease);
 			const snapshot = sessionSnapshot;
 			if (!snapshot || snapshot.lease !== lease || replayedGeneration === snapshot.generation) {
+				if (runPostReplayHooks) {
+					await runPostReplayHooks();
+					assertLease(lease);
+				}
 				if (publishOnComplete) loaded = { lease, handle: publishOnComplete };
 				return;
 			}
@@ -649,7 +726,7 @@ export function createLazyBuiltinFactory(
 			}
 			let promise: Promise<void>;
 			promise = lifecycleForward
-				.enqueue(() => replayCurrentSession(captured, lease, onReplay, publishOnComplete))
+				.enqueue(() => replayCurrentSession(captured, lease, onReplay, publishOnComplete, runPostReplayHooks))
 				.finally(() => {
 					if (activeReplay?.promise === promise) activeReplay = null;
 				});
@@ -705,13 +782,15 @@ export function createLazyBuiltinFactory(
 				const cleanupCandidate = async (): Promise<void> => {
 					if (cleaned) return;
 					cleaned = true;
-					disposeCapturedResources(captured);
 					const shutdown = lease.shutdown;
 					const cleanupCtx = shutdown?.ctx ?? replayCtx;
-					if (!cleanupCtx) return;
+					if (!cleanupCtx) {
+						disposeCapturedResources(captured);
+						return;
+					}
 					const shutdownEvent = shutdown?.event ?? { type: "session_shutdown", reason: "quit" };
 					try {
-						await dispatchCapturedHandlers(captured, "session_shutdown", shutdownEvent, cleanupCtx);
+						await dispatchCapturedShutdownOnce(captured, shutdownEvent, cleanupCtx);
 					} catch {
 						// Rejected lazy candidate cleanup must not mask the original error or lease retirement.
 					}
@@ -730,6 +809,7 @@ export function createLazyBuiltinFactory(
 						managedEvents,
 						interceptedBusEvents,
 						spec.interceptsMcpContributions === true,
+						() => assertLease(lease),
 					);
 					await factory(proxy);
 					assertLease(lease);
@@ -743,6 +823,15 @@ export function createLazyBuiltinFactory(
 						};
 					}
 					const handle = createHandle(captured, lease);
+					const runActivatedHooks =
+						activatedHooks.length > 0
+							? async () => {
+									for (const hook of activatedHooks) {
+										await hook(handle, ctx ?? replayCtx ?? undefined);
+										assertLease(lease);
+									}
+								}
+							: undefined;
 					await ensureCurrentSessionReplayed(
 						captured,
 						lease,
@@ -750,12 +839,9 @@ export function createLazyBuiltinFactory(
 							replayCtx = replayContext;
 						},
 						handle,
+						runActivatedHooks,
 					);
 					assertLease(lease);
-					for (const hook of activatedHooks) {
-						await hook(handle, ctx ?? replayCtx ?? undefined);
-						assertLease(lease);
-					}
 					return handle;
 				} catch (error) {
 					if (loaded?.lease === lease && loaded.handle.captured === captured) loaded = null;
@@ -765,7 +851,9 @@ export function createLazyBuiltinFactory(
 			})();
 			inFlight = { lease, promise, background };
 			void promise.then(
-				() => undefined,
+				() => {
+					if (inFlight?.promise === promise) inFlight = null;
+				},
 				(error: unknown) => {
 					if (inFlight?.promise === promise) inFlight = null;
 					spec.onActivationError?.(error, ctx);
@@ -946,13 +1034,7 @@ export function createLazyBuiltinFactory(
 			replayedGeneration = generation;
 			resetActiveLifecycle();
 			const publishedCleanup = retiredLoaded
-				? lifecycleForward.enqueue(async () => {
-						try {
-							await dispatchCapturedHandlers(retiredLoaded, "session_shutdown", event, ctx);
-						} finally {
-							disposeCapturedResources(retiredLoaded);
-						}
-					})
+				? lifecycleForward.enqueue(() => dispatchCapturedShutdownOnce(retiredLoaded, event, ctx))
 				: Promise.resolve();
 			const retainedCleanup = retainSettledLifecycleCleanup(lease, [
 				publishedCleanup,
@@ -977,6 +1059,7 @@ export function createLazyBuiltinFactory(
 			if (activeLease.retired) return;
 			activeLifecycle.turnStart = null;
 			activeLifecycle.agentStart = null;
+			activeLifecycle.pendingMessages.length = 0;
 			activeLifecycle.activeTools.clear();
 			await forwardLiveEvent("turn_end", event, ctx);
 		});
@@ -994,13 +1077,21 @@ export function createLazyBuiltinFactory(
 		pi.on("agent_end", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.agentStart = null;
+			activeLifecycle.pendingMessages.length = 0;
 			activeLifecycle.activeTools.clear();
 			await forwardLiveEvent("agent_end", event, ctx);
 		});
 
 		pi.on("message_start", async (event, ctx) => {
 			if (activeLease.retired) return;
-			await forwardLiveEvent("message_start", event, ctx);
+			const lease = activeLease;
+			if (loaded?.lease === lease || activeReplay?.lease === lease) {
+				await forwardLiveEvent("message_start", event, ctx);
+				return;
+			}
+			if (inFlight?.lease === lease) {
+				activeLifecycle.pendingMessages.push({ event, ctx });
+			}
 		});
 
 		pi.on("tool_execution_start", async (event, ctx) => {
@@ -1019,6 +1110,14 @@ export function createLazyBuiltinFactory(
 			if (activeLease.retired) return;
 			activeLifecycle.modelSelect = { event, ctx };
 			await forwardLiveEvent("model_select", event, ctx);
+		});
+
+		pi.registerToolRenderer?.((toolName, next) => {
+			const resolvers = controller.active?.captured.toolRenderers;
+			if (!resolvers || resolvers.length === 0) return next();
+			const resolve = (index: number): ReturnType<ToolRendererResolver> =>
+				index < resolvers.length ? resolvers[index]!(toolName, () => resolve(index + 1)) : next();
+			return resolve(0);
 		});
 
 		const recordingApi = createStaticRecordingApi(pi, staticSurface);

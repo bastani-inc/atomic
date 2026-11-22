@@ -665,4 +665,200 @@ describe("lazy builtin extension mechanism", () => {
 		assert.equal(loaded.extensions[0]!.tools.has("web_search"), false);
 		assert.equal(executed, false);
 	});
+
+	test("dispatches session_shutdown at most once when shutdown arrives during onActivated hook", async () => {
+		const hookGate = deferred<void>();
+		let shutdownCount = 0;
+		const spec: LazyBuiltinSpec = {
+			label: "shutdown-once",
+			register(pi, controller) {
+				controller.onActivated(async () => {
+					await hookGate.promise;
+				});
+				pi.registerTool({
+					name: "act",
+					label: "Act",
+					description: "Act",
+					parameters: Type.Object({}),
+					execute: (...args) => controller.executeTool("act", args),
+				});
+			},
+		};
+		const { extension, runner } = await mountExtension(
+			createLazyBuiltinFactory(spec, async () => (pi) => {
+				pi.on("session_shutdown", () => {
+					shutdownCount += 1;
+				});
+				pi.registerTool({
+					name: "act",
+					label: "Act",
+					description: "Act",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+				});
+			}),
+		);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		const call = extension.tools
+			.get("act")!
+			.definition.execute("c1", {}, undefined, undefined, runner.createContext());
+		await new Promise((r) => setImmediate(r));
+
+		const shutdown = runner.emit({ type: "session_shutdown", reason: "quit" });
+		hookGate.resolve();
+		await shutdown;
+		await assert.rejects(call, /invalidated by session shutdown/i);
+		assert.equal(shutdownCount, 1);
+	});
+
+	test("retired background factory cannot mutate live ExtensionAPI after successor lease starts", async () => {
+		const factoryGate = deferred<void>();
+		let controllerRef: Parameters<LazyBuiltinSpec["register"]>[1] | undefined;
+		let loadIndex = 0;
+		const spec: LazyBuiltinSpec = {
+			label: "proxy-fence",
+			register(_pi, controller) {
+				controllerRef = controller;
+			},
+		};
+		const { extension, runner } = await mountExtension(
+			createLazyBuiltinFactory(spec, async () => {
+				loadIndex += 1;
+				if (loadIndex === 1) {
+					return async (pi) => {
+						await factoryGate.promise;
+						// Attempt to register a dynamic tool on the retired proxy after successor lease started!
+						pi.registerTool({
+							name: "stale_bg_tool",
+							label: "Stale",
+							description: "Stale",
+							parameters: Type.Object({}),
+							execute: async () => ({ content: [{ type: "text", text: "stale" }], details: {} }),
+						});
+					};
+				}
+				return () => {};
+			}),
+		);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		const bgPromise = controllerRef!.activate(runner.createContext(), { background: true });
+		bgPromise.catch(() => {});
+		await new Promise((r) => setImmediate(r));
+
+		// Retire lease 1 and start successor lease 2 while lease 1's async factory is suspended!
+		await runner.emit({ type: "session_shutdown", reason: "new" });
+		await runner.emit({ type: "session_start", reason: "new" });
+
+		// Resume lease 1's async factory; proxy must reject mutation and leave lease 2's Extension untouched!
+		factoryGate.resolve();
+		await assert.rejects(bgPromise, /invalidated by session shutdown/i);
+		assert.equal(extension.tools.has("stale_bg_tool"), false);
+	});
+
+	test("toolRenderers registered during failed activation do not leak or duplicate across retries", async () => {
+		let attempt = 0;
+		const resolverCalls: number[] = [];
+		const spec: LazyBuiltinSpec = {
+			label: "tool-renderer-retry",
+			register(pi, controller) {
+				pi.registerTool({
+					name: "render_me",
+					label: "RenderMe",
+					description: "RenderMe",
+					parameters: Type.Object({}),
+					execute: (...args) => controller.executeTool("render_me", args),
+				});
+			},
+		};
+		const { extension, runner } = await mountExtension(
+			createLazyBuiltinFactory(spec, async () => {
+				attempt += 1;
+				const currentAttempt = attempt;
+				return (pi) => {
+					pi.registerToolRenderer((toolName, next) => {
+						resolverCalls.push(currentAttempt);
+						return toolName === "render_me" ? {} : next();
+					});
+					if (currentAttempt === 1) throw new Error("fail-attempt-1");
+					pi.registerTool({
+						name: "render_me",
+						label: "RenderMe",
+						description: "RenderMe",
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+					});
+				};
+			}),
+		);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		const tool = extension.tools.get("render_me")!.definition;
+
+		await assert.rejects(tool.execute("c1", {}, undefined, undefined, runner.createContext()), /fail-attempt-1/);
+		// Failed attempt 1's toolRenderer must NOT be invoked while dormant!
+		runner.resolveToolRenderers("render_me", () => undefined);
+		assert.deepEqual(resolverCalls, []);
+
+		// Attempt 2 succeeds; ONLY attempt 2's toolRenderer runs (once, no leak from attempt 1).
+		await tool.execute("c2", {}, undefined, undefined, runner.createContext());
+		runner.resolveToolRenderers("render_me", () => undefined);
+		assert.deepEqual(resolverCalls, [2]);
+	});
+
+	test("message_start arriving while lazy module import is awaiting is buffered and delivered in order", async () => {
+		const loadGate = deferred<ExtensionFactory>();
+		const observed: string[] = [];
+		const spec: LazyBuiltinSpec = {
+			label: "message-start-buffer",
+			register(pi, controller) {
+				pi.registerTool({
+					name: "msg_tool",
+					label: "MsgTool",
+					description: "MsgTool",
+					parameters: Type.Object({}),
+					execute: (...args) => controller.executeTool("msg_tool", args),
+				});
+			},
+		};
+		const { extension, runner } = await mountExtension(createLazyBuiltinFactory(spec, () => loadGate.promise));
+		await runner.emit({ type: "session_start", reason: "startup" });
+		await runner.emit({ type: "turn_start", turnIndex: 0, timestamp: 1 });
+
+		// Trigger activation (suspended inside loadImplementation()).
+		const call = extension.tools
+			.get("msg_tool")!
+			.definition.execute("c1", {}, undefined, undefined, runner.createContext());
+		await new Promise((r) => setImmediate(r));
+
+		// message_start arrives while loadImplementation() is still pending!
+		await runner.emit({
+			type: "message_start",
+			message: { role: "custom", customType: "intercom_message", content: "hi", display: true, timestamp: 2 },
+		});
+
+		loadGate.resolve((pi) => {
+			pi.on("session_start", () => {
+				observed.push("session_start");
+			});
+			pi.on("turn_start", () => {
+				observed.push("turn_start");
+			});
+			pi.on("message_start", (event) => {
+				observed.push(
+					`message_start:${(event.message as { customType?: string }).customType ?? event.message.role}`,
+				);
+			});
+			pi.registerTool({
+				name: "msg_tool",
+				label: "MsgTool",
+				description: "MsgTool",
+				parameters: Type.Object({}),
+				execute: async () => {
+					observed.push("execute");
+					return { content: [{ type: "text", text: "ok" }], details: {} };
+				},
+			});
+		});
+		await call;
+		assert.deepEqual(observed, ["session_start", "turn_start", "message_start:intercom_message", "execute"]);
+	});
 });
