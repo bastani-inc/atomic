@@ -22,6 +22,7 @@ export class RpcTerminalDrain {
 	private generation: number | undefined;
 	private settlement: Promise<void> | undefined;
 	private claimed: { generation: number; error: Error } | undefined;
+	private timer: ReturnType<typeof setTimeout> | undefined;
 
 	/**
 	 * Record the cause that owns this generation's terminal phase, without
@@ -39,9 +40,18 @@ export class RpcTerminalDrain {
 	 * `settle` receives the claimed error — whichever cause got here first — and
 	 * runs exactly once for that generation.
 	 */
-	begin(generation: number, drained: Promise<void>, error: Error, settle: (error: Error) => void): Promise<void> {
+	begin(
+		generation: number,
+		drained: Promise<void>,
+		error: Error,
+		settle: (error: Error) => void,
+		keepAlive = false,
+	): Promise<void> {
 		const cause = this.claim(generation, error);
-		if (this.generation === generation && this.settlement) return this.settlement;
+		if (this.generation === generation && this.settlement) {
+			if (keepAlive) this.timer?.ref?.();
+			return this.settlement;
+		}
 		this.generation = generation;
 		let done = false;
 		const completion = Promise.withResolvers<void>();
@@ -49,6 +59,7 @@ export class RpcTerminalDrain {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
+			if (this.timer === timer) this.timer = undefined;
 			try {
 				settle(cause);
 				completion.resolve();
@@ -57,7 +68,8 @@ export class RpcTerminalDrain {
 			}
 		};
 		const timer = setTimeout(finish, EXIT_DRAIN_TIMEOUT_MS);
-		timer.unref?.();
+		if (!keepAlive) timer.unref?.();
+		this.timer = timer;
 		// Both EOF and the deadline release callers waiting for transport teardown.
 		this.settlement = completion.promise;
 		void drained.then(finish, finish);
