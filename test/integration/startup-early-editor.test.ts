@@ -37,7 +37,11 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) await removeTempRootReleasingBroker(root);
 });
 
-function startCli(args: readonly string[], env: Record<string, string> = {}): PtyProgram {
+function startCli(
+	args: readonly string[],
+	env: Record<string, string> = {},
+	prepare?: (agentDir: string) => void,
+): PtyProgram {
 	const root = makeTempDirectory("atomic-early-editor-");
 	roots.push(root);
 	const agentDir = join(root, "agent");
@@ -46,6 +50,7 @@ function startCli(args: readonly string[], env: Record<string, string> = {}): Pt
 	mkdirSync(project, { recursive: true });
 	prepareAgentDir(agentDir, "http://127.0.0.1:9");
 	prepareInstalledPackage(PACKAGE, installed);
+	prepare?.(agentDir);
 	const program = startPtyProgram({
 		executable: process.execPath,
 		args: [join(PACKAGE, "dist/cli.js"), "--offline", ...args],
@@ -350,6 +355,38 @@ test(
 		const errors = lines.flatMap((line, index) => (/Error: .*ATOMIC_STORAGE/.test(line) ? [index] : []));
 		assert.equal(errors.length, 1, `the error is shown once:\n${lines.join("\n")}`);
 		assert.equal(lines.at(-1), lines[errors[0]!], `the error is the last thing on the screen:\n${lines.join("\n")}`);
+	},
+	REAL_CLI_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a startup warning that waits for a key after the prompt showed is shown alone, and nothing of the prompt stays",
+	async () => {
+		// A hooks/ directory in the agent directory makes startup print a warning and wait for a key before the session.
+		const program = startCli(["--approve"], {}, (agentDir) => mkdirSync(join(agentDir, "hooks")));
+		await program.waitForScreen(
+			(screen) => screen.includes("Press any key to continue"),
+			CLI_TIMEOUT_MS,
+			"the warning",
+		);
+		assert.ok(program.output().includes("❯"), "the early editor showed before the warning");
+		// As without the early editor: the screen shows the warning and no line of the prompt.
+		const lines = program
+			.screen()
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.filter((line) => line !== "");
+		assert.deepEqual(
+			lines.filter((line) => /[❯─]/u.test(line)),
+			[],
+			`the prompt's lines are gone:\n${lines.join("\n")}`,
+		);
+		assert.ok(
+			lines.some((line) => line.includes("hooks/ directory found")),
+			`the warning is shown:\n${lines.join("\n")}`,
+		);
+		program.write("x");
+		await program.waitForScreen((screen) => screen.includes(SESSION_HEADER), CLI_TIMEOUT_MS, "the session");
 	},
 	REAL_CLI_TEST_TIMEOUT_MS,
 );
