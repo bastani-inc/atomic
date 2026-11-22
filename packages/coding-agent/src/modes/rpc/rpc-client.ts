@@ -368,10 +368,10 @@ export class RpcClient extends RpcClientApi {
 		const probePending = writer.pendingBytes;
 		let probeWritten = false;
 		try {
+			// Ahead of whatever waits to be written: an engine too busy to read can hold an earlier write past the ack's
+			// deadline, and the stop that follows drops what is still queued.
 			this.bestEffort(
-				writer.write(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })).then(() => {
-					probeWritten = true;
-				}),
+				writer.writeUrgent(serializeInteractiveEngineFrame({ type: "engine_explicit_quit" })),
 				"explicit quit",
 			);
 			const acked = await done.promise;
