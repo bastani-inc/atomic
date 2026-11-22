@@ -350,3 +350,62 @@ test("a sender ending for good while its write is pending refuses waiting answer
 	assert.equal(broker.outcome("ans-1")?.type, "delivery_failed");
 	assert.equal(broker.send("stage", "launcher", "ans-2")?.type, "delivery_failed");
 });
+
+test("revoking a sender or responder immediately releases waiting answers without waiting for stalled writes", () => {
+	const launcher = session("launcher", "launch", createReachPolicy("launch", ["stages"]));
+	const stage = session("stage", "stages");
+	const broker = brokerHoldingWritesTo("stage", [launcher, stage]);
+	broker.send("launcher", "stage", "stalled-note");
+	assert.equal(broker.send("stage", "launcher", "waiting-ans"), undefined);
+	// Revoke launcher while the socket write callback never fires.
+	broker.paths.revoke(`["return","host:launcher","launch"]`);
+	assert.equal(broker.outcome("waiting-ans")?.type, "delivery_failed");
+
+	// Same when the responder itself revokes while a write is stalled.
+	const launcher2 = session("launcher2", "launch2", createReachPolicy("launch2", ["stages2"]));
+	const stage2 = session("stage2", "stages2");
+	const broker2 = brokerHoldingWritesTo("stage2", [launcher2, stage2]);
+	broker2.send("launcher2", "stage2", "stalled-note-2");
+	assert.equal(broker2.send("stage2", "launcher2", "waiting-ans-2"), undefined);
+	broker2.paths.revoke(`["return","host:stage2","stages2"]`);
+	assert.equal(broker2.outcome("waiting-ans-2")?.type, "delivery_failed");
+});
+
+test("a stalled write bounds return-path waits and refuses without re-parking once the bound expires", async () => {
+	const shortWaitMs = 50;
+	const paths = new ReturnPaths(undefined, undefined, undefined, undefined, shortWaitMs);
+	const broker = brokerHoldingWritesTo(
+		"stage",
+		[
+			session("launcher-id", "launch", createReachPolicy("launch", ["stages"]), "launcher-name"),
+			session("stage", "stages"),
+		],
+		paths,
+	);
+	broker.send("launcher-id", "stage", "stalled-note");
+	assert.equal(broker.send("stage", "launcher-id", "timed-id"), undefined);
+	assert.equal(broker.send("stage", "launcher-name", "timed-name"), undefined);
+
+	// Wait past shortWaitMs without completing the stalled write: both must fail cleanly with main's refusals.
+	const deadline = performance.now() + 1_000;
+	while (
+		(broker.outcome("timed-id") === undefined || broker.outcome("timed-name") === undefined) &&
+		performance.now() < deadline
+	) {
+		await new Promise((done) => setTimeout(done, 10));
+	}
+	assert.deepEqual(broker.outcome("timed-id"), {
+		type: "delivery_failed",
+		messageId: "timed-id",
+		attemptId: undefined,
+		reason: "Target session is in a different intercom group",
+	});
+	assert.deepEqual(broker.outcome("timed-name"), {
+		type: "delivery_failed",
+		messageId: "timed-name",
+		attemptId: undefined,
+		reason: "Session not found",
+	});
+	// Completing the stalled write later must not throw or emit duplicate frames.
+	broker.completeWrites(true);
+});

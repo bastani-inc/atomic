@@ -10,6 +10,17 @@ export const RETURN_PATH_MAX_ENTRIES = 10_000;
  * opens one again. Kept apart from the paths and four times as many: dropping a path does not forget what opened it.
  */
 export const RETURN_PATH_SEEN_OPENINGS = 4 * RETURN_PATH_MAX_ENTRIES;
+/**
+ * Maximum time an answer waits for a matching in-flight return-path opening to settle before returning the normal
+ * refusal. Bounded strictly below the client's 10 s send timeout and 8 s receipt wait so a stalled write or database
+ * settle never hangs the sender.
+ */
+export const RETURN_PATH_OPENING_WAIT_MS = 5_000;
+
+/** Outcome of waiting on a pending return-path opening. */
+export type ReturnPathOpeningWaitOutcome = "settled" | "expired";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * One end of a return path: its current broker session id, and the stable identity of its registration (its return
@@ -53,7 +64,9 @@ export interface PendingReturnPathOpeningInfo {
 interface PendingReturnPathOpening extends PendingReturnPathOpeningInfo {
 	readonly responderIdentity: string;
 	readonly handedOverAt: number;
+	readonly targetKeys: readonly string[];
 	readonly waiters: Set<() => void>;
+	finish: () => void;
 }
 
 /**
@@ -84,15 +97,18 @@ export class ReturnPaths {
 	 * broker before a newer message in the same clock tick never count toward that newer message.
 	 */
 	private handoverSeq = 0;
-	/** In-flight deliveries whose return-path opening settles on confirmation, by pair and by responder. */
+	/** In-flight deliveries whose return-path opening settles on confirmation, indexed by pair, responder, sender, and target. */
 	private readonly pendingByPair = new Map<string, Set<PendingReturnPathOpening>>();
 	private readonly pendingByResponder = new Map<string, Set<PendingReturnPathOpening>>();
+	private readonly pendingBySender = new Map<string, Set<PendingReturnPathOpening>>();
+	private readonly pendingByResponderTarget = new Map<string, Set<PendingReturnPathOpening>>();
 
 	constructor(
 		private readonly now: () => number = () => performance.now(),
 		private readonly windowMs = RETURN_PATH_WINDOW_MS,
 		private readonly messageLimit = RETURN_PATH_MESSAGE_LIMIT,
 		private readonly maxEntries = RETURN_PATH_MAX_ENTRIES,
+		private readonly openingWaitMs = RETURN_PATH_OPENING_WAIT_MS,
 	) {}
 
 	/**
@@ -111,7 +127,8 @@ export class ReturnPaths {
 	): void {
 		if (responder.identity === undefined || sender.identity === undefined) return;
 		if (responder.identity === sender.identity) return;
-		if (since !== undefined && this.endedSince(sender.identity, since)) return;
+		if (since !== undefined && (this.endedSince(sender.identity, since) || this.endedSince(responder.identity, since)))
+			return;
 		const key = pathKey(responder.identity, sender.identity);
 		const opening = `${key}\0${operationId}`;
 		if (this.seen.has(opening)) return;
@@ -158,6 +175,15 @@ export class ReturnPaths {
 	}
 
 	/**
+	 * Monotonic deadline for a send's total wait across pending return-path openings, clamped to `maxMs` when supplied so
+	 * a wait never outlasts the sender's remaining deadline.
+	 */
+	openingWaitDeadline(maxMs?: number): number {
+		const bound = maxMs === undefined ? this.openingWaitMs : Math.min(this.openingWaitMs, Math.max(0, maxMs));
+		return this.now() + bound;
+	}
+
+	/**
 	 * Records an in-flight delivery from `sender` to `responder` handed over at `handedOverAt` whose return path opens
 	 * once its write or settle completes. Calling the returned function (idempotent) ends the hold and wakes any waiting
 	 * answers so they are decided again.
@@ -167,96 +193,175 @@ export class ReturnPaths {
 		sender: ReturnPathParty,
 		senderInfo: Pick<SessionInfo, "id" | "name">,
 		handedOverAt: number,
+		senderReturnAddress?: string,
 	): (() => void) | undefined {
 		if (responder.identity === undefined || sender.identity === undefined) return undefined;
 		if (responder.identity === sender.identity) return undefined;
-		const key = pathKey(responder.identity, sender.identity);
+		const responderIdentity = responder.identity;
+		const senderIdentity = sender.identity;
+		const key = pathKey(responderIdentity, senderIdentity);
+		const targetKeys = targetIndexKeys(responderIdentity, senderInfo, senderReturnAddress);
 		const opening: PendingReturnPathOpening = {
-			responderIdentity: responder.identity,
-			senderIdentity: sender.identity,
+			responderIdentity,
+			senderIdentity,
 			senderInfo,
 			handedOverAt,
+			targetKeys,
 			waiters: new Set(),
+			finish: () => {},
 		};
-		let pair = this.pendingByPair.get(key);
-		if (pair === undefined) {
-			pair = new Set();
-			this.pendingByPair.set(key, pair);
-		}
-		pair.add(opening);
-		let byResponder = this.pendingByResponder.get(responder.identity);
-		if (byResponder === undefined) {
-			byResponder = new Set();
-			this.pendingByResponder.set(responder.identity, byResponder);
-		}
-		byResponder.add(opening);
+		addToSetMap(this.pendingByPair, key, opening);
+		addToSetMap(this.pendingByResponder, responderIdentity, opening);
+		addToSetMap(this.pendingBySender, senderIdentity, opening);
+		for (const targetKey of targetKeys) addToSetMap(this.pendingByResponderTarget, targetKey, opening);
 		let done = false;
-		return () => {
+		const finish = (): void => {
 			if (done) return;
 			done = true;
-			const currentPair = this.pendingByPair.get(key);
-			currentPair?.delete(opening);
-			if (currentPair?.size === 0) this.pendingByPair.delete(key);
-			const currentResponder = this.pendingByResponder.get(opening.responderIdentity);
-			currentResponder?.delete(opening);
-			if (currentResponder?.size === 0) this.pendingByResponder.delete(opening.responderIdentity);
+			removeFromSetMap(this.pendingByPair, key, opening);
+			removeFromSetMap(this.pendingByResponder, responderIdentity, opening);
+			removeFromSetMap(this.pendingBySender, senderIdentity, opening);
+			for (const targetKey of targetKeys) removeFromSetMap(this.pendingByResponderTarget, targetKey, opening);
 			const waiters = [...opening.waiters];
 			opening.waiters.clear();
 			for (const wake of waiters) wake();
 		};
+		opening.finish = finish;
+		return finish;
+	}
+
+	/** Whether an in-flight delivery from `sender` to `responder` handed over before `beforeSeq` is still pending. */
+	hasPendingOpening(responder: ReturnPathParty, sender: ReturnPathParty, beforeSeq: number): boolean {
+		if (responder.identity === undefined || sender.identity === undefined) return false;
+		const openings = this.pendingByPair.get(pathKey(responder.identity, sender.identity));
+		if (openings === undefined || openings.size === 0) return false;
+		for (const opening of openings) {
+			if (opening.handedOverAt < beforeSeq) return true;
+		}
+		return false;
 	}
 
 	/**
-	 * When an in-flight delivery from `sender` to `responder` handed over before `beforeSeq` has not settled yet, runs
-	 * `decideAgain` once one of those deliveries settles and returns true; otherwise returns false.
+	 * O(1) lookup of sender identities whose in-flight delivery to `responder` (handed over before `beforeSeq`) matches
+	 * `target` by id, name, 8-hex UUID prefix, or return address. Returns `undefined` when none match.
+	 */
+	pendingSendersForTarget(
+		responder: ReturnPathParty,
+		target: string,
+		beforeSeq: number,
+	): ReadonlySet<string> | undefined {
+		const matched = this.lookupTargetOpenings(responder, target);
+		if (matched === undefined) return undefined;
+		let senders: Set<string> | undefined;
+		for (const opening of matched) {
+			if (opening.handedOverAt >= beforeSeq) continue;
+			senders ??= new Set();
+			senders.add(opening.senderIdentity);
+		}
+		return senders;
+	}
+
+	/**
+	 * When an in-flight delivery from `sender` to `responder` handed over before `beforeSeq` has not settled yet and
+	 * `deadlineAt` has not elapsed, runs `onDone` once one settles or the bound expires, and returns true; otherwise
+	 * returns false synchronously.
 	 */
 	whenOpening(
 		responder: ReturnPathParty,
 		sender: ReturnPathParty,
 		beforeSeq: number,
-		decideAgain: () => void,
+		deadlineAt: number,
+		onDone: (outcome: ReturnPathOpeningWaitOutcome) => void,
 	): boolean {
 		if (responder.identity === undefined || sender.identity === undefined) return false;
 		const openings = this.pendingByPair.get(pathKey(responder.identity, sender.identity));
 		if (openings === undefined || openings.size === 0) return false;
-		return this.waitOnEligible(openings, beforeSeq, undefined, decideAgain);
+		return this.waitOnEligible(openings, beforeSeq, deadlineAt, onDone);
 	}
 
 	/**
-	 * When an in-flight delivery to `responder` handed over before `beforeSeq` matches `matches`, runs `decideAgain` once
-	 * one of those matching deliveries settles and returns true; otherwise returns false.
+	 * O(1) indexed lookup: when an in-flight delivery to `responder` handed over before `beforeSeq` matches `target` and
+	 * `deadlineAt` has not elapsed, runs `onDone` once one settles or the bound expires, and returns true; otherwise
+	 * returns false synchronously.
 	 */
-	whenOpeningForResponder(
+	whenOpeningForTarget(
 		responder: ReturnPathParty,
+		target: string,
 		beforeSeq: number,
-		matches: (opening: PendingReturnPathOpeningInfo) => boolean,
-		decideAgain: () => void,
+		deadlineAt: number,
+		onDone: (outcome: ReturnPathOpeningWaitOutcome) => void,
 	): boolean {
-		if (responder.identity === undefined) return false;
-		const openings = this.pendingByResponder.get(responder.identity);
-		if (openings === undefined || openings.size === 0) return false;
-		return this.waitOnEligible(openings, beforeSeq, matches, decideAgain);
+		const matched = this.lookupTargetOpenings(responder, target);
+		if (matched === undefined) return false;
+		return this.waitOnEligible(matched, beforeSeq, deadlineAt, onDone);
+	}
+
+	/** Releases every pending opening and wakes any waiting answers (used on broker shutdown). */
+	clearPending(): void {
+		const all: PendingReturnPathOpening[] = [];
+		for (const set of this.pendingByResponder.values()) {
+			for (const opening of set) all.push(opening);
+		}
+		for (const opening of all) opening.finish();
+	}
+
+	private lookupTargetOpenings(
+		responder: ReturnPathParty,
+		target: string,
+	): Iterable<PendingReturnPathOpening> | undefined {
+		if (responder.identity === undefined) return undefined;
+		if (!this.pendingByResponder.has(responder.identity)) return undefined;
+		const responderIdentity = responder.identity;
+		const lower = target.toLowerCase();
+		const byId = this.pendingByResponderTarget.get(`${responderIdentity}\0id:${target}`);
+		const byName = this.pendingByResponderTarget.get(`${responderIdentity}\0name:${lower}`);
+		const byPrefix =
+			target.length === 8 ? this.pendingByResponderTarget.get(`${responderIdentity}\0prefix:${lower}`) : undefined;
+		const byAddr = this.pendingByResponderTarget.get(`${responderIdentity}\0addr:${target}`);
+		// Fast path: 0 or 1 matching bucket avoids allocating a merged Set.
+		let single: Set<PendingReturnPathOpening> | undefined;
+		let merged: Set<PendingReturnPathOpening> | undefined;
+		for (const bucket of [byId, byName, byPrefix, byAddr]) {
+			if (bucket === undefined || bucket.size === 0) continue;
+			if (single === undefined) {
+				single = bucket;
+			} else {
+				if (merged === undefined) merged = new Set(single);
+				for (const opening of bucket) merged.add(opening);
+			}
+		}
+		return merged ?? single;
 	}
 
 	private waitOnEligible(
-		openings: ReadonlySet<PendingReturnPathOpening>,
+		openings: Iterable<PendingReturnPathOpening>,
 		beforeSeq: number,
-		matches: ((opening: PendingReturnPathOpeningInfo) => boolean) | undefined,
-		decideAgain: () => void,
+		deadlineAt: number,
+		onDone: (outcome: ReturnPathOpeningWaitOutcome) => void,
 	): boolean {
+		const remainingMs = deadlineAt - this.now();
+		if (remainingMs <= 0) return false;
 		const eligible: PendingReturnPathOpening[] = [];
 		for (const opening of openings) {
-			if (opening.handedOverAt < beforeSeq && (matches === undefined || matches(opening))) eligible.push(opening);
+			if (opening.handedOverAt < beforeSeq) eligible.push(opening);
 		}
 		if (eligible.length === 0) return false;
-		let woken = false;
-		const wake = (): void => {
-			if (woken) return;
-			woken = true;
-			for (const opening of eligible) opening.waiters.delete(wake);
-			decideAgain();
+		let finished = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const complete = (outcome: ReturnPathOpeningWaitOutcome): void => {
+			if (finished) return;
+			finished = true;
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			for (const opening of eligible) opening.waiters.delete(onSettled);
+			onDone(outcome);
 		};
-		for (const opening of eligible) opening.waiters.add(wake);
+		const onSettled = (): void => complete("settled");
+		for (const opening of eligible) opening.waiters.add(onSettled);
+		timer = setTimeout(() => complete("expired"), remainingMs);
+		timer.unref?.();
 		return true;
 	}
 
@@ -292,6 +397,11 @@ export class ReturnPaths {
 			this.ended.delete(oldest);
 			this.endsForgotten = at;
 		}
+		const pendingToRelease = [
+			...(this.pendingByResponder.get(identity) ?? []),
+			...(this.pendingBySender.get(identity) ?? []),
+		];
+		for (const opening of pendingToRelease) opening.finish();
 	}
 
 	/** A mark for {@link open}: a message handed over now opens nothing once every registration of its sender ended. */
@@ -351,4 +461,31 @@ function unindex(entries: Map<string, Set<string>>, identity: string, key: strin
 	const keys = entries.get(identity);
 	keys?.delete(key);
 	if (keys?.size === 0) entries.delete(identity);
+}
+
+function addToSetMap<V>(map: Map<string, Set<V>>, key: string, value: V): void {
+	let set = map.get(key);
+	if (set === undefined) {
+		set = new Set();
+		map.set(key, set);
+	}
+	set.add(value);
+}
+
+function removeFromSetMap<V>(map: Map<string, Set<V>>, key: string, value: V): void {
+	const set = map.get(key);
+	set?.delete(value);
+	if (set?.size === 0) map.delete(key);
+}
+
+function targetIndexKeys(
+	responderIdentity: string,
+	senderInfo: Pick<SessionInfo, "id" | "name">,
+	senderReturnAddress: string | undefined,
+): string[] {
+	const keys: string[] = [`${responderIdentity}\0id:${senderInfo.id}`];
+	if (senderInfo.name !== undefined) keys.push(`${responderIdentity}\0name:${senderInfo.name.toLowerCase()}`);
+	if (UUID_PATTERN.test(senderInfo.id)) keys.push(`${responderIdentity}\0prefix:${senderInfo.id.slice(0, 8).toLowerCase()}`);
+	if (senderReturnAddress !== undefined) keys.push(`${responderIdentity}\0addr:${senderReturnAddress}`);
+	return keys;
 }

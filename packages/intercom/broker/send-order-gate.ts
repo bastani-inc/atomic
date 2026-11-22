@@ -43,6 +43,7 @@ export interface SendOrderTicket {
 
 interface InternalTicket extends SendOrderTicket {
 	previousTargetIdentity?: string;
+	readonly pendingLocalTargetIdentities?: ReadonlySet<string>;
 	targetKnownWait?: DeferredWait;
 	unboundedWait?: DeferredWait;
 	finishedWait?: DeferredWait;
@@ -61,6 +62,8 @@ export type BeginSendTicketOptions =
 			readonly rawTarget: string;
 			readonly arrivedRegSeq: number;
 			readonly isLocal: false;
+			/** Local target identities whose return path to this sender is pending and matches `rawTarget`. */
+			readonly pendingLocalTargetIdentities?: ReadonlySet<string>;
 	  };
 
 /** Known identifiers of a resolved target, used to skip unrelated still-resolving remote sends. */
@@ -128,6 +131,9 @@ export class SendOrderGate {
 			unbounded: !options.isLocal,
 			phase: options.isLocal ? "resolved" : "resolving",
 			targetIdentity: options.isLocal ? options.targetIdentity : undefined,
+			...(!options.isLocal && options.pendingLocalTargetIdentities !== undefined
+				? { pendingLocalTargetIdentities: options.pendingLocalTargetIdentities }
+				: {}),
 		};
 		if (this.closed) {
 			ticket.phase = "done";
@@ -253,6 +259,7 @@ export class SendOrderGate {
 		}
 		// Earlier remote send is still resolving its target identity.
 		if (earlier.previousTargetIdentity === options.targetIdentity) return "target";
+		if (earlier.pendingLocalTargetIdentities?.has(options.targetIdentity)) return "finish";
 		if (current.isLocal && options.targetRegSeq !== undefined && options.targetRegSeq <= earlier.arrivedRegSeq) {
 			const matchesAlias = earlier.rawTarget === options.awaitedId || earlier.rawTarget === options.aliasId;
 			if (!matchesAlias) return "skip";

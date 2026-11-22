@@ -42,15 +42,24 @@ class Node {
 	readonly supervisorCache = new SupervisorChannelCache();
 	readonly pendingQuestions = new PendingQuestionIndex();
 	readonly deliveredMessages = new DeliveredMessageCache();
-	readonly returnPaths: ReturnPathAuthority = createReturnPathAuthority(new ReturnPaths(), this.sessions);
+	readonly rawReturnPaths: ReturnPaths;
+	readonly returnPaths: ReturnPathAuthority;
 	writeConfirmedHook:
+		| ((socket: net.Socket, frame: BrokerOutboundFrame, onSettled: (written: boolean) => void) => void)
+		| undefined;
+	localWriteConfirmedHook:
 		| ((socket: net.Socket, frame: BrokerOutboundFrame, onSettled: (written: boolean) => void) => void)
 		| undefined;
 	router!: MultiNodeRouter;
 	opened!: OpenedBrokerState;
 
-	static async start(shared: SqliteDatabase): Promise<Node> {
-		const node = new Node();
+	constructor(openingWaitMs?: number) {
+		this.rawReturnPaths = new ReturnPaths(undefined, undefined, undefined, undefined, openingWaitMs);
+		this.returnPaths = createReturnPathAuthority(this.rawReturnPaths, this.sessions);
+	}
+
+	static async start(shared: SqliteDatabase, openingWaitMs?: number): Promise<Node> {
+		const node = new Node(openingWaitMs);
 		node.opened = await openIntercomBrokerState(
 			{ openDatabase: async () => borrowedDatabase(shared), prefix: "mn_" },
 			{ pollIntervalMs: BUS_POLL_INTERVAL_MS },
@@ -84,7 +93,13 @@ class Node {
 	}
 
 	/** Registers a session here; `confirmsSaves`: its deliveries complete only on its `received`. */
-	async connect(name: string, group: string, confirmsSaves: boolean, reach?: IntercomReachPolicy) {
+	async connect(
+		name: string,
+		group: string,
+		confirmsSaves: boolean,
+		reach?: IntercomReachPolicy,
+		returnAddress = randomUUID(),
+	) {
 		const info: SessionInfo = {
 			id: randomUUID(),
 			name,
@@ -102,7 +117,7 @@ class Node {
 			info,
 			registrationGroup: normalizeGroup(group),
 			registrationName: name,
-			registrationReturnAddress: randomUUID(),
+			registrationReturnAddress: returnAddress,
 			...(confirmsSaves ? { acknowledgesReceipt: true as const } : {}),
 			...(reach === undefined ? {} : { reach }),
 		};
@@ -111,17 +126,32 @@ class Node {
 		return session;
 	}
 
-	send(from: BrokerConnectedSession, to: string, id: string): void {
+	send(
+		from: BrokerConnectedSession,
+		to: string,
+		id: string,
+		extraMsg: Record<string, unknown> = {},
+		extraClient: Record<string, unknown> = {},
+	): void {
 		handleBrokerSend(
 			from.socket,
-			{ type: "send", to, message: { id, timestamp: 1, content: { text: id } }, attemptId: randomUUID() },
+			{
+				type: "send",
+				to,
+				message: { id, timestamp: 1, content: { text: id }, ...extraMsg },
+				attemptId: randomUUID(),
+				...extraClient,
+			},
 			from.info.id,
 			this.sessions,
 			this.deliveredMessages,
 			(target, frame) => this.write(target, frame),
 			this.supervisorCache,
 			this.pendingQuestions,
-			(target, frame, onSettled) => onSettled(this.write(target, frame)),
+			(target, frame, onSettled) =>
+				this.localWriteConfirmedHook !== undefined
+					? this.localWriteConfirmedHook(target, frame, onSettled)
+					: onSettled(this.write(target, frame)),
 			undefined,
 			undefined,
 			(request) => this.router.routeSend(request),
@@ -161,7 +191,7 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function cluster(): Promise<[Node, Node]> {
+async function cluster(openingWaitMs?: number): Promise<[Node, Node]> {
 	const directory = makeTempDirectory("intercom-multinode-return-path-");
 	const shared = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
 	const nodes: Node[] = [];
@@ -170,7 +200,7 @@ async function cluster(): Promise<[Node, Node]> {
 		await shared.close();
 		removeTempDirectory(directory);
 	});
-	for (let index = 0; index < 2; index++) nodes.push(await Node.start(shared));
+	for (let index = 0; index < 2; index++) nodes.push(await Node.start(shared, openingWaitMs));
 	return [nodes[0]!, nodes[1]!];
 }
 
@@ -375,4 +405,286 @@ test("answers sent on another node before a non-receipt delivery write completes
 	for (const settle of heldWrites.splice(0)) settle(true);
 	assert.equal((await waitFor(() => outcomeOf(stage, "immediate-answer"))).type, "delivered");
 	assert.equal((await waitFor(() => outcomeOf(launcher, "first-note"))).type, "delivered");
+});
+
+test("router close releases pending openings before awaiting serial reply lanes and makes no post-close DB calls", async () => {
+	const [a, b] = await cluster();
+	const launcher = await a.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
+	const stage = await b.connect("stage", "stages", false);
+	const heldWrites: Array<(written: boolean) => void> = [];
+	b.writeConfirmedHook = (socket, frame, onSettled) => {
+		if (socket === stage.socket) {
+			b.write(socket, frame);
+			heldWrites.push(onSettled);
+			return;
+		}
+		onSettled(b.write(socket, frame));
+	};
+
+	a.send(launcher, "stage", "close-open");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "close-open"));
+
+	// Send both a reply-lane candidate (serialized on `reply:<id>`) and a plain send waiting on the pending opening.
+	b.send(stage, "launcher", "close-reply", { replyTo: "some-ask" });
+	b.send(stage, "launcher", "close-plain");
+	await new Promise((done) => setTimeout(done, 60));
+
+	let listLiveAfterClose = 0;
+	const origListLive = b.opened.state.leases.listLive.bind(b.opened.state.leases);
+	let closing = false;
+	b.opened.state.leases.listLive = async (...args) => {
+		if (closing) listLiveAfterClose += 1;
+		return origListLive(...args);
+	};
+
+	closing = true;
+	const closeDone = await Promise.race([
+		b.router.close().then(() => "closed" as const),
+		new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 1_500)),
+	]);
+	for (const settle of heldWrites.splice(0)) settle(false);
+
+	assert.equal(closeDone, "closed", "close() must release pending openings before awaiting serial lanes");
+	assert.equal(listLiveAfterClose, 0, "no shared-DB queries may run after close()");
+	assert.equal(outcomeOf(stage, "close-plain"), undefined, "no spurious failure frame written after close()");
+});
+
+test("a same-group remote peer sharing a name with a pending cross-group sender is never blocked, and requirePendingReply never waits", async () => {
+	const [a, b] = await cluster();
+	const crossGroupAlice = await a.connect("alice", "launch", false, createReachPolicy("launch", ["stages"]));
+	const sameGroupAlice = await a.connect("alice", "stages", false);
+	const stage = await b.connect("stage", "stages", true);
+
+	a.send(crossGroupAlice, "stage", "sg-open");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "sg-open"));
+
+	const outbox = b.opened.state.outbox;
+	const realMarkDelivered = outbox.markDelivered.bind(outbox);
+	const gate = Promise.withResolvers<void>();
+	const entered = Promise.withResolvers<void>();
+	outbox.markDelivered = async (claim) => {
+		entered.resolve();
+		await gate.promise;
+		return realMarkDelivered(claim);
+	};
+	assert.equal(b.router.received(stage, "sg-open"), true);
+	await entered.promise;
+	try {
+		// Sending to same-group "alice" resolves normally without ever waiting on crossGroupAlice's pending opening.
+		b.send(stage, "alice", "sg-msg");
+		assert.equal((await waitFor(() => outcomeOf(stage, "sg-msg"))).type, "delivered");
+		assert.equal(
+			(
+				await waitFor(() =>
+					framesOf(sameGroupAlice).find((frame) => frame.type === "message" && frame.message.id === "sg-msg"),
+				)
+			).type,
+			"message",
+		);
+	} finally {
+		outbox.markDelivered = realMarkDelivered;
+		gate.resolve();
+	}
+	assert.equal((await waitFor(() => outcomeOf(crossGroupAlice, "sg-open"))).type, "delivered");
+
+	// requirePendingReply cannot be satisfied by a return path, so it fails immediately while a non-receipt write is held.
+	const stage2 = await b.connect("stage2", "stages", false);
+	const heldWrites: Array<(written: boolean) => void> = [];
+	b.writeConfirmedHook = (socket, frame, onSettled) => {
+		if (socket === stage2.socket) {
+			b.write(socket, frame);
+			heldWrites.push(onSettled);
+			return;
+		}
+		onSettled(b.write(socket, frame));
+	};
+	a.send(crossGroupAlice, "stage2", "sg-open-2");
+	await waitFor(() => framesOf(stage2).find((frame) => frame.type === "message" && frame.message.id === "sg-open-2"));
+	b.send(stage2, crossGroupAlice.info.id, "req-reply", { replyTo: "missing-ask" }, { requirePendingReply: true });
+	assert.equal((await waitFor(() => outcomeOf(stage2, "req-reply"))).type, "delivery_failed");
+	for (const settle of heldWrites.splice(0)) settle(true);
+});
+
+test("multi-node local sends preserve per-(sender, target) FIFO order across ID and name targeting with one outbox read", async () => {
+	const [_a, b] = await cluster();
+	const launcher = await b.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
+	const stage = await b.connect("stage", "stages", false);
+
+	// Case A: msg-1 (by ID) and msg-2 (by ID)
+	const heldLocal: Array<(written: boolean) => void> = [];
+	b.localWriteConfirmedHook = (socket, frame, onSettled) => {
+		if (socket === stage.socket) {
+			b.write(socket, frame);
+			heldLocal.push(onSettled);
+			return;
+		}
+		onSettled(b.write(socket, frame));
+	};
+
+	let msg1Reads = 0;
+	const outbox = b.opened.state.outbox;
+	const realRead = outbox.read.bind(outbox);
+	const msg1ReadDone = Promise.withResolvers<void>();
+	const msg2ReadEntered = Promise.withResolvers<void>();
+	const msg2ReadGate = Promise.withResolvers<void>();
+	outbox.read = async (messageId) => {
+		if (messageId === "fifo-a-1") {
+			msg1Reads += 1;
+			const result = await realRead(messageId);
+			if (msg1Reads === 1) msg1ReadDone.resolve();
+			return result;
+		}
+		if (messageId === "fifo-a-2") {
+			msg2ReadEntered.resolve();
+			await msg2ReadGate.promise;
+			return realRead(messageId);
+		}
+		return realRead(messageId);
+	};
+
+	b.send(launcher, "stage", "fifo-a-open");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "fifo-a-open"));
+	b.send(stage, launcher.info.id, "fifo-a-1");
+	await msg1ReadDone.promise;
+	// Let fifo-a-1 reach commitLocalNotFound and park before fifo-a-2 arrives.
+	await new Promise((done) => setTimeout(done, 30));
+	b.send(stage, launcher.info.id, "fifo-a-2");
+	await msg2ReadEntered.promise;
+	for (const settle of heldLocal.splice(0)) settle(true);
+	await new Promise((done) => setTimeout(done, 30));
+	msg2ReadGate.resolve();
+
+	assert.equal((await waitFor(() => outcomeOf(stage, "fifo-a-1"))).type, "delivered");
+	assert.equal((await waitFor(() => outcomeOf(stage, "fifo-a-2"))).type, "delivered");
+	outbox.read = realRead;
+
+	const orderA = framesOf(launcher)
+		.filter((frame) => frame.type === "message" && frame.message.id.startsWith("fifo-a-"))
+		.map((frame) => (frame.type === "message" ? frame.message.id : ""));
+	assert.equal(msg1Reads, 1, "parked local send must not re-enter routeRemote for a second outbox read");
+	assert.deepEqual(orderA, ["fifo-a-1", "fifo-a-2"]);
+
+	// Case B: msg-1 (by NAME) followed by msg-2 (by ID)
+	const launcher2 = await b.connect("launcher2", "launch2", false, createReachPolicy("launch2", ["stages2"]));
+	const stage2 = await b.connect("stage2", "stages2", false);
+	const heldLocal2: Array<(written: boolean) => void> = [];
+	b.localWriteConfirmedHook = (socket, frame, onSettled) => {
+		if (socket === stage2.socket) {
+			b.write(socket, frame);
+			heldLocal2.push(onSettled);
+			return;
+		}
+		onSettled(b.write(socket, frame));
+	};
+	const msg2bEntered = Promise.withResolvers<void>();
+	const msg2bGate = Promise.withResolvers<void>();
+	outbox.read = async (messageId) => {
+		if (messageId === "fifo-b-2") {
+			msg2bEntered.resolve();
+			await msg2bGate.promise;
+			return realRead(messageId);
+		}
+		return realRead(messageId);
+	};
+
+	b.send(launcher2, "stage2", "fifo-b-open");
+	await waitFor(() =>
+		framesOf(stage2).find((frame) => frame.type === "message" && frame.message.id === "fifo-b-open"),
+	);
+	b.send(stage2, "launcher2", "fifo-b-1");
+	b.send(stage2, launcher2.info.id, "fifo-b-2");
+	await msg2bEntered.promise;
+	// Settle fifo-b-open while fifo-b-2 is in outbox.read, then release fifo-b-2.
+	for (const settle of heldLocal2.splice(0)) settle(true);
+	await new Promise((done) => setTimeout(done, 30));
+	msg2bGate.resolve();
+
+	assert.equal((await waitFor(() => outcomeOf(stage2, "fifo-b-1"))).type, "delivered");
+	assert.equal((await waitFor(() => outcomeOf(stage2, "fifo-b-2"))).type, "delivered");
+	outbox.read = realRead;
+
+	const orderB = framesOf(launcher2)
+		.filter((frame) => frame.type === "message" && frame.message.id.startsWith("fifo-b-"))
+		.map((frame) => (frame.type === "message" ? frame.message.id : ""));
+	assert.deepEqual(orderB, ["fifo-b-1", "fifo-b-2"]);
+});
+
+test("hung markDelivered respects bounded wait, releases on sessionLeft and close, and recomputes same-group join mid-wait", async () => {
+	// Part 1: bounded wait expires cleanly when markDelivered hangs
+	const [a, b] = await cluster(80);
+	const launcher = await a.connect("launcher", "launch", false, createReachPolicy("launch", ["stages"]));
+	const stage = await b.connect("stage", "stages", true);
+	a.send(launcher, "stage", "hung-m1");
+	await waitFor(() => framesOf(stage).find((frame) => frame.type === "message" && frame.message.id === "hung-m1"));
+
+	const outbox = b.opened.state.outbox;
+	const realMark = outbox.markDelivered.bind(outbox);
+	const gate = Promise.withResolvers<void>();
+	const entered = Promise.withResolvers<void>();
+	outbox.markDelivered = async (claim) => {
+		entered.resolve();
+		await gate.promise;
+		return realMark(claim);
+	};
+	assert.equal(b.router.received(stage, "hung-m1"), true);
+	await entered.promise;
+
+	b.send(stage, "launcher", "hung-ans");
+	const expiredOutcome = await waitFor(() => outcomeOf(stage, "hung-ans"));
+	assert.equal(expiredOutcome.type, "delivery_failed");
+
+	// Part 2: sessionLeft releases settling opening and ends responder cleanly (no zombie path on late settle)
+	b.sessions.delete(stage.info.id);
+	b.rawReturnPaths.revoke(`["return","${stage.registrationReturnAddress}","stages"]`);
+	b.router.sessionLeft(stage, undefined, true);
+	outbox.markDelivered = realMark;
+	gate.resolve();
+	await new Promise((done) => setTimeout(done, 100));
+	assert.equal(
+		b.returnPaths.holds(stage, {
+			sessionId: launcher.info.id,
+			identity: `["return","${launcher.registrationReturnAddress}","launch"]`,
+		}),
+		false,
+	);
+
+	// Part 3: joining the sender's group mid-wait in enqueueThroughOutbox delivers as same-group on wake
+	const launcherAddr = randomUUID();
+	const launcherOld = await a.connect(
+		"l-old",
+		"launch3",
+		false,
+		createReachPolicy("launch3", ["stages3"]),
+		launcherAddr,
+	);
+	const stage3 = await b.connect("stage3", "stages3", true);
+	a.send(launcherOld, "stage3", "join-m1");
+	await waitFor(() => framesOf(stage3).find((frame) => frame.type === "message" && frame.message.id === "join-m1"));
+	a.sessions.delete(launcherOld.info.id);
+	a.router.sessionLeft(launcherOld, undefined, false);
+	const launcherNew = await a.connect(
+		"l-new",
+		"launch3",
+		false,
+		createReachPolicy("launch3", ["stages3"]),
+		launcherAddr,
+	);
+
+	const gate3 = Promise.withResolvers<void>();
+	const entered3 = Promise.withResolvers<void>();
+	outbox.markDelivered = async (claim) => {
+		entered3.resolve();
+		await gate3.promise;
+		return realMark(claim);
+	};
+	assert.equal(b.router.received(stage3, "join-m1"), true);
+	await entered3.promise;
+
+	// Address launcherNew by its new ID (reaches enqueueThroughOutbox wait); then join launch3 before settle completes.
+	b.send(stage3, launcherNew.info.id, "join-ans");
+	await new Promise((done) => setTimeout(done, 30));
+	stage3.info.groups = [...(stage3.info.groups ?? []), "launch3"];
+	outbox.markDelivered = realMark;
+	gate3.resolve();
+	assert.equal((await waitFor(() => outcomeOf(stage3, "join-ans"))).type, "delivered");
 });

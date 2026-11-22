@@ -7,6 +7,7 @@ import {
 	DELIVERED_MESSAGE_TTL_MS,
 	RECIPIENT_RECEIPT_TIMEOUT_MS,
 	RECIPIENT_SAVE_MAX_WAIT_MS,
+	SEND_RESPONSE_TIMEOUT_MS,
 } from "../retry-policy.js";
 import {
 	resolveSessionTarget,
@@ -17,7 +18,7 @@ import {
 import type { DeliveryFailureReasonCode, Message, SessionInfo } from "../types.js";
 import { ASK_FAILURE_QUEUED, crashPoint } from "./crash-points.js";
 import type { DeliveredMessageCache } from "./delivered-message-cache.js";
-import { sameGroup } from "./group-isolation.js";
+import { isVerticalBypass, sameGroup } from "./group-isolation.js";
 import {
 	reachesGroups,
 	reachesSession,
@@ -97,7 +98,13 @@ import {
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
-import { RETURN_PATH_MAX_ENTRIES, type ReturnPathParty, returnPathClosedReason } from "./return-paths.js";
+import {
+	RETURN_PATH_MAX_ENTRIES,
+	RETURN_PATH_OPENING_WAIT_MS,
+	type ReturnPathOpeningWaitOutcome,
+	type ReturnPathParty,
+	returnPathClosedReason,
+} from "./return-paths.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
 import { brokerHostIdentity, isProcessAlive, processStartedAt } from "./broker-instance.js";
 import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
@@ -482,6 +489,8 @@ interface Inflight {
 	readonly released?: ReleasedReplyHandoff;
 	/** When the frame was handed to the recipient: its answers from then on count toward the return path it opens. */
 	readonly handedOverAt?: number;
+	/** Revocation mark taken at hand-over so a permanently ended responder or sender gets no late path. */
+	readonly handedOverMark?: number;
 	/** Ends the pending return-path opening hold when this delivery settles or is abandoned. */
 	readonly finishOpening?: () => void;
 }
@@ -1051,6 +1060,8 @@ export class MultiNodeRouter {
 	private checkingHolds: { again: boolean } | undefined;
 	private readonly serials = new Map<string, Promise<void>>();
 	private readonly settling = new Set<Promise<void>>();
+	/** Every active pending return-path opening owned by this router (`inflight` and `settleDelivered`), by release handle. */
+	private readonly activeOpenings = new Map<() => void, BrokerConnectedSession>();
 	/**
 	 * When rows whose settle failed were first handed over, by message id: the recipient may have read such a row, and
 	 * answered, before it is handed over again, so the path it opens counts answers from its first hand-over on.
@@ -2920,6 +2931,9 @@ export class MultiNodeRouter {
 			this.inflight.delete(inflight.row.messageId);
 			inflight.finishOpening?.();
 		}
+		for (const [release, owner] of [...this.activeOpenings]) {
+			if (owner === session) release();
+		}
 		for (const waiter of [...this.waiters.values()]) {
 			// #4642: a hosted session shares its host's socket; only its own sends end with it.
 			const sentBySession =
@@ -3488,6 +3502,27 @@ export class MultiNodeRouter {
 			this.activeLocalCommit.reentrant = request;
 			return;
 		}
+		let pendingLocalTargetIdentities: Set<string> | undefined;
+		if (
+			request.localTarget === undefined &&
+			!request.requirePendingReply &&
+			request.returnPathArrivalSeq !== undefined &&
+			mayUseReturnPath(request.message, request.supervisorSend, request.from)
+		) {
+			const senders = this.host.returnPaths?.pendingSendersForTarget(
+				request.from,
+				request.target,
+				request.returnPathArrivalSeq,
+			);
+			if (senders !== undefined) {
+				for (const identity of senders) {
+					if (this.localSessionFor(identity) !== undefined) {
+						pendingLocalTargetIdentities ??= new Set();
+						pendingLocalTargetIdentities.add(identity);
+					}
+				}
+			}
+		}
 		const ticket = this.sendOrder.begin(
 			request.localTarget === undefined
 				? {
@@ -3495,6 +3530,7 @@ export class MultiNodeRouter {
 						rawTarget: request.target,
 						arrivedRegSeq: this.registrationSeq,
 						isLocal: false,
+						...(pendingLocalTargetIdentities === undefined ? {} : { pendingLocalTargetIdentities }),
 					}
 				: {
 						senderKey: deliveryTargetIdentity(request.from),
@@ -3516,25 +3552,48 @@ export class MultiNodeRouter {
 
 	private async routeSendSafely(request: RemoteSendRequest, ticket: SendOrderTicket, ownsTicket: boolean): Promise<void> {
 		const startedAt = performance.now();
+		const openingDeadlineAt = this.returnPathOpeningDeadlineAt(request, startedAt);
 		// #5607: a sender or local recipient whose id may have passed to another registration is checked first.
 		const owners = this.sendOwnerChecks(request);
 		try {
 			if (this.closed) return;
-			if (request.localTarget !== undefined) await this.answerLocalRetry(request, request.localTarget, owners, ticket);
-			else if (owners === undefined || (await this.senderOwns(request, owners))) await this.route(request, ticket);
+			if (request.localTarget !== undefined)
+				await this.answerLocalRetry(request, request.localTarget, owners, ticket, openingDeadlineAt);
+			else if (owners === undefined || (await this.senderOwns(request, owners)))
+				await this.route(request, ticket, openingDeadlineAt);
 		} catch (error) {
 			this.report(error);
 			if (this.closed) return;
 			// Local delivery does not depend on the shared database (spec §8).
 			if (request.localTarget !== undefined) {
 				const remainingMs = Math.max(0, startedAt + LOCAL_RETRY_LOOKUP_BOUND_MS - performance.now());
-				await this.deliverLocally(request, request.localTarget, ticket, remainingMs);
+				await this.deliverLocally(request, request.localTarget, ticket, remainingMs, openingDeadlineAt);
 				return;
 			}
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
 		} finally {
 			if (ownsTicket) this.sendOrder.finish(ticket);
 		}
+	}
+
+	private returnPathOpeningDeadlineAt(request: RemoteSendRequest, startedAt: number): number {
+		const clientDeadline = startedAt + SEND_RESPONSE_TIMEOUT_MS;
+		const defaultDeadline = this.host.returnPaths?.openingWaitDeadline() ?? startedAt + RETURN_PATH_OPENING_WAIT_MS;
+		const base = request.returnPathDeadlineAt ?? defaultDeadline;
+		return Math.min(base, clientDeadline);
+	}
+
+	private trackOpening(session: BrokerConnectedSession, finish: (() => void) | undefined): (() => void) | undefined {
+		if (finish === undefined) return undefined;
+		let released = false;
+		const release = (): void => {
+			if (released) return;
+			released = true;
+			this.activeOpenings.delete(release);
+			finish();
+		};
+		this.activeOpenings.set(release, session);
+		return release;
 	}
 
 	/** Wait for strictly earlier sends from the same sender to `target` before performing a local commit. */
@@ -3595,8 +3654,16 @@ export class MultiNodeRouter {
 	 * `routeSend` (e.g. if the local target disconnected, was fenced, or lost an alias mid-lookup) so the fallback
 	 * runs in place on the same order ticket without self-deadlock or priority inversion.
 	 */
-	private async commitLocalNotFound(request: RemoteSendRequest, ticket: SendOrderTicket): Promise<void> {
+	private async commitLocalNotFound(
+		request: RemoteSendRequest,
+		ticket: SendOrderTicket,
+		openingDeadlineAt?: number,
+	): Promise<void> {
 		if (this.closed) return;
+		if (request.localTarget !== undefined && openingDeadlineAt !== undefined) {
+			await this.awaitLocalReturnPathIfRefused(request, request.localTarget, ticket, openingDeadlineAt);
+			if (this.closed) return;
+		}
 		const frame: { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest } = {
 			clientMessage: request.clientMessage,
 		};
@@ -3614,6 +3681,58 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * Keep `ticket` in place while a local cross-group send waits for a matching in-flight return-path opening, so the
+	 * send never releases its SendOrderGate slot early or re-enters `routeSend` for a second outbox lookup.
+	 */
+	private async awaitLocalReturnPathIfRefused(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		ticket: SendOrderTicket,
+		openingDeadlineAt: number,
+	): Promise<void> {
+		const returnPaths = this.host.returnPaths;
+		if (
+			returnPaths === undefined ||
+			request.requirePendingReply ||
+			request.supervisorSend ||
+			request.returnPathArrivalSeq === undefined ||
+			!mayUseReturnPath(request.message, request.supervisorSend, request.from)
+		)
+			return;
+		const isCrossGroupRefusal = (): boolean => {
+			if (reachesSession(request.from, target.info)) return false;
+			if (
+				isVerticalBypass({
+					replyTo: request.message.replyTo,
+					sender: request.from.info,
+					target: target.info,
+					supervisorCache: this.host.supervisorCache,
+				})
+			)
+				return false;
+			if (
+				request.message.replyTo !== undefined &&
+				this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, request.message.replyTo)
+			)
+				return false;
+			return !returnPaths.allows(request.from, returnPathParty(target), request.message.id);
+		};
+		const targetParty = returnPathParty(target);
+		if (!isCrossGroupRefusal() || !returnPaths.hasPendingOpening(request.from, targetParty, request.returnPathArrivalSeq))
+			return;
+		this.sendOrder.markUnbounded(ticket);
+		while (!this.closed && isCrossGroupRefusal()) {
+			const outcome = await this.awaitReturnPathOpening(
+				request.from,
+				targetParty,
+				request.returnPathArrivalSeq,
+				openingDeadlineAt,
+			);
+			if (this.closed || outcome !== "settled") return;
+		}
+	}
+
+	/**
 	 * A send to a session here that the shared database failed for is delivered locally. #5607: a reply that this
 	 * broker's own routes say answers an ask to its sender's alias goes out as from that alias while the alias is
 	 * confirmed its own, and is refused as retryable while it is not: the database that could confirm it failed.
@@ -3623,6 +3742,7 @@ export class MultiNodeRouter {
 		target: BrokerConnectedSession,
 		ticket: SendOrderTicket,
 		remainingBoundMs: number,
+		openingDeadlineAt: number,
 	): Promise<void> {
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		let boundExpired = remainingBoundMs <= 0;
@@ -3646,14 +3766,16 @@ export class MultiNodeRouter {
 		const alias = this.replyAlias(request);
 		const pending = this.host.pendingQuestions;
 		if (replyTo === undefined || alias === undefined || pending.matchesReply(request.from.info.id, target.info.id, replyTo))
-			return this.commitLocalNotFound(request, ticket);
+			return this.commitLocalNotFound(request, ticket, openingDeadlineAt);
 		// Only the database that failed could show an ask to the alias that no route here names: a reply that must answer
 		// an open ask is refused as retryable, not for good.
 		if (!pending.matchesReply(alias.id, target.info.id, replyTo))
-			return request.requirePendingReply ? this.refuseRouteUnavailable(request) : this.commitLocalNotFound(request, ticket);
+			return request.requirePendingReply
+				? this.refuseRouteUnavailable(request)
+				: this.commitLocalNotFound(request, ticket, openingDeadlineAt);
 		const sending = this.answeringAsHeld(request, alias);
 		if (sending === UNCERTAIN_ALIAS) return this.refuseRouteUnavailable(request);
-		await this.commitLocalNotFound(sending ?? request, ticket);
+		await this.commitLocalNotFound(sending ?? request, ticket, openingDeadlineAt);
 	}
 
 	/** Whether this broker's own routes authorize `request`'s reply to `target`. */
@@ -3681,11 +3803,12 @@ export class MultiNodeRouter {
 		from: BrokerConnectedSession,
 		target: string,
 		beforeSeq: number | undefined,
-	): Promise<boolean> {
-		if (beforeSeq === undefined || this.host.returnPaths === undefined) return Promise.resolve(false);
-		return new Promise<boolean>((resolve) => {
-			const waited = this.host.returnPaths!.whenOpeningForTarget(from, target, beforeSeq, () => resolve(true));
-			if (!waited) resolve(false);
+		deadlineAt: number,
+	): Promise<ReturnPathOpeningWaitOutcome | "none"> {
+		if (this.closed || beforeSeq === undefined || this.host.returnPaths === undefined) return Promise.resolve("none");
+		return new Promise<ReturnPathOpeningWaitOutcome | "none">((resolve) => {
+			const waited = this.host.returnPaths!.whenOpeningForTarget(from, target, beforeSeq, deadlineAt, resolve);
+			if (!waited) resolve("none");
 		});
 	}
 
@@ -3693,151 +3816,203 @@ export class MultiNodeRouter {
 		from: BrokerConnectedSession,
 		target: ReturnPathParty,
 		beforeSeq: number | undefined,
-	): Promise<boolean> {
-		if (beforeSeq === undefined || this.host.returnPaths === undefined) return Promise.resolve(false);
-		return new Promise<boolean>((resolve) => {
-			const waited = this.host.returnPaths!.whenOpening(from, target, beforeSeq, () => resolve(true));
-			if (!waited) resolve(false);
+		deadlineAt: number,
+	): Promise<ReturnPathOpeningWaitOutcome | "none"> {
+		if (this.closed || beforeSeq === undefined || this.host.returnPaths === undefined) return Promise.resolve("none");
+		return new Promise<ReturnPathOpeningWaitOutcome | "none">((resolve) => {
+			const waited = this.host.returnPaths!.whenOpening(from, target, beforeSeq, deadlineAt, resolve);
+			if (!waited) resolve("none");
 		});
 	}
 
-	private async route(request: RemoteSendRequest, ticket: SendOrderTicket): Promise<void> {
+	private async route(request: RemoteSendRequest, ticket: SendOrderTicket, openingDeadlineAt: number): Promise<void> {
 		if (request.message.replyTo !== undefined) await Promise.all([...this.settling]);
-		if (mayUseReturnPath(request.message, request.supervisorSend, request.from)) {
-			while (await this.awaitReturnPathOpeningForTarget(request.from, request.target, request.returnPathArrivalSeq)) {
-				// Each iteration finishes at least one matching opening handed over before this send arrived.
-			}
-		}
+		if (this.closed) return;
 		if (await this.routeReleasedReply(request, undefined, ticket)) return;
+		if (this.closed) return;
 		const from = request.from;
-		const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
-			(lease) =>
-				lease.subject.kind === "presence" &&
-				lease.holderId !== this.brokerId &&
-				!this.host.sessions.has(lease.subject.session.id),
-		);
-		const presenceOf = (lease: LeaseState) => lease.subject as RecipientPresenceSubject;
-		// #5607: a plain send to an id a session holds as an alias reaches that session.
-		const plain = isPlainSend(request);
-		const exact =
-			live.find((lease) => presenceOf(lease).session.id === request.target) ??
-			(plain ? await this.aliasHolder(live, request.target) : undefined);
-		let resolved: LeaseState | undefined = exact;
-		if (resolved === undefined) {
-			const replyAuthorized = await this.replyAuthorizedTargets(
-				request,
-				live.map((lease) => presenceOf(lease).session.id),
-			);
-			const visible = live.filter((lease) => {
-				const info = presenceOf(lease).session;
-				return (
-					reachesSession(from, info) ||
-					(request.supervisorSend && info.id === from.supervisorId) ||
-					replyAuthorized.has(info.id)
-				);
-			});
-			const nonAgentNamed = visible.some(
+		for (;;) {
+			const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
 				(lease) =>
-					!isAgentRecipient(presenceOf(lease).session) &&
-					presenceOf(lease).session.name?.toLowerCase() === request.target.toLowerCase(),
+					lease.subject.kind === "presence" &&
+					lease.holderId !== this.brokerId &&
+					!this.host.sessions.has(lease.subject.session.id),
 			);
-			const agents = visible.filter((lease) => isAgentRecipient(presenceOf(lease).session));
-			const infos = agents.map((lease) => presenceOf(lease).session);
-			let resolution: SessionTargetResolution = resolveSessionTarget(infos, request.target);
-			if (resolution.kind === "not_found") {
-				resolution = resolveSessionTargetByHostSessionId(infos, request.target, (info) => {
-					const lease = agents.find((candidate) => presenceOf(candidate).session === info);
-					return lease === undefined ? undefined : returnAddressOf(presenceOf(lease).targetIdentity);
+			if (this.closed) return;
+			const presenceOf = (lease: LeaseState) => lease.subject as RecipientPresenceSubject;
+			// #5607: a plain send to an id a session holds as an alias reaches that session.
+			const plain = isPlainSend(request);
+			const exact =
+				live.find((lease) => presenceOf(lease).session.id === request.target) ??
+				(plain ? await this.aliasHolder(live, request.target) : undefined);
+			if (this.closed) return;
+			let resolved: LeaseState | undefined = exact;
+			if (resolved === undefined) {
+				const replyAuthorized = await this.replyAuthorizedTargets(
+					request,
+					live.map((lease) => presenceOf(lease).session.id),
+				);
+				if (this.closed) return;
+				const visible = live.filter((lease) => {
+					const info = presenceOf(lease).session;
+					return (
+						reachesSession(from, info) ||
+						(request.supervisorSend && info.id === from.supervisorId) ||
+						replyAuthorized.has(info.id)
+					);
 				});
-			}
-			// A sender this one holds a return path to answers to its name only when nothing visible does.
-			const answerable = resolution.kind === "not_found"
-				? live.filter(
-						(lease) =>
-							isAgentRecipient(presenceOf(lease).session) &&
-							!agents.includes(lease) &&
-							this.holdsReturnPath(request, {
-								sessionId: presenceOf(lease).session.id,
-								identity: stableIdentity(presenceOf(lease).targetIdentity),
-							}),
-					)
-				: [];
-			if (answerable.length > 0) {
-				const answered = resolveSessionTarget(answerable.map((lease) => presenceOf(lease).session), request.target);
-				if (answered.kind !== "not_found") {
-					resolution = answered;
-					agents.push(...answerable);
+				const nonAgentNamed = visible.some(
+					(lease) =>
+						!isAgentRecipient(presenceOf(lease).session) &&
+						presenceOf(lease).session.name?.toLowerCase() === request.target.toLowerCase(),
+				);
+				const agents = visible.filter((lease) => isAgentRecipient(presenceOf(lease).session));
+				const infos = agents.map((lease) => presenceOf(lease).session);
+				let resolution: SessionTargetResolution = resolveSessionTarget(infos, request.target);
+				if (resolution.kind === "not_found") {
+					resolution = resolveSessionTargetByHostSessionId(infos, request.target, (info) => {
+						const lease = agents.find((candidate) => presenceOf(candidate).session === info);
+						return lease === undefined ? undefined : returnAddressOf(presenceOf(lease).targetIdentity);
+					});
+				}
+				// A sender this one holds a return path to answers to its name only when nothing visible does.
+				const answerable =
+					resolution.kind === "not_found"
+						? live.filter(
+								(lease) =>
+									isAgentRecipient(presenceOf(lease).session) &&
+									!agents.includes(lease) &&
+									this.holdsReturnPath(request, {
+										sessionId: presenceOf(lease).session.id,
+										identity: stableIdentity(presenceOf(lease).targetIdentity),
+									}),
+							)
+						: [];
+				if (answerable.length > 0) {
+					const answered = resolveSessionTarget(
+						answerable.map((lease) => presenceOf(lease).session),
+						request.target,
+					);
+					if (answered.kind !== "not_found") {
+						resolution = answered;
+						agents.push(...answerable);
+					}
+				}
+				if (resolution.kind === "resolved") {
+					const session = resolution.session;
+					resolved = agents.find((lease) => presenceOf(lease).session === session);
+				} else if (resolution.kind !== "not_found") {
+					this.fail(request, sessionTargetFailureReason(request.clientMessage.to, resolution));
+					return;
+				} else if (nonAgentNamed) {
+					this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
+					return;
 				}
 			}
-			if (resolution.kind === "resolved") {
-				const session = resolution.session;
-				resolved = agents.find((lease) => presenceOf(lease).session === session);
-			} else if (resolution.kind !== "not_found") {
-				this.fail(request, sessionTargetFailureReason(request.clientMessage.to, resolution));
-				return;
-			} else if (nonAgentNamed) {
-				this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
+			// A presence whose id is bound to another session's return address (from a broker that grants ids without
+			// binding them) is not that session: what is addressed to the id waits for the session it is bound to.
+			if (
+				resolved !== undefined &&
+				!(await this.holdsSessionId(
+					presenceOf(resolved).session.id,
+					returnAddressOf(presenceOf(resolved).targetIdentity),
+				))
+			) {
+				resolved = undefined;
+			}
+			if (this.closed) return;
+			if (resolved !== undefined) {
+				const subject = presenceOf(resolved);
+				await this.deliverThroughOutbox(
+					request,
+					{
+						identity: subject.targetIdentity,
+						sessionId: subject.session.id,
+						groups: sessionGroups(subject.session),
+						gates: subject.session,
+						hostBrokerId: resolved.holderId,
+					},
+					ticket,
+					openingDeadlineAt,
+					{
+						sessionId: subject.session.id,
+						...(subject.session.name === undefined ? {} : { names: [subject.session.name] }),
+						...(returnAddressOf(subject.targetIdentity) === undefined
+							? {}
+							: { atomicSessionId: returnAddressOf(subject.targetIdentity) }),
+						...(subject.aliases === undefined || subject.aliases.length === 0
+							? {}
+							: { aliases: subject.aliases.map((alias) => alias.id) }),
+					},
+				);
 				return;
 			}
-		}
-		// A presence whose id is bound to another session's return address (from a broker that grants ids without
-		// binding them) is not that session: what is addressed to the id waits for the session it is bound to.
-		if (
-			resolved !== undefined &&
-			!(await this.holdsSessionId(presenceOf(resolved).session.id, returnAddressOf(presenceOf(resolved).targetIdentity)))
-		) {
-			resolved = undefined;
-		}
-		if (resolved !== undefined) {
-			const subject = presenceOf(resolved);
-			await this.deliverThroughOutbox(
-				request,
-				{
-					identity: subject.targetIdentity,
-					sessionId: subject.session.id,
-					groups: sessionGroups(subject.session),
-					gates: subject.session,
-					hostBrokerId: resolved.holderId,
-				},
-				ticket,
-				{
-					sessionId: subject.session.id,
-					...(subject.session.name === undefined ? {} : { names: [subject.session.name] }),
-					...(returnAddressOf(subject.targetIdentity) === undefined
-						? {}
-						: { atomicSessionId: returnAddressOf(subject.targetIdentity) }),
-					...(subject.aliases === undefined || subject.aliases.length === 0
-						? {}
-						: { aliases: subject.aliases.map((alias) => alias.id) }),
-				},
-			);
+			if (!request.supervisorSend && !request.requirePendingReply && request.expectedRecipientId === undefined) {
+				if (await this.holdForRemoteReservation(request, ticket)) return;
+				if (this.closed) return;
+			}
+			const known = await this.resolveKnownSession(request);
+			if (this.closed) return;
+			if (known === "answered") return;
+			if (known !== undefined) {
+				await this.deliverThroughOutbox(
+					request,
+					{
+						identity: known.targetIdentity,
+						sessionId: known.intercomSessionId,
+						groups: new Set(known.groups),
+						gates: known,
+					},
+					ticket,
+					openingDeadlineAt,
+					{
+						sessionId: known.intercomSessionId,
+						...(known.name === undefined ? {} : { names: [known.name] }),
+						...(known.atomicSessionId === undefined ? {} : { atomicSessionId: known.atomicSessionId }),
+						...(known.aliasSessionId === undefined ? {} : { aliases: [known.aliasSessionId] }),
+					},
+				);
+				return;
+			}
+			// Refusal path only: after all visible/remote/known resolution found nothing, wait up to the per-send bound if
+			// a matching cross-group opening handed over before this send arrived is still settling.
+			if (
+				!request.requirePendingReply &&
+				mayUseReturnPath(request.message, request.supervisorSend, from) &&
+				request.returnPathArrivalSeq !== undefined
+			) {
+				const outcome = await this.awaitReturnPathOpeningForTarget(
+					from,
+					request.target,
+					request.returnPathArrivalSeq,
+					openingDeadlineAt,
+				);
+				if (this.closed) return;
+				if (outcome === "settled") {
+					// If the settled opening was from a local session on this broker, deliver locally while keeping `ticket`.
+					const localAnswerable = (this.host.returnPaths?.answerable(from) ?? []).filter((session) =>
+						isAgentRecipient(session.info),
+					);
+					const localMatch = resolveSessionTarget(
+						localAnswerable.map((session) => session.info),
+						request.target,
+					);
+					if (localMatch.kind === "resolved") {
+						const localSession = this.host.sessions.get(localMatch.session.id);
+						if (localSession !== undefined) {
+							await this.waitForEarlierLocal(ticket, localSession);
+							if (this.closed) return;
+							request.notFound();
+							return;
+						}
+					}
+					continue;
+				}
+			}
+			if (this.closed) return;
+			request.notFound();
 			return;
 		}
-		if (!request.supervisorSend && !request.requirePendingReply && request.expectedRecipientId === undefined) {
-			if (await this.holdForRemoteReservation(request, ticket)) return;
-		}
-		const known = await this.resolveKnownSession(request);
-		if (known === "answered") return;
-		if (known !== undefined) {
-			await this.deliverThroughOutbox(
-				request,
-				{
-					identity: known.targetIdentity,
-					sessionId: known.intercomSessionId,
-					groups: new Set(known.groups),
-					gates: known,
-				},
-				ticket,
-				{
-					sessionId: known.intercomSessionId,
-					...(known.name === undefined ? {} : { names: [known.name] }),
-					...(known.atomicSessionId === undefined ? {} : { atomicSessionId: known.atomicSessionId }),
-					...(known.aliasSessionId === undefined ? {} : { aliases: [known.aliasSessionId] }),
-				},
-			);
-			return;
-		}
-		request.notFound();
 	}
 
 	/** #4386: a reply to a released asker's question goes to the asker's owner, once; true when it was one. */
@@ -4275,6 +4450,7 @@ export class MultiNodeRouter {
 		target: BrokerConnectedSession,
 		owners: SendOwnerChecks | undefined,
 		ticket: SendOrderTicket,
+		openingDeadlineAt: number,
 	): Promise<void> {
 		const targetIdentity = deliveryTargetIdentity(target);
 		const lookup = this.state.outbox.read(request.message.id);
@@ -4306,7 +4482,7 @@ export class MultiNodeRouter {
 					// no longer holds, is looked for wherever that id lives now.
 					if (found.sender !== "lost") {
 						await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
-						await this.commitLocalNotFound(request, ticket);
+						await this.commitLocalNotFound(request, ticket, openingDeadlineAt);
 					}
 					return;
 				}
@@ -4327,7 +4503,7 @@ export class MultiNodeRouter {
 				}
 				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 				await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
-				await this.commitLocalNotFound(sending, ticket);
+				await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 				return;
 			}
 			if (existing.status === "found") {
@@ -4365,7 +4541,7 @@ export class MultiNodeRouter {
 			}
 			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
 			await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
-			await this.commitLocalNotFound(sending, ticket);
+			await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 		} finally {
 			clearTimeout(bound);
 		}
@@ -4481,6 +4657,7 @@ export class MultiNodeRouter {
 		request: RemoteSendRequest,
 		target: RemoteTarget,
 		ticket: SendOrderTicket,
+		openingDeadlineAt: number,
 		targetMatch?: TargetMatchInfo,
 	): Promise<void> {
 		this.sendOrder.resolveTarget(ticket, target.identity);
@@ -4515,7 +4692,7 @@ export class MultiNodeRouter {
 		if (wait !== undefined) await wait;
 		if (this.closed) return;
 		// #5607: a reply to an ask its sender's alias received goes out as from that alias.
-		await this.enqueueThroughOutbox(answering ?? request, target, digest, answering !== undefined);
+		await this.enqueueThroughOutbox(answering ?? request, target, digest, answering !== undefined, openingDeadlineAt);
 		if (this.localSessionFor(target.identity) !== undefined && !this.closed) {
 			let bound: ReturnType<typeof setTimeout> | undefined;
 			const expired = new Promise<"expired">((resolve) => {
@@ -4536,6 +4713,7 @@ export class MultiNodeRouter {
 		target: RemoteTarget,
 		digest: string,
 		correlatedReply: boolean,
+		openingDeadlineAt: number,
 	): Promise<void> {
 		const { message, from } = request;
 		if (request.requirePendingReply && !correlatedReply) {
@@ -4546,7 +4724,8 @@ export class MultiNodeRouter {
 			message.replyTo !== undefined &&
 			this.host.supervisorCache.matchReply(message.replyTo, from.info.id, target.sessionId);
 		// A session answers a sender outside its reach whose message reached it here, within the return path's bounds.
-		const crossesGroups = !request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups);
+		let crossesGroups =
+			!request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups);
 		const answered: ReturnPathParty | undefined =
 			crossesGroups && mayUseReturnPath(message, request.supervisorSend, from)
 				? { sessionId: target.sessionId, identity: stableIdentity(target.identity) }
@@ -4555,14 +4734,28 @@ export class MultiNodeRouter {
 			answered !== undefined &&
 			this.host.returnPaths?.use(from, answered, message.id, request.returnPathArrivalSeq) === true;
 		while (
+			!this.closed &&
 			crossesGroups &&
 			!returnPath &&
 			answered !== undefined &&
-			(await this.awaitReturnPathOpening(from, answered, request.returnPathArrivalSeq))
+			!request.requirePendingReply
 		) {
+			const outcome = await this.awaitReturnPathOpening(
+				from,
+				answered,
+				request.returnPathArrivalSeq,
+				openingDeadlineAt,
+			);
+			if (this.closed) return;
+			if (outcome !== "settled") break;
+			// The sender may have joined the target's group while waiting, so `delivered` skipped opening a return path.
+			crossesGroups =
+				!request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups);
+			if (!crossesGroups) break;
 			returnPath =
 				this.host.returnPaths?.use(from, answered, message.id, request.returnPathArrivalSeq) === true;
 		}
+		if (this.closed) return;
 		if (crossesGroups && !returnPath) {
 			this.fail(
 				request,
@@ -5107,15 +5300,19 @@ export class MultiNodeRouter {
 				if (failed.status === "failed") await this.wakeOrigin(row);
 				continue;
 			}
+			const handedOverMark = this.host.returnPaths?.mark();
 			const handedOverAt = this.firstHandedOverAt.get(row.messageId) ?? this.host.returnPaths?.handOverTime();
 			const finishOpening =
 				session.acknowledgesReceipt === true || handedOverAt === undefined
 					? undefined
-					: this.host.returnPaths?.beginOpening(
+					: this.trackOpening(
 							session,
-							{ sessionId: frame.from.id, identity: frame.senderIdentity },
-							frame.from,
-							handedOverAt,
+							this.host.returnPaths?.beginOpening(
+								session,
+								{ sessionId: frame.from.id, identity: frame.senderIdentity },
+								frame.from,
+								handedOverAt,
+							),
 						);
 			const inflight: Inflight = {
 				claim,
@@ -5123,8 +5320,10 @@ export class MultiNodeRouter {
 				session,
 				identity,
 				...(handedOverAt === undefined ? {} : { handedOverAt }),
+				...(handedOverMark === undefined ? {} : { handedOverMark }),
 				...(finishOpening === undefined ? {} : { finishOpening }),
 			};
+			this.inflight.get(row.messageId)?.finishOpening?.();
 			this.inflight.set(row.messageId, inflight);
 			const delivery = messageFrameFor(session, frame.from, frame.message, frame.channel);
 			this.host.writeConfirmed(session.socket, delivery, (written) => {
@@ -5200,11 +5399,14 @@ export class MultiNodeRouter {
 			inflight.finishOpening ??
 			(inflight.handedOverAt === undefined
 				? undefined
-				: this.host.returnPaths?.beginOpening(
+				: this.trackOpening(
 						recipient,
-						{ sessionId: frame.from.id, identity: frame.senderIdentity },
-						frame.from,
-						inflight.handedOverAt,
+						this.host.returnPaths?.beginOpening(
+							recipient,
+							{ sessionId: frame.from.id, identity: frame.senderIdentity },
+							frame.from,
+							inflight.handedOverAt,
+						),
 					));
 		let marked = false;
 		const settling = (async () => {
@@ -5243,7 +5445,7 @@ export class MultiNodeRouter {
 					{ sessionId: frame.from.id, identity: frame.senderIdentity },
 					frame.from,
 					frame.message.id,
-					undefined,
+					inflight.handedOverMark,
 					inflight.handedOverAt,
 				);
 				finishOpening?.();
@@ -5753,6 +5955,10 @@ export class MultiNodeRouter {
 		if (this.closed) return;
 		this.closed = true;
 		this.sendOrder.close();
+		// Release every pending return-path opening (both `inflight` and `settleDelivered`) before awaiting `serials`,
+		// so a serialized reply waiting on a pending opening wakes immediately and never deadlocks shutdown.
+		for (const release of [...this.activeOpenings.keys()]) release();
+		this.activeOpenings.clear();
 		for (const initial of this.initialScans.values()) initial.resolve();
 		this.initialScans.clear();
 		for (const timer of this.timers) clearInterval(timer);
@@ -5775,7 +5981,6 @@ export class MultiNodeRouter {
 		} catch (error) {
 			this.report(error);
 		}
-		for (const inflight of this.inflight.values()) inflight.finishOpening?.();
 		this.inflight.clear();
 		this.presence.clear();
 		await this.subscription?.close();
