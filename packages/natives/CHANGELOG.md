@@ -8,6 +8,7 @@
 - `watchSessionEnd(onEnd)`: on Windows, a hidden top-level window that hears the end of the user's session (sign-out, restart or shutdown), calls `onEnd` with how many milliseconds ago Windows said so, and keeps Windows waiting while the process shuts down: until `onEnd` returns false, the process exits, or 4.5 seconds have passed. Elsewhere it does nothing ([#6187](https://github.com/bastani-inc/atomic/pull/6187)).
 - `startHostProcess` takes `endWithParent`: the process gets `SIGKILL` when the process that started it ends, however it ends; not the processes it starts.
 - `terminateProcessCreatedAt(pid, created, descendants)`: on Windows, ends the running process `pid` only if it was created at `created`, as `processCreationTime` reads it, and with `descendants` what it started, each through a handle checked before anything is ended; `null` when `pid` names no such process, and off Windows.
+- `holdProcessDescendants(pid)`: on Windows, holds a running child process and the processes it started, and those they started, each through a handle of its own, taken only while it is still its parent's child and started after it (by the kernel's order of process starts, not by a clock), so a process given one of their ids is never held. `endAll()` ends the child and then them, only if it ended the child, so what a child that exited by itself left keeps running; `release()` lets go of them. `null` once the child has exited and elsewhere.
 
 ### Changed
 

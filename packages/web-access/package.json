@@ -2,7 +2,7 @@
   "name": "@bastani/web-access",
   "version": "0.0.0",
   "private": true,
-  "description": "Atomic extension for web search, URL fetching, GitHub repo cloning, PDF/video extraction. Fork of: https://github.com/nicobailon/pi-web-access",
+  "description": "Atomic extension for web search, URL fetching, GitHub repository cloning, and PDF and video extraction.",
   "contributors": [
     "Norin Lavaee",
     "Alex Lavaee"

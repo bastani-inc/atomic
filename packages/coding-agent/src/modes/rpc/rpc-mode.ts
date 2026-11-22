@@ -19,7 +19,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { quitAsInteractiveApp } from "../../core/interactive-quit.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
-import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
+import { flushRawStdout, rawStdoutWriteFailed, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { QueuedDeliveryRelay } from "../../core/queued-message-delivery.ts";
 import { onBlueprintBuildFinished, onBlueprintBuildWaiting } from "../../core/resume/blueprint/barrier.ts";
 import { startedWithHangupIgnored } from "../../utils/inherited-hangup.js";
@@ -97,8 +97,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const inputForm = interactiveEngineChild ? new EngineInputFormService(writeRawStdout) : undefined;
 	const quitIntent = interactiveEngineChild ? new EngineQuitIntent(writeRawStdout) : undefined;
 	const hostPid = Number.parseInt(interactiveEngineStartupEnv().hostPid ?? "", 10);
+	/** Whether this process's input ended: for an engine child, its host closed it or is gone. */
+	let inputEnded = false;
 	if (quitIntent && Number.isSafeInteger(hostPid) && hostPid > 0) {
-		endCommandsWhenHostIsGone(hostPid, () => quitIntent.explicitQuitRequested);
+		endCommandsWhenHostIsGone(
+			hostPid,
+			() => quitIntent.explicitQuitRequested,
+			() => inputEnded || rawStdoutWriteFailed(),
+		);
 	}
 	const projectTrust = interactiveEngineChild
 		? new EngineProjectTrustService(() => runtimeHost.session.extensionRunner)
@@ -358,6 +364,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	});
 
 	const onInputEnd = () => {
+		inputEnded = true;
 		void shutdown(0, undefined, "input-end");
 	};
 	process.stdin.on("end", onInputEnd);
