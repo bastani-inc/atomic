@@ -1339,22 +1339,35 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 const BUN_SUBPROCESS_TIMEOUT_MS = 60_000;
 /** Scale factor k between baseline and scaled inputs for load-independent linearity checks (O(n) ~ k, O(n^2) ~ k^2). */
 const LINEARITY_SCALE_FACTOR = 5;
-/** Interleaved paired samples per input family; median filters isolated GC or scheduler pauses. */
+/** Interleaved paired samples per input family; median filters isolated GC or JIT tier-up spikes. */
 const LINEARITY_SAMPLES = 5;
-/** Floor on the baseline median so sub-millisecond fast paths do not amplify timer quantization noise. */
-const LINEARITY_BASELINE_FLOOR_MS = 1;
+/** Minimum CPU time per baseline batch (5 ms) so measurement stays well above timer resolution without any floor. */
+const LINEARITY_MIN_BATCH_CPU_US = 5_000;
+/** Minimum acceptable median baseline CPU time (half target, also rejects 0 us coarse-tick medians and forces a retry). */
+const LINEARITY_MIN_MEDIAN_CPU_US = LINEARITY_MIN_BATCH_CPU_US / 2;
+/** Upper cap on adaptive batch doubling so a degenerate no-op cannot loop unboundedly. */
+const MAX_LINEARITY_BATCH_REPS = 1_024;
 /** Ratio ceiling between linear k (5x) and quadratic k^2 (25x): 3x headroom above linear, well below quadratic. */
 const LINEARITY_RATIO_HEADROOM = 3;
 const MAX_LINEAR_SCALING_RATIO = LINEARITY_SCALE_FACTOR * LINEARITY_RATIO_HEADROOM;
 
-function medianDurationMs(samples: readonly number[]): number {
+function medianNumber(samples: readonly number[]): number {
 	const sorted = [...samples].sort((a, b) => a - b);
 	return sorted[Math.floor(sorted.length / 2)]!;
 }
 
+function measureBatchCpuUs(input: string, reps: number, run: (input: string) => void): number {
+	const started = process.cpuUsage();
+	for (let i = 0; i < reps; i++) run(input);
+	const delta = process.cpuUsage(started);
+	return delta.user + delta.system;
+}
+
 /**
- * Load-independent O(n) scaling check: times `build(baseSize)` and `build(baseSize * k)` interleaved in the
- * same process so host CPU load slows both proportionally, then bounds `median(k*N) / max(median(N), floor)`.
+ * Load-independent O(n) scaling check using process CPU time (`process.cpuUsage()`): adaptively doubles batch
+ * repetitions on `build(baseSize)` until a batch consumes >= 5 ms of CPU time, then runs interleaved paired
+ * batches of `small` and `build(baseSize * k)` at the same repetition count and bounds `median(k*N) / median(N)`
+ * with no artificial denominator floor.
  */
 function assertLinearScaling(
 	label: string,
@@ -1365,32 +1378,36 @@ function assertLinearScaling(
 	const small = build(baseSize);
 	const large = build(baseSize * LINEARITY_SCALE_FACTOR);
 	run(small);
-	const smallTimes: number[] = [];
-	const largeTimes: number[] = [];
-	for (let sample = 0; sample < LINEARITY_SAMPLES; sample++) {
-		if (sample % 2 === 0) {
-			let started = performance.now();
-			run(small);
-			smallTimes.push(performance.now() - started);
-			started = performance.now();
-			run(large);
-			largeTimes.push(performance.now() - started);
-		} else {
-			let started = performance.now();
-			run(large);
-			largeTimes.push(performance.now() - started);
-			started = performance.now();
-			run(small);
-			smallTimes.push(performance.now() - started);
-		}
+	let reps = 1;
+	while (reps < MAX_LINEARITY_BATCH_REPS && measureBatchCpuUs(small, reps, run) < LINEARITY_MIN_BATCH_CPU_US) {
+		reps *= 2;
 	}
-	const smallMedian = medianDurationMs(smallTimes);
-	const largeMedian = medianDurationMs(largeTimes);
-	const ratio = largeMedian / Math.max(smallMedian, LINEARITY_BASELINE_FLOOR_MS);
-	assert.ok(
-		ratio <= MAX_LINEAR_SCALING_RATIO,
-		`${label} scaled super-linearly: median(${baseSize * LINEARITY_SCALE_FACTOR})=${largeMedian.toFixed(1)}ms / median(${baseSize})=${smallMedian.toFixed(1)}ms (${ratio.toFixed(2)}x > ${MAX_LINEAR_SCALING_RATIO}x)`,
-	);
+	for (;;) {
+		const smallTimes: number[] = [];
+		const largeTimes: number[] = [];
+		for (let sample = 0; sample < LINEARITY_SAMPLES; sample++) {
+			if (sample % 2 === 0) {
+				smallTimes.push(measureBatchCpuUs(small, reps, run));
+				largeTimes.push(measureBatchCpuUs(large, reps, run));
+			} else {
+				largeTimes.push(measureBatchCpuUs(large, reps, run));
+				smallTimes.push(measureBatchCpuUs(small, reps, run));
+			}
+		}
+		const smallMedianUs = medianNumber(smallTimes);
+		if (smallMedianUs < LINEARITY_MIN_MEDIAN_CPU_US && reps < MAX_LINEARITY_BATCH_REPS) {
+			reps = Math.min(reps * 2, MAX_LINEARITY_BATCH_REPS);
+			continue;
+		}
+		assert.ok(smallMedianUs > 0, `${label} baseline CPU time was 0 us after ${reps} reps`);
+		const largeMedianUs = medianNumber(largeTimes);
+		const ratio = largeMedianUs / smallMedianUs;
+		assert.ok(
+			ratio <= MAX_LINEAR_SCALING_RATIO,
+			`${label} scaled super-linearly (reps=${reps}): median(${baseSize * LINEARITY_SCALE_FACTOR})=${(largeMedianUs / 1000).toFixed(2)}ms / median(${baseSize})=${(smallMedianUs / 1000).toFixed(2)}ms CPU (${ratio.toFixed(2)}x > ${MAX_LINEAR_SCALING_RATIO}x)`,
+		);
+		return;
+	}
 }
 
 describe("OAuth credential shapes and linear-time scanning across Node and Bun", () => {
@@ -1601,12 +1618,13 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 		() => {
 			const script = `
 import assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
 import { redactCredentialShapes } from "./packages/coding-agent/src/utils/credential-redaction.ts";
 
 const SCALE = ${LINEARITY_SCALE_FACTOR};
 const SAMPLES = ${LINEARITY_SAMPLES};
-const BASELINE_FLOOR_MS = ${LINEARITY_BASELINE_FLOOR_MS};
+const MIN_BATCH_CPU_US = ${LINEARITY_MIN_BATCH_CPU_US};
+const MIN_MEDIAN_CPU_US = ${LINEARITY_MIN_MEDIAN_CPU_US};
+const MAX_BATCH_REPS = ${MAX_LINEARITY_BATCH_REPS};
 const MAX_RATIO = ${MAX_LINEAR_SCALING_RATIO};
 
 function median(values) {
@@ -1614,36 +1632,47 @@ function median(values) {
 	return sorted[Math.floor(sorted.length / 2)];
 }
 
+function measureBatchCpuUs(input, reps) {
+	const started = process.cpuUsage();
+	for (let i = 0; i < reps; i++) redactCredentialShapes(input);
+	const delta = process.cpuUsage(started);
+	return delta.user + delta.system;
+}
+
 function assertLinearOnBun(label, baseSize, build) {
 	const small = build(baseSize);
 	const large = build(baseSize * SCALE);
 	redactCredentialShapes(small);
-	const smallTimes = [];
-	const largeTimes = [];
-	for (let sample = 0; sample < SAMPLES; sample++) {
-		if (sample % 2 === 0) {
-			let started = performance.now();
-			redactCredentialShapes(small);
-			smallTimes.push(performance.now() - started);
-			started = performance.now();
-			redactCredentialShapes(large);
-			largeTimes.push(performance.now() - started);
-		} else {
-			let started = performance.now();
-			redactCredentialShapes(large);
-			largeTimes.push(performance.now() - started);
-			started = performance.now();
-			redactCredentialShapes(small);
-			smallTimes.push(performance.now() - started);
-		}
+	let reps = 1;
+	while (reps < MAX_BATCH_REPS && measureBatchCpuUs(small, reps) < MIN_BATCH_CPU_US) {
+		reps *= 2;
 	}
-	const smallMedian = median(smallTimes);
-	const largeMedian = median(largeTimes);
-	const ratio = largeMedian / Math.max(smallMedian, BASELINE_FLOOR_MS);
-	assert.ok(
-		ratio <= MAX_RATIO,
-		label + " scaled super-linearly on Bun: median(" + (baseSize * SCALE) + ")=" + largeMedian.toFixed(1) + "ms / median(" + baseSize + ")=" + smallMedian.toFixed(1) + "ms (" + ratio.toFixed(2) + "x > " + MAX_RATIO + "x)",
-	);
+	for (;;) {
+		const smallTimes = [];
+		const largeTimes = [];
+		for (let sample = 0; sample < SAMPLES; sample++) {
+			if (sample % 2 === 0) {
+				smallTimes.push(measureBatchCpuUs(small, reps));
+				largeTimes.push(measureBatchCpuUs(large, reps));
+			} else {
+				largeTimes.push(measureBatchCpuUs(large, reps));
+				smallTimes.push(measureBatchCpuUs(small, reps));
+			}
+		}
+		const smallMedianUs = median(smallTimes);
+		if (smallMedianUs < MIN_MEDIAN_CPU_US && reps < MAX_BATCH_REPS) {
+			reps = Math.min(reps * 2, MAX_BATCH_REPS);
+			continue;
+		}
+		assert.ok(smallMedianUs > 0, label + " baseline CPU time was 0 us on Bun after " + reps + " reps");
+		const largeMedianUs = median(largeTimes);
+		const ratio = largeMedianUs / smallMedianUs;
+		assert.ok(
+			ratio <= MAX_RATIO,
+			label + " scaled super-linearly on Bun (reps=" + reps + "): median(" + (baseSize * SCALE) + ")=" + (largeMedianUs / 1000).toFixed(2) + "ms / median(" + baseSize + ")=" + (smallMedianUs / 1000).toFixed(2) + "ms CPU (" + ratio.toFixed(2) + "x > " + MAX_RATIO + "x)",
+		);
+		return;
+	}
 }
 
 const cases = [
