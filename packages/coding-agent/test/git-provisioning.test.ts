@@ -353,11 +353,15 @@ function listLinuxLibraryDirectories(listing: Readonly<Record<string, readonly s
 function treatFilesAsExecutable(): void {
 	const actualStat = mocks.actualFs?.statSync;
 	mocks.statSync.mockImplementation((path: string, options?: object) => {
-		const stats = (actualStat as (path: string, options?: object) => import("node:fs").Stats | undefined)(
-			path,
-			options,
-		);
-		return stats === undefined ? undefined : Object.assign(Object.create(stats), { mode: stats.mode | 0o111 });
+		const stats = (
+			actualStat as (
+				path: string,
+				options?: object,
+			) => import("node:fs").Stats | import("node:fs").BigIntStats | undefined
+		)(path, options);
+		if (stats === undefined) return undefined;
+		const mode = typeof stats.mode === "bigint" ? stats.mode | 0o111n : stats.mode | 0o111;
+		return Object.assign(Object.create(stats), { mode });
 	});
 }
 
@@ -370,11 +374,14 @@ function freezeStats(...paths: string[]): void {
 	const actualStat = mocks.actualFs!.statSync as (
 		path: string,
 		options?: object,
-	) => import("node:fs").Stats | undefined;
-	const frozen = new Map(paths.map((path) => [path, actualStat(path)]));
-	mocks.statSync.mockImplementation((path: string, options?: object) =>
-		frozen.has(String(path)) ? frozen.get(String(path)) : actualStat(path, options),
-	);
+	) => import("node:fs").Stats | import("node:fs").BigIntStats | undefined;
+	const frozenPlain = new Map(paths.map((path) => [path, actualStat(path)]));
+	const frozenBigInt = new Map(paths.map((path) => [path, actualStat(path, { bigint: true })]));
+	mocks.statSync.mockImplementation((path: string, options?: { bigint?: boolean }) => {
+		const key = String(path);
+		if (!frozenPlain.has(key)) return actualStat(path, options);
+		return options?.bigint === true ? frozenBigInt.get(key) : frozenPlain.get(key);
+	});
 }
 
 function leftovers(): string[] {

@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -60,11 +61,15 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 		mkdirSync(lockPath);
 		recordLockHolder(lockPath);
 		const record = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as Record<string, unknown>;
+		const bigStats = statSync(lockPath, { bigint: true });
+		const plainStats = statSync(lockPath);
+		const exact = lockHolder(lockPath);
 		assert.deepEqual(record, {
 			host: hostname(),
 			pid: process.pid,
 			started: processStartToken(process.pid),
-			lock: lockHolder(lockPath),
+			lock: bigStats.ino <= BigInt(Number.MAX_SAFE_INTEGER) ? `${plainStats.ino}:${plainStats.birthtimeMs}` : exact,
+			lockId: exact,
 		});
 		assert.equal(takeOverDeadHolder(lockPath), false, "a live holder keeps its lock");
 		assert.equal(existsSync(lockPath), true);
