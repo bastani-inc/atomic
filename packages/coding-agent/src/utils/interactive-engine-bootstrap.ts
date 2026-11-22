@@ -56,6 +56,8 @@ export interface InteractiveEngineBootstrap {
 	 * one it resumes. Only the first engine of that session is given it.
 	 */
 	startedSessionId?: string;
+	/** This engine replaced one that stopped unexpectedly; suppress startup resume prompts for stopped children. */
+	restarted?: true;
 }
 
 /**
@@ -186,6 +188,7 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 			...(startupExtensionCheck ? { startupExtensionCheck } : {}),
 			...(parsed.queuedDeliveries === true ? { queuedDeliveries: true } : {}),
 			...(typeof parsed.startedSessionId === "string" ? { startedSessionId: parsed.startedSessionId } : {}),
+			...(parsed.restarted === true ? { restarted: true } : {}),
 		};
 	} catch {
 		return undefined;

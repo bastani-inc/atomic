@@ -2011,12 +2011,16 @@ describe("credential egress chokepoint", () => {
 	 * has to be reviewed here before it ships.
 	 */
 	const RAW_STDOUT_EGRESS = [
+		// Runs only in the internal Windows broker relay process; writes only { ok, pid, creationTime } (or spawn error code/message), never credentials or user data.
+		`bun/internal-intercom-broker.ts: process.stdout.write(\`\${JSON.stringify(payload)}\\n\`)`,
 		`cli/auth-cli.ts: writeRawStdout(\`\${output}\\n\`)`,
 		`cli/auth-terminal.ts: process.stdout.write(\`\${line}\\n\`)`,
 		`cli/auth-terminal.ts: process.stdout.write(message)`,
 		`cli/blueprint-command.ts: process.stdout.write(text)`,
 		`cli/credential-print.ts: writeRawStdoutOnce(payload)`,
 		`modes/interactive-engine/engine-child-liveness.ts: writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity }))`,
+		// Prewarmed child readiness handshake: per-spawn nonce, build identity, and capability flag, never credentials.
+		`modes/interactive-engine/engine-prewarm.ts: process.stdout.write(\`\${JSON.stringify({ type: "prewarm_ready", nonce, build, envHandoff: true })}\\n\`)`,
 		`modes/interactive/external-editor.ts: process.stdout.write( \`Launching external editor: \${request.command}\\n\${APP_NAME} will resume when the editor exits.\\n\`, )`,
 		`modes/interactive/interactive-process-lifecycle.ts: process.stdout.write(\`\${chalk.dim("To resume this session:")} \${resumeCommand}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(toJsonEvent(event))}\\n\`)`,

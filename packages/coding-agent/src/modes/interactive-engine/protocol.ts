@@ -113,10 +113,22 @@ export type InteractiveEngineMessage =
 	| { type: "engine_deprecation_warning"; message: string; once?: string }
 	/** The status of a subagent the host shows on its main screen (view `viewId`), on every change. */
 	| { type: "engine_agent_view_status"; viewId: string; status: AgentViewStatus }
+	/**
+	 * A subagent's session was stopped, cleared, ended non-resumably, or received input by another path, so any
+	 * pending lost-queue restore held by the host for that child is dropped.
+	 */
+	| {
+			type: "engine_agent_queue_invalidated";
+			sessionId: string;
+			sessionFile?: string;
+			reason: "stopped" | "cleared" | "session-ended" | "sent-elsewhere";
+	  }
 	/** The engine's agent panel or `/tasks` asks the host to show a subagent, or main when `taskId` is null. */
 	| {
 			type: "engine_view_agent";
 			taskId: string | null;
+			/** Monotonic positive integer per engine bridge/generation identifying this request; omitted by older engines. */
+			requestId?: number;
 			/** The request closes `/tasks`: the host keeps its prompt and panel as painted until the subagent is shown. */
 			keepScreen?: true;
 			/**
@@ -175,6 +187,11 @@ export type InteractiveEngineMessage =
 			rowKeys?: string[];
 			/** How a viewed subagent's transcript laid out this frame, so the host can place it in another height. */
 			layout?: TranscriptFrameLayout;
+			/**
+			 * Host preview sequence number when this frame was rendered under a speculative `panelOnView` preview;
+			 * omitted on committed frames and by older engines.
+			 */
+			previewSeq?: number;
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string; evictCache?: true }
@@ -588,11 +605,33 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, viewId: value.viewId, status }
 				: undefined;
 		}
+		case "engine_agent_queue_invalidated": {
+			const reason = value.reason;
+			const validReason =
+				reason === "stopped" || reason === "cleared" || reason === "session-ended" || reason === "sent-elsewhere";
+			return typeof value.sessionId === "string" &&
+				value.sessionId.length > 0 &&
+				(value.sessionFile === undefined ||
+					(typeof value.sessionFile === "string" && value.sessionFile.length > 0)) &&
+				validReason
+				? {
+						type: value.type,
+						sessionId: value.sessionId,
+						...(value.sessionFile === undefined ? {} : { sessionFile: value.sessionFile }),
+						reason,
+					}
+				: undefined;
+		}
 		case "engine_view_agent":
 			return typeof value.taskId === "string" || value.taskId === null
 				? {
 						type: value.type,
 						taskId: value.taskId,
+						...(typeof value.requestId === "number" &&
+						Number.isSafeInteger(value.requestId) &&
+						value.requestId > 0
+							? { requestId: value.requestId }
+							: {}),
 						...(value.keepScreen === true ? { keepScreen: true } : {}),
 						...(value.panel === true ? { panel: true } : {}),
 						...(value.panelOnView === true ? { panelOnView: true } : {}),
@@ -718,6 +757,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 							? { rowKeys: value.rowKeys as string[] }
 							: {}),
 						...layoutField(value.layout),
+						...(typeof value.previewSeq === "number" &&
+						Number.isSafeInteger(value.previewSeq) &&
+						value.previewSeq > 0
+							? { previewSeq: value.previewSeq }
+							: {}),
 						...(isJsonObject(value.scrollRequest) &&
 						typeof value.scrollRequest.version === "number" &&
 						typeof value.scrollRequest.scrollTop === "number"
@@ -1090,12 +1134,22 @@ function parseAgentViewStatus(value: JsonValue | undefined): AgentViewStatus | u
 		isStringList(queued.followUp) &&
 		(value.unsaved === undefined || isStringList(value.unsaved));
 	if (!valid) return undefined;
+	let result: Record<string, JsonValue> = value;
 	// Receipts that are not as an engine writes them are left out: its messages are then reported as unconfirmed.
-	if (value.receipts !== undefined && !isAgentViewReceipts(value.receipts)) {
-		const { receipts: _receipts, ...status } = value;
-		return status as unknown as AgentViewStatus;
+	if (result.receipts !== undefined && !isAgentViewReceipts(result.receipts)) {
+		const { receipts: _receipts, ...rest } = result;
+		result = rest;
 	}
-	return value as unknown as AgentViewStatus;
+	// Malformed session identity fields are left out so the host safely falls back to notice-only.
+	const badSessionId =
+		result.sessionId !== undefined && (typeof result.sessionId !== "string" || result.sessionId.length === 0);
+	const badSessionFile =
+		result.sessionFile !== undefined && (typeof result.sessionFile !== "string" || result.sessionFile.length === 0);
+	if (badSessionId || badSessionFile) {
+		const { sessionId: _sessionId, sessionFile: _sessionFile, ...rest } = result;
+		result = rest;
+	}
+	return result as unknown as AgentViewStatus;
 }
 
 function isAgentViewReceipts(value: JsonValue): boolean {

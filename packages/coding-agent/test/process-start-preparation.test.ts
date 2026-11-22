@@ -193,6 +193,95 @@ test("a timed-out start read is remembered before another query is allowed (#531
 	assert.equal(queries, 2);
 });
 
+test("a fresh start read bypasses stale negative and positive cache and supersedes an older in-flight query (#5315)", async () => {
+	const pid = 2 ** 22 + 8;
+	const releaseOld = join(directory, "release-old-query");
+	let call = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: () => {
+			call++;
+			if (call === 1) return ["-e", "process.exitCode = 1"];
+			if (call === 2) return ["-e", 'console.log("132000000000000001")'];
+			if (call === 3) return ["-e", 'console.log("132000000000000002")'];
+			if (call === 4)
+				return [
+					"-e",
+					'const fs = require("node:fs"); const t = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(t); console.log("132000000000000003"); } }, 10);',
+					releaseOld,
+				];
+			return ["-e", 'console.log("132000000000000004")'];
+		},
+	});
+	// 1) Stale negative cache (failed/dead query) is bypassed by a fresh read.
+	assert.equal(await readProcessStartToken(pid), undefined);
+	const first = await readProcessStartToken(pid, { fresh: true });
+	assert.match(first ?? "", /^[0-9a-f]{12}$/);
+	// 2) Stale positive cache (previous process with same PID) is bypassed by a fresh read.
+	const second = await readProcessStartToken(pid, { fresh: true });
+	assert.match(second ?? "", /^[0-9a-f]{12}$/);
+	assert.notEqual(second, first);
+	// 3) An older in-flight query is superseded by a fresh read and cannot overwrite the cache.
+	const now = Date.now();
+	vi.spyOn(Date, "now").mockReturnValue(now + CACHE_EXPIRY_MS);
+	const older = readProcessStartToken(pid);
+	const newer = await readProcessStartToken(pid, { fresh: true });
+	assert.match(newer ?? "", /^[0-9a-f]{12}$/);
+	assert.notEqual(newer, second);
+	writeFileSync(releaseOld, "");
+	assert.equal(await older, newer);
+	assert.equal(processStartToken(pid), newer);
+	assert.equal(await readProcessStartToken(pid), newer);
+	assert.equal(call, 5);
+});
+
+test("a concurrent fresh read for process.pid shares an in-flight read and a superseded read finishing early awaits the fresher read (#5315)", async () => {
+	const releaseOwn = join(directory, "release-own-query");
+	let ownCalls = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: () => {
+			ownCalls++;
+			return [
+				"-e",
+				'const fs = require("node:fs"); const t = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(t); console.log("132000000000000077"); } }, 10);',
+				releaseOwn,
+			];
+		},
+	});
+	const ownA = readProcessStartToken(process.pid);
+	const ownB = readProcessStartToken(process.pid, { fresh: true });
+	writeFileSync(releaseOwn, "");
+	const [tokenA, tokenB] = await Promise.all([ownA, ownB]);
+	assert.match(tokenA ?? "", /^[0-9a-f]{12}$/);
+	assert.equal(tokenB, tokenA);
+	assert.equal(ownCalls, 1, "own pid shares its in-flight read instead of spawning a duplicate query");
+
+	const pid = 2 ** 22 + 8;
+	const releaseNew = join(directory, "release-new-query");
+	let pidCalls = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: () => {
+			if (++pidCalls === 1) return ["-e", 'console.log("132000000000000011")'];
+			return [
+				"-e",
+				'const fs = require("node:fs"); const t = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(t); console.log("132000000000000022"); } }, 10);',
+				releaseNew,
+			];
+		},
+	});
+	// Start q1 (fast) then immediately supersede with q2 (slow): q1 finishes BEFORE q2.
+	const q1 = readProcessStartToken(pid);
+	const q2 = readProcessStartToken(pid, { fresh: true });
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	writeFileSync(releaseNew, "");
+	const [ans1, ans2] = await Promise.all([q1, q2]);
+	assert.match(ans2 ?? "", /^[0-9a-f]{12}$/);
+	assert.equal(ans1, ans2, "superseded read finishing early resolves to the fresher read instead of undefined");
+	assert.equal(pidCalls, 2);
+});
+
 test("uncontended auth saves and provider refreshes never wait for a fallback start read (#5315)", async () => {
 	let queries = 0;
 	setProcessCreationTimeQueryForTesting({
