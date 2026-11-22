@@ -39,7 +39,7 @@ A `file:` database is opened in write-ahead-log mode with a 5000 ms busy timeout
 
 A libSQL server (sqld) answers a write that meets its checkpoint `SQLITE_BUSY` at once, without running it. A statement outside a transaction, an `exec` of one statement, a batch, or the start of a transaction that the server answers busy runs again with growing waits for up to 5 seconds before it fails.
 
-The token is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence, per-process overrides, and the other storage options.
+The token is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](https://docs.bastani.ai/storage) for selection precedence, per-process overrides, and the other storage options.
 
 ## Use from the SDK
 
