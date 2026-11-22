@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -27,6 +27,7 @@ import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-ma
 import { atomicHome } from "../../packages/coding-agent/src/core/workspace/resolve.js";
 import { resolveBrokerStateSource } from "../../packages/intercom/broker/open-broker-state.js";
 
+import { renameSyncWithRetry } from "../helpers/rename-retry.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const STORAGE_ENV_KEYS = [
@@ -1610,7 +1611,7 @@ test("renaming an adopting agent directory in its parent keeps its session histo
 	mkdirSync(join(parent, "workflows"), { recursive: true });
 	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
 	assert.equal(defaultSessionDatabasePath(original, {}), join(parent, "workflows", "journal.sqlite"));
-	renameSync(original, renamed);
+	renameSyncWithRetry(original, renamed);
 	resetStorageHomeCacheForTests();
 	assert.equal(defaultSessionDatabasePath(renamed, {}), join(parent, "workflows", "journal.sqlite"));
 	mkdirSync(original);

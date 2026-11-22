@@ -27,6 +27,7 @@ import {
 	createStructuredOutputTool as createStructuredOutputToolFromEntrypoint,
 	STRUCTURED_OUTPUT_TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME_FROM_ENTRYPOINT,
 } from "../../packages/coding-agent/src/index.js";
+import { stripSystemPromptEnvironmentPaths } from "../helpers/system-prompt-paths.js";
 
 type InferenceRequest = StructuredOutputRequest<ReturnType<typeof Type.Object>>;
 
@@ -321,14 +322,21 @@ describe("structured_output inference tool", () => {
 				definition.promptSnippet ? [[definition.name, definition.promptSnippet] as const] : [],
 			),
 		);
-		assert.doesNotMatch(buildSystemPrompt({ cwd: process.cwd(), toolSnippets: snippets }), /structured_output/);
+		const cwd = process.cwd();
+		assert.doesNotMatch(
+			stripSystemPromptEnvironmentPaths(buildSystemPrompt({ cwd, toolSnippets: snippets }), { cwd }),
+			/structured_output/,
+		);
 
 		const optInTool = createStructuredOutputTool({ schema: Type.Object({}) });
-		const optInPrompt = buildSystemPrompt({
-			cwd: process.cwd(),
-			selectedTools: [optInTool.name],
-			toolSnippets: { [optInTool.name]: optInTool.promptSnippet ?? "" },
-		});
+		const optInPrompt = stripSystemPromptEnvironmentPaths(
+			buildSystemPrompt({
+				cwd,
+				selectedTools: [optInTool.name],
+				toolSnippets: { [optInTool.name]: optInTool.promptSnippet ?? "" },
+			}),
+			{ cwd },
+		);
 		assert.match(optInPrompt, /structured_output/);
 	});
 });

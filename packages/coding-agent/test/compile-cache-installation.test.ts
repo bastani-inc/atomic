@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import { renameSyncWithRetry } from "../../../test/helpers/rename-retry.js";
 import {
 	INSTALLER_AT_WORK_MS,
 	type InstallationSnapshot,
@@ -50,7 +51,7 @@ describe("a compile-cache helper's installation", () => {
 		assert.notEqual(before.directory, undefined);
 		assert.equal(installationChanged(before, readInstallationSnapshot(packageDir)), false);
 		// What npm does first when it replaces a package: it moves the old directory aside.
-		renameSync(packageDir, join(root, ".atomic-retired"));
+		renameSyncWithRetry(packageDir, join(root, ".atomic-retired"));
 		assert.equal(installationChanged(before, readInstallationSnapshot(packageDir)), true);
 	});
 

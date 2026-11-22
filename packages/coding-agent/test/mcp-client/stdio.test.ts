@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import {
 	type RecordedProcess,
 	recordProcess,
@@ -160,6 +160,77 @@ describe("StdioTransport", () => {
 				assert.equal(closeEvents, 1);
 			} finally {
 				if (helper !== undefined) await signalRecordedProcess(helper);
+			}
+		},
+		PROCESS_TREE_TEST_TIMEOUT_MS,
+	);
+
+	it("allocates no close-bound timer after close for a cooperative server", async () => {
+		const closeTimeoutMs = 4_321;
+		const transport = new StdioTransport({
+			command: process.execPath,
+			args: [fixture],
+			closeTimeoutMs,
+		});
+		const client = new McpClient({ name: "stdio-test", version: "1.0.0" });
+		const realSetTimeout = globalThis.setTimeout;
+		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		try {
+			await client.connect(transport);
+			let closedEventFired = false;
+			const delaysAfterClose: number[] = [];
+			transport.onClose(() => {
+				closedEventFired = true;
+			});
+			setTimeoutSpy.mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+				if (closedEventFired) delaysAfterClose.push(Number(args[1]));
+				return realSetTimeout(...args);
+			}) as typeof setTimeout);
+			setTimeoutSpy.mockClear();
+
+			await transport.close();
+
+			assert.equal(closedEventFired, true);
+			assert.deepEqual(delaysAfterClose, []);
+		} finally {
+			setTimeoutSpy.mockRestore();
+			await client.close();
+		}
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"allocates no close-bound timer after close on POSIX even when a stubborn server is killed",
+		async () => {
+			const closeTimeoutMs = 123;
+			const transport = new StdioTransport({
+				command: process.execPath,
+				args: ["-e", "process.on('SIGTERM', () => {}); process.stdin.resume(); setInterval(() => {}, 1000)"],
+				closeTimeoutMs,
+			});
+			const realSetTimeout = globalThis.setTimeout;
+			const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+			try {
+				await transport.start();
+				const server = await recordProcess(transport.pid as number);
+				let closedEventFired = false;
+				const delaysAfterClose: number[] = [];
+				transport.onClose(() => {
+					closedEventFired = true;
+				});
+				setTimeoutSpy.mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+					if (closedEventFired) delaysAfterClose.push(Number(args[1]));
+					return realSetTimeout(...args);
+				}) as typeof setTimeout);
+				setTimeoutSpy.mockClear();
+
+				await transport.close();
+
+				assert.equal(closedEventFired, true);
+				assert.deepEqual(delaysAfterClose, []);
+				assert.equal(await waitUntilGone(server, PROCESS_TREE_EXIT_WAIT_MS), true);
+			} finally {
+				setTimeoutSpy.mockRestore();
+				await transport.close();
 			}
 		},
 		PROCESS_TREE_TEST_TIMEOUT_MS,

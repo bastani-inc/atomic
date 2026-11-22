@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { stripSystemPromptEnvironmentPaths } from "../../../test/helpers/system-prompt-paths.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.js";
 import { createEditToolDefinition, editToolSystemPromptContribution } from "../src/core/tools/edit.js";
 import { createWriteToolDefinition, writeToolSystemPromptContribution } from "../src/core/tools/write.js";
@@ -46,6 +47,9 @@ describe("edit and write prompt contributions (#4328)", () => {
 			...writeToolSystemPromptContribution.guidelines,
 		])
 			assert.ok(prompt.includes(text), `assembled prompt omitted: ${text}`);
-		assert.doesNotMatch(prompt, /\[PATH#|snapshot tag|replace N\.\.M|\+TEXT/);
+		assert.doesNotMatch(
+			stripSystemPromptEnvironmentPaths(prompt, { cwd: "/workspace" }),
+			/\[PATH#|snapshot tag|replace N\.\.M|\+TEXT/,
+		);
 	});
 });
