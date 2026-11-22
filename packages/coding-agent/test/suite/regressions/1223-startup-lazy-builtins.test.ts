@@ -70,6 +70,7 @@ function assertWebAccessRetriesRejectedInitializer(): void {
 			join(tempDir, "result-renderers.ts"),
 			"export function renderWebAccessToolResult() { return undefined; }\n",
 		);
+		writeFileSync(join(tempDir, "message-renderers.ts"), readRepoFile("packages/web-access/message-renderers.ts"));
 		writeFileSync(
 			join(tempDir, "index-heavy.ts"),
 			`

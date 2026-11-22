@@ -137,6 +137,7 @@ import type {
 	SubagentChildPolicy,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolRendererResolver,
 	ToolRenderers,
 	ToolResultEvent,
 	ToolResultEventResult,
@@ -190,6 +191,38 @@ export async function emitSessionShutdownEvent(
 		return true;
 	}
 	return false;
+}
+
+/** Exact renderer registrations introduced by an in-place deferred startup attach. */
+export interface RendererChange {
+	readonly messageTypes: ReadonlySet<string>;
+	readonly toolNames: ReadonlySet<string>;
+	readonly hasToolResolvers: boolean;
+}
+
+/** Tool renderer resolution result together with the resolver identity (or `"base"`) that supplied it. */
+export interface ResolvedToolRenderers {
+	readonly renderers: ToolRenderers | undefined;
+	readonly source: ToolRendererResolver | "base";
+	readonly base: ToolRenderers | undefined;
+}
+
+interface RendererChangeSubscription {
+	readonly listener: (change: RendererChange) => void;
+	readonly onRetire?: () => void;
+}
+
+function collectRendererChange(extensions: readonly Extension[]): RendererChange | undefined {
+	const messageTypes = new Set<string>();
+	const toolNames = new Set<string>();
+	let hasToolResolvers = false;
+	for (const ext of extensions) {
+		for (const customType of ext.messageRenderers.keys()) messageTypes.add(customType);
+		for (const toolName of ext.tools.keys()) toolNames.add(toolName);
+		if ((ext.toolRenderers?.length ?? 0) > 0) hasToolResolvers = true;
+	}
+	if (messageTypes.size === 0 && toolNames.size === 0 && !hasToolResolvers) return undefined;
+	return { messageTypes, toolNames, hasToolResolvers };
 }
 
 export class ExtensionRunner {
@@ -300,6 +333,7 @@ export class ExtensionRunner {
 	private activeUIPrompt:
 		| { depth: number; reason: "ui_prompt" | "project_trust"; kind: UIPromptKind; title: string | undefined }
 		| undefined;
+	private readonly rendererChangeListeners = new Set<RendererChangeSubscription>();
 
 	constructor(
 		extensions: Extension[],
@@ -321,6 +355,37 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 		this.subagentPolicy = subagentPolicy;
 		this.intercomPolicy = intercomPolicy;
+	}
+
+	/** Subscribe to renderer registry changes caused by in-place deferred startup attachment. */
+	onRenderersChanged(listener: (change: RendererChange) => void, onRetire?: () => void): () => void {
+		const subscription: RendererChangeSubscription = { listener, onRetire };
+		this.rendererChangeListeners.add(subscription);
+		return () => {
+			this.rendererChangeListeners.delete(subscription);
+		};
+	}
+
+	private notifyRenderersChanged(change: RendererChange): void {
+		for (const subscription of [...this.rendererChangeListeners]) {
+			try {
+				subscription.listener(change);
+			} catch {
+				// Listener failure must not abort startup attachment.
+			}
+		}
+	}
+
+	private retireRendererChangeListeners(): void {
+		const subscriptions = [...this.rendererChangeListeners];
+		this.rendererChangeListeners.clear();
+		for (const subscription of subscriptions) {
+			try {
+				subscription.onRetire?.();
+			} catch {
+				// Listener cleanup must not block runner retirement.
+			}
+		}
 	}
 
 	bindCore(
@@ -749,6 +814,7 @@ export class ExtensionRunner {
 	}
 
 	revokeAuthority(): void {
+		this.retireRendererChangeListeners();
 		try {
 			this.retireObservation();
 		} finally {
@@ -758,6 +824,7 @@ export class ExtensionRunner {
 	}
 
 	invalidate(message = STALE_EXTENSION_CONTEXT_MESSAGE): void {
+		this.retireRendererChangeListeners();
 		this.sealHostInput();
 		try {
 			this.retireObservation();
@@ -825,12 +892,35 @@ export class ExtensionRunner {
 		return collectMarkdownTransformers(this.extensions);
 	}
 
+	/** Renderers of calls to `toolName` together with the resolver identity (or `"base"`) that produced them. */
+	resolveToolRenderersWithSource(toolName: string, base: () => ToolRenderers | undefined): ResolvedToolRenderers {
+		const resolvers = this.extensions.flatMap((ext) => ext.toolRenderers ?? []);
+		let baseResult: ToolRenderers | undefined;
+		const resolve = (
+			index: number,
+		): { renderers: ToolRenderers | undefined; source: ToolRendererResolver | "base" } => {
+			if (index >= resolvers.length) {
+				baseResult = base();
+				return { renderers: baseResult, source: "base" };
+			}
+			const resolver = resolvers[index]!;
+			let downstream: { renderers: ToolRenderers | undefined; source: ToolRendererResolver | "base" } | undefined;
+			const result = resolver(toolName, () => {
+				downstream = resolve(index + 1);
+				return downstream.renderers;
+			});
+			if (downstream !== undefined && result === downstream.renderers) {
+				return downstream;
+			}
+			return { renderers: result, source: resolver };
+		};
+		const resolved = resolve(0);
+		return { renderers: resolved.renderers, source: resolved.source, base: baseResult };
+	}
+
 	/** Renderers of calls to `toolName`: extension resolvers in load order, then `base`. */
 	resolveToolRenderers(toolName: string, base: () => ToolRenderers | undefined): ToolRenderers | undefined {
-		const resolvers = this.extensions.flatMap((ext) => ext.toolRenderers ?? []);
-		const resolve = (index: number): ToolRenderers | undefined =>
-			index < resolvers.length ? resolvers[index](toolName, () => resolve(index + 1)) : base();
-		return resolve(0);
+		return this.resolveToolRenderersWithSource(toolName, base).renderers;
 	}
 
 	getEntryRenderer(customType: string): EntryRenderer | undefined {
@@ -989,14 +1079,19 @@ export class ExtensionRunner {
 		const retained = this.extensions.filter((extension) => !extensions.includes(extension));
 		this.extensions = [...extensions, ...retained];
 		return async () => {
-			await runResourceRegistrationBatch(this.runtime, () =>
-				runGenericHandlers(
-					this.extensions.filter((extension) => newcomers.includes(extension)),
-					this.createContext(),
-					{ type: "session_start", reason: "startup" },
-					onError,
-				),
-			);
+			try {
+				await runResourceRegistrationBatch(this.runtime, () =>
+					runGenericHandlers(
+						this.extensions.filter((extension) => newcomers.includes(extension)),
+						this.createContext(),
+						{ type: "session_start", reason: "startup" },
+						onError,
+					),
+				);
+			} finally {
+				const change = collectRendererChange(newcomers);
+				if (change) this.notifyRenderersChanged(change);
+			}
 		};
 	}
 
