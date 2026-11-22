@@ -277,6 +277,7 @@ In non-interactive modes, check `ctx.hasUI` before using UI methods.
 <a id="keybinding-hints" />
 <a id="best-practices" />
 <a id="fallback" />
+
 - Extension structure, state management, custom tools, overrides, remote execution, truncation, and custom rendering moved to [Writing extensions](/extensions/authoring).
 
 <a id="events" />
@@ -316,6 +317,7 @@ In non-interactive modes, check `ctx.hasUI` before using UI methods.
 <a id="user_bash" />
 <a id="input-events" />
 <a id="input" />
+
 - Lifecycle diagrams, event payloads, and return contracts moved to [Extension events](/extensions/events).
 
 <a id="custom-ui" />
@@ -329,6 +331,7 @@ In non-interactive modes, check `ctx.hasUI` before using UI methods.
 <a id="custom-editor" />
 <a id="message-rendering" />
 <a id="theme-colors" />
+
 - Dialogs, widgets, autocomplete providers, custom components, overlays, custom editors, and theme helpers moved to [Extension UI](/extensions/ui).
 
 <a id="extensioncontext" />
@@ -383,7 +386,9 @@ In non-interactive modes, check `ctx.hasUI` before using UI methods.
 <a id="pi-unregisterprovider-name" />
 <a id="pi-registermcpserver-name-config" />
 <a id="error-handling" />
+
 - `ExtensionContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and error handling moved to [Extension API reference](/extensions/api-reference).
 
 <a id="examples-reference" />
+
 - Runnable extension examples moved to [Extension examples](/extensions/examples).

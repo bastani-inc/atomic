@@ -251,7 +251,7 @@ When a [model fallback](/settings#fallbackmodels) switches models, the entry als
 
 ```json
 {"type":"model_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","provider":"anthropic","modelId":"claude-opus-4-8","fallback":{"requested":"openai/gpt-4o","from":"openai/gpt-4o","reason":"503 Service Unavailable"}}
-{"type":"model_change","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","provider":"github-copilot","modelId":"gpt-5.5","fallback":{"requested":"openai/gpt-5","from":"openai/gpt-5","reason":"No API key found for openai","skipped":[{"model":"openai/gpt-5","provider":"openai","reason":"no-credentials"},{"model":"anthropic/claude-opus-4-8","provider":"anthropic","reason":"no-credentials"}]}}
+{"type":"model_change","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","provider":"github-copilot","modelId":"gpt-6.1-sol","fallback":{"requested":"openai/gpt-5","from":"openai/gpt-5","reason":"No API key found for openai","skipped":[{"model":"openai/gpt-5","provider":"openai","reason":"no-credentials"},{"model":"anthropic/claude-opus-4-8","provider":"anthropic","reason":"no-credentials"}]}}
 ```
 
 ### ThinkingLevelChangeEntry

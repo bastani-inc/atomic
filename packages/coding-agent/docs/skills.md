@@ -44,6 +44,7 @@ Discovery rules:
 Disable default discovery with `--no-skills`. Explicit `--skill` paths still load.
 
 <a id="using-skills-from-other-harnesses" />
+
 ### Using skills from other tools
 
 To load skills stored in existing user directories, add their paths to `settings.json`:
@@ -190,10 +191,12 @@ If a skill command is queued while the session is paused, it may remain literal 
 <a id="skill-structure" />
 <a id="skill-md-format" />
 <a id="example" />
+
 - Skill directory structure, `SKILL.md` format, and a worked example moved to [Writing skills](/skills/authoring).
 
 <a id="frontmatter" />
 <a id="name-rules" />
 <a id="description-best-practices" />
 <a id="validation" />
+
 - Frontmatter fields, name rules, description best practices, and validation rules moved to [Skill reference](/skills/reference).

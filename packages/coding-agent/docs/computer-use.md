@@ -65,17 +65,56 @@ Check the target library or app API reference before scripting, start on a dispo
 osascript -e 'on run argv' -e 'tell application "TextEdit" to make new document with properties {text:(item 1 of argv)}' -e 'end run' "Draft outline"
 ```
 
-macOS prompts once for Automation permission; grant it interactively. See Apple's [scripting terminology guide](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AboutScriptingTerminology.html) for dictionary details.
+macOS prompts once for Automation permission; grant it interactively. JavaScript for Automation (JXA) is another macOS option via `osascript -l JavaScript script.js`; it uses Apple's automation objects rather than browser DOM or Node.js APIs. See Apple's [scripting terminology guide](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AboutScriptingTerminology.html) for dictionary details.
 
-**Presentations (`python-pptx` with `uv`):** Run one-off Python scripts with [uv](https://docs.astral.sh/uv/) using `--no-project` so you do not modify an unrelated project environment:
+**Presentations (`python-pptx` with `uv`):** Save this script as `create_deck.py` in a scratch directory:
+
+```python
+from pathlib import Path
+
+from pptx import Presentation
+
+deck = Presentation()
+title_slide = deck.slides.add_slide(deck.slide_layouts[0])
+title_slide.shapes.title.text = "Quarterly review"
+title_slide.placeholders[1].text = "Draft for discussion"
+
+summary = deck.slides.add_slide(deck.slide_layouts[1])
+summary.shapes.title.text = "Next steps"
+body = summary.placeholders[1].text_frame
+body.text = "Review the results"
+body.add_paragraph().text = "Agree on next quarter's priorities"
+
+output = Path("quarterly-review-draft.pptx")
+with output.open("xb") as stream:
+    deck.save(stream)
+print(f"Created {output.resolve()}")
+```
+
+Run it from that directory with [uv](https://docs.astral.sh/uv/) using `--no-project` so you do not modify an unrelated project environment:
 
 ```sh
 uv run --no-project --with python-pptx python create_deck.py
 ```
 
-Open new outputs with exclusive creation (`open("xb")`) to avoid overwriting originals, inspect custom template placeholder indices before editing, and review the rendered slides in PowerPoint or LibreOffice Impress. See the [python-pptx quickstart](https://python-pptx.readthedocs.io/en/latest/user/quickstart.html), [python-docx](https://python-docx.readthedocs.io/en/latest/), and [openpyxl](https://openpyxl.readthedocs.io/en/stable/).
+Opening the output with exclusive creation (`open("xb")`) prevents overwriting an existing file. Inspect custom template placeholder indices before editing, and review the rendered slides in PowerPoint or LibreOffice Impress. See the [python-pptx quickstart](https://python-pptx.readthedocs.io/en/latest/user/quickstart.html), [python-docx](https://python-docx.readthedocs.io/en/latest/), and [openpyxl](https://openpyxl.readthedocs.io/en/stable/).
 
-**Desktop Office (VBA and Office Scripts):** Keep VBA macros inside a trusted `.xlsm` copy, reference `ThisWorkbook` and named sheets instead of `Selection` or `ActiveSheet`, and respect organization Trust Center policies rather than lowering macro security. For Excel on the web or Microsoft 365 with the Automate tab, see [Office Scripts versus VBA](https://learn.microsoft.com/en-us/office/dev/scripts/resources/vba-differences).
+**Desktop Office (VBA and Office Scripts):** Keep VBA macros inside a trusted `.xlsm` copy, reference `ThisWorkbook` and named sheets instead of `Selection` or `ActiveSheet`, and respect organization Trust Center policies rather than lowering macro security. For example, to format `A1:D20` on a `Summary` worksheet:
+
+```vb
+Option Explicit
+
+Sub FormatSummary()
+    Dim report As Worksheet
+    Set report = ThisWorkbook.Worksheets("Summary")
+
+    report.Range("A1:D1").Font.Bold = True
+    report.Range("B2:D20").NumberFormat = "#,##0.00"
+    report.Range("A1:D20").Columns.AutoFit
+End Sub
+```
+
+For Excel on the web or Microsoft 365 with the Automate tab, see [Office Scripts versus VBA](https://learn.microsoft.com/en-us/office/dev/scripts/resources/vba-differences).
 
 **Blender batch scripting:** Load the `.blend` file before the script and pass `--python-exit-code 1` so Python errors return a nonzero exit status:
 

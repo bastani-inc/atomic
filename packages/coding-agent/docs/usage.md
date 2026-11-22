@@ -61,7 +61,7 @@ On native Windows, `Alt+Z` opens an interactive PowerShell subshell; type `exit`
 
 ## Startup typing
 
-On eligible interactive starts, Atomic opens the prompt editor immediately so you can start typing right away, and your text is kept while the session finishes loading. This applies in a fullscreen terminal when no startup dialog (such as first-run setup or a project trust prompt), non-default editor display setting (other than a built-in global theme), or CLI flag outside `--offline`, `--no-mcp`, `--verbose`, `--approve`/`-a`, and `--no-approve`/`-na` is active.
+On eligible interactive starts, Atomic opens the prompt editor immediately so you can start typing right away, and your text is kept while the session finishes loading. This applies in a fullscreen terminal when no startup dialog (such as first-run setup or a project trust prompt), custom editor display setting, or CLI flag outside `--offline`, `--no-mcp`, `--verbose`, `--approve`/`-a`, and `--no-approve`/`-na` is active. Static built-in global themes (`dark`, `light`, and the Catppuccin palettes) stay eligible; `system` and `light/dark` pairs use standard startup.
 
 While the session is still loading:
 

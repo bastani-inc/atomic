@@ -952,6 +952,55 @@ describe("docs reader anchors (#2847)", () => {
 		}
 		assert.deepEqual(wrong, [], "a live citation cannot be exempted; correct the anchor instead");
 	});
+
+	test("every standalone HTML anchor tag is separated from following markdown by a blank line", () => {
+		// Under CommonMark HTML block rule 7, a standalone HTML tag like `<a id="foo" />`
+		// swallows immediately following non-blank lines into the raw HTML block, so a
+		// heading or bullet list on the next line renders as literal unparsed markdown.
+		const anchorLine = /^ {0,3}<a\s+id=(?:"[^"]+"|'[^']+')\s*(?:\/>|><\/a>)\s*$/u;
+		const unseparatedAnchors = (text: string): number[] => {
+			const lines = text.split("\n");
+			let fence: { character: string; length: number } | undefined;
+			const badLines: number[] = [];
+			for (let index = 0; index < lines.length; index += 1) {
+				const line = lines[index] ?? "";
+				const marker = /^\s*(`{3,}|~{3,})(.*)$/u.exec(line);
+				if (marker) {
+					const delimiter = marker[1] ?? "";
+					if (!fence) fence = { character: delimiter[0] ?? "", length: delimiter.length };
+					else if (delimiter[0] === fence.character && delimiter.length >= fence.length && !marker[2]?.trim())
+						fence = undefined;
+					continue;
+				}
+				if (fence) continue;
+				if (!anchorLine.test(line)) continue;
+				const next = lines[index + 1];
+				if (next !== undefined && next.trim() !== "" && !anchorLine.test(next)) {
+					badLines.push(index + 1);
+				}
+			}
+			return badLines;
+		};
+
+		assert.deepEqual(unseparatedAnchors('<a id="a" />\n### Heading\n'), [1]);
+		assert.deepEqual(unseparatedAnchors('<a id="a" />\n<a id="b" />\n- Item\n'), [2]);
+		assert.deepEqual(unseparatedAnchors('<a id="a" />\n<a id="b" />\n\n- Item\n'), []);
+		assert.deepEqual(unseparatedAnchors('```md\n<a id="a" />\n### Fenced\n```\n'), []);
+
+		const violations: string[] = [];
+		for (const slug of diskSlugs) {
+			const page = pathForSlug(slug);
+			const text = readFileSync(join(docsDir, page), "utf8");
+			for (const line of unseparatedAnchors(text)) {
+				violations.push(`${page}:${line}`);
+			}
+		}
+		assert.deepEqual(
+			violations,
+			[],
+			"every standalone `<a id=... />` block must be followed by a blank line before markdown content",
+		);
+	});
 });
 
 describe("docs references and assets (#2847)", () => {

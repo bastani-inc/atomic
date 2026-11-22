@@ -427,7 +427,7 @@ See [Environment variables](/environment-variables) for the complete registry of
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the startup version update check |
 | `ATOMIC_STDIN_TIMEOUT_MS` | Milliseconds a print-mode run waits for piped stdin before starting with a prompt argument; default `2000`, max `2147483647`, `0` waits until EOF |
 | `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no` (does not disable update checks) |
-| `NODE_COMPILE_CACHE` | Override Node's persistent compile cache directory (enabled automatically on Node 22.8+; set `NODE_DISABLE_COMPILE_CACHE=1` to opt out). On Windows, a cold default cache warms in a background `node` helper during interactive runs |
+| `NODE_COMPILE_CACHE` | Override Node's persistent compile cache directory (enabled automatically on Node 22.8+; set `NODE_DISABLE_COMPILE_CACHE=1` to opt out) |
 | `ATOMIC_CACHE_RETENTION` | Prompt-cache retention: `long` (default), `short`, or `none`, subject to provider and model support. See [Prompt-cache retention](/environment-variables#prompt-cache-retention) |
 | `ATOMIC_OAUTH_CALLBACK_HOST` | Bind host for the local OAuth callback server during `/login`; default `127.0.0.1` |
 | `ATOMIC_NO_PTY` | Set to `1` to disable PTY allocation for `bash` and `powershell` tools |
@@ -446,4 +446,4 @@ The snapshot is taken when the command executes, not when the tool is created, s
 
 Before overlaying the eight current snapshot values above, Atomic clears those eight names plus the two retired session-file variables (ten reserved names in total; see [Bash and PowerShell session environment](/environment-variables#bash-and-powershell-session-environment) for the retired names). Factory-created bash tools expose the same metadata by default and accept `exposeSessionEnvironment: false` to omit it.
 
-App-specific `ATOMIC_*` variables also accept legacy `PI_*` aliases (except storage and team variables). Intercom's default broker starter works across Node installs, Bun checkouts, and standalone binaries without needing `npx`, `tsx`, or `bun` on `PATH`.
+Many app-specific `ATOMIC_*` variables also accept legacy `PI_*` aliases, while storage, team, and newer Atomic-only variables such as `ATOMIC_REDUCED_MOTION` do not; see [Environment variables](/environment-variables) for the exact alias of each variable. Intercom's default broker starter works across Node installs, Bun checkouts, and standalone binaries without needing `npx`, `tsx`, or `bun` on `PATH`.

@@ -13,8 +13,8 @@ Atomic discovers agents in the scopes below. Later scopes and later directories 
 
 | Scope | Locations (increasing precedence) |
 | --- | --- |
-| Builtin | Bundled with Atomic |
 | Package | `agents` field in an installed package, qualified as `<namespace>.<name>` ([package subagents](/packages/authoring#subagents)) |
+| Builtin | Bundled with Atomic |
 | User | `~/.pi/agent/agents/**/*.md` (omitted when `ATOMIC_CODING_AGENT_DIR` is set), then `~/.agents/**/*.md`, then `~/.atomic/agent/agents/**/*.md` (or `<ATOMIC_CODING_AGENT_DIR>/agents/**/*.md`) |
 | Project (trusted only) | Nearest ancestor project root: `.agents/**/*.md`, then `.pi/agents/**/*.md`, then `.atomic/agents/**/*.md` |
 

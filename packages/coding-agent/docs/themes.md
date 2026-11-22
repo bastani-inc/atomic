@@ -179,4 +179,5 @@ Atomic ships seven built-in themes:
 <a id="color-values" />
 <a id="256-color-palette" />
 <a id="terminal-compatibility" />
+
 - Theme format, color tokens, HTML export settings, color values, 256-color palette behavior, and terminal compatibility moved to [Theme reference](/themes/reference).
