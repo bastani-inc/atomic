@@ -1,21 +1,21 @@
 {
 	"name": "@bastani/atomic",
-	"version": "0.0.0",
+	"version": "0.10.4-alpha.1",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@bastani/atomic",
-			"version": "0.0.0",
+			"version": "0.10.4-alpha.1",
 			"license": "MIT",
 			"dependencies": {
-				"@bastani/atomic-natives": "0.0.0",
-				"@bastani/atomic-ai": "0.0.0",
-				"@bastani/atomic-agent-core": "0.0.0",
-				"@bastani/atomic-codemode": "0.0.0",
-				"@bastani/atomic-tui": "0.0.0",
-				"@bastani/atomic-schema": "0.0.0",
-				"@bastani/atomic-telemetry": "0.0.0",
+				"@bastani/atomic-natives": "0.10.4-alpha.1",
+				"@bastani/atomic-ai": "0.10.4-alpha.1",
+				"@bastani/atomic-agent-core": "0.10.4-alpha.1",
+				"@bastani/atomic-codemode": "0.10.4-alpha.1",
+				"@bastani/atomic-tui": "0.10.4-alpha.1",
+				"@bastani/atomic-schema": "0.10.4-alpha.1",
+				"@bastani/atomic-telemetry": "0.10.4-alpha.1",
 				"@silvia-odwyer/photon-node": "0.3.4",
 				"brace-expansion": "5.0.12",
 				"chalk": "6.0.0",
@@ -422,26 +422,26 @@
 			}
 		},
 		"node_modules/@bastani/atomic-agent-core": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-agent-core/-/atomic-agent-core-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-agent-core/-/atomic-agent-core-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"dependencies": {
-				"@bastani/atomic-ai": "0.0.0",
-				"@bastani/atomic-schema": "0.0.0"
+				"@bastani/atomic-ai": "0.10.4-alpha.1",
+				"@bastani/atomic-schema": "0.10.4-alpha.1"
 			},
 			"engines": {
 				"node": ">=22.19.0"
 			}
 		},
 		"node_modules/@bastani/atomic-ai": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-ai/-/atomic-ai-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-ai/-/atomic-ai-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.129.0",
 				"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-				"@bastani/atomic-schema": "0.0.0",
-				"@bastani/atomic-telemetry": "0.0.0",
+				"@bastani/atomic-schema": "0.10.4-alpha.1",
+				"@bastani/atomic-telemetry": "0.10.4-alpha.1",
 				"@google/genai": "2.32.0",
 				"@smithy/node-http-handler": "4.13.0",
 				"http-proxy-agent": "9.1.0",
@@ -519,8 +519,8 @@
 			}
 		},
 		"node_modules/@bastani/atomic-codemode": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-codemode/-/atomic-codemode-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-codemode/-/atomic-codemode-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"quickjs-wasi": "3.6.3"
@@ -530,18 +530,18 @@
 			}
 		},
 		"node_modules/@bastani/atomic-natives": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"optionalDependencies": {
-				"@bastani/atomic-natives-darwin-arm64": "0.0.0",
-				"@bastani/atomic-natives-darwin-x64": "0.0.0",
-				"@bastani/atomic-natives-linux-arm64-gnu": "0.0.0",
-				"@bastani/atomic-natives-linux-arm64-musl": "0.0.0",
-				"@bastani/atomic-natives-linux-x64-gnu": "0.0.0",
-				"@bastani/atomic-natives-linux-x64-musl": "0.0.0",
-				"@bastani/atomic-natives-win32-arm64-msvc": "0.0.0",
-				"@bastani/atomic-natives-win32-x64-msvc": "0.0.0"
+				"@bastani/atomic-natives-darwin-arm64": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-darwin-x64": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-linux-arm64-gnu": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-linux-arm64-musl": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-linux-x64-gnu": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-linux-x64-musl": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-win32-arm64-msvc": "0.10.4-alpha.1",
+				"@bastani/atomic-natives-win32-x64-msvc": "0.10.4-alpha.1"
 			},
 			"engines": {
 				"bun": ">=1.4.2",
@@ -549,8 +549,8 @@
 			}
 		},
 		"node_modules/@bastani/atomic-natives-darwin-arm64": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-arm64/-/atomic-natives-darwin-arm64-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-arm64/-/atomic-natives-darwin-arm64-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"darwin"
@@ -561,8 +561,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-darwin-x64": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-x64/-/atomic-natives-darwin-x64-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-x64/-/atomic-natives-darwin-x64-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"darwin"
@@ -573,8 +573,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-arm64-gnu": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-gnu/-/atomic-natives-linux-arm64-gnu-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-gnu/-/atomic-natives-linux-arm64-gnu-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -588,8 +588,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-arm64-musl": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-musl/-/atomic-natives-linux-arm64-musl-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-musl/-/atomic-natives-linux-arm64-musl-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -603,8 +603,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-x64-gnu": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-gnu/-/atomic-natives-linux-x64-gnu-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-gnu/-/atomic-natives-linux-x64-gnu-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -618,8 +618,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-linux-x64-musl": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-musl/-/atomic-natives-linux-x64-musl-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-musl/-/atomic-natives-linux-x64-musl-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"linux"
@@ -633,8 +633,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-win32-arm64-msvc": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-arm64-msvc/-/atomic-natives-win32-arm64-msvc-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-arm64-msvc/-/atomic-natives-win32-arm64-msvc-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"win32"
@@ -645,8 +645,8 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-natives-win32-x64-msvc": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-x64-msvc/-/atomic-natives-win32-x64-msvc-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-x64-msvc/-/atomic-natives-win32-x64-msvc-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"os": [
 				"win32"
@@ -657,24 +657,24 @@
 			"optional": true
 		},
 		"node_modules/@bastani/atomic-schema": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-schema/-/atomic-schema-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-schema/-/atomic-schema-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"engines": {
 				"node": ">=22.19.0"
 			}
 		},
 		"node_modules/@bastani/atomic-telemetry": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-telemetry/-/atomic-telemetry-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-telemetry/-/atomic-telemetry-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"engines": {
 				"node": ">=22.19.0"
 			}
 		},
 		"node_modules/@bastani/atomic-tui": {
-			"version": "0.0.0",
-			"resolved": "https://registry.npmjs.org/@bastani/atomic-tui/-/atomic-tui-0.0.0.tgz",
+			"version": "0.10.4-alpha.1",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-tui/-/atomic-tui-0.10.4-alpha.1.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"get-east-asian-width": "1.7.0",
