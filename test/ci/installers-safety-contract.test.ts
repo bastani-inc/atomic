@@ -380,6 +380,14 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 	assert.match(powershell, /\$rollbackRetryLimit\s*=\s*[2-9]/u);
 	assert.match(finallyBlock, /while \(\$rollbackAttempt -lt \$rollbackRetryLimit/u);
 	assert.match(finallyBlock, /Write-Warning.*rollback.*incomplete.*-WarningAction Continue/iu);
+	assert.match(
+		finallyBlock,
+		/\$null = Remove-AtomicTreeWithRetry \$versionStagePath \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
+	);
+	assert.match(
+		finallyBlock,
+		/\$null = Remove-AtomicTreeWithRetry \$shimNextPath \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
+	);
 	assert.match(powershell, /function Add-AtomicMissingDirectoryPaths/u);
 	assert.match(powershell, /Sort-Object -Property Length -Descending/u);
 	assert.match(powershell, /do \{[\s\S]+\} while \(\$removedDirectory\)/u);
@@ -405,6 +413,7 @@ test("Windows temporary download directories are removed with bounded verified r
 	assert.doesNotMatch(helper, /SilentlyContinue/u);
 	assert.match(helper, /\[IO\.Directory\]::Delete\(\$Path, \$true\)/u);
 	assert.match(helper, /if \(-not \(Test-AtomicRemovalTargetExists \$Path\)\)/u);
+	assert.match(helper, /Test-AtomicTransientFileSystemError \$result\.LastError/u);
 	assert.match(helper, /\[IO\.FileAttributes\]::ReadOnly/u);
 	assert.doesNotMatch(helper, /Remove-Item -LiteralPath (?!\$Path\b)/u);
 	assert.doesNotMatch(helper, /\[IO\.Directory\]::Delete\((?!\$Path,)/u);

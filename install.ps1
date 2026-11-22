@@ -920,8 +920,28 @@ function Get-AtomicShimShadowingExtensions {
     return $shadowing
 }
 
+function Test-AtomicTransientFileSystemError {
+    param($ErrorRecord)
+
+    if ($null -eq $ErrorRecord) {
+        return $false
+    }
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        if ($exception -is [System.IO.IOException] -or $exception -is [System.UnauthorizedAccessException]) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
 function Remove-AtomicDirectoryLinkOrTree {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [int]$RetryLimit = 9,
+        [int]$RetryDelayMilliseconds = 250
+    )
 
     $item = Get-AtomicDirectoryEntry $Path
     if ($null -eq $item) {
@@ -933,7 +953,13 @@ function Remove-AtomicDirectoryLinkOrTree {
         return
     }
 
-    Remove-Item -LiteralPath $item.FullName -Recurse -Force
+    $removal = Remove-AtomicTreeWithRetry $item.FullName $RetryLimit $RetryDelayMilliseconds
+    if (-not $removal.Removed) {
+        if ($null -ne $removal.LastError) {
+            throw $removal.LastError
+        }
+        throw "Failed to remove $($item.FullName) after $($removal.Attempts) attempts."
+    }
 }
 
 function Test-AtomicRemovalTargetExists {
@@ -1002,6 +1028,10 @@ function Remove-AtomicTreeWithRetry {
         }
         if (-not (Test-AtomicRemovalTargetExists $Path)) {
             return $result
+        }
+
+        if ($null -ne $result.LastError -and -not (Test-AtomicTransientFileSystemError $result.LastError)) {
+            break
         }
 
         if ($result.Attempts -lt $RetryLimit) {
@@ -1123,7 +1153,13 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.ShimInstallIntended = $false
             }
             else {
-                Remove-Item -LiteralPath $shimItem.FullName -Force
+                $shimRemoval = Remove-AtomicTreeWithRetry $shimItem.FullName $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
+                if (-not $shimRemoval.Removed) {
+                    if ($null -ne $shimRemoval.LastError) {
+                        throw $shimRemoval.LastError
+                    }
+                    throw "Failed to remove $($shimItem.FullName) after $($shimRemoval.Attempts) attempts."
+                }
                 $Transaction.ShimInstallIntended = $false
             }
         }
@@ -1207,7 +1243,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.VersionInstallIntended = $false
             }
             else {
-                Remove-AtomicDirectoryLinkOrTree $versionItem.FullName
+                Remove-AtomicDirectoryLinkOrTree $versionItem.FullName $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
                 $Transaction.VersionInstallIntended = $false
             }
         }
@@ -1946,7 +1982,7 @@ finally {
     }
 
     if ($null -ne $shimNextPath -and $null -ne (Get-AtomicDirectoryEntry $shimNextPath)) {
-        Remove-Item -LiteralPath $shimNextPath -Force -ErrorAction SilentlyContinue
+        $null = Remove-AtomicTreeWithRetry $shimNextPath $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
     }
     if ($null -ne $atomicCurrentNextPath -and $null -ne (Get-AtomicDirectoryEntry $atomicCurrentNextPath)) {
         try { Remove-AtomicDirectoryLinkOrTree $atomicCurrentNextPath }
@@ -1957,7 +1993,7 @@ finally {
         catch { Write-Warning -Message "Failed to remove temporary current pointer ${currentNextPath}: $_" -WarningAction Continue }
     }
     if ($null -ne $versionStagePath -and $null -ne (Get-AtomicDirectoryEntry $versionStagePath)) {
-        Remove-Item -LiteralPath $versionStagePath -Recurse -Force -ErrorAction SilentlyContinue
+        $null = Remove-AtomicTreeWithRetry $versionStagePath $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
     }
     if ($null -ne $tempDir -and (Test-Path -LiteralPath $tempDir)) {
         try {
