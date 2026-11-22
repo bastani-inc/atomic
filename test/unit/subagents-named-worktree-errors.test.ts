@@ -211,56 +211,64 @@ test.skipIf(process.platform === "win32")(
 /** Longer than the add's wait for a sibling worktree's registration (one second), as its own Git commands take on a loaded machine. */
 const LOADED_GIT_COMMAND_MS = 1_200;
 
-test("an add retries another worktree's missing commondir however long its own Git commands take on a loaded machine (#5202)", async () => {
-	const repo = makeRepo();
-	const realAdd = namedWorktreeGit.addNamedWorktree;
-	const realRunGit = worktreeGit.runGit;
-	let attempts = 0;
-	vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation((cwd, args, env, signal) => {
-		if (++attempts === 1)
-			return Promise.resolve({
-				status: 128,
-				stdout: "",
-				stderr: "fatal: failed to read .git/worktrees/another-target/commondir: No error\n",
-			});
-		return realAdd(cwd, args, env, signal);
-	});
-	vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, env) => {
-		// The listing the retry makes first answers as late as a loaded machine's Git does.
-		if (attempts === 1 && args[0] === "worktree" && args[1] === "list") await sleep(LOADED_GIT_COMMAND_MS);
-		return realRunGit(cwd, args, env);
-	});
-	const created = await ensureNamedWorktree(repo, { branch: "feat/commondir-slow-git" });
-	assert.equal(attempts, 2);
-	assert.equal(git(created.path, "branch", "--show-current"), "feat/commondir-slow-git");
-});
+test(
+	"an add retries another worktree's missing commondir however long its own Git commands take on a loaded machine (#5202)",
+	async () => {
+		const repo = makeRepo();
+		const realAdd = namedWorktreeGit.addNamedWorktree;
+		const realRunGit = worktreeGit.runGit;
+		let attempts = 0;
+		vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation((cwd, args, env, signal) => {
+			if (++attempts === 1)
+				return Promise.resolve({
+					status: 128,
+					stdout: "",
+					stderr: "fatal: failed to read .git/worktrees/another-target/commondir: No error\n",
+				});
+			return realAdd(cwd, args, env, signal);
+		});
+		vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, env) => {
+			// The listing the retry makes first answers as late as a loaded machine's Git does.
+			if (attempts === 1 && args[0] === "worktree" && args[1] === "list") await sleep(LOADED_GIT_COMMAND_MS);
+			return realRunGit(cwd, args, env);
+		});
+		const created = await ensureNamedWorktree(repo, { branch: "feat/commondir-slow-git" });
+		assert.equal(attempts, 2);
+		assert.equal(git(created.path, "branch", "--show-current"), "feat/commondir-slow-git");
+	},
+	REAL_GIT_PROCESS_BUDGET_MS,
+);
 
-test("a persistent sibling commondir error stops within five adds and never retries a populated target (#5202)", async () => {
-	const repo = makeRepo();
-	let attempts = 0;
-	const errorText = "fatal: failed to read .git/worktrees/another-target/commondir: No error\n";
-	const add = vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation(async () => {
-		attempts++;
-		return { status: 128, stdout: "", stderr: errorText };
-	});
-	await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/persistent-commondir" }), /failed to read/);
-	assert.ok(attempts >= 1 && attempts <= 5, `expected at most five adds, got ${attempts}`);
+test(
+	"a persistent sibling commondir error stops within five adds and never retries a populated target (#5202)",
+	async () => {
+		const repo = makeRepo();
+		let attempts = 0;
+		const errorText = "fatal: failed to read .git/worktrees/another-target/commondir: No error\n";
+		const add = vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation(async () => {
+			attempts++;
+			return { status: 128, stdout: "", stderr: errorText };
+		});
+		await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/persistent-commondir" }), /failed to read/);
+		assert.ok(attempts >= 1 && attempts <= 5, `expected at most five adds, got ${attempts}`);
 
-	attempts = 0;
-	const target = join(repo, "partial-checkout");
-	add.mockImplementation(async () => {
-		attempts++;
-		mkdirSync(target);
-		writeFileSync(join(target, "keep.txt"), "not yet checked out\n");
-		return { status: 128, stdout: "", stderr: errorText };
-	});
-	await assert.rejects(
-		ensureNamedWorktree(repo, { branch: "feat/partial-commondir", path: target }),
-		/failed to read/,
-	);
-	assert.equal(attempts, 1);
-	assert.equal(readFileSync(join(target, "keep.txt"), "utf8"), "not yet checked out\n");
-});
+		attempts = 0;
+		const target = join(repo, "partial-checkout");
+		add.mockImplementation(async () => {
+			attempts++;
+			mkdirSync(target);
+			writeFileSync(join(target, "keep.txt"), "not yet checked out\n");
+			return { status: 128, stdout: "", stderr: errorText };
+		});
+		await assert.rejects(
+			ensureNamedWorktree(repo, { branch: "feat/partial-commondir", path: target }),
+			/failed to read/,
+		);
+		assert.equal(attempts, 1);
+		assert.equal(readFileSync(join(target, "keep.txt"), "utf8"), "not yet checked out\n");
+	},
+	REAL_GIT_PROCESS_BUDGET_MS,
+);
 
 test("an add does not retry if Git left its own admin entry behind even when the target is absent (#5202)", async () => {
 	const repo = makeRepo();
